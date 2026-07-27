@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from datetime import datetime
 import hashlib
-from typing import cast
+from typing import Literal, TypeAlias, assert_never, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import inspect, literal, null, select as sa_select, union_all
 from sqlalchemy.orm import defer
 from sqlmodel import Session, col, desc, func, select
 
@@ -14,6 +17,7 @@ from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, create_presigned_url, s3_object_exists
 from tracker.database.models import (
+    AgentCausedExitReason,
     Benchmark,
     ErrorResult,
     EvaluationResult,
@@ -39,6 +43,16 @@ from tracker.types import (
 from tracker.utils import fetch_harness_config
 
 router = APIRouter(prefix="/benchmarks")
+
+BenchmarkAttemptRow: TypeAlias = tuple[
+    Literal["evaluation", "error"],
+    UUID,
+    str,
+    datetime,
+    str | None,
+    AgentCausedExitReason | None,
+    str | None,
+]
 
 
 def _summarize_attempt_error(message: str) -> tuple[str, bool, str]:
@@ -86,7 +100,6 @@ def get_benchmark_task_attempts(
     if benchmark is None:
         raise HTTPException(status_code=404, detail="Benchmark not found")
 
-    page_end = offset + limit
     task_filters = (
         col(Task.benchmark) == benchmark.id,
         col(Task.org_id) == org.id,
@@ -99,44 +112,87 @@ def get_benchmark_task_attempts(
         *task_filters,
         col(ErrorResult.org_id) == org.id,
     )
-    evaluation_rows = session.exec(
-        select(EvaluationResult, Task.task_id)
-        .join(Task, col(EvaluationResult.task) == col(Task.id))
+    evaluation_result_table = inspect(EvaluationResult).local_table
+    error_result_table = inspect(ErrorResult).local_table
+    task_table = inspect(Task).local_table
+    evaluation_attempts = (
+        sa_select(
+            literal("evaluation").label("kind"),
+            evaluation_result_table.c.id.label("id"),
+            task_table.c.task_id.label("task_id"),
+            evaluation_result_table.c.created_at.label("created_at"),
+            evaluation_result_table.c.instance_id.label("instance_id"),
+            evaluation_result_table.c.agent_caused_exit_reason.label("agent_caused_exit_reason"),
+            null().label("error_message"),
+        )
+        .join(task_table, evaluation_result_table.c.task == task_table.c.id)
         .where(*evaluation_filters)
-        .order_by(desc(EvaluationResult.created_at), desc(EvaluationResult.id))
-        .options(defer(EvaluationResult.result))  # pyright: ignore[reportArgumentType]
-        .limit(page_end)
-    ).all()
-    error_rows = session.exec(
-        select(ErrorResult, Task.task_id)
-        .join(Task, col(ErrorResult.task) == col(Task.id))
+    )
+    error_attempts = (
+        sa_select(
+            literal("error").label("kind"),
+            error_result_table.c.id.label("id"),
+            task_table.c.task_id.label("task_id"),
+            error_result_table.c.created_at.label("created_at"),
+            null().label("instance_id"),
+            null().label("agent_caused_exit_reason"),
+            error_result_table.c.error_message.label("error_message"),
+        )
+        .join(task_table, error_result_table.c.task == task_table.c.id)
         .where(*error_filters)
-        .order_by(desc(ErrorResult.created_at), desc(ErrorResult.id))
-        .limit(page_end)
-    ).all()
-    attempts: list[BenchmarkTaskAttempt] = [
-        BenchmarkEvaluationTaskAttempt(
-            id=row.id,
-            task_id=task_id,
-            created_at=row.created_at,
-            instance_id=row.instance_id,
-            agent_caused_exit_reason=row.agent_caused_exit_reason,
-        )
-        for row, task_id in evaluation_rows
-    ]
-    for row, task_id in error_rows:
-        message, truncated, fingerprint = _summarize_attempt_error(row.error_message)
-        attempts.append(
-            BenchmarkErrorTaskAttempt(
-                id=row.id,
-                task_id=task_id,
-                created_at=row.created_at,
-                error_message=message,
-                error_message_truncated=truncated,
-                error_fingerprint=fingerprint,
+    )
+    attempt_rows = union_all(evaluation_attempts, error_attempts).subquery()
+    rows = cast(
+        Sequence[BenchmarkAttemptRow],
+        session.execute(  # pyright: ignore[reportDeprecated]
+            sa_select(
+                attempt_rows.c.kind,
+                attempt_rows.c.id,
+                attempt_rows.c.task_id,
+                attempt_rows.c.created_at,
+                attempt_rows.c.instance_id,
+                attempt_rows.c.agent_caused_exit_reason,
+                attempt_rows.c.error_message,
             )
+            .order_by(
+                desc(attempt_rows.c.created_at),
+                desc(attempt_rows.c.id),
+                desc(attempt_rows.c.kind),
+            )
+            .offset(offset)
+            .limit(limit)
         )
-    attempts.sort(key=lambda attempt: (attempt.created_at, attempt.id.int), reverse=True)
+        .tuples()
+        .all(),
+    )
+    attempts: list[BenchmarkTaskAttempt] = []
+    for kind, attempt_id, task_id, created_at, instance_id, exit_reason, error_message in rows:
+        match kind:
+            case "evaluation":
+                attempts.append(
+                    BenchmarkEvaluationTaskAttempt(
+                        id=attempt_id,
+                        task_id=task_id,
+                        created_at=created_at,
+                        instance_id=instance_id,
+                        agent_caused_exit_reason=exit_reason,
+                    )
+                )
+            case "error":
+                assert error_message is not None
+                message, truncated, fingerprint = _summarize_attempt_error(error_message)
+                attempts.append(
+                    BenchmarkErrorTaskAttempt(
+                        id=attempt_id,
+                        task_id=task_id,
+                        created_at=created_at,
+                        error_message=message,
+                        error_message_truncated=truncated,
+                        error_fingerprint=fingerprint,
+                    )
+                )
+            case _:
+                assert_never(kind)
 
     evaluation_count = session.exec(
         select(func.count(col(EvaluationResult.id)))
@@ -147,7 +203,7 @@ def get_benchmark_task_attempts(
         select(func.count(col(ErrorResult.id))).join(Task, col(ErrorResult.task) == col(Task.id)).where(*error_filters)
     ).one()
     return BenchmarkTaskAttemptsResponse(
-        attempts=attempts[offset:page_end],
+        attempts=attempts,
         total_count=evaluation_count + error_count,
     )
 

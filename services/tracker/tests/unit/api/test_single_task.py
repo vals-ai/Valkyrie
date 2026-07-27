@@ -162,6 +162,31 @@ def test_benchmark_attempts_enforce_org_scope_and_page_limit(
     assert distant_response.status_code == 422
 
 
+def test_benchmark_attempts_processes_only_the_requested_page(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    benchmark = example_benchmark_object
+    task = make_task(benchmark, "retried-task", status=TaskStatus.ERROR)
+    database_session.add_all([benchmark, task])
+    database_session.flush()
+    started_at = datetime(2026, 6, 24, 12, tzinfo=ZoneInfo("UTC"))
+    database_session.add_all(
+        [make_error_result(task, f"failure-{index}", started_at + timedelta(minutes=index)) for index in range(5)]
+    )
+    database_session.commit()
+
+    summarize = Mock(wraps=getattr(single_task_module, "_summarize_attempt_error"))
+    monkeypatch.setattr(single_task_module, "_summarize_attempt_error", summarize)
+
+    response = _client.get(f"/benchmarks/{benchmark.id}/attempts?limit=1&offset=3")
+
+    assert response.status_code == 200, response.text
+    assert [attempt["error_message"] for attempt in response.json()["attempts"]] == ["failure-1"]
+    assert summarize.call_count == 1
+
+
 def test_task_attempts_page_retry_history_newest_first(
     database_session: Session,
     example_benchmark_object: Benchmark,
