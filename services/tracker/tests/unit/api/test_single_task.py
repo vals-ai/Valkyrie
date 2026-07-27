@@ -45,7 +45,7 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
 
     finished_task = make_task(
         benchmark,
-        "finished-task",
+        "owner/repo/finished-task",
         status=TaskStatus.FINISHED,
         finished_at=now,
     )
@@ -93,6 +93,7 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     other_org_response = _client.get(f"/benchmarks/{other_benchmark.id}/tasks/unknown")
 
     assert finished_response.status_code == 200
+    assert finished_response.json()["task_id"] == "owner/repo/finished-task"
     assert finished_response.json()["evaluation_result"] == {"score": 1.0}
     assert finished_response.json()["agent_caused_exit_reason"] == "TIMEOUT"
     assert finished_response.json()["error_message"] is None
@@ -117,7 +118,7 @@ def test_task_artifacts_only_presign_existing_output(
     - Missing output returns no S3 URL and does not call the signer again.
     """
     benchmark = example_benchmark_object
-    task = make_task(benchmark, "task-with-output")
+    task = make_task(benchmark, "owner/repo/task-with-output")
     database_session.add_all([benchmark, task])
     database_session.commit()
 

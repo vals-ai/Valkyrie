@@ -76,36 +76,7 @@ def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[Evalu
 
 
 @router.get(
-    "/{benchmark_id}/tasks/{task_id}",
-    response_model=SingleTaskResponse,
-)
-def get_single_task(
-    benchmark_id: UUID,
-    task_id: str,
-    org: Org = Depends(get_current_org),
-    session: Session = Depends(get_session),
-) -> SingleTaskResponse:
-    """Fetch a single task's status + evaluation result for the SingleTask page."""
-    _, task = _load_task_or_404(benchmark_id, task_id, org, session)
-
-    eval_row, error_message = _fetch_result_objects(session, task, org)
-
-    return SingleTaskResponse(
-        id=task.id,
-        task_id=task.task_id,
-        status=task.status,
-        started_at=task.started_at,
-        finished_at=task.finished_at,
-        error_message=error_message,
-        evaluation_result=eval_row.result if eval_row else None,
-        agent_caused_exit_reason=(
-            eval_row.agent_caused_exit_reason.value if eval_row and eval_row.agent_caused_exit_reason else None
-        ),
-    )
-
-
-@router.get(
-    "/{benchmark_id}/tasks/{task_id}/artifacts",
+    "/{benchmark_id}/tasks/{task_id:path}/artifacts",
     response_model=TaskArtifactsResponse,
 )
 async def get_task_artifacts(
@@ -144,4 +115,33 @@ async def get_task_artifacts(
         cloudwatch_url=cloudwatch_url,
         agent_output_url=agent_output_url,
         agent_output_expires_in=ttl_seconds,
+    )
+
+
+@router.get(
+    "/{benchmark_id}/tasks/{task_id:path}",
+    response_model=SingleTaskResponse,
+)
+def get_single_task(
+    benchmark_id: UUID,
+    task_id: str,
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> SingleTaskResponse:
+    """Fetch a single task's status + evaluation result for the SingleTask page."""
+    _, task = _load_task_or_404(benchmark_id, task_id, org, session)
+
+    eval_row, error_message = _fetch_result_objects(session, task, org)
+
+    return SingleTaskResponse(
+        id=task.id,
+        task_id=task.task_id,
+        status=task.status,
+        started_at=task.started_at,
+        finished_at=task.finished_at,
+        error_message=error_message,
+        evaluation_result=eval_row.result if eval_row else None,
+        agent_caused_exit_reason=(
+            eval_row.agent_caused_exit_reason.value if eval_row and eval_row.agent_caused_exit_reason else None
+        ),
     )
