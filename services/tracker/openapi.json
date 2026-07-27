@@ -384,6 +384,106 @@
         "title": "BenchmarkArguments",
         "type": "object"
       },
+      "BenchmarkErrorTaskAttempt": {
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "error_fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Error Fingerprint",
+            "type": "string"
+          },
+          "error_message": {
+            "maxLength": 4000,
+            "title": "Error Message",
+            "type": "string"
+          },
+          "error_message_truncated": {
+            "title": "Error Message Truncated",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "error",
+            "default": "error",
+            "title": "Kind",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "error_message",
+          "error_message_truncated",
+          "error_fingerprint",
+          "task_id"
+        ],
+        "title": "BenchmarkErrorTaskAttempt",
+        "type": "object"
+      },
+      "BenchmarkEvaluationTaskAttempt": {
+        "properties": {
+          "agent_caused_exit_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentCausedExitReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "instance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instance Id"
+          },
+          "kind": {
+            "const": "evaluation",
+            "default": "evaluation",
+            "title": "Kind",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "instance_id",
+          "agent_caused_exit_reason",
+          "task_id"
+        ],
+        "title": "BenchmarkEvaluationTaskAttempt",
+        "type": "object"
+      },
       "BenchmarkServiceCatalogResponse": {
         "properties": {
           "services": {
@@ -713,6 +813,41 @@
           "finished_tasks"
         ],
         "title": "BenchmarkTableRow",
+        "type": "object"
+      },
+      "BenchmarkTaskAttemptsResponse": {
+        "properties": {
+          "attempts": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "error": "#/components/schemas/BenchmarkErrorTaskAttempt",
+                  "evaluation": "#/components/schemas/BenchmarkEvaluationTaskAttempt"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/BenchmarkErrorTaskAttempt"
+                },
+                {
+                  "$ref": "#/components/schemas/BenchmarkEvaluationTaskAttempt"
+                }
+              ]
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
+          "total_count": {
+            "title": "Total Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attempts",
+          "total_count"
+        ],
+        "title": "BenchmarkTaskAttemptsResponse",
         "type": "object"
       },
       "Body_retry_or_resume_benchmark": {
@@ -2286,6 +2421,71 @@
           }
         },
         "summary": "Get Single Benchmark"
+      }
+    },
+    "/benchmarks/{benchmark_id}/attempts": {
+      "get": {
+        "description": "Return persisted task outcomes across a benchmark, newest first.",
+        "operationId": "get_benchmark_task_attempts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BenchmarkTaskAttemptsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Benchmark Task Attempts"
       }
     },
     "/benchmarks/{benchmark_id}/concurrency": {

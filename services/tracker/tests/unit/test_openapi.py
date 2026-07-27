@@ -80,3 +80,10 @@ def test_openapi_declares_required_harness_headers() -> None:
     assert schema["components"]["parameters"] == expected_parameters
     for operation in affected_operations:
         assert operation["parameters"][-4:] == expected_references
+
+
+def test_openapi_declares_run_and_task_attempt_routes() -> None:
+    paths = build_openapi()["paths"]
+
+    assert paths["/benchmarks/{benchmark_id}/attempts"]["get"]["operationId"] == "get_benchmark_task_attempts"
+    assert paths["/benchmarks/{benchmark_id}/tasks/{task_id}/attempts"]["get"]["operationId"] == "get_task_attempts"

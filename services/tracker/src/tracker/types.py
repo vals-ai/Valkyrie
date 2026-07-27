@@ -426,6 +426,25 @@ class TaskAttemptsResponse(BaseModel):
     total_count: int
 
 
+class BenchmarkErrorTaskAttempt(ErrorTaskAttempt):
+    task_id: str
+
+
+class BenchmarkEvaluationTaskAttempt(EvaluationTaskAttempt):
+    task_id: str
+
+
+BenchmarkTaskAttempt = Annotated[
+    BenchmarkErrorTaskAttempt | BenchmarkEvaluationTaskAttempt,
+    Field(discriminator="kind"),
+]
+
+
+class BenchmarkTaskAttemptsResponse(BaseModel):
+    attempts: list[BenchmarkTaskAttempt]
+    total_count: int
+
+
 class AgentEntry(BaseModel):
     name: str
     last_modified: str | None = None

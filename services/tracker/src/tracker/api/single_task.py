@@ -23,6 +23,10 @@ from tracker.database.models import (
 )
 from tracker.database.session import get_session
 from tracker.types import (
+    BenchmarkErrorTaskAttempt,
+    BenchmarkEvaluationTaskAttempt,
+    BenchmarkTaskAttempt,
+    BenchmarkTaskAttemptsResponse,
     ErrorTaskAttempt,
     EvaluationTaskAttempt,
     HarnessConfig,
@@ -62,6 +66,90 @@ def _load_task_or_404(benchmark_id: UUID, task_id: str, org: Org, session: Sessi
         raise HTTPException(status_code=404, detail="Task not found")
 
     return benchmark, task
+
+
+@router.get(
+    "/{benchmark_id}/attempts",
+    response_model=BenchmarkTaskAttemptsResponse,
+)
+def get_benchmark_task_attempts(
+    benchmark_id: UUID,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=10_000),
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> BenchmarkTaskAttemptsResponse:
+    """Return persisted task outcomes across a benchmark, newest first."""
+    benchmark = session.exec(
+        select(Benchmark).where(Benchmark.id == benchmark_id).where(Benchmark.org_id == org.id)
+    ).first()
+    if benchmark is None:
+        raise HTTPException(status_code=404, detail="Benchmark not found")
+
+    page_end = offset + limit
+    task_filters = (
+        col(Task.benchmark) == benchmark.id,
+        col(Task.org_id) == org.id,
+    )
+    evaluation_filters = (
+        *task_filters,
+        col(EvaluationResult.org_id) == org.id,
+    )
+    error_filters = (
+        *task_filters,
+        col(ErrorResult.org_id) == org.id,
+    )
+    evaluation_rows = session.exec(
+        select(EvaluationResult, Task.task_id)
+        .join(Task, col(EvaluationResult.task) == col(Task.id))
+        .where(*evaluation_filters)
+        .order_by(desc(EvaluationResult.created_at), desc(EvaluationResult.id))
+        .options(defer(EvaluationResult.result))  # pyright: ignore[reportArgumentType]
+        .limit(page_end)
+    ).all()
+    error_rows = session.exec(
+        select(ErrorResult, Task.task_id)
+        .join(Task, col(ErrorResult.task) == col(Task.id))
+        .where(*error_filters)
+        .order_by(desc(ErrorResult.created_at), desc(ErrorResult.id))
+        .limit(page_end)
+    ).all()
+    attempts: list[BenchmarkTaskAttempt] = [
+        BenchmarkEvaluationTaskAttempt(
+            id=row.id,
+            task_id=task_id,
+            created_at=row.created_at,
+            instance_id=row.instance_id,
+            agent_caused_exit_reason=row.agent_caused_exit_reason,
+        )
+        for row, task_id in evaluation_rows
+    ]
+    for row, task_id in error_rows:
+        message, truncated, fingerprint = _summarize_attempt_error(row.error_message)
+        attempts.append(
+            BenchmarkErrorTaskAttempt(
+                id=row.id,
+                task_id=task_id,
+                created_at=row.created_at,
+                error_message=message,
+                error_message_truncated=truncated,
+                error_fingerprint=fingerprint,
+            )
+        )
+    attempts.sort(key=lambda attempt: (attempt.created_at, attempt.id.int, attempt.kind), reverse=True)
+
+    evaluation_count = session.exec(
+        select(func.count(col(EvaluationResult.id)))
+        .join(Task, col(EvaluationResult.task) == col(Task.id))
+        .where(*evaluation_filters)
+    ).one()
+    error_count = session.exec(
+        select(func.count(col(ErrorResult.id))).join(Task, col(ErrorResult.task) == col(Task.id)).where(*error_filters)
+    ).one()
+    return BenchmarkTaskAttemptsResponse(
+        attempts=attempts[offset:page_end],
+        total_count=evaluation_count + error_count,
+    )
 
 
 def _task_prefix(benchmark_id: UUID, task_id: str) -> str:
