@@ -119,6 +119,11 @@ async def get_task_artifacts(
 
 
 @router.get(
+    "/{benchmark_id}/task",
+    operation_id="get_single_task_by_query",
+    response_model=SingleTaskResponse,
+)
+@router.get(
     "/{benchmark_id}/tasks/{task_id:path}",
     response_model=SingleTaskResponse,
 )

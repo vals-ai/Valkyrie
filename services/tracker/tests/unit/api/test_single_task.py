@@ -56,7 +56,8 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
         finished_at=now,
     )
     pending_task = make_task(benchmark, "pending-task")
-    database_session.add_all([finished_task, error_task, pending_task])
+    ambiguous_task = make_task(benchmark, "owner/artifacts")
+    database_session.add_all([finished_task, error_task, pending_task, ambiguous_task])
     database_session.flush()
     database_session.add_all(
         [
@@ -90,6 +91,10 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     finished_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}")
     error_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{error_task.task_id}")
     pending_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{pending_task.task_id}")
+    ambiguous_response = _client.get(
+        f"/benchmarks/{benchmark.id}/task",
+        params={"task_id": ambiguous_task.task_id},
+    )
     other_org_response = _client.get(f"/benchmarks/{other_benchmark.id}/tasks/unknown")
 
     assert finished_response.status_code == 200
@@ -103,6 +108,8 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     assert pending_response.status_code == 200
     assert pending_response.json()["error_message"] is None
     assert pending_response.json()["evaluation_result"] is None
+    assert ambiguous_response.status_code == 200
+    assert ambiguous_response.json()["task_id"] == "owner/artifacts"
     assert other_org_response.status_code == 404
 
 

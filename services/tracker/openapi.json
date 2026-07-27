@@ -2204,6 +2204,56 @@
         "summary": "Patch Benchmark Concurrency"
       }
     },
+    "/benchmarks/{benchmark_id}/task": {
+      "get": {
+        "description": "Fetch a single task's status + evaluation result for the SingleTask page.",
+        "operationId": "get_single_task_by_query",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SingleTaskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Single Task"
+      }
+    },
     "/benchmarks/{benchmark_id}/tasks": {
       "get": {
         "description": "Paginated tasks for a benchmark, with optional status filter + task-id search.\n\nsort=status desc surfaces errors first (attention priority). Default: started_at desc.",
