@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_serializer, field_validator
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
+    AgentCausedExitReason,
     AgentContractRequest,
     BenchmarkArguments,
     BenchmarkStatus,
@@ -20,6 +21,8 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.outbound_security import validate_benchmark_name, validate_service_url_syntax
+
+TASK_ATTEMPT_ERROR_MAX_LENGTH = 4_000
 
 
 def _serialize_utc(value: datetime | None) -> str | None:
@@ -389,6 +392,38 @@ class SingleTaskResponse(BaseModel):
     @field_serializer("finished_at")
     def _serialize_finished_at(self, value: datetime | None) -> str | None:
         return _serialize_utc(value)
+
+
+class TaskAttemptBase(BaseModel):
+    id: UUID
+    created_at: datetime
+
+    @field_serializer("created_at")
+    def _serialize_created_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+
+class ErrorTaskAttempt(TaskAttemptBase):
+    kind: Literal["error"] = "error"
+    error_message: str = Field(max_length=TASK_ATTEMPT_ERROR_MAX_LENGTH)
+    error_message_truncated: bool
+    error_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class EvaluationTaskAttempt(TaskAttemptBase):
+    kind: Literal["evaluation"] = "evaluation"
+    instance_id: str | None
+    agent_caused_exit_reason: AgentCausedExitReason | None
+
+
+TaskAttempt = Annotated[ErrorTaskAttempt | EvaluationTaskAttempt, Field(discriminator="kind")]
+
+
+class TaskAttemptsResponse(BaseModel):
+    attempts: list[TaskAttempt]
+    total_count: int
 
 
 class AgentEntry(BaseModel):

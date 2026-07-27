@@ -6,8 +6,10 @@ Cover task details and artifact-link behavior.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from hashlib import sha256
+from urllib.parse import quote
 from unittest.mock import ANY, AsyncMock, Mock
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -25,6 +27,138 @@ from tracker.database.models import (
 )
 
 _client = TestClient(app)
+
+
+def test_task_attempts_page_retry_history_newest_first(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    benchmark = example_benchmark_object
+    task = make_task(
+        benchmark,
+        "suite/task",
+        status=TaskStatus.ERROR,
+        finished_at=datetime(2026, 6, 24, 16, tzinfo=ZoneInfo("UTC")),
+    )
+    database_session.add_all([benchmark, task])
+    database_session.flush()
+
+    newest_evaluation = make_evaluation_result(
+        task,
+        "evaluation-new",
+        {"score": 1.0},
+        datetime(2026, 6, 24, 16, tzinfo=ZoneInfo("UTC")),
+    )
+    repeated_error_new = make_error_result(
+        task,
+        "identical failure",
+        datetime(2026, 6, 24, 15, tzinfo=ZoneInfo("UTC")),
+    )
+    repeated_error_old = make_error_result(
+        task,
+        "identical failure",
+        datetime(2026, 6, 24, 15, tzinfo=ZoneInfo("UTC")),
+    )
+    older_evaluation = make_evaluation_result(
+        task,
+        "evaluation-old",
+        {"score": 0.25},
+        datetime(2026, 6, 24, 14, tzinfo=ZoneInfo("UTC")),
+        exit_reason=AgentCausedExitReason.TIMEOUT,
+    )
+    newest_evaluation.id = UUID("00000000-0000-0000-0000-000000000004")
+    repeated_error_new.id = UUID("00000000-0000-0000-0000-000000000003")
+    repeated_error_old.id = UUID("00000000-0000-0000-0000-000000000002")
+    older_evaluation.id = UUID("00000000-0000-0000-0000-000000000001")
+    database_session.add_all(
+        [
+            newest_evaluation,
+            repeated_error_new,
+            repeated_error_old,
+            older_evaluation,
+        ]
+    )
+    database_session.commit()
+
+    task_path = quote(task.task_id, safe="")
+    first_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{task_path}/attempts?limit=2")
+    second_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{task_path}/attempts?limit=2&offset=2")
+
+    fingerprint = sha256(b"identical failure").hexdigest()
+    assert first_response.status_code == 200, first_response.text
+    assert first_response.json() == {
+        "attempts": [
+            {
+                "kind": "evaluation",
+                "id": str(newest_evaluation.id),
+                "created_at": "2026-06-24T16:00:00+00:00",
+                "instance_id": "evaluation-new",
+                "agent_caused_exit_reason": None,
+            },
+            {
+                "kind": "error",
+                "id": str(repeated_error_new.id),
+                "created_at": "2026-06-24T15:00:00+00:00",
+                "error_message": "identical failure",
+                "error_message_truncated": False,
+                "error_fingerprint": fingerprint,
+            },
+        ],
+        "total_count": 4,
+    }
+    assert second_response.status_code == 200, second_response.text
+    assert second_response.json() == {
+        "attempts": [
+            {
+                "kind": "error",
+                "id": str(repeated_error_old.id),
+                "created_at": "2026-06-24T15:00:00+00:00",
+                "error_message": "identical failure",
+                "error_message_truncated": False,
+                "error_fingerprint": fingerprint,
+            },
+            {
+                "kind": "evaluation",
+                "id": str(older_evaluation.id),
+                "created_at": "2026-06-24T14:00:00+00:00",
+                "instance_id": "evaluation-old",
+                "agent_caused_exit_reason": "TIMEOUT",
+            },
+        ],
+        "total_count": 4,
+    }
+
+
+def test_task_attempts_enforce_org_scope_and_page_limit(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    benchmark = example_benchmark_object
+    task = make_task(benchmark, "target", status=TaskStatus.ERROR)
+    other_org = Org(id=uuid4(), name="other-org")
+    other_benchmark = Benchmark(
+        org_id=other_org.id,
+        name=benchmark.name,
+        arguments=benchmark.arguments,
+    )
+    other_task = make_task(other_benchmark, task.task_id, status=TaskStatus.ERROR)
+    database_session.add_all([benchmark, task, other_org, other_benchmark, other_task])
+    database_session.flush()
+
+    target_error = make_error_result(task, "target failure", datetime.now(ZoneInfo("UTC")))
+    foreign_error = make_error_result(task, "foreign failure", datetime.now(ZoneInfo("UTC")))
+    foreign_error.org_id = other_org.id
+    database_session.add_all([target_error, foreign_error])
+    database_session.commit()
+
+    response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/attempts")
+    foreign_response = _client.get(f"/benchmarks/{other_benchmark.id}/tasks/{other_task.task_id}/attempts")
+    oversized_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/attempts?limit=101")
+
+    assert response.status_code == 200
+    assert [attempt["error_message"] for attempt in response.json()["attempts"]] == ["target failure"]
+    assert foreign_response.status_code == 404
+    assert oversized_response.status_code == 422
 
 
 def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(

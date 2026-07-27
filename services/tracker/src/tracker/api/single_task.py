@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, desc, select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import defer
+from sqlmodel import Session, col, desc, func, select
 
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
@@ -20,10 +22,27 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import get_session
-from tracker.types import HarnessConfig, SingleTaskResponse, TaskArtifactsResponse
+from tracker.types import (
+    ErrorTaskAttempt,
+    EvaluationTaskAttempt,
+    HarnessConfig,
+    SingleTaskResponse,
+    TaskArtifactsResponse,
+    TaskAttempt,
+    TaskAttemptsResponse,
+    TASK_ATTEMPT_ERROR_MAX_LENGTH,
+)
 from tracker.utils import fetch_harness_config
 
 router = APIRouter(prefix="/benchmarks")
+
+
+def _summarize_attempt_error(message: str) -> tuple[str, bool, str]:
+    return (
+        message[:TASK_ATTEMPT_ERROR_MAX_LENGTH],
+        len(message) > TASK_ATTEMPT_ERROR_MAX_LENGTH,
+        hashlib.sha256(message.encode()).hexdigest(),
+    )
 
 
 def _load_task_or_404(benchmark_id: UUID, task_id: str, org: Org, session: Session) -> tuple[Benchmark, Task]:
@@ -73,6 +92,72 @@ def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[Evalu
         return cast(EvaluationResult | None, result), None
 
     return None, cast(str | None, result)
+
+
+@router.get(
+    "/{benchmark_id}/tasks/{task_id:path}/attempts",
+    response_model=TaskAttemptsResponse,
+)
+def get_task_attempts(
+    benchmark_id: UUID,
+    task_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> TaskAttemptsResponse:
+    """Return persisted task outcomes, newest first."""
+    _, task = _load_task_or_404(benchmark_id, task_id, org, session)
+    page_end = offset + limit
+    evaluation_filters = (
+        col(EvaluationResult.task) == task.id,
+        col(EvaluationResult.org_id) == org.id,
+    )
+    error_filters = (
+        col(ErrorResult.task) == task.id,
+        col(ErrorResult.org_id) == org.id,
+    )
+    evaluation_rows = session.exec(
+        select(EvaluationResult)
+        .where(*evaluation_filters)
+        .order_by(desc(EvaluationResult.created_at), desc(EvaluationResult.id))
+        .options(defer(EvaluationResult.result))  # pyright: ignore[reportArgumentType]
+        .limit(page_end)
+    ).all()
+    error_rows = session.exec(
+        select(ErrorResult)
+        .where(*error_filters)
+        .order_by(desc(ErrorResult.created_at), desc(ErrorResult.id))
+        .limit(page_end)
+    ).all()
+    attempts: list[TaskAttempt] = [
+        EvaluationTaskAttempt(
+            id=row.id,
+            created_at=row.created_at,
+            instance_id=row.instance_id,
+            agent_caused_exit_reason=row.agent_caused_exit_reason,
+        )
+        for row in evaluation_rows
+    ]
+    for row in error_rows:
+        message, truncated, fingerprint = _summarize_attempt_error(row.error_message)
+        attempts.append(
+            ErrorTaskAttempt(
+                id=row.id,
+                created_at=row.created_at,
+                error_message=message,
+                error_message_truncated=truncated,
+                error_fingerprint=fingerprint,
+            )
+        )
+    attempts.sort(key=lambda attempt: (attempt.created_at, attempt.id.int, attempt.kind), reverse=True)
+
+    evaluation_count = session.exec(select(func.count(col(EvaluationResult.id))).where(*evaluation_filters)).one()
+    error_count = session.exec(select(func.count(col(ErrorResult.id))).where(*error_filters)).one()
+    return TaskAttemptsResponse(
+        attempts=attempts[offset:page_end],
+        total_count=evaluation_count + error_count,
+    )
 
 
 @router.get(

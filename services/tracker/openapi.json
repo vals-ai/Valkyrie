@@ -69,6 +69,15 @@
         "title": "AWSCredentials",
         "type": "object"
       },
+      "AgentCausedExitReason": {
+        "description": "Exit reasons caused by the agent that continue to evaluation",
+        "enum": [
+          "TIMEOUT",
+          "OS_KILLED"
+        ],
+        "title": "AgentCausedExitReason",
+        "type": "string"
+      },
       "AgentContractRequest": {
         "properties": {
           "egress_allowlist": {
@@ -754,6 +763,96 @@
           }
         },
         "title": "Body_stop_benchmark",
+        "type": "object"
+      },
+      "ErrorTaskAttempt": {
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "error_fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Error Fingerprint",
+            "type": "string"
+          },
+          "error_message": {
+            "maxLength": 4000,
+            "title": "Error Message",
+            "type": "string"
+          },
+          "error_message_truncated": {
+            "title": "Error Message Truncated",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "error",
+            "default": "error",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "error_message",
+          "error_message_truncated",
+          "error_fingerprint"
+        ],
+        "title": "ErrorTaskAttempt",
+        "type": "object"
+      },
+      "EvaluationTaskAttempt": {
+        "properties": {
+          "agent_caused_exit_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentCausedExitReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "instance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instance Id"
+          },
+          "kind": {
+            "const": "evaluation",
+            "default": "evaluation",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "instance_id",
+          "agent_caused_exit_reason"
+        ],
+        "title": "EvaluationTaskAttempt",
         "type": "object"
       },
       "FetchBenchmarkMetadataResponse": {
@@ -1651,6 +1750,41 @@
         "title": "TaskArtifactsResponse",
         "type": "object"
       },
+      "TaskAttemptsResponse": {
+        "properties": {
+          "attempts": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "error": "#/components/schemas/ErrorTaskAttempt",
+                  "evaluation": "#/components/schemas/EvaluationTaskAttempt"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorTaskAttempt"
+                },
+                {
+                  "$ref": "#/components/schemas/EvaluationTaskAttempt"
+                }
+              ]
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
+          "total_count": {
+            "title": "Total Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attempts",
+          "total_count"
+        ],
+        "title": "TaskAttemptsResponse",
+        "type": "object"
+      },
       "TaskStatus": {
         "enum": [
           "PENDING",
@@ -2484,6 +2618,79 @@
           }
         },
         "summary": "Get Task Artifacts"
+      }
+    },
+    "/benchmarks/{benchmark_id}/tasks/{task_id}/attempts": {
+      "get": {
+        "description": "Return persisted task outcomes, newest first.",
+        "operationId": "get_task_attempts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskAttemptsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task Attempts"
       }
     },
     "/check-results-exist": {
