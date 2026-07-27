@@ -33,9 +33,12 @@ class TestReadSchedulerOverview:
         queued_second = _queue(make_benchmark(name="second"), pool_id=pool_b, priority=1)
         queued_fifo = _queue(make_benchmark(name="fifo"), pool_id=pool_a, priority=3)
         direct = make_benchmark(name="direct")
+        malformed = make_benchmark(name="malformed")
+        malformed.arguments = malformed.arguments.model_copy(update={"queue_pool_id": pool_a})
         foreign = _queue(make_benchmark(name="foreign", org_id=other_org.id), pool_id=pool_a, priority=0)
 
         foreign_first = make_task(foreign, "foreign-first", started_at=now - timedelta(minutes=20))
+        malformed_waiting = make_task(malformed, "malformed-waiting", started_at=now - timedelta(minutes=25))
         urgent = make_task(queued_urgent, "urgent", started_at=now - timedelta(minutes=15))
         second = make_task(queued_second, "second", started_at=now - timedelta(minutes=10))
         fifo_first = make_task(queued_fifo, "fifo-first", started_at=now - timedelta(minutes=5))
@@ -61,8 +64,10 @@ class TestReadSchedulerOverview:
                 queued_second,
                 queued_fifo,
                 direct,
+                malformed,
                 foreign,
                 foreign_first,
+                malformed_waiting,
                 urgent,
                 second,
                 fifo_first,

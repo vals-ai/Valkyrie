@@ -54,7 +54,11 @@ def _read_waiting_rows(
             .label("position"),
         )
         .join(Benchmark, col(Benchmark.id) == col(Task.benchmark))
-        .where(Task.status == TaskStatus.PENDING, _queued_benchmarks_expression())
+        .where(
+            Task.status == TaskStatus.PENDING,
+            _queued_benchmarks_expression(),
+            priority.between(0, 4),
+        )
         .subquery()
     )
     scope = (col(Task.org_id) == org_id, col(Benchmark.org_id) == org_id)
