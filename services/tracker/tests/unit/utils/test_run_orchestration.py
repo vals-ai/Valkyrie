@@ -5,13 +5,13 @@ Run: uv run pytest tests/unit/utils/test_run_orchestration.py
 
 import asyncio
 from contextlib import suppress
+from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from benchmark_service import SandboxProvider
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import VerifyTaskIdsResponse
 from sqlmodel import Session, select
 
 from tests.utils import TEST_ORG_ID
@@ -22,13 +22,12 @@ from tracker.database.models import (
     BenchmarkStatus,
     EvaluationResult,
     Org,
-    RetryMode,
     Task,
     TaskStatus,
 )
 from tracker.scheduler.store import queue_pool_id
 from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import process_benchmark, reset_to_in_progress_status, start_benchmark_request_to_benchmark
+from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
 
 
 def _persist_benchmark(
@@ -59,7 +58,7 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
     request = StartBenchmarkRequest(
         benchmark_name="swebench",
         contract=contract,
-        concurrency=2,
+        concurrency=3,
         priority=3,
         task_ids=task_ids,
         harness_config=harness_config,
@@ -86,9 +85,17 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
                 org_id=TEST_ORG_ID,
                 task_id=task_id,
                 benchmark=benchmark.id,
-                status=TaskStatus.EVALUATING,
+                status=TaskStatus.PENDING,
             )
             for task_id in task_ids[3:]
+        ]
+        + [
+            Task(
+                org_id=TEST_ORG_ID,
+                task_id="existing_active",
+                benchmark=benchmark.id,
+                status=TaskStatus.IN_PROGRESS,
+            )
         ]
     )
     database_session.commit()
@@ -136,6 +143,7 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
 
             return {task_row.task_id: result}
 
+        assert task_row.status == TaskStatus.PENDING
         pending_started.append(task_row.task_id)
         pending_contender_started.set()
         await hold_pending.wait()
@@ -162,7 +170,7 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
         assert len(evaluation_started) == 2
         assert pending_started == []
 
-        set_concurrency(1)
+        set_concurrency(2)
         first_evaluation = evaluation_started[0]
         release_evaluation[first_evaluation].set()
         await evaluation_finished[first_evaluation].wait()
@@ -172,7 +180,7 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
         assert len(evaluation_started) == 2
         assert pending_started == []
 
-        set_concurrency(2)
+        set_concurrency(3)
         continue_coordinator.put_nowait(None)
         await coordinator_polls.get()
         await third_evaluation_started.wait()
@@ -240,6 +248,10 @@ async def test_queued_process_benchmark_recovers_existing_work_before_finalizing
     )
     database_session.commit()
     initial_statuses: dict[str, TaskStatus] = {}
+    original_resume_started_at = database_session.exec(
+        select(Task.started_at).where(Task.benchmark == benchmark.id).where(Task.task_id == "resume_eval")
+    ).one()
+    resumed_at: datetime | None = None
 
     async def recover_queued_pool(_context: object) -> None:
         with Session(bind=database_session.bind) as session:
@@ -252,7 +264,10 @@ async def test_queued_process_benchmark_recovers_existing_work_before_finalizing
             session.commit()
 
     async def process_task(task_row: Task, *_args: Any, **_kwargs: Any) -> dict[str, dict[str, Any]]:
+        nonlocal resumed_at
         initial_statuses[task_row.task_id] = task_row.status
+        if task_row.task_id == "resume_eval":
+            resumed_at = task_row.started_at
         result = {"status": "success", "score": 1.0}
         with Session(bind=database_session.bind) as session:
             task = session.get(Task, task_row.id)
@@ -288,6 +303,7 @@ async def test_queued_process_benchmark_recovers_existing_work_before_finalizing
         "resume_eval": TaskStatus.FINISHED,
         "recover_build": TaskStatus.FINISHED,
     }
+    assert resumed_at is not None and resumed_at > original_resume_started_at
     assert benchmark.status == BenchmarkStatus.FINISHED
 
 
@@ -343,7 +359,7 @@ async def test_process_benchmark_defaults_to_five_concurrent_tasks(
 
 
 @pytest.mark.usefixtures("process_benchmark_env")
-async def test_process_benchmark_handles_provider_config_failure(
+async def test_direct_provider_setup_failure_closes_client_without_creating_tasks(
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
@@ -357,76 +373,51 @@ async def test_process_benchmark_handles_provider_config_failure(
         harness_config=harness_config,
     )
     benchmark = _persist_benchmark(request, database_session)
+    benchmark_service = AsyncMock(spec=BenchmarkServiceClient)
+    benchmark_service.get_sandbox_provider = Mock(side_effect=RuntimeError("provider setup failed"))
     monkeypatch.setattr(
-        "tracker.utils.run_orchestration.fetch_sandbox_provider_config",
-        Mock(side_effect=RuntimeError("provider secret drift")),
+        "tracker.utils.run_orchestration.create_benchmark_service_client_from_request",
+        Mock(return_value=benchmark_service),
     )
-    provider_warning = Mock()
-    monkeypatch.setattr("tracker.utils.run_orchestration.logger.warning", provider_warning)
-    fallback_cleanup = Mock()
-    monkeypatch.setattr("tracker.utils.run_orchestration.catch_errors_during_cleanup", fallback_cleanup)
+    with pytest.raises(RuntimeError, match="provider setup failed"):
+        await process_benchmark(request.model_dump(), str(benchmark.id), task_ids)
 
-    await process_benchmark(request.model_dump(), str(benchmark.id), task_ids)
-
+    benchmark_service.close.assert_awaited_once_with()
     database_session.refresh(benchmark)
     tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).all()
-    assert benchmark.status == BenchmarkStatus.ERROR
-    assert benchmark.error_message == "Sandbox provider configuration is unavailable"
-    assert "provider secret drift" not in (benchmark.error_message or "")
-    assert [task.status for task in tasks] == [TaskStatus.ERROR]
-    provider_warning.assert_called_once_with(
-        "Sandbox provider configuration resolution failed (%s)",
-        "RuntimeError",
-    )
-    fallback_cleanup.assert_not_called()
-
-    benchmark_service = AsyncMock(spec=BenchmarkServiceClient)
-    benchmark_service.verify_task_ids.return_value = VerifyTaskIdsResponse(task_ids=task_ids)
-    org = database_session.get(Org, TEST_ORG_ID)
-    assert org is not None
-    assert (
-        await reset_to_in_progress_status(
-            benchmark_row=benchmark,
-            session=database_session,
-            benchmark_service=benchmark_service,
-            retry=True,
-            retry_mode=RetryMode.AUTO,
-            rerun_task_ids=[],
-            org=org,
-        )
-        == task_ids
-    )
-
-    database_session.refresh(benchmark)
-    database_session.refresh(tasks[0])
     assert benchmark.status == BenchmarkStatus.IN_PROGRESS
     assert benchmark.error_message is None
-    assert benchmark.finished_at is None
-    assert tasks[0].status == TaskStatus.PENDING
+    assert tasks == []
 
 
 @pytest.mark.usefixtures("process_benchmark_env")
-async def test_process_benchmark_cancellation_only_fails_its_tasks(
+async def test_queued_process_benchmark_cancellation_preserves_recoverable_tasks(
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    task_ids = ["task_0"]
+    task_ids = ["building", "pending"]
     request = StartBenchmarkRequest(
         benchmark_name="swebench",
         contract=contract,
+        priority=3,
         task_ids=task_ids,
         harness_config=harness_config,
     )
-    benchmark = _persist_benchmark(request, database_session)
-    unrelated_task = Task(
-        org_id=TEST_ORG_ID,
-        task_id="task_unrelated",
-        benchmark=benchmark.id,
-        status=TaskStatus.PENDING,
+    benchmark = _persist_benchmark(
+        request,
+        database_session,
+        queued_pool_id=queue_pool_id("coordinator-pool"),
     )
-    database_session.add(unrelated_task)
+    database_session.add(
+        Task(
+            org_id=TEST_ORG_ID,
+            task_id="building",
+            benchmark=benchmark.id,
+            status=TaskStatus.BUILDING,
+        )
+    )
     database_session.commit()
     monkeypatch.setattr(
         "tracker.utils.run_orchestration.fetch_sandbox_provider_config",
@@ -440,9 +431,103 @@ async def test_process_benchmark_cancellation_only_fails_its_tasks(
     tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).all()
     assert benchmark.status == BenchmarkStatus.IN_PROGRESS
     assert {task.task_id: task.status for task in tasks} == {
-        "task_unrelated": TaskStatus.PENDING,
-        "task_0": TaskStatus.ERROR,
+        "building": TaskStatus.BUILDING,
+        "pending": TaskStatus.PENDING,
     }
+
+
+@pytest.mark.usefixtures("process_benchmark_env")
+@pytest.mark.parametrize("active_status", [TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING])
+async def test_queued_cancellation_errors_locally_owned_unrecoverable_tasks(
+    contract: AgentContractRequest,
+    database_session: Session,
+    harness_config: HarnessConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    active_status: TaskStatus,
+) -> None:
+    request = StartBenchmarkRequest(
+        benchmark_name="swebench",
+        contract=contract,
+        priority=3,
+        task_ids=["task_0"],
+        harness_config=harness_config,
+    )
+    benchmark = _persist_benchmark(
+        request,
+        database_session,
+        queued_pool_id=queue_pool_id("coordinator-pool"),
+    )
+    task_started = asyncio.Event()
+
+    async def process_task(task_row: Task, *_args: Any, **_kwargs: Any) -> dict[str, None]:
+        with Session(bind=database_session.bind) as session:
+            task = session.get(Task, task_row.id)
+            assert task is not None
+            task.status = active_status
+            session.add(task)
+            session.commit()
+        task_started.set()
+        await asyncio.Event().wait()
+        return {task_row.task_id: None}
+
+    sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id="coordinator-pool")
+    monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
+    monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", Mock(return_value=sandbox_provider))
+
+    run = asyncio.create_task(process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"]))
+    await asyncio.wait_for(task_started.wait(), timeout=2)
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+
+    database_session.refresh(benchmark)
+    task = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).one()
+    assert benchmark.status == BenchmarkStatus.ERROR
+    assert task.status == TaskStatus.ERROR
+
+
+@pytest.mark.usefixtures("process_benchmark_env")
+@pytest.mark.parametrize("advanced_status", [TaskStatus.BUILDING, TaskStatus.FINISHED])
+async def test_queued_failure_does_not_override_advanced_tasks(
+    contract: AgentContractRequest,
+    database_session: Session,
+    harness_config: HarnessConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    advanced_status: TaskStatus,
+) -> None:
+    request = StartBenchmarkRequest(
+        benchmark_name="swebench",
+        contract=contract,
+        priority=3,
+        task_ids=["task_0"],
+        harness_config=harness_config,
+    )
+    benchmark = _persist_benchmark(
+        request,
+        database_session,
+        queued_pool_id=queue_pool_id("coordinator-pool"),
+    )
+
+    def advance_then_fail(*_args: object, **_kwargs: object) -> None:
+        with Session(bind=database_session.bind) as session:
+            task = session.exec(select(Task).where(Task.benchmark == benchmark.id)).one()
+            task.status = advanced_status
+            session.add(task)
+            session.commit()
+        raise RuntimeError("provider configuration failed")
+
+    monkeypatch.setattr(
+        "tracker.utils.run_orchestration.fetch_sandbox_provider_config",
+        advance_then_fail,
+    )
+
+    await process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"])
+
+    database_session.refresh(benchmark)
+    task = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).one()
+    assert benchmark.status == BenchmarkStatus.IN_PROGRESS
+    assert benchmark.error_message is None
+    assert task.status == advanced_status
 
 
 @pytest.mark.usefixtures("process_benchmark_env")
@@ -495,31 +580,6 @@ async def test_queued_process_benchmark_reports_provider_configuration_drift(
         "task_unrelated": TaskStatus.PENDING,
         "task_0": TaskStatus.BUILDING,
         "task_1": TaskStatus.ERROR,
-    }
-    benchmark_service = AsyncMock(spec=BenchmarkServiceClient)
-    benchmark_service.verify_task_ids.return_value = VerifyTaskIdsResponse(task_ids=task_ids)
-    org = database_session.get(Org, TEST_ORG_ID)
-    assert org is not None
-
-    verified_task_ids = await reset_to_in_progress_status(
-        benchmark_row=benchmark,
-        session=database_session,
-        benchmark_service=benchmark_service,
-        retry=True,
-        retry_mode=RetryMode.AUTO,
-        rerun_task_ids=[],
-        org=org,
-    )
-
-    database_session.refresh(benchmark)
-    for task in tasks:
-        database_session.refresh(task)
-    assert verified_task_ids == task_ids
-    assert benchmark.status == BenchmarkStatus.IN_PROGRESS
-    assert {task.task_id: task.status for task in tasks} == {
-        "task_unrelated": TaskStatus.PENDING,
-        "task_0": TaskStatus.BUILDING,
-        "task_1": TaskStatus.PENDING,
     }
 
 

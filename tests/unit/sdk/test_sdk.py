@@ -229,7 +229,7 @@ async def test_start_can_omit_optional_run_configuration(make_client, sdk_config
     assert captured_body["webhook_intervals"] is None
     assert captured_body["concurrency"] == 5
     assert "use_queue" not in captured_body
-    assert captured_body["priority"] is None
+    assert "priority" not in captured_body
 
 
 async def test_start_serializes_explicit_queue_priority(make_client, sdk_config) -> None:

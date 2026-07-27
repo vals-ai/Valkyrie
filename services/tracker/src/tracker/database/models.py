@@ -203,8 +203,11 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
         """Runs when we save the value to the database."""
         if value is None:
             return None
-        serialized = value.model_dump()
-        serialized["queue_pool_id"] = value.queue_pool_id
+        serialized = value.model_dump(exclude={"priority", "queue_pool_id"})
+        if value.priority is not None:
+            serialized["priority"] = value.priority
+        if value.queue_pool_id is not None:
+            serialized["queue_pool_id"] = value.queue_pool_id
 
         return serialized
 

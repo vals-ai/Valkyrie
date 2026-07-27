@@ -319,17 +319,16 @@ def save_eval_resume_state(
     org: Org,
     eval_resume_state: dict[str, Any],
     *,
-    expected_started_at: datetime | None = None,
+    expected_started_at: datetime,
 ) -> bool:
     with Session(bind=engine) as session:
         task_update = (
             update(Task)
             .where(col(Task.id) == task_row_id)
             .where(col(Task.org_id) == org.id)
-            .where(col(Task.status) != TaskStatus.STOPPED)
+            .where(col(Task.status) == TaskStatus.EVALUATING)
+            .where(col(Task.started_at) == expected_started_at)
         )
-        if expected_started_at is not None:
-            task_update = task_update.where(col(Task.started_at) == expected_started_at)
 
         result = session.exec(task_update.values(eval_resume_state=eval_resume_state))
         session.commit()
@@ -344,7 +343,7 @@ def _commit_task_status(
     error_message: str | None = None,
     extra: dict[str, Any] | None = None,
     expected_started_at: datetime | None = None,
-    expected_status: TaskStatus | None = None,
+    expected_status: TaskStatus | tuple[TaskStatus, ...] | None = None,
 ) -> bool:
     from_status = task.status
     span_attributes = {
@@ -363,11 +362,15 @@ def _commit_task_status(
             values["finished_at"] = datetime.now(ZoneInfo("UTC"))
 
         task_update = update(Task).where(col(Task.id) == task.id).where(col(Task.org_id) == task.org_id)
-        if to_status != TaskStatus.STOPPED:
-            task_update = task_update.where(col(Task.status) != TaskStatus.STOPPED)
         if expected_started_at is not None:
             task_update = task_update.where(col(Task.started_at) == expected_started_at)
-        if expected_status is not None:
+        if expected_status is None:
+            task_update = task_update.where(
+                col(Task.status).not_in((TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED))
+            )
+        elif isinstance(expected_status, tuple):
+            task_update = task_update.where(col(Task.status).in_(expected_status))
+        else:
             task_update = task_update.where(col(Task.status) == expected_status)
 
         result = session.exec(task_update.values(**values))
@@ -386,7 +389,7 @@ def commit_task_status_transition(
     to_status: TaskStatus,
     *,
     expected_started_at: datetime | None = None,
-    expected_status: TaskStatus | None = None,
+    expected_status: TaskStatus | tuple[TaskStatus, ...] | None = None,
 ) -> bool:
     fetch_start = time.monotonic()
     task = fetch_task_row(task_row_id, session, org)
@@ -574,7 +577,7 @@ async def _process_task_attempt(
                         org,
                         TaskStatus.FINISHED,
                         expected_started_at=attempt_started_at,
-                        expected_status=TaskStatus.EVALUATING,
+                        expected_status=(TaskStatus.EVALUATING, TaskStatus.ERROR),
                     ):
                         return {task_id: None}
 
@@ -586,18 +589,6 @@ async def _process_task_attempt(
                         return {task_id: None}
 
                 raise e from e
-
-        if queue_context is not None and task_row.status == TaskStatus.EVALUATING:
-            with Session(bind=engine) as task_session:
-                if not commit_task_status_transition(
-                    task_row.id,
-                    task_session,
-                    org,
-                    TaskStatus.PENDING,
-                    expected_started_at=attempt_started_at,
-                    expected_status=TaskStatus.EVALUATING,
-                ):
-                    return {task_id: None}
 
         task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
         # Labels that show up in the UI we can use to filter sandboxes
@@ -818,6 +809,7 @@ async def _process_task_attempt(
                         org,
                         TaskStatus.FINISHED,
                         expected_started_at=attempt_started_at,
+                        expected_status=(TaskStatus.EVALUATING, TaskStatus.ERROR),
                     ):
                         return {task_id: None}
 

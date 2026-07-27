@@ -33,6 +33,7 @@ from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkStatus,
+    ErrorResult,
     EvaluationResult,
     FinalEvaluation,
     Org,
@@ -46,6 +47,7 @@ from tracker.utils import (
     TaskMonitor,
     TrackedTask,
     TrackedTaskStatus,
+    commit_task_error,
     force_stop_sandboxes,
     handle_early_exit,
     initiate_stop_benchmark,
@@ -889,7 +891,7 @@ class TestRunRecovery:
         assert benchmark_row.final_evaluation is not None
         assert benchmark_row.final_evaluation.final_score == 3.0
 
-    async def test_process_task_resumes_evaluation_without_sandbox(
+    async def test_resumed_evaluation_success_supersedes_duplicate_error(
         self,
         contract: AgentContractRequest,
         database_session: Session,
@@ -938,6 +940,16 @@ class TestRunRecovery:
             assert eval_resume_state == {"artifact_prefix": "s3://bucket/run"}
             assert sandbox_provider is sandbox_provider_config
             on_eval_resume_state({"artifact_prefix": "s3://bucket/run", "job_id": "job-1"})
+            with Session(bind=database_session.bind) as session:
+                task = session.get(Task, task_row.id)
+                assert task is not None
+                assert commit_task_error(
+                    task,
+                    session,
+                    "duplicate evaluation failed",
+                    expected_started_at=task_row.started_at,
+                    expected_status=TaskStatus.EVALUATING,
+                )
             return {"score": 1.0}
 
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
@@ -965,11 +977,13 @@ class TestRunRecovery:
 
         database_session.refresh(task_row)
         evaluation = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
+        error = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).one()
         assert result == {"task_0": {"score": 1.0}}
         create_sandbox.assert_not_called()
         assert task_row.status == TaskStatus.FINISHED
         assert task_row.eval_resume_state == {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
         assert evaluation.instance_id is None
+        assert error.error_message == "duplicate evaluation failed"
 
     async def test_process_task_keeps_stopped_eval_resume_task_stopped(
         self,
@@ -1286,26 +1300,53 @@ class TestRunRecovery:
         task_row = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).one()
         assert task_row.status == TaskStatus.ERROR
 
-    async def test_queued_running_resume_dispatches_durable_scheduler_context(
+    @pytest.mark.parametrize(
+        ("task_specs", "expected_status", "expected_task_ids"),
+        [
+            pytest.param(
+                [
+                    ("pending", TaskStatus.PENDING, None, 1),
+                    ("building", TaskStatus.BUILDING, None, 2),
+                    ("resumable-evaluation", TaskStatus.EVALUATING, {"job_id": "evaluation-job"}, 3),
+                    ("finished", TaskStatus.FINISHED, None, 4),
+                ],
+                200,
+                ["pending", "building", "resumable-evaluation"],
+                id="recoverable",
+            ),
+            pytest.param(
+                [
+                    ("in-progress", TaskStatus.IN_PROGRESS, None, 1),
+                    ("unresumable-evaluation", TaskStatus.EVALUATING, None, 2),
+                ],
+                409,
+                None,
+                id="unsafe-active",
+            ),
+            pytest.param(
+                [
+                    ("finished", TaskStatus.FINISHED, None, 1),
+                    ("error", TaskStatus.ERROR, None, 2),
+                ],
+                200,
+                [],
+                id="finalization-only",
+            ),
+        ],
+    )
+    async def test_queued_running_resume_dispatches_safe_scheduler_context(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
         mock_kicker: MockKicker,
+        task_specs: list[tuple[str, TaskStatus, dict[str, str] | None, int]],
+        expected_status: int,
+        expected_task_ids: list[str] | None,
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
         benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"queue_pool_id": "pool-recovery"})
-        task_specs: list[tuple[str, TaskStatus, dict[str, str] | None, int]] = [
-            ("pending", TaskStatus.PENDING, None, 1),
-            ("building", TaskStatus.BUILDING, None, 1),
-            ("in-progress", TaskStatus.IN_PROGRESS, None, 3),
-            ("resumable-evaluation", TaskStatus.EVALUATING, {"job_id": "evaluation-job"}, 4),
-            ("unresumable-evaluation", TaskStatus.EVALUATING, None, 5),
-            ("finished", TaskStatus.FINISHED, None, 6),
-            ("error", TaskStatus.ERROR, None, 7),
-            ("stopped", TaskStatus.STOPPED, None, 8),
-        ]
         task_rows = [
             Task(
                 id=UUID(int=task_index),
@@ -1337,14 +1378,15 @@ class TestRunRecovery:
             json={"task_ids": ["finished"]},
         )
 
-        assert response.status_code == 200
-        assert response.json() == {"status": "success"}
-        assert mock_kicker.queued_calls[0]["verified_task_ids"] == [
-            "pending",
-            "building",
-            "in-progress",
-            "resumable-evaluation",
-        ]
+        assert response.status_code == expected_status
+        if expected_task_ids is None:
+            assert response.json() == {
+                "detail": "Run has active tasks that cannot be resumed safely; stop the run before resuming"
+            }
+            assert mock_kicker.queued_calls == []
+        else:
+            assert response.json() == {"status": "success"}
+            assert mock_kicker.queued_calls[0]["verified_task_ids"] == expected_task_ids
 
         database_session.expire_all()
         persisted_tasks = database_session.exec(

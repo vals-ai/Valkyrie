@@ -95,7 +95,10 @@ class RunsResource:
             "POST",
             "/start-benchmark",
             StartBenchmarkResponse,
-            json=payload.model_dump(mode="json"),
+            json=payload.model_dump(
+                mode="json",
+                exclude={"priority"} if priority is None else None,
+            ),
         )
 
     async def fetch(self, run_id: UUID) -> FetchBenchmarkResponse:

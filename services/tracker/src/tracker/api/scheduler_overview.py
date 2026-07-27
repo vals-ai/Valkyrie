@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import JSON, type_coerce
+from sqlalchemy import JSON, select as sa_select, type_coerce
+from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, col, func, select
+from sqlmodel.sql.expression import Select
 
 from tracker.auth import get_current_org
-from tracker.database.models import Benchmark, Org, Task, TaskStatus
+from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.database.session import get_session
 from tracker.types import (
     SchedulerActiveEntryResponse,
@@ -42,8 +45,8 @@ def _read_waiting_rows(
     priority = arguments["priority"].as_integer()
     pool_id = arguments["queue_pool_id"].as_string()
     queued_tasks = (
-        select(
-            col(Task.id).label("task_id"),
+        sa_select(
+            cast(ColumnElement[UUID], col(Task.id).label("task_id")),
             priority.label("priority"),
             pool_id.label("pool_id"),
             func.row_number()
@@ -55,24 +58,25 @@ def _read_waiting_rows(
         )
         .join(Benchmark, col(Benchmark.id) == col(Task.benchmark))
         .where(
-            Task.status == TaskStatus.PENDING,
+            col(Task.status) == TaskStatus.PENDING,
+            col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS,
             _queued_benchmarks_expression(),
-            priority.between(0, 4),
         )
         .subquery()
     )
     scope = (col(Task.org_id) == org_id, col(Benchmark.org_id) == org_id)
-    pool_counts = dict(
-        session.exec(
-            select(queued_tasks.c.pool_id, func.count(queued_tasks.c.task_id))
-            .join(Task, col(Task.id) == queued_tasks.c.task_id)
-            .join(Benchmark, col(Benchmark.id) == col(Task.benchmark))
-            .where(*scope)
-            .group_by(queued_tasks.c.pool_id)
-        ).all()
+    pool_counts_statement = cast(
+        Select[tuple[str, int]],
+        sa_select(queued_tasks.c.pool_id, func.count(queued_tasks.c.task_id))
+        .join(Task, col(Task.id) == queued_tasks.c.task_id)
+        .join(Benchmark, col(Benchmark.id) == col(Task.benchmark))
+        .where(*scope)
+        .group_by(queued_tasks.c.pool_id),
     )
-    rows = session.exec(
-        select(
+    pool_counts = dict(session.exec(pool_counts_statement).all())
+    rows_statement = cast(
+        Select[tuple[Task, Benchmark, int, str, int]],
+        sa_select(
             Task,
             Benchmark,
             queued_tasks.c.priority,
@@ -83,10 +87,11 @@ def _read_waiting_rows(
         .join(Benchmark, col(Benchmark.id) == col(Task.benchmark))
         .where(*scope)
         .order_by(queued_tasks.c.priority.asc(), col(Task.started_at).asc(), col(Task.id).asc())
-        .limit(limit + 1)
-    ).all()
+        .limit(limit + 1),
+    )
+    rows = list(session.exec(rows_statement).all())
 
-    return list(rows), pool_counts
+    return rows, pool_counts
 
 
 def _read_active_rows(
@@ -98,6 +103,7 @@ def _read_active_rows(
     scope = (
         col(Task.org_id) == org_id,
         col(Benchmark.org_id) == org_id,
+        col(Benchmark.status).in_((BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING)),
         col(Task.status).in_(_ACTIVE_STATUSES),
         _queued_benchmarks_expression(),
     )
@@ -121,7 +127,7 @@ def _read_active_rows(
     return list(rows), counts
 
 
-async def read_scheduler_overview(
+def read_scheduler_overview(
     *,
     session: Session,
     org_id: UUID,
@@ -177,13 +183,13 @@ async def read_scheduler_overview(
 
 
 @router.get("/overview", response_model=SchedulerOverviewResponse)
-async def get_scheduler_overview(
+def get_scheduler_overview(
     waiting_limit: int = Query(default=100, ge=1, le=200),
     active_limit: int = Query(default=100, ge=1, le=200),
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> SchedulerOverviewResponse:
-    return await read_scheduler_overview(
+    return read_scheduler_overview(
         session=session,
         org_id=org.id,
         now=datetime.now(UTC),

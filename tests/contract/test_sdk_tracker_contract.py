@@ -14,7 +14,7 @@ from typing import Any, cast
 
 import pytest
 from benchmark_service.schemas import VerifyTaskIdsResponse
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from services.tracker.main import app
 from tracker.database.models import (
     AgentContractRequest,
@@ -199,9 +199,25 @@ def load_fixture(name: str) -> dict[str, Any]:
 class _LegacyTrackerStartBenchmarkRequest(BaseModel):
     """Start-request fields relevant before queue priority was introduced."""
 
+    model_config = ConfigDict(extra="forbid")
+
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
+    label: str | None = None
+    task_ids: list[str] | None = None
+    slice_str: str | None = None
+    lambda_function: str | None = None
+    dataset: str | None = None
+    harness_config: HarnessConfig
+    custom_benchmark_service: str | None = None
+    service_headers: dict[str, str] = Field(default_factory=dict)
+    sandbox_provider: str = "daytona"
+    sandbox_provider_secret_name: str | None = None
+    service_auth_header_name: str | None = None
+    service_auth_secret_name: str | None = None
+    webhook_secret_name: str | None = None
+    webhook_intervals: list[int] | None = None
 
 
 @pytest.mark.parametrize(
@@ -288,11 +304,11 @@ def test_sdk_default_start_request_is_accepted_by_legacy_tracker() -> None:
     payload.pop("priority")
     sdk_request = SDKStartBenchmarkRequest.model_validate(payload)
 
-    wire_payload = sdk_request.model_dump(mode="json")
+    wire_payload = sdk_request.model_dump(mode="json", exclude={"priority"})
     legacy_request = _LegacyTrackerStartBenchmarkRequest.model_validate(wire_payload)
 
     assert wire_payload["concurrency"] == 5
-    assert wire_payload["priority"] is None
+    assert "priority" not in wire_payload
     assert legacy_request.concurrency == 5
 
 

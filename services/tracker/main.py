@@ -4,7 +4,7 @@ import logging
 import tarfile
 import traceback
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -19,7 +19,7 @@ from fastapi.routing import APIRoute
 from opentelemetry.propagate import inject
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, select, update
 
 from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
@@ -79,7 +79,7 @@ from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
-from tracker.scheduler import queue_pool_id
+from tracker.scheduler.store import queue_pool_id
 from tracker.types import (
     AnalyzeBenchmarkRequest,
     FetchBenchmarkMetadataResponse,
@@ -314,6 +314,12 @@ async def start_benchmark(
                 status_code=400,
                 detail="Queue priority requires sandbox queue to be enabled",
             )
+    elif request.sandbox_provider == "modal":
+        if request.priority is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Queue priority requires a sandbox provider configured for admission",
+            )
     else:
         provider_config = await asyncio.to_thread(
             fetch_sandbox_provider_config,
@@ -327,6 +333,7 @@ async def start_benchmark(
         finally:
             await provider.close()
 
+        # Admission identity is configured per provider secret; unmanaged credentials remain direct.
         queue_configured = provider_pool_id is not None
         if queue_configured and request.priority is None:
             request = request.model_copy(update={"priority": 3})
@@ -374,12 +381,13 @@ async def start_benchmark(
         queue_pool_id=resolved_queue_pool_id,
     )
     session.add(benchmark_row)
-    session.commit()
-    benchmark_id_var.set(str(benchmark_row.id))
     benchmark_started_at = benchmark_row.started_at
-
     if resolved_queue_pool_id is not None:
+        session.flush()
         create_task_rows(verify_response.task_ids, benchmark_row, session, run_starter.org)
+    else:
+        session.commit()
+    benchmark_id_var.set(str(benchmark_row.id))
 
     if run_starter.access_key_id is not None and run_starter.email is None:
         logger.warning(
@@ -394,8 +402,33 @@ async def start_benchmark(
             request.harness_config.aws,
             request.harness_config.s3_bucket,
         )
+        await (
+            process_benchmark.kicker()
+            .with_labels(**_taskiq_labels())
+            .kiq(
+                start_benchmark_request_json=request.model_dump(),
+                benchmark_id_str=str(benchmark_row.id),
+                verified_task_ids=verify_response.task_ids,
+            )
+        )
     except Exception as e:
         error_message = f"{str(e)}\n{traceback.format_exc()}"
+        if resolved_queue_pool_id is not None:
+            session.exec(
+                update(Task)
+                .where(col(Task.benchmark) == benchmark_row.id)
+                .where(
+                    col(Task.status).in_(
+                        (
+                            TaskStatus.PENDING,
+                            TaskStatus.BUILDING,
+                            TaskStatus.IN_PROGRESS,
+                            TaskStatus.EVALUATING,
+                        )
+                    )
+                )
+                .values(status=TaskStatus.ERROR, finished_at=datetime.now(UTC))
+            )
         commit_benchmark_error(benchmark_row, session, error_message)
         error_response = StartBenchmarkErrorResponse(
             benchmark_id=benchmark_row.id,
@@ -403,16 +436,6 @@ async def start_benchmark(
         )
 
         raise TrackerServiceError(error_response.model_dump_json()) from e
-
-    await (
-        process_benchmark.kicker()
-        .with_labels(**_taskiq_labels())
-        .kiq(
-            start_benchmark_request_json=request.model_dump(),
-            benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=verify_response.task_ids,
-        )
-    )
 
     return StartBenchmarkResponse(
         benchmark_name=benchmark_row.name,
@@ -850,17 +873,18 @@ async def retry_or_resume_benchmark(
                 )
                 .order_by(col(Task.started_at), col(Task.id))
             ).all()
-            recovery_triggered = any(
-                task_row.status in (TaskStatus.PENDING, TaskStatus.BUILDING)
-                or (task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None)
+            unsafe_rows = [
+                task_row
                 for task_row in scheduler_rows
-            )
-            if recovery_triggered:
-                recovery_task_ids = [
-                    task_row.task_id
-                    for task_row in scheduler_rows
-                    if task_row.status != TaskStatus.EVALUATING or task_row.eval_resume_state is not None
-                ]
+                if task_row.status == TaskStatus.IN_PROGRESS
+                or (task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is None)
+            ]
+            if unsafe_rows:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Run has active tasks that cannot be resumed safely; stop the run before resuming",
+                )
+            recovery_task_ids = [task_row.task_id for task_row in scheduler_rows]
 
         if recovery_task_ids is None:
             return RetryOrResumeBenchmarkResponse(
@@ -891,7 +915,7 @@ async def retry_or_resume_benchmark(
             org=org,
         )
 
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids and recovery_task_ids is None:
         return RetryOrResumeBenchmarkResponse(
             status="success",
         )

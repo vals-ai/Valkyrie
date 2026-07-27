@@ -3,30 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from hashlib import sha256
 from types import TracebackType
-from typing import cast
 from uuid import UUID
 
-from sqlalchemy import JSON, Text, case, cast as sql_cast, func, text, type_coerce
+from sqlalchemy import JSON, case, func, text, type_coerce
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, col, select, update
 
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 
-_ACTIVE_SANDBOX_STATUSES = (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS)
-
-
-@dataclass(frozen=True, slots=True)
-class ScheduledTask:
-    task_row_id: UUID
-    task_id: str
-    benchmark_id: UUID
-    started_at: datetime
-    priority: int
+_ACTIVE_TASK_STATUSES = (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
 
 
 class PostgresPoolLock:
@@ -36,6 +25,14 @@ class PostgresPoolLock:
         self._engine = engine
         self._lock_key = int.from_bytes(sha256(pool_id.encode()).digest()[:8], byteorder="big", signed=True)
         self._connection: Connection | None = None
+
+    @property
+    def connection(self) -> Connection:
+        """Return the connection that owns the lock while this context is active."""
+        if self._connection is None:
+            raise RuntimeError("PostgreSQL advisory lock is not held")
+
+        return self._connection
 
     async def __aenter__(self) -> bool:
         acquire_task = asyncio.create_task(asyncio.to_thread(self._try_acquire))
@@ -113,56 +110,12 @@ def queue_pool_id(provider_pool_id: str) -> str:
 
 def _active_task_count():
     active_task = aliased(Task)
-    eval_resume_state = sql_cast(col(active_task.eval_resume_state), Text)
     return (
         select(func.count(col(active_task.id)))
         .where(col(active_task.benchmark) == col(Benchmark.id))
-        .where(
-            col(active_task.status).in_(_ACTIVE_SANDBOX_STATUSES)
-            | (
-                (col(active_task.status) == TaskStatus.EVALUATING)
-                & eval_resume_state.is_not(None)
-                & (eval_resume_state != "null")
-            )
-        )
+        .where(col(active_task.status).in_(_ACTIVE_TASK_STATUSES))
         .correlate(Benchmark)
         .scalar_subquery()
-    )
-
-
-def next_eligible_task(session: Session, pool_id: str) -> ScheduledTask | None:
-    """Select the global queue head whose run has current concurrency capacity."""
-    active_count = _active_task_count()
-    arguments = type_coerce(col(Benchmark.arguments), JSON)
-    priority = arguments["priority"].as_integer()
-    concurrency = arguments["concurrency"].as_integer()
-    queued_pool = arguments["queue_pool_id"].as_string()
-
-    row = cast(
-        tuple[Task, int] | None,
-        session.exec(
-            select(Task, priority.label("priority"))
-            .join(Benchmark, col(Benchmark.id) == col(Task.benchmark))
-            .where(col(Task.status) == TaskStatus.PENDING)
-            .where(col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS)
-            .where(queued_pool == pool_id)
-            .where(priority.between(0, 4))
-            .where(active_count < concurrency)
-            .order_by(priority, col(Task.started_at), col(Task.id))
-            .limit(1)
-        ).first(),
-    )
-    if row is None:
-        return None
-
-    task, selected_priority = row
-
-    return ScheduledTask(
-        task_row_id=task.id,
-        task_id=task.task_id,
-        benchmark_id=task.benchmark,
-        started_at=task.started_at,
-        priority=selected_priority,
     )
 
 
@@ -178,7 +131,6 @@ def _eligible_task_id(pool_id: str):
         .where(col(Task.status) == TaskStatus.PENDING)
         .where(col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS)
         .where(arguments["queue_pool_id"].as_string() == pool_id)
-        .where(priority.between(0, 4))
         .where(active_count < concurrency)
         .order_by(priority, col(Task.started_at), col(Task.id))
         .limit(1)

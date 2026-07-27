@@ -26,7 +26,7 @@ from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse
 import pytest
 from sqlalchemy.engine import Engine
-from sqlmodel import Session
+from sqlmodel import Session, create_engine
 from tenacity import wait_none
 
 from tests.factories import make_task
@@ -274,6 +274,8 @@ class TestPostgresScheduler:
         postgres_session.add_all([first, second])
         postgres_session.commit()
 
+        assert store_module.eligible_task_is(postgres_session, pool_id, first.id, first.started_at)
+        assert not store_module.eligible_task_is(postgres_session, pool_id, second.id, second.started_at)
         assert not store_module.claim_eligible_task(postgres_session, pool_id, second.id, second.started_at)
         assert not store_module.claim_eligible_task(
             postgres_session,
@@ -318,6 +320,42 @@ class TestPostgresScheduler:
 
 class TestPostgresAdmission:
     """Database-fenced provider admission."""
+
+    async def test_admission_reuses_single_pool_connection(
+        self,
+        postgres_engine: Engine,
+        postgres_session: Session,
+    ) -> None:
+        provider_pool_id = f"daytona:{uuid4()}"
+        pool_id = store_module.queue_pool_id(provider_pool_id)
+        events: list[str] = []
+        _, (task,) = _make_admission_run(
+            postgres_session,
+            pool_id=pool_id,
+            task_specs=[("single-connection", TaskStatus.PENDING, _ATTEMPT)],
+        )
+        single_connection_engine = create_engine(
+            postgres_engine.url,
+            pool_size=1,
+            max_overflow=0,
+            pool_timeout=0.05,
+        )
+        context = _queue_context(single_connection_engine, provider_pool_id, events)
+
+        try:
+            async with AsyncExitStack() as stack:
+                sandbox = await _enter(stack, context, task, events)
+
+                assert sandbox is not None
+
+            with Session(postgres_engine) as assertion_session:
+                admitted = assertion_session.get(Task, task.id)
+
+            assert admitted is not None
+            assert admitted.status == TaskStatus.IN_PROGRESS
+            assert events == ["capacity", "create", "cleanup"]
+        finally:
+            single_connection_engine.dispose()
 
     async def test_lock_retention_and_dynamic_concurrency(
         self,
@@ -378,6 +416,12 @@ class TestPostgresAdmission:
                 first_events,
                 on_create=decrease_concurrency,
             )
+            _update_task(
+                postgres_engine,
+                first.id,
+                status=TaskStatus.EVALUATING,
+                started_at=first.started_at,
+            )
             monkeypatch.setattr("tracker.scheduler.admission.asyncio.sleep", controlled_backoff)
             second_admission = asyncio.create_task(_enter(second_stack, second_context, second, second_events))
             await blocked_poll.wait()
@@ -388,7 +432,7 @@ class TestPostgresAdmission:
 
             assert first_sandbox is not None
             assert persisted_first is not None
-            assert persisted_first.status == TaskStatus.IN_PROGRESS
+            assert persisted_first.status == TaskStatus.EVALUATING
             assert blocked_second is not None
             assert blocked_second.status == TaskStatus.PENDING
             assert lock_observations == [False, False]
@@ -568,13 +612,6 @@ class TestPostgresAdmission:
                 ("competitor", TaskStatus.PENDING, _ATTEMPT + timedelta(microseconds=1)),
             ],
         )
-        dormant_evaluation = make_task(
-            benchmark,
-            "dormant-evaluation",
-            status=TaskStatus.EVALUATING,
-            started_at=retrying.started_at + timedelta(microseconds=2),
-        )
-        postgres_session.add(dormant_evaluation)
         postgres_session.commit()
         org = postgres_session.get(Org, benchmark.org_id)
         assert org is not None
