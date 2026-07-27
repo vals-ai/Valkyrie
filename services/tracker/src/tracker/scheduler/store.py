@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
+from types import TracebackType
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import JSON, func, type_coerce
+from sqlalchemy import JSON, func, text, type_coerce
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, col, select, update
 
@@ -24,6 +27,83 @@ class ScheduledTask:
     benchmark_id: UUID
     started_at: datetime
     priority: int
+
+
+class PostgresPoolLock:
+    """A nonblocking session advisory lock held on one dedicated connection."""
+
+    def __init__(self, engine: Engine, pool_id: str) -> None:
+        self._engine = engine
+        self._lock_key = int.from_bytes(sha256(pool_id.encode()).digest()[:8], byteorder="big", signed=True)
+        self._connection: Connection | None = None
+
+    async def __aenter__(self) -> bool:
+        acquire_task = asyncio.create_task(asyncio.to_thread(self._try_acquire))
+        try:
+            return await asyncio.shield(acquire_task)
+        except asyncio.CancelledError:
+            acquired = await acquire_task
+            if acquired:
+                await asyncio.to_thread(self._release)
+            raise
+
+    async def __aexit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        if self._connection is None:
+            return
+
+        release_task = asyncio.create_task(asyncio.to_thread(self._release))
+        try:
+            await asyncio.shield(release_task)
+        except asyncio.CancelledError:
+            await release_task
+            raise
+
+    def _try_acquire(self) -> bool:
+        connection = self._engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+        try:
+            acquired = bool(
+                connection.execute(
+                    text("SELECT pg_try_advisory_lock(:lock_key)"),
+                    {"lock_key": self._lock_key},
+                ).scalar_one()
+            )
+            if acquired:
+                self._connection = connection
+
+                return True
+        except BaseException:
+            connection.close()
+            raise
+
+        connection.close()
+
+        return False
+
+    def _release(self) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is None:
+            return
+
+        try:
+            unlocked = bool(
+                connection.execute(
+                    text("SELECT pg_advisory_unlock(:lock_key)"),
+                    {"lock_key": self._lock_key},
+                ).scalar_one()
+            )
+            if not unlocked:
+                raise RuntimeError("PostgreSQL advisory lock ownership was lost before release")
+        except BaseException:
+            connection.invalidate()
+            raise
+        finally:
+            connection.close()
 
 
 def queue_pool_id(provider_pool_id: str) -> str:
