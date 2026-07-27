@@ -1,6 +1,6 @@
 .PHONY: help build run stop clean logs tracker-service \
         test test-integration-local test-integration-live test-unit test-alembic \
-        migrate-gen venv-check
+        migrate-gen openapi openapi-check venv-check
 
 PYTHON_VERSION := 3.12
 PYTEST := uv run pytest
@@ -16,6 +16,8 @@ help:
 	@echo "  make logs            - View container logs"
 	@echo "  make tracker-service - Build, run, and view logs for the tracker service"
 	@echo "  make migrate-gen     - Generate a new migration from model changes"
+	@echo "  make openapi         - Generate the committed Tracker API contract"
+	@echo "  make openapi-check   - Check the committed Tracker API contract"
 
 # --- Setup ---
 venv-check:
@@ -60,6 +62,13 @@ test-integration-local: venv-check
 	$(PYTEST) tests/integration/local/database
 test-integration-live: venv-check
 	$(PYTEST) tests/integration/live -n 2
+
+# --- API contract ---
+openapi: venv-check
+	PYTHON_DOTENV_DISABLED=1 uv run python generate_openapi.py
+
+openapi-check: venv-check
+	PYTHON_DOTENV_DISABLED=1 $(PYTEST) tests/unit/test_openapi.py
 
 # --- Migrations ---
 migrate-gen: venv-check
