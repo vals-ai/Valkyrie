@@ -45,7 +45,6 @@ from tracker.database.models import (
 )
 from tracker.database.session import engine
 from tracker.exceptions import (
-    CloudWatchError,
     DependencySetupExhaustedError,
     OutputArtifactError,
     SandboxSetupError,
@@ -310,7 +309,7 @@ async def write_buffered_logs(
     while (message := await write_queue.get()) is not None:
         try:
             await asyncio.to_thread(write_benchmark_log_event, stream_key, message, aws, log_group)
-        except CloudWatchError:
+        except Exception:
             logger.exception("Failed to write task logs")
 
 

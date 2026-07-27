@@ -63,6 +63,31 @@ class TestTaskExecution:
         await asyncio.wait_for(writer, timeout=1)
         assert calls == ["first", "second"]
 
+    async def test_buffered_log_writer_keeps_cloudwatch_failures_non_fatal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[str] = []
+
+        def write(_stream_key: str, message: str, _aws: AWSCredentials, _log_group: str) -> None:
+            calls.append(message)
+            if message == "first":
+                raise RuntimeError("CloudWatch unavailable")
+
+        monkeypatch.setattr(task_execution, "write_benchmark_log_event", write)
+        write_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        for message in ["first", "second", None]:
+            write_queue.put_nowait(message)
+
+        await task_execution.write_buffered_logs(
+            write_queue,
+            "run:task",
+            Mock(spec=AWSCredentials),
+            "/valkyrie/worker",
+        )
+
+        assert calls == ["first", "second"]
+
     async def test_resizable_limiter_increase_wakes_waiting_admission(self) -> None:
         limiter = ResizableLimiter(limit=1)
         first_started = asyncio.Event()
