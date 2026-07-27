@@ -14,9 +14,9 @@ from main import app
 from tracker.logging import (
     ContextFilter,
     DevFormatter,
-    benchmark_id_var,
     configure_logging,
     request_id_var,
+    run_id_var,
     task_id_var,
 )
 from tracker.middleware import LoggingContextMiddleware
@@ -75,18 +75,18 @@ class TestContextFilter:
         assert record.task_id == ""
 
         request_token = request_id_var.set("req-123")
-        benchmark_token = benchmark_id_var.set("bench-456")
+        run_token = run_id_var.set("run-456")
         task_token = task_id_var.set("task-789")
         try:
             context_filter.filter(record)
 
             assert record.request_id == "req-123"
-            assert record.run_id == "bench-456"
-            assert record.benchmark_id == "bench-456"
+            assert record.run_id == "run-456"
+            assert record.benchmark_id == "run-456"
             assert record.task_id == "task-789"
         finally:
             request_id_var.reset(request_token)
-            benchmark_id_var.reset(benchmark_token)
+            run_id_var.reset(run_token)
             task_id_var.reset(task_token)
 
 
@@ -188,10 +188,10 @@ class TestDevelopmentFormatter:
 
 
 class TestLoggingContextMiddleware:
-    """Benchmark logging context setup and cleanup."""
+    """Run logging context setup and cleanup."""
 
     async def test_logging_context_middleware_pre_execute(self) -> None:
-        """Taskiq middleware binds benchmark_id and request_id from message."""
+        """Taskiq middleware binds run_id and request_id from the legacy message."""
         middleware = LoggingContextMiddleware()
 
         message = MagicMock()
@@ -200,31 +200,31 @@ class TestLoggingContextMiddleware:
 
         result = await middleware.pre_execute(message)
 
-        assert benchmark_id_var.get() == "bench-123"
+        assert run_id_var.get() == "bench-123"
         assert request_id_var.get() == "req-456"
         assert result is message
 
     async def test_logging_context_middleware_post_execute_clears(self) -> None:
         """post_execute clears all context vars."""
         middleware = LoggingContextMiddleware()
-        benchmark_id_var.set("leftover")
+        run_id_var.set("leftover")
         request_id_var.set("leftover")
         task_id_var.set("leftover")
 
         await middleware.post_execute(MagicMock(), MagicMock())
 
-        assert benchmark_id_var.get() == ""
+        assert run_id_var.get() == ""
         assert request_id_var.get() == ""
         assert task_id_var.get() == ""
 
     async def test_logging_context_middleware_on_error_clears(self) -> None:
         """on_error clears context vars so failed jobs don't leak."""
         middleware = LoggingContextMiddleware()
-        benchmark_id_var.set("leaked")
+        run_id_var.set("leaked")
 
         await middleware.on_error(MagicMock(), MagicMock(), RuntimeError("boom"))
 
-        assert benchmark_id_var.get() == ""
+        assert run_id_var.get() == ""
 
 
 async def test_request_context_middleware_sets_request_id(monkeypatch: pytest.MonkeyPatch) -> None:

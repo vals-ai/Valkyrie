@@ -499,6 +499,10 @@ benchmark definition.
 When components are deployed separately, upgrade the tracker before publishing the matching SDK or CLI. Older clients
 continue to use retained legacy routes, and new clients fall back to them on a canonical-route 404 during rollout or rollback.
 
+Physical identifiers are intentionally deferred: database and Alembic names, the `benchmarks/` S3 prefix, existing
+CloudWatch names, and the `tracker.utils:process_benchmark` Taskiq registration do not change in this migration. Renaming
+any of them requires a separate dual-read/backfill design after the compatibility window.
+
 | Topic | Link |
 | --- | --- |
 | Python SDK | [Guide](docs/sdk/README.md) |
