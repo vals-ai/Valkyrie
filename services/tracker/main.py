@@ -75,6 +75,7 @@ from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
+from tracker.outbound_security import validate_service_url_syntax
 from tracker.types import (
     AnalyzeBenchmarkRequest,
     FetchBenchmarkMetadataResponse,
@@ -754,6 +755,7 @@ async def retry_or_resume_benchmark(
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
     secrets: dict[str, str] = Body(default={}),
+    benchmark_url: str | None = Body(default=None),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
@@ -771,6 +773,7 @@ async def retry_or_resume_benchmark(
         concurrency: Optional new concurrency level (overrides original value)
         task_ids: Optional list of specific task IDs to run. If a task id is not yet
             registered but is valid in the current dataset, a fresh PENDING row is created.
+        benchmark_url: Optional replacement benchmark service URL stored on the run.
 
     Returns:
         RetryOrResumeBenchmarkResponse
@@ -783,17 +786,27 @@ async def retry_or_resume_benchmark(
             detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
         )
 
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and concurrency is None:
-        return RetryOrResumeBenchmarkResponse(
-            status="success",
-        )
+    if benchmark_url is not None:
+        try:
+            benchmark_url = validate_service_url_syntax(benchmark_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if concurrency is not None and concurrency < 1:
         raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
 
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
-        assert concurrency is not None
-        _update_benchmark_concurrency(benchmark_id, concurrency, session, org)
+        if concurrency is not None:
+            _update_benchmark_concurrency(benchmark_id, concurrency, session, org)
+        if benchmark_url is not None:
+            update_benchmark_resume_arguments(
+                benchmark_id,
+                session,
+                org,
+                secrets={},
+                concurrency=None,
+                benchmark_url=benchmark_url,
+            )
         return RetryOrResumeBenchmarkResponse(status="success")
 
     effective_service_headers = forward_tracker_api_key(
@@ -804,7 +817,10 @@ async def retry_or_resume_benchmark(
     verified_task_ids = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
-        benchmark_service=benchmark_row.benchmark_service(service_headers=effective_service_headers),
+        benchmark_service=benchmark_row.benchmark_service(
+            service_headers=effective_service_headers,
+            benchmark_url=benchmark_url,
+        ),
         retry=retry,
         retry_mode=retry_mode,
         rerun_task_ids=task_ids,
@@ -812,17 +828,27 @@ async def retry_or_resume_benchmark(
     )
 
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
+        if benchmark_url is not None:
+            update_benchmark_resume_arguments(
+                benchmark_id,
+                session,
+                org,
+                secrets={},
+                concurrency=None,
+                benchmark_url=benchmark_url,
+            )
         return RetryOrResumeBenchmarkResponse(
             status="success",
         )
 
-    if secrets or concurrency is not None:
+    if secrets or concurrency is not None or benchmark_url is not None:
         benchmark_row = update_benchmark_resume_arguments(
             benchmark_id,
             session,
             org,
             secrets=secrets,
             concurrency=concurrency,
+            benchmark_url=benchmark_url,
         )
 
     # Ensure that credentials are included with the model dump

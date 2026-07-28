@@ -107,6 +107,7 @@ class MockTrackerService:
 
     start_response: dict[str, object] = {}
     start_calls: list[dict[str, object]] = []
+    retry_or_resume_calls: list[dict[str, object]] = []
     init_calls = 0
     provider_validations: list[str | None] = []
     require_config_values: list[bool] = []
@@ -148,6 +149,8 @@ class MockTrackerService:
         return SimpleNamespace(benchmark_name="swebench")
 
     def retry_or_resume_benchmark(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+        self.retry_or_resume_calls.append({"args": _args, "kwargs": _kwargs})
+
         return SimpleNamespace(status="success")
 
     @classmethod
@@ -180,6 +183,7 @@ class MockTrackerService:
 def mock_tracker_service() -> type[MockTrackerService]:
     """Reset and provide the tracker service mock used by this module."""
     MockTrackerService.start_calls = []
+    MockTrackerService.retry_or_resume_calls = []
     MockTrackerService.init_calls = 0
     MockTrackerService.provider_validations = []
     MockTrackerService.require_config_values = []
@@ -875,6 +879,26 @@ def test_run_commands_connect_after_success(
         assert "Track progress:" not in result.output
 
     assert streamed_run_ids == [str(started_run_id), str(resume_run_id), str(retry_run_id)]
+
+
+def test_run_retry_benchmark_url_reaches_tracker(
+    connect_stream_testbed: tuple[UUID, list[str], type[MockTrackerService]],
+) -> None:
+    """The retry command should send its benchmark URL override to the tracker.
+
+    Test cases:
+    - A retry accepts `--benchmark-url` and forwards its value.
+    """
+    _started_run_id, _streamed_run_ids, mock_tracker_service = connect_stream_testbed
+    run_id = uuid4()
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        ["run", "retry", str(run_id), "--benchmark-url", "https://new.example"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert mock_tracker_service.retry_or_resume_calls[0]["kwargs"]["benchmark_url"] == "https://new.example"
 
 
 def test_run_start_provider_option_reaches_tracker(

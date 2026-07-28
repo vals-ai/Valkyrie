@@ -1134,6 +1134,96 @@ class TestRunRecovery:
         database_session.refresh(benchmark_row)
         assert benchmark_row.arguments.contract.secrets == queued_request["contract"]["secrets"]
 
+    async def test_retry_or_resume_replaces_benchmark_url(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+    ) -> None:
+        """A retry URL override should be validated, normalized, and persisted.
+
+        Test cases:
+        - Invalid overrides fail before task state changes.
+        - Task verification uses the normalized replacement benchmark URL.
+        - The queued request and stored run retain the replacement URL.
+        - An active resume stores the replacement without queueing duplicate work.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        benchmark_row.custom_benchmark_service = "https://old.example"
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.STOPPED,
+        )
+        database_session.add_all([benchmark_row, task_row])
+        database_session.commit()
+        verified_urls: list[str] = []
+
+        async def _verify_task_ids(
+            benchmark_service: BenchmarkServiceClient,
+            *,
+            task_ids: list[str],
+            slice_str: str | None,
+            dataset: str | None,
+        ) -> VerifyTaskIdsResponse:
+            verified_urls.append(benchmark_service._url)
+
+            return VerifyTaskIdsResponse(task_ids=task_ids)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_task_ids)
+
+        invalid_response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={
+                "task_ids": [],
+                "service_headers": {},
+                "benchmark_url": "",
+            },
+        )
+
+        assert invalid_response.status_code == 400
+        assert invalid_response.json() == {"detail": "Invalid benchmark service URL"}
+        assert mock_kicker.queued_calls == []
+        database_session.refresh(benchmark_row)
+        database_session.refresh(task_row)
+        assert benchmark_row.custom_benchmark_service == "https://old.example"
+        assert task_row.status == TaskStatus.STOPPED
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={
+                "task_ids": [],
+                "service_headers": {},
+                "benchmark_url": "https://new.example/",
+            },
+        )
+
+        assert response.status_code == 200
+        assert verified_urls == ["https://new.example"]
+
+        queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        assert queued_request["custom_benchmark_service"] == "https://new.example"
+
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.custom_benchmark_service == "https://new.example"
+
+        active_response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={
+                "task_ids": [],
+                "service_headers": {},
+                "benchmark_url": "https://active.example/",
+            },
+        )
+
+        assert active_response.status_code == 200
+        assert len(mock_kicker.queued_calls) == 1
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.custom_benchmark_service == "https://active.example"
+
     async def test_retry_or_resume_secret_merge_preserves_concurrent_concurrency_update(
         self,
         example_benchmark_object: Benchmark,
