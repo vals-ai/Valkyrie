@@ -1147,12 +1147,13 @@ class TestRunRecovery:
         - Invalid overrides fail before task state changes.
         - Task verification uses the normalized replacement benchmark URL.
         - The queued request and stored run retain the replacement URL.
-        - An active resume stores the replacement without queueing duplicate work.
-        - An active retry with no retryable tasks still stores the replacement.
+        - An active resume stores URL and secret overrides without queueing duplicate work.
+        - An active retry with no retryable tasks still stores URL and secret overrides.
         """
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
         benchmark_row.custom_benchmark_service = "https://old.example"
+        benchmark_row.arguments.contract.secrets = {"EXISTING_API_KEY": "existing-secret"}
         task_row = Task(
             org_id=TEST_ORG_ID,
             task_id="task_0",
@@ -1216,6 +1217,7 @@ class TestRunRecovery:
             json={
                 "task_ids": [],
                 "service_headers": {},
+                "secrets": {"ACTIVE_API_KEY": "active-secret"},
                 "benchmark_url": "https://active.example/",
             },
         )
@@ -1224,12 +1226,17 @@ class TestRunRecovery:
         assert len(mock_kicker.queued_calls) == 1
         database_session.refresh(benchmark_row)
         assert benchmark_row.custom_benchmark_service == "https://active.example"
+        assert benchmark_row.arguments.contract.secrets == {
+            "EXISTING_API_KEY": "existing-secret",
+            "ACTIVE_API_KEY": "active-secret",
+        }
 
         active_retry_response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",
             json={
                 "task_ids": [],
                 "service_headers": {},
+                "secrets": {"ACTIVE_API_KEY": "active-retry-secret"},
                 "benchmark_url": "https://active-retry.example/",
             },
         )
@@ -1238,6 +1245,10 @@ class TestRunRecovery:
         assert len(mock_kicker.queued_calls) == 1
         database_session.refresh(benchmark_row)
         assert benchmark_row.custom_benchmark_service == "https://active-retry.example"
+        assert benchmark_row.arguments.contract.secrets == {
+            "EXISTING_API_KEY": "existing-secret",
+            "ACTIVE_API_KEY": "active-retry-secret",
+        }
 
     async def test_retry_or_resume_secret_merge_preserves_concurrent_concurrency_update(
         self,
