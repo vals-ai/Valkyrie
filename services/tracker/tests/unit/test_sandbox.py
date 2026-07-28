@@ -7,12 +7,21 @@ import asyncio
 import shlex
 from collections import deque
 from collections.abc import AsyncIterator, Mapping
-from typing import Any, Never
-from unittest.mock import AsyncMock, Mock
+from typing import Any, Never, cast
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
-from benchmark_service import ComposeSandbox, ComposeSource, ExecResult, ImageSource, Resources, SnapshotSource
-from benchmark_service import SandboxNotFoundError
+from benchmark_service import (
+    ComposeSandbox,
+    ComposeSource,
+    ExecResult,
+    ImageSource,
+    Resources,
+    SandboxNotFoundError,
+    SandboxSource,
+    SnapshotSource,
+    TargetedSnapshotSource,
+)
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
@@ -32,6 +41,7 @@ from tracker.exceptions import (
     SandboxSetupError,
 )
 from tracker.sandbox import (
+    OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES,
     create_sandbox,
     run_agent,
     upload_agent_artifacts,
@@ -52,6 +62,7 @@ _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencie
 _install_agent_dependencies_with_retries = getattr(sandbox_module, "_install_agent_dependencies_with_retries")
 _stream_command_output_with_egress_allowlist = getattr(sandbox_module, "_stream_command_output_with_egress_allowlist")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
+_upload_output_artifact = getattr(sandbox_module, "_upload_output_artifact")
 
 
 class TestOutputArtifacts:
@@ -200,6 +211,139 @@ class TestOutputArtifacts:
         with pytest.raises(OutputArtifactError, match="Required output artifact missing"):
             await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
 
+    async def test_upload_output_artifacts_skips_missing_optional_model_patch(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        artifact = OutputArtifact(
+            path="artifacts/model.patch",
+            source="/logs/artifacts/model.patch",
+            required=False,
+        )
+
+        sandbox = Mock()
+        exec_mock = AsyncMock(return_value=ExecResult(exit_code=1, output=""))
+        upload_mock = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "_exec", exec_mock)
+        monkeypatch.setattr(sandbox_module, "upload_to_s3", upload_mock)
+
+        await upload_output_artifacts(
+            sandbox,
+            [artifact],
+            "benchmark-123",
+            "task_0",
+            harness_config.aws,
+            "bucket",
+        )
+
+        exec_mock.assert_awaited_once_with(
+            sandbox,
+            "test -f /logs/artifacts/model.patch && ! test -L /logs/artifacts/model.patch",
+        )
+        upload_mock.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("required", "expected_uploads"),
+        [(True, [b"secret"]), (False, [])],
+        ids=["required-collected", "optional-skipped"],
+    )
+    async def test_upload_output_artifacts_handles_non_glob_symlinks_by_requiredness(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+        required: bool,
+        expected_uploads: list[bytes],
+    ) -> None:
+        source = "/logs/symlink result.json"
+        uploaded: list[bytes] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command == "test -f '/logs/symlink result.json'":
+                return ExecResult(exit_code=0, output="")
+            if command == "test -f '/logs/symlink result.json' && ! test -L '/logs/symlink result.json'":
+                return ExecResult(exit_code=1, output="")
+            if command == "stat -c%s '/logs/symlink result.json'":
+                return ExecResult(exit_code=0, output="6")
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fake_upload_to_s3(file_content: bytes, _s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+            uploaded.append(file_content)
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "upload_to_s3", fake_upload_to_s3)
+
+        sandbox = Mock()
+        sandbox.id = "sandbox-123"
+        sandbox.name = "task-alias"
+        sandbox.download_file = AsyncMock(return_value=b"secret")
+        artifact = OutputArtifact(path="artifacts/result.json", source=source, required=required)
+
+        await upload_output_artifacts(
+            sandbox,
+            [artifact],
+            "benchmark-123",
+            "task_0",
+            harness_config.aws,
+            "bucket",
+        )
+
+        assert uploaded == expected_uploads
+
+    async def test_upload_output_artifacts_prioritizes_required_artifacts_for_total_size_limit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        optional_source = "/logs/optional.json"
+        required_source = "/logs/required.json"
+        uploaded: list[tuple[bytes, str]] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command in {
+                f"test -f {optional_source} && ! test -L {optional_source}",
+                f"test -f {required_source}",
+            }:
+                return ExecResult(exit_code=0, output="")
+            if command == f"stat -c%s {optional_source}":
+                return ExecResult(exit_code=0, output=str(OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES))
+            if command == f"stat -c%s {required_source}":
+                return ExecResult(exit_code=0, output="1")
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fake_download_file(path: str) -> bytes:
+            return path.encode()
+
+        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+            uploaded.append((file_content, s3_key))
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "upload_to_s3", fake_upload_to_s3)
+
+        sandbox = Mock()
+        sandbox.id = "sandbox-123"
+        sandbox.name = "task-alias"
+        sandbox.download_file = fake_download_file
+
+        await upload_output_artifacts(
+            sandbox,
+            [
+                OutputArtifact(path="telemetry/optional.json", source=optional_source, required=False),
+                OutputArtifact(path="scoring/required.json", source=required_source),
+            ],
+            "benchmark-123",
+            "task_0",
+            harness_config.aws,
+            "bucket",
+        )
+
+        assert uploaded == [
+            (
+                required_source.encode(),
+                "benchmarks/benchmark-123/task_0/scoring/required.json",
+            )
+        ]
+
     async def test_upload_output_artifacts_fails_when_file_exceeds_tracker_limit(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -221,6 +365,89 @@ class TestOutputArtifacts:
         with pytest.raises(OutputArtifactError, match="too large"):
             await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
 
+        upload_mock.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("stat_result", "total_bytes", "error"),
+        (
+            (ExecResult(exit_code=1, output=""), 0, "Failed to stat"),
+            (ExecResult(exit_code=0, output="not-a-size"), 0, "Failed to parse"),
+            (
+                ExecResult(exit_code=0, output=str(MAX_OUTPUT_ARTIFACT_BYTES)),
+                1,
+                "Output artifacts are too large",
+            ),
+        ),
+    )
+    async def test_upload_output_artifact_rejects_invalid_sizes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+        stat_result: ExecResult,
+        total_bytes: int,
+        error: str,
+    ) -> None:
+        sandbox = Mock()
+        sandbox.download_file = AsyncMock()
+        exec_mock = AsyncMock(
+            side_effect=[
+                ExecResult(exit_code=0, output=""),
+                stat_result,
+            ]
+        )
+        monkeypatch.setattr(sandbox_module, "_exec", exec_mock)
+
+        with pytest.raises(OutputArtifactError, match=error):
+            await _upload_output_artifact(
+                sandbox,
+                "artifacts/result.json",
+                "benchmark-123",
+                "task_0",
+                harness_config.aws,
+                "bucket",
+                total_bytes,
+            )
+
+        sandbox.download_file.assert_not_awaited()
+
+    async def test_upload_output_artifacts_skips_invalid_optional_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        artifact = OutputArtifact(
+            path="atif/trajectory.json",
+            source="/logs/trajectory_atif.json",
+            required=False,
+        )
+
+        sandbox = Mock()
+        exec_mock = AsyncMock(
+            side_effect=[
+                ExecResult(exit_code=0, output=""),
+                ExecResult(exit_code=0, output=str(MAX_OUTPUT_ARTIFACT_BYTES + 1)),
+            ]
+        )
+        upload_mock = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "_exec", exec_mock)
+        monkeypatch.setattr(sandbox_module, "upload_to_s3", upload_mock)
+
+        await upload_output_artifacts(
+            sandbox,
+            [artifact],
+            "benchmark-123",
+            "task_0",
+            harness_config.aws,
+            "bucket",
+        )
+
+        assert exec_mock.await_args_list == [
+            call(
+                sandbox,
+                "test -f /logs/trajectory_atif.json && ! test -L /logs/trajectory_atif.json",
+            ),
+            call(sandbox, "stat -c%s /logs/trajectory_atif.json"),
+        ]
         upload_mock.assert_not_awaited()
 
 
@@ -628,6 +855,8 @@ class TestSandboxLifecycle:
             == "public.ecr.aws/vals/harbor"
         )
         assert metric_source_name(SnapshotSource(snapshot="base-python")) == "snapshot"
+        with pytest.raises(AssertionError, match="Expected code to be unreachable"):
+            metric_source_name(cast(SandboxSource, object()))
 
     def test_compose_runtime_sandbox_wraps_only_compose_sources(self) -> None:
         """Compose sources should adapt only the runtime sandbox surface.
@@ -813,6 +1042,33 @@ class TestSandboxLifecycle:
             )
         ]
         assert context_calls == [("sandbox-123", "ghcr.io/vals/swebench:latest")]
+
+    async def test_targeted_snapshot_is_measured_and_deleted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        provider = AsyncMock()
+        provider.create_sandbox.return_value = mock_sandbox
+        distribution = Mock()
+        set_sandbox_context = Mock()
+        monkeypatch.setattr(sandbox_module, "distribution", distribution)
+        monkeypatch.setattr(sandbox_module, "set_sandbox_context", set_sandbox_context)
+
+        source = TargetedSnapshotSource(snapshot="masscan-linux-vm", target="us-west-3")
+        async with create_sandbox(
+            provider=provider,
+            sandbox_name="task-alias",
+            source=source,
+            resources=Resources(vcpu=4, memory=16, disk=30),
+            creation_semaphore=asyncio.Semaphore(1),
+        ) as sandbox:
+            assert sandbox is mock_sandbox
+
+        request = provider.create_sandbox.await_args.args[0]
+        assert request.source == source
+        assert distribution.call_args.kwargs["tags"] == {"image": "snapshot"}
+        set_sandbox_context.assert_called_once_with(mock_sandbox, image="snapshot")
+        provider.delete_sandbox.assert_awaited_once_with(mock_sandbox.id)
 
     async def test_create_sandbox_emits_error_metric(self, monkeypatch: pytest.MonkeyPatch) -> None:
         create_error = RuntimeError("create failed")

@@ -17,7 +17,9 @@ def make_fetch_response(
     run_id: UUID,
     *,
     status: BenchmarkStatus = BenchmarkStatus.IN_PROGRESS,
+    total_tasks: int = 4,
     finished_tasks: int = 1,
+    task_breakdown: dict[TaskStatus, int] | None = None,
     final_score: float | None = None,
 ) -> FetchBenchmarkResponse:
     """Build a run response with configurable progress and terminal state."""
@@ -27,11 +29,13 @@ def make_fetch_response(
         details=BenchmarkDetails(
             status=status,
             started_at=datetime(2026, 7, 9, 12, 30, tzinfo=timezone.utc),
-            total_tasks=4,
+            total_tasks=total_tasks,
             finished_tasks=finished_tasks,
-            task_breakdown={
+            task_breakdown=task_breakdown
+            if task_breakdown is not None
+            else {
                 TaskStatus.FINISHED: finished_tasks,
-                TaskStatus.IN_PROGRESS: 4 - finished_tasks,
+                TaskStatus.IN_PROGRESS: total_tasks - finished_tasks,
             },
             docent_reading_status=DocentReadingStatus.IDLE,
         ),

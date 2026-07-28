@@ -568,6 +568,7 @@ class TestTrackerAPI:
         Test Cases:
             - Returns 200 OK
             - Raising exception if benchmark row is not found
+            - Existing benchmark without discovered tasks returns empty progress
             - Benchmark details are returned in the response
             - Benchmark details are updated as benchmark progresses
             - Run-level errors are returned only after the benchmark reaches ERROR
@@ -583,6 +584,17 @@ class TestTrackerAPI:
 
         database_session.add(benchmark_row)
         database_session.commit()
+
+        # Fetch during the interval between benchmark creation and task discovery.
+        query_params = {"benchmark_id": str(benchmark_row.id)}
+        response = client.get("/fetch-benchmark", params=query_params)
+
+        assert response.status_code == 200
+
+        details = response.json()["details"]
+        assert details["total_tasks"] == 0
+        assert details["finished_tasks"] == 0
+        assert details["task_breakdown"] == {}
 
         # Push some task rows that we can use to check the progress of the benchmark
         task_rows = [Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id) for i in range(10)]

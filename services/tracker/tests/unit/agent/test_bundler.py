@@ -69,6 +69,7 @@ final_output: /tmp/final.txt
 output_artifacts:
   - path: logs
     source: /tmp/logs
+    required: false
 secrets:
   API_KEY: API key
 """,
@@ -82,9 +83,14 @@ secrets:
         assert contract.run_cmd == "python run.py --problem {problem_statement_path} --model gpt-4o"
         assert contract.final_output == "/tmp/final.txt"
         output_artifact = contract.output_artifacts[0]
-        assert isinstance(output_artifact, OutputArtifact)
-        assert output_artifact.path == "logs"
-        assert output_artifact.source == "/tmp/logs"
+        assert output_artifact == OutputArtifact(
+            path="logs",
+            source="/tmp/logs",
+            required=False,
+        )
+
+        serialized_artifact = contract.model_dump(mode="json")["output_artifacts"][0]
+        assert serialized_artifact["required"] is False
         assert contract.secrets == {"API_KEY": "API key"}
 
     def test_get_contract_from_zip_bytes_reports_missing_contract(self) -> None:
