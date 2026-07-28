@@ -1,7 +1,6 @@
 """Agent contract models used by SDK run requests."""
 
 from pathlib import PurePosixPath
-from typing import Any
 
 from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, field_validator, model_serializer
 
@@ -28,7 +27,7 @@ class OutputArtifact(BaseModel):
     required: bool = True
 
     @model_serializer(mode="wrap")
-    def serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+    def serialize(self, handler: SerializerFunctionWrapHandler):
         data = handler(self)
         if self.required:
             data.pop("required", None)

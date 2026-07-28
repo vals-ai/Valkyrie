@@ -225,8 +225,8 @@ def test_sdk_and_tracker_wire_models_have_the_same_fields(
     tracker_model: type[BaseModel], sdk_model: type[BaseModel]
 ) -> None:
     assert tracker_model.model_fields.keys() == sdk_model.model_fields.keys()
-    tracker_schema = tracker_model.model_json_schema()
-    sdk_schema = sdk_model.model_json_schema()
+    tracker_schema = tracker_model.model_json_schema(mode="serialization")
+    sdk_schema = sdk_model.model_json_schema(mode="serialization")
     assert set(tracker_schema.get("required", [])) == set(sdk_schema.get("required", []))
 
     for name in tracker_model.model_fields:
