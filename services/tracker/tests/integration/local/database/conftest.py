@@ -17,7 +17,7 @@ def postgres_container() -> Generator[PostgresContainer, None, None]:
         yield postgres
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def postgres_engine(postgres_container: PostgresContainer) -> Generator[Engine, None, None]:
     """Create the tracker schema and always dispose its engine."""
     engine = create_engine(postgres_container.get_connection_url())

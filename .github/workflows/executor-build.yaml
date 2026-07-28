@@ -76,7 +76,7 @@ jobs:
       - name: Build and inspect immutable executor PEX
         working-directory: services/tracker
         run: |
-          python build_executor_artifact.py \
+          PYTHONPATH=src python build_executor_artifact.py \
             --output-directory "$RUNNER_TEMP/executor-release" \
             --source-revision "$GITHUB_SHA"
           test -s "$RUNNER_TEMP/executor-release/executor.pex"
