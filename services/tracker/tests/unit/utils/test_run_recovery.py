@@ -1303,6 +1303,37 @@ class TestRunRecovery:
             "task_finished": TaskStatus.FINISHED,
         }
 
+    async def test_retry_clears_loaded_final_evaluation(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+    ) -> None:
+        benchmark = example_benchmark_object
+        benchmark.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark)
+        database_session.flush()
+        database_session.add(
+            Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark.id, status=TaskStatus.ERROR)
+        )
+        database_session.add(FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark.id, final_score=1.0))
+        database_session.commit()
+        assert benchmark.final_evaluation is not None
+
+        async def verify(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark.id}?retry=true")
+
+        assert response.status_code == 200
+        assert mock_kicker.queued_calls[0]["verified_task_ids"] == ["task_0"]
+        reloaded_benchmark = database_session.get(Benchmark, benchmark.id)
+        assert reloaded_benchmark is not None
+        assert reloaded_benchmark.final_evaluation is None
+
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_running_retry_repairs_error_and_later_finalizes_same_run(
         self,

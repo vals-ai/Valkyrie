@@ -810,6 +810,7 @@ async def retry_or_resume_benchmark(
         rerun_task_ids=task_ids,
         org=org,
     )
+    session.expire(benchmark_row, ["final_evaluation"])
 
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
         return RetryOrResumeBenchmarkResponse(
