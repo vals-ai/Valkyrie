@@ -1,4 +1,7 @@
-"""Behavioral tests for SDK-owned request and response models."""
+"""Behavioral tests for SDK-owned request and response models.
+
+Run: uv run pytest tests/unit/sdk/test_models.py
+"""
 
 from __future__ import annotations
 
@@ -32,6 +35,11 @@ def test_agent_contract_normalizes_output_artifacts() -> None:
         output_artifacts=[
             "reports/result.json",
             {"path": "logs/run.txt", "source": "/workspace/logs/*.txt"},
+            {
+                "path": "artifacts/model.patch",
+                "source": "/logs/artifacts/model.patch",
+                "required": False,
+            },
         ],
     )
 
@@ -40,12 +48,54 @@ def test_agent_contract_normalizes_output_artifacts() -> None:
         path="logs/run.txt",
         source="/workspace/logs/*.txt",
     )
+    assert contract.output_artifacts[2] == OutputArtifact(
+        path="artifacts/model.patch",
+        source="/logs/artifacts/model.patch",
+        required=False,
+    )
+
+    serialized = contract.model_dump(mode="json")["output_artifacts"]
+    assert "required" not in serialized[1]
+    assert serialized[2]["required"] is False
 
 
 @pytest.mark.parametrize("path", ["/absolute", "../escape", "a/../b"])
 def test_agent_contract_rejects_unsafe_artifact_paths(path: str) -> None:
     with pytest.raises(ValidationError):
         AgentContractRequest(name="agent", output_artifacts=[path])
+
+
+@pytest.mark.parametrize(
+    "artifacts",
+    [
+        [
+            "artifacts/result.json",
+            OutputArtifact(
+                path="artifacts//result.json",
+                source="/logs/optional.json",
+                required=False,
+            ),
+        ],
+        [
+            OutputArtifact(
+                path="telemetry/result.json",
+                source="/logs/first.json",
+                required=False,
+            ),
+            OutputArtifact(
+                path="telemetry//result.json",
+                source="/logs/second.json",
+                required=False,
+            ),
+        ],
+    ],
+    ids=["required-optional", "optional-optional"],
+)
+def test_agent_contract_rejects_duplicate_normalized_output_artifact_paths(
+    artifacts: list[str | OutputArtifact],
+) -> None:
+    with pytest.raises(ValidationError, match="duplicate"):
+        AgentContractRequest(name="agent", output_artifacts=artifacts)
 
 
 @pytest.mark.parametrize("source", ["relative/path", "/../escape", "/*.json"])

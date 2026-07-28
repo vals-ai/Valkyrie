@@ -1,8 +1,9 @@
 """Agent contract models used by SDK run requests."""
 
 from pathlib import PurePosixPath
+from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, field_validator, model_serializer
 
 from valkyrie.sdk.models._base import ResponseModel
 
@@ -24,6 +25,14 @@ class OutputArtifact(BaseModel):
 
     path: str
     source: str | None = None
+    required: bool = True
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        if self.required:
+            data.pop("required", None)
+        return data
 
     @field_validator("source")
     @classmethod
@@ -66,6 +75,7 @@ class AgentContractRequest(BaseModel):
             raise ValueError(f"output_artifacts cannot contain more than {MAX_OUTPUT_ARTIFACT_COUNT} entries")
 
         normalized_artifacts: list[OutputArtifactSpec] = []
+        normalized_paths: set[str] = set()
         for artifact in value:
             artifact_path = artifact if isinstance(artifact, str) else artifact.path
             path = PurePosixPath(artifact_path)
@@ -73,8 +83,12 @@ class AgentContractRequest(BaseModel):
                 raise ValueError("output_artifacts paths must be relative paths")
             if not path.parts or ".." in path.parts or "." in path.parts:
                 raise ValueError("output_artifacts paths cannot contain empty, '.', or '..' path parts")
+            normalized_path = str(path)
+            if normalized_path in normalized_paths:
+                raise ValueError(f"output_artifacts cannot contain duplicate paths: {normalized_path}")
+            normalized_paths.add(normalized_path)
             normalized_artifacts.append(
-                str(path) if isinstance(artifact, str) else artifact.model_copy(update={"path": str(path)})
+                normalized_path if isinstance(artifact, str) else artifact.model_copy(update={"path": normalized_path})
             )
         return normalized_artifacts
 
