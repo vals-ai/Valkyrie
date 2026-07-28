@@ -5,7 +5,14 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, SerializerFunctionWrapHandler, field_serializer, field_validator, model_serializer
+from pydantic import (
+    BaseModel,
+    Field as PydanticField,
+    SerializerFunctionWrapHandler,
+    field_serializer,
+    field_validator,
+    model_serializer,
+)
 from sqlalchemy import Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -171,7 +178,7 @@ class BenchmarkArguments(BaseModel):
 
     contract: AgentContractRequest
     concurrency: int
-    priority: int | None = None
+    priority: int | None = PydanticField(default=None, strict=True, ge=0, le=4)
     queue_pool_id: str | None = Field(default=None, exclude=True)
     task_ids: list[str] | None = None
     slice_str: str | None = None

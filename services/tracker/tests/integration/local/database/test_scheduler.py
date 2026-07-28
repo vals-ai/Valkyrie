@@ -288,10 +288,12 @@ async def test_admission_rechecks_dynamic_concurrency_capacity_and_lock(
     )
     events: list[str] = []
     lock_checks: list[bool] = []
+    observed_states: list[TaskStatus] = []
 
     async def observe_lock() -> None:
         async with store.PostgresPoolLock(postgres_engine, pool_id) as acquired:
             lock_checks.append(acquired)
+        observed_states.append(_task(postgres_engine, waiting).status)
 
     async def poll(_seconds: float) -> None:
         _set_concurrency(postgres_engine, benchmark, 2)
@@ -313,6 +315,7 @@ async def test_admission_rechecks_dynamic_concurrency_capacity_and_lock(
     assert _task(postgres_engine, active).status == TaskStatus.IN_PROGRESS
     assert sleep.await_count == 2
     assert lock_checks == [False, False, False]
+    assert observed_states == [TaskStatus.PENDING, TaskStatus.PENDING, TaskStatus.BUILDING]
     assert events == ["capacity", "capacity", "create", "cleanup"]
 
 

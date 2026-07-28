@@ -8,7 +8,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
-from pydantic import BaseModel, Field, PlainSerializer, field_validator
+from pydantic import BaseModel, Field, PlainSerializer, field_serializer, field_validator
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -38,7 +38,6 @@ def _serialize_required_utc(value: datetime) -> str:
 
 
 UTCDateTime = Annotated[datetime, PlainSerializer(_serialize_required_utc, return_type=str)]
-OptionalUTCDateTime = Annotated[datetime | None, PlainSerializer(_serialize_utc, return_type=str | None)]
 
 
 class BenchmarkDetails(BaseModel):
@@ -235,8 +234,8 @@ class BenchmarkTableRow(BaseModel):
     model: str | None
     dataset: str = "default"
     started_by_email: str | None
-    started_at: UTCDateTime
-    finished_at: OptionalUTCDateTime
+    started_at: datetime
+    finished_at: datetime | None
     status: BenchmarkStatus
     total_tasks: int
     finished_tasks: int
@@ -245,6 +244,16 @@ class BenchmarkTableRow(BaseModel):
     task_state_counts: dict[str, int] = {}
     final_score: float | None = None
     error_message: str | None = None
+
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None  # started_at is non-nullable
+        return result
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
 
 
 class FetchBenchmarksResponse(BaseModel):
@@ -302,11 +311,15 @@ class BenchmarkServicesRequest(BaseModel):
 class BenchmarkStatusEntry(BaseModel):
     id: UUID
     status: BenchmarkStatus
-    finished_at: OptionalUTCDateTime
+    finished_at: datetime | None
     total_tasks: int
     finished_tasks: int
     # Per-TaskStatus counts; same shape as BenchmarkTableRow.task_state_counts.
     task_state_counts: dict[str, int] = {}
+
+    @field_serializer("finished_at")
+    def _serialize_dt(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
 
 
 class BenchmarkStatusResponse(BaseModel):
@@ -320,8 +333,8 @@ class SingleBenchmarkResponse(BaseModel):
     name: str
     agent_name: str
     model: str | None
-    started_at: UTCDateTime
-    finished_at: OptionalUTCDateTime
+    started_at: datetime
+    finished_at: datetime | None
     status: BenchmarkStatus
     total_tasks: int
     finished_tasks: int
@@ -332,14 +345,34 @@ class SingleBenchmarkResponse(BaseModel):
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
 
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
+
 
 class TaskSummary(BaseModel):
     id: UUID
     task_id: str
     status: TaskStatus
-    started_at: UTCDateTime
-    finished_at: OptionalUTCDateTime
+    started_at: datetime
+    finished_at: datetime | None
     error_message: str | None = None
+
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
 
 
 class TasksResponse(BaseModel):
@@ -351,11 +384,21 @@ class SingleTaskResponse(BaseModel):
     id: UUID
     task_id: str
     status: TaskStatus
-    started_at: UTCDateTime
-    finished_at: OptionalUTCDateTime
+    started_at: datetime
+    finished_at: datetime | None
     error_message: str | None
     evaluation_result: dict[str, Any] | None
     agent_caused_exit_reason: str | None
+
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
 
 
 class AgentEntry(BaseModel):

@@ -297,6 +297,28 @@ def test_start_priority_override_is_optional_and_strict(model: type[BaseModel]) 
             model.model_validate({**payload, "sandbox_provider": "modal", "priority": invalid})
 
 
+@pytest.mark.parametrize(
+    "priority",
+    [
+        pytest.param(False, id="false"),
+        pytest.param(True, id="true"),
+        pytest.param("1", id="string"),
+        pytest.param(1.0, id="float"),
+        pytest.param(-1, id="below-minimum"),
+        pytest.param(5, id="above-maximum"),
+    ],
+)
+def test_sdk_benchmark_arguments_priority_rejects_invalid_values(priority: object) -> None:
+    with pytest.raises(ValidationError):
+        SDKBenchmarkArguments.model_validate(
+            {
+                "contract": {"name": "agent"},
+                "concurrency": 1,
+                "priority": priority,
+            }
+        )
+
+
 def test_sdk_default_start_request_is_accepted_by_legacy_tracker() -> None:
     payload = load_fixture("start.json")["request"]
     payload.pop("concurrency")
