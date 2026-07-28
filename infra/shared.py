@@ -46,7 +46,7 @@ from constants import (
 from constructs import Construct
 from stage import Stage
 
-DEPLOYMENT_STACK_NAMES = ("SharedStack", "TrackerStack", "DriverStack", "ExecutorStack", "MonitoringStack")
+DEPLOYMENT_STACK_NAMES = ("SharedStack", "TrackerStack", "DriverStack", "WorkerStack", "MonitoringStack")
 DEPLOYMENT_SUCCESS_STATUSES = ("CREATE_COMPLETE", "UPDATE_COMPLETE")
 DEPLOYMENT_FAILURE_STATUSES = (
     "CREATE_FAILED",

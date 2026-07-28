@@ -26,9 +26,9 @@ from constants import (
     executor_release_launch_parameter,
 )
 from shared import SharedStack
+from executor_stack import ExecutorStack
 from stage import DEV, PROD, RELEASE_TEST, Stage
 from tracker_stack import TrackerStack
-from worker_stack import ExecutorStack
 
 TEST_ACCOUNT = "123456789012"
 TEST_REGION = "us-east-1"
@@ -97,7 +97,7 @@ def dev_service_templates() -> tuple[assertions.Template, assertions.Template]:
     )
     executor = ExecutorStack(
         app,
-        stage.stack_id("ExecutorStack"),
+        stage.stack_id("WorkerStack"),
         stage=stage,
         vpc=shared.vpc,
         cluster=shared.cluster,

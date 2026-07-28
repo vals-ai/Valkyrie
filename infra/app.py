@@ -11,8 +11,8 @@ from driver_stack import DriverStack
 from monitoring_stack import MonitoringStack
 from shared import SharedStack
 from stage import resolve
+from executor_stack import ExecutorStack
 from tracker_stack import TrackerStack
-from worker_stack import ExecutorStack
 
 app = cdk.App()
 stage = resolve(app)
@@ -58,7 +58,8 @@ tracker = TrackerStack(
 # ExecutorHost and its sealed release-control resources
 executor = ExecutorStack(
     app,
-    stage.stack_id("ExecutorStack"),
+    # ExecutorStack retains the deployed WorkerStack identity for in-place updates.
+    stage.stack_id("WorkerStack"),
     stage=stage,
     vpc=shared.vpc,
     cluster=shared.cluster,

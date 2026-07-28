@@ -6,6 +6,7 @@ import sys
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import monotonic, sleep
 from uuid import uuid4
 
 import pytest
@@ -30,6 +31,7 @@ _EXECUTOR_RELEASE_OWNERSHIP_PREDECESSOR = "6f3c2d9a8b10"
 _CURRENT_OWNERSHIP_REVISION = "e9f0a1b2c3d4"
 _PREVIOUS_REVISION = "d8e9f0a1b2c3"
 _MAINTENANCE_REVISION = "f0a1b2c3d4e5"
+_MIGRATION_ADVISORY_LOCK_ID = 0x56414C4B59524945
 
 
 @pytest.fixture
@@ -95,15 +97,41 @@ def test_maintenance_fence_migration_is_additive(migration_database_url: str) ->
     engine.dispose()
 
 
-def test_concurrent_upgrades_serialize_on_advisory_lock(migration_database_url: str) -> None:
-    def upgrade(_index: int) -> subprocess.CompletedProcess[str]:
-        return _run_alembic(migration_database_url, "upgrade", _MAINTENANCE_REVISION)
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        upgrades = list(executor.map(upgrade, range(2)))
-
-    assert all(upgrade.returncode == 0 for upgrade in upgrades), [upgrade.stderr for upgrade in upgrades]
+def test_upgrade_waits_for_the_migration_advisory_lock(migration_database_url: str) -> None:
     engine = create_engine(migration_database_url)
+    with engine.connect() as lock_holder, ThreadPoolExecutor(max_workers=1) as executor:
+        lock_holder.execute(
+            text("SELECT pg_advisory_lock(:lock_id)"),
+            {"lock_id": _MIGRATION_ADVISORY_LOCK_ID},
+        )
+        lock_holder.commit()
+        upgrade = executor.submit(_run_alembic, migration_database_url, "upgrade", _MAINTENANCE_REVISION)
+        deadline = monotonic() + 10
+        try:
+            while monotonic() < deadline:
+                with engine.connect() as observer:
+                    waiting = observer.execute(
+                        text("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted)")
+                    ).scalar_one()
+                if waiting:
+                    break
+                if upgrade.done():
+                    result = upgrade.result()
+                    pytest.fail(f"Alembic exited before waiting for the migration lock: {result.stderr}")
+                sleep(0.05)
+            else:
+                pytest.fail("Alembic did not wait for the migration advisory lock")
+            assert not upgrade.done()
+        finally:
+            lock_holder.execute(
+                text("SELECT pg_advisory_unlock(:lock_id)"),
+                {"lock_id": _MIGRATION_ADVISORY_LOCK_ID},
+            )
+            lock_holder.commit()
+
+        result = upgrade.result(timeout=30)
+
+    assert result.returncode == 0, result.stderr
     with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     assert revision == _MAINTENANCE_REVISION

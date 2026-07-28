@@ -10,7 +10,7 @@ from taskiq_redis import RedisStreamBroker
 from taskiq_redis.redis_backend import RedisAsyncResultBackend
 
 from tracker.logging import configure_logging
-from tracker.middleware import LoggingContextMiddleware, TaskProtectionMiddleware, TracingContextMiddleware
+from tracker.middleware import LoggingContextMiddleware, TracingContextMiddleware
 from tracker.observability import configure_observability
 from tracker.outbound_security import validate_benchmark_name
 
@@ -67,7 +67,7 @@ result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
 
 # Tracing precedes Logging so that anything emitted after (logs, child spans
 # from middlewares or the task body) is captured under the propagated parent trace.
-_BROKER_MIDDLEWARES = (TaskProtectionMiddleware(), TracingContextMiddleware(), LoggingContextMiddleware())
+_BROKER_MIDDLEWARES = (TracingContextMiddleware(), LoggingContextMiddleware())
 
 broker = (
     InMemoryBroker().with_middlewares(*_BROKER_MIDDLEWARES)

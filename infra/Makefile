@@ -14,7 +14,8 @@ STACK_PREFIX = $(if $(filter dev,$(STAGE)),ValkDev,$(if $(filter release-test,$(
 STACKS_shared = $(STACK_PREFIX)SharedStack
 STACKS_tracker = $(STACK_PREFIX)TrackerStack
 STACKS_driver = $(STACK_PREFIX)DriverStack
-STACKS_executor = $(STACK_PREFIX)ExecutorStack
+# ExecutorStack is the Python owner; WorkerStack is the retained CloudFormation identity.
+STACKS_executor = $(STACK_PREFIX)WorkerStack
 STACKS_monitoring = $(STACK_PREFIX)MonitoringStack
 STACKS_core = $(STACKS_shared) $(STACKS_tracker) $(STACKS_monitoring)
 STACKS_all = --all

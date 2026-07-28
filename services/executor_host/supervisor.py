@@ -34,15 +34,18 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CACHE_DIR = "/var/cache/valkyrie-executors"
 ECS_AGENT_URI = os.environ.get("ECS_AGENT_URI")
-_PROTECTION_EXPIRY_MINUTES = 1440
+_PROTECTION_EXPIRY_MINUTES = 120
+_PROTECTION_REFRESH_SECONDS = 30 * 60
+_PROTECTION_RETRY_SECONDS = 30
 _AUTHORITY_LOSS_GRACE_SECONDS = 10
 _active_execution_count = 0
+_protection_refresh_task: asyncio.Task[None] | None = None
 _execution_lock = asyncio.Lock()
 
 
-async def _set_task_protection(*, enabled: bool) -> None:
+async def _set_task_protection(*, enabled: bool) -> bool:
     if not ECS_AGENT_URI:
-        return
+        return True
     body: dict[str, object] = {"ProtectionEnabled": enabled}
     if enabled:
         body["ExpiresInMinutes"] = _PROTECTION_EXPIRY_MINUTES
@@ -57,25 +60,57 @@ async def _set_task_protection(*, enabled: bool) -> None:
         with urllib.request.urlopen(request, timeout=5) as response:
             response.read()
 
+    update_task = asyncio.create_task(asyncio.to_thread(update))
     try:
-        await asyncio.to_thread(update)
+        await asyncio.shield(update_task)
+    except asyncio.CancelledError:
+        await _await_task_completion(update_task)
+        raise
     except Exception:
         logger.exception("Failed to set ECS task protection to %s", enabled)
+        return False
+    return True
+
+
+async def _renew_task_protection(delay_seconds: float) -> None:
+    while True:
+        await asyncio.sleep(delay_seconds)
+        updated = await _set_task_protection(enabled=True)
+        delay_seconds = _PROTECTION_REFRESH_SECONDS if updated is not False else _PROTECTION_RETRY_SECONDS
+
+
+async def _await_task_cancellation(task: asyncio.Task[None]) -> None:
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            pass
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 async def _acquire_task_protection() -> None:
-    global _active_execution_count
+    global _active_execution_count, _protection_refresh_task
     async with _execution_lock:
         if _active_execution_count == 0:
-            await _set_task_protection(enabled=True)
+            updated = await _set_task_protection(enabled=True)
+            initial_delay = _PROTECTION_REFRESH_SECONDS if updated is not False else _PROTECTION_RETRY_SECONDS
+            _protection_refresh_task = asyncio.create_task(_renew_task_protection(initial_delay))
         _active_execution_count += 1
 
 
 async def _release_task_protection() -> None:
-    global _active_execution_count
+    global _active_execution_count, _protection_refresh_task
     async with _execution_lock:
         _active_execution_count -= 1
         if _active_execution_count == 0:
+            refresh_task = _protection_refresh_task
+            _protection_refresh_task = None
+            if refresh_task is not None:
+                refresh_task.cancel()
+                await _await_task_cancellation(refresh_task)
             await _set_task_protection(enabled=False)
 
 
@@ -659,7 +694,8 @@ async def run_executor_dispatch(
             await _terminalize_after_failure(store, authority, verified_task_ids)
             raise
     finally:
-        await _release_task_protection()
+        release_task = asyncio.create_task(_release_task_protection())
+        await _await_task_completion(release_task)
 
 
 @broker.task(EXECUTOR_TASK_NAME)

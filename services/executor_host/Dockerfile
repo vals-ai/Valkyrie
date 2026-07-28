@@ -17,4 +17,4 @@ ENV STABLE_QUEUE_NAME=valkyrie-stable
 
 USER executor
 
-CMD ["python", "-m", "taskiq", "worker", "--no-configure-logging", "supervisor:broker", "supervisor"]
+CMD ["python", "-m", "taskiq", "worker", "--workers", "1", "--no-configure-logging", "supervisor:broker", "supervisor"]

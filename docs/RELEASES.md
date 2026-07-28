@@ -179,22 +179,37 @@ manual outage. Perform these steps in order:
    key existence alone is not proof that the queue drained.
 5. Suspend legacy Worker scaling, set its desired count to zero, and verify that
    no Worker task remains.
-6. Run the forward-only all-stack deployment and activation. It deletes the
-   drained legacy service but retains `/valkyrie/worker` log history. After the
-   new Tracker and ExecutorHost are healthy, resume Tracker scaling and restore
-   its normal service count. Do not deploy a pre-Package-R Tracker image after
-   the migrations commit.
+6. With separate approval for this live AWS mutation, run `make deploy` with
+   `SCOPE=executor` from the new source. The Python `ExecutorStack` updates the
+   physical `WorkerStack` in place, deletes the drained legacy service, and
+   retains `/valkyrie/worker` log history. This CDK-only bootstrap does not
+   publish or activate an executor release.
+7. Verify that `/valkyrie/<stage>/executor-release/launch-config` exists in SSM.
+   Automated executor deployment fails closed until this parameter exists.
+8. Rerun the branch deployment. It closes admission through the sealed control
+   task, deploys the core migration, activates the immutable executor release,
+   and restores Tracker only after successful completion. Do not deploy a pre-
+   Package-R Tracker image after the migrations commit.
 
 This procedure is operational only; the migrations contain no cutover state or
 compatibility branch. It applies once, to the first executor-dispatch rollout.
+The manual physical `WorkerStack` update is a separate protected action, not an
+automatic bootstrap path.
 
 ## Automated deployment
 
-Core and executor deployment are separate lanes. Every `dev` or `prod` push may
-deploy the Shared, Tracker, and Monitoring stacks, but that core lane never builds
-an executor artifact, deploys `ExecutorStack`, activates a release, or enters
-executor maintenance. Executor work runs only when the trusted classifier reports
-an executor release, an ExecutorStack change, or an incompatible migration.
+Core and executor deployment use separate jobs and one non-cancelling deployment
+mutex per stage. Every `dev` or `prod` push may deploy the Shared, Tracker, and
+Monitoring stacks, but a core-only change never builds an executor artifact,
+deploys the physical `WorkerStack`, activates a release, or enters executor
+maintenance. Executor work runs only when the trusted classifier reports an
+executor release, an `ExecutorStack` change, or an incompatible migration. After
+acquiring the mutex, an executor job compares its SHA with the current branch
+head and exits before AWS credentials or mutations when it is stale.
+
+`ExecutorStack` is the Python owner and `executor` is the deployment scope. Its
+physical CloudFormation identity remains `WorkerStack` to update the deployed
+stack and retained resources in place.
 
 An executor release builds one ARM64/Python 3.12 PEX from the exact Tracker source
 and the dedicated `services/executor_artifact/uv.lock`. The release launcher uses
@@ -208,9 +223,11 @@ admission target before committing. PostgreSQL serializes overlapping activation
 on the singleton admission row before either task creates or matches the release.
 
 Dev executor operations follow a successful core deployment unless an incompatible
-migration must run inside maintenance. Production executor operations additionally
-wait for approval on the protected `production-release` GitHub Environment. That
-environment must require reviewers, permit only `prod`, and define
+migration must run inside maintenance. Production uses a separate no-op approval
+job on the protected `production-release` GitHub Environment. Waiting for approval
+does not hold the deployment mutex; the mutating executor job starts only after
+both that approval and its same-revision core dependency succeed. The Environment
+must require reviewers, permit only `prod`, and define
 `PRODUCTION_RELEASE_APPROVAL_CONFIGURED=true`. The AWS accounts must already
 contain the account-owned GitHub OIDC provider used by the environment-bound
 release roles.
@@ -230,14 +247,20 @@ stack update, and admission reopens only after every required stack update and
 executor activation succeeds. A failure leaves the fence closed for a retry of
 the same commit.
 
-The initial ExecutorStack deployment skips maintenance because no release-control
-task or executor workload exists yet. Later ExecutorStack changes use the normal
-maintenance flow. Manual workflow dispatch remains limited to credential
-validation and planning; deployments come from branch pushes.
+Automated executor deployment never skips maintenance. Before the one-time manual
+cutover creates sealed control, the workflow fails because the stage launch-config
+SSM parameter is absent and points operators to the cutover procedure above.
+Later `ExecutorStack` changes use the normal maintenance flow. Manual workflow
+dispatch remains limited to credential validation and planning; deployments come
+from branch pushes.
 
 Start, Retry, Resume, and concurrency changes return `503` while the fence is
 held. Nothing is replayed automatically. Alembic startup upgrades use one
 PostgreSQL advisory lock so rolling Tracker tasks cannot race migrations.
+ExecutorHost runs one Taskiq worker process with up to 100 concurrent async tasks,
+so its in-memory active count owns the whole ECS task. It renews a 120-minute ECS
+protection lease every 30 minutes while work remains and cancels any in-flight
+renewal before disabling protection.
 
 Tracker retires blocker-free draining releases automatically; artifact deletion
 remains separate.

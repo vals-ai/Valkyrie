@@ -4,10 +4,14 @@ AWS CDK infrastructure for the Agentic Harness benchmark platform.
 
 ## Architecture
 
-- **Shared Stack**: VPC, ECS cluster, service discovery, benchmark storage, executor release storage, and Redis
-- **Tracker Stack**: Public API, load balancer, PostgreSQL, and the sealed release-control task
-- **Worker Stack**: Stable ExecutorHost plus retained historical Worker logs
+- **Shared Stack**: VPC, ECS cluster, service discovery, benchmark storage, and Redis
+- **Tracker Stack**: Public API, load balancer, and PostgreSQL
+- **Executor Stack**: Stable ExecutorHost, executor release storage, sealed release control, and retained Worker logs
 - **Monitoring Stack**: Tracker, load balancer, database, and Redis alarms
+
+`ExecutorStack` is the Python owner and `executor` is the deployment scope. Its
+physical CloudFormation name remains `WorkerStack` so deployments update the
+existing stack and retained resources in place.
 
 Production imports the existing `vals.ai` hosted zone. Development imports the
 account-local `benchmark-tracker-dev.vals.ai` child zone and certificate.
@@ -52,21 +56,24 @@ make install
 ## Deployment
 
 Production and development deploy automatically when changes reach `prod` and
-`dev`. The manual **Deploy to AWS** workflow on `dev` remains available: use
-`credentials-only` to verify the Environment and OIDC role, `plan` to review a
-CDK diff, and `deploy` for an explicit scope.
+`dev`. The manual **Deploy to AWS** workflow on `dev` supports only
+`credentials-only` and `plan`; deployments come from branch pushes.
 
-Successful all-stack deployments run by the GitHub workflow also build and
-activate an immutable executor release. Dev activation is automatic. Production
-executor upload and activation wait for `production-release` approval after the
-stacks deploy. Manual partial, plan, and credentials-only workflow operations
-never activate a release.
+Core and executor changes use separate jobs but one deployment mutex per stage.
+A core-only change never builds an executor artifact, enters executor maintenance,
+deploys the physical `WorkerStack`, or activates a release. A stale queued
+executor job exits before using AWS credentials. Production approval is a
+separate no-op job, so waiting for approval does not hold the deployment mutex.
+Manual partial, plan, and credentials-only workflow operations never activate a
+release.
 
 Direct `make deploy` is CDK-only: it does not build, upload, or activate an
 executor release. The first executor-dispatch rollout uses the Monitoring-only
-pre-deployment, manual outage, and legacy-queue drain documented in
-`docs/RELEASES.md`. Later workflow deployments keep existing executions pinned
-while previous releases drain normally.
+pre-deployment, manual outage, legacy-queue drain, and separately authorized
+physical `WorkerStack` bootstrap documented in `docs/RELEASES.md`. Automated
+executor work fails closed until the bootstrap publishes the stage's sealed
+release-control SSM parameter. Later workflow deployments keep existing
+executions pinned while previous releases drain normally.
 
 For a local plan or an administrator break-glass deployment, pass the target
 explicitly. The preflight rejects the wrong account, Region, or STS identity.
@@ -96,9 +103,9 @@ make plan STAGE=release-test SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
 ```
 
-`SCOPE` accepts `shared`, `tracker`, `worker`, `monitoring`, `driver`
-(`release-test` only), or `all`. `worker` is the historical stack name for
-ExecutorHost and retained Worker logs. CDK follows the existing stack
+`SCOPE` accepts `shared`, `tracker`, `executor`, `monitoring`, `driver`
+(`release-test` only), `core`, or `all`. The `executor` scope targets the
+historical physical `WorkerStack` name. CDK follows the existing stack
 dependencies when an individual stack is selected. The
 Makefile defaults `PRODUCTION_ACCOUNT_ID` to the Vals production account so a
 dev target cannot select it accidentally. Self-hosted operators can override

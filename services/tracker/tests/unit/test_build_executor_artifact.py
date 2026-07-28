@@ -6,6 +6,13 @@ import pytest
 from build_executor_artifact import release_identity, verify_archive
 
 
+def test_dependency_export_omits_local_projects() -> None:
+    builder = (Path(__file__).parents[2] / "build_executor_artifact.py").read_text()
+
+    assert '"--no-emit-local"' in builder
+    assert '"--no-emit-project"' not in builder
+
+
 def test_release_identity_includes_source_and_artifact_digest() -> None:
     release_id, key = release_identity("abcdef1234567890", "0123456789abcdef" * 4)
 

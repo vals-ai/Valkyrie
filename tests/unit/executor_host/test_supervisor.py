@@ -560,6 +560,118 @@ async def test_broker_payload_dispatch_id_reaches_dispatch_owner(
     assert captured["executor_dispatch_id"] == "dispatch-1"
 
 
+def test_executor_host_uses_one_taskiq_process() -> None:
+    dockerfile = (Path(__file__).parents[3] / "services" / "executor_host" / "Dockerfile").read_text()
+
+    assert '"--workers", "1"' in dockerfile
+
+
+@pytest.mark.asyncio
+async def test_task_protection_uses_a_renewable_two_hour_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    request_bodies: list[dict[str, object]] = []
+
+    class Response:
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b""
+
+    def fake_urlopen(request: object, *, timeout: int) -> Response:
+        assert timeout == 5
+        request_bodies.append(json.loads(cast(bytes, getattr(request, "data"))))
+        return Response()
+
+    monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", "http://ecs-agent")
+    monkeypatch.setattr(supervisor_module.urllib.request, "urlopen", fake_urlopen)
+
+    set_task_protection = getattr(supervisor_module, "_set_task_protection")
+    assert await set_task_protection(enabled=True)
+    assert request_bodies == [{"ProtectionEnabled": True, "ExpiresInMinutes": 120}]
+
+
+@pytest.mark.asyncio
+async def test_task_protection_retries_failed_refreshes(monkeypatch: pytest.MonkeyPatch) -> None:
+    protection_results = iter([False, True])
+    delays: list[float] = []
+
+    async def record_protection(*, enabled: bool) -> bool:
+        assert enabled
+        return next(protection_results)
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+        if len(delays) == 3:
+            raise RuntimeError("stop renewal test")
+
+    monkeypatch.setattr(supervisor_module, "_set_task_protection", record_protection)
+    monkeypatch.setattr(supervisor_module.asyncio, "sleep", record_sleep)
+
+    renew_task_protection = getattr(supervisor_module, "_renew_task_protection")
+    with pytest.raises(RuntimeError, match="stop renewal test"):
+        await renew_task_protection(30 * 60)
+
+    assert delays == [30 * 60, 30, 30 * 60]
+
+
+@pytest.mark.asyncio
+async def test_task_protection_waits_for_in_flight_refresh_before_cancelling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refresh_started = asyncio.Event()
+    finish_refresh = asyncio.Event()
+    refresh_completed = asyncio.Event()
+
+    async def block_to_thread(*_args: object, **_kwargs: object) -> None:
+        refresh_started.set()
+        await finish_refresh.wait()
+        refresh_completed.set()
+
+    monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", "http://ecs-agent")
+    monkeypatch.setattr(supervisor_module.asyncio, "to_thread", block_to_thread)
+
+    set_task_protection = getattr(supervisor_module, "_set_task_protection")
+    refresh_task = asyncio.create_task(set_task_protection(enabled=True))
+    await refresh_started.wait()
+    refresh_task.cancel()
+    await asyncio.sleep(0)
+    assert not refresh_task.done()
+
+    finish_refresh.set()
+    with pytest.raises(asyncio.CancelledError):
+        await refresh_task
+    assert refresh_completed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_task_protection_has_one_loop_for_concurrent_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    protection_calls: list[bool] = []
+
+    async def record_protection(*, enabled: bool) -> bool:
+        protection_calls.append(enabled)
+        return True
+
+    monkeypatch.setattr(supervisor_module, "_set_task_protection", record_protection)
+
+    acquire_task_protection = getattr(supervisor_module, "_acquire_task_protection")
+    release_task_protection = getattr(supervisor_module, "_release_task_protection")
+    await acquire_task_protection()
+    refresh_task = getattr(supervisor_module, "_protection_refresh_task")
+    await acquire_task_protection()
+    assert getattr(supervisor_module, "_protection_refresh_task") is refresh_task
+
+    await release_task_protection()
+    assert protection_calls == [True]
+    await release_task_protection()
+
+    assert protection_calls == [True, False]
+    assert refresh_task.done()
+    assert getattr(supervisor_module, "_protection_refresh_task") is None
+
+
 @pytest.mark.asyncio
 async def test_task_protection_is_acquired_before_claim(
     tmp_path: Path,

@@ -81,7 +81,7 @@ def build(output_directory: Path, source_revision: str) -> dict[str, object]:
                 "--locked",
                 "--no-dev",
                 "--no-hashes",
-                "--no-emit-project",
+                "--no-emit-local",
                 "--format",
                 "requirements.txt",
                 "--output-file",

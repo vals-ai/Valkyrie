@@ -25,9 +25,9 @@ from constants import (
 )
 from monitoring_stack import MonitoringStack
 from shared import SharedStack
+from executor_stack import ExecutorStack
 from stage import DEV, DEV_STACK_PREFIX, PROD, RELEASE_TEST, Stage
 from tracker_stack import TrackerStack
-from worker_stack import ExecutorStack
 
 TEST_ALERTS_SLACK_ENV = {
     SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE",
@@ -166,7 +166,7 @@ def _service_templates(
     )
     executor = ExecutorStack(
         app,
-        stage.stack_id("ExecutorStack"),
+        stage.stack_id("WorkerStack"),
         stage=stage,
         vpc=shared.vpc,
         cluster=shared.cluster,
@@ -317,7 +317,7 @@ class MonitoringStackTest(unittest.TestCase):
         worker_log_group = executor_template.to_json()["Resources"]["WorkerLogGroup31FDBE4A"]
         self.assertEqual(worker_log_group["DeletionPolicy"], "Retain")
         self.assertEqual(worker_log_group["UpdateReplacePolicy"], "Retain")
-        self.assertNotIn("ExecutorStack", json.dumps(monitoring_template.to_json()))
+        self.assertNotIn("WorkerStack", json.dumps(monitoring_template.to_json()))
 
     def test_monitoring_has_no_legacy_worker_alarm_or_widgets(self) -> None:
         synthesized = json.dumps(_monitoring_template().to_json())

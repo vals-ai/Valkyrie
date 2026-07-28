@@ -3,8 +3,9 @@
 import unittest
 from pathlib import Path
 
-WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "deploy.yaml"
-EXECUTOR_BUILD_WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "executor-build.yaml"
+ROOT = Path(__file__).parents[2]
+WORKFLOW = ROOT / ".github" / "workflows" / "deploy.yaml"
+EXECUTOR_BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "executor-build.yaml"
 
 
 class DeployWorkflowTest(unittest.TestCase):
@@ -20,6 +21,7 @@ class DeployWorkflowTest(unittest.TestCase):
         manual_inputs = workflow.split("  workflow_dispatch:", maxsplit=1)[1].split("permissions:", maxsplit=1)[0]
         self.assertNotIn("- deploy", manual_inputs)
         self.assertIn("needs: classify-deployment", production_core)
+        self.assertIn("group: valkyrie-prod-deploy", production_core)
         self.assertIn("core_maintenance_required != 'true'", production_core)
         self.assertIn("database_maintenance_required != 'true'", production_core)
         self.assertIn("SCOPE=core", production_core)
@@ -27,6 +29,7 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertNotIn("executor_release.py", production_core)
         self.assertNotIn("maintenance-operation", production_core)
         self.assertIn("needs: classify-deployment", dev_core)
+        self.assertIn("group: valkyrie-dev-${{ github.event_name == 'push' && 'deploy' || github.run_id }}", dev_core)
         self.assertIn("core_maintenance_required != 'true'", dev_core)
         self.assertIn("database_maintenance_required != 'true'", dev_core)
         self.assertIn("environment: dev", dev_core)
@@ -38,9 +41,25 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertNotIn("submodules: recursive", workflow)
         self.assertNotIn("secrets.GH_PAT", workflow)
 
+    def test_executor_keeps_the_deployed_worker_stack_identity(self) -> None:
+        app = (ROOT / "infra" / "app.py").read_text(encoding="utf-8")
+        makefile = (ROOT / "infra" / "Makefile").read_text(encoding="utf-8")
+        classifier = (ROOT / "infra" / "classify_repository_change.py").read_text(encoding="utf-8")
+        build_workflow = EXECUTOR_BUILD_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("from executor_stack import ExecutorStack", app)
+        self.assertIn('stage.stack_id("WorkerStack")', app)
+        self.assertIn("STACKS_executor = $(STACK_PREFIX)WorkerStack", makefile)
+        self.assertIn('"infra/executor_stack.py"', classifier)
+        self.assertIn('"infra/executor_stack.py"', build_workflow)
+        self.assertNotIn("worker_stack.py", app + classifier + build_workflow)
+
     def test_executor_jobs_own_build_deploy_activation_and_maintenance(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         dev_executor = workflow.split("  executor-development:", maxsplit=1)[1].split(
+            "  production-executor-approval:", maxsplit=1
+        )[0]
+        production_approval = workflow.split("  production-executor-approval:", maxsplit=1)[1].split(
             "  executor-production:", maxsplit=1
         )[0]
         prod_executor = workflow.split("  executor-production:", maxsplit=1)[1]
@@ -62,12 +81,14 @@ class DeployWorkflowTest(unittest.TestCase):
 
         self.assertIn("needs: [classify-deployment, run-dev-operation]", dev_executor)
         self.assertIn("environment: dev", dev_executor)
-        self.assertIn("needs: [classify-deployment, deploy-production-core]", prod_executor)
-        self.assertIn("environment: production-release", prod_executor)
-        self.assertLess(
-            prod_executor.index("Require configured production approval"),
-            prod_executor.index("Configure production release credentials"),
+        self.assertIn("environment: production-release", production_approval)
+        self.assertNotIn("concurrency:", production_approval)
+        self.assertIn(
+            "needs: [classify-deployment, deploy-production-core, production-executor-approval]",
+            prod_executor,
         )
+        self.assertNotIn("environment: production-release", prod_executor)
+        self.assertIn("needs.production-executor-approval.result == 'success'", prod_executor)
         self.assertEqual(workflow.count("python build_executor_artifact.py"), 2)
         self.assertEqual(workflow.count("--maintenance-operation begin"), 2)
         self.assertEqual(workflow.count("--maintenance-operation finish"), 2)
@@ -77,7 +98,7 @@ class DeployWorkflowTest(unittest.TestCase):
     def test_maintenance_paths_bypass_the_skipped_core_job_and_preserve_failed_fences(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         dev_executor = workflow.split("  executor-development:", maxsplit=1)[1].split(
-            "  executor-production:", maxsplit=1
+            "  production-executor-approval:", maxsplit=1
         )[0]
         prod_executor = workflow.split("  executor-production:", maxsplit=1)[1]
 
@@ -98,27 +119,42 @@ class DeployWorkflowTest(unittest.TestCase):
             self.assertNotIn("always()", finish)
             self.assertIn("--maintenance-operation finish", finish)
 
-    def test_executor_stack_bootstrap_skips_maintenance_until_control_exists(self) -> None:
+    def test_executor_bootstrap_fails_closed_until_release_control_exists(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         dev_executor = workflow.split("  executor-development:", maxsplit=1)[1].split(
-            "  executor-production:", maxsplit=1
+            "  production-executor-approval:", maxsplit=1
         )[0]
         prod_executor = workflow.split("  executor-production:", maxsplit=1)[1]
 
         for executor_job in (dev_executor, prod_executor):
-            self.assertIn("Detect existing executor stack", executor_job)
-            begin = executor_job.split("maintenance-operation begin", maxsplit=1)[0].rsplit(
-                "      - name:", maxsplit=1
-            )[1]
-            finish = executor_job.split("maintenance-operation finish", maxsplit=1)[0].rsplit(
-                "      - name:", maxsplit=1
-            )[1]
-            self.assertIn("steps.executor-stack.outputs.exists == 'true'", begin)
-            self.assertIn("steps.executor-stack.outputs.exists == 'true'", finish)
-            self.assertIn('grep -q "does not exist"', executor_job)
+            self.assertIn("aws ssm get-parameter", executor_job)
+            self.assertIn("ParameterNotFound", executor_job)
+            self.assertIn("physical WorkerStack bootstrap", executor_job)
+            self.assertNotIn("describe-stacks", executor_job)
+            self.assertNotIn("steps.executor-stack.outputs.exists", executor_job)
 
-        self.assertIn("EXECUTOR_STACK_NAME: ValkDevExecutorStack", dev_executor)
-        self.assertIn("EXECUTOR_STACK_NAME: ExecutorStack", prod_executor)
+        self.assertIn(
+            "EXECUTOR_RELEASE_LAUNCH_PARAMETER: /valkyrie/dev/executor-release/launch-config",
+            dev_executor,
+        )
+        self.assertIn(
+            "EXECUTOR_RELEASE_LAUNCH_PARAMETER: /valkyrie/prod/executor-release/launch-config",
+            prod_executor,
+        )
+
+    def test_mutations_share_stage_mutex_and_stale_executor_jobs_do_nothing(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        dev_executor = workflow.split("  executor-development:", maxsplit=1)[1].split(
+            "  production-executor-approval:", maxsplit=1
+        )[0]
+        prod_executor = workflow.split("  executor-production:", maxsplit=1)[1]
+
+        self.assertEqual(workflow.count("group: valkyrie-prod-deploy"), 2)
+        self.assertIn("group: valkyrie-dev-deploy", dev_executor)
+        for executor_job in (dev_executor, prod_executor):
+            self.assertIn("gh api", executor_job)
+            self.assertIn("id: freshness", executor_job)
+            self.assertGreaterEqual(executor_job.count("steps.freshness.outputs.current == 'true'"), 14)
 
     def test_deployment_reuses_the_pr_classifier(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

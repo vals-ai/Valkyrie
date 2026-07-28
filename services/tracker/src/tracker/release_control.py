@@ -246,9 +246,8 @@ def get_executor_admission(session: Session, *, for_update: bool = False) -> Exe
     return _get_required_admission(session, for_update=for_update)
 
 
-def lock_executor_admission(session: Session) -> ExecutorAdmission:
-    """Lock executor admission and reject new work during maintenance."""
-    admission = _get_admission(session, for_update=True)
+def _get_open_executor_admission(session: Session, *, for_update: bool) -> ExecutorAdmission:
+    admission = _get_admission(session, for_update=for_update)
     if admission is None:
         raise ReleaseControlError("No active executor release is configured")
     if admission.maintenance_target_sha is not None:
@@ -256,13 +255,16 @@ def lock_executor_admission(session: Session) -> ExecutorAdmission:
     return admission
 
 
+def lock_executor_admission(session: Session) -> ExecutorAdmission:
+    """Lock executor admission and reject new work during maintenance."""
+    return _get_open_executor_admission(session, for_update=True)
+
+
 def select_active_release(session: Session, *, for_update: bool = False) -> ExecutorRelease:
     """Return the healthy release currently admitted for new benchmarks."""
-    admission = lock_executor_admission(session) if for_update else _get_admission(session)
-    if admission is None or admission.release_id is None:
+    admission = _get_open_executor_admission(session, for_update=for_update)
+    if admission.release_id is None:
         raise ReleaseControlError("No active executor release is configured")
-    if admission.maintenance_target_sha is not None:
-        raise MaintenanceModeError("Executor maintenance is in progress")
 
     release = session.get(ExecutorRelease, admission.release_id)
     if release is None or release.status != ExecutorReleaseStatus.ACTIVE or not release.readiness_verified:
