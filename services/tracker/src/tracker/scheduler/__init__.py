@@ -1,1 +1,1 @@
-"""Redis-backed sandbox admission primitives."""
+"""PostgreSQL-backed sandbox scheduling."""

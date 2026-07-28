@@ -12,10 +12,48 @@ from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkArguments,
+    BenchmarkArgumentsType,
     OutputArtifact,
     Task,
     TaskStatus,
 )
+
+
+@pytest.mark.parametrize("priority", [0, 4])
+def test_benchmark_arguments_accepts_priority_bounds(priority: int) -> None:
+    arguments = BenchmarkArguments(
+        contract=AgentContractRequest(name="agent"),
+        concurrency=5,
+        priority=priority,
+    )
+
+    assert arguments.priority == priority
+
+
+@pytest.mark.parametrize("priority", [False, True, "1", 1.0, -1, 5])
+def test_benchmark_arguments_rejects_invalid_priority(priority: object) -> None:
+    with pytest.raises(ValidationError):
+        BenchmarkArguments.model_validate(
+            {
+                "contract": AgentContractRequest(name="agent"),
+                "concurrency": 5,
+                "priority": priority,
+            },
+        )
+
+
+def test_direct_benchmark_storage_omits_scheduler_fields(database_session: Session) -> None:
+    stored = BenchmarkArgumentsType().process_bind_param(
+        BenchmarkArguments(
+            contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+            concurrency=5,
+        ),
+        database_session.get_bind().dialect,
+    )
+
+    assert stored is not None
+    assert "priority" not in stored
+    assert "queue_pool_id" not in stored
 
 
 def test_required_output_artifact_omits_default_from_serialized_contract() -> None:
