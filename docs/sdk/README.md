@@ -79,7 +79,7 @@ await client.runs.retry(
 )
 ```
 
-The benchmark URL override is stored on the run and reused by later retries and resumes.
+If your benchmark service does not have a static URL, you can override the URL used to retry and resume.
 
 Fetch stored launch metadata or check whether canonical S3 results already exist:
 

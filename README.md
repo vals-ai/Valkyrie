@@ -298,7 +298,7 @@ valkyrie run resume <id>
 # Retry errored tasks
 valkyrie run retry <id>
 
-# Replace the benchmark service URL for this and later retries/resumes
+# Replace the benchmark service URL for later retries/resumes
 valkyrie run retry <id> --benchmark-url https://new-benchmark.example
 
 # Override concurrency on resume (works on retry)
