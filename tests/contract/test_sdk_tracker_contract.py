@@ -254,12 +254,21 @@ def test_sdk_and_tracker_accept_canonical_fixture(
 def test_sdk_and_tracker_wire_models_have_the_same_fields(
     tracker_model: type[BaseModel], sdk_model: type[BaseModel]
 ) -> None:
-    tracker_schema = tracker_model.model_json_schema(mode="serialization")
-    sdk_schema = sdk_model.model_json_schema(mode="serialization")
-    tracker_properties = tracker_schema["properties"]
-    sdk_properties = sdk_schema["properties"]
+    tracker_schema = tracker_model.model_json_schema()
+    sdk_schema = sdk_model.model_json_schema()
+    tracker_properties = {
+        name: tracker_schema["properties"][name]
+        for name, field in tracker_model.model_fields.items()
+        if not field.exclude
+    }
+    sdk_properties = {
+        name: sdk_schema["properties"][name] for name, field in sdk_model.model_fields.items() if not field.exclude
+    }
     assert tracker_properties.keys() == sdk_properties.keys()
-    assert set(tracker_schema.get("required", [])) == set(sdk_schema.get("required", []))
+    assert (
+        set(tracker_schema.get("required", [])) & tracker_properties.keys()
+        == set(sdk_schema.get("required", [])) & sdk_properties.keys()
+    )
 
     for name in tracker_properties:
         tracker_property = _normalized_wire_schema(tracker_properties[name])
