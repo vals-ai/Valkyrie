@@ -20,6 +20,7 @@ from tracker.database.models import (
 )
 from tracker.release_control import (
     create_executor_dispatch,
+    lock_executor_admission,
     pin_benchmark_to_release,
     resolve_current_execution_release,
     select_active_release,
@@ -44,8 +45,9 @@ def admit_start_dispatch(
     dispatch_id: UUID,
 ) -> ExecutorDispatch:
     """Select the active release and persist one start dispatch."""
+    with session.no_autoflush:
+        release = select_active_release(session, for_update=True)
     session.add(benchmark)
-    release = select_active_release(session, for_update=True)
     pin_benchmark_to_release(benchmark, release)
     dispatch = create_executor_dispatch(
         benchmark.id,
@@ -67,10 +69,13 @@ def admit_recovery_dispatch(
     kind: ExecutorDispatchKind,
 ) -> ExecutorDispatch:
     """Persist additive in-progress work or replace a terminal execution."""
-    if pre_action_status == BenchmarkStatus.IN_PROGRESS:
-        release = resolve_current_execution_release(session, benchmark, for_update=True)
-    else:
-        release = select_active_release(session, for_update=True)
+    with session.no_autoflush:
+        lock_executor_admission(session)
+        if pre_action_status == BenchmarkStatus.IN_PROGRESS:
+            release = resolve_current_execution_release(session, benchmark, for_update=True)
+        else:
+            release = select_active_release(session, for_update=True)
+    if pre_action_status != BenchmarkStatus.IN_PROGRESS:
         benchmark.current_execution_release_id = release.id
         benchmark.finished_at = None
         terminalize_active_dispatches(session, benchmark.id)

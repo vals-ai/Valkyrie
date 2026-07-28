@@ -28,6 +28,7 @@ from constants import (
 from shared import SharedStack
 from stage import DEV, PROD, RELEASE_TEST, Stage
 from tracker_stack import TrackerStack
+from worker_stack import ExecutorStack
 
 TEST_ACCOUNT = "123456789012"
 TEST_REGION = "us-east-1"
@@ -59,8 +60,8 @@ DEV_SHARED_CONTRACT_PARAMETERS = {
 DEV_TRACKER_CONTRACT_PARAMETERS = {
     DEV_TRACKER_SECURITY_GROUP_PARAMETER,
     DEV_TRACKER_ALB_DNS_PARAMETER,
-    executor_release_launch_parameter(DEV),
 }
+EXECUTOR_CONTRACT_PARAMETERS = {executor_release_launch_parameter(DEV)}
 
 
 def published_parameter_names(template: assertions.Template) -> set[str]:
@@ -79,7 +80,7 @@ def dev_shared_stack() -> tuple[cdk.App, SharedStack]:
     return app, shared
 
 
-def dev_tracker_template() -> assertions.Template:
+def dev_service_templates() -> tuple[assertions.Template, assertions.Template]:
     app, shared = dev_shared_stack()
     stage = Stage(DEV)
     tracker = TrackerStack(
@@ -91,11 +92,35 @@ def dev_tracker_template() -> assertions.Template:
         namespace=shared.namespace,
         hosted_zone=shared.hosted_zone,
         bucket_name=shared.bucket_name,
-        executor_release_bucket=shared.executor_release_bucket,
         redis_url=shared.redis_url,
         env=TEST_ENV,
     )
-    return assertions.Template.from_stack(tracker)
+    executor = ExecutorStack(
+        app,
+        stage.stack_id("ExecutorStack"),
+        stage=stage,
+        vpc=shared.vpc,
+        cluster=shared.cluster,
+        namespace=shared.namespace,
+        redis_url=shared.redis_url,
+        bucket_name=shared.bucket_name,
+        database=tracker.database,
+        db_credentials=tracker.db_credentials,
+        tracker_service=tracker.tracker_fargate_service,
+        tracker_image=tracker.tracker_image,
+        env=TEST_ENV,
+    )
+    return assertions.Template.from_stack(tracker), assertions.Template.from_stack(executor)
+
+
+def dev_tracker_template() -> assertions.Template:
+    tracker_template, _ = dev_service_templates()
+    return tracker_template
+
+
+def dev_executor_template() -> assertions.Template:
+    _, executor_template = dev_service_templates()
+    return executor_template
 
 
 def ssm_parameter_id(template: Mapping[str, object], parameter_name: str) -> str:
@@ -113,66 +138,50 @@ def ssm_parameter_id(template: Mapping[str, object], parameter_name: str) -> str
 
 
 class DevAccountInfrastructureTest(unittest.TestCase):
-    def test_dev_bucket_is_named_and_hardened(self) -> None:
+    def test_dev_buckets_are_owned_and_hardened_by_their_domains(self) -> None:
         _, shared = dev_shared_stack()
         shared_template = assertions.Template.from_stack(shared)
+        with mock.patch.dict(os.environ, {"DESCOPE_PROJECT_ID": "dev-project"}, clear=True):
+            executor_template = dev_executor_template()
 
-        buckets = shared_template.find_resources("AWS::S3::Bucket")
-        self.assertEqual(len(buckets), 2)
-        buckets_by_name = {bucket["Properties"]["BucketName"]: bucket for bucket in buckets.values()}
+        shared_buckets = shared_template.find_resources("AWS::S3::Bucket")
+        self.assertEqual(len(shared_buckets), 1)
+        bucket = next(iter(shared_buckets.values()))
+        self.assertEqual(bucket["Properties"]["BucketName"], "agentic-harness-dev")
+
+        executor_buckets = executor_template.find_resources("AWS::S3::Bucket")
+        self.assertEqual(len(executor_buckets), 1)
+        release_bucket = next(iter(executor_buckets.values()))
         self.assertEqual(
-            set(buckets_by_name),
-            {"agentic-harness-dev", f"valkyrie-executor-releases-dev-{TEST_ACCOUNT}"},
+            release_bucket["Properties"]["BucketName"],
+            f"valkyrie-executor-releases-dev-{TEST_ACCOUNT}",
         )
-        bucket = buckets_by_name["agentic-harness-dev"]
-        release_bucket = buckets_by_name[f"valkyrie-executor-releases-dev-{TEST_ACCOUNT}"]
-        self.assertEqual(bucket["DeletionPolicy"], "Retain")
-        self.assertEqual(bucket["UpdateReplacePolicy"], "Retain")
-        self.assertEqual(release_bucket["DeletionPolicy"], "Retain")
-        self.assertEqual(release_bucket["UpdateReplacePolicy"], "Retain")
-        self.assertEqual(
-            bucket["Properties"]["PublicAccessBlockConfiguration"],
-            {
-                "BlockPublicAcls": True,
-                "BlockPublicPolicy": True,
-                "IgnorePublicAcls": True,
-                "RestrictPublicBuckets": True,
-            },
-        )
-        self.assertEqual(bucket["Properties"]["VersioningConfiguration"], {"Status": "Enabled"})
-        self.assertEqual(
-            bucket["Properties"]["OwnershipControls"],
-            {"Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]},
-        )
-        self.assertEqual(
-            bucket["Properties"]["BucketEncryption"],
-            {"ServerSideEncryptionConfiguration": [{"ServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]},
-        )
-        self.assertEqual(release_bucket["Properties"]["VersioningConfiguration"], {"Status": "Enabled"})
-        self.assertEqual(
-            release_bucket["Properties"]["BucketEncryption"],
-            {"ServerSideEncryptionConfiguration": [{"ServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]},
-        )
-        shared_template.has_resource_properties(
-            "AWS::S3::BucketPolicy",
-            {
-                "PolicyDocument": {
-                    "Statement": assertions.Match.array_with(
-                        [
-                            assertions.Match.object_like(
-                                {
-                                    "Condition": {"Bool": {"aws:SecureTransport": "false"}},
-                                    "Effect": "Deny",
-                                }
-                            )
-                        ]
-                    )
-                }
-            },
-        )
+
+        for retained_bucket in (bucket, release_bucket):
+            self.assertEqual(retained_bucket["DeletionPolicy"], "Retain")
+            self.assertEqual(retained_bucket["UpdateReplacePolicy"], "Retain")
+            self.assertEqual(
+                retained_bucket["Properties"]["PublicAccessBlockConfiguration"],
+                {
+                    "BlockPublicAcls": True,
+                    "BlockPublicPolicy": True,
+                    "IgnorePublicAcls": True,
+                    "RestrictPublicBuckets": True,
+                },
+            )
+            self.assertEqual(retained_bucket["Properties"]["VersioningConfiguration"], {"Status": "Enabled"})
+            self.assertEqual(
+                retained_bucket["Properties"]["OwnershipControls"],
+                {"Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]},
+            )
+            self.assertEqual(
+                retained_bucket["Properties"]["BucketEncryption"],
+                {"ServerSideEncryptionConfiguration": [{"ServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]},
+            )
+
         conditional_write_statements = [
             statement
-            for policy in shared_template.find_resources("AWS::S3::BucketPolicy").values()
+            for policy in executor_template.find_resources("AWS::S3::BucketPolicy").values()
             for statement in policy["Properties"]["PolicyDocument"]["Statement"]
             if statement.get("Sid") == "RequireConditionalExecutorReleaseWrites"
         ]
@@ -206,10 +215,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         rendered = json.dumps(template)
         iam_policies = tracker_template.find_resources("AWS::IAM::Policy")
         rendered_policies = json.dumps(iam_policies)
-        self.assertIn("s3:GetObject", rendered_policies)
-        self.assertIn("s3:PutObject", rendered_policies)
         self.assertNotIn("s3:DeleteObject", rendered_policies)
-        self.assertNotIn("s3:ListBucket", rendered_policies)
         self.assertIn("devEvalInfraDescopeManagementKey", rendered)
         self.assertNotIn("/vals/dev/descope/project-id", rendered)
         self.assertNotIn("valkyrie/sentry-dsn", rendered)
@@ -251,7 +257,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
 
     def test_dev_release_control_is_one_sealed_task_with_environment_bound_role(self) -> None:
         with mock.patch.dict(os.environ, {"DESCOPE_PROJECT_ID": "dev-project"}, clear=True):
-            template = dev_tracker_template()
+            template = dev_executor_template()
 
         template.has_resource_properties(
             "AWS::ECS::TaskDefinition",
@@ -342,8 +348,9 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         self.assertEqual(published_parameter_names(shared_template), DEV_SHARED_CONTRACT_PARAMETERS)
 
         with mock.patch.dict(os.environ, {"DESCOPE_PROJECT_ID": "dev-project"}, clear=True):
-            tracker_template = dev_tracker_template()
+            tracker_template, executor_template = dev_service_templates()
         self.assertEqual(published_parameter_names(tracker_template), DEV_TRACKER_CONTRACT_PARAMETERS)
+        self.assertEqual(published_parameter_names(executor_template), EXECUTOR_CONTRACT_PARAMETERS)
 
     def test_prod_shared_stack_publishes_no_contract_parameters(self) -> None:
         app = cdk.App(context=PROD_CONTEXT)

@@ -1,6 +1,6 @@
 """Shared infrastructure: VPC, ECS Cluster, Service Discovery namespace, S3, ElastiCache."""
 
-from typing import Any, cast
+from typing import Any
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -12,7 +12,6 @@ from aws_cdk import (
     aws_elasticache,
     aws_events,
     aws_events_targets,
-    aws_iam,
     aws_route53,
     aws_s3,
     aws_servicediscovery,
@@ -33,8 +32,6 @@ from constants import (
     DEV_SHARED_TRACKER_REPOSITORY_URI_PARAMETER,
     DEV_SHARED_VPC_ID_PARAMETER,
     ELASTICACHE_NODE_TYPE,
-    EXECUTOR_RELEASE_BUCKET_NAME,
-    EXECUTOR_RELEASE_PREFIX,
     NAMESPACE,
     REDIS_PORT,
     RELEASE_TEST_EXECUTOR_HOST_REPOSITORY_NAME,
@@ -49,7 +46,7 @@ from constants import (
 from constructs import Construct
 from stage import Stage
 
-DEPLOYMENT_STACK_NAMES = ("SharedStack", "TrackerStack", "DriverStack", "WorkerStack", "MonitoringStack")
+DEPLOYMENT_STACK_NAMES = ("SharedStack", "TrackerStack", "DriverStack", "ExecutorStack", "MonitoringStack")
 DEPLOYMENT_SUCCESS_STATUSES = ("CREATE_COMPLETE", "UPDATE_COMPLETE")
 DEPLOYMENT_FAILURE_STATUSES = (
     "CREATE_FAILED",
@@ -127,31 +124,6 @@ class SharedStack(Stack):
             enforce_ssl=None if self.stage.is_prod else True,
             object_ownership=None if self.stage.is_prod else aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
             versioned=None if self.stage.is_prod else True,
-        )
-
-        if self.stage.is_release_test:
-            self.executor_release_bucket = self.bucket
-        else:
-            self.executor_release_bucket = aws_s3.Bucket(
-                self,
-                "ExecutorReleaseBucket",
-                bucket_name=f"{self.stage.phys(EXECUTOR_RELEASE_BUCKET_NAME)}-{self.account}",
-                block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
-                encryption=aws_s3.BucketEncryption.S3_MANAGED,
-                enforce_ssl=True,
-                object_ownership=aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
-                versioned=True,
-                removal_policy=cdk.RemovalPolicy.RETAIN,
-            )
-        self.executor_release_bucket.add_to_resource_policy(
-            aws_iam.PolicyStatement(
-                sid="RequireConditionalExecutorReleaseWrites",
-                effect=aws_iam.Effect.DENY,
-                principals=[cast(aws_iam.IPrincipal, aws_iam.AnyPrincipal())],
-                actions=["s3:PutObject"],
-                resources=[self.executor_release_bucket.arn_for_objects(f"{EXECUTOR_RELEASE_PREFIX}/*")],
-                conditions={"Null": {"s3:if-none-match": "true"}},
-            )
         )
 
         self.tracker_repository: aws_ecr.Repository | None = None

@@ -46,6 +46,35 @@ class FakeS3Client:
         return {"Body": BytesIO(self.content)}
 
 
+class FakeEcsClient:
+    def __init__(self) -> None:
+        self.service_updates: list[dict[str, object]] = []
+        self.protection_updates: list[dict[str, object]] = []
+        self.stopped_tasks: list[str] = []
+
+    def get_waiter(self, name: str) -> "FakeEcsClient":
+        assert name == "services_stable"
+        return self
+
+    def wait(self, **_kwargs: object) -> None:
+        return
+
+    def list_tasks(self, **_kwargs: object) -> dict[str, object]:
+        return {"taskArns": ["task-1", "task-2"]}
+
+    def update_task_protection(self, **kwargs: object) -> dict[str, object]:
+        self.protection_updates.append(kwargs)
+        return {}
+
+    def stop_task(self, **kwargs: object) -> dict[str, object]:
+        self.stopped_tasks.append(str(kwargs["task"]))
+        return {}
+
+    def update_service(self, **kwargs: object) -> dict[str, object]:
+        self.service_updates.append(kwargs)
+        return {}
+
+
 def _release_arguments(monkeypatch: MonkeyPatch, *, artifact_digest: str = "a" * 64) -> None:
     monkeypatch.setattr(
         sys,
@@ -58,6 +87,12 @@ def _release_arguments(monkeypatch: MonkeyPatch, *, artifact_digest: str = "a" *
             "tracker",
             "releases",
             "releases",
+            "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
+            "ExecutorHost",
+            "Tracker",
+            "1",
+            "2",
+            "activate",
             "git-abc123-def456",
             "s3://releases/releases/git-abc123-def456/executor.pex",
             artifact_digest,
@@ -120,6 +155,61 @@ def test_release_entrypoint_uses_sealed_configuration_and_persists_active_releas
     assert admission.release_id == stored_release.id
 
 
+def test_maintenance_begin_fences_admission_and_stops_executor_hosts(
+    monkeypatch: MonkeyPatch,
+    database_session: Session,
+) -> None:
+    target_sha = "b" * 40
+    _release_arguments(monkeypatch)
+    sys.argv = sys.argv[:12] + ["maintenance-begin", target_sha]
+    secrets = FakeSecretsManager()
+    ecs = FakeEcsClient()
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", lambda: secrets)
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    release_entrypoint.main()
+
+    database_session.expire_all()
+    admission = database_session.get(ExecutorAdmission, 1)
+    assert admission is not None
+    assert admission.maintenance_target_sha == target_sha
+    assert ecs.service_updates == [
+        {
+            "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
+            "service": "ExecutorHost",
+            "desiredCount": 0,
+        },
+        {
+            "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
+            "service": "Tracker",
+            "desiredCount": 0,
+        },
+    ]
+    assert ecs.protection_updates[0]["tasks"] == ["task-1", "task-2"]
+    assert ecs.stopped_tasks == ["task-1", "task-2"]
+
+    sys.argv = sys.argv[:12] + ["maintenance-finish", target_sha]
+    release_entrypoint.main()
+
+    database_session.expire_all()
+    admission = database_session.get(ExecutorAdmission, 1)
+    assert admission is not None
+    assert admission.maintenance_target_sha is None
+    assert ecs.service_updates[-2:] == [
+        {
+            "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
+            "service": "ExecutorHost",
+            "desiredCount": 1,
+        },
+        {
+            "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
+            "service": "Tracker",
+            "desiredCount": 2,
+        },
+    ]
+
+
 def test_release_entrypoint_digest_failure_does_not_commit_release(
     monkeypatch: MonkeyPatch,
     database_session: Session,
@@ -144,7 +234,7 @@ def test_release_entrypoint_digest_failure_does_not_commit_release(
 
 def test_release_entrypoint_rejects_invalid_release_id_before_reading_secret(monkeypatch: MonkeyPatch) -> None:
     _release_arguments(monkeypatch)
-    sys.argv[7] = "invalid release"
+    sys.argv[13] = "invalid release"
     monkeypatch.setattr(
         release_entrypoint,
         "create_secrets_manager_client",
@@ -158,8 +248,8 @@ def test_release_entrypoint_rejects_invalid_release_id_before_reading_secret(mon
 @pytest.mark.parametrize(
     ("argument_index", "invalid_value", "error"),
     [
-        (8, "s3://other/releases/git-abc123-def456/executor.pex", "configured S3 bucket"),
-        (10, "2", "Unsupported executor protocol"),
+        (14, "s3://other/releases/git-abc123-def456/executor.pex", "configured S3 bucket"),
+        (16, "2", "Unsupported executor protocol"),
     ],
 )
 def test_release_entrypoint_rejects_invalid_artifact_identity_before_reading_secret(
@@ -189,5 +279,5 @@ def test_release_entrypoint_rejects_arbitrary_extra_command_arguments(monkeypatc
         lambda: pytest.fail("invalid command shape must not read Secrets Manager"),
     )
 
-    with pytest.raises(SystemExit, match="sealed configuration"):
+    with pytest.raises(SystemExit, match="sealed release task"):
         release_entrypoint.main()

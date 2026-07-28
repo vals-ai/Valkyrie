@@ -12,7 +12,7 @@ from monitoring_stack import MonitoringStack
 from shared import SharedStack
 from stage import resolve
 from tracker_stack import TrackerStack
-from worker_stack import WorkerStack
+from worker_stack import ExecutorStack
 
 app = cdk.App()
 stage = resolve(app)
@@ -49,27 +49,26 @@ tracker = TrackerStack(
     namespace=shared.namespace,
     hosted_zone=shared.hosted_zone,
     bucket_name=shared.bucket_name,
-    executor_release_bucket=shared.executor_release_bucket,
     redis_url=shared.redis_url,
     tracker_repository=tracker_repository,
     image_tag=release_test_image_tag,
     env=env,
 )
 
-# Stable ExecutorHost, retained under the historical WorkerStack identity
-worker = WorkerStack(
+# ExecutorHost and its sealed release-control resources
+executor = ExecutorStack(
     app,
-    stage.stack_id("WorkerStack"),
+    stage.stack_id("ExecutorStack"),
     stage=stage,
     vpc=shared.vpc,
     cluster=shared.cluster,
     namespace=shared.namespace,
     redis_url=shared.redis_url,
     bucket_name=shared.bucket_name,
-    executor_release_bucket=shared.executor_release_bucket,
     database=tracker.database,
     db_credentials=tracker.db_credentials,
     tracker_service=tracker.tracker_fargate_service,
+    tracker_image=tracker.tracker_image,
     executor_host_repository=executor_host_repository,
     image_tag=release_test_image_tag,
     env=env,
@@ -110,7 +109,7 @@ monitoring = MonitoringStack(
 
 # Deployment order
 tracker.add_dependency(shared)
-worker.add_dependency(tracker)
+executor.add_dependency(tracker)
 monitoring.add_dependency(tracker)
 
 app.synth()

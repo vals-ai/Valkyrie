@@ -242,6 +242,7 @@ class ExecutorRelease(SQLModel, table=True):
 class ExecutorAdmission(SQLModel, table=True):
     id: int = Field(default=1, primary_key=True)
     release_id: str | None = Field(default=None, foreign_key="executorrelease.id")
+    maintenance_target_sha: str | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
 
 

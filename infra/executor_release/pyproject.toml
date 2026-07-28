@@ -1,0 +1,8 @@
+[project]
+name = "valkyrie-executor-release"
+version = "0.1.0"
+description = "Executor artifact publication and maintenance control dependencies"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.43.49",
+]

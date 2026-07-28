@@ -1,5 +1,5 @@
 .PHONY: help install lint typecheck test venv_check validate-scope preflight \
-	plan diff deploy deploy-shared deploy-tracker deploy-driver hotswap destroy
+	plan diff deploy deploy-shared deploy-tracker deploy-driver deploy-executor hotswap destroy
 
 PRODUCTION_ACCOUNT_ID ?= 613431292675
 
@@ -14,10 +14,12 @@ STACK_PREFIX = $(if $(filter dev,$(STAGE)),ValkDev,$(if $(filter release-test,$(
 STACKS_shared = $(STACK_PREFIX)SharedStack
 STACKS_tracker = $(STACK_PREFIX)TrackerStack
 STACKS_driver = $(STACK_PREFIX)DriverStack
-STACKS_worker = $(STACK_PREFIX)WorkerStack
+STACKS_executor = $(STACK_PREFIX)ExecutorStack
 STACKS_monitoring = $(STACK_PREFIX)MonitoringStack
+STACKS_core = $(STACKS_shared) $(STACKS_tracker) $(STACKS_monitoring)
 STACKS_all = --all
 SELECTED_STACKS = $(STACKS_$(SCOPE))
+DEPLOY_EXCLUSIVELY = $(if $(filter executor,$(SCOPE)),--exclusively,)
 DIFF_STACKS = $(if $(filter all,$(SCOPE)),,$(SELECTED_STACKS))
 CDK_DIFF_METHOD = $(if $(filter release-test,$(STAGE)),--method=template,)
 
@@ -39,7 +41,7 @@ help:
 	@echo "  make lint                                     - Check infrastructure formatting and lint"
 	@echo "  make typecheck                                - Type-check infrastructure code"
 	@echo ""
-	@echo "Set SCOPE to shared, tracker, driver, worker, monitoring, or all. Driver is release-test only."
+	@echo "Set SCOPE to shared, tracker, driver, executor, monitoring, core, or all. Driver is release-test only."
 
 install:
 	uv sync --python 3.12
@@ -63,8 +65,8 @@ venv_check:
 
 validate-scope:
 	@case "$(SCOPE)" in \
-		shared|tracker|driver|worker|monitoring|all) ;; \
-		*) echo "SCOPE must be shared, tracker, driver, worker, monitoring, or all; got $(SCOPE)."; exit 1 ;; \
+		shared|tracker|driver|executor|monitoring|core|all) ;; \
+		*) echo "SCOPE must be shared, tracker, driver, executor, monitoring, core, or all; got $(SCOPE)."; exit 1 ;; \
 	esac
 	@if [ "$(SCOPE)" = "driver" ] && [ "$(STAGE)" != "release-test" ]; then \
 		echo "SCOPE=driver requires STAGE=release-test; got $(STAGE)."; \
@@ -80,7 +82,7 @@ plan: validate-scope preflight
 diff: plan
 
 deploy: validate-scope preflight
-	uv run cdk deploy $(SELECTED_STACKS) $(CDK_CTX) $(CDK_PROFILE) --require-approval never
+	uv run cdk deploy $(SELECTED_STACKS) $(CDK_CTX) $(CDK_PROFILE) $(DEPLOY_EXCLUSIVELY) --require-approval never
 
 deploy-shared: SCOPE := shared
 deploy-shared: deploy
@@ -90,6 +92,9 @@ deploy-tracker: deploy
 
 deploy-driver: SCOPE := driver
 deploy-driver: deploy
+
+deploy-executor: SCOPE := executor
+deploy-executor: deploy
 
 hotswap: preflight
 	uv run cdk deploy --all $(CDK_CTX) $(CDK_PROFILE) --hotswap

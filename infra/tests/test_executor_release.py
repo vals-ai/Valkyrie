@@ -11,13 +11,7 @@ from unittest import mock
 
 import executor_release
 from botocore.exceptions import ClientError
-from executor_release import (
-    ArtifactManifest,
-    LaunchConfig,
-    publish_artifact,
-    run_activation,
-    validate_artifact,
-)
+from executor_release import ArtifactManifest, LaunchConfig, publish_artifact, run_control_task, validate_artifact
 
 
 class CollisionS3:
@@ -167,22 +161,14 @@ class ExecutorReleaseTest(unittest.TestCase):
 
         self.assertEqual(s3_client.calls[0]["IfNoneMatch"], "*")
         self.assertEqual(len(ecs_client.run_calls), 1)
-
-    def test_activation_uses_one_task_with_release_values_as_data_arguments(self) -> None:
-        release = manifest(b"immutable executor")
-        client = RecordingEcs()
-
-        task_arn = run_activation(client, launch_config(), release)
-
-        self.assertEqual(task_arn, "arn:aws:ecs:us-east-1:123:task/cluster/release-task-1")
-        self.assertEqual(len(client.run_calls), 1)
-        call = client.run_calls[0]
+        call = ecs_client.run_calls[0]
         self.assertEqual(call["taskDefinition"], "task-definition-arn")
         overrides = cast(Mapping[str, Any], call["overrides"])
         container_overrides = cast(list[Mapping[str, Any]], overrides["containerOverrides"])
         self.assertEqual(
             container_overrides[0]["command"],
             [
+                "activate",
                 release.release_id,
                 f"s3://release-bucket/{release.key}",
                 release.artifact_digest,
@@ -190,21 +176,50 @@ class ExecutorReleaseTest(unittest.TestCase):
             ],
         )
         self.assertNotIn("environment", container_overrides[0])
-        self.assertEqual(client.waiter.calls, [{"cluster": "cluster-arn", "tasks": [task_arn]}])
+        self.assertEqual(
+            ecs_client.waiter.calls,
+            [{"cluster": "cluster-arn", "tasks": ["arn:aws:ecs:us-east-1:123:task/cluster/release-task-1"]}],
+        )
 
-    def test_activation_reports_ecs_start_failure(self) -> None:
+    def test_maintenance_uses_the_same_sealed_control_task(self) -> None:
+        ecs_client = RecordingEcs()
+        with (
+            mock.patch.dict(os.environ, {"AWS_REGION": "us-east-1"}, clear=True),
+            mock.patch.object(executor_release, "create_sts_client", return_value=RecordingSts()),
+            mock.patch.object(executor_release, "create_ssm_client", return_value=RecordingSsm()),
+            mock.patch.object(executor_release, "create_ecs_client", return_value=ecs_client),
+        ):
+            executor_release.main(
+                [
+                    "--account-id",
+                    "123456789012",
+                    "--maintenance-operation",
+                    "begin",
+                    "--region",
+                    "us-east-1",
+                    "--stage",
+                    "dev",
+                    "--target-sha",
+                    "a" * 40,
+                ]
+            )
+
+        overrides = cast(Mapping[str, Any], ecs_client.run_calls[0]["overrides"])
+        container_overrides = cast(list[Mapping[str, Any]], overrides["containerOverrides"])
+        self.assertEqual(container_overrides[0]["command"], ["maintenance-begin", "a" * 40])
+
+    def test_control_task_reports_ecs_start_failure(self) -> None:
         client = RecordingEcs(failures=[{"reason": "RESOURCE:CPU"}])
 
         with self.assertRaisesRegex(RuntimeError, "ECS rejected"):
-            run_activation(client, launch_config(), manifest(b"immutable executor"))
+            run_control_task(client, launch_config(), ["activate"])
 
-    def test_activation_can_retry_after_waiter_failure(self) -> None:
+    def test_control_task_can_retry_after_waiter_failure(self) -> None:
         client = RecordingEcs(waiter_failures=1)
-        release = manifest(b"immutable executor")
 
         with self.assertRaisesRegex(RuntimeError, "waiter failed"):
-            run_activation(client, launch_config(), release)
-        task_arn = run_activation(client, launch_config(), release)
+            run_control_task(client, launch_config(), ["activate"])
+        task_arn = run_control_task(client, launch_config(), ["activate"])
 
         self.assertEqual(task_arn, "arn:aws:ecs:us-east-1:123:task/cluster/release-task-2")
         self.assertEqual(len(client.run_calls), 2)
@@ -222,9 +237,9 @@ class ExecutorReleaseTest(unittest.TestCase):
             ],
         )
 
-    def test_activation_fails_on_nonzero_release_container(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "activation failed"):
-            run_activation(RecordingEcs(exit_code=2), launch_config(), manifest(b"immutable executor"))
+    def test_control_task_fails_on_nonzero_release_container(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "task failed"):
+            run_control_task(RecordingEcs(exit_code=2), launch_config(), ["activate"])
 
 
 if __name__ == "__main__":

@@ -187,44 +187,68 @@ manual outage. Perform these steps in order:
 
 This procedure is operational only; the migrations contain no cutover state or
 compatibility branch. It applies once, to the first executor-dispatch rollout.
-Later deployments use the immutable release path normally and do not require an
-outage or queue drain.
 
 ## Automated deployment
 
-An all-stack `dev` or `prod` deployment builds one ARM64/Python 3.12 PEX from the
-exact Tracker source and locked runtime dependencies. The artifact digest is part
-of the release ID and S3 key, so different bytes cannot reuse an existing release
-identity. The workflow uploads with create-only semantics, then runs one sealed
+Core and executor deployment are separate lanes. Every `dev` or `prod` push may
+deploy the Shared, Tracker, and Monitoring stacks, but that core lane never builds
+an executor artifact, deploys `ExecutorStack`, activates a release, or enters
+executor maintenance. Executor work runs only when the trusted classifier reports
+an executor release, an ExecutorStack change, or an incompatible migration.
+
+An executor release builds one ARM64/Python 3.12 PEX from the exact Tracker source
+and the dedicated `services/executor_artifact/uv.lock`. The release launcher uses
+`infra/executor_release/uv.lock`; ordinary Tracker and CDK lock changes therefore
+do not schedule executor work. The artifact digest is part of the release ID and
+S3 key, so different bytes cannot reuse an existing release identity. The
+executor lane uploads with create-only semantics, then runs one sealed
 release-control task. Its `activate` transaction creates or matches the immutable
 release, verifies the S3 digest, promotes it, and confirms it is the active
-admission target before committing. PostgreSQL serializes overlapping
-activations on the singleton admission row before either task creates or matches
-the release.
+admission target before committing. PostgreSQL serializes overlapping activations
+on the singleton admission row before either task creates or matches the release.
 
-Dev activation runs automatically after a successful all-stack deployment.
-Production stack deployment completes first; executor upload and activation wait
-for approval on the protected `production-release` GitHub Environment. That
+Dev executor operations follow a successful core deployment unless an incompatible
+migration must run inside maintenance. Production executor operations additionally
+wait for approval on the protected `production-release` GitHub Environment. That
 environment must require reviewers, permit only `prod`, and define
 `PRODUCTION_RELEASE_APPROVAL_CONFIGURED=true`. The AWS accounts must already
 contain the account-owned GitHub OIDC provider used by the environment-bound
 release roles.
 
-The manual cutover above must complete before the first all-stack deployment.
-After that cutover, new starts may return `503` between a later stack deployment
-and approved activation, while existing runs continue on their pinned artifacts.
-Previous active releases drain normally.
+The `maintenance-classification` job runs the same classifier used by deployment.
+New tables, explicitly nullable default-free columns, changes that make an existing
+column nullable, and explicitly non-unique indexes are safe. ExecutorStack and
+release-control changes require executor maintenance. Other migration operations
+require database maintenance. The required check deliberately fails for those
+changes, so an authorized force merge is the maintenance approval.
 
-Partial, plan, and credentials-only deployments never publish or activate an
-executor release. Tracker retires blocker-free draining releases automatically;
-artifact deletion remains separate.
+For an approved maintenance deployment, the existing sealed release task closes
+admission, marks active benchmarks and tasks `STOPPED`, fails queued or running
+dispatches, removes ExecutorHost task protection, and sends `StopTask`. It does
+not wait for provider cleanup before deployment. Tracker is stopped before the
+stack update, and admission reopens only after every required stack update and
+executor activation succeeds. A failure leaves the fence closed for a retry of
+the same commit.
+
+The initial ExecutorStack deployment skips maintenance because no release-control
+task or executor workload exists yet. Later ExecutorStack changes use the normal
+maintenance flow. Manual workflow dispatch remains limited to credential
+validation and planning; deployments come from branch pushes.
+
+Start, Retry, Resume, and concurrency changes return `503` while the fence is
+held. Nothing is replayed automatically. Alembic startup upgrades use one
+PostgreSQL advisory lock so rolling Tracker tasks cannot race migrations.
+
+Tracker retires blocker-free draining releases automatically; artifact deletion
+remains separate.
 
 ## Lifecycle interfaces
 
-There is no release lifecycle CLI, operator status command, or tenant HTTP
-endpoint. The sealed deployment task calls release control directly, verifies
-the configured S3 artifact, and commits activation once. New benchmark starts
-return `503` until that activation commits an `ACTIVE` admission target.
+There is no tenant release or maintenance HTTP endpoint and no manual release
+lifecycle CLI. The sealed deployment task calls release and maintenance control
+directly; GitHub can launch that task but cannot read database or tenant sandbox
+credentials. New benchmark starts return `503` until executor activation commits
+an `ACTIVE` admission target and any maintenance fence opens.
 
 ## Artifact retention
 

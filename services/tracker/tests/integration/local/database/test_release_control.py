@@ -30,6 +30,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.dispatch_control import admit_recovery_dispatch, admit_start_dispatch
+from tracker.maintenance_control import begin_maintenance
 from tracker.release_control import (
     ReleaseControlError,
     activate_release,
@@ -612,3 +613,40 @@ def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
     stored_retry_first = postgres_session.get(Benchmark, retry_first.id)
     assert stored_retry_first is not None
     assert stored_retry_first.status == BenchmarkStatus.STOPPING
+
+
+def test_maintenance_commit_rejects_start_waiting_on_admission_lock(
+    postgres_session: Session,
+    postgres_engine: Engine,
+) -> None:
+    release = _release("maintenance-race")
+    release.status = ExecutorReleaseStatus.ACTIVE
+    postgres_session.add(release)
+    admission = postgres_session.get(ExecutorAdmission, 1)
+    assert admission is not None
+    admission.release_id = release.id
+    postgres_session.add(admission)
+    org = Org(id=uuid4(), name="maintenance-race-org")
+    postgres_session.add(org)
+    postgres_session.commit()
+
+    def admit_start(session: Session) -> None:
+        benchmark = Benchmark(
+            id=uuid4(),
+            org_id=org.id,
+            name="maintenance-race-start",
+            status=BenchmarkStatus.IN_PROGRESS,
+            arguments=BenchmarkArguments(
+                contract=AgentContractRequest(name="race-agent", install_cmd="true", run_cmd="true"),
+                concurrency=1,
+            ),
+        )
+        admit_start_dispatch(session, benchmark=benchmark, dispatch_id=uuid4())
+
+    outcomes = _run_while_first_transaction_holds_locks(
+        lambda session: begin_maintenance(session, target_sha="a" * 40),
+        admit_start,
+        postgres_engine,
+    )
+
+    assert sorted(outcomes) == ["first-committed", "second-rejected"]

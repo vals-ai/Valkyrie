@@ -172,12 +172,11 @@ def publish_artifact(
             raise
 
 
-def run_activation(
+def run_control_task(
     client: EcsClient,
     config: LaunchConfig,
-    manifest: ArtifactManifest,
+    command: list[str],
 ) -> str:
-    artifact_uri = f"s3://{config.bucket}/{manifest.key}"
     response = client.run_task(
         cluster=config.cluster,
         taskDefinition=config.task_definition,
@@ -193,12 +192,7 @@ def run_activation(
             "containerOverrides": [
                 {
                     "name": config.container,
-                    "command": [
-                        manifest.release_id,
-                        artifact_uri,
-                        manifest.artifact_digest,
-                        manifest.protocol_version,
-                    ],
+                    "command": command,
                 }
             ]
         },
@@ -243,24 +237,24 @@ def run_activation(
         None,
     )
     if release_container is None or release_container.get("exitCode") != 0:
-        raise RuntimeError(f"Executor release activation failed: {release_container!r}")
+        raise RuntimeError(f"Executor release task failed: {release_container!r}")
     return task_arn
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--account-id", required=True)
-    parser.add_argument("--artifact", required=True, type=Path)
-    parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--artifact", type=Path)
+    parser.add_argument("--maintenance-operation", choices=("begin", "finish"))
+    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--region", required=True)
     parser.add_argument("--stage", choices=("dev", "prod", "release-test"), required=True)
+    parser.add_argument("--target-sha")
     args = parser.parse_args(argv)
 
     if os.environ.get("AWS_REGION") != args.region:
         parser.error("AWS_REGION does not match the requested release region")
 
-    manifest = ArtifactManifest.load(args.manifest)
-    validate_artifact(manifest, args.artifact)
     sts = create_sts_client()
     identity = sts.get_caller_identity()
     if identity.get("Account") != args.account_id:
@@ -268,10 +262,36 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     ssm = create_ssm_client()
     config = LaunchConfig.from_parameter(ssm.get_parameter(Name=executor_release_launch_parameter(args.stage)))
+    ecs = create_ecs_client()
+
+    if args.maintenance_operation is not None:
+        if args.target_sha is None or args.artifact is not None or args.manifest is not None:
+            parser.error("Maintenance requires --target-sha and does not accept release artifacts")
+        task_arn = run_control_task(
+            ecs,
+            config,
+            [f"maintenance-{args.maintenance_operation}", args.target_sha],
+        )
+        print(json.dumps({"maintenance": args.maintenance_operation, "task_arn": task_arn}, sort_keys=True))
+        return
+
+    if args.artifact is None or args.manifest is None or args.target_sha is not None:
+        parser.error("Release activation requires --artifact and --manifest")
+    manifest = ArtifactManifest.load(args.manifest)
+    validate_artifact(manifest, args.artifact)
     s3 = create_s3_client()
     publish_artifact(s3, config, manifest, args.artifact)
-    ecs = create_ecs_client()
-    task_arn = run_activation(ecs, config, manifest)
+    task_arn = run_control_task(
+        ecs,
+        config,
+        [
+            "activate",
+            manifest.release_id,
+            f"s3://{config.bucket}/{manifest.key}",
+            manifest.artifact_digest,
+            manifest.protocol_version,
+        ],
+    )
     print(json.dumps({"release_id": manifest.release_id, "task_arn": task_arn}, sort_keys=True))
 
 

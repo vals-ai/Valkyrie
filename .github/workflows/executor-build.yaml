@@ -9,6 +9,7 @@ on:
       - ".github/workflows/deploy.yaml"
       - "infra/tracker_stack.py"
       - "infra/worker_stack.py"
+      - "services/executor_artifact/**"
       - "services/executor_host/**"
       - "services/tracker/**"
       - "tests/unit/executor_host/**"
@@ -19,6 +20,7 @@ on:
       - ".github/workflows/deploy.yaml"
       - "infra/tracker_stack.py"
       - "infra/worker_stack.py"
+      - "services/executor_artifact/**"
       - "services/executor_host/**"
       - "services/tracker/**"
       - "tests/unit/executor_host/**"
@@ -47,11 +49,13 @@ jobs:
           enable-cache: true
           cache-dependency-glob: |
             uv.lock
+            services/executor_artifact/uv.lock
             services/tracker/uv.lock
             services/executor_host/uv.lock
 
       - name: Verify locked service dependencies
         run: |
+          uv lock --project services/executor_artifact --check
           uv lock --project services/tracker --check
           uv lock --project services/executor_host --check
           uv export \
@@ -69,14 +73,10 @@ jobs:
       - name: Run ExecutorHost unit tests
         run: uv run pytest tests/unit/executor_host
 
-      - name: Install Tracker build dependencies
-        working-directory: services/tracker
-        run: uv sync --frozen
-
       - name: Build and inspect immutable executor PEX
         working-directory: services/tracker
         run: |
-          uv run python build_executor_artifact.py \
+          python build_executor_artifact.py \
             --output-directory "$RUNNER_TEMP/executor-release" \
             --source-revision "$GITHUB_SHA"
           test -s "$RUNNER_TEMP/executor-release/executor.pex"

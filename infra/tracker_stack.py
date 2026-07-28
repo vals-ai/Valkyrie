@@ -13,11 +13,9 @@ from aws_cdk import (
     aws_ecs,
     aws_ecs_patterns,
     aws_elasticloadbalancingv2,
-    aws_iam,
     aws_logs,
     aws_rds,
     aws_route53,
-    aws_s3,
     aws_secretsmanager,
     aws_servicediscovery,
     aws_ssm,
@@ -36,8 +34,6 @@ from constants import (
     DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER,
     DEV_TRACKER_SECURITY_GROUP_PARAMETER,
     DOCKER_ASSET_EXCLUDES,
-    EXECUTOR_RELEASE_PREFIX,
-    EXECUTOR_RELEASE_ROLE_NAME,
     POSTGRES_DB,
     POSTGRES_PORT,
     POSTGRES_USER,
@@ -46,12 +42,11 @@ from constants import (
     TRACKER_PORT,
     TRACKER_SCALING_CPU_PERCENT,
     VPC_CIDR,
-    executor_release_launch_parameter,
     stage_parameter_name,
 )
 from constructs import Construct
 from stage import Stage
-from stage_config import StageConfig, benchmark_service_base_url, config_for
+from stage_config import benchmark_service_base_url, config_for
 
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
@@ -62,9 +57,8 @@ _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
 class TrackerStack(Stack):
     """Tracker stack: public API behind an ALB and the shared RDS database.
 
-    Exposes ``database``, ``db_credentials``, and ``tracker_fargate_service``
-    so the historical :class:`WorkerStack` can connect ExecutorHost to the
-    shared network and database.
+    Exposes its image, database, credentials, and service so ExecutorStack can
+    consume the shared runtime contracts without owning Tracker resources.
     """
 
     def __init__(
@@ -77,7 +71,6 @@ class TrackerStack(Stack):
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
         hosted_zone: aws_route53.IHostedZone | None,
         bucket_name: str,
-        executor_release_bucket: aws_s3.IBucket,
         redis_url: str,
         tracker_repository: aws_ecr.IRepository | None = None,
         image_tag: str | None = None,
@@ -99,6 +92,7 @@ class TrackerStack(Stack):
                 platform=Platform.LINUX_ARM64,
                 exclude=list(DOCKER_ASSET_EXCLUDES),
             )
+        self.tracker_image = tracker_image
 
         # Shared environment variables
         benchmark_service_url = benchmark_service_base_url(stage)
@@ -284,17 +278,8 @@ class TrackerStack(Stack):
             public_load_balancer=not stage.is_release_test,
         )
 
-        # Expose the inner FargateService for cross-stack security group rules
+        # Expose the inner FargateService for cross-stack security group rules.
         self.tracker_fargate_service = self.service.service
-        self._create_executor_release_control(
-            stage=stage,
-            stage_config=stage_config,
-            vpc=vpc,
-            cluster=cluster,
-            tracker_image=tracker_image,
-            release_bucket=executor_release_bucket,
-            db_secret=db_credentials_secret,
-        )
 
         # Cloud Map registration for internal access.
         # Intentionally unstaged: dev gets its own namespace, and benchmark
@@ -368,159 +353,3 @@ class TrackerStack(Stack):
                 parameter_name=stage_parameter_name(DEV_TRACKER_ALB_DNS_PARAMETER, stage.name),
                 string_value=self.service.load_balancer.load_balancer_dns_name,
             )
-
-    def _create_executor_release_control(
-        self,
-        *,
-        stage: Stage,
-        stage_config: StageConfig,
-        vpc: aws_ec2.IVpc,
-        cluster: aws_ecs.ICluster,
-        tracker_image: aws_ecs.ContainerImage,
-        release_bucket: aws_s3.IBucket,
-        db_secret: aws_secretsmanager.ISecret,
-    ) -> None:
-        task_role = aws_iam.Role(
-            self,
-            "ExecutorReleaseTaskRole",
-            role_name=stage.phys("ValkyrieExecutorReleaseTask"),
-            assumed_by=cast(aws_iam.IPrincipal, aws_iam.ServicePrincipal("ecs-tasks.amazonaws.com")),
-        )
-        execution_role = aws_iam.Role(
-            self,
-            "ExecutorReleaseExecutionRole",
-            role_name=stage.phys("ValkyrieExecutorReleaseExecution"),
-            assumed_by=cast(aws_iam.IPrincipal, aws_iam.ServicePrincipal("ecs-tasks.amazonaws.com")),
-            managed_policies=[
-                aws_iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AmazonECSTaskExecutionRolePolicy")
-            ],
-        )
-        task_role.add_to_policy(
-            aws_iam.PolicyStatement(
-                actions=["s3:GetObject"],
-                resources=[release_bucket.arn_for_objects(f"{EXECUTOR_RELEASE_PREFIX}/*")],
-            )
-        )
-        task_role.add_to_policy(
-            aws_iam.PolicyStatement(
-                actions=["secretsmanager:GetSecretValue"],
-                resources=[db_secret.secret_arn],
-            )
-        )
-
-        task_definition = aws_ecs.FargateTaskDefinition(
-            self,
-            "ExecutorReleaseTaskDefinition",
-            family=stage.phys("ValkyrieExecutorRelease"),
-            cpu=512,
-            memory_limit_mib=1024,
-            runtime_platform=_ARM64_PLATFORM,
-            execution_role=cast(aws_iam.IRole, execution_role),
-            task_role=cast(aws_iam.IRole, task_role),
-        )
-        container_name = "ExecutorRelease"
-        task_definition.add_container(
-            container_name,
-            image=tracker_image,
-            entry_point=[
-                "/app/.venv/bin/python",
-                "-m",
-                "tracker.release_entrypoint",
-                db_secret.secret_arn,
-                self.database.db_instance_endpoint_address,
-                self.database.db_instance_endpoint_port,
-                POSTGRES_DB,
-                release_bucket.bucket_name,
-                EXECUTOR_RELEASE_PREFIX,
-            ],
-            logging=aws_ecs.LogDriver.aws_logs(
-                stream_prefix=container_name,
-                log_group=aws_logs.LogGroup(
-                    self,
-                    "ExecutorReleaseLogGroup",
-                    log_group_name=stage.phys("/valkyrie/executor-release"),
-                    retention=stage_config.service_log_retention,
-                    removal_policy=cdk.RemovalPolicy.RETAIN,
-                ),
-            ),
-        )
-
-        tracker_security_group = self.tracker_fargate_service.connections.security_groups[0]
-        launch_parameter = aws_ssm.StringParameter(
-            self,
-            "ExecutorReleaseLaunchConfig",
-            parameter_name=executor_release_launch_parameter(stage.name),
-            string_value=self.to_json_string(
-                {
-                    "bucket": release_bucket.bucket_name,
-                    "cluster": cluster.cluster_arn,
-                    "container": container_name,
-                    "prefix": EXECUTOR_RELEASE_PREFIX,
-                    "security_group": tracker_security_group.security_group_id,
-                    "subnets": vpc.select_subnets(subnet_type=aws_ec2.SubnetType.PUBLIC).subnet_ids,
-                    "task_definition": task_definition.task_definition_arn,
-                }
-            ),
-        )
-
-        if stage.is_release_test:
-            return
-
-        oidc_provider = aws_iam.OpenIdConnectProvider.from_open_id_connect_provider_arn(
-            self,
-            "GitHubOidcProvider",
-            f"arn:{self.partition}:iam::{self.account}:oidc-provider/token.actions.githubusercontent.com",
-        )
-        github_environment = "production-release" if stage.is_prod else "dev"
-        release_role = aws_iam.Role(
-            self,
-            "ExecutorReleaseRole",
-            role_name=stage.phys(EXECUTOR_RELEASE_ROLE_NAME),
-            assumed_by=cast(
-                aws_iam.IPrincipal,
-                aws_iam.WebIdentityPrincipal(
-                    oidc_provider.open_id_connect_provider_arn,
-                    conditions={
-                        "StringEquals": {
-                            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-                            "token.actions.githubusercontent.com:sub": (
-                                f"repo:vals-ai/Valkyrie:environment:{github_environment}"
-                            ),
-                        }
-                    },
-                ),
-            ),
-        )
-        release_role.add_to_policy(
-            aws_iam.PolicyStatement(
-                actions=["s3:PutObject"],
-                resources=[release_bucket.arn_for_objects(f"{EXECUTOR_RELEASE_PREFIX}/*")],
-            )
-        )
-        release_role.add_to_policy(
-            aws_iam.PolicyStatement(
-                actions=["ecs:RunTask"],
-                resources=[task_definition.task_definition_arn],
-                conditions={"ArnEquals": {"ecs:cluster": cluster.cluster_arn}},
-            )
-        )
-        release_role.add_to_policy(
-            aws_iam.PolicyStatement(
-                actions=["ecs:DescribeTasks"],
-                resources=["*"],
-                conditions={"ArnEquals": {"ecs:cluster": cluster.cluster_arn}},
-            )
-        )
-        release_role.add_to_policy(
-            aws_iam.PolicyStatement(
-                actions=["iam:PassRole"],
-                resources=[task_role.role_arn, execution_role.role_arn],
-                conditions={"StringEquals": {"iam:PassedToService": "ecs-tasks.amazonaws.com"}},
-            )
-        )
-        release_role.add_to_policy(
-            aws_iam.PolicyStatement(
-                actions=["ssm:GetParameter"],
-                resources=[launch_parameter.parameter_arn],
-            )
-        )

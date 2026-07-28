@@ -62,6 +62,7 @@ def build(output_directory: Path, source_revision: str) -> dict[str, object]:
         raise RuntimeError("Executor artifacts must be built on ARM64")
 
     tracker_directory = Path(__file__).resolve().parent
+    executor_project = tracker_directory.parent / "executor_artifact"
     output_directory.mkdir(parents=True, exist_ok=True)
     output_path = output_directory / "executor.pex"
 
@@ -75,6 +76,8 @@ def build(output_directory: Path, source_revision: str) -> dict[str, object]:
             [
                 "uv",
                 "export",
+                "--project",
+                str(executor_project),
                 "--locked",
                 "--no-dev",
                 "--no-hashes",
@@ -103,6 +106,7 @@ def build(output_directory: Path, source_revision: str) -> dict[str, object]:
                 "--from",
                 f"pex=={PEX_VERSION}",
                 "pex",
+                "--no-transitive",
                 "-r",
                 str(requirements),
                 str(wheels[0]),

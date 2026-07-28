@@ -27,7 +27,7 @@ from monitoring_stack import MonitoringStack
 from shared import SharedStack
 from stage import DEV, DEV_STACK_PREFIX, PROD, RELEASE_TEST, Stage
 from tracker_stack import TrackerStack
-from worker_stack import WorkerStack
+from worker_stack import ExecutorStack
 
 TEST_ALERTS_SLACK_ENV = {
     SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE",
@@ -159,25 +159,24 @@ def _service_templates(
         namespace=shared.namespace,
         hosted_zone=shared.hosted_zone,
         bucket_name=shared.bucket_name,
-        executor_release_bucket=shared.executor_release_bucket,
         redis_url=shared.redis_url,
         tracker_repository=tracker_repository,
         image_tag=image_tag,
         env=env,
     )
-    worker = WorkerStack(
+    executor = ExecutorStack(
         app,
-        stage.stack_id("WorkerStack"),
+        stage.stack_id("ExecutorStack"),
         stage=stage,
         vpc=shared.vpc,
         cluster=shared.cluster,
         namespace=shared.namespace,
         redis_url=shared.redis_url,
         bucket_name=shared.bucket_name,
-        executor_release_bucket=shared.executor_release_bucket,
         database=tracker.database,
         db_credentials=tracker.db_credentials,
         tracker_service=tracker.tracker_fargate_service,
+        tracker_image=tracker.tracker_image,
         executor_host_repository=executor_host_repository,
         image_tag=image_tag,
         env=env,
@@ -198,7 +197,7 @@ def _service_templates(
 
     return (
         assertions.Template.from_stack(tracker),
-        assertions.Template.from_stack(worker),
+        assertions.Template.from_stack(executor),
         assertions.Template.from_stack(monitoring),
     )
 
@@ -227,8 +226,8 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertFalse(_shared_template(DEV).find_resources("AWS::ECR::Repository"))
 
     def test_production_release_role_is_bound_to_protected_environment(self) -> None:
-        tracker_template, _, _ = _service_templates(PROD)
-        roles = tracker_template.find_resources("AWS::IAM::Role")
+        _, executor_template, _ = _service_templates(PROD)
+        roles = executor_template.find_resources("AWS::IAM::Role")
         release_role = next(
             role for role in roles.values() if role["Properties"].get("RoleName") == "ValkyrieExecutorRelease"
         )
@@ -236,26 +235,32 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertIn("repo:vals-ai/Valkyrie:environment:production-release", trust)
         self.assertNotIn("refs/heads/prod", trust)
 
+        synthesized = json.dumps(executor_template.to_json())
+        self.assertIn("tracker.release_entrypoint", synthesized)
+        self.assertIn("ecs:UpdateTaskProtection", synthesized)
+        self.assertIn("ecs:StopTask", synthesized)
+        self.assertIn("ecs:UpdateService", synthesized)
+
     def test_release_test_templates_use_external_benchmark_service_and_namespaced_outputs(self) -> None:
         with mock.patch.dict(
             os.environ,
             {"DESCOPE_PROJECT_ID": "release-test"},
             clear=False,
         ):
-            tracker_template, worker_template, _ = _service_templates(RELEASE_TEST)
+            tracker_template, executor_template, _ = _service_templates(RELEASE_TEST)
 
         parameter_names = [
             resource["Properties"]["Name"]
-            for resource in tracker_template.find_resources("AWS::SSM::Parameter").values()
+            for resource in executor_template.find_resources("AWS::SSM::Parameter").values()
         ]
         self.assertTrue(parameter_names)
         self.assertTrue(all("/valkyrie/release-test/" in name for name in parameter_names))
         self.assertIn("/valkyrie/release-test/executor-release/launch-config", parameter_names)
-        tracker_template.has_resource_properties(
+        executor_template.has_resource_properties(
             "AWS::ECS::TaskDefinition",
             {"Family": "ValkyrieExecutorRelease-release-test"},
         )
-        roles = tracker_template.find_resources("AWS::IAM::Role")
+        roles = executor_template.find_resources("AWS::IAM::Role")
         self.assertFalse(
             any(role["Properties"].get("RoleName") == "ValkyrieExecutorRelease-release-test" for role in roles.values())
         )
@@ -274,25 +279,29 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertTrue(
             any(
                 resource["Properties"]["ServiceName"].endswith("-release-test")
-                for resource in worker_template.find_resources("AWS::ECS::Service").values()
+                for resource in executor_template.find_resources("AWS::ECS::Service").values()
             )
         )
 
-    def test_worker_stack_contains_only_the_stable_executor_host(self) -> None:
-        _, worker_template, monitoring_template = _service_templates(PROD)
-        services = worker_template.find_resources("AWS::ECS::Service")
-        task_definitions = worker_template.find_resources("AWS::ECS::TaskDefinition")
-        scalable_targets = worker_template.find_resources("AWS::ApplicationAutoScaling::ScalableTarget")
+    def test_executor_stack_owns_the_host_and_release_control(self) -> None:
+        _, executor_template, monitoring_template = _service_templates(PROD)
+        services = executor_template.find_resources("AWS::ECS::Service")
+        task_definitions = executor_template.find_resources("AWS::ECS::TaskDefinition")
+        scalable_targets = executor_template.find_resources("AWS::ApplicationAutoScaling::ScalableTarget")
 
         self.assertEqual(len(services), 1)
-        self.assertEqual(len(task_definitions), 1)
+        self.assertEqual(len(task_definitions), 2)
         self.assertEqual(len(scalable_targets), 1)
-        worker_template.has_resource_properties(
+        executor_template.has_resource_properties(
             "AWS::ECS::Service",
             {"ServiceName": "ExecutorHost"},
         )
+        executor_template.has_resource_properties(
+            "AWS::ECS::TaskDefinition",
+            {"Family": "ValkyrieExecutorRelease"},
+        )
 
-        synthesized = json.dumps(worker_template.to_json())
+        synthesized = json.dumps(executor_template.to_json())
         self.assertIn('"STABLE_QUEUE_NAME", "Value": "valkyrie-stable"', synthesized)
         self.assertNotIn("taskiq", synthesized)
         self.assertNotIn("WorkerTaskDef", synthesized)
@@ -300,15 +309,15 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertNotIn("WorkerCpuScaling", synthesized)
         protection_policies = [
             policy
-            for policy in worker_template.find_resources("AWS::IAM::Policy").values()
+            for policy in executor_template.find_resources("AWS::IAM::Policy").values()
             if "ecs:UpdateTaskProtection" in json.dumps(policy)
         ]
-        self.assertEqual(len(protection_policies), 1)
+        self.assertEqual(len(protection_policies), 2)
 
-        worker_log_group = worker_template.to_json()["Resources"]["WorkerLogGroup31FDBE4A"]
+        worker_log_group = executor_template.to_json()["Resources"]["WorkerLogGroup31FDBE4A"]
         self.assertEqual(worker_log_group["DeletionPolicy"], "Retain")
         self.assertEqual(worker_log_group["UpdateReplacePolicy"], "Retain")
-        self.assertNotIn("WorkerStack", json.dumps(monitoring_template.to_json()))
+        self.assertNotIn("ExecutorStack", json.dumps(monitoring_template.to_json()))
 
     def test_monitoring_has_no_legacy_worker_alarm_or_widgets(self) -> None:
         synthesized = json.dumps(_monitoring_template().to_json())

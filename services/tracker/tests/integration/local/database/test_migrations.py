@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
@@ -28,6 +29,7 @@ _EXECUTOR_RELEASE_OWNERSHIP_REVISION = "c7d8e9f0a1b2"
 _EXECUTOR_RELEASE_OWNERSHIP_PREDECESSOR = "6f3c2d9a8b10"
 _CURRENT_OWNERSHIP_REVISION = "e9f0a1b2c3d4"
 _PREVIOUS_REVISION = "d8e9f0a1b2c3"
+_MAINTENANCE_REVISION = "f0a1b2c3d4e5"
 
 
 @pytest.fixture
@@ -77,6 +79,34 @@ def test_executor_release_ownership_downgrade_restores_predecessor_schema(
         ).scalar_one()
     assert revision == _EXECUTOR_RELEASE_OWNERSHIP_PREDECESSOR
     assert release_status_enum_exists is False
+    engine.dispose()
+
+
+def test_maintenance_fence_migration_is_additive(migration_database_url: str) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", _MAINTENANCE_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    engine = create_engine(migration_database_url)
+    admission_columns = {column["name"] for column in inspect(engine).get_columns("executoradmission")}
+    assert "maintenance_target_sha" in admission_columns
+    with engine.connect() as connection:
+        revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+    assert revision == _MAINTENANCE_REVISION
+    engine.dispose()
+
+
+def test_concurrent_upgrades_serialize_on_advisory_lock(migration_database_url: str) -> None:
+    def upgrade(_index: int) -> subprocess.CompletedProcess[str]:
+        return _run_alembic(migration_database_url, "upgrade", _MAINTENANCE_REVISION)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        upgrades = list(executor.map(upgrade, range(2)))
+
+    assert all(upgrade.returncode == 0 for upgrade in upgrades), [upgrade.stderr for upgrade in upgrades]
+    engine = create_engine(migration_database_url)
+    with engine.connect() as connection:
+        revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+    assert revision == _MAINTENANCE_REVISION
     engine.dispose()
 
 

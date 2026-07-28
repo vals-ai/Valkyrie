@@ -81,7 +81,7 @@ from tracker.docent_analysis import (
 from tracker.exceptions import TrackerServiceError
 from executor_protocol import EXECUTOR_TASK_NAME, executor_task_signature
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
-from tracker.release_control import ReleaseControlError
+from tracker.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
 from tracker.release_retirement import AutomaticReleaseRetirement
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
@@ -845,7 +845,12 @@ def _update_benchmark_concurrency(
     org: Org,
 ) -> BenchmarkConcurrencyUpdate:
     try:
+        with session.no_autoflush:
+            lock_executor_admission(session)
         benchmark_row = update_benchmark_concurrency(benchmark_id, concurrency, session, org)
+    except MaintenanceModeError as exc:
+        session.rollback()
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Not found") from exc
 
@@ -932,6 +937,8 @@ async def retry_or_resume_benchmark(
     dispatch_id = uuid4()
     pre_action_status: BenchmarkStatus | None = None
     try:
+        with session.no_autoflush:
+            lock_executor_admission(session)
         benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
         if benchmark_row.status == BenchmarkStatus.STOPPING:
             raise HTTPException(
@@ -978,7 +985,11 @@ async def retry_or_resume_benchmark(
         session.commit()
     except ReleaseControlError as exc:
         session.rollback()
-        status_code = 409 if pre_action_status == BenchmarkStatus.IN_PROGRESS else 503
+        status_code = (
+            503
+            if isinstance(exc, MaintenanceModeError)
+            else (409 if pre_action_status == BenchmarkStatus.IN_PROGRESS else 503)
+        )
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     except Exception:
         session.rollback()

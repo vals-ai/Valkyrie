@@ -1,0 +1,59 @@
+name: Maintenance classification
+
+on:
+  pull_request_target:
+    branches: [dev, prod]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    branches: [dev, prod]
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+jobs:
+  classify:
+    name: maintenance-classification
+    runs-on: ubuntu-24.04-arm
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+
+    steps:
+      - name: Checkout trusted classifier
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+
+      - name: Fetch candidate without executing it
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$PR_NUMBER" ]]; then
+            git fetch --no-tags origin "pull/$PR_NUMBER/head"
+          else
+            git fetch --no-tags origin "${MERGE_GROUP_HEAD_REF#refs/heads/}"
+          fi
+          test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA"
+
+      - name: Classify candidate
+        run: |
+          set -euo pipefail
+          python3 infra/classify_repository_change.py \
+            --base-sha "$BASE_SHA" \
+            --head-sha "$HEAD_SHA" \
+            --output maintenance-classification.json
+
+      - name: Require force merge for maintenance
+        run: |
+          set -euo pipefail
+          classification="$(python3 -c 'import json; print(json.load(open("maintenance-classification.json"))["classification"])')"
+          if [[ "$classification" == "safe" ]]; then
+            exit 0
+          fi
+          echo "::error::Maintenance is required. Use an authorized force merge to approve the outage."
+          exit 1
