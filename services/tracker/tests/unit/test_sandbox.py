@@ -7,11 +7,20 @@ import asyncio
 import shlex
 from collections import deque
 from collections.abc import AsyncIterator, Mapping
-from typing import Any, Never
+from typing import Any, Never, cast
 from unittest.mock import AsyncMock, Mock, call
 
 import pytest
-from benchmark_service import ComposeSandbox, ComposeSource, ExecResult, ImageSource, Resources, SnapshotSource
+from benchmark_service import (
+    ComposeSandbox,
+    ComposeSource,
+    ExecResult,
+    ImageSource,
+    Resources,
+    SandboxSource,
+    SnapshotSource,
+    TargetedSnapshotSource,
+)
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
@@ -845,6 +854,8 @@ class TestSandboxLifecycle:
             == "public.ecr.aws/vals/harbor"
         )
         assert metric_source_name(SnapshotSource(snapshot="base-python")) == "snapshot"
+        with pytest.raises(AssertionError, match="Expected code to be unreachable"):
+            metric_source_name(cast(SandboxSource, object()))
 
     def test_compose_runtime_sandbox_wraps_only_compose_sources(self) -> None:
         """Compose sources should adapt only the runtime sandbox surface.
@@ -1030,6 +1041,33 @@ class TestSandboxLifecycle:
             )
         ]
         assert context_calls == [("sandbox-123", "ghcr.io/vals/swebench:latest")]
+
+    async def test_targeted_snapshot_is_measured_and_deleted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        provider = AsyncMock()
+        provider.create_sandbox.return_value = mock_sandbox
+        distribution = Mock()
+        set_sandbox_context = Mock()
+        monkeypatch.setattr(sandbox_module, "distribution", distribution)
+        monkeypatch.setattr(sandbox_module, "set_sandbox_context", set_sandbox_context)
+
+        source = TargetedSnapshotSource(snapshot="masscan-linux-vm", target="us-west-3")
+        async with create_sandbox(
+            provider=provider,
+            sandbox_name="task-alias",
+            source=source,
+            resources=Resources(vcpu=4, memory=16, disk=30),
+            creation_semaphore=asyncio.Semaphore(1),
+        ) as sandbox:
+            assert sandbox is mock_sandbox
+
+        request = provider.create_sandbox.await_args.args[0]
+        assert request.source == source
+        assert distribution.call_args.kwargs["tags"] == {"image": "snapshot"}
+        set_sandbox_context.assert_called_once_with(mock_sandbox, image="snapshot")
+        provider.delete_sandbox.assert_awaited_once_with(mock_sandbox.id)
 
     async def test_create_sandbox_emits_error_metric(self, monkeypatch: pytest.MonkeyPatch) -> None:
         create_error = RuntimeError("create failed")

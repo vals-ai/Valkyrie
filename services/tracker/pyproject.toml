@@ -25,7 +25,7 @@ dependencies = [
     "tenacity>=9.0.0",
     "sentry-sdk[fastapi]==2.58.0",
     "python-json-logger>=3.2.1",
-    "create-benchmark-service>=0.11.0",
+    "create-benchmark-service>=0.20.0",
     "aioboto3>=7.0.0",
 ]
 
@@ -50,7 +50,7 @@ build-backend = "hatchling.build"
 prerelease = "allow"
 
 [tool.uv.sources]
-create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "c9dfa6593fc88f8465af579efb36de0f42b69c07" }
+create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "1bf53d29b026d56338b6516a9151be266f2df59d" }
 
 [tool.hatch.metadata]
 allow-direct-references = true
