@@ -122,6 +122,7 @@ def _read_active_rows(
         .where(*scope)
         .order_by(col(Task.started_at).asc(), col(Task.id).asc())
         .limit(limit + 1)
+        .execution_options(populate_existing=True)
     ).all()
 
     return list(rows), counts

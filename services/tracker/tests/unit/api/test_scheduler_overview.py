@@ -7,7 +7,7 @@ from sqlmodel import Session
 
 from tests.factories import make_benchmark, make_task
 from tests.utils import TEST_ORG_ID
-from tracker.api.scheduler_overview import read_scheduler_overview
+from tracker.api.scheduler_overview import _read_active_rows, read_scheduler_overview  # pyright: ignore[reportPrivateUsage]
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 
 
@@ -105,3 +105,21 @@ async def test_reports_org_queued_rows_in_priority_fifo_order(database_session: 
     ]
     assert overview.waiting_capped
     assert overview.active_capped
+
+
+def test_active_read_refreshes_preloaded_task_state(database_session: Session) -> None:
+    benchmark = _queue(make_benchmark(name="transitioning"), pool_id="pool_a", priority=3)
+    task = make_task(benchmark, "transitioning", status=TaskStatus.PENDING)
+    database_session.add_all([benchmark, task])
+    database_session.commit()
+
+    with Session(bind=database_session.bind) as writer:
+        stored_task = writer.get(Task, task.id)
+        assert stored_task is not None
+        stored_task.status = TaskStatus.IN_PROGRESS
+        writer.commit()
+
+    rows, counts = _read_active_rows(session=database_session, org_id=TEST_ORG_ID, limit=100)
+
+    assert counts == {TaskStatus.IN_PROGRESS: 1}
+    assert [(row.task_id, row.status) for row, _benchmark in rows] == [(task.task_id, TaskStatus.IN_PROGRESS)]
