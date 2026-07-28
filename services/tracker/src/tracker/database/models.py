@@ -178,7 +178,7 @@ class BenchmarkArguments(BaseModel):
 
     contract: AgentContractRequest
     concurrency: int
-    priority: int | None = PydanticField(default=None, strict=True, ge=0, le=4)
+    priority: int | None = PydanticField(default=None, exclude=True, strict=True, ge=0, le=4)
     queue_pool_id: str | None = Field(default=None, exclude=True)
     task_ids: list[str] | None = None
     slice_str: str | None = None
