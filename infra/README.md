@@ -78,41 +78,18 @@ export BENCHMARK_CATALOG_URL=https://<api-id>.execute-api.us-east-1.amazonaws.co
 
 ## Sandbox cleanup schedule
 
-Production includes a provider-generic cleanup engine invoked hourly by EventBridge Scheduler through a container-image
-Lambda. The schedule is disabled and the function is in dry-run mode by default. The Lambda is not attached to the VPC,
-has a 14-minute timeout, and reserves one concurrent execution so cleanup sweeps cannot overlap.
+Production includes an hourly EventBridge schedule for a singleton, 14-minute cleanup Lambda. The schedule is disabled
+unless `SANDBOX_CLEANUP_ENABLED` is exactly `true`; Scheduler delivery and asynchronous Lambda failures go to an encrypted
+dead-letter queue.
 
-The engine selects a sandbox-provider adapter from `SANDBOX_CLEANUP_PROVIDER`. Daytona is the currently supported adapter
-and remains the default. An unsupported provider fails closed before listing or deleting sandboxes. The Daytona adapter
-sweeps every sandbox visible through the configured credentials and target that is strictly older than 48 hours. This
-includes sandboxes provisioned by Harbor and benchmark services outside the Valkyrie tracker lifecycle. Only the exact
-`clean-up` label key exempts a sandbox when its value equals `false` after trimming and case-folding; a missing key remains
-eligible. Adding a provider requires an adapter that supplies normalized candidate metadata and implements complete-list,
-refresh, and delete operations; the age, opt-out, revalidation, timeout, and reporting policy remains shared.
-
-For Daytona, the Lambda reads the `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET` JSON fields from the selected
-Secrets Manager secret. Configure rollout with GitHub repository variables:
+The Lambda loads the selected Create Benchmark Service (CBS) provider configuration from Secrets Manager and uses the
+provider directly to list, refresh, and delete sandboxes in its configured scope. Sandboxes strictly older than 48 hours
+are deleted unless their exact `clean-up` label is `false` after trimming and case-folding. The secret must contain the
+JSON fields required by the selected CBS provider. Providers must support creation-time-filtered inventory metadata;
+currently Daytona is the only compatible provider and uses `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SANDBOX_CLEANUP_ENABLED` | `false` | Enables the hourly production schedule |
-| `SANDBOX_CLEANUP_DRY_RUN` | `true` | Reports eligible sandboxes without deleting them |
-| `SANDBOX_CLEANUP_PROVIDER` | `daytona` | Selects the sandbox-provider adapter |
+| `SANDBOX_CLEANUP_PROVIDER` | `daytona` | Selects a cleanup-compatible CBS sandbox provider |
 | `SANDBOX_CLEANUP_SECRET_NAME` | `AgenticHarnessSecrets` | Selects the provider credentials secret |
-
-Safe rollout:
-
-1. Validate that the selected secret contains the fields required by the selected provider and can see every producer's
-   sandboxes. For Daytona, verify the three fields above use the same API and target as every producer being swept. Give
-   every legitimate sandbox expected to exceed 48 hours the exact `clean-up=false` label before enabling deletion.
-2. Deploy with the default disabled, dry-run configuration.
-3. Run the isolated live cleanup integration test against approved test credentials.
-4. Invoke the Lambda once in dry-run mode, then inspect `/valkyrie/sandbox-cleanup` logs and the cleanup DLQ.
-5. Assign an owner for those signals, set `SANDBOX_CLEANUP_ENABLED=true` while leaving dry-run enabled, redeploy the same
-   revision, and inspect the logs and DLQ after at least one scheduled invocation.
-6. With explicit approval, set `SANDBOX_CLEANUP_DRY_RUN=false` and redeploy the same revision.
-
-The encrypted dead-letter queue receives both Scheduler delivery failures and Lambda asynchronous handler failures;
-their message formats identify which stage failed. Individual sandbox deletion failures are also reported in CloudWatch,
-and make the invocation fail after the sweep so the failure reaches the queue without preventing later candidates from
-being attempted.

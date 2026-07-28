@@ -1,63 +1,46 @@
-"""Delete stale sandboxes through a provider-neutral cleanup engine."""
+"""Delete stale sandboxes through Create Benchmark Service providers."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import os
-from collections.abc import AsyncGenerator, Mapping
-from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from collections import Counter
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol, cast
+from typing import Protocol
 
-import boto3
-from benchmark_service.sandbox import SandboxProviderConfig, sandbox_provider_config_from_mapping
+from benchmark_service import (
+    Sandbox,
+    SandboxNotFoundError,
+    SandboxProvider,
+    SandboxProviderConfig,
+    SandboxQuery,
+)
 
 from tracker.logging import configure_logging, get_logger
+from tracker.utils.resources import fetch_sandbox_provider_config
 
 logger = get_logger(__name__)
 
 _CLEANUP_LABEL = "clean-up"
-_CLEANUP_DISABLED = "false"
 _MAX_SANDBOX_AGE = timedelta(hours=48)
-_DELETE_TIMEOUT_SECONDS = 120
+_OPERATION_TIMEOUT_SECONDS = 120
 _LAMBDA_SHUTDOWN_MARGIN_SECONDS = 60
-CandidateExclusion = Literal["exempted", "scope_mismatch", "not_old", "invalid_metadata"]
-
-
-@dataclass(frozen=True)
-class CleanupCandidate:
-    """Provider-neutral metadata required to make a cleanup decision."""
-
-    id: str
-    name: str
-    created_at: datetime | None
-    labels: Mapping[str, str]
-    scope: str | None
-    provider_data: object | None = field(default=None, repr=False, compare=False)
-
-
-class SandboxCleanupBackend(Protocol):
-    """Control-plane operations a sandbox provider must expose for cleanup."""
-
-    @property
-    def provider_name(self) -> str: ...
-
-    @property
-    def scope(self) -> str | None: ...
-
-    async def list_candidates(self, created_before: datetime) -> list[CleanupCandidate]: ...
-
-    async def refresh_candidate(self, sandbox_id: str) -> CleanupCandidate | None: ...
-
-    async def delete_candidate(self, candidate: CleanupCandidate) -> None: ...
-
-
-class SecretsManagerClient(Protocol):
-    """Secrets Manager operation used by the Lambda handler."""
-
-    def get_secret_value(self, *, SecretId: str) -> Mapping[str, object]: ...
+_OUTCOMES = (
+    "deleted",
+    "already_absent",
+    "opted_out",
+    "not_old",
+    "invalid_metadata",
+    "identity_mismatch",
+    "refresh_failed",
+    "delete_failed",
+)
+_FAILURE_OUTCOMES = (
+    "invalid_metadata",
+    "identity_mismatch",
+    "refresh_failed",
+    "delete_failed",
+)
 
 
 class LambdaContext(Protocol):
@@ -66,300 +49,116 @@ class LambdaContext(Protocol):
     def get_remaining_time_in_millis(self) -> int: ...
 
 
-@dataclass(frozen=True)
-class CleanupFailure:
-    sandbox_id: str
-    sandbox_name: str
-    error_type: str
-
-
-@dataclass(frozen=True)
-class CleanupReport:
-    provider: str
-    cutoff: datetime
-    dry_run: bool
-    scanned: int
-    eligible: int
-    deletion_completed: int
-    exempted: int
-    scope_mismatch: int
-    not_old: int
-    invalid_metadata: int
-    failures: tuple[CleanupFailure, ...]
-
-    @property
-    def succeeded(self) -> bool:
-        return self.scope_mismatch == 0 and self.invalid_metadata == 0 and not self.failures
-
-
-class SandboxCleanupError(RuntimeError):
-    def __init__(self, report: CleanupReport):
-        self.report = report
-        super().__init__(
-            "Sandbox cleanup did not fully succeed: "
-            f"scope_mismatch={report.scope_mismatch}, "
-            f"invalid_metadata={report.invalid_metadata}, failures={len(report.failures)}"
-        )
-
-
-def _cleanup_is_disabled(labels: Mapping[str, str]) -> bool:
-    value = labels.get(_CLEANUP_LABEL)
-    return value is not None and value.strip().casefold() == _CLEANUP_DISABLED
-
-
-def _candidate_exclusion(
-    candidate: CleanupCandidate,
-    *,
-    scope: str | None,
-    cutoff: datetime,
-) -> CandidateExclusion | None:
-    if candidate.scope != scope:
-        return "scope_mismatch"
-    if _cleanup_is_disabled(candidate.labels):
-        return "exempted"
-    if candidate.created_at is None or candidate.created_at.tzinfo is None:
+def _classify(sandbox: Sandbox, cutoff: datetime) -> str | None:
+    labels = sandbox.labels
+    created_at = sandbox.created_at
+    if labels is None or created_at is None or created_at.utcoffset() is None:
         return "invalid_metadata"
-    if candidate.created_at.astimezone(UTC) >= cutoff:
+
+    cleanup_label = labels.get(_CLEANUP_LABEL)
+    if cleanup_label is not None and cleanup_label.strip().casefold() == "false":
+        return "opted_out"
+    if created_at.astimezone(UTC) >= cutoff:
         return "not_old"
     return None
 
 
-def _log_exclusion(
-    exclusion: CandidateExclusion,
-    candidate: CleanupCandidate,
-    *,
-    provider: str,
-) -> None:
-    if exclusion == "scope_mismatch":
+def _record_classification(outcomes: Counter[str], sandbox: Sandbox, outcome: str) -> None:
+    outcomes[outcome] += 1
+    if outcome == "invalid_metadata":
         logger.error(
-            "Skipping sandbox returned outside the configured cleanup scope",
-            extra={"provider": provider, "sandbox_id": candidate.id, "sandbox_name": candidate.name},
-        )
-    elif exclusion == "invalid_metadata":
-        logger.error(
-            "Skipping sandbox with invalid creation metadata",
-            extra={"provider": provider, "sandbox_id": candidate.id, "sandbox_name": candidate.name},
+            "Skipping sandbox with invalid cleanup metadata",
+            extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name},
         )
 
 
 async def cleanup_old_sandboxes(
-    backend: SandboxCleanupBackend,
+    provider: SandboxProvider,
     *,
     now: datetime,
-    dry_run: bool = True,
-) -> CleanupReport:
-    """Delete in-scope sandboxes strictly older than 48 hours unless they opt out."""
-    if now.tzinfo is None:
+) -> Counter[str]:
+    """Delete sandboxes strictly older than 48 hours unless they opt out."""
+    if now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
 
     cutoff = now.astimezone(UTC) - _MAX_SANDBOX_AGE
-    scanned = eligible = deletion_completed = 0
-    exclusions: dict[CandidateExclusion, int] = {
-        "exempted": 0,
-        "scope_mismatch": 0,
-        "not_old": 0,
-        "invalid_metadata": 0,
-    }
-    failures: list[CleanupFailure] = []
+    query = SandboxQuery(labels={}, page_size=200, created_at_lte=cutoff)
 
-    # Providers must finish inventory before the first mutation so a pagination
-    # retry can never cause already-deleted sandboxes to be listed again.
-    candidates = await backend.list_candidates(cutoff)
-    for candidate in candidates:
-        scanned += 1
-        exclusion = _candidate_exclusion(candidate, scope=backend.scope, cutoff=cutoff)
-        if exclusion is not None:
-            exclusions[exclusion] += 1
-            _log_exclusion(exclusion, candidate, provider=backend.provider_name)
-            continue
+    # Complete inventory before the first mutation so pagination cannot be
+    # disturbed by deleting sandboxes from the same result set.
+    sandboxes = [sandbox async for sandbox in provider.list_sandboxes(query)]
+    outcomes: Counter[str] = Counter()
 
-        eligible += 1
-        if dry_run:
-            logger.info(
-                "Sandbox is eligible for cleanup (dry run)",
-                extra={
-                    "provider": backend.provider_name,
-                    "sandbox_id": candidate.id,
-                    "sandbox_name": candidate.name,
-                },
-            )
+    for sandbox in sandboxes:
+        classification = _classify(sandbox, cutoff)
+        if classification is not None:
+            _record_classification(outcomes, sandbox, classification)
             continue
 
         try:
-            current_candidate = await backend.refresh_candidate(candidate.id)
+            current = await asyncio.wait_for(
+                provider.get_sandbox(sandbox.id),
+                timeout=_OPERATION_TIMEOUT_SECONDS,
+            )
+        except SandboxNotFoundError:
+            outcomes["already_absent"] += 1
+            continue
         except Exception as exc:
-            failures.append(
-                CleanupFailure(
-                    sandbox_id=candidate.id,
-                    sandbox_name=candidate.name,
-                    error_type=type(exc).__name__,
-                )
-            )
+            outcomes["refresh_failed"] += 1
             logger.error(
-                "Failed to refresh sandbox before deletion",
-                extra={
-                    "provider": backend.provider_name,
-                    "sandbox_id": candidate.id,
-                    "sandbox_name": candidate.name,
-                    "error_type": type(exc).__name__,
-                },
+                "Failed to refresh sandbox before cleanup",
+                extra={"sandbox_id": sandbox.id, "error_type": type(exc).__name__},
             )
             continue
 
-        if current_candidate is None:
-            deletion_completed += 1
-            logger.info(
-                "Sandbox was already absent before cleanup deletion",
-                extra={
-                    "provider": backend.provider_name,
-                    "sandbox_id": candidate.id,
-                    "sandbox_name": candidate.name,
-                },
-            )
-            continue
-
-        if current_candidate.id != candidate.id:
-            failures.append(
-                CleanupFailure(
-                    sandbox_id=candidate.id,
-                    sandbox_name=candidate.name,
-                    error_type="CandidateIdentityMismatch",
-                )
-            )
+        if current.id != sandbox.id:
+            outcomes["identity_mismatch"] += 1
             logger.error(
-                "Cleanup backend refreshed a different sandbox",
-                extra={
-                    "provider": backend.provider_name,
-                    "sandbox_id": candidate.id,
-                    "sandbox_name": candidate.name,
-                    "refreshed_sandbox_id": current_candidate.id,
-                },
+                "Cleanup refresh returned a different sandbox",
+                extra={"sandbox_id": sandbox.id, "refreshed_sandbox_id": current.id},
             )
             continue
 
-        exclusion = _candidate_exclusion(current_candidate, scope=backend.scope, cutoff=cutoff)
-        if exclusion is not None:
-            eligible -= 1
-            exclusions[exclusion] += 1
-            _log_exclusion(exclusion, current_candidate, provider=backend.provider_name)
+        classification = _classify(current, cutoff)
+        if classification is not None:
+            _record_classification(outcomes, current, classification)
             continue
 
         try:
             await asyncio.wait_for(
-                backend.delete_candidate(current_candidate),
-                timeout=_DELETE_TIMEOUT_SECONDS,
+                provider.delete_sandbox(current.id),
+                timeout=_OPERATION_TIMEOUT_SECONDS,
             )
+        except SandboxNotFoundError:
+            outcomes["already_absent"] += 1
         except Exception as exc:
-            failures.append(
-                CleanupFailure(
-                    sandbox_id=current_candidate.id,
-                    sandbox_name=current_candidate.name,
-                    error_type=type(exc).__name__,
-                )
-            )
+            outcomes["delete_failed"] += 1
             logger.error(
                 "Failed to delete sandbox",
-                extra={
-                    "provider": backend.provider_name,
-                    "sandbox_id": current_candidate.id,
-                    "sandbox_name": current_candidate.name,
-                    "error_type": type(exc).__name__,
-                },
+                extra={"sandbox_id": current.id, "error_type": type(exc).__name__},
             )
-            continue
+        else:
+            outcomes["deleted"] += 1
 
-        deletion_completed += 1
-        logger.info(
-            "Completed deletion of old sandbox",
-            extra={
-                "provider": backend.provider_name,
-                "sandbox_id": current_candidate.id,
-                "sandbox_name": current_candidate.name,
-            },
-        )
-
-    return CleanupReport(
-        provider=backend.provider_name,
-        cutoff=cutoff,
-        dry_run=dry_run,
-        scanned=scanned,
-        eligible=eligible,
-        deletion_completed=deletion_completed,
-        exempted=exclusions["exempted"],
-        scope_mismatch=exclusions["scope_mismatch"],
-        not_old=exclusions["not_old"],
-        invalid_metadata=exclusions["invalid_metadata"],
-        failures=tuple(failures),
-    )
-
-
-@asynccontextmanager
-async def _cleanup_backend(provider_config: SandboxProviderConfig) -> AsyncGenerator[SandboxCleanupBackend]:
-    if provider_config.type == "daytona":
-        from tracker.daytona_cleanup import daytona_cleanup_backend
-
-        async with daytona_cleanup_backend(provider_config) as backend:
-            yield backend
-        return
-
-    raise RuntimeError(f"Sandbox cleanup does not support provider {provider_config.type!r}")
+    return outcomes
 
 
 async def run_cleanup(
     provider_config: SandboxProviderConfig,
     *,
     now: datetime | None = None,
-    dry_run: bool = True,
-) -> CleanupReport:
-    """Build the configured provider backend and perform one cleanup sweep."""
-    async with _cleanup_backend(provider_config) as backend:
-        return await cleanup_old_sandboxes(
-            backend,
-            now=now or datetime.now(UTC),
-            dry_run=dry_run,
-        )
+) -> Counter[str]:
+    """Create the configured CBS provider and perform one cleanup sweep."""
+    async with provider_config.create_provider() as provider:
+        return await cleanup_old_sandboxes(provider, now=now or datetime.now(UTC))
 
 
 def _load_provider_config(secret_name: str, provider_type: str) -> SandboxProviderConfig:
-    secrets = cast(
-        SecretsManagerClient,
-        boto3.client("secretsmanager"),  # pyright: ignore[reportUnknownMemberType]
-    )
-    response = secrets.get_secret_value(SecretId=secret_name)
-    secret_string = response.get("SecretString")
-    if not isinstance(secret_string, str):
-        raise RuntimeError("Sandbox cleanup secret must contain a JSON SecretString")
-
     try:
-        parsed: object = json.loads(secret_string)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Sandbox cleanup secret must contain valid JSON") from exc
-    if not isinstance(parsed, dict):
-        raise RuntimeError("Sandbox cleanup secret must contain a JSON object")
-    payload = cast(dict[str, object], parsed)
-
-    try:
-        return sandbox_provider_config_from_mapping({**payload, "type": provider_type})
+        return fetch_sandbox_provider_config(secret_name, None, provider_type)
     except (TypeError, ValueError):
-        # Validation details may echo provider credentials, so expose only the
-        # provider discriminator and keep the original exception unchained.
+        # Provider validation may echo credentials, so do not expose or chain it.
         raise RuntimeError(f"Sandbox cleanup secret is invalid for provider {provider_type!r}") from None
-
-
-def _report_fields(report: CleanupReport) -> dict[str, object]:
-    return {
-        "provider": report.provider,
-        "dry_run": report.dry_run,
-        "cutoff": report.cutoff.isoformat(),
-        "scanned": report.scanned,
-        "eligible": report.eligible,
-        "deletion_completed": report.deletion_completed,
-        "exempted": report.exempted,
-        "scope_mismatch": report.scope_mismatch,
-        "not_old": report.not_old,
-        "invalid_metadata": report.invalid_metadata,
-        "failures": len(report.failures),
-    }
 
 
 def _remaining_cleanup_seconds(context: LambdaContext) -> float:
@@ -377,18 +176,26 @@ def lambda_handler(_event: object, context: LambdaContext) -> dict[str, object]:
     provider_type = os.environ.get("SANDBOX_CLEANUP_PROVIDER", "daytona").strip().casefold()
     if not provider_type:
         raise RuntimeError("SANDBOX_CLEANUP_PROVIDER must not be empty")
-    provider_config = _load_provider_config(os.environ["SANDBOX_CLEANUP_SECRET_NAME"], provider_type)
+    secret_name = os.environ.get("SANDBOX_CLEANUP_SECRET_NAME", "").strip()
+    if not secret_name:
+        raise RuntimeError("SANDBOX_CLEANUP_SECRET_NAME must not be empty")
 
+    provider_config = _load_provider_config(secret_name, provider_type)
     timeout_seconds = _remaining_cleanup_seconds(context)
-    dry_run = os.environ.get("SANDBOX_CLEANUP_DRY_RUN", "true").strip().casefold() != "false"
-    report = asyncio.run(
+    outcomes = asyncio.run(
         asyncio.wait_for(
-            run_cleanup(provider_config, dry_run=dry_run),
+            run_cleanup(provider_config),
             timeout=timeout_seconds,
         )
     )
-    fields = _report_fields(report)
+    fields: dict[str, object] = {
+        "provider": provider_type,
+        "scanned": sum(outcomes.values()),
+        **{outcome: outcomes[outcome] for outcome in _OUTCOMES},
+    }
     logger.info("Sandbox cleanup sweep complete", extra=fields)
-    if not report.succeeded:
-        raise SandboxCleanupError(report)
+
+    failures = sum(outcomes[outcome] for outcome in _FAILURE_OUTCOMES)
+    if failures:
+        raise RuntimeError(f"Sandbox cleanup did not fully succeed: failures={failures}")
     return fields

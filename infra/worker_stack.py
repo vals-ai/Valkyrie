@@ -208,7 +208,6 @@ class WorkerStack(Stack):
         log_retention: aws_logs.RetentionDays,
     ) -> None:
         cleanup_enabled = os.environ.get("SANDBOX_CLEANUP_ENABLED") == "true"
-        cleanup_dry_run = os.environ.get("SANDBOX_CLEANUP_DRY_RUN") != "false"
         cleanup_provider = os.environ.get("SANDBOX_CLEANUP_PROVIDER") or "daytona"
         cleanup_secret_name = os.environ.get("SANDBOX_CLEANUP_SECRET_NAME") or SANDBOX_CLEANUP_SECRET_NAME
 
@@ -248,7 +247,6 @@ class WorkerStack(Stack):
             timeout=Duration.minutes(14),
             reserved_concurrent_executions=1,
             environment={
-                "SANDBOX_CLEANUP_DRY_RUN": str(cleanup_dry_run).lower(),
                 "SANDBOX_CLEANUP_PROVIDER": cleanup_provider,
                 "SANDBOX_CLEANUP_SECRET_NAME": cleanup_secret_name,
                 "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
