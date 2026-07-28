@@ -4,12 +4,12 @@ Local development guide for the Agentic Harness.
 
 ## Prerequisites
 
-- Python 3.12+
+- Python 3.12.x
 - [uv](https://github.com/astral-sh/uv) package manager (`brew install uv`)
 
 ### Environment
 
-Add inside of `.env`
+Add inside of `.env` when running against a local tracker service:
 
 ```env
 TRACKER_SERVICE_URL=http://localhost:8000

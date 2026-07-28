@@ -150,12 +150,28 @@ Add `--connect` to stream updates after the run starts:
 valkyrie run start --agent sweagent --benchmark swebench --connect
 ```
 
+To start three independent runs of the same benchmark:
+
+```console
+$ valkyrie run start --agent sweagent --benchmark swebench --count 3
+Run ID: <id-1>
+Run ID: <id-2>
+Run ID: <id-3>
+3 / 3 requested runs successfully started.
+Track progress: valkyrie run status --ids <id-1>,<id-2>,<id-3>
+```
+
+Start requests are sent sequentially, but accepted runs execute independently and may overlap. Approximate simultaneous task pressure and cost can scale with `count × concurrency`. `--connect` is only supported when count is `1`; it is rejected when count is greater than `1`.
+
+Starts are fail-fast: if a request fails, no later requests are attempted. The command exits nonzero and reports confirmed progress with a combined status command. After a transport/server response failure, the latest request's outcome can be unknown; verify with `valkyrie run list`.
+
 | Flag | Description |
 | --- | --- |
 | `--agent` | Agent name from S3 or path to agent directory (e.g., `sweagent` or `./agents/sweagent`). Agents on users machine are automatically uploaded to S3 before the benchmark starts. |
 | `--benchmark` | Benchmark name (e.g. `swebench`) |
 | `--model` | Model key (e.g. `openai/gpt-4o`) |
 | `--concurrency` | Number of concurrent sandbox tasks (default: 5) |
+| `-n` / `--count` | Number of independent runs to start (default: 1; hard maximum: 10) |
 | `-s` / `--secret` | Secret pair as `ENV_VAR aws_secret_name`. Repeatable. Merged with contract defaults (CLI wins on conflict) |
 | `-k` / `--kwarg` | Key-value pair passed to the agent run command. Repeatable |
 | `--lambda` | AWS Lambda function to invoke after the run completes |
@@ -169,6 +185,19 @@ valkyrie run start --agent sweagent --benchmark swebench --connect
 | `--ignore-custom-services` / `--ics` | Ignore custom benchmark services that have been configured. Provides opt-out for custom services. |
 | `--connect` | Stream run updates after the run starts |
 
+### Update a running run's concurrency
+
+```bash
+valkyrie run update <id> --concurrency 20
+```
+
+This updates the persisted concurrency limit for an active run without restarting it. Increases allow more tasks after
+the tracker next refreshes the run; decreases do not cancel in-flight work and pause new admissions until usage falls
+below the new limit. The value must be a positive integer, and completed, stopped, or failed runs cannot be updated.
+The limit is enforced independently by each `process_benchmark` executor. If an active retry creates overlapping
+executors, aggregate admissions may temporarily exceed the persisted value; a strict cross-executor or distributed cap
+is not provided.
+
 ### Monitor a run
 
 After starting, use the following commands to check the status of a run: 
@@ -179,7 +208,47 @@ valkyrie run fetch <id> --connect
 
 # One-time status check
 valkyrie run fetch <id>
+
+# One-time machine-readable snapshot
+valkyrie run fetch <id> --format json
+
+# Machine-readable stream (one JSON object per line)
+valkyrie run fetch <id> --connect --format jsonl
+
+# Lightweight status for several known run IDs
+valkyrie run status --ids <id-1>,<id-2> --format json
+
+# Show stored run and current task error messages
+valkyrie run errors <id>
+
+# Machine-readable error messages
+valkyrie run errors <id> --format json
 ```
+
+Connected text fetches display the benchmark, agent, model, dataset, run ID, and other run metadata before streaming
+progress updates. Machine-readable output uses a versioned, allowlisted schema and does not include stored agent
+secrets or kwargs. JSONL begins with a `snapshot` record, followed by zero or more `update` records. Recognized stream
+termination emits `complete`, `error`, `stopped`, `disconnect`, or `interrupted`; unexpected clean exhaustion emits
+`disconnect` and exits nonzero. Transport or malformed-protocol failures can exit nonzero without a final record, so
+stderr and the process exit code remain authoritative for command failures.
+
+Exit code 0 means the CLI handled the response or stream event; it does not mean the benchmark itself succeeded.
+Agents must inspect each run's `status` and each JSONL record's `event`. Optional values such as model, starter, label,
+finish time, and score can be null. In fetch output, `metadata_available: false` specifically means identity metadata
+could not be loaded. All timestamps are UTC ISO 8601 strings, and non-finite scores are normalized to null.
+
+The version 1 machine document shapes are:
+
+- Fetch JSON/JSONL record: `schema_version`, `event`, `observed_at`, run identity, status/progress counts, score, and
+  metadata availability.
+- Run list document: `schema_version`, `kind: "run_list"`, `observed_at`, `returned_count`, and allowlisted `runs`.
+- Batch status document: `schema_version`, `kind: "run_status"`, `observed_at`, request/return counts,
+  `missing_run_ids`, and lightweight `runs` containing status and task counts.
+
+Batch status preserves the requested ID order, ignores duplicate IDs, and requests up to 50 IDs at a time. A missing
+or inaccessible ID is listed in `missing_run_ids` and makes the command exit nonzero after emitting the JSON document.
+Its `finished_tasks` count includes terminal `FINISHED`, `ERROR`, and `STOPPED` tasks. Use `run list --format json --all`
+when benchmark, agent, model, or dataset identity is also needed.
 
 ### Download results
 
@@ -209,8 +278,15 @@ valkyrie run results <id> --task-ids-file https://example.com/subset.txt
 ```bash
 valkyrie run stop <id>
 
+# Stop only selected tasks
+valkyrie run stop <id> --task-ids task-a,task-b
+valkyrie run stop <id> --task-ids-file ./task-ids.txt
+
 # Force stop all in-flight tasks immediately
 valkyrie run stop <id> --force
+
+# Force stop only selected tasks and remove their sandboxes
+valkyrie run stop <id> --task-ids task-a,task-b --force
 ```
 
 ### Resume / Retry a run
@@ -261,6 +337,11 @@ valkyrie run list \
   --order-by DESC \
   --started-by alice@vals.ai,bob@vals.ai \
   --label swebench_claude_code
+
+# Dump every matching run as one machine-readable JSON document
+valkyrie run list --format json --all \
+  --model openai/gpt-5 \
+  --status IN_PROGRESS
 ```
 
 | Option | Description |
@@ -272,8 +353,12 @@ valkyrie run list \
 | `--status` | Filter by status: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR` |
 | `--order-by` | Order results (`desc` or `asc`) |
 | `--started-by` | Comma-separated list of starter emails (case-insensitive) |
+| `--format json` | Emit one versioned, allowlisted JSON document instead of a table (requires `--all`) |
+| `--all` | Fetch every matching run without interactive paging (requires `--format json`) |
 
 Supports paginated navigation ([h] previous, [l] next, [q] quit).
+Machine output exhausts cursor pagination before writing stdout and excludes stored agent secrets, kwargs, and raw
+error messages.
 
 ### Download run outputs
 
@@ -409,6 +494,7 @@ Webhook configuration is persisted per-benchmark in the database. On resume or r
 
 | Topic | Link |
 | --- | --- |
+| Python SDK | [Guide](docs/sdk/README.md) |
 | Hosted vs self-hosted | [HOSTED_MODE.md](docs/HOSTED_MODE.md) |
 | Local development | [DEVELOPMENT.md](docs/DEVELOPMENT.md) |
 | Lambda integration | [LAMBDA_USAGE.md](docs/LAMBDA_USAGE.md) |

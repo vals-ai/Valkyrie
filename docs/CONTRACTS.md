@@ -26,6 +26,10 @@ output_artifacts:
   - artifacts/summary.json
   - artifacts/turns.jsonl
 
+egress_allowlist:
+  - https://api.openai.com
+  - https://github.com
+
 secrets:
   ANTHROPIC_API_KEY: devEvalInfraAnthropicKey
 
@@ -168,6 +172,20 @@ benchmarks/run_id/task_0/artifacts/turns.jsonl
 benchmarks/run_id/task_0/artifacts/config.json
 benchmarks/run_id/task_0/artifacts/result.json
 ```
+
+### `egress_allowlist: list`
+
+URLs the agent may reach while `run_cmd` is running. Use this to allow model provider requests while denying other outbound requests from the agent sandbox; the sandbox provider resolves each host into its network rules at run time.
+
+These rules only apply while the agent command runs. They help keep evaluations clean, but they are not a hard block against data leaks: egress is restored after `run_cmd`, root agents can change sandbox host files, and CDN hosts can share allowed edge IPs with other services.
+
+```yaml
+egress_allowlist:
+  - https://api.openai.com
+  - https://github.com
+```
+
+Omit this field, or set it to an empty list, to keep unrestricted sandbox egress.
 
 ### `secrets: dict`
 

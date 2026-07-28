@@ -1,6 +1,7 @@
 """S3 upload utilities for the tracker service."""
 
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Iterable
+from contextlib import suppress
 from datetime import datetime
 from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
@@ -24,7 +25,10 @@ _R = TypeVar("_R")
 S3_AGENTS_PREFIX = "agents"
 S3_BENCHMARKS_PREFIX = "benchmarks"
 
-_CLIENT_CONFIG = Config(max_pool_connections=200)
+_CLIENT_CONFIG = Config(max_pool_connections=200, retries={"mode": "standard"})
+
+# S3 multipart uploads require every part except the last to be at least 5 MiB.
+_MULTIPART_PART_BYTES = 8 * 1024 * 1024
 
 
 @lru_cache(maxsize=32)
@@ -38,7 +42,7 @@ def _s3_session(aws: "AWSCredentials") -> aioboto3.Session:
     )
 
 
-def _s3_client(aws: "AWSCredentials") -> Any:
+def s3_client(aws: "AWSCredentials") -> Any:
     """Open an async S3 client for the given credentials (use as `async with`)."""
     return _s3_session(aws).client("s3", config=_CLIENT_CONFIG)  # pyright: ignore[reportUnknownMemberType]
 
@@ -89,8 +93,61 @@ async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", 
     Raises:
         S3Error: If upload fails due to AWS errors or network issues
     """
-    async with _s3_client(aws) as client:
+    async with s3_client(aws) as client:
         await client.put_object(Bucket=s3_bucket, Key=s3_key, Body=file_content)
+
+
+@logfire.instrument("upload_stream_to_s3", extract_args=("s3_key", "s3_bucket"))
+@handle_s3_error(message="Failed to upload stream to S3")
+async def upload_stream_to_s3(chunks: AsyncIterable[bytes], s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> int:
+    """
+    Upload a byte stream to S3 via multipart upload, buffering at most one part in memory.
+
+    Args:
+        chunks: Async iterable of byte chunks to upload
+        s3_key: S3 object key (path in bucket)
+        aws: AWS credentials for authentication
+        s3_bucket: S3 bucket name
+
+    Returns:
+        Total number of bytes uploaded
+
+    Raises:
+        S3Error: If upload fails due to AWS errors or network issues
+    """
+    total_bytes = 0
+    async with s3_client(aws) as client:
+        multipart = await client.create_multipart_upload(Bucket=s3_bucket, Key=s3_key)
+        upload_id = multipart["UploadId"]
+        try:
+            parts: list[dict[str, Any]] = []
+            buffer = bytearray()
+
+            async def _upload_part() -> None:
+                part_number = len(parts) + 1
+                response = await client.upload_part(
+                    Bucket=s3_bucket, Key=s3_key, PartNumber=part_number, UploadId=upload_id, Body=bytes(buffer)
+                )
+                parts.append({"ETag": response["ETag"], "PartNumber": part_number})
+                buffer.clear()
+
+            async for chunk in chunks:
+                buffer.extend(chunk)
+                total_bytes += len(chunk)
+                if len(buffer) >= _MULTIPART_PART_BYTES:
+                    await _upload_part()
+
+            if buffer or not parts:
+                await _upload_part()
+
+            await client.complete_multipart_upload(
+                Bucket=s3_bucket, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts}
+            )
+        except BaseException:
+            with suppress(Exception):
+                await client.abort_multipart_upload(Bucket=s3_bucket, Key=s3_key, UploadId=upload_id)
+            raise
+    return total_bytes
 
 
 @handle_s3_error(message="Failed to download from S3")
@@ -109,7 +166,7 @@ async def download_from_s3(s3_key: str, aws: "AWSCredentials", s3_bucket: str) -
     Raises:
         S3Error: If download fails due to AWS errors, network issues, or file not found
     """
-    async with _s3_client(aws) as client:
+    async with s3_client(aws) as client:
         response = await client.get_object(Bucket=s3_bucket, Key=s3_key)
         async with response["Body"] as stream:
             return await stream.read()
@@ -136,7 +193,7 @@ async def download_many_from_s3(
     each object is read fully into memory one at a time, so peak memory is
     bounded by the largest single object rather than the whole set.
     """
-    async with _s3_client(aws) as client:
+    async with s3_client(aws) as client:
         async for s3_key in _as_async_iter(s3_keys):
             try:
                 response = await client.get_object(Bucket=s3_bucket, Key=s3_key)
@@ -159,7 +216,7 @@ async def delete_from_s3(s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> 
     Raises:
         S3Error: If deletion fails due to AWS errors or network issues
     """
-    async with _s3_client(aws) as client:
+    async with s3_client(aws) as client:
         await client.delete_object(Bucket=s3_bucket, Key=s3_key)
 
 
@@ -171,7 +228,7 @@ async def copy_s3_object(source_key: str, dest_key: str, aws: "AWSCredentials", 
         S3Error: If copy fails due to AWS errors or network issues
     """
     try:
-        async with _s3_client(aws) as client:
+        async with s3_client(aws) as client:
             await client.copy_object(
                 Bucket=s3_bucket,
                 CopySource={"Bucket": s3_bucket, "Key": source_key},
@@ -210,7 +267,7 @@ async def s3_object_exists(s3_key: str, aws: "AWSCredentials", s3_bucket: str) -
     Returns:
         True if the object exists, False otherwise
     """
-    async with _s3_client(aws) as client:
+    async with s3_client(aws) as client:
         try:
             await client.head_object(Bucket=s3_bucket, Key=s3_key)
             return True
@@ -237,7 +294,7 @@ async def list_s3_objects(prefix: str, aws: "AWSCredentials", s3_bucket: str) ->
         S3Error: If listing fails due to AWS errors or network issues
     """
     try:
-        async with _s3_client(aws) as client:
+        async with s3_client(aws) as client:
             paginator = client.get_paginator("list_objects_v2")
             async for page in paginator.paginate(Bucket=s3_bucket, Prefix=prefix):
                 for s3_object in page.get("Contents", []):
@@ -264,7 +321,7 @@ async def create_presigned_url(s3_key: str, aws: "AWSCredentials", s3_bucket: st
     Raises:
         S3Error: If presigned URL creation fails
     """
-    async with _s3_client(aws) as client:
+    async with s3_client(aws) as client:
         presigned_url: str = await client.generate_presigned_url(
             "get_object",
             Params={"Bucket": s3_bucket, "Key": s3_key},
@@ -315,7 +372,7 @@ async def list_agents(aws: "AWSCredentials", s3_bucket: str) -> list[tuple[str, 
         S3Error: If listing fails due to AWS errors or network issues
     """
     agents: list[tuple[str, datetime | None]] = []
-    async with _s3_client(aws) as client:
+    async with s3_client(aws) as client:
         paginator = client.get_paginator("list_objects_v2")
         async for page in paginator.paginate(Bucket=s3_bucket, Prefix="agents/"):
             for s3_object in page.get("Contents", []):

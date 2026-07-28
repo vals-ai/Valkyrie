@@ -1,18 +1,22 @@
 """Sandbox management utilities for the tracker service."""
 
+import asyncio
 import shlex
 import time
 import uuid
 from asyncio import Semaphore
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from enum import Enum
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
 import logfire
 import sentry_sdk
 from benchmark_service import (
+    ComposeSandbox,
+    ComposeSource,
     ExecResult,
     ImageSource,
     Sandbox,
@@ -33,12 +37,16 @@ from tenacity import (
     retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
+    wait_chain,
+    wait_fixed,
+    wait_none,
 )
 
 from tracker.aws.s3 import (
     create_presigned_url,
     get_agent_result_s3_key,
     get_benchmark_contract_s3_key,
+    upload_stream_to_s3,
     upload_to_s3,
 )
 from tracker.database.models import (
@@ -49,6 +57,7 @@ from tracker.database.models import (
 )
 from tracker.exceptions import (
     AgentRunFailedError,
+    DependencySetupExhaustedError,
     OutputArtifactError,
     SandboxError,
     SandboxSetupError,
@@ -70,6 +79,7 @@ logger = get_logger(__name__)
 bundle_path = PurePosixPath("/bundle")
 SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
+AGENT_INSTALL_TIMEOUT_SECONDS = 10 * 60
 CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
 
 
@@ -92,10 +102,24 @@ async def delete_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> None:
 
 def _source_name(source: SandboxSource) -> str:
     match source:
+        case ComposeSource(outer=outer):
+            return _source_name(outer)
         case ImageSource(image=image):
             return image
         case SnapshotSource():
             return "snapshot"
+
+
+def _provider_source(source: SandboxSource) -> SandboxSource:
+    if isinstance(source, ComposeSource):
+        return source.outer
+    return source
+
+
+def runtime_sandbox(sandbox: Sandbox, source: SandboxSource) -> Sandbox:
+    if isinstance(source, ComposeSource):
+        return ComposeSandbox(sandbox, source)
+    return sandbox
 
 
 def _metric_source_name(source: SandboxSource) -> str:
@@ -142,10 +166,11 @@ async def _create_sandbox(
     env_vars: dict[str, str] | None = None,
 ) -> Sandbox:
     """Create a sandbox through its provider."""
-    _set_sandbox_create_span_attributes(sandbox_name, source, resources)
+    provider_source = _provider_source(source)
+    _set_sandbox_create_span_attributes(sandbox_name, provider_source, resources)
     return await provider.create_sandbox(
         SandboxCreateRequest(
-            source=source,
+            source=provider_source,
             resources=resources,
             name=sandbox_name,
             labels=labels or {},
@@ -190,7 +215,15 @@ async def create_sandbox(
     try:
         async with creation_semaphore:
             start = time.monotonic()
-            sandbox = await _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars)
+            creation_task = asyncio.create_task(
+                _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars)
+            )
+            try:
+                sandbox = await asyncio.shield(creation_task)
+            except asyncio.CancelledError:
+                sandbox = await creation_task
+                await delete_sandbox(sandbox, provider)
+                raise
     except Exception as e:
         incr("valkyrie.sandbox.create.errors", tags={"error_class": type(e).__name__})
         raise
@@ -295,28 +328,73 @@ async def upload_agent_artifacts(
         raise SandboxError(error_message)
 
 
-@retry(
-    retry=retry_if_exception_type(SandboxError),
-    reraise=True,
-    stop=stop_after_attempt(3),
-    before_sleep=retry_callback("valkyrie.sandbox.deps"),
-)
-async def install_agent_dependencies(
+class DependencySetupMode(str, Enum):
+    """Select whether dependency setup can retry inside the current sandbox."""
+
+    IN_PLACE_RETRIES = "in_place_retries"
+    FINAL_FRESH_SANDBOX = "final_fresh_sandbox"
+
+
+async def _install_agent_dependencies_once(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     log_output: Callable[[str], None],
 ) -> None:
-    """Install agent dependencies in the sandbox."""
+    """Run one bounded dependency installation attempt."""
     if not contract.install_cmd:
         return
 
     log_output(f"Installing dependencies for contract: {contract.name}")
 
     contract_path = get_contract_path(contract.name)
+    install_cmd = f"timeout {AGENT_INSTALL_TIMEOUT_SECONDS:g} sh -c {shlex.quote(contract.install_cmd)}"
 
-    await stream_command_output(sandbox, f"cd {shlex.quote(str(contract_path))} && {contract.install_cmd}", log_output)
+    exit_reason, _duration = await stream_command_output(
+        sandbox,
+        f"cd {shlex.quote(str(contract_path))} && {install_cmd}",
+        log_output,
+    )
+    if exit_reason == AgentCausedExitReason.TIMEOUT:
+        raise SandboxError(
+            f"Dependency installation for contract {contract.name} timed out after "
+            f"{AGENT_INSTALL_TIMEOUT_SECONDS:g} seconds"
+        )
 
     log_output(f"Finished installing dependencies for contract: {contract.name}")
+
+
+@retry(
+    retry=retry_if_exception_type(SandboxError),
+    reraise=True,
+    stop=stop_after_attempt(4),
+    wait=wait_chain(wait_none(), wait_fixed(10), wait_fixed(60)),
+    before_sleep=retry_callback("valkyrie.sandbox.deps"),
+)
+async def _install_agent_dependencies_with_retries(
+    sandbox: Sandbox,
+    contract: AgentContractRequest,
+    log_output: Callable[[str], None],
+) -> None:
+    await _install_agent_dependencies_once(sandbox, contract, log_output)
+
+
+async def install_agent_dependencies(
+    sandbox: Sandbox,
+    contract: AgentContractRequest,
+    log_output: Callable[[str], None],
+    mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
+) -> None:
+    """Install dependencies using the policy selected for this sandbox."""
+    if mode is DependencySetupMode.FINAL_FRESH_SANDBOX:
+        await _install_agent_dependencies_once(sandbox, contract, log_output)
+        return
+
+    try:
+        await _install_agent_dependencies_with_retries(sandbox, contract, log_output)
+    except SandboxError as error:
+        raise DependencySetupExhaustedError(
+            f"Dependency installation for contract {contract.name} failed after 4 attempts"
+        ) from error
 
 
 # NOTE: If this gets too big move it into a mapping
@@ -325,6 +403,13 @@ _TIMEOUT_EXIT_CODE: int = 124
 _OS_KILL_EXIT_CODE: int = 137
 _SUCCESS_EXIT_CODE: int = 0
 _STATUS_DIR = "/tmp/.valkyrie"
+_OUTPUT_TAIL_MAX_CHARS = 64 * 1024
+_EGRESS_RETRY = retry(
+    retry=retry_if_exception_type(ProviderSandboxError) & retry_if_not_exception_type(SandboxNotFoundError),
+    reraise=True,
+    stop=stop_after_attempt(3),
+    before_sleep=retry_callback("valkyrie.sandbox.egress"),
+)
 
 
 @logfire.instrument("sandbox.exec", extract_args=False)
@@ -338,12 +423,61 @@ async def _exec(sandbox: Sandbox, command: str) -> ExecResult:
         raise SandboxError(str(e)) from e
 
 
+@_EGRESS_RETRY
+async def _run_egress_operation(operation: Callable[[], Awaitable[None]]) -> None:
+    await operation()
+
+
+async def _apply_egress_allowlist(sandbox: Sandbox, allowed_addresses: list[str]) -> None:
+    try:
+        await _run_egress_operation(lambda: sandbox.modify_egress_rules(allowed_addresses))
+    except SandboxNotFoundError:
+        raise
+    except ValueError as e:
+        raise SandboxSetupError(f"Failed to apply egress rules: {e}") from e
+    except ProviderSandboxError as e:
+        raise SandboxError(str(e)) from e
+
+
+async def _clear_egress_allowlist(sandbox: Sandbox, fail_on_error: bool) -> None:
+    try:
+        # Clearing restores unrestricted egress because sandboxes have no baseline restriction today.
+        await _run_egress_operation(sandbox.clear_egress_rules)
+    except Exception as e:
+        logger.warning("failed to clear egress rules for sandbox %s", sandbox.id, exc_info=True)
+        if fail_on_error:
+            raise SandboxSetupError("Failed to clear egress rules") from e
+
+
+async def _stream_command_output_with_egress_allowlist(
+    sandbox: Sandbox,
+    command: str,
+    on_output: Callable[[str], None],
+    allowed_addresses: list[str],
+) -> tuple[AgentCausedExitReason | None, float]:
+    if not allowed_addresses:
+        return await stream_command_output(sandbox, command, on_output)
+
+    command_completed = False
+    try:
+        await _apply_egress_allowlist(sandbox, allowed_addresses)
+        result = await stream_command_output(sandbox, command, on_output)
+        command_completed = True
+        return result
+    finally:
+        # After a clean agent run, stale egress rules would affect evaluation; otherwise preserve the original error.
+        await _clear_egress_allowlist(sandbox, fail_on_error=command_completed)
+
+
 async def stream_command_output(
     sandbox: Sandbox,
     command: str,
     on_output: Callable[[str], None],
 ) -> tuple[AgentCausedExitReason | None, float]:
-    output: deque[str] = deque(maxlen=50)
+    # Bounded tail of recent output, kept only for error messages; capped by characters
+    # rather than chunk count since a single chunk can be arbitrarily large.
+    output: deque[str] = deque()
+    output_chars = 0
     run_id = uuid.uuid4().hex
     start_ns_path = f"{_STATUS_DIR}/{run_id}.start_ns"
     end_ns_path = f"{_STATUS_DIR}/{run_id}.end_ns"
@@ -362,6 +496,9 @@ async def stream_command_output(
             async for data in sandbox.command(timed_command):
                 on_output(data)
                 output.append(data)
+                output_chars += len(data)
+                while output_chars > _OUTPUT_TAIL_MAX_CHARS and len(output) > 1:
+                    output_chars -= len(output.popleft())
         except ProviderSandboxCommandError as e:
             exit_code = e.exit_code
         except SandboxNotFoundError:
@@ -414,8 +551,9 @@ async def archive_and_upload_output(
         raise SandboxError(f"Failed to create archive from {output_path}")
 
     try:
-        file_content = await sandbox.download_file(archive_path)
-        await upload_to_s3(file_content, agent_output_s3_key, aws, s3_bucket)
+        archive_bytes = await upload_stream_to_s3(
+            sandbox.stream_download(archive_path), agent_output_s3_key, aws, s3_bucket
+        )
 
         logger.info(
             "agent_output.archive_and_upload.complete",
@@ -426,7 +564,7 @@ async def archive_and_upload_output(
                 "s3_key": agent_output_s3_key,
                 "benchmark_id": benchmark_id,
                 "task_id": task_id,
-                "archive_bytes": len(file_content),
+                "archive_bytes": archive_bytes,
                 "duration_ms": elapsed_ms(start),
             },
         )
@@ -554,6 +692,8 @@ async def run_agent(
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
+    runtime_source: SandboxSource | None = None,
+    dependency_setup_mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
@@ -566,6 +706,7 @@ async def run_agent(
         cwd: Working directory to run the agent in
         agent_output_s3_key: S3 key to where we will upload the final output archive to
         agent_timeout: Optional timeout in seconds to enforce on the agent command
+        runtime_source: Optional source used to adapt agent commands to the task runtime
 
     Returns:
         AgentCausedExitReason if the agent was terminated abnormally but recoverably
@@ -575,8 +716,10 @@ async def run_agent(
         SandboxError: If the agent fails to run or times out
     """
     log_output(f"Running agent {contract.name}")
+    if runtime_source is not None:
+        sandbox = runtime_sandbox(sandbox, runtime_source)
 
-    await install_agent_dependencies(sandbox, contract, log_output)
+    await install_agent_dependencies(sandbox, contract, log_output, dependency_setup_mode)
 
     run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
 
@@ -585,14 +728,17 @@ async def run_agent(
 
     # Apply timeout if specified
     if agent_timeout is not None:
-        run_cmd = f"timeout {agent_timeout} {run_cmd}"
+        run_cmd = f"timeout {agent_timeout:g} sh -c {shlex.quote(run_cmd)}"
 
     # Create cwd if it does not already exist
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
     # Run the agent without including task directory dependencies
-    exit_reason, agent_run_time = await stream_command_output(
-        sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output
+    exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
+        sandbox,
+        f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
+        log_output,
+        contract.egress_allowlist,
     )
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:
