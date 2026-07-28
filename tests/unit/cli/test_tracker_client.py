@@ -670,12 +670,12 @@ def test_retry_or_resume_sends_retry_mode(
     monkeypatch: pytest.MonkeyPatch,
     mock_client: MockClient,
 ) -> None:
-    """Resume requests should carry retry mode and override secrets.
+    """Resume requests should carry retry mode and request overrides.
 
     Test cases:
     - Retry mode and concurrency are query parameters.
     - An explicit zero is forwarded instead of silently using the stored concurrency.
-    - Secret overrides are sent in the JSON body with task IDs and service headers.
+    - Secret and benchmark URL overrides are sent in the JSON body.
     """
 
     monkeypatch.setattr(TrackerService, "_load_config", staticmethod(_empty_config))
@@ -690,6 +690,7 @@ def test_retry_or_resume_sends_retry_mode(
         concurrency=3,
         task_ids=["task-1"],
         secrets={"ANTHROPIC_API_KEY": "new-secret"},
+        benchmark_url="https://new.example",
     )
 
     assert result.status == "success"
@@ -698,6 +699,7 @@ def test_retry_or_resume_sends_retry_mode(
         "task_ids": ["task-1"],
         "service_headers": {},
         "secrets": {"ANTHROPIC_API_KEY": "new-secret"},
+        "benchmark_url": "https://new.example",
     }
 
     tracker.retry_or_resume_benchmark(
