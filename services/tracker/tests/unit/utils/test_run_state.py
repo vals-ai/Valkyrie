@@ -522,33 +522,26 @@ class TestRunState:
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
 
     @pytest.mark.parametrize("status", [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED])
-    def test_commit_task_error_preserves_terminal_status_by_default(
+    def test_commit_task_error_preserves_terminal_tasks(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
         status: TaskStatus,
     ) -> None:
-        task_row = Task(
+        task = Task(
             org_id=TEST_ORG_ID,
             task_id="task_0",
             benchmark=example_benchmark_object.id,
             status=status,
         )
-        database_session.add(example_benchmark_object)
-        database_session.add(task_row)
+        database_session.add_all([example_benchmark_object, task])
         database_session.commit()
 
-        committed = commit_task_error(
-            task_row,
-            database_session,
-            "stale evaluation failure",
-        )
+        assert not commit_task_error(task, database_session, "stale failure")
 
-        database_session.refresh(task_row)
-        errors = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all()
-        assert not committed
-        assert task_row.status == status
-        assert errors == []
+        database_session.refresh(task)
+        assert task.status == status
+        assert database_session.exec(select(ErrorResult.id).where(ErrorResult.task == task.id)).first() is None
 
     @pytest.mark.parametrize(
         "status",

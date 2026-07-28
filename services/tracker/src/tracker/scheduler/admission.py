@@ -48,7 +48,7 @@ def create_queue_context(
         provider=provider,
         pool_id=queue_pool_id(provider_pool_id),
         engine=engine,
-        poll_interval_seconds=float(poll_interval_seconds),
+        poll_interval_seconds=poll_interval_seconds,
     )
 
 
@@ -139,15 +139,19 @@ async def enter_queued_sandbox(
             if acquired:
                 _reset_abandoned_pool_builds(lock.connection, context.pool_id)
                 with Session(lock.connection) as session:
-                    current_state = _queued_task_state(session, task_row_id, expected_started_at)
                     eligible = eligible_task_is(
                         session,
                         context.pool_id,
                         task_row_id,
                         expected_started_at,
                     )
+                    waiting = eligible or _queued_task_state(
+                        session,
+                        task_row_id,
+                        expected_started_at,
+                    ) == (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS)
 
-                if current_state != (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS):
+                if not waiting:
                     return None
 
                 if eligible and await context.provider.check_admission(source, resources):
@@ -158,12 +162,14 @@ async def enter_queued_sandbox(
                             task_row_id=task_row_id,
                             expected_started_at=expected_started_at,
                         )
-                        current_state = _queued_task_state(session, task_row_id, expected_started_at)
-
-                    if not claimed:
-                        if current_state != (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS):
+                        if not claimed and _queued_task_state(
+                            session,
+                            task_row_id,
+                            expected_started_at,
+                        ) != (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS):
                             return None
-                    else:
+
+                    if claimed:
                         sandbox = await stack.enter_async_context(create())
                         with Session(lock.connection) as session:
                             started = _start_claimed_task(

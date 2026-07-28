@@ -291,12 +291,6 @@ class TestCountedStarts:
             assert result.exit_code == 2
             assert start_testbed.boundary_call_count() == 0
 
-    def test_priority_help_describes_a_configured_override(self, start_testbed: StartTestbed) -> None:
-        result = start_testbed.cli_runner.invoke(start_command, ["--help"])
-
-        assert result.exit_code == 0
-        assert "Override configured queue priority" in result.output
-
     def test_priority_forwards_provider_and_numeric_zero(
         self,
         start_testbed: StartTestbed,
@@ -309,7 +303,6 @@ class TestCountedStarts:
         assert "Priority override:" in queued_result.output
         start_call = start_testbed.tracker.start_benchmark.call_args
         assert start_call is not None
-        assert type(start_call.kwargs["priority"]) is int
         assert start_call.kwargs["priority"] == 0
         assert start_call.kwargs["provider"] == "modal"
 

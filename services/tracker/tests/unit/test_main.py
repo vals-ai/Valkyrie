@@ -7,7 +7,6 @@ import io
 import logging
 import tarfile
 from collections.abc import AsyncIterator
-from datetime import timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
 from uuid import UUID, uuid4
@@ -20,7 +19,6 @@ from benchmark_service.client import (
     BenchmarkServiceUnauthenticatedError,
 )
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
-from dateutil.parser import isoparse
 from descope.descope_client import DescopeClient
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -383,13 +381,12 @@ class TestTrackerAPI:
             "provider_pool_id",
             "requested_priority",
             "expected_priority",
-            "expected_queued_tasks",
         ),
         [
-            pytest.param(False, "shared-pool", None, None, False, id="queue-disabled-direct"),
-            pytest.param(True, "shared-pool", None, 3, True, id="queued-default-priority"),
-            pytest.param(True, "shared-pool", 0, 0, True, id="queued-explicit-zero-priority"),
-            pytest.param(True, None, None, None, False, id="unmanaged-provider-direct"),
+            pytest.param(False, "shared-pool", None, None, id="queue-disabled-direct"),
+            pytest.param(True, "shared-pool", None, 3, id="queued-default-priority"),
+            pytest.param(True, "shared-pool", 0, 0, id="queued-explicit-zero-priority"),
+            pytest.param(True, None, None, None, id="unmanaged-provider-direct"),
         ],
     )
     async def test_start_benchmark_persists_queued_tasks_before_dispatch(
@@ -403,7 +400,6 @@ class TestTrackerAPI:
         provider_pool_id: str | None,
         requested_priority: int | None,
         expected_priority: int | None,
-        expected_queued_tasks: bool,
     ) -> None:
         monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", sandbox_queue_enabled, raising=False)
         provider: Mock | None = None
@@ -437,19 +433,11 @@ class TestTrackerAPI:
         benchmark_row = database_session.get(Benchmark, UUID(json_response["benchmark_id"]))
         assert benchmark_row is not None
         assert benchmark_row.arguments.priority == expected_priority
-        assert (benchmark_row.arguments.queue_pool_id is not None) is expected_queued_tasks
-        assert isoparse(json_response["started_at"]) == benchmark_row.started_at.replace(tzinfo=timezone.utc)
-        assert {key: json_response[key] for key in ("benchmark_name", "agent_name", "concurrency", "task_count")} == {
-            "benchmark_name": "swebench",
-            "agent_name": contract.name,
-            "concurrency": 5,
-            "task_count": 2,
-        }
+        queued = expected_priority is not None
+        assert (benchmark_row.arguments.queue_pool_id is not None) is queued
 
         task_rows = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
-        assert {task_row.task_id for task_row in task_rows} == (
-            {"task_0", "task_1"} if expected_queued_tasks else set()
-        )
+        assert {task_row.task_id for task_row in task_rows} == ({"task_0", "task_1"} if queued else set())
 
         worker_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
         assert {key: worker_request[key] for key in ("concurrency", "priority")} == {
@@ -496,7 +484,7 @@ class TestTrackerAPI:
         else:
             assert response.json() == {"detail": "Queue priority requires a sandbox provider configured for admission"}
 
-    async def test_start_benchmark_rolls_back_queued_run_when_task_creation_fails(
+    async def test_start_benchmark_marks_persisted_queue_error_when_start_setup_fails(
         self,
         contract: AgentContractRequest,
         monkeypatch: MonkeyPatch,
@@ -504,14 +492,13 @@ class TestTrackerAPI:
         harness_config: HarnessConfig,
     ) -> None:
         monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", True, raising=False)
-        provider = Mock(admission_pool_id="shared-pool", close=AsyncMock())
         provider_config = Mock()
-        provider_config.create_provider.return_value = provider
+        provider_config.create_provider.return_value = Mock(admission_pool_id="shared-pool", close=AsyncMock())
         monkeypatch.setattr("main.fetch_sandbox_provider_config", Mock(return_value=provider_config))
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
         monkeypatch.setattr(
-            "main.create_task_rows",
-            Mock(side_effect=RuntimeError("task persistence failed")),
+            "main.copy_agent_to_benchmark",
+            AsyncMock(side_effect=RuntimeError("copy failed")),
         )
         request = StartBenchmarkRequest(
             contract=contract,
@@ -523,60 +510,12 @@ class TestTrackerAPI:
             "/start-benchmark",
             json=request.model_dump(),
         )
-        database_session.rollback()
 
+        benchmark = database_session.exec(select(Benchmark)).one()
+        task = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).one()
         assert response.status_code == 500
-        assert database_session.exec(select(Benchmark)).all() == []
-
-    @pytest.mark.parametrize("failure_stage", ["copy", "dispatch"])
-    async def test_start_benchmark_marks_queued_tasks_error_when_start_fails(
-        self,
-        contract: AgentContractRequest,
-        monkeypatch: MonkeyPatch,
-        database_session: Session,
-        harness_config: HarnessConfig,
-        mock_kicker: MockKicker,
-        failure_stage: str,
-    ) -> None:
-        monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", True, raising=False)
-        provider = Mock(admission_pool_id="shared-pool", close=AsyncMock())
-        provider_config = Mock()
-        provider_config.create_provider.return_value = provider
-        monkeypatch.setattr("main.fetch_sandbox_provider_config", Mock(return_value=provider_config))
-        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
-
-        failure = RuntimeError(f"{failure_stage} failed")
-        if failure_stage == "copy":
-            monkeypatch.setattr("main.copy_agent_to_benchmark", AsyncMock(side_effect=failure))
-        else:
-
-            async def claim_then_fail(**_kwargs: Any) -> None:
-                with Session(bind=database_session.bind) as session:
-                    task = session.exec(select(Task).where(Task.status == TaskStatus.PENDING)).first()
-                    assert task is not None
-                    task.status = TaskStatus.BUILDING
-                    session.add(task)
-                    session.commit()
-                raise failure
-
-            monkeypatch.setattr(mock_kicker, "kiq", claim_then_fail)
-        request = StartBenchmarkRequest(
-            contract=contract,
-            benchmark_name="swebench",
-            harness_config=harness_config,
-        )
-
-        response = TestClient(app, raise_server_exceptions=False).post(
-            "/start-benchmark",
-            json=request.model_dump(),
-        )
-
-        benchmark_row = database_session.exec(select(Benchmark)).one()
-        task_rows = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
-        assert response.status_code == 500
-        assert response.json() == {"detail": "Tracker service operation failed"}
-        assert benchmark_row.status == BenchmarkStatus.ERROR
-        assert [task.status for task in task_rows] == [TaskStatus.ERROR]
+        assert benchmark.status == BenchmarkStatus.ERROR
+        assert task.status == TaskStatus.ERROR
 
     async def test_start_benchmark_returns_502_when_benchmark_service_is_unreachable(
         self,

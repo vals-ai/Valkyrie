@@ -283,8 +283,7 @@ class TaskMonitor:
                     task.cancel(f"Task {task_id} has been invalidated. Run has been requested to stop")
 
             await self._check_notifications(benchmark_row)
-            if self._task_tracking:
-                await asyncio.sleep(self._TRACK_INTERVAL)
+            await asyncio.sleep(self._TRACK_INTERVAL)
 
 
 def handle_early_exit(task_row: Task, task_session: Session) -> bool:

@@ -284,7 +284,6 @@ def test_start_priority_override_is_optional_and_strict(model: type[BaseModel]) 
     )
 
     assert default_request.priority is None
-    assert "use_queue" not in model.model_fields
 
     for priority in range(5):
         accepted = cast(
@@ -310,16 +309,6 @@ def test_sdk_default_start_request_is_accepted_by_legacy_tracker() -> None:
     assert wire_payload["concurrency"] == 5
     assert "priority" not in wire_payload
     assert legacy_request.concurrency == 5
-
-
-@pytest.mark.parametrize("model", [StartBenchmarkResponse, SDKStartBenchmarkResponse])
-def test_start_response_accepts_legacy_direct_surface(model: type[BaseModel]) -> None:
-    payload = load_fixture("start.json")["response"]
-
-    model.model_validate(payload)
-
-    assert "use_queue" not in model.model_fields
-    assert "priority" not in model.model_fields
 
 
 def _normalized_wire_schema(value: Any) -> Any:

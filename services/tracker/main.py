@@ -334,17 +334,15 @@ async def start_benchmark(
             await provider.close()
 
         # Admission identity is configured per provider secret; unmanaged credentials remain direct.
-        queue_configured = provider_pool_id is not None
-        if queue_configured and request.priority is None:
-            request = request.model_copy(update={"priority": 3})
-        elif not queue_configured and request.priority is not None:
+        if provider_pool_id is not None:
+            if request.priority is None:
+                request = request.model_copy(update={"priority": 3})
+            resolved_queue_pool_id = queue_pool_id(provider_pool_id)
+        elif request.priority is not None:
             raise HTTPException(
                 status_code=400,
                 detail="Queue priority requires a sandbox provider configured for admission",
             )
-
-        if provider_pool_id is not None:
-            resolved_queue_pool_id = queue_pool_id(provider_pool_id)
 
     if not request.contract.install_cmd and not request.contract.run_cmd:
         request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request)})
@@ -356,7 +354,7 @@ async def start_benchmark(
     # Validate benchmark service is reachable + tasks resolve BEFORE creating the DB row,
     # so failed auth / unreachable services don't pollute the benchmark list.
     try:
-        _ = await benchmark_service.health_check()
+        await benchmark_service.health_check()
     except httpx.ConnectError as exc:
         raise HTTPException(
             status_code=502,
@@ -873,13 +871,11 @@ async def retry_or_resume_benchmark(
                 )
                 .order_by(col(Task.started_at), col(Task.id))
             ).all()
-            unsafe_rows = [
-                task_row
-                for task_row in scheduler_rows
-                if task_row.status == TaskStatus.IN_PROGRESS
+            if any(
+                task_row.status == TaskStatus.IN_PROGRESS
                 or (task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is None)
-            ]
-            if unsafe_rows:
+                for task_row in scheduler_rows
+            ):
                 raise HTTPException(
                     status_code=409,
                     detail="Run has active tasks that cannot be resumed safely; stop the run before resuming",

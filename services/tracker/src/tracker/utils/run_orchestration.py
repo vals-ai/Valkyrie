@@ -72,11 +72,11 @@ async def _run_queued_tasks(
     creation_semaphore: Semaphore,
     queue_context: SandboxQueueContext,
     notifier: SlackNotifier | None,
-    record_cancellation: Callable[[dict[UUID, datetime]], bool],
+    record_cancellation: Callable[[dict[UUID, datetime]], None],
 ) -> None:
     """Run durable queued rows with active work plus one local pending contender."""
     owned_task_row_ids = {task_row.id for _, task_row in task_rows}
-    local_runners: dict[UUID, tuple[datetime, TrackedTask, asyncio.Task[dict[str, dict[str, Any] | None]]]] = {}
+    local_runners: dict[UUID, tuple[datetime, asyncio.Task[dict[str, dict[str, Any] | None]]]] = {}
     tracked_tasks: dict[str, TrackedTask] = {}
     coordinator_done = asyncio.Event()
     monitor = TaskMonitor(
@@ -130,11 +130,11 @@ async def _run_queued_tasks(
         )
         tracked_tasks[task_row.task_id] = tracked_task
         runner = asyncio.create_task(tracked_task.run(None, task_row))
-        local_runners[task_row.id] = (task_row.started_at, tracked_task, runner)
+        local_runners[task_row.id] = (task_row.started_at, runner)
 
     try:
         while True:
-            for task_row_id, (_attempt, _tracked, runner) in list(local_runners.items()):
+            for task_row_id, (_attempt, runner) in list(local_runners.items()):
                 if runner.done():
                     await runner
                     del local_runners[task_row_id]
@@ -147,14 +147,9 @@ async def _run_queued_tasks(
                 current_rows = [task_row for task_row in benchmark_task_rows if task_row.id in owned_task_row_ids]
 
             current_by_id = {task_row.id: task_row for task_row in current_rows}
-            active_attempts = {
-                task_row_id: attempt
-                for task_row_id, (attempt, _tracked, runner) in local_runners.items()
-                if not runner.done()
-            }
             active_task_row_ids = {
                 task_row_id
-                for task_row_id, attempt in active_attempts.items()
+                for task_row_id, (attempt, _runner) in local_runners.items()
                 if (current_task := current_by_id.get(task_row_id)) is not None and current_task.started_at == attempt
             }
             used_slots = sum(
@@ -181,7 +176,7 @@ async def _run_queued_tasks(
                         for task_row in current_rows
                         if task_row.status == TaskStatus.EVALUATING
                         and task_row.eval_resume_state is not None
-                        and task_row.id not in active_attempts
+                        and task_row.id not in local_runners
                     ),
                     key=lambda task_row: (task_row.started_at, task_row.id),
                 )
@@ -193,14 +188,13 @@ async def _run_queued_tasks(
                 current_by_id.get(task_row_id) is not None
                 and current_by_id[task_row_id].status == TaskStatus.PENDING
                 and current_by_id[task_row_id].started_at == attempt
-                and not runner.done()
-                for task_row_id, (attempt, _tracked, runner) in local_runners.items()
+                for task_row_id, (attempt, _runner) in local_runners.items()
             )
             if not pending_contender_exists and available_slots and benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
                 pending_candidates = [
                     task_row
                     for task_row in current_rows
-                    if task_row.status == TaskStatus.PENDING and task_row.id not in active_attempts
+                    if task_row.status == TaskStatus.PENDING and task_row.id not in local_runners
                 ]
                 if pending_candidates:
                     launch(min(pending_candidates, key=lambda task_row: (task_row.started_at, task_row.id)))
@@ -215,17 +209,14 @@ async def _run_queued_tasks(
 
             await asyncio.sleep(queue_context.poll_interval_seconds)
     except asyncio.CancelledError:
-        cancellation_attempts = {
-            task_row_id: attempt for task_row_id, (attempt, _tracked, _runner) in local_runners.items()
-        }
+        cancellation_attempts = {task_row_id: attempt for task_row_id, (attempt, _runner) in local_runners.items()}
         raise
     finally:
         coordinator_done.set()
-        if any(not runner.done() for _attempt, _tracked, runner in local_runners.values()):
-            for _attempt, _tracked, runner in local_runners.values():
-                runner.cancel()
+        for _attempt, runner in local_runners.values():
+            runner.cancel()
         await gather(
-            *(runner for _attempt, _tracked, runner in local_runners.values()),
+            *(runner for _attempt, runner in local_runners.values()),
             return_exceptions=True,
         )
         await monitor_task
@@ -395,18 +386,15 @@ def _fetch_final_score_state(
         else None
         for task_row_id, task_id, _started_at, status in task_rows
     }
-    fingerprint_rows: list[tuple[UUID, datetime, TaskStatus, UUID | None]] = []
-    for task_row_id, _task_id, started_at, status in task_rows:
-        latest_result = latest_results.get(task_row_id)
-        fingerprint_rows.append(
-            (
-                task_row_id,
-                started_at,
-                status,
-                latest_result[0] if latest_result is not None else None,
-            )
+    fingerprint = tuple(
+        (
+            task_row_id,
+            started_at,
+            status,
+            latest_results[task_row_id][0] if task_row_id in latest_results else None,
         )
-    fingerprint = tuple(fingerprint_rows)
+        for task_row_id, _task_id, started_at, status in task_rows
+    )
     return inputs, fingerprint
 
 
@@ -530,11 +518,10 @@ async def process_benchmark(
                 org,
                 [task_row for _, task_row in task_rows],
                 error_message,
-                allow_terminal_without_task_transition=post_task_finalization,
-                expected_fingerprint=finalization_fingerprint if post_task_finalization else None,
+                expected_fingerprint=finalization_fingerprint,
             )
 
-    def record_queued_cancellation(owned_attempts: dict[UUID, datetime]) -> bool:
+    def record_queued_cancellation(owned_attempts: dict[UUID, datetime]) -> None:
         nonlocal queued_cancellation_recorded
         with Session(bind=engine) as session:
             queued_cancellation_recorded = _commit_queued_cancellation(
@@ -544,7 +531,6 @@ async def process_benchmark(
                 owned_attempts,
                 "Run was interrupted",
             )
-        return queued_cancellation_recorded
 
     if not queued_run:
         sandbox_provider_config = fetch_sandbox_provider_config(
@@ -568,7 +554,6 @@ async def process_benchmark(
                 task_rows = create_task_rows(verified_task_ids, benchmark_row, session, org)
                 run_task_rows = _load_verified_task_rows(verified_task_ids, benchmark_row, session, org)
                 queued_pool_id = benchmark_row.arguments.queue_pool_id
-                limiter = None
             assert queued_pool_id is not None
 
             try:
@@ -752,10 +737,7 @@ async def process_benchmark(
         logger.warning(error_message)
         finalization_deferred = not record_failure(error_message)
         failure_recorded = True
-    except BenchmarkServiceError as e:
-        finalization_deferred = not record_failure(str(e))
-        failure_recorded = True
-    except TrackerServiceError as e:
+    except (BenchmarkServiceError, TrackerServiceError) as e:
         finalization_deferred = not record_failure(str(e))
         failure_recorded = True
     except Exception as e:
@@ -805,7 +787,6 @@ def _commit_process_benchmark_error(
     owned_task_rows: Sequence[Task],
     error_message: str,
     *,
-    allow_terminal_without_task_transition: bool = False,
     expected_fingerprint: _TaskFingerprint | None = None,
 ) -> bool:
     benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
@@ -830,10 +811,8 @@ def _commit_process_benchmark_error(
                 continue
             session.add(ErrorResult(org_id=org.id, task=task_row.id, error_message="Run failed"))
             task_row.status = TaskStatus.ERROR
-            session.add(task_row)
             transitioned_task = True
 
-    session.flush()
     if expected_fingerprint is not None:
         _evaluation_results, current_fingerprint = _fetch_final_score_state(
             session,
@@ -847,12 +826,7 @@ def _commit_process_benchmark_error(
     if has_runnable_tasks(session, benchmark_row, org):
         session.commit()
         return False
-    if (
-        benchmark_row.arguments.queue_pool_id is not None
-        and expected_states
-        and not transitioned_task
-        and not allow_terminal_without_task_transition
-    ):
+    if benchmark_row.arguments.queue_pool_id is not None and expected_states and not transitioned_task:
         session.commit()
         return False
 
@@ -860,7 +834,6 @@ def _commit_process_benchmark_error(
         benchmark_row.docent_reading_status = DocentReadingStatus.ERROR
     benchmark_row.status = BenchmarkStatus.ERROR
     benchmark_row.error_message = error_message
-    session.add(benchmark_row)
     session.commit()
     return True
 
@@ -893,10 +866,8 @@ def _commit_queued_cancellation(
                 continue
             session.add(ErrorResult(org_id=org.id, task=task_row.id, error_message=error_message))
             task_row.status = TaskStatus.ERROR
-            session.add(task_row)
             transitioned_task = True
 
-    session.flush()
     if not transitioned_task or has_runnable_tasks(session, benchmark_row, org):
         session.commit()
         return False
@@ -905,7 +876,6 @@ def _commit_queued_cancellation(
         benchmark_row.docent_reading_status = DocentReadingStatus.ERROR
     benchmark_row.status = BenchmarkStatus.ERROR
     benchmark_row.error_message = error_message
-    session.add(benchmark_row)
     session.commit()
     return True
 

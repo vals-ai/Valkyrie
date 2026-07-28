@@ -28,10 +28,7 @@ class PostgresPoolLock:
 
     @property
     def connection(self) -> Connection:
-        """Return the connection that owns the lock while this context is active."""
-        if self._connection is None:
-            raise RuntimeError("PostgreSQL advisory lock is not held")
-
+        assert self._connection is not None
         return self._connection
 
     async def __aenter__(self) -> bool:
@@ -82,11 +79,8 @@ class PostgresPoolLock:
         return False
 
     def _release(self) -> None:
-        connection = self._connection
+        connection = self.connection
         self._connection = None
-        if connection is None:
-            return
-
         try:
             unlocked = bool(
                 connection.execute(
@@ -177,14 +171,14 @@ def claim_eligible_task(
     return result.rowcount == 1
 
 
-def reset_abandoned_builds(session: Session, pool_id: str, now: datetime) -> int:
+def reset_abandoned_builds(session: Session, pool_id: str, now: datetime) -> None:
     """Return abandoned sandbox builds in one provider pool to the queue."""
     arguments = type_coerce(col(Benchmark.arguments), JSON)
     queued_benchmarks = select(col(Benchmark.id)).where(
         col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS,
         arguments["queue_pool_id"].as_string() == pool_id,
     )
-    result = session.exec(
+    session.exec(
         update(Task)
         .where(col(Task.status) == TaskStatus.BUILDING)
         .where(col(Task.benchmark).in_(queued_benchmarks))
@@ -196,5 +190,3 @@ def reset_abandoned_builds(session: Session, pool_id: str, now: datetime) -> int
             ),
         )
     )
-
-    return result.rowcount
