@@ -12,7 +12,7 @@ import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from benchmark_service.schemas import VerifyTaskIdsResponse
-from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, WebSocket
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from opentelemetry.propagate import inject
@@ -132,20 +132,7 @@ def _operation_id(route: APIRoute) -> str:
 
 app = FastAPI(generate_unique_id_function=_operation_id, redirect_slashes=False)
 
-
-def _exclude_request_arguments_from_telemetry(
-    _request: Request | WebSocket,
-    _attributes: dict[str, Any],
-) -> None:
-    """Drop parsed request values and validation errors because either may contain secrets."""
-    return None
-
-
-logfire.instrument_fastapi(
-    app,
-    excluded_urls="/health$",
-    request_attributes_mapper=_exclude_request_arguments_from_telemetry,
-)
+logfire.instrument_fastapi(app, excluded_urls="/health$")
 
 app.add_middleware(RequestContextMiddleware)
 
