@@ -3,10 +3,61 @@
 Run: uv run pytest tests/unit/database/test_models.py
 """
 
+import pytest
+from pydantic import ValidationError
 from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, Task, TaskStatus
+from tracker.database.models import (
+    AgentContractRequest,
+    Benchmark,
+    BenchmarkArguments,
+    OutputArtifact,
+    Task,
+    TaskStatus,
+)
+
+
+def test_required_output_artifact_omits_default_from_serialized_contract() -> None:
+    artifact = OutputArtifact(path="logs/result.json")
+
+    assert artifact.model_dump(mode="json") == {
+        "path": "logs/result.json",
+        "source": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "artifacts",
+    [
+        [
+            "artifacts/result.json",
+            OutputArtifact(
+                path="artifacts//result.json",
+                source="/logs/optional.json",
+                required=False,
+            ),
+        ],
+        [
+            OutputArtifact(
+                path="telemetry/result.json",
+                source="/logs/first.json",
+                required=False,
+            ),
+            OutputArtifact(
+                path="telemetry//result.json",
+                source="/logs/second.json",
+                required=False,
+            ),
+        ],
+    ],
+    ids=["required-optional", "optional-optional"],
+)
+def test_agent_contract_rejects_duplicate_normalized_output_artifact_paths(
+    artifacts: list[str | OutputArtifact],
+) -> None:
+    with pytest.raises(ValidationError, match="duplicate"):
+        AgentContractRequest(name="agent", output_artifacts=artifacts)
 
 
 def test_create_benchmark_table_row_counts_stopped_tasks_as_finished(database_session: Session) -> None:

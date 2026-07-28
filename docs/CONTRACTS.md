@@ -4,7 +4,7 @@ This guide explains how to create agent contracts for Valkyrie.
 
 ## Overview
 
-An agent contract defines how to install and run an agent in a sandbox environment. Valkyrie handles bundling, deployment, and evaluation - you just need to specify how your agent is set up and executed.
+An agent contract defines how to install and run an agent in a sandbox environment. Valkyrie handles bundling, deployment, and evaluation - you just need to specify how your agent is set up and executed. If you need to create a CLI to run your agent, visit the [Creating a CLI](#creating-a-cli) section to learn how.
 
 ## Complete Contract Template
 
@@ -15,6 +15,8 @@ name: my_agent
 
 install_cmd: "bash setup.sh"
 
+# CLI is required to run the agent, you may need to make a python file, install it as a package, import it
+# inside, and wrap it in a CLI to accept arguments
 run_cmd: >-
   my_agent --task {problem_statement_path}
   --model {model}
@@ -153,13 +155,30 @@ output_artifacts:
     source: /logs/{task_id}/result.json
 ```
 
+By default, every declared artifact is required. Set `required: false` for best-effort telemetry that must not change the task result when it is missing or cannot be uploaded:
+
+```yaml
+output_artifacts:
+  - path: atif/trajectory.json
+    source: /logs/{task_id}/trajectory_atif.json
+    required: false
+  - path: artifacts/model.patch
+    source: /logs/{task_id}/artifacts/model.patch
+    required: false
+```
+
+`artifacts/model.patch` is reserved for an optional validated text diff produced
+by repository-editing agents. Its ATIF trajectory may reference it through
+`extra.vals.model_patch`; Valkyrie still collects it as a separate artifact.
+
 Valkyrie does not require a specific destination prefix. For Vals benchmark result ingestion, use the project convention `vals_format/config.json` and `vals_format/result.json`.
 
 Guardrails:
 
 - Artifact destination paths are relative to the task's S3 prefix. String entries use the same path under `/tmp/valkyrie`; object entries use their explicit `source`.
 - Object `source` paths must be absolute sandbox paths. Glob sources must include a non-root directory prefix such as `/logs` or `/app/results/...`.
-- Each declared artifact is required. Missing files or unresolved glob sources fail the task clearly.
+- String entries and object entries without `required: false` are required. Missing files, unresolved glob sources, validation failures, size-limit failures, download failures, and upload failures fail the task clearly.
+- Optional artifacts are skipped and logged when collection fails. They are intended for non-scoring telemetry; their absence never changes the task result.
 - Individual files cannot exceed 50 MiB.
 - At most 10 output artifacts can be declared.
 - The total uploaded sidecar bytes per task cannot exceed 50 MiB.
@@ -287,6 +306,40 @@ source /bundle/my_agent/submodule/my_agent/.venv/bin/activate
 exec python /bundle/my_agent/submodule/my_agent/main.py "$@"
 WRAPPER
 chmod +x /usr/local/bin/my_agent
+```
+
+## Creating a CLI
+
+In order for valkyrie to pass in the required CLI arguments to your agent, the agent must accept CLI arguments. If your agent currently does not have a CLI, you can use this example to add it
+
+```python
+# run_agent.py
+import argparse
+from pathlib import Path
+
+from agent import agent
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("problem_statement_path", type=Path)
+    parser.add_argument("task_id")
+    arguments = parser.parse_args()
+
+    problem_statement = arguments.problem_statement_path.read_text()
+    agent.run(
+        problem_statement=problem_statement,
+        task_id=arguments.task_id,
+    )
+
+
+if __name__ == "__main__":
+    """
+    uv run python run_agent.py \
+      "{problem_statement_path}" \
+      "{task_id}"
+    """
+    main()
 ```
 
 The entire agent directory is bundled to `/bundle/<agent_name>/` in the sandbox (`contract.yaml` will be excluded).

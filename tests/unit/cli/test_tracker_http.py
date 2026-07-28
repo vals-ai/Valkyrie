@@ -97,6 +97,34 @@ class TestTrackerJsonEndpoints:
             ):
                 tracker.fetch_benchmark(_RUN_ID)
 
+    @pytest.mark.parametrize(
+        ("status_code", "detail"),
+        [(401, "invalid token"), (400, "invalid status request")],
+        ids=["authentication", "request"],
+    )
+    def test_status_requests_surface_non_ok_responses(
+        self,
+        status_code: int,
+        detail: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Connected status handling must not hide non-retryable tracker responses.
+
+        Test cases:
+        - Authentication failures surface from both fetch and stream requests.
+        - Invalid requests surface from both fetch and stream requests.
+        """
+
+        def handle_request(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(status_code, json={"detail": detail}, request=request)
+
+        with _tracker_with_handler(monkeypatch, handle_request) as tracker:
+            with pytest.raises(TrackerServiceError, match=detail):
+                tracker.fetch_benchmark(_RUN_ID)
+
+            with pytest.raises(TrackerServiceError, match=detail):
+                list(tracker.stream_benchmark(_RUN_ID))
+
     def test_run_read_endpoints_parse_real_http_responses(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Run reads must preserve typed payloads, filters, and task selections over HTTP.
 
