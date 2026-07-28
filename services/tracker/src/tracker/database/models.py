@@ -102,7 +102,7 @@ class OutputArtifact(BaseModel):
     required: bool = True
 
     @model_serializer(mode="wrap")
-    def serialize(self, handler: SerializerFunctionWrapHandler):
+    def serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         data = handler(self)
         if self.required:
             data.pop("required", None)
