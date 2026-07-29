@@ -763,7 +763,7 @@ async def run_agent(
         problem_path: Path inside the sandbox where the problem statement file was written during setup
         log_output: Callback to log output
         cwd: Working directory to run the agent in
-        agent_env_vars: Resolved environment passed natively to agent setup and execution
+        agent_env_vars: Environment supplied to each fresh agent PTY
         agent_output_s3_key: S3 key to where we will upload the final output archive to
         agent_timeout: Optional timeout in seconds to enforce on the agent command
         runtime_source: Optional source used to adapt agent commands to the task runtime

@@ -577,14 +577,6 @@ async def _process_task_attempt(
             "TASK_ID": task_row.task_id,
             "IDENTITY": json.dumps(identity),
         }
-        sandbox_env_vars = {
-            # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
-            # are filterable per benchmark run and separable from other environments sharing the
-            # same Daytona account (sandbox OTLP export is account-level).
-            "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS": (
-                f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={ENVIRONMENT}"
-            ),
-        }
 
         # We don't want to track the task until the sandbox is actually created.
         task_breakdown = TaskBreakdown()
@@ -595,7 +587,12 @@ async def _process_task_attempt(
             sandbox_name=task_row.task_id,
             source=task_data.source,
             labels=labels,
-            env_vars=sandbox_env_vars,
+            # Sandbox telemetry is configuration; agent secrets stay command-scoped.
+            env_vars={
+                "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS": (
+                    f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={ENVIRONMENT}"
+                )
+            },
             resources=task_data.resources,
             creation_semaphore=creation_semaphore,
         ) as sandbox:

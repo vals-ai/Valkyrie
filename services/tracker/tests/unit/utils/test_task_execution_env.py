@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlmodel import Session
@@ -29,16 +30,6 @@ async def _capture_sandbox_environment(
 ) -> AsyncGenerator[SimpleNamespace, None]:
     captured_env_vars.append(env_vars)
     yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
-
-
-async def _capture_agent_environment(
-    captured_env_vars: list[dict[str, str]],
-    *_args: Any,
-    agent_env_vars: dict[str, str],
-    **_kwargs: Any,
-) -> tuple[None, float]:
-    captured_env_vars.append(agent_env_vars)
-    return None, 0.0
 
 
 class TestProcessTaskEnvironment:
@@ -72,7 +63,7 @@ class TestProcessTaskEnvironment:
             }
         )
         captured_sandbox_env_vars: list[dict[str, str]] = []
-        captured_agent_env_vars: list[dict[str, str]] = []
+        run_agent = AsyncMock(return_value=(None, 0.0))
 
         def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {
@@ -91,11 +82,7 @@ class TestProcessTaskEnvironment:
             "create_sandbox",
             partial(_capture_sandbox_environment, captured_sandbox_env_vars),
         )
-        monkeypatch.setattr(
-            utils_module,
-            "run_agent",
-            partial(_capture_agent_environment, captured_agent_env_vars),
-        )
+        monkeypatch.setattr(utils_module, "run_agent", run_agent)
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
@@ -107,8 +94,8 @@ class TestProcessTaskEnvironment:
                 )
             }
         ]
-        assert len(captured_agent_env_vars) == 1
-        agent_env_vars = captured_agent_env_vars[0]
+        run_agent.assert_awaited_once()
+        agent_env_vars = run_agent.call_args.kwargs["agent_env_vars"]
         assert agent_env_vars["RUN_ID"] == str(benchmark_id)
         assert "QUESTION_ID" not in agent_env_vars
         assert agent_env_vars["TASK_ID"] == "task_0"
@@ -135,23 +122,19 @@ class TestProcessTaskEnvironment:
             database_session,
             harness_config,
         )
-        captured_agent_env_vars: list[dict[str, str]] = []
+        run_agent = AsyncMock(return_value=(None, 0.0))
 
         def _mock_resolve_no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {}
 
         monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_no_secrets)
-        monkeypatch.setattr(
-            utils_module,
-            "run_agent",
-            partial(_capture_agent_environment, captured_agent_env_vars),
-        )
+        monkeypatch.setattr(utils_module, "run_agent", run_agent)
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
-        assert len(captured_agent_env_vars) == 1
-        agent_env_vars = captured_agent_env_vars[0]
+        run_agent.assert_awaited_once()
+        agent_env_vars = run_agent.call_args.kwargs["agent_env_vars"]
         assert json.loads(agent_env_vars["IDENTITY"]) == {
             "benchmark_name": "swebench",
             "agent_name": contract.name,
