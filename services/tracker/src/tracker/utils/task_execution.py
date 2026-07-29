@@ -569,10 +569,8 @@ async def _process_task_attempt(
         if benchmark_started_by_email:
             identity["email"] = benchmark_started_by_email
 
-        agent_secrets = resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws)
-        agent_secrets.pop("DAYTONA_SANDBOX_OTEL_EXTRA_LABELS", None)
         agent_env_vars = {
-            **agent_secrets,
+            **resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             "IDENTITY": json.dumps(identity),
@@ -587,8 +585,10 @@ async def _process_task_attempt(
             sandbox_name=task_row.task_id,
             source=task_data.source,
             labels=labels,
-            # Sandbox telemetry is configuration; agent secrets stay command-scoped.
             env_vars={
+                # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
+                # are filterable per benchmark run and separable from other environments sharing the
+                # same Daytona account (sandbox OTLP export is account-level).
                 "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS": (
                     f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={ENVIRONMENT}"
                 )

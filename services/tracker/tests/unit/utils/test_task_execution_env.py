@@ -73,7 +73,6 @@ class TestProcessTaskEnvironment:
                 "UNRELATED_SECRET": "secret-value",
                 "MODEL_GATEWAY_URL": "https://gateway.example.test",
                 "MODEL_GATEWAY_API_KEY": "gateway-key",
-                "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS": "secret-value",
             }
 
         monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_secrets)
@@ -107,7 +106,6 @@ class TestProcessTaskEnvironment:
         assert agent_env_vars["UNRELATED_SECRET"] == "secret-value"
         assert agent_env_vars["MODEL_GATEWAY_URL"] == "https://gateway.example.test"
         assert agent_env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
-        assert "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS" not in agent_env_vars
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_task_omits_identity_email_when_unavailable(

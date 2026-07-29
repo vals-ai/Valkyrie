@@ -208,7 +208,7 @@ Omit this field, or set it to an empty list, to keep unrestricted sandbox egress
 
 ### `secrets: dict`
 
-Secrets required by the agent. Maps environment variable names to AWS Secrets Manager secret names. Tracker resolves them and injects them only during agent dependency installation and execution. Raw values are never stored.
+Secrets specified in the contract or CLI are used when installing dependencies and running the agent. Contract entries map environment variable names to AWS Secrets Manager secret names. Raw values are never stored.
 
 ```yaml
 secrets:
