@@ -646,6 +646,7 @@ async def _process_task_attempt(
                         task_data.cwd,
                         aws=harness_config.aws,
                         s3_bucket=harness_config.s3_bucket,
+                        agent_env_vars=env_vars,
                         agent_output_s3_key=agent_output_s3_key,
                         agent_timeout=task_data.agent_timeout,
                         benchmark_id=str(benchmark_id),

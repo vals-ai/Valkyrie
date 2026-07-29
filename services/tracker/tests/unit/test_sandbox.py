@@ -557,6 +557,7 @@ class TestRunAgent:
             "/testbed",
             aws=harness_config.aws,
             s3_bucket=harness_config.s3_bucket,
+            agent_env_vars={},
             benchmark_id="benchmark-123",
         )
 
@@ -612,6 +613,7 @@ class TestRunAgent:
             "/testbed",
             aws=harness_config.aws,
             s3_bucket=harness_config.s3_bucket,
+            agent_env_vars={},
             agent_output_s3_key="benchmarks/run/task/agent_output.tar.gz",
             benchmark_id="benchmark-123",
         )
@@ -640,9 +642,16 @@ class TestRunAgent:
             assert command == "mkdir -p /workspace"
             return ExecResult(exit_code=0)
 
-        async def fake_stream_command_output(sandbox: Any, command: str, _log_output: Any) -> tuple[None, float]:
+        async def fake_stream_command_output(
+            sandbox: Any,
+            command: str,
+            _log_output: Any,
+            *,
+            env_vars: Mapping[str, str] | None = None,
+        ) -> tuple[None, float]:
             observed_sandboxes.append(sandbox)
             assert command == "cd /workspace && PYTHONSAFEPATH=1 echo done"
+            assert env_vars == {}
             return None, 0.0
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -662,6 +671,7 @@ class TestRunAgent:
             "/workspace",
             aws=harness_config.aws,
             s3_bucket=harness_config.s3_bucket,
+            agent_env_vars={},
             runtime_source=ComposeSource(
                 outer=ImageSource(image="docker:28.3.3-dind"),
                 compose_command="docker compose -f /harbor/compose.yaml",
@@ -693,8 +703,15 @@ class TestRunAgent:
             assert command == "mkdir -p /workspace"
             return ExecResult(exit_code=0)
 
-        async def fake_stream_command_output(_sandbox: Any, command: str, _log_output: Any) -> tuple[None, float]:
+        async def fake_stream_command_output(
+            _sandbox: Any,
+            command: str,
+            _log_output: Any,
+            *,
+            env_vars: Mapping[str, str] | None = None,
+        ) -> tuple[None, float]:
             observed_commands.append(command)
+            assert env_vars == {}
             return None, 0.0
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -713,10 +730,46 @@ class TestRunAgent:
             "/workspace",
             aws=harness_config.aws,
             s3_bucket=harness_config.s3_bucket,
+            agent_env_vars={},
             agent_timeout=2.5,
         )
 
         assert observed_commands == [f"cd /workspace && PYTHONSAFEPATH=1 timeout 2.5 sh -c {shlex.quote(run_cmd)}"]
+
+    async def test_run_agent_passes_environment_to_install_and_execution(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="bash setup.sh",
+            run_cmd="echo done",
+        )
+        agent_env_vars = {"MODEL_PROXY_SSH_KEY": "sentinel-key"}
+        stream_output = AsyncMock(return_value=(None, 0.0))
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
+        monkeypatch.setattr(sandbox_module, "stream_command_output", stream_output)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+
+        await run_agent(
+            mock_sandbox,
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            lambda _msg: None,
+            "/workspace",
+            aws=harness_config.aws,
+            s3_bucket=harness_config.s3_bucket,
+            agent_env_vars=agent_env_vars,
+        )
+
+        assert stream_output.await_count == 2
+        assert all(call.kwargs["env_vars"] is agent_env_vars for call in stream_output.await_args_list)
+        assert all("sentinel-key" not in call.args[1] for call in stream_output.await_args_list)
 
 
 class TestSandboxRetry:
@@ -755,8 +808,11 @@ class TestSandboxRetry:
             _sandbox: Any,
             command: str,
             _log_output: Any,
+            *,
+            env_vars: Mapping[str, str] | None = None,
         ) -> tuple[AgentCausedExitReason | None, float]:
             observed_commands.append(command)
+            assert env_vars == {}
 
             return setup_results.popleft()
 
@@ -765,7 +821,7 @@ class TestSandboxRetry:
 
         monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
 
-        await _install_agent_dependencies(Mock(), contract, log_output)
+        await _install_agent_dependencies(Mock(), contract, log_output, {})
 
         expected_command = "cd /bundle/test-agent && timeout 600 sh -c 'apt-get update -qq && echo done'"
         assert observed_commands == [expected_command, expected_command]
@@ -791,7 +847,7 @@ class TestSandboxRetry:
         monkeypatch.setattr(sandbox_module, "stream_command_output", stream_command)
         monkeypatch.setattr(asyncio, "sleep", sleep)
 
-        await _install_agent_dependencies(Mock(), contract, _ignore_output)
+        await _install_agent_dependencies(Mock(), contract, _ignore_output, {})
 
         assert stream_command.await_count == 4
         assert [call.args[0] for call in sleep.await_args_list] == [0.0, 10.0, 60.0]
@@ -811,7 +867,7 @@ class TestSandboxRetry:
         monkeypatch.setattr(asyncio, "sleep", sleep)
 
         with pytest.raises(DependencySetupExhaustedError) as exc_info:
-            await _install_agent_dependencies(Mock(), contract, _ignore_output)
+            await _install_agent_dependencies(Mock(), contract, _ignore_output, {})
 
         assert isinstance(exc_info.value.__cause__, AgentRunFailedError)
         assert stream_command.await_count == 4
@@ -826,6 +882,7 @@ class TestSandboxRetry:
                 Mock(),
                 contract,
                 _ignore_output,
+                {},
                 mode=mode.FINAL_FRESH_SANDBOX,
             )
 
@@ -1252,6 +1309,7 @@ class TestEgressAllowlist:
             "run-agent.sh",
             on_output=ignore_output,
             allowed_addresses=["https://api.openai.com"],
+            agent_env_vars={},
         )
 
         assert result == (None, 2.5)
@@ -1285,6 +1343,7 @@ class TestEgressAllowlist:
             "run-agent.sh",
             on_output=ignore_output,
             allowed_addresses=[],
+            agent_env_vars={},
         )
 
         assert result == (None, 1.0)
@@ -1321,7 +1380,15 @@ class TestStreamCommandOutputAgentFailure:
     """Agent command failure cleanup and error classification."""
 
     async def test_stream_command_output_removes_timing_files(self) -> None:
-        async def stream_command(_command: str) -> AsyncIterator[str]:
+        observed_env_vars: Mapping[str, str] | None = None
+
+        async def stream_command(
+            _command: str,
+            *,
+            env_vars: Mapping[str, str] | None = None,
+        ) -> AsyncIterator[str]:
+            nonlocal observed_env_vars
+            observed_env_vars = env_vars
             yield "done\n"
 
         exec_commands: list[str] = []
@@ -1342,11 +1409,15 @@ class TestStreamCommandOutputAgentFailure:
         mock_sandbox.exec = exec_command
 
         exit_reason, duration = await sandbox_module.stream_command_output(
-            mock_sandbox, "run-agent.sh", on_output=lambda _: None
+            mock_sandbox,
+            "run-agent.sh",
+            on_output=lambda _: None,
+            env_vars={"MODEL_PROXY_SSH_KEY": "sentinel-key"},
         )
 
         assert exit_reason is None
         assert duration == 2
+        assert observed_env_vars == {"MODEL_PROXY_SSH_KEY": "sentinel-key"}
         assert exec_commands[-1].startswith("rm -f ")
         assert ".start_ns" in exec_commands[-1]
         assert ".end_ns" in exec_commands[-1]
@@ -1355,7 +1426,12 @@ class TestStreamCommandOutputAgentFailure:
     async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(
         self, monkeypatch: pytest.MonkeyPatch, exit_code: int
     ) -> None:
-        async def stream_command(_command: str) -> AsyncIterator[str]:
+        async def stream_command(
+            _command: str,
+            *,
+            env_vars: Mapping[str, str] | None = None,
+        ) -> AsyncIterator[str]:
+            assert env_vars is None
             yield "last line\n"
             raise ProviderSandboxCommandError(exit_code)
 
@@ -1393,7 +1469,12 @@ class TestStreamCommandOutputAgentFailure:
         """
         tail_cap = getattr(sandbox_module, "_OUTPUT_TAIL_MAX_CHARS")
 
-        async def stream_command(_command: str) -> AsyncIterator[str]:
+        async def stream_command(
+            _command: str,
+            *,
+            env_vars: Mapping[str, str] | None = None,
+        ) -> AsyncIterator[str]:
+            assert env_vars is None
             yield "old-marker\n"
             yield "x" * (tail_cap + 1) + "\n"
             yield "new-marker\n"

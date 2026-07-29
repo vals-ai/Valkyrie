@@ -210,6 +210,7 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
         task_data.cwd,
         aws=aws_credentials,
         s3_bucket="unused",
+        agent_env_vars={},
         runtime_source=task_data.source,
     )
 

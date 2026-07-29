@@ -31,6 +31,16 @@ async def _capture_sandbox_environment(
     yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
 
 
+async def _capture_agent_environment(
+    captured_env_vars: list[dict[str, str]],
+    *_args: Any,
+    agent_env_vars: dict[str, str],
+    **_kwargs: Any,
+) -> tuple[None, float]:
+    captured_env_vars.append(agent_env_vars)
+    return None, 0.0
+
+
 class TestProcessTaskEnvironment:
     """Tracker-owned environment variables passed to agent tasks."""
 
@@ -62,6 +72,7 @@ class TestProcessTaskEnvironment:
             }
         )
         captured_env_vars: list[dict[str, str]] = []
+        captured_agent_env_vars: list[dict[str, str]] = []
 
         def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {
@@ -78,6 +89,11 @@ class TestProcessTaskEnvironment:
             utils_module,
             "create_sandbox",
             partial(_capture_sandbox_environment, captured_env_vars),
+        )
+        monkeypatch.setattr(
+            utils_module,
+            "run_agent",
+            partial(_capture_agent_environment, captured_agent_env_vars),
         )
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
@@ -96,6 +112,7 @@ class TestProcessTaskEnvironment:
         assert env_vars["UNRELATED_SECRET"] == "secret-value"
         assert env_vars["MODEL_GATEWAY_URL"] == "https://gateway.example.test"
         assert env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
+        assert captured_agent_env_vars == [env_vars]
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_task_omits_identity_email_when_unavailable(

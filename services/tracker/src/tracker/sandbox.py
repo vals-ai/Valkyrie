@@ -6,7 +6,7 @@ import time
 import uuid
 from asyncio import Semaphore
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import PurePosixPath
@@ -342,6 +342,7 @@ async def _install_agent_dependencies_once(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     log_output: Callable[[str], None],
+    agent_env_vars: Mapping[str, str],
 ) -> None:
     """Run one bounded dependency installation attempt."""
     if not contract.install_cmd:
@@ -356,6 +357,7 @@ async def _install_agent_dependencies_once(
         sandbox,
         f"cd {shlex.quote(str(contract_path))} && {install_cmd}",
         log_output,
+        env_vars=agent_env_vars,
     )
     if exit_reason == AgentCausedExitReason.TIMEOUT:
         raise SandboxError(
@@ -377,23 +379,25 @@ async def _install_agent_dependencies_with_retries(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     log_output: Callable[[str], None],
+    agent_env_vars: Mapping[str, str],
 ) -> None:
-    await _install_agent_dependencies_once(sandbox, contract, log_output)
+    await _install_agent_dependencies_once(sandbox, contract, log_output, agent_env_vars)
 
 
 async def install_agent_dependencies(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     log_output: Callable[[str], None],
+    agent_env_vars: Mapping[str, str],
     mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
 ) -> None:
     """Install dependencies using the policy selected for this sandbox."""
     if mode is DependencySetupMode.FINAL_FRESH_SANDBOX:
-        await _install_agent_dependencies_once(sandbox, contract, log_output)
+        await _install_agent_dependencies_once(sandbox, contract, log_output, agent_env_vars)
         return
 
     try:
-        await _install_agent_dependencies_with_retries(sandbox, contract, log_output)
+        await _install_agent_dependencies_with_retries(sandbox, contract, log_output, agent_env_vars)
     except SandboxError as error:
         raise DependencySetupExhaustedError(
             f"Dependency installation for contract {contract.name} failed after 4 attempts"
@@ -457,14 +461,15 @@ async def _stream_command_output_with_egress_allowlist(
     command: str,
     on_output: Callable[[str], None],
     allowed_addresses: list[str],
+    agent_env_vars: Mapping[str, str],
 ) -> tuple[AgentCausedExitReason | None, float]:
     if not allowed_addresses:
-        return await stream_command_output(sandbox, command, on_output)
+        return await stream_command_output(sandbox, command, on_output, env_vars=agent_env_vars)
 
     command_completed = False
     try:
         await _apply_egress_allowlist(sandbox, allowed_addresses)
-        result = await stream_command_output(sandbox, command, on_output)
+        result = await stream_command_output(sandbox, command, on_output, env_vars=agent_env_vars)
         command_completed = True
         return result
     finally:
@@ -476,6 +481,8 @@ async def stream_command_output(
     sandbox: Sandbox,
     command: str,
     on_output: Callable[[str], None],
+    *,
+    env_vars: Mapping[str, str] | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     # Bounded tail of recent output, kept only for error messages; capped by characters
     # rather than chunk count since a single chunk can be arbitrarily large.
@@ -496,7 +503,7 @@ async def stream_command_output(
     exit_code = _SUCCESS_EXIT_CODE
     try:
         try:
-            async for data in sandbox.command(timed_command):
+            async for data in sandbox.command(timed_command, env_vars=env_vars):
                 on_output(data)
                 output.append(data)
                 output_chars += len(data)
@@ -740,6 +747,7 @@ async def run_agent(
     cwd: str,
     aws: AWSCredentials,
     s3_bucket: str,
+    agent_env_vars: Mapping[str, str],
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
@@ -755,6 +763,7 @@ async def run_agent(
         problem_path: Path inside the sandbox where the problem statement file was written during setup
         log_output: Callback to log output
         cwd: Working directory to run the agent in
+        agent_env_vars: Resolved environment passed natively to agent setup and execution
         agent_output_s3_key: S3 key to where we will upload the final output archive to
         agent_timeout: Optional timeout in seconds to enforce on the agent command
         runtime_source: Optional source used to adapt agent commands to the task runtime
@@ -770,7 +779,7 @@ async def run_agent(
     if runtime_source is not None:
         sandbox = runtime_sandbox(sandbox, runtime_source)
 
-    await install_agent_dependencies(sandbox, contract, log_output, dependency_setup_mode)
+    await install_agent_dependencies(sandbox, contract, log_output, agent_env_vars, dependency_setup_mode)
 
     run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
 
@@ -790,6 +799,7 @@ async def run_agent(
         f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
         log_output,
         contract.egress_allowlist,
+        agent_env_vars=agent_env_vars,
     )
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:

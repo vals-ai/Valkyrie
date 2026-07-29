@@ -232,7 +232,7 @@ class TestSandboxOperations:
         await test_sandbox.exec(f"mkdir -p /bundle/{contract_name}")
         await test_sandbox.exec(f"echo '#!/bin/bash\necho hello world' > /bundle/{contract_name}/setup.sh")
 
-        await install_agent_dependencies(test_sandbox, contract, log_callback)
+        await install_agent_dependencies(test_sandbox, contract, log_callback, {})
 
         # Verify messages were logged
         output = "\n".join(logged_messages)
@@ -277,6 +277,7 @@ class TestSandboxOperations:
             cwd="/",
             aws=live_aws_credentials,
             s3_bucket=harness_config.s3_bucket,
+            agent_env_vars={},
         )
 
         output = "\n".join(logged_messages)
@@ -321,6 +322,7 @@ class TestSandboxOperations:
             cwd="/",
             aws=live_aws_credentials,
             s3_bucket=harness_config.s3_bucket,
+            agent_env_vars={},
         )
 
         output = "\n".join(logged_messages)
