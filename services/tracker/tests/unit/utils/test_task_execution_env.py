@@ -71,7 +71,7 @@ class TestProcessTaskEnvironment:
                 "contract": contract.model_copy(update={"name": "transient-agent-name"}),
             }
         )
-        captured_env_vars: list[dict[str, str]] = []
+        captured_sandbox_env_vars: list[dict[str, str]] = []
         captured_agent_env_vars: list[dict[str, str]] = []
 
         def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
@@ -82,13 +82,14 @@ class TestProcessTaskEnvironment:
                 "UNRELATED_SECRET": "secret-value",
                 "MODEL_GATEWAY_URL": "https://gateway.example.test",
                 "MODEL_GATEWAY_API_KEY": "gateway-key",
+                "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS": "secret-value",
             }
 
         monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_secrets)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
-            partial(_capture_sandbox_environment, captured_env_vars),
+            partial(_capture_sandbox_environment, captured_sandbox_env_vars),
         )
         monkeypatch.setattr(
             utils_module,
@@ -99,20 +100,27 @@ class TestProcessTaskEnvironment:
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
-        assert len(captured_env_vars) == 1
-        env_vars = captured_env_vars[0]
-        assert env_vars["RUN_ID"] == str(benchmark_id)
-        assert "QUESTION_ID" not in env_vars
-        assert env_vars["TASK_ID"] == "task_0"
-        assert json.loads(env_vars["IDENTITY"]) == {
+        assert captured_sandbox_env_vars == [
+            {
+                "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS": (
+                    f"benchmark_id={benchmark_id},task_id=task_0,environment={utils_module.ENVIRONMENT}"
+                )
+            }
+        ]
+        assert len(captured_agent_env_vars) == 1
+        agent_env_vars = captured_agent_env_vars[0]
+        assert agent_env_vars["RUN_ID"] == str(benchmark_id)
+        assert "QUESTION_ID" not in agent_env_vars
+        assert agent_env_vars["TASK_ID"] == "task_0"
+        assert json.loads(agent_env_vars["IDENTITY"]) == {
             "benchmark_name": "swebench",
             "agent_name": contract.name,
             "email": "starter@example.com",
         }
-        assert env_vars["UNRELATED_SECRET"] == "secret-value"
-        assert env_vars["MODEL_GATEWAY_URL"] == "https://gateway.example.test"
-        assert env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
-        assert captured_agent_env_vars == [env_vars]
+        assert agent_env_vars["UNRELATED_SECRET"] == "secret-value"
+        assert agent_env_vars["MODEL_GATEWAY_URL"] == "https://gateway.example.test"
+        assert agent_env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
+        assert "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS" not in agent_env_vars
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_task_omits_identity_email_when_unavailable(
@@ -127,7 +135,7 @@ class TestProcessTaskEnvironment:
             database_session,
             harness_config,
         )
-        captured_env_vars: list[dict[str, str]] = []
+        captured_agent_env_vars: list[dict[str, str]] = []
 
         def _mock_resolve_no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {}
@@ -135,18 +143,18 @@ class TestProcessTaskEnvironment:
         monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_no_secrets)
         monkeypatch.setattr(
             utils_module,
-            "create_sandbox",
-            partial(_capture_sandbox_environment, captured_env_vars),
+            "run_agent",
+            partial(_capture_agent_environment, captured_agent_env_vars),
         )
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
-        assert len(captured_env_vars) == 1
-        env_vars = captured_env_vars[0]
-        assert json.loads(env_vars["IDENTITY"]) == {
+        assert len(captured_agent_env_vars) == 1
+        agent_env_vars = captured_agent_env_vars[0]
+        assert json.loads(agent_env_vars["IDENTITY"]) == {
             "benchmark_name": "swebench",
             "agent_name": contract.name,
         }
-        assert "MODEL_GATEWAY_URL" not in env_vars
-        assert "MODEL_GATEWAY_API_KEY" not in env_vars
+        assert "MODEL_GATEWAY_URL" not in agent_env_vars
+        assert "MODEL_GATEWAY_API_KEY" not in agent_env_vars

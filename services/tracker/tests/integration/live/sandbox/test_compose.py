@@ -96,13 +96,6 @@ async def compose_sandbox(
     project_name = f"tracker-compose-{uuid.uuid4().hex[:8]}"
     compose_file = f"/tmp/{project_name}.compose.yaml"
     task_data = _compose_task_response(f"docker compose -p {project_name} -f {compose_file}")
-    env_vars = {
-        "RUN_ID": _COMPOSE_RUN_ID,
-        "TASK_ID": _COMPOSE_TASK_ID,
-        "IDENTITY": _COMPOSE_IDENTITY,
-        "TRACKER_COMPOSE_SECRET": _COMPOSE_SECRET,
-    }
-
     assert isinstance(task_data.source, ComposeSource)
     assert isinstance(task_data.source.outer, ImageSource)
 
@@ -113,7 +106,6 @@ async def compose_sandbox(
         task_data.source,
         task_data.resources,
         creation_semaphore,
-        env_vars=env_vars,
     ) as outer_sandbox:
         try:
             await _start_compose_runtime(outer_sandbox, task_data.source, compose_file)
@@ -210,7 +202,12 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
         task_data.cwd,
         aws=aws_credentials,
         s3_bucket="unused",
-        agent_env_vars={},
+        agent_env_vars={
+            "RUN_ID": _COMPOSE_RUN_ID,
+            "TASK_ID": _COMPOSE_TASK_ID,
+            "IDENTITY": _COMPOSE_IDENTITY,
+            "TRACKER_COMPOSE_SECRET": _COMPOSE_SECRET,
+        },
         runtime_source=task_data.source,
     )
 
@@ -223,6 +220,8 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
 
     run_proof = await sandbox.exec("cat /workspace/agent-run.txt", timeout=30)
     assert run_proof.stdout == "agent-run"
+    ambient_secret = await sandbox.exec('test -z "${TRACKER_COMPOSE_SECRET+x}"', timeout=30)
+    assert ambient_secret.exit_code == 0
 
     evaluation = await sandbox.exec(
         "test -s /workspace/agent-run.txt && printf '{\"score\":1}' > /workspace/evaluation.json",
