@@ -6,7 +6,7 @@ Run: pytest services/tracker/tests/unit/test_sandbox.py
 import asyncio
 import shlex
 from collections import deque
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any, Never, cast
 from unittest.mock import AsyncMock, Mock, call
 
@@ -636,7 +636,7 @@ class TestRunAgent:
             *,
             benchmark_id: str | None = None,
             task_id: str | None = None,
-            execution_is_current: Any = None,
+            execution_is_current: Callable[[], bool] | None = None,
         ) -> None:
             archive_calls.append(f"{benchmark_id}:{task_id}:{output_path}")
 
