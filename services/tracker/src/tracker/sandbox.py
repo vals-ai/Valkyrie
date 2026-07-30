@@ -405,6 +405,7 @@ async def install_agent_dependencies(
 _TIMEOUT_EXIT_CODE: int = 124
 _OS_KILL_EXIT_CODE: int = 137
 _SUCCESS_EXIT_CODE: int = 0
+_STATUS_DIR = "/tmp/.valkyrie"
 _OUTPUT_TAIL_MAX_CHARS = 64 * 1024
 _EGRESS_RETRY = retry(
     retry=retry_if_exception_type(ProviderSandboxError) & retry_if_not_exception_type(SandboxNotFoundError),
@@ -480,35 +481,72 @@ async def stream_command_output(
     # rather than chunk count since a single chunk can be arbitrarily large.
     output: deque[str] = deque()
     output_chars = 0
+    run_id = uuid.uuid4().hex
+    start_ns_path = f"{_STATUS_DIR}/{run_id}.start_ns"
+    end_ns_path = f"{_STATUS_DIR}/{run_id}.end_ns"
+    # Timing is embedded in the sandbox command so it excludes the tracker->sandbox
+    # request round-trip and program cold-start (~5-6s), keeping the measurement accurate.
+    timed_command = (
+        f"mkdir -p {shlex.quote(_STATUS_DIR)}"
+        f" && date +%s%N > {shlex.quote(start_ns_path)}"
+        f"; {command}"
+        f"; exit_code=$?"
+        f"; date +%s%N > {shlex.quote(end_ns_path)}"
+        f'; sh -c "exit $exit_code"'
+    )
 
     exit_code = _SUCCESS_EXIT_CODE
-    started_at = time.monotonic()
+    monotonic_start = time.monotonic()
     try:
-        async for data in sandbox.command(command):
-            on_output(data)
-            output.append(data)
-            output_chars += len(data)
-            while output_chars > _OUTPUT_TAIL_MAX_CHARS and len(output) > 1:
-                output_chars -= len(output.popleft())
-    except ProviderSandboxCommandError as e:
-        exit_code = e.exit_code
-    except SandboxNotFoundError:
-        raise
-    except ProviderSandboxError as e:
-        raise SandboxError(str(e)) from e
-    duration = time.monotonic() - started_at
+        try:
+            async for data in sandbox.command(timed_command):
+                on_output(data)
+                output.append(data)
+                output_chars += len(data)
+                while output_chars > _OUTPUT_TAIL_MAX_CHARS and len(output) > 1:
+                    output_chars -= len(output.popleft())
+        except ProviderSandboxCommandError as e:
+            exit_code = e.exit_code
+        except SandboxNotFoundError:
+            raise
+        except ProviderSandboxError as e:
+            raise SandboxError(str(e)) from e
 
-    if exit_code == _SUCCESS_EXIT_CODE:
-        return None, duration
-    if exit_code == _TIMEOUT_EXIT_CODE:
-        return AgentCausedExitReason.TIMEOUT, duration
-    if exit_code == _OS_KILL_EXIT_CODE:
-        return AgentCausedExitReason.OS_KILLED, duration
+        # Prefer the sandbox-measured duration; fall back to the tracker-side monotonic
+        # duration if the timing files are missing/unparseable (e.g. the agent removed
+        # /tmp/.valkyrie), rather than crashing on `int()` of a `cat` error string.
+        duration = await _read_sandbox_duration(
+            sandbox, start_ns_path, end_ns_path, fallback=time.monotonic() - monotonic_start
+        )
 
-    tail = "".join(output).strip().splitlines()
-    recent = "\n".join(tail[-10:]) if tail else "(no output)"
-    sentry_sdk.set_tag("agent_exit_code", str(exit_code))
-    raise AgentRunFailedError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
+        if exit_code == _SUCCESS_EXIT_CODE:
+            return None, duration
+        if exit_code == _TIMEOUT_EXIT_CODE:
+            return AgentCausedExitReason.TIMEOUT, duration
+        if exit_code == _OS_KILL_EXIT_CODE:
+            return AgentCausedExitReason.OS_KILLED, duration
+
+        tail = "".join(output).strip().splitlines()
+        recent = "\n".join(tail[-10:]) if tail else "(no output)"
+        sentry_sdk.set_tag("agent_exit_code", str(exit_code))
+        raise AgentRunFailedError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
+    finally:
+        try:
+            await _exec(sandbox, f"rm -f {shlex.quote(start_ns_path)} {shlex.quote(end_ns_path)}")
+        except Exception:
+            pass
+
+
+async def _read_sandbox_duration(sandbox: Sandbox, start_ns_path: str, end_ns_path: str, fallback: float) -> float:
+    """Read the sandbox-side command duration, degrading to ``fallback`` on any failure."""
+    start_result = await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")
+    end_result = await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")
+    if start_result.exit_code != _SUCCESS_EXIT_CODE or end_result.exit_code != _SUCCESS_EXIT_CODE:
+        return fallback
+    try:
+        return (int(end_result.stdout.strip()) - int(start_result.stdout.strip())) / 1e9
+    except ValueError:
+        return fallback
 
 
 @logfire.instrument(
