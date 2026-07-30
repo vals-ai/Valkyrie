@@ -509,6 +509,8 @@ async def stream_command_output(
     run_id = uuid.uuid4().hex
     start_ns_path = f"{_STATUS_DIR}/{run_id}.start_ns"
     end_ns_path = f"{_STATUS_DIR}/{run_id}.end_ns"
+    # Timing is embedded in the sandbox command so it excludes the tracker->sandbox
+    # request round-trip and program cold-start (~5-6s), keeping the measurement accurate.
     timed_command = (
         f"mkdir -p {shlex.quote(_STATUS_DIR)}"
         f" && date +%s%N > {shlex.quote(start_ns_path)}"
@@ -519,6 +521,7 @@ async def stream_command_output(
     )
 
     exit_code = _SUCCESS_EXIT_CODE
+    monotonic_start = time.monotonic()
     try:
         try:
             async for data in sandbox.command(timed_command):
@@ -541,13 +544,17 @@ async def stream_command_output(
                 raise SandboxNotFoundError(str(e)) from e
             raise SandboxError(str(e)) from e
 
+        # Prefer the sandbox-measured duration; fall back to the tracker-side monotonic
+        # duration if the timing files are missing/unparseable (e.g. the agent removed
+        # /tmp/.valkyrie), rather than crashing on `int()` of a `cat` error string.
+        #
         # The stream completed cleanly and the exit_code is authoritative; timing is auxiliary.
         # If the sandbox is torn down between stream-end and these auxiliary reads (the common
         # VALKYRIE-6X shape), don't flip a completed run to ERROR -- log and default duration.
         try:
-            start_ns = (await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")).stdout
-            end_ns = (await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")).stdout
-            duration = (int(end_ns.strip()) - int(start_ns.strip())) / 1e9
+            duration = await _read_sandbox_duration(
+                sandbox, start_ns_path, end_ns_path, fallback=time.monotonic() - monotonic_start
+            )
         except SandboxNotFoundError:
             logger.warning(
                 "sandbox.stream_command_output.timing_lost_sandbox_gone",
@@ -572,6 +579,18 @@ async def stream_command_output(
             await _exec(sandbox, f"rm -f {shlex.quote(start_ns_path)} {shlex.quote(end_ns_path)}")
         except Exception:
             pass
+
+
+async def _read_sandbox_duration(sandbox: Sandbox, start_ns_path: str, end_ns_path: str, fallback: float) -> float:
+    """Read the sandbox-side command duration, degrading to ``fallback`` on any failure."""
+    start_result = await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")
+    end_result = await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")
+    if start_result.exit_code != _SUCCESS_EXIT_CODE or end_result.exit_code != _SUCCESS_EXIT_CODE:
+        return fallback
+    try:
+        return (int(end_result.stdout.strip()) - int(start_result.stdout.strip())) / 1e9
+    except ValueError:
+        return fallback
 
 
 @logfire.instrument(
