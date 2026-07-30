@@ -1381,8 +1381,11 @@ class TestEgressAllowlist:
 class TestStreamCommandOutputAgentFailure:
     """Agent command failure cleanup and error classification."""
 
-    async def test_stream_command_output_removes_timing_files(self) -> None:
-        async def stream_command(_command: str) -> AsyncIterator[str]:
+    async def test_stream_command_output_uses_sandbox_timing_and_removes_files(self) -> None:
+        observed_commands: list[str] = []
+
+        async def stream_command(command: str) -> AsyncIterator[str]:
+            observed_commands.append(command)
             yield "done\n"
 
         exec_commands: list[str] = []
@@ -1408,9 +1411,40 @@ class TestStreamCommandOutputAgentFailure:
 
         assert exit_reason is None
         assert duration == 2
+        # Timing is embedded in the sandbox command, not run raw.
+        assert observed_commands and "run-agent.sh" in observed_commands[0]
+        assert ".start_ns" in observed_commands[0]
         assert exec_commands[-1].startswith("rm -f ")
         assert ".start_ns" in exec_commands[-1]
         assert ".end_ns" in exec_commands[-1]
+
+    async def test_stream_command_output_falls_back_when_timing_files_missing(self) -> None:
+        async def stream_command(_command: str) -> AsyncIterator[str]:
+            yield "done\n"
+
+        async def exec_command(command: str) -> ExecResult:
+            if command.startswith("cat "):
+                # `cat` on a missing file: non-zero exit and an error string on stdout.
+                return ExecResult(
+                    exit_code=1,
+                    output="cat: /tmp/.valkyrie/abc.end_ns: No such file or directory",
+                )
+            return ExecResult(exit_code=0)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "test-sandbox"
+        mock_sandbox.state = "started"
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = exec_command
+
+        exit_reason, duration = await sandbox_module.stream_command_output(
+            mock_sandbox, "run-agent.sh", on_output=lambda _: None
+        )
+
+        # No crash on int() of the cat error text; duration degrades to the monotonic fallback.
+        assert exit_reason is None
+        assert duration >= 0
 
     @pytest.mark.parametrize("exit_code", [1, 2, 127])
     async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(
@@ -1425,12 +1459,7 @@ class TestStreamCommandOutputAgentFailure:
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "test-sandbox"
         mock_sandbox.command = stream_command
-        mock_sandbox.exec = AsyncMock(
-            side_effect=[
-                ExecResult(exit_code=0, output="1000000000"),
-                ExecResult(exit_code=0, output="3000000000"),
-            ]
-        )
+        mock_sandbox.exec = AsyncMock()
 
         def fake_set_tag(key: str, value: object) -> None:
             tagged[key] = str(value)
@@ -1464,13 +1493,7 @@ class TestStreamCommandOutputAgentFailure:
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "test-sandbox"
         mock_sandbox.command = stream_command
-        mock_sandbox.exec = AsyncMock(
-            side_effect=[
-                ExecResult(exit_code=0, output="1000000000"),
-                ExecResult(exit_code=0, output="3000000000"),
-                ExecResult(exit_code=0, output=""),
-            ]
-        )
+        mock_sandbox.exec = AsyncMock()
 
         def fake_set_tag(_key: str, _value: object) -> None:
             pass
