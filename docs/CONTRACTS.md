@@ -4,7 +4,7 @@ This guide explains how to create agent contracts for Valkyrie.
 
 ## Overview
 
-An agent contract defines how to install and run an agent in a sandbox environment. Valkyrie handles bundling, deployment, and evaluation - you just need to specify how your agent is set up and executed.
+An agent contract defines how to install and run an agent in a sandbox environment. Valkyrie handles bundling, deployment, and evaluation - you just need to specify how your agent is set up and executed. If you need to create a CLI to run your agent, visit the [Creating a CLI](#creating-a-cli) section to learn how.
 
 ## Complete Contract Template
 
@@ -15,6 +15,8 @@ name: my_agent
 
 install_cmd: "bash setup.sh"
 
+# CLI is required to run the agent, you may need to make a python file, install it as a package, import it
+# inside, and wrap it in a CLI to accept arguments
 run_cmd: >-
   my_agent --task {problem_statement_path}
   --model {model}
@@ -304,6 +306,40 @@ source /bundle/my_agent/submodule/my_agent/.venv/bin/activate
 exec python /bundle/my_agent/submodule/my_agent/main.py "$@"
 WRAPPER
 chmod +x /usr/local/bin/my_agent
+```
+
+## Creating a CLI
+
+In order for valkyrie to pass in the required CLI arguments to your agent, the agent must accept CLI arguments. If your agent currently does not have a CLI, you can use this example to add it
+
+```python
+# run_agent.py
+import argparse
+from pathlib import Path
+
+from agent import agent
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("problem_statement_path", type=Path)
+    parser.add_argument("task_id")
+    arguments = parser.parse_args()
+
+    problem_statement = arguments.problem_statement_path.read_text()
+    agent.run(
+        problem_statement=problem_statement,
+        task_id=arguments.task_id,
+    )
+
+
+if __name__ == "__main__":
+    """
+    uv run python run_agent.py \
+      "{problem_statement_path}" \
+      "{task_id}"
+    """
+    main()
 ```
 
 The entire agent directory is bundled to `/bundle/<agent_name>/` in the sandbox (`contract.yaml` will be excluded).

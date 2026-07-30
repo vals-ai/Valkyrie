@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, assert_never
 
 import logfire
 import sentry_sdk
@@ -25,6 +25,7 @@ from benchmark_service import (
     SandboxProvider,
     SandboxSource,
     SnapshotSource,
+    TargetedSnapshotSource,
 )
 from benchmark_service import (
     Resources as TrackerResources,
@@ -106,8 +107,10 @@ def _source_name(source: SandboxSource) -> str:
             return _source_name(outer)
         case ImageSource(image=image):
             return image
-        case SnapshotSource():
+        case SnapshotSource() | TargetedSnapshotSource():
             return "snapshot"
+        case _:
+            assert_never(source)
 
 
 def _provider_source(source: SandboxSource) -> SandboxSource:
