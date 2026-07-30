@@ -184,7 +184,7 @@ Starts are fail-fast: if a request fails, no later requests are attempted. The c
 | `-i` / `--interval` | Progress percentage threshold for Slack notification. Repeatable. Max 3, must be divisible by 5, range 5–100. See [Slack Notifications](#slack-notifications) |
 | `--ignore-custom-services` / `--ics` | Ignore custom benchmark services that have been configured. Provides opt-out for custom services. |
 | `--connect` | Stream run updates after the run starts |
-| `--json` | Emit one start document, or JSONL when combined with `--connect` |
+| `--json` | Emit start documents as JSON Lines: one `launch` record per confirmed run when `--count` exceeds 1 or `--connect` is used, then a terminal record |
 
 ### Update a running run's concurrency
 
@@ -258,7 +258,7 @@ when benchmark, agent, model, or dataset identity is also needed.
 
 To view results, you should use the following command to download results to disk:
 ```bash
-# default path: ./<benchmark>.json)
+# default path: ./results-<run_id>.json
 valkyrie run results <id> --path ./results.json
 ```
 
@@ -272,10 +272,15 @@ valkyrie run results <id> --task-ids-file https://example.com/subset.txt
 
 | Option | Description |
 | --- | --- |
-| `--path` | Local path to save results (default: `./<benchmark>.json`) |
+| `--path` | Local path to save results (default: `./results-<run_id>.json`) |
 | `--s3` | Upload to S3 instead of downloading. With `--task-ids` / `--task-ids-file` the subset view overwrites the canonical S3 key — re-run without filters to restore |
 | `--task-ids` | Comma-separated task IDs to score the subset over (recomputes `final_score` over the filtered set) |
 | `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
+| `--force` | Overwrite an existing local file or S3 result without prompting |
+| `--json` | Emit one retrieval receipt instead of human output |
+
+Retrieval prompts before overwriting an existing local file or S3 result. Use `--force` for non-interactive callers;
+without it, an unanswerable prompt refuses to overwrite and exits nonzero instead of writing.
 
 ### Stop a run
 
@@ -353,6 +358,7 @@ valkyrie run list --json --all \
 | `--agent-name` | Filter by agent name |
 | `--benchmark-name` | Filter by benchmark name |
 | `--model` | Filter by model |
+| `--dataset` | Filter by dataset (e.g. `default`, `terminal-bench-2.1`) |
 | `-l` / `--label` | Filter by run label |
 | `--status` | Filter by status: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR` |
 | `--order-by` | Order results (`desc` or `asc`) |

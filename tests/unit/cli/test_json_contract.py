@@ -5,13 +5,16 @@ Run: uv run pytest tests/unit/cli/test_json_contract.py
 Covers the supported run-command surface and strict serialization.
 """
 
+import json
 from collections.abc import Iterator
+from importlib import import_module
 
 import click
 import pytest
 from click.testing import CliRunner
 
-from valkyrie.cli.machine_output import credential_free_url, strict_json
+from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.machine_output import credential_free_url, redact_urls, strict_json
 from valkyrie.cli.main import cli
 
 _RUN_ID = "123e4567-e89b-12d3-a456-426614174000"
@@ -59,6 +62,49 @@ class TestJsonPolicy:
         assert result.exit_code == 2
         assert result.stdout == ""
         assert "--json cannot be combined with --format" in result.stderr
+
+    def test_json_failures_end_with_an_error_document_naming_the_invoked_command(
+        self,
+        cli_runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Machine callers must diagnose a failure from stdout, and usage errors must not.
+
+        Test cases:
+        - A command failure emits one error document naming the invoked alias.
+        - Rejected usage keeps stdout empty.
+        """
+        monkeypatch.setattr(
+            import_module("valkyrie.cli.run.resume"),
+            "TrackerService",
+            lambda: (_ for _ in ()).throw(TrackerServiceError("connection reset")),
+        )
+
+        result = cli_runner.invoke(cli, ["run", "retry", _RUN_ID, "--json"])
+
+        assert result.exit_code == 1
+        assert json.loads(result.stdout) == {
+            "command": "run retry",
+            "error_message": "connection reset",
+            "kind": "error",
+            "schema_version": 1,
+        }
+        assert cli_runner.invoke(cli, ["run", "retry", "not-a-uuid", "--json"]).stdout == ""
+
+    @pytest.mark.parametrize(
+        ("message", "expected"),
+        [
+            ("read https://b.test/t.txt?X-Amz-Signature=url-secret-sentinel failed", "read <redacted-url> failed"),
+            ("no route to https://user:url-secret-sentinel@tracker.test/api", "no route to <redacted-url>"),
+            ("no route to http://localhost:8000/api", "no route to http://localhost:8000/api"),
+            ("unparseable https://[url-secret-sentinel", "unparseable <redacted-url>"),
+            ("uppercase HTTPS://b.test/t?sig=url-secret-sentinel", "uppercase <redacted-url>"),
+        ],
+    )
+    def test_redact_urls_drops_only_credential_bearing_urls(self, message: str, expected: str) -> None:
+        """Receipts are persisted, so a quoted URL must not carry credentials into one."""
+        assert redact_urls(message) == expected
+        assert "url-secret-sentinel" not in redact_urls(message)
 
     @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
     def test_strict_json_rejects_non_finite_numbers(self, value: float) -> None:

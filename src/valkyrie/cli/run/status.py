@@ -5,7 +5,7 @@ from tracker.types import BenchmarkStatusEntry
 
 from valkyrie.cli.display import format_table
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.machine_output import json_option, resolve_json_format
+from valkyrie.cli.machine_output import json_errors, json_option, resolve_json_format
 from valkyrie.cli.run.progress import BenchmarkFormatter
 from valkyrie.cli.run.snapshot import format_run_status_json
 from valkyrie.cli.tracker_client import TrackerService
@@ -37,6 +37,7 @@ _STATUS_BATCH_SIZE = 50
     help="Output format.",
 )
 @json_option
+@json_errors
 def status_runs(run_ids_value: str, output_format: str, json_output: bool) -> None:
     """Fetch lightweight progress for a deterministic set of run IDs."""
     output_format = resolve_json_format(output_format, json_output)

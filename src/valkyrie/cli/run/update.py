@@ -5,7 +5,7 @@ from uuid import UUID
 import click
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.machine_output import emit_json, json_option
+from valkyrie.cli.machine_output import emit_json, json_errors, json_option
 from valkyrie.cli.tracker_client import TrackerService
 
 
@@ -23,6 +23,7 @@ from valkyrie.cli.tracker_client import TrackerService
     help="New maximum number of concurrent tasks",
 )
 @json_option
+@json_errors
 def update(run_id: UUID, concurrency: int, json_output: bool) -> None:
     """Update the concurrency limit for an active run."""
     try:

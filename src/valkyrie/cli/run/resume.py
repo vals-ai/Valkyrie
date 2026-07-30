@@ -6,7 +6,7 @@ from tracker.database.models import RetryMode
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.machine_output import emit_json, json_option
+from valkyrie.cli.machine_output import emit_json, json_errors, json_option
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.agent.storage import update_benchmark_agent_version
@@ -76,6 +76,7 @@ from valkyrie.cli.tracker_client import TrackerService
 )
 @json_option
 @click.pass_context
+@json_errors
 def resume(
     ctx: click.Context,
     run_id: UUID,
@@ -113,10 +114,11 @@ def resume(
                 asyncio.run(update_benchmark_agent_version(agent_name, str(run_id)))
                 click.echo(click.style("\r\033[K✓ Agent updated", fg="green"), err=True)
 
+            retry_mode = RetryMode.FROM_SCRATCH if from_scratch else RetryMode.AUTO
             _ = tracker.retry_or_resume_benchmark(
                 run_id,
                 retry,
-                RetryMode.FROM_SCRATCH if from_scratch else RetryMode.AUTO,
+                retry_mode,
                 concurrency,
                 retry_task_ids,
                 service_headers=service_headers,
@@ -132,7 +134,7 @@ def resume(
                     run_id=str(run_id),
                     connected=connect,
                     updated_agent=update_agent,
-                    retry_mode=(RetryMode.FROM_SCRATCH if from_scratch else RetryMode.AUTO).value,
+                    retry_mode=retry_mode.value,
                     selected_task_count=len(retry_task_ids) if retry_task_ids else None,
                 )
             else:

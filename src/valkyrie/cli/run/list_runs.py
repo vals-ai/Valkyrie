@@ -3,7 +3,7 @@ from tracker.database.models import BenchmarkStatus
 from tracker.types import BenchmarkTableRow, FetchBenchmarksRequest, FetchBenchmarksResponse, Order
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.machine_output import json_option, resolve_json_format
+from valkyrie.cli.machine_output import json_errors, json_option, resolve_json_format
 from valkyrie.cli.display import format_table, paginate_cli_pages, short_local_time
 from valkyrie.cli.run.progress import BenchmarkFormatter
 from valkyrie.cli.run.snapshot import format_run_list_json
@@ -83,6 +83,7 @@ _MACHINE_PAGE_LIMIT = 500
     help="Fetch every matching run without interactive paging. Requires JSON output.",
 )
 @json_option
+@json_errors
 def list_runs(
     agent_name: str | None,
     benchmark_name: str | None,
@@ -109,9 +110,9 @@ def list_runs(
     started_by_list: list[str] = [s.strip() for s in started_by.split(",") if s.strip()] if started_by else []
 
     if output_format == "json" and not all_runs:
-        raise click.UsageError("JSON output requires --all.")
+        raise click.UsageError("JSON output (--json or --format json) requires --all.")
     if all_runs and output_format != "json":
-        raise click.UsageError("--all requires JSON output.")
+        raise click.UsageError("--all requires JSON output (--json or --format json).")
 
     try:
         with TrackerService() as tracker:

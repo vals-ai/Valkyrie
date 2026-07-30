@@ -259,10 +259,15 @@ class TestCountedStarts:
         )
 
         assert result.exit_code == 0, result.output
-        assert len(result.stdout.splitlines()) == 1
         assert "\x1b" not in result.stdout
 
-        payload = json.loads(result.stdout)
+        records = [json.loads(line) for line in result.stdout.splitlines()]
+        assert [record.get("event") for record in records] == ["launch", "launch", None]
+
+        # Each launch publishes only the run it confirms, so no run is repeated.
+        assert [record["runs"] for record in records[:2]] == [[run] for run in records[-1]["runs"]]
+
+        payload = records[-1]
         assert payload["kind"] == "run_start"
         assert payload["outcome"] == "completed"
         assert payload["confirmed_count"] == 2
@@ -301,15 +306,21 @@ class TestCountedStarts:
         result = start_testbed.invoke(["--count", "3", "--json"])
 
         assert result.exit_code == 1
-        assert len(result.stdout.splitlines()) == 1
+        records = [json.loads(line) for line in result.stdout.splitlines()]
+        assert [record["kind"] for record in records] == ["run_start", "run_start", "error"]
 
-        payload = json.loads(result.stdout)
-        assert payload["kind"] == "run_start"
+        # The confirmed run reaches stdout before the failing request.
+        assert records[0]["event"] == "launch"
+
+        payload = records[1]
+        assert "event" not in payload
         assert payload["outcome"] == "partial"
         assert payload["latest_request_outcome"] == "unknown"
         assert payload["attempted_count"] == 2
         assert payload["confirmed_count"] == 1
         assert payload["runs"][0]["run_id"] == str(_FIRST_RUN_ID)
+
+        assert records[-1]["error_message"] == "benchmark unavailable"
         assert "benchmark unavailable" in result.stderr
 
     def test_connected_json_start_emits_jsonl_and_streams_jsonl(self, start_testbed: StartTestbed) -> None:
@@ -324,26 +335,18 @@ class TestCountedStarts:
         assert [record["kind"] for record in records] == [
             "run_start",
             "run_snapshot",
+            "run_start",
         ]
-        assert [record["event"] for record in records] == ["launch", "snapshot"]
-        assert records[0]["outcome"] == "completed"
-        assert records[0]["runs"][0]["run_id"] == str(_FIRST_RUN_ID)
+
+        # The launch precedes the stream and a terminal summary closes it.
+        assert [record.get("event") for record in records] == ["launch", "snapshot", None]
+        assert records[0]["runs"] == records[-1]["runs"]
+        assert [run["run_id"] for run in records[0]["runs"]] == [str(_FIRST_RUN_ID)]
         start_testbed.stream_status.assert_called_once_with(
             start_testbed.tracker,
             _FIRST_RUN_ID,
             output_format="jsonl",
         )
-
-    def test_connected_json_start_failure_emits_eventful_summary(self, start_testbed: StartTestbed) -> None:
-        start_testbed.set_responses([httpx.Response(503, json={"detail": "benchmark unavailable"})])
-
-        result = start_testbed.invoke(["--connect", "--json"])
-
-        assert result.exit_code == 1
-        payload = json.loads(result.stdout)
-        assert payload["kind"] == "run_start"
-        assert payload["event"] == "launch"
-        assert payload["outcome"] == "uncertain"
 
     def test_counted_local_start_uploads_once(
         self,

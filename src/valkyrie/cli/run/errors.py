@@ -1,6 +1,5 @@
 """Inspect stored run errors without downloading a results file."""
 
-import json
 from collections import defaultdict
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -11,16 +10,10 @@ from tracker.types import FinalViewResponse
 
 from valkyrie.cli.display import terminal_safe
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.machine_output import json_option, resolve_json_format
+from valkyrie.cli.machine_output import json_errors, json_option, resolve_json_format, strict_json, utc_isoformat
 from valkyrie.cli.tracker_client import TrackerService
 
 _TASK_ID_PREVIEW_LIMIT = 5
-
-
-def _utc_isoformat(value: datetime) -> str:
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _display_error_message(message: str) -> str:
@@ -64,7 +57,7 @@ def build_run_errors_payload(
     return {
         "schema_version": 1,
         "kind": "run_errors",
-        "observed_at": _utc_isoformat(observed_at or datetime.now(timezone.utc)),
+        "observed_at": utc_isoformat(observed_at or datetime.now(timezone.utc)),
         "run_id": str(response.benchmark_id),
         "benchmark_name": response.benchmark_name,
         "status": response.status.value,
@@ -76,12 +69,7 @@ def build_run_errors_payload(
 
 def format_run_errors_json(response: FinalViewResponse) -> str:
     """Serialize one compact, machine-readable run-errors document."""
-    return json.dumps(
-        build_run_errors_payload(response),
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    return strict_json(build_run_errors_payload(response))
 
 
 def format_run_errors_text(response: FinalViewResponse) -> None:
@@ -135,6 +123,7 @@ def format_run_errors_text(response: FinalViewResponse) -> None:
     help="Output format.",
 )
 @json_option
+@json_errors
 def errors(run_id: UUID, output_format: str, json_output: bool) -> None:
     """Show stored run and current task error messages."""
     output_format = resolve_json_format(output_format, json_output)

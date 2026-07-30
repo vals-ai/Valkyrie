@@ -109,6 +109,8 @@ class TestAnalyzeCommand:
         records = [json.loads(line) for line in result.stdout.splitlines()]
         assert [record["event"] for record in records] == ["started", "heartbeat", "complete"]
         assert records[-1]["reading_plan_url"] is None
+        # A withheld URL must be distinguishable from one the analyzer never returned.
+        assert records[-1]["reading_plan_url_status"] == "withheld"
         assert "url-secret-sentinel" not in result.stdout
         assert "Invoking" not in result.stdout
 
@@ -126,7 +128,8 @@ class TestAnalyzeCommand:
 
         assert result.exit_code == 1
         records = [json.loads(line) for line in result.stdout.splitlines()]
-        assert [record["event"] for record in records] == ["started", "disconnect"]
+        assert [record.get("event") for record in records] == ["started", "disconnect", None]
+        assert records[-1]["kind"] == "error"
         assert "ended without a terminal result" in result.stderr
 
     @pytest.mark.parametrize(

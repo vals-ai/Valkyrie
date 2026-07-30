@@ -175,6 +175,7 @@ class TestResultsCommand:
         assert json.loads(s3_result.stdout) == {
             "action": "write",
             "kind": "run_results",
+            "requested_task_count": None,
             "run_id": str(_RUN_ID),
             "schema_version": 1,
             "s3_url": "s3://bucket/results.json",
@@ -234,3 +235,36 @@ class TestResultsCommand:
         assert expected_message in result.output
         if output_path.exists():
             assert output_path.read_text(encoding="utf-8") == "original"
+
+    def test_unanswerable_overwrite_blocks_until_forced(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        cli_runner: CliRunner,
+    ) -> None:
+        """A non-interactive caller must learn why nothing was written, and how to proceed.
+
+        Test cases:
+        - Closed stdin emits a blocked receipt plus an error naming --force, and preserves the file.
+        - --force overwrites the same target without prompting.
+        """
+        output_path = tmp_path / "results.json"
+        output_path.write_text("original", encoding="utf-8")
+        monkeypatch.setattr(results_module, "TrackerService", lambda: MockResultsTracker(make_final_view(_RUN_ID)))
+
+        blocked = cli_runner.invoke(results, [str(_RUN_ID), "--path", str(output_path), "--json"], input="")
+
+        assert blocked.exit_code == 1
+        records = [json.loads(line) for line in blocked.stdout.splitlines()]
+        assert [record["kind"] for record in records] == ["run_results", "error"]
+        assert records[0]["status"] == "blocked"
+        assert records[0]["reason"] == "target_exists"
+        assert "--force" in records[1]["error_message"]
+        assert output_path.read_text(encoding="utf-8") == "original"
+
+        forced = cli_runner.invoke(results, [str(_RUN_ID), "--path", str(output_path), "--json", "--force"], input="")
+
+        assert forced.exit_code == 0, forced.output
+        assert json.loads(forced.stdout)["status"] == "completed"
+        assert "Overwrite" not in forced.output
+        assert json.loads(output_path.read_text(encoding="utf-8"))["benchmark_id"] == str(_RUN_ID)

@@ -1,7 +1,5 @@
 """Safe machine-readable snapshots for benchmark runs."""
 
-import json
-from collections.abc import Mapping
 from datetime import datetime, timezone
 from math import isfinite
 from typing import Literal
@@ -16,6 +14,7 @@ from tracker.types import (
 )
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.machine_output import strict_json, utc_isoformat
 from valkyrie.cli.tracker_client import TrackerService
 
 RunEvent = Literal["snapshot", "update", "complete", "error", "stopped", "disconnect", "interrupted"]
@@ -29,19 +28,8 @@ def fetch_run_metadata(tracker: TrackerService, run_id: UUID) -> FetchBenchmarkM
         return None
 
 
-def _utc_isoformat(value: datetime) -> str:
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
 def _finite_score_or_none(value: float | None) -> float | None:
     return value if value is None or isfinite(value) else None
-
-
-def _format_json(payload: Mapping[str, object]) -> str:
-    """Serialize strict compact JSON; NaN and Infinity are never valid machine output."""
-    return json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":"))
 
 
 def build_run_snapshot(
@@ -61,7 +49,7 @@ def build_run_snapshot(
         "schema_version": 1,
         "kind": "run_snapshot",
         "event": event,
-        "observed_at": _utc_isoformat(observed_at or datetime.now(timezone.utc)),
+        "observed_at": utc_isoformat(observed_at or datetime.now(timezone.utc)),
         "run_id": str(response.benchmark_id),
         "benchmark_name": response.benchmark_name,
         "agent_name": contract.name if contract is not None else None,
@@ -69,7 +57,7 @@ def build_run_snapshot(
         "dataset": (arguments.dataset or "default") if arguments is not None else None,
         "label": response.label,
         "started_by_email": metadata.started_by_email if metadata is not None else None,
-        "started_at": _utc_isoformat(details.started_at),
+        "started_at": utc_isoformat(details.started_at),
         "status": details.status.value,
         "total_tasks": details.total_tasks,
         "finished_tasks": details.finished_tasks,
@@ -94,7 +82,7 @@ def format_run_snapshot_json(
     event: RunEvent,
 ) -> str:
     """Serialize one compact JSON or JSONL record."""
-    return _format_json(build_run_snapshot(response, metadata, event=event))
+    return strict_json(build_run_snapshot(response, metadata, event=event))
 
 
 def build_run_summary(run: BenchmarkTableRow) -> dict[str, object]:
@@ -108,8 +96,8 @@ def build_run_summary(run: BenchmarkTableRow) -> dict[str, object]:
         "dataset": run.dataset or "default",
         "label": run.label,
         "started_by_email": run.started_by_email,
-        "started_at": _utc_isoformat(run.started_at),
-        "finished_at": _utc_isoformat(run.finished_at) if run.finished_at is not None else None,
+        "started_at": utc_isoformat(run.started_at),
+        "finished_at": utc_isoformat(run.finished_at) if run.finished_at is not None else None,
         "status": run.status.value,
         "total_tasks": run.total_tasks,
         "finished_tasks": run.finished_tasks,
@@ -126,11 +114,11 @@ def format_run_list_json(runs: list[BenchmarkTableRow], *, observed_at: datetime
     payload = {
         "schema_version": 1,
         "kind": "run_list",
-        "observed_at": _utc_isoformat(observed_at or datetime.now(timezone.utc)),
+        "observed_at": utc_isoformat(observed_at or datetime.now(timezone.utc)),
         "returned_count": len(runs),
         "runs": [build_run_summary(run) for run in runs],
     }
-    return _format_json(payload)
+    return strict_json(payload)
 
 
 def build_run_status(entry: BenchmarkStatusEntry) -> dict[str, object]:
@@ -139,7 +127,7 @@ def build_run_status(entry: BenchmarkStatusEntry) -> dict[str, object]:
     return {
         "run_id": str(entry.id),
         "status": entry.status.value,
-        "finished_at": _utc_isoformat(entry.finished_at) if entry.finished_at is not None else None,
+        "finished_at": utc_isoformat(entry.finished_at) if entry.finished_at is not None else None,
         "total_tasks": entry.total_tasks,
         "finished_tasks": entry.finished_tasks,
         "task_state_counts": {
@@ -160,10 +148,10 @@ def format_run_status_json(
     payload = {
         "schema_version": 1,
         "kind": "run_status",
-        "observed_at": _utc_isoformat(observed_at or datetime.now(timezone.utc)),
+        "observed_at": utc_isoformat(observed_at or datetime.now(timezone.utc)),
         "requested_count": requested_count,
         "returned_count": len(entries),
         "missing_run_ids": [str(run_id) for run_id in missing_run_ids],
         "runs": [build_run_status(entry) for entry in entries],
     }
-    return _format_json(payload)
+    return strict_json(payload)

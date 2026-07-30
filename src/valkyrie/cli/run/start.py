@@ -9,7 +9,7 @@ from tracker.agent.schemas import AgentConfig
 from tracker.types import StartBenchmarkResponse
 
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
-from valkyrie.cli.machine_output import emit_json, json_option, utc_isoformat
+from valkyrie.cli.machine_output import emit_json, json_errors, json_option, utc_isoformat
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.agent.storage import get_contract_from_s3, push_agent
@@ -158,16 +158,34 @@ def resolve_webhook_config(
     return None, None
 
 
+def build_start_run(response: StartBenchmarkResponse) -> dict[str, object]:
+    """Build the allowlisted per-run view for a confirmed launch."""
+    return {
+        "run_id": str(response.benchmark_id),
+        "benchmark_name": response.benchmark_name,
+        "agent_name": response.agent_name,
+        "started_at": utc_isoformat(response.started_at),
+        "max_concurrency": response.concurrency,
+        "total_tasks": response.task_count,
+    }
+
+
 def emit_start_outcome(
     responses: list[StartBenchmarkResponse],
     *,
     requested_count: int,
     attempted_count: int,
+    confirmed_count: int,
     outcome: str,
     latest_request_outcome: str,
     event: str | None = None,
 ) -> None:
-    """Emit one versioned start result, including confirmed runs after a partial failure."""
+    """Emit one versioned start document.
+
+    A ``launch`` event carries only the run it confirms so that a multi-run
+    stream never repeats earlier runs; the terminal document carries no event and
+    lists every confirmed run.
+    """
     emit_json(
         "run_start",
         **({"event": event} if event is not None else {}),
@@ -175,18 +193,8 @@ def emit_start_outcome(
         latest_request_outcome=latest_request_outcome,
         requested_count=requested_count,
         attempted_count=attempted_count,
-        confirmed_count=len(responses),
-        runs=[
-            {
-                "run_id": str(response.benchmark_id),
-                "benchmark_name": response.benchmark_name,
-                "agent_name": response.agent_name,
-                "started_at": utc_isoformat(response.started_at),
-                "max_concurrency": response.concurrency,
-                "total_tasks": response.task_count,
-            }
-            for response in responses
-        ],
+        confirmed_count=confirmed_count,
+        runs=[build_start_run(response) for response in responses],
     )
 
 
@@ -198,7 +206,6 @@ def report_start_failure(
     uncertain: bool,
     rejected: bool,
     json_output: bool,
-    connect: bool,
 ) -> None:
     """Report a failed attempt while preserving any confirmed run IDs."""
     if json_output:
@@ -206,9 +213,9 @@ def report_start_failure(
             responses,
             requested_count=requested_count,
             attempted_count=attempted_count,
+            confirmed_count=len(responses),
             outcome="partial" if responses else "uncertain" if uncertain else "failed",
             latest_request_outcome="unknown" if uncertain else "failed",
-            event="launch" if connect else None,
         )
         return
 
@@ -356,6 +363,7 @@ def report_start_failure(
     help="Number of independent runs to start",
 )
 @json_option
+@json_errors
 def start(
     agent: str,
     model: str | None,
@@ -464,7 +472,6 @@ def start(
                         uncertain=True,
                         rejected=False,
                         json_output=json_output,
-                        connect=connect,
                     )
                     raise click.ClickException(str(error)) from error
 
@@ -477,7 +484,6 @@ def start(
                         uncertain=response.status_code >= 500,
                         rejected=True,
                         json_output=json_output,
-                        connect=connect,
                     )
                     raise click.ClickException(str(response_error_detail(response)))
 
@@ -491,37 +497,40 @@ def start(
                         uncertain=True,
                         rejected=False,
                         json_output=json_output,
-                        connect=connect,
                     )
                     raise click.ClickException("Tracker returned a malformed 200 start response.") from error
 
                 start_responses.append(start_response)
-                if json_output and connect:
+                if not json_output:
+                    format_start_benchmark_response(start_response, connect)
+                elif connect or count > 1:
+                    # Publish each run ID before the next request so a later
+                    # failure cannot strand an already-confirmed run.
                     emit_start_outcome(
-                        start_responses,
+                        [start_response],
                         requested_count=count,
                         attempted_count=attempt_index + 1,
-                        outcome="completed",
+                        confirmed_count=len(start_responses),
+                        outcome="completed" if len(start_responses) == count else "in_progress",
                         latest_request_outcome="confirmed",
                         event="launch",
                     )
-                elif not json_output:
-                    format_start_benchmark_response(start_response, connect)
                 if connect:
                     if json_output:
                         stream_benchmark_status(tracker, start_response.benchmark_id, output_format="jsonl")
                     else:
                         stream_benchmark_status(tracker, start_response.benchmark_id)
 
-        if json_output and not connect:
+        if json_output:
             emit_start_outcome(
                 start_responses,
                 requested_count=count,
                 attempted_count=count,
+                confirmed_count=len(start_responses),
                 outcome="completed",
                 latest_request_outcome="confirmed",
             )
-        elif not json_output:
+        else:
             format_confirmed_start_summary([response.benchmark_id for response in start_responses], count)
     except (BundlerError, TrackerServiceError, ContractValidationError) as e:
         raise click.ClickException(str(e))

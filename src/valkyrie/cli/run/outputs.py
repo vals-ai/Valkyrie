@@ -9,7 +9,7 @@ from httpx import Response
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.machine_output import emit_json, json_option
+from valkyrie.cli.machine_output import emit_json, json_errors, json_option
 from valkyrie.cli.run.artifacts import download_s3_path
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.tracker_client import TrackerService
@@ -34,6 +34,7 @@ from valkyrie.cli.tracker_client import TrackerService
     help="Comma-separated list of task IDs to download (e.g., astropy__astropy-7606,django__django-10880)",
 )
 @json_option
+@json_errors
 def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None, json_output: bool) -> None:
     """
     Fetch run outputs for a benchmark by its run id.
