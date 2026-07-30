@@ -268,7 +268,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                         {
                             "Name": "ExecutorRelease",
                             "EntryPoint": assertions.Match.array_with(
-                                ["/app/.venv/bin/python", "-m", "tracker.release_entrypoint"]
+                                ["/app/.venv/bin/python", "-m", "tracker.executor.release_entrypoint"]
                             ),
                         }
                     )

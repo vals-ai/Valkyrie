@@ -1,4 +1,4 @@
-"""Run with `uv run pytest tests/unit/test_release_retirement.py`."""
+"""Run with `uv run pytest tests/unit/executor/test_release_retirement.py`."""
 
 from collections.abc import Callable
 from threading import Event
@@ -8,9 +8,9 @@ from pytest import MonkeyPatch
 from sqlmodel import Session
 
 import main as main_module
-from tracker import release_retirement
+from tracker.executor import release_retirement
 from tracker.database.models import ExecutorRelease, ExecutorReleaseStatus
-from tracker.release_control import promote_release, register_release
+from tracker.executor.release_control import promote_release, register_release
 
 
 def test_retirement_loop_retires_a_blocker_free_release(

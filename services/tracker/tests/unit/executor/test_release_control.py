@@ -17,7 +17,7 @@ from tracker.database.models import (
     ExecutorRelease,
     ExecutorReleaseStatus,
 )
-from tracker.release_control import (
+from tracker.executor.release_control import (
     ReleaseControlError,
     activate_release,
     active_executor_release_work,

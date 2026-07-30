@@ -276,6 +276,28 @@ def upgrade() -> None:
         self.assertTrue(result.executor_release_required)
         self.assertFalse(result.database_maintenance_required)
 
+    def test_executor_artifact_builder_requires_only_a_release(self) -> None:
+        head_sha = self._commit_file("services/executor_artifact/build.py", "changed = True\n")
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "safe")
+        self.assertFalse(result.executor_stack_deploy_required)
+        self.assertTrue(result.executor_release_required)
+        self.assertFalse(result.core_maintenance_required)
+        self.assertFalse(result.database_maintenance_required)
+
+    def test_executor_release_helper_requires_stack_deploy(self) -> None:
+        head_sha = self._commit_file("infra/executor_release/main.py", "changed = True\n")
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertFalse(result.executor_release_required)
+        self.assertFalse(result.core_maintenance_required)
+        self.assertFalse(result.database_maintenance_required)
+
     def test_tracker_lock_does_not_trigger_an_executor_release(self) -> None:
         head_sha = self._commit_file("services/tracker/uv.lock", "version = 1\n")
 
@@ -308,7 +330,7 @@ def upgrade() -> None:
 
     def test_executor_runtime_change_requires_only_a_release(self) -> None:
         head_sha = self._commit_file(
-            "services/tracker/src/tracker/executor_entrypoint.py",
+            "services/tracker/src/tracker/executor/entrypoint.py",
             "changed = True\n",
         )
 

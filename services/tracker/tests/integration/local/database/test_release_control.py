@@ -29,9 +29,9 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.dispatch_control import admit_recovery_dispatch, admit_start_dispatch
-from tracker.maintenance_control import begin_maintenance
-from tracker.release_control import (
+from tracker.executor.dispatch_control import admit_recovery_dispatch, admit_start_dispatch
+from tracker.executor.maintenance_control import begin_maintenance
+from tracker.executor.release_control import (
     ReleaseControlError,
     activate_release,
     pin_benchmark_to_release,

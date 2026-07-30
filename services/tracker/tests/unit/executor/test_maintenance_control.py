@@ -20,8 +20,8 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.maintenance_control import MaintenanceOwnershipError, begin_maintenance, finish_maintenance
-from tracker.release_control import MaintenanceModeError, select_active_release
+from tracker.executor.maintenance_control import MaintenanceOwnershipError, begin_maintenance, finish_maintenance
+from tracker.executor.release_control import MaintenanceModeError, select_active_release
 
 
 def _release(release_id: str = "maintenance-release") -> ExecutorRelease:

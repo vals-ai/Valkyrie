@@ -1,6 +1,8 @@
 import hashlib
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from collections.abc import Mapping
@@ -9,9 +11,9 @@ from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
-import executor_release
+import executor_release.main as executor_release
 from botocore.exceptions import ClientError
-from executor_release import ArtifactManifest, LaunchConfig, publish_artifact, run_control_task, validate_artifact
+from executor_release.main import ArtifactManifest, LaunchConfig, publish_artifact, run_control_task, validate_artifact
 
 
 class CollisionS3:
@@ -103,6 +105,20 @@ def launch_config() -> LaunchConfig:
 
 
 class ExecutorReleaseTest(unittest.TestCase):
+    def test_nested_cli_imports_in_workflow_environment(self) -> None:
+        infra_directory = Path(__file__).parents[1]
+        result = subprocess.run(
+            [sys.executable, "executor_release/main.py", "--help"],
+            cwd=infra_directory,
+            env={**os.environ, "PYTHONPATH": "."},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage:", result.stdout)
+
     def test_manifest_and_artifact_must_match(self) -> None:
         content = b"immutable executor"
         release = manifest(content)

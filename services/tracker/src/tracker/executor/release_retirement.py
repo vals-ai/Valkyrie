@@ -8,7 +8,7 @@ from threading import Event, Thread
 from sqlmodel import Session
 
 from tracker.database.session import engine
-from tracker.release_control import retire_drained_releases
+from tracker.executor.release_control import retire_drained_releases
 
 _RECONCILIATION_INTERVAL_SECONDS = 60.0
 _SHUTDOWN_TIMEOUT_SECONDS = 5.0

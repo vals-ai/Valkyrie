@@ -21,7 +21,7 @@ from tracker.database.models import (
     Org,
     Task,
 )
-from tracker.execution_authority import ExecutionAuthority
+from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
 

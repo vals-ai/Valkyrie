@@ -13,7 +13,7 @@ from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import Benchmark, Org, Task, TaskStatus
-from tracker.execution_authority import ExecutionAuthority
+from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.utils import ResizableLimiter, TaskMonitor, TrackedTask, TrackedTaskStatus
 
 

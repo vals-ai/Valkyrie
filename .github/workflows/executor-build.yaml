@@ -70,13 +70,12 @@ jobs:
       - name: Install ExecutorHost test dependencies
         run: uv sync --frozen
 
-      - name: Run ExecutorHost unit tests
-        run: uv run pytest tests/unit/executor_host
+      - name: Run executor support unit tests
+        run: uv run pytest tests/unit/executor_host services/executor_artifact/tests
 
       - name: Build and inspect immutable executor PEX
-        working-directory: services/tracker
         run: |
-          PYTHONPATH=src python build_executor_artifact.py \
+          PYTHONPATH=services/tracker/src python services/executor_artifact/build.py \
             --output-directory "$RUNNER_TEMP/executor-release" \
             --source-revision "$GITHUB_SHA"
           test -s "$RUNNER_TEMP/executor-release/executor.pex"

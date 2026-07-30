@@ -25,8 +25,8 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("core_maintenance_required != 'true'", production_core)
         self.assertIn("database_maintenance_required != 'true'", production_core)
         self.assertIn("SCOPE=core", production_core)
-        self.assertNotIn("build_executor_artifact.py", production_core)
-        self.assertNotIn("executor_release.py", production_core)
+        self.assertNotIn("services/executor_artifact/build.py", production_core)
+        self.assertNotIn("executor_release/main.py", production_core)
         self.assertNotIn("maintenance-operation", production_core)
         self.assertIn("needs: classify-deployment", dev_core)
         self.assertIn("group: valkyrie-dev-${{ github.event_name == 'push' && 'deploy' || github.run_id }}", dev_core)
@@ -35,8 +35,8 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("environment: dev", dev_core)
         self.assertIn("SCOPE: ${{ github.event_name == 'push' && 'core' || inputs.scope }}", dev_core)
         self.assertIn("Deploy dev core stacks", dev_core)
-        self.assertNotIn("build_executor_artifact.py", dev_core)
-        self.assertNotIn("executor_release.py", dev_core)
+        self.assertNotIn("services/executor_artifact/build.py", dev_core)
+        self.assertNotIn("executor_release/main.py", dev_core)
         self.assertNotIn("maintenance-operation", dev_core)
         self.assertNotIn("submodules: recursive", workflow)
         self.assertNotIn("secrets.GH_PAT", workflow)
@@ -70,11 +70,17 @@ class DeployWorkflowTest(unittest.TestCase):
                 self.assertIn("executor_release_required", executor_job)
                 self.assertIn("core_maintenance_required", executor_job)
                 self.assertIn("database_maintenance_required", executor_job)
-                self.assertIn("PYTHONPATH=src python build_executor_artifact.py", executor_job)
+                self.assertIn(
+                    "PYTHONPATH=services/tracker/src python services/executor_artifact/build.py",
+                    executor_job,
+                )
                 self.assertIn("--maintenance-operation begin", executor_job)
                 self.assertIn("SCOPE=executor", executor_job)
                 self.assertIn("--maintenance-operation finish", executor_job)
-                self.assertIn("uv run --project executor_release --frozen python executor_release.py", executor_job)
+                self.assertIn(
+                    "PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py",
+                    executor_job,
+                )
                 self.assertLess(executor_job.index("Begin"), executor_job.index("SCOPE=executor"))
                 self.assertLess(executor_job.index("SCOPE=executor"), executor_job.index("Publish and activate"))
                 self.assertLess(executor_job.index("Publish and activate"), executor_job.index("Finish"))
@@ -89,7 +95,10 @@ class DeployWorkflowTest(unittest.TestCase):
         )
         self.assertNotIn("environment: production-release", prod_executor)
         self.assertIn("needs.production-executor-approval.result == 'success'", prod_executor)
-        self.assertEqual(workflow.count("PYTHONPATH=src python build_executor_artifact.py"), 2)
+        self.assertEqual(
+            workflow.count("PYTHONPATH=services/tracker/src python services/executor_artifact/build.py"),
+            2,
+        )
         self.assertEqual(workflow.count("--maintenance-operation begin"), 2)
         self.assertEqual(workflow.count("--maintenance-operation finish"), 2)
         self.assertNotIn("actions/upload-artifact", workflow)
@@ -196,11 +205,11 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn('"services/executor_host/**"', workflow)
         self.assertIn('"services/tracker/**"', workflow)
         self.assertIn('".dockerignore"', workflow)
-        self.assertIn("PYTHONPATH=src python build_executor_artifact.py", workflow)
-        self.assertIn("uv run pytest tests/unit/executor_host", workflow)
+        self.assertIn("PYTHONPATH=services/tracker/src python services/executor_artifact/build.py", workflow)
+        self.assertIn("uv run pytest tests/unit/executor_host services/executor_artifact/tests", workflow)
         self.assertIn("-f services/tracker/Dockerfile", workflow)
         self.assertIn("-f services/executor_host/Dockerfile", workflow)
-        self.assertEqual(workflow.count("build_executor_artifact.py"), 1)
+        self.assertEqual(workflow.count("services/executor_artifact/build.py"), 1)
         self.assertIn("services/executor_artifact/uv.lock", workflow)
         self.assertIn("uv lock --project services/executor_artifact --check", workflow)
 
@@ -212,7 +221,10 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("infra/executor_release/uv.lock", workflow)
         self.assertIn("services/executor_artifact/uv.lock", workflow)
         self.assertNotIn("services/tracker/uv.lock", workflow)
-        self.assertIn("uv run --project executor_release --frozen python executor_release.py", workflow)
+        self.assertIn(
+            "PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py",
+            workflow,
+        )
 
 
 if __name__ == "__main__":

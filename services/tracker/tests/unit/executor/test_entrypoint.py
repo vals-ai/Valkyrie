@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pytest import MonkeyPatch
 
-from tracker import executor_entrypoint
+from tracker.executor import entrypoint as executor_entrypoint
 
 
 @pytest.mark.asyncio

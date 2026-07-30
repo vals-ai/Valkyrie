@@ -67,7 +67,7 @@ async for update in client.runs.stream(run.benchmark_id):
 
 Run responses include executor-release provenance fields. Their ownership and
 nullability semantics are documented in
-[Executor releases](../RELEASES.md#benchmark-release-provenance).
+[Executor releases](../executor-releases/README.md#benchmark-release-provenance).
 
 Use the other run methods:
 

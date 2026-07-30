@@ -15,7 +15,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.dispatch_control import (
+from tracker.executor.dispatch_control import (
     EnqueueFailureResolution,
     admit_recovery_dispatch,
     admit_start_dispatch,
@@ -24,8 +24,8 @@ from tracker.dispatch_control import (
     terminalize_active_dispatches,
 )
 from tracker.exceptions import ExecutionAuthorityRevoked
-from tracker.execution_authority import ExecutionAuthority, lock_execution_authority
-from tracker.release_control import (
+from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
+from tracker.executor.release_control import (
     create_executor_dispatch,
     pin_benchmark_to_release,
     promote_release,

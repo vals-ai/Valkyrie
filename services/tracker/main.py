@@ -68,7 +68,7 @@ from tracker.database.models import (
     Task,
 )
 from tracker.database.scoping import assert_org, get_scoped
-from tracker.dispatch_control import (
+from tracker.executor.dispatch_control import (
     EnqueueFailureResolution,
     admit_recovery_dispatch,
     admit_start_dispatch,
@@ -81,8 +81,8 @@ from tracker.docent_analysis import (
 from tracker.exceptions import TrackerServiceError
 from executor_protocol import EXECUTOR_TASK_NAME, executor_task_signature
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
-from tracker.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
-from tracker.release_retirement import AutomaticReleaseRetirement
+from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
+from tracker.executor.release_retirement import AutomaticReleaseRetirement
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.types import (

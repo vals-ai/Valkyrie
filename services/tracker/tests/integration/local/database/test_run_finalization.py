@@ -37,9 +37,9 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.exceptions import ExecutionAuthorityRevoked
-from tracker.dispatch_control import admit_recovery_dispatch, terminalize_active_dispatches
-from tracker.execution_authority import ExecutionAuthority
-from tracker.release_control import promote_release
+from tracker.executor.dispatch_control import admit_recovery_dispatch, terminalize_active_dispatches
+from tracker.executor.execution_authority import ExecutionAuthority
+from tracker.executor.release_control import promote_release
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import force_stop_sandboxes, process_benchmark, reset_to_in_progress_status
 from tracker.utils.reporting import create_final_view

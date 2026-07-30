@@ -23,7 +23,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.dispatch_control import terminalize_active_dispatches
+from tracker.executor.dispatch_control import terminalize_active_dispatches
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.sandbox import delete_sandbox

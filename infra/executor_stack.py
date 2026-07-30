@@ -292,7 +292,7 @@ class ExecutorStack(Stack):
             entry_point=[
                 "/app/.venv/bin/python",
                 "-m",
-                "tracker.release_entrypoint",
+                "tracker.executor.release_entrypoint",
                 db_secret.secret_arn,
                 database.db_instance_endpoint_address,
                 database.db_instance_endpoint_port,

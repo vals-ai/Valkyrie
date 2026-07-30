@@ -26,9 +26,9 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import engine
-from tracker.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
+from tracker.executor.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
 from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
-from tracker.execution_authority import ExecutionAuthority, lock_execution_authority
+from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier

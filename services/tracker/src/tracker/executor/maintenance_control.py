@@ -13,7 +13,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.release_control import ReleaseControlError, get_executor_admission
+from tracker.executor.release_control import ReleaseControlError, get_executor_admission
 
 _ACTIVE_BENCHMARK_STATUSES = (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING)
 _ACTIVE_DISPATCH_STATUSES = (ExecutorDispatchStatus.QUEUED, ExecutorDispatchStatus.RUNNING)

@@ -21,7 +21,7 @@ from tracker.database.models import (
     Org,
     TaskStatus,
 )
-from tracker.release_control import create_executor_dispatch, pin_benchmark_to_release, register_release
+from tracker.executor.release_control import create_executor_dispatch, pin_benchmark_to_release, register_release
 
 
 @pytest.mark.asyncio

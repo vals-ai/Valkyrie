@@ -1,4 +1,4 @@
-"""Run with `uv run pytest tests/unit/test_release_entrypoint.py`."""
+"""Run with `uv run pytest tests/unit/executor/test_release_entrypoint.py`."""
 
 import builtins
 import hashlib
@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from pytest import MonkeyPatch
 from sqlmodel import Session
 
-from tracker import release_entrypoint
+from tracker.executor import release_entrypoint
 from tracker.database import session as tracker_session
 from tracker.database.models import ExecutorAdmission, ExecutorRelease, ExecutorReleaseStatus
 
@@ -80,7 +80,7 @@ def _release_arguments(monkeypatch: MonkeyPatch, *, artifact_digest: str = "a" *
         sys,
         "argv",
         [
-            "tracker.release_entrypoint",
+            "tracker.executor.release_entrypoint",
             "arn:aws:secretsmanager:us-east-1:123456789012:secret:tracker",
             "database.internal",
             "5432",

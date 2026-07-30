@@ -17,7 +17,7 @@ from executor_protocol import DEFAULT_EXECUTOR_RELEASE_PREFIX, SUPPORTED_PROTOCO
 
 PEX_VERSION = "2.98.2"
 _REQUIRED_ARCHIVE_PATHS = (
-    "tracker/executor_entrypoint.py",
+    "tracker/executor/entrypoint.py",
     "executor_protocol.py",
 )
 
@@ -61,8 +61,8 @@ def build(output_directory: Path, source_revision: str) -> dict[str, object]:
     if platform.machine() not in {"aarch64", "arm64"}:
         raise RuntimeError("Executor artifacts must be built on ARM64")
 
-    tracker_directory = Path(__file__).resolve().parent
-    executor_project = tracker_directory.parent / "executor_artifact"
+    executor_project = Path(__file__).resolve().parent
+    tracker_directory = executor_project.parent / "tracker"
     output_directory.mkdir(parents=True, exist_ok=True)
     output_path = output_directory / "executor.pex"
 
@@ -111,7 +111,7 @@ def build(output_directory: Path, source_revision: str) -> dict[str, object]:
                 str(requirements),
                 str(wheels[0]),
                 "-m",
-                "tracker.executor_entrypoint",
+                "tracker.executor.entrypoint",
                 "-o",
                 str(artifact),
             ],

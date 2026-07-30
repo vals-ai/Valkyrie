@@ -51,7 +51,7 @@ from tracker.exceptions import (
     SandboxSetupError,
     TrackerServiceError,
 )
-from tracker.execution_authority import ExecutionAuthority, lock_execution_authority
+from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback

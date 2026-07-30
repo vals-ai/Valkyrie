@@ -236,7 +236,7 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertNotIn("refs/heads/prod", trust)
 
         synthesized = json.dumps(executor_template.to_json())
-        self.assertIn("tracker.release_entrypoint", synthesized)
+        self.assertIn("tracker.executor.release_entrypoint", synthesized)
         self.assertIn("ecs:UpdateTaskProtection", synthesized)
         self.assertIn("ecs:StopTask", synthesized)
         self.assertIn("ecs:UpdateService", synthesized)

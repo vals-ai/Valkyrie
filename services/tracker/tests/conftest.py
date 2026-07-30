@@ -23,7 +23,7 @@ from tracker.database.models import (
     ExecutorRelease,
     Org,
 )
-from tracker.execution_authority import ExecutionAuthority
+from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.types import AWSCredentials
 
 _ = load_dotenv()

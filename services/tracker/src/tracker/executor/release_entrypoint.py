@@ -132,7 +132,7 @@ def _activate_sealed_release(task: ReleaseTaskConfig, release: ReleaseInput) -> 
 
     from tracker.database.models import ExecutorRelease
     from tracker.database.session import engine
-    from tracker.release_control import ReleaseControlError, activate_release
+    from tracker.executor.release_control import ReleaseControlError, activate_release
 
     try:
         with Session(engine) as session:
@@ -192,7 +192,7 @@ def _begin_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) -
     from sqlmodel import Session
 
     from tracker.database.session import engine
-    from tracker.maintenance_control import MaintenanceOwnershipError, begin_maintenance
+    from tracker.executor.maintenance_control import MaintenanceOwnershipError, begin_maintenance
 
     try:
         with Session(engine) as session:
@@ -221,7 +221,7 @@ def _finish_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) 
     from sqlmodel import Session
 
     from tracker.database.session import engine
-    from tracker.maintenance_control import MaintenanceOwnershipError, finish_maintenance
+    from tracker.executor.maintenance_control import MaintenanceOwnershipError, finish_maintenance
 
     client = create_ecs_client()
     client.update_service(

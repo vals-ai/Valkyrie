@@ -45,8 +45,8 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.execution_authority import ExecutionAuthority, lock_execution_authority
-from tracker.release_control import ReleaseControlError, promote_release
+from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
+from tracker.executor.release_control import ReleaseControlError, promote_release
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     ResizableLimiter,
@@ -1456,7 +1456,10 @@ class TestRunRecovery:
             raise ReleaseControlError("current release unavailable")
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_error_task)
-        monkeypatch.setattr("tracker.dispatch_control.resolve_current_execution_release", _fail_release_resolution)
+        monkeypatch.setattr(
+            "tracker.executor.dispatch_control.resolve_current_execution_release",
+            _fail_release_resolution,
+        )
 
         response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
 

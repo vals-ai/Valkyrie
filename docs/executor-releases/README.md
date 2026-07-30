@@ -24,14 +24,14 @@ stores the release and artifact selected for that invocation.
 7. Tracker automatically retires each `DRAINING` release after all of those
    blockers clear. Retired releases cannot become active again.
 
-![Executor release lifecycle](../valkyrie-release-lifecycle.png)
+![Executor release lifecycle](diagrams/valkyrie-release-lifecycle.png)
 
 ## Execution-pinned recovery
 
 Release routing changes only when an execution crosses a whole-run terminal
 boundary. It does not change which tasks retry or resume selects.
 
-![Release coexistence and execution ownership](../valkyrie-release-coexistence.png)
+![Release coexistence and execution ownership](diagrams/valkyrie-release-coexistence.png)
 
 | Operation and benchmark state | Executor release |
 | --- | --- |
@@ -53,7 +53,7 @@ A benchmark keeps two distinct ownership facts:
 Every executor dispatch keeps its own immutable release and artifact snapshot.
 A release becoming `DRAINING` never rewrites queued or running dispatches.
 
-![Dispatch ownership and pinned artifact flow](../valkyrie-dispatch-ownership.png)
+![Dispatch ownership and pinned artifact flow](diagrams/valkyrie-dispatch-ownership.png)
 
 Start admission atomically persists benchmark ownership and its queued `START`
 dispatch before enqueueing Redis. The transaction sets both immutable initial
