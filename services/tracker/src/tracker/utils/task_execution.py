@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from types import TracebackType
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -574,7 +574,7 @@ async def _process_task_attempt(
                     org_id=org.id,
                     task=task_row.id,
                     instance_id=None,
-                    result=evaluation_result,
+                    result=cast(dict[str, Any], evaluation_result),
                     agent_caused_exit_reason=None,
                 )
 
@@ -782,7 +782,7 @@ async def _process_task_attempt(
                     org_id=org.id,
                     task=task_row.id,
                     instance_id=sandbox.id,
-                    result=evaluation_result,
+                    result=cast(dict[str, Any], evaluation_result),
                     agent_caused_exit_reason=exit_reason,
                 )
 
