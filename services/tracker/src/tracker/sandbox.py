@@ -405,7 +405,6 @@ async def install_agent_dependencies(
 _TIMEOUT_EXIT_CODE: int = 124
 _OS_KILL_EXIT_CODE: int = 137
 _SUCCESS_EXIT_CODE: int = 0
-_STATUS_DIR = "/tmp/.valkyrie"
 _OUTPUT_TAIL_MAX_CHARS = 64 * 1024
 _EGRESS_RETRY = retry(
     retry=retry_if_exception_type(ProviderSandboxError) & retry_if_not_exception_type(SandboxNotFoundError),
@@ -481,54 +480,35 @@ async def stream_command_output(
     # rather than chunk count since a single chunk can be arbitrarily large.
     output: deque[str] = deque()
     output_chars = 0
-    run_id = uuid.uuid4().hex
-    start_ns_path = f"{_STATUS_DIR}/{run_id}.start_ns"
-    end_ns_path = f"{_STATUS_DIR}/{run_id}.end_ns"
-    timed_command = (
-        f"mkdir -p {shlex.quote(_STATUS_DIR)}"
-        f" && date +%s%N > {shlex.quote(start_ns_path)}"
-        f"; {command}"
-        f"; exit_code=$?"
-        f"; date +%s%N > {shlex.quote(end_ns_path)}"
-        f'; sh -c "exit $exit_code"'
-    )
 
     exit_code = _SUCCESS_EXIT_CODE
+    started_at = time.monotonic()
     try:
-        try:
-            async for data in sandbox.command(timed_command):
-                on_output(data)
-                output.append(data)
-                output_chars += len(data)
-                while output_chars > _OUTPUT_TAIL_MAX_CHARS and len(output) > 1:
-                    output_chars -= len(output.popleft())
-        except ProviderSandboxCommandError as e:
-            exit_code = e.exit_code
-        except SandboxNotFoundError:
-            raise
-        except ProviderSandboxError as e:
-            raise SandboxError(str(e)) from e
+        async for data in sandbox.command(command):
+            on_output(data)
+            output.append(data)
+            output_chars += len(data)
+            while output_chars > _OUTPUT_TAIL_MAX_CHARS and len(output) > 1:
+                output_chars -= len(output.popleft())
+    except ProviderSandboxCommandError as e:
+        exit_code = e.exit_code
+    except SandboxNotFoundError:
+        raise
+    except ProviderSandboxError as e:
+        raise SandboxError(str(e)) from e
+    duration = time.monotonic() - started_at
 
-        start_ns = (await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")).stdout
-        end_ns = (await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")).stdout
-        duration = (int(end_ns.strip()) - int(start_ns.strip())) / 1e9
+    if exit_code == _SUCCESS_EXIT_CODE:
+        return None, duration
+    if exit_code == _TIMEOUT_EXIT_CODE:
+        return AgentCausedExitReason.TIMEOUT, duration
+    if exit_code == _OS_KILL_EXIT_CODE:
+        return AgentCausedExitReason.OS_KILLED, duration
 
-        if exit_code == _SUCCESS_EXIT_CODE:
-            return None, duration
-        if exit_code == _TIMEOUT_EXIT_CODE:
-            return AgentCausedExitReason.TIMEOUT, duration
-        if exit_code == _OS_KILL_EXIT_CODE:
-            return AgentCausedExitReason.OS_KILLED, duration
-
-        tail = "".join(output).strip().splitlines()
-        recent = "\n".join(tail[-10:]) if tail else "(no output)"
-        sentry_sdk.set_tag("agent_exit_code", str(exit_code))
-        raise AgentRunFailedError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
-    finally:
-        try:
-            await _exec(sandbox, f"rm -f {shlex.quote(start_ns_path)} {shlex.quote(end_ns_path)}")
-        except Exception:
-            pass
+    tail = "".join(output).strip().splitlines()
+    recent = "\n".join(tail[-10:]) if tail else "(no output)"
+    sentry_sdk.set_tag("agent_exit_code", str(exit_code))
+    raise AgentRunFailedError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
 
 
 @logfire.instrument(

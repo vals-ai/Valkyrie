@@ -1320,36 +1320,28 @@ class TestEgressAllowlist:
 class TestStreamCommandOutputAgentFailure:
     """Agent command failure cleanup and error classification."""
 
-    async def test_stream_command_output_removes_timing_files(self) -> None:
-        async def stream_command(_command: str) -> AsyncIterator[str]:
+    async def test_stream_command_output_measures_duration_in_tracker(self) -> None:
+        observed_commands: list[str] = []
+
+        async def stream_command(command: str) -> AsyncIterator[str]:
+            observed_commands.append(command)
             yield "done\n"
-
-        exec_commands: list[str] = []
-
-        async def exec_command(command: str) -> ExecResult:
-            exec_commands.append(command)
-            if command.startswith("cat ") and command.endswith(".start_ns"):
-                return ExecResult(exit_code=0, output="1000000000")
-            if command.startswith("cat ") and command.endswith(".end_ns"):
-                return ExecResult(exit_code=0, output="3000000000")
-            return ExecResult(exit_code=0)
 
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "test-sandbox"
         mock_sandbox.state = "started"
         mock_sandbox.command = stream_command
-        mock_sandbox.exec = exec_command
+        mock_sandbox.exec = AsyncMock()
 
         exit_reason, duration = await sandbox_module.stream_command_output(
             mock_sandbox, "run-agent.sh", on_output=lambda _: None
         )
 
         assert exit_reason is None
-        assert duration == 2
-        assert exec_commands[-1].startswith("rm -f ")
-        assert ".start_ns" in exec_commands[-1]
-        assert ".end_ns" in exec_commands[-1]
+        assert duration >= 0
+        assert observed_commands == ["run-agent.sh"]
+        mock_sandbox.exec.assert_not_awaited()
 
     @pytest.mark.parametrize("exit_code", [1, 2, 127])
     async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(
@@ -1364,12 +1356,7 @@ class TestStreamCommandOutputAgentFailure:
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "test-sandbox"
         mock_sandbox.command = stream_command
-        mock_sandbox.exec = AsyncMock(
-            side_effect=[
-                ExecResult(exit_code=0, output="1000000000"),
-                ExecResult(exit_code=0, output="3000000000"),
-            ]
-        )
+        mock_sandbox.exec = AsyncMock()
 
         def fake_set_tag(key: str, value: object) -> None:
             tagged[key] = str(value)
@@ -1403,13 +1390,7 @@ class TestStreamCommandOutputAgentFailure:
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "test-sandbox"
         mock_sandbox.command = stream_command
-        mock_sandbox.exec = AsyncMock(
-            side_effect=[
-                ExecResult(exit_code=0, output="1000000000"),
-                ExecResult(exit_code=0, output="3000000000"),
-                ExecResult(exit_code=0, output=""),
-            ]
-        )
+        mock_sandbox.exec = AsyncMock()
 
         def fake_set_tag(_key: str, _value: object) -> None:
             pass
