@@ -207,7 +207,10 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn('".dockerignore"', workflow)
         self.assertIn("PYTHONPATH=services/tracker/src python services/executor_artifact/build.py", workflow)
         self.assertIn("uv run pytest tests/unit/executor_host services/executor_artifact/tests", workflow)
-        self.assertIn("-f services/tracker/Dockerfile", workflow)
+        self.assertIn(
+            "docker build --platform linux/arm64 -t valkyrie-tracker:ci services/tracker",
+            workflow,
+        )
         self.assertIn("-f services/executor_host/Dockerfile", workflow)
         self.assertEqual(workflow.count("services/executor_artifact/build.py"), 1)
         self.assertIn("services/executor_artifact/uv.lock", workflow)

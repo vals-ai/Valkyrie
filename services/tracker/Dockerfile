@@ -11,11 +11,11 @@ RUN apt-get update && apt-get install -y \
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-COPY services/tracker/pyproject.toml services/tracker/uv.lock services/tracker/alembic.ini ./
+COPY pyproject.toml uv.lock alembic.ini ./
 
-COPY services/tracker/src ./src
-COPY services/tracker/main.py ./
-COPY services/tracker/entrypoint.sh /entrypoint.sh
+COPY src ./src
+COPY main.py ./
+COPY entrypoint.sh /entrypoint.sh
 
 RUN uv sync --frozen --no-dev
 RUN chmod +x /entrypoint.sh

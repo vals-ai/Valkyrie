@@ -244,6 +244,15 @@ def upgrade() -> None:
         self.assertEqual(result.classification, "maintenance-required")
         self.assertEqual(result.reasons, ["executor-core-change"])
 
+    def test_executor_host_context_change_requires_maintenance(self) -> None:
+        head_sha = self._commit_file(".dockerignore", "changed\n")
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertEqual(result.reasons, ["executor-core-change"])
+
     def test_shared_executor_input_requires_core_maintenance(self) -> None:
         head_sha = self._commit_file("infra/shared.py", "changed = True\n")
 

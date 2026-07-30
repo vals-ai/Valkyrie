@@ -12,6 +12,7 @@ from pathlib import Path
 _EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 _MIGRATION_DIRECTORY = "services/tracker/src/tracker/database/migrations/versions/"
 _EXECUTOR_STACK_FILES = {
+    ".dockerignore",
     ".github/workflows/deploy.yaml",
     ".github/workflows/maintenance-classification.yaml",
     "infra/Makefile",

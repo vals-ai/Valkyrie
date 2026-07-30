@@ -1,6 +1,7 @@
 """Tracker service stack - public-facing API with ALB and shared RDS database."""
 
 import os
+from pathlib import Path
 from typing import Any, cast
 
 import aws_cdk as cdk
@@ -87,10 +88,11 @@ class TrackerStack(Stack):
             tracker_image = aws_ecs.ContainerImage.from_ecr_repository(tracker_repository, image_tag)
         else:
             tracker_image = aws_ecs.ContainerImage.from_asset(
-                "..",
-                file="services/tracker/Dockerfile",
+                str(Path(__file__).resolve().parent.parent / "services" / "tracker"),
+                file="Dockerfile",
                 platform=Platform.LINUX_ARM64,
                 exclude=list(DOCKER_ASSET_EXCLUDES),
+                ignore_mode=cdk.IgnoreMode.DOCKER,
             )
         self.tracker_image = tracker_image
 

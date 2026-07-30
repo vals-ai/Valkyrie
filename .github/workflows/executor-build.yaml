@@ -82,7 +82,7 @@ jobs:
           python -m json.tool "$RUNNER_TEMP/executor-release/manifest.json" >/dev/null
 
       - name: Build ARM64 Tracker image
-        run: docker build --platform linux/arm64 -f services/tracker/Dockerfile -t valkyrie-tracker:ci .
+        run: docker build --platform linux/arm64 -t valkyrie-tracker:ci services/tracker
 
       - name: Build ARM64 ExecutorHost image
         run: docker build --platform linux/arm64 -f services/executor_host/Dockerfile -t valkyrie-executor-host:ci .

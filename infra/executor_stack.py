@@ -100,6 +100,7 @@ class ExecutorStack(Stack):
                 file="services/executor_host/Dockerfile",
                 platform=Platform.LINUX_ARM64,
                 exclude=list(DOCKER_ASSET_EXCLUDES),
+                ignore_mode=cdk.IgnoreMode.DOCKER,
             )
 
         benchmark_service_url = benchmark_service_base_url(stage)
