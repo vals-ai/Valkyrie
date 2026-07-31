@@ -611,6 +611,9 @@ async def _process_task_attempt(
         labels = {
             "Benchmark": start_benchmark_request.benchmark_name,
             "Id": str(benchmark_id),
+            # CBS resolves VolumeMount's {run_id} placeholder from the
+            # "run-id" label and hard-fails if this isolation identity is absent.
+            "run-id": str(benchmark_id),
             "Task": task_row.task_id,
         }
 
@@ -656,6 +659,7 @@ async def _process_task_attempt(
             labels=labels,
             env_vars=env_vars,
             resources=task_data.resources,
+            volumes=task_data.volumes,
             creation_semaphore=creation_semaphore,
         ) as sandbox:
             task_breakdown.sandbox_build_duration = time.perf_counter() - start_sandbox_build_time

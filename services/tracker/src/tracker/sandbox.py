@@ -26,6 +26,7 @@ from benchmark_service import (
     SandboxSource,
     SnapshotSource,
     TargetedSnapshotSource,
+    VolumeMount,
 )
 from benchmark_service import (
     Resources as TrackerResources,
@@ -167,6 +168,7 @@ async def _create_sandbox(
     resources: TrackerResources,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
+    volumes: list[VolumeMount] | None = None,
 ) -> Sandbox:
     """Create a sandbox through its provider."""
     provider_source = _provider_source(source)
@@ -178,6 +180,7 @@ async def _create_sandbox(
             name=sandbox_name,
             labels=labels or {},
             env_vars=env_vars or {},
+            volumes=volumes or [],
             auto_stop_interval=SANDBOX_AUTO_STOP_INTERVAL,
             create_timeout=SANDBOX_CREATE_TIMEOUT,
         )
@@ -193,6 +196,7 @@ async def create_sandbox(
     creation_semaphore: Semaphore,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
+    volumes: list[VolumeMount] | None = None,
 ) -> AsyncGenerator[Sandbox, Any]:
     """
     Yeild a sandbox to be used within a context manager.
@@ -204,6 +208,7 @@ async def create_sandbox(
         resources: The resources to use for the sandbox
         labels: The labels to use for the sandbox
         env_vars: The environment variables to use for the sandbox
+        volumes: Persistent volumes to mount in the sandbox
         creation_semaphore: Per-benchmark semaphore to limit concurrent sandbox creation.
 
     Returns:
@@ -219,7 +224,7 @@ async def create_sandbox(
         async with creation_semaphore:
             start = time.monotonic()
             creation_task = asyncio.create_task(
-                _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars)
+                _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars, volumes)
             )
             try:
                 sandbox = await asyncio.shield(creation_task)
