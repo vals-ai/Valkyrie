@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 from unittest.mock import AsyncMock, Mock
+from uuid import UUID
 
 import pytest
 from benchmark_service import SandboxNotFoundError, SandboxRecoveryPolicy
@@ -180,6 +181,7 @@ class TestTaskExecutionRetry:
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("benchmark_service.client.time.time", lambda: 1_234.5)
+        monkeypatch.setattr("benchmark_service.client.uuid4", lambda: UUID(int=1))
 
         sandbox_envs: list[dict[str, str]] = []
 
@@ -226,7 +228,9 @@ class TestTaskExecutionRetry:
         assert "VALKYRIE_SANDBOX_OUTAGE_ID" not in sandbox_envs[0]
         for lost_attempt, env in enumerate(sandbox_envs[1:], start=1):
             assert env["VALKYRIE_SANDBOX_OUTAGE_STARTED_EPOCH"] == "1234.5"
-            assert env["VALKYRIE_SANDBOX_OUTAGE_ID"] == f"{benchmark_id}:task_0:{lost_attempt}"
+            assert env["VALKYRIE_SANDBOX_OUTAGE_ID"] == (
+                f"{benchmark_id}:task_0:{lost_attempt}:00000000000000000000000000000001"
+            )
 
         database_session.refresh(task_row)
         assert task_row.status == expected_status
