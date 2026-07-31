@@ -241,6 +241,59 @@ class TestTaskExecutionRetry:
         database_session.refresh(task_row)
         assert task_row.status == expected_status
 
+    async def test_eval_resume_loads_recovery_policy_before_handling_sandbox_loss(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        task_row.status = TaskStatus.EVALUATING
+        task_row.eval_resume_state = {"artifact_prefix": "s3://bucket/run"}
+        database_session.add(task_row)
+        database_session.commit()
+
+        retryable_process_task = getattr(task_execution_module, "_process_task_attempt")
+        monkeypatch.setattr(retryable_process_task.retry, "wait", wait_none())
+        monkeypatch.setattr("tracker.utils.task_execution.time.time", lambda: 1_234.5)
+
+        retrieve_count = 0
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            nonlocal retrieve_count
+            retrieve_count += 1
+            response = make_retrieve_task_response(problem_path="/tmp/problem.txt")
+            response.sandbox_recovery = SandboxRecoveryPolicy(max_sandbox_attempts=2)
+            return response
+
+        resume_count = 0
+
+        async def _mock_resume_evaluation(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            nonlocal resume_count
+            resume_count += 1
+            if resume_count == 1:
+                raise SandboxNotFoundError("grading sandbox was preempted")
+            return {"status": "success", "score": 1.0}
+
+        monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock())
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        assert retrieve_count == 2
+        assert resume_count == 2
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.FINISHED
+
     async def test_process_task_spans_timed_status_transitions(
         self,
         contract: AgentContractRequest,

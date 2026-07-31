@@ -586,6 +586,11 @@ async def _process_task_attempt(
         return not execution_is_current()
 
     try:
+        task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
+        sandbox_recovery.max_attempts = (
+            task_data.sandbox_recovery.max_sandbox_attempts if task_data.sandbox_recovery is not None else None
+        )
+
         if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
             try:
                 log_output("Resuming evaluation from durable benchmark state\n")
@@ -635,10 +640,6 @@ async def _process_task_attempt(
 
                 raise e from e
 
-        task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
-        sandbox_recovery.max_attempts = (
-            task_data.sandbox_recovery.max_sandbox_attempts if task_data.sandbox_recovery is not None else None
-        )
         sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
 
         # Labels that show up in the UI we can use to filter sandboxes
