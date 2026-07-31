@@ -3,6 +3,7 @@
 Run: uv run pytest tests/unit/utils/test_benchmark_service_failures.py
 """
 
+import asyncio
 import time
 from typing import Any, Never
 
@@ -179,6 +180,8 @@ class TestBenchmarkServiceFailures:
             contract, database_session, harness_config
         )
         logged_messages: list[str] = []
+        log_written = asyncio.Event()
+        event_loop = asyncio.get_running_loop()
 
         async def _mock_install_agent_dependencies(*_args: Any, **_kwargs: Any) -> None:
             return None
@@ -195,6 +198,7 @@ class TestBenchmarkServiceFailures:
 
         def _mock_write_benchmark_log_event(_stream_key: str, message: str, *_args: Any, **_kwargs: Any) -> None:
             logged_messages.append(message)
+            event_loop.call_soon_threadsafe(log_written.set)
 
         monkeypatch.setattr(utils_module, "run_agent", sandbox_module.run_agent)
         monkeypatch.setattr(sandbox_module, "install_agent_dependencies", _mock_install_agent_dependencies)
@@ -207,6 +211,7 @@ class TestBenchmarkServiceFailures:
         monkeypatch.setattr(utils_module, "write_benchmark_log_event", _mock_write_benchmark_log_event)
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        await asyncio.wait_for(log_written.wait(), timeout=1)
 
         assert result == {"task_0": None}
 
