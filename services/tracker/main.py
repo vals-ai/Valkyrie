@@ -828,6 +828,8 @@ async def retry_or_resume_benchmark(
     )
 
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
+        if concurrency is not None:
+            _update_benchmark_concurrency(benchmark_id, concurrency, session, org)
         if secrets or benchmark_url is not None:
             update_benchmark_resume_arguments(
                 benchmark_id,

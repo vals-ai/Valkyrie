@@ -1148,7 +1148,7 @@ class TestRunRecovery:
         - Task verification uses the normalized replacement benchmark URL.
         - The queued request and stored run retain the replacement URL.
         - An active resume stores URL and secret overrides without queueing duplicate work.
-        - An active retry with no retryable tasks still stores URL and secret overrides.
+        - An active retry with no retryable tasks still stores all request overrides.
         """
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
@@ -1232,7 +1232,7 @@ class TestRunRecovery:
         }
 
         active_retry_response = client.post(
-            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true&concurrency=10",
             json={
                 "task_ids": [],
                 "service_headers": {},
@@ -1245,6 +1245,7 @@ class TestRunRecovery:
         assert len(mock_kicker.queued_calls) == 1
         database_session.refresh(benchmark_row)
         assert benchmark_row.custom_benchmark_service == "https://active-retry.example"
+        assert benchmark_row.arguments.concurrency == 10
         assert benchmark_row.arguments.contract.secrets == {
             "EXISTING_API_KEY": "existing-secret",
             "ACTIVE_API_KEY": "active-retry-secret",
