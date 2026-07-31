@@ -1,6 +1,7 @@
 """Sandbox management utilities for the tracker service."""
 
 import asyncio
+import math
 import shlex
 import time
 import uuid
@@ -80,6 +81,7 @@ logger = get_logger(__name__)
 
 bundle_path = PurePosixPath("/bundle")
 SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
+SANDBOX_AUTO_STOP_PADDING_MINUTES = 10
 SANDBOX_CREATE_TIMEOUT = 360
 AGENT_INSTALL_TIMEOUT_SECONDS = 10 * 60
 CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
@@ -160,6 +162,15 @@ def _set_sandbox_span_attributes(sandbox: Sandbox) -> None:
     span.set_attribute("valkyrie.sandbox_state", sandbox.state)
 
 
+def sandbox_auto_stop_interval(agent_timeout: float | None) -> int:
+    if agent_timeout is None:
+        return SANDBOX_AUTO_STOP_INTERVAL
+    return max(
+        SANDBOX_AUTO_STOP_INTERVAL,
+        math.ceil(agent_timeout / 60) + SANDBOX_AUTO_STOP_PADDING_MINUTES,
+    )
+
+
 @logfire.instrument("sandbox.create", extract_args=False)
 async def _create_sandbox(
     provider: SandboxProvider,
@@ -169,6 +180,7 @@ async def _create_sandbox(
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
     volumes: list[VolumeMount] | None = None,
+    auto_stop_interval: int = SANDBOX_AUTO_STOP_INTERVAL,
 ) -> Sandbox:
     """Create a sandbox through its provider."""
     provider_source = _provider_source(source)
@@ -181,7 +193,7 @@ async def _create_sandbox(
             labels=labels or {},
             env_vars=env_vars or {},
             volumes=volumes or [],
-            auto_stop_interval=SANDBOX_AUTO_STOP_INTERVAL,
+            auto_stop_interval=auto_stop_interval,
             create_timeout=SANDBOX_CREATE_TIMEOUT,
         )
     )
@@ -197,6 +209,7 @@ async def create_sandbox(
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
     volumes: list[VolumeMount] | None = None,
+    auto_stop_interval: int = SANDBOX_AUTO_STOP_INTERVAL,
 ) -> AsyncGenerator[Sandbox, Any]:
     """
     Yeild a sandbox to be used within a context manager.
@@ -224,7 +237,16 @@ async def create_sandbox(
         async with creation_semaphore:
             start = time.monotonic()
             creation_task = asyncio.create_task(
-                _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars, volumes)
+                _create_sandbox(
+                    provider,
+                    sandbox_name,
+                    source,
+                    resources,
+                    labels,
+                    env_vars,
+                    volumes,
+                    auto_stop_interval,
+                )
             )
             try:
                 sandbox = await asyncio.shield(creation_task)

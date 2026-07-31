@@ -65,6 +65,14 @@ _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
 _upload_output_artifact = getattr(sandbox_module, "_upload_output_artifact")
 
 
+def test_sandbox_auto_stop_interval_defaults_without_agent_timeout() -> None:
+    assert sandbox_module.sandbox_auto_stop_interval(None) == sandbox_module.SANDBOX_AUTO_STOP_INTERVAL
+
+
+def test_sandbox_auto_stop_interval_tracks_agent_timeout() -> None:
+    assert sandbox_module.sandbox_auto_stop_interval(172_800.0) == 2_890
+
+
 class TestOutputArtifacts:
     """Declared output artifact collection and size validation."""
 
@@ -1000,6 +1008,7 @@ class TestSandboxLifecycle:
             resources,
             labels={"run-id": "run-123"},
             volumes=volumes,
+            auto_stop_interval=1234,
         )
 
         assert sandbox is mock_sandbox
@@ -1009,7 +1018,7 @@ class TestSandboxLifecycle:
         assert request.resources == resources
         assert request.labels == {"run-id": "run-123"}
         assert request.volumes == volumes
-        assert request.auto_stop_interval == sandbox_module.SANDBOX_AUTO_STOP_INTERVAL
+        assert request.auto_stop_interval == 1234
         assert request.create_timeout == sandbox_module.SANDBOX_CREATE_TIMEOUT
 
     async def test_create_sandbox_unwraps_compose_source_before_provider_create(

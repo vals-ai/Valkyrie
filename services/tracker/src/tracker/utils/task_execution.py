@@ -55,7 +55,13 @@ from tracker.executor.execution_authority import ExecutionAuthority, lock_execut
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
-from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
+from tracker.sandbox import (
+    DependencySetupMode,
+    create_sandbox,
+    run_agent,
+    sandbox_auto_stop_interval,
+    upload_agent_artifacts,
+)
 from tracker.types import (
     AWSCredentials,
     HarnessConfig,
@@ -660,6 +666,7 @@ async def _process_task_attempt(
             env_vars=env_vars,
             resources=task_data.resources,
             volumes=task_data.volumes,
+            auto_stop_interval=sandbox_auto_stop_interval(task_data.agent_timeout),
             creation_semaphore=creation_semaphore,
         ) as sandbox:
             task_breakdown.sandbox_build_duration = time.perf_counter() - start_sandbox_build_time
