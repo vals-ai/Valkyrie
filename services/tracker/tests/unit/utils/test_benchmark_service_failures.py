@@ -182,6 +182,7 @@ class TestBenchmarkServiceFailures:
         logged_messages: list[str] = []
         log_written = asyncio.Event()
         event_loop = asyncio.get_running_loop()
+        expected_error = "Output artifact error: Required output artifact missing: /tmp/valkyrie/artifacts/missing.json"
 
         async def _mock_install_agent_dependencies(*_args: Any, **_kwargs: Any) -> None:
             return None
@@ -198,7 +199,8 @@ class TestBenchmarkServiceFailures:
 
         def _mock_write_benchmark_log_event(_stream_key: str, message: str, *_args: Any, **_kwargs: Any) -> None:
             logged_messages.append(message)
-            event_loop.call_soon_threadsafe(log_written.set)
+            if f"[ERROR] {expected_error}" in message:
+                event_loop.call_soon_threadsafe(log_written.set)
 
         monkeypatch.setattr(utils_module, "run_agent", sandbox_module.run_agent)
         monkeypatch.setattr(sandbox_module, "install_agent_dependencies", _mock_install_agent_dependencies)
@@ -218,7 +220,6 @@ class TestBenchmarkServiceFailures:
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
         error_message = self._latest_task_error(database_session, task_row)
-        expected_error = "Output artifact error: Required output artifact missing: /tmp/valkyrie/artifacts/missing.json"
         assert error_message == expected_error
         assert any(f"[ERROR] {expected_error}" in message for message in logged_messages)
 
