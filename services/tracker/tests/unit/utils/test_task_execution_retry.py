@@ -13,7 +13,6 @@ from benchmark_service import SandboxNotFoundError, SandboxRecoveryPolicy
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse, VolumeMount
 from sqlmodel import Session
-from tenacity import wait_none
 
 from tests.unit.utils.task_execution_support import (
     create_task_environment,
@@ -29,13 +28,6 @@ from tracker.utils import task_execution as task_execution_module
 
 class TestTaskExecutionRetry:
     """Task execution retries, callbacks, and transition spans."""
-
-    def test_process_task_retry_decorator_uses_observability_retry_callback(self) -> None:
-        retryable_process_task = getattr(task_execution_module, "_process_task_attempt")
-        before_sleep = retryable_process_task.retry.before_sleep
-
-        assert before_sleep is not None
-        assert callable(before_sleep)
 
     @pytest.mark.parametrize(
         "fail_target,error,second_error,expected_dependency_modes,expected_status",
@@ -97,8 +89,7 @@ class TestTaskExecutionRetry:
             harness_config,
         )
 
-        retryable_process_task = getattr(task_execution_module, "_process_task_attempt")
-        monkeypatch.setattr(retryable_process_task.retry, "wait", wait_none())
+        monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
 
         sandbox_entry_count = 0
 
@@ -187,9 +178,8 @@ class TestTaskExecutionRetry:
             database_session,
             harness_config,
         )
-        retryable_process_task = getattr(task_execution_module, "_process_task_attempt")
-        monkeypatch.setattr(retryable_process_task.retry, "wait", wait_none())
-        monkeypatch.setattr("tracker.utils.task_execution.time.time", lambda: 1_234.5)
+        monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
+        monkeypatch.setattr("benchmark_service.client.time.time", lambda: 1_234.5)
 
         sandbox_envs: list[dict[str, str]] = []
 
@@ -258,9 +248,8 @@ class TestTaskExecutionRetry:
         database_session.add(task_row)
         database_session.commit()
 
-        retryable_process_task = getattr(task_execution_module, "_process_task_attempt")
-        monkeypatch.setattr(retryable_process_task.retry, "wait", wait_none())
-        monkeypatch.setattr("tracker.utils.task_execution.time.time", lambda: 1_234.5)
+        monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
+        monkeypatch.setattr("benchmark_service.client.time.time", lambda: 1_234.5)
 
         retrieve_count = 0
 
