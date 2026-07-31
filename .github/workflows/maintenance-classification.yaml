@@ -29,12 +29,11 @@ jobs:
 
       - name: Fetch base and candidate without executing them
         env:
-          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "${BASE_REF#refs/heads/}"
+          git fetch --no-tags origin "$BASE_SHA"
           test "$(git rev-parse FETCH_HEAD)" = "$BASE_SHA"
           if [[ -n "$PR_NUMBER" ]]; then
             git fetch --no-tags origin "pull/$PR_NUMBER/head"
