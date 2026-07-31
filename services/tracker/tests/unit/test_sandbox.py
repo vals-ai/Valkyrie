@@ -11,7 +11,15 @@ from typing import Any, Never
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from benchmark_service import ComposeSandbox, ComposeSource, ExecResult, ImageSource, Resources, SnapshotSource
+from benchmark_service import (
+    ComposeSandbox,
+    ComposeSource,
+    ExecResult,
+    ImageSource,
+    Resources,
+    SnapshotSource,
+    VolumeMount,
+)
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
@@ -694,11 +702,21 @@ class TestSandboxLifecycle:
         provider.create_sandbox = AsyncMock(return_value=mock_sandbox)
 
         resources = Resources(vcpu=2, memory=4, disk=5)
+        volumes = [
+            VolumeMount(
+                name="shared-fixtures",
+                mount_path="/fixtures",
+                read_only=True,
+                subpath="{run_id}",
+            )
+        ]
         sandbox = await _create_sandbox(
             provider,
             "task-alias",
             ImageSource(image="ghcr.io/vals/swebench:latest"),
             resources,
+            labels={"run-id": "run-123"},
+            volumes=volumes,
         )
 
         assert sandbox is mock_sandbox
@@ -706,6 +724,8 @@ class TestSandboxLifecycle:
         request = provider.create_sandbox.await_args.args[0]
         assert request.name == "task-alias"
         assert request.resources == resources
+        assert request.labels == {"run-id": "run-123"}
+        assert request.volumes == volumes
         assert request.auto_stop_interval == sandbox_module.SANDBOX_AUTO_STOP_INTERVAL
         assert request.create_timeout == sandbox_module.SANDBOX_CREATE_TIMEOUT
 

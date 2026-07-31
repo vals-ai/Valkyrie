@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import RetrieveTaskResponse
+from benchmark_service.schemas import RetrieveTaskResponse, VolumeMount
 from sqlmodel import Session
 from tenacity import wait_none
 
@@ -174,15 +174,27 @@ class TestTaskExecutionRetry:
             harness_config,
         )
 
+        create_sandbox_kwargs: dict[str, Any] = {}
+
         @asynccontextmanager
-        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+        async def _mock_create_sandbox(*_args: Any, **kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+            create_sandbox_kwargs.update(kwargs)
             mock_sandbox = AsyncMock()
             mock_sandbox.id = "mock-sandbox-id"
             mock_sandbox.name = "mock-sandbox-name"
             yield mock_sandbox
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
-            return make_retrieve_task_response(problem_path="/tmp/problem.txt")
+            response = make_retrieve_task_response(problem_path="/tmp/problem.txt")
+            response.volumes = [
+                VolumeMount(
+                    name="shared-fixtures",
+                    mount_path="/fixtures",
+                    read_only=True,
+                    subpath="{run_id}",
+                )
+            ]
+            return response
 
         async def _mock_upload_agent_artifacts(*_args: Any, **_kwargs: Any) -> None:
             return None
@@ -243,6 +255,15 @@ class TestTaskExecutionRetry:
         assert all(record["entered"] and record["exited"] for record in transition_records)
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
         assert run_agent_kwargs["benchmark_id"] == str(benchmark_id)
+        assert create_sandbox_kwargs["labels"]["run-id"] == str(benchmark_id)
+        assert create_sandbox_kwargs["volumes"] == [
+            VolumeMount(
+                name="shared-fixtures",
+                mount_path="/fixtures",
+                read_only=True,
+                subpath="{run_id}",
+            )
+        ]
 
         event_names = [record["message"] for record in log_records]
         assert "agent.run.complete" in event_names
