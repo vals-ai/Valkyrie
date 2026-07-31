@@ -864,8 +864,7 @@ async def _process_task_attempt(
             return {task_id: None}
         log_output(f"\n[ERROR] {_exception_message(e)}")
         within_policy = (
-            sandbox_recovery.max_attempts is None
-            or sandbox_recovery.attempts < sandbox_recovery.max_attempts
+            sandbox_recovery.max_attempts is None or sandbox_recovery.attempts < sandbox_recovery.max_attempts
         )
         if sandbox_recovery.setup_retries < _PTY_TASK_RETRY_LIMIT and within_policy:
             sandbox_recovery.setup_retries += 1
