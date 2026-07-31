@@ -641,9 +641,7 @@ async def _process_task_attempt(
                     task_id=task_id, dataset=start_benchmark_request.dataset
                 )
                 sandbox_recovery.max_attempts = (
-                    task_data.sandbox_recovery.max_sandbox_attempts
-                    if task_data.sandbox_recovery is not None
-                    else None
+                    task_data.sandbox_recovery.max_sandbox_attempts if task_data.sandbox_recovery is not None else None
                 )
                 raise
             except Exception as e:
