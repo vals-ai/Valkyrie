@@ -239,12 +239,16 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("pull_request_target:", classification_workflow)
         trusted_checkout = classification_workflow.split("      - name: Checkout trusted classifier", maxsplit=1)[
             1
-        ].split("      - name: Fetch candidate without executing it", maxsplit=1)[0]
-        self.assertIn(
-            "ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
-            trusted_checkout,
-        )
+        ].split("      - name: Fetch base and candidate without executing them", maxsplit=1)[0]
+        self.assertIn("ref: ${{ github.event.repository.default_branch }}", trusted_checkout)
+        self.assertNotIn("github.event.pull_request.base.sha", trusted_checkout)
         self.assertNotIn("github.event.pull_request.head.sha", trusted_checkout)
+        self.assertIn(
+            "BASE_REF: ${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}",
+            classification_workflow,
+        )
+        self.assertIn('git fetch --no-tags origin "${BASE_REF#refs/heads/}"', classification_workflow)
+        self.assertIn('test "$(git rev-parse FETCH_HEAD)" = "$BASE_SHA"', classification_workflow)
         self.assertIn('git fetch --no-tags origin "pull/$PR_NUMBER/head"', classification_workflow)
         self.assertIn('git fetch --no-tags origin "${MERGE_GROUP_HEAD_REF#refs/heads/}"', classification_workflow)
         self.assertIn('test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA"', classification_workflow)
