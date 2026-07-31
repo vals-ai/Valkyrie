@@ -6,7 +6,7 @@ Cover lightweight benchmark status and result-existence routes.
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 import pytest
 from sqlmodel import Session
 
@@ -116,6 +116,10 @@ class TestBenchmarkStatusQueries:
                 "id": str(benchmark_id),
                 "status": "IN_PROGRESS",
                 "finished_at": None,
+                "executor_release_id": None,
+                "current_execution_release_id": None,
+                "executor_artifact_digest": None,
+                "executor_protocol_version": None,
                 "total_tasks": 4,
                 "finished_tasks": 3,
                 "task_state_counts": {"FINISHED": 1, "ERROR": 1, "STOPPED": 1, "IN_PROGRESS": 1},

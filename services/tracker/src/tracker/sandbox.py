@@ -26,6 +26,7 @@ from benchmark_service import (
     SandboxSource,
     SnapshotSource,
     TargetedSnapshotSource,
+    VolumeMount,
 )
 from benchmark_service import (
     Resources as TrackerResources,
@@ -167,6 +168,7 @@ async def _create_sandbox(
     resources: TrackerResources,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
+    volumes: list[VolumeMount] | None = None,
 ) -> Sandbox:
     """Create a sandbox through its provider."""
     provider_source = _provider_source(source)
@@ -178,6 +180,7 @@ async def _create_sandbox(
             name=sandbox_name,
             labels=labels or {},
             env_vars=env_vars or {},
+            volumes=volumes or [],
             auto_stop_interval=SANDBOX_AUTO_STOP_INTERVAL,
             create_timeout=SANDBOX_CREATE_TIMEOUT,
         )
@@ -193,6 +196,7 @@ async def create_sandbox(
     creation_semaphore: Semaphore,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
+    volumes: list[VolumeMount] | None = None,
     *,
     unique_name: bool = True,
 ) -> AsyncGenerator[Sandbox, Any]:
@@ -206,6 +210,7 @@ async def create_sandbox(
         resources: The resources to use for the sandbox
         labels: The labels to use for the sandbox
         env_vars: The environment variables to use for the sandbox
+        volumes: Persistent volumes to mount in the sandbox
         creation_semaphore: Per-benchmark semaphore to limit concurrent sandbox creation.
         unique_name: Whether to append a random suffix to the supplied name.
 
@@ -223,7 +228,7 @@ async def create_sandbox(
         async with creation_semaphore:
             start = time.monotonic()
             creation_task = asyncio.create_task(
-                _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars)
+                _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars, volumes)
             )
             try:
                 sandbox = await asyncio.shield(creation_task)
@@ -488,6 +493,8 @@ async def stream_command_output(
     run_id = uuid.uuid4().hex
     start_ns_path = f"{_STATUS_DIR}/{run_id}.start_ns"
     end_ns_path = f"{_STATUS_DIR}/{run_id}.end_ns"
+    # Timing is embedded in the sandbox command so it excludes the tracker->sandbox
+    # request round-trip and program cold-start (~5-6s), keeping the measurement accurate.
     timed_command = (
         f"mkdir -p {shlex.quote(_STATUS_DIR)}"
         f" && date +%s%N > {shlex.quote(start_ns_path)}"
@@ -498,6 +505,7 @@ async def stream_command_output(
     )
 
     exit_code = _SUCCESS_EXIT_CODE
+    monotonic_start = time.monotonic()
     try:
         try:
             async for data in sandbox.command(timed_command):
@@ -513,9 +521,12 @@ async def stream_command_output(
         except ProviderSandboxError as e:
             raise SandboxError(str(e)) from e
 
-        start_ns = (await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")).stdout
-        end_ns = (await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")).stdout
-        duration = (int(end_ns.strip()) - int(start_ns.strip())) / 1e9
+        # Prefer the sandbox-measured duration; fall back to the tracker-side monotonic
+        # duration if the timing files are missing/unparseable (e.g. the agent removed
+        # /tmp/.valkyrie), rather than crashing on `int()` of a `cat` error string.
+        duration = await _read_sandbox_duration(
+            sandbox, start_ns_path, end_ns_path, fallback=time.monotonic() - monotonic_start
+        )
 
         if exit_code == _SUCCESS_EXIT_CODE:
             return None, duration
@@ -535,6 +546,18 @@ async def stream_command_output(
             pass
 
 
+async def _read_sandbox_duration(sandbox: Sandbox, start_ns_path: str, end_ns_path: str, fallback: float) -> float:
+    """Read the sandbox-side command duration, degrading to ``fallback`` on any failure."""
+    start_result = await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")
+    end_result = await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")
+    if start_result.exit_code != _SUCCESS_EXIT_CODE or end_result.exit_code != _SUCCESS_EXIT_CODE:
+        return fallback
+    try:
+        return (int(end_result.stdout.strip()) - int(start_result.stdout.strip())) / 1e9
+    except ValueError:
+        return fallback
+
+
 @logfire.instrument(
     "agent_output.archive_and_upload",
     extract_args=("output_path", "agent_output_s3_key", "benchmark_id", "task_id"),
@@ -548,6 +571,7 @@ async def archive_and_upload_output(
     *,
     benchmark_id: str | None = None,
     task_id: str | None = None,
+    execution_is_current: Callable[[], bool] | None = None,
 ) -> None:
     """Compress a file in the sandbox into a tar.gz and upload it to S3"""
     archive_path = f"/tmp/{uuid.uuid4().hex}.tar.gz"
@@ -559,7 +583,11 @@ async def archive_and_upload_output(
 
     try:
         archive_bytes = await upload_stream_to_s3(
-            sandbox.stream_download(archive_path), agent_output_s3_key, aws, s3_bucket
+            sandbox.stream_download(archive_path),
+            agent_output_s3_key,
+            aws,
+            s3_bucket,
+            should_continue=execution_is_current,
         )
 
         logger.info(
@@ -647,6 +675,7 @@ async def upload_output_artifacts(
     task_id: str,
     aws: AWSCredentials,
     s3_bucket: str,
+    execution_is_current: Callable[[], bool] | None = None,
 ) -> None:
     """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
     total_bytes = 0
@@ -656,7 +685,7 @@ async def upload_output_artifacts(
     for artifact in [*required_artifacts, *optional_artifacts]:
         artifact_path = _output_artifact_path(artifact)
         try:
-            total_bytes = await _upload_output_artifact(
+            updated_total_bytes = await _upload_output_artifact(
                 sandbox,
                 artifact,
                 benchmark_id,
@@ -664,7 +693,11 @@ async def upload_output_artifacts(
                 aws,
                 s3_bucket,
                 total_bytes,
+                execution_is_current,
             )
+            if updated_total_bytes is None:
+                return
+            total_bytes = updated_total_bytes
         except Exception:
             if _output_artifact_is_required(artifact):
                 raise
@@ -689,7 +722,8 @@ async def _upload_output_artifact(
     aws: AWSCredentials,
     s3_bucket: str,
     total_bytes: int,
-) -> int:
+    execution_is_current: Callable[[], bool] | None = None,
+) -> int | None:
     artifact_path = _output_artifact_path(artifact)
     sandbox_path = await _resolve_output_artifact_sandbox_path(sandbox, artifact, task_id)
     quoted_path = shlex.quote(sandbox_path)
@@ -716,8 +750,13 @@ async def _upload_output_artifact(
             f"Output artifacts are too large: {new_total_bytes} bytes > {OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES} bytes"
         )
 
+    if execution_is_current is not None and not execution_is_current():
+        return None
+
     s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path)
     file_content = await sandbox.download_file(sandbox_path)
+    if execution_is_current is not None and not execution_is_current():
+        return None
     await upload_to_s3(file_content, s3_key, aws, s3_bucket)
 
     logger.info(
@@ -749,6 +788,7 @@ async def run_agent(
     benchmark_id: str | None = None,
     runtime_source: SandboxSource | None = None,
     dependency_setup_mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
+    execution_is_current: Callable[[], bool] | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
@@ -762,6 +802,7 @@ async def run_agent(
         agent_output_s3_key: S3 key to where we will upload the final output archive to
         agent_timeout: Optional timeout in seconds to enforce on the agent command
         runtime_source: Optional source used to adapt agent commands to the task runtime
+        execution_is_current: Optional execution-authority check before output uploads
 
     Returns:
         AgentCausedExitReason if the agent was terminated abnormally but recoverably
@@ -808,7 +849,11 @@ async def run_agent(
     # Upload any output from the agent to S3
     if contract.final_output:
         result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
-        if result.exit_code == _SUCCESS_EXIT_CODE and agent_output_s3_key:
+        if (
+            result.exit_code == _SUCCESS_EXIT_CODE
+            and agent_output_s3_key
+            and (execution_is_current is None or execution_is_current())
+        ):
             await archive_and_upload_output(
                 sandbox,
                 contract.final_output,
@@ -817,6 +862,7 @@ async def run_agent(
                 s3_bucket,
                 benchmark_id=benchmark_id,
                 task_id=task_id,
+                execution_is_current=execution_is_current,
             )
 
     if contract.output_artifacts:
@@ -829,6 +875,7 @@ async def run_agent(
             task_id,
             aws,
             s3_bucket,
+            execution_is_current,
         )
 
     # Return why the agent terminated abnormally, or None on clean exit

@@ -49,10 +49,12 @@ from tracker.database.models import (
 from tracker.database.session import engine
 from tracker.exceptions import (
     DependencySetupExhaustedError,
+    ExecutionAuthorityRevoked,
     OutputArtifactError,
     SandboxSetupError,
     TrackerServiceError,
 )
+from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
@@ -133,10 +135,18 @@ class TrackedTask:
     _task: asyncio.Task[Any] | None
     _org: Org
     _attempt_started_at: datetime
+    _authority: ExecutionAuthority
 
-    def __init__(self, coro: Coroutine[Any, Any, Any], org: Org, started_at: datetime):
+    def __init__(
+        self,
+        coro: Coroutine[Any, Any, Any],
+        org: Org,
+        authority: ExecutionAuthority,
+        started_at: datetime,
+    ):
         self._coro = coro
         self._org = org
+        self._authority = authority
         self._attempt_started_at = _normalized_attempt_time(started_at)
         self._status = TrackedTaskStatus.WAITING
         self._task = None
@@ -185,7 +195,13 @@ class TrackedTask:
             sentry_sdk.capture_exception(e)
             with Session(bind=engine) as session:
                 task = fetch_task_row(task_row.id, session, self._org)
-                commit_task_error(task, session, error_message, expected_started_at=task_row.started_at)
+                commit_task_error(
+                    task,
+                    session,
+                    error_message,
+                    expected_started_at=task_row.started_at,
+                    authority=self._authority,
+                )
 
             return {task_row.task_id: None}
         finally:
@@ -200,6 +216,7 @@ class TaskMonitor:
     _limiter: ResizableLimiter | None
     _coordinator_done: asyncio.Event | None
     _cancellation_requested: set[str]
+    _authority: ExecutionAuthority
     _TRACK_INTERVAL: int = 2
 
     def __init__(
@@ -208,6 +225,8 @@ class TaskMonitor:
         task_tracking: dict[str, TrackedTask],
         org: Org,
         limiter: ResizableLimiter | None,
+        *,
+        authority: ExecutionAuthority,
         notifier: SlackNotifier | None = None,
         coordinator_done: asyncio.Event | None = None,
     ):
@@ -218,6 +237,7 @@ class TaskMonitor:
         self._limiter = limiter
         self._coordinator_done = coordinator_done
         self._cancellation_requested = set()
+        self._authority = authority
 
     def _load_state(self, task_ids: list[str]) -> tuple[Benchmark, dict[str, tuple[TaskStatus, datetime]]]:
         with Session(bind=engine) as session:
@@ -238,6 +258,16 @@ class TaskMonitor:
 
         return benchmark_row, task_states
 
+    def _authority_is_current(self) -> bool:
+        with Session(bind=engine) as session:
+            try:
+                lock_execution_authority(session, self._authority)
+            except ExecutionAuthorityRevoked:
+                session.rollback()
+                return False
+            session.rollback()
+            return True
+
     async def _check_notifications(self, benchmark_row: Benchmark) -> None:
         """Check notification thresholds using DB task counts."""
         if not self._notifier:
@@ -253,6 +283,7 @@ class TaskMonitor:
         """
 
         while self._task_tracking or (self._coordinator_done is not None and not self._coordinator_done.is_set()):
+            authority_current = self._authority_is_current()
             for task_id, tracked_task in list(self._task_tracking.items()):
                 if tracked_task.status == TrackedTaskStatus.DONE:
                     del self._task_tracking[task_id]
@@ -273,7 +304,8 @@ class TaskMonitor:
                 tracked_task = self._task_tracking[task_id]
                 status, started_at = task_states[task_id]
                 invalid = (
-                    status == TaskStatus.STOPPED
+                    not authority_current
+                    or status == TaskStatus.STOPPED
                     or benchmark_row.status == BenchmarkStatus.ERROR
                     or _normalized_attempt_time(started_at) != tracked_task.attempt_started_at
                 )
@@ -286,11 +318,12 @@ class TaskMonitor:
             await asyncio.sleep(self._TRACK_INTERVAL)
 
 
-def handle_early_exit(task_row: Task, task_session: Session) -> bool:
+def handle_early_exit(task_row: Task, task_session: Session, authority: ExecutionAuthority) -> bool:
     return _commit_task_status(
         task_row,
         task_session,
         TaskStatus.STOPPED,
+        authority=authority,
         expected_started_at=task_row.started_at,
     )
 
@@ -319,8 +352,14 @@ def save_eval_resume_state(
     eval_resume_state: dict[str, Any],
     *,
     expected_started_at: datetime,
+    authority: ExecutionAuthority,
 ) -> bool:
     with Session(bind=engine) as session:
+        try:
+            lock_execution_authority(session, authority)
+        except ExecutionAuthorityRevoked:
+            session.rollback()
+            return False
         task_update = (
             update(Task)
             .where(col(Task.id) == task_row_id)
@@ -339,6 +378,7 @@ def _commit_task_status(
     session: Session,
     to_status: TaskStatus,
     *,
+    authority: ExecutionAuthority,
     error_message: str | None = None,
     extra: dict[str, Any] | None = None,
     expected_started_at: datetime | None = None,
@@ -356,6 +396,11 @@ def _commit_task_status(
         span_attributes["has_error_message"] = True
 
     with logfire.span("task.status_transition", **span_attributes):  # pyright: ignore[reportArgumentType]
+        try:
+            lock_execution_authority(session, authority)
+        except ExecutionAuthorityRevoked:
+            session.rollback()
+            return False
         values: dict[str, TaskStatus | datetime] = {"status": to_status}
         if to_status in [TaskStatus.FINISHED, TaskStatus.ERROR]:
             values["finished_at"] = datetime.now(ZoneInfo("UTC"))
@@ -387,6 +432,7 @@ def commit_task_status_transition(
     org: Org,
     to_status: TaskStatus,
     *,
+    authority: ExecutionAuthority,
     expected_started_at: datetime | None = None,
     expected_status: TaskStatus | tuple[TaskStatus, ...] | None = None,
 ) -> bool:
@@ -399,6 +445,7 @@ def commit_task_status_transition(
         extra={"fetch_duration_ms": elapsed_ms(fetch_start)},
         expected_started_at=expected_started_at,
         expected_status=expected_status,
+        authority=authority,
     )
 
 
@@ -412,9 +459,10 @@ async def process_task(
     harness_config: HarnessConfig,
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
-    sandbox_provider: SandboxProvider,
     creation_semaphore: Semaphore,
+    authority: ExecutionAuthority,
     *,
+    sandbox_provider: SandboxProvider | None = None,
     queue_context: SandboxQueueContext | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Process one task while retaining dependency recovery state across sandbox attempts."""
@@ -427,9 +475,10 @@ async def process_task(
         harness_config,
         org,
         sandbox_provider_config,
-        sandbox_provider,
         creation_semaphore,
         dependency_setup_recovery=_DependencySetupRecoveryState(),
+        authority=authority,
+        sandbox_provider=sandbox_provider,
         queue_context=queue_context,
     )
 
@@ -450,10 +499,11 @@ async def _process_task_attempt(
     harness_config: HarnessConfig,
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
-    sandbox_provider: SandboxProvider,
     creation_semaphore: Semaphore,
     dependency_setup_recovery: _DependencySetupRecoveryState,
+    authority: ExecutionAuthority,
     *,
+    sandbox_provider: SandboxProvider | None = None,
     queue_context: SandboxQueueContext | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """
@@ -483,7 +533,7 @@ async def _process_task_attempt(
             return {task_id: None}
         attempt_started_at = task_row.started_at
         if benchmark_row.status == BenchmarkStatus.STOPPING or task_row.status == TaskStatus.STOPPED:
-            handle_early_exit(task_row, task_session)
+            handle_early_exit(task_row, task_session, authority)
             return {task_id: None}
         expected_failure_status = (
             TaskStatus.EVALUATING
@@ -520,12 +570,22 @@ async def _process_task_attempt(
     flush_task = asyncio.create_task(auto_flush_logs())
 
     def on_eval_resume_state(state: dict[str, Any]) -> None:
-        save_eval_resume_state(task_row.id, org, state, expected_started_at=attempt_started_at)
+        save_eval_resume_state(task_row.id, org, state, expected_started_at=attempt_started_at, authority=authority)
+
+    def execution_is_current() -> bool:
+        with Session(bind=engine) as task_session:
+            try:
+                lock_execution_authority(task_session, authority)
+            except ExecutionAuthorityRevoked:
+                task_session.rollback()
+                return False
+            task = fetch_task_row(task_row.id, task_session, org)
+            is_current = task.status != TaskStatus.STOPPED and task.started_at == attempt_started_at
+            task_session.rollback()
+            return is_current
 
     def task_is_stopped() -> bool:
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            return task.status == TaskStatus.STOPPED or task.started_at != attempt_started_at
+        return not execution_is_current()
 
     def commit_attempt_error(error_message: str) -> bool:
         with Session(bind=engine) as task_session:
@@ -536,6 +596,7 @@ async def _process_task_attempt(
                 error_message,
                 expected_started_at=attempt_started_at,
                 expected_status=expected_failure_status,
+                authority=authority,
             )
 
     try:
@@ -577,6 +638,7 @@ async def _process_task_attempt(
                         TaskStatus.FINISHED,
                         expected_started_at=attempt_started_at,
                         expected_status=(TaskStatus.EVALUATING, TaskStatus.ERROR),
+                        authority=authority,
                     ):
                         return {task_id: None}
 
@@ -590,10 +652,15 @@ async def _process_task_attempt(
                 raise e from e
 
         task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
+        if sandbox_provider is None:
+            sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
         # Labels that show up in the UI we can use to filter sandboxes
         labels = {
             "Benchmark": start_benchmark_request.benchmark_name,
             "Id": str(benchmark_id),
+            # CBS resolves VolumeMount's {run_id} placeholder from the
+            # "run-id" label and hard-fails if this isolation identity is absent.
+            "run-id": str(benchmark_id),
             "Task": task_row.task_id,
         }
 
@@ -605,6 +672,7 @@ async def _process_task_attempt(
                     org,
                     TaskStatus.BUILDING,
                     expected_started_at=attempt_started_at,
+                    authority=authority,
                 ):
                     return {task_id: None}
 
@@ -648,6 +716,7 @@ async def _process_task_attempt(
                 labels=labels,
                 env_vars=env_vars,
                 resources=task_data.resources,
+                volumes=task_data.volumes,
                 creation_semaphore=creation_semaphore,
                 unique_name=queue_context is None,
             )
@@ -667,7 +736,6 @@ async def _process_task_attempt(
                 )
                 if sandbox is None:
                     return {task_id: None}
-
             task_breakdown.sandbox_build_duration = time.perf_counter() - start_sandbox_build_time
             start_sandbox_run_time = time.perf_counter()
 
@@ -680,6 +748,7 @@ async def _process_task_attempt(
                             org,
                             TaskStatus.IN_PROGRESS,
                             expected_started_at=attempt_started_at,
+                            authority=authority,
                         ):
                             return {task_id: None}
 
@@ -725,6 +794,7 @@ async def _process_task_attempt(
                         benchmark_id=str(benchmark_id),
                         runtime_source=task_data.source,
                         dependency_setup_mode=dependency_setup_recovery.mode,
+                        execution_is_current=execution_is_current,
                     )
                 except DependencySetupExhaustedError:
                     dependency_setup_recovery.mode = DependencySetupMode.FINAL_FRESH_SANDBOX
@@ -751,6 +821,7 @@ async def _process_task_attempt(
                         org,
                         TaskStatus.EVALUATING,
                         expected_started_at=attempt_started_at,
+                        authority=authority,
                     ):
                         return {task_id: None}
 
@@ -809,6 +880,7 @@ async def _process_task_attempt(
                         TaskStatus.FINISHED,
                         expected_started_at=attempt_started_at,
                         expected_status=(TaskStatus.EVALUATING, TaskStatus.ERROR),
+                        authority=authority,
                     ):
                         return {task_id: None}
 
@@ -833,6 +905,7 @@ async def _process_task_attempt(
                     TaskStatus.PENDING,
                     expected_started_at=attempt_started_at,
                     expected_status=expected_failure_status,
+                    authority=authority,
                 ):
                     return {task_id: None}
         log_output(f"\n[ERROR] {_exception_message(e)}")
@@ -917,6 +990,7 @@ def commit_task_error(
     session: Session,
     error_message: str,
     *,
+    authority: ExecutionAuthority,
     expected_started_at: datetime | None = None,
     expected_status: TaskStatus | None = None,
 ) -> bool:
@@ -928,4 +1002,5 @@ def commit_task_error(
         error_message=error_message,
         expected_started_at=expected_started_at,
         expected_status=expected_status,
+        authority=authority,
     )

@@ -97,6 +97,7 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
     database_session: Session,
     harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
+    executor_authority_kwargs: Any,
 ) -> None:
     task_ids = ["evaluation_0", "evaluation_1", "evaluation_2", "pending_0", "pending_1"]
     provider_pool_id = "coordinator-pool"
@@ -160,7 +161,8 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
     monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", Mock(return_value=sandbox_provider))
     monkeypatch.setattr("tracker.utils.run_orchestration.asyncio.sleep", controlled_sleep)
-    run = asyncio.create_task(process_benchmark(request.model_dump(), str(benchmark.id), task_ids))
+    authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
+    run = asyncio.create_task(process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs))
     try:
         await coordinator_polls.get()
         await asyncio.wait_for(two_evaluations_started.wait(), timeout=2)
@@ -211,6 +213,7 @@ async def test_queued_process_benchmark_recovers_existing_work_before_finalizing
     database_session: Session,
     harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
+    executor_authority_kwargs: Any,
 ) -> None:
     task_ids = ["resume_eval", "recover_build"]
     provider_pool_id = "evaluation-pool"
@@ -257,7 +260,11 @@ async def test_queued_process_benchmark_recovers_existing_work_before_finalizing
         Mock(return_value=sandbox_provider),
     )
 
-    await asyncio.wait_for(process_benchmark(request.model_dump(), str(benchmark.id), task_ids), timeout=5)
+    authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
+    await asyncio.wait_for(
+        process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs),
+        timeout=5,
+    )
 
     database_session.refresh(benchmark)
     tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).all()
@@ -279,6 +286,7 @@ async def test_direct_provider_setup_failure_closes_client(
     database_session: Session,
     harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
+    executor_authority_kwargs: Any,
 ) -> None:
     request = StartBenchmarkRequest(
         benchmark_name="swebench",
@@ -293,9 +301,10 @@ async def test_direct_provider_setup_failure_closes_client(
         "tracker.utils.run_orchestration.create_benchmark_service_client_from_request",
         Mock(return_value=benchmark_service),
     )
+    authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
 
     with pytest.raises(RuntimeError, match="provider setup failed"):
-        await process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"])
+        await process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"], **authority_kwargs)
 
     benchmark_service.close.assert_awaited_once_with()
 
@@ -306,6 +315,7 @@ async def test_queued_cancellation_errors_owned_work_and_preserves_pending_work(
     database_session: Session,
     harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
+    executor_authority_kwargs: Any,
 ) -> None:
     task_ids = ["active", "pending"]
     request, benchmark = _queued_run(contract, harness_config, database_session, task_ids)
@@ -328,7 +338,8 @@ async def test_queued_cancellation_errors_owned_work_and_preserves_pending_work(
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
     monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", Mock(return_value=sandbox_provider))
 
-    run = asyncio.create_task(process_benchmark(request.model_dump(), str(benchmark.id), task_ids))
+    authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
+    run = asyncio.create_task(process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs))
     await asyncio.wait_for(task_started.wait(), timeout=2)
     run.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -354,6 +365,7 @@ async def test_queued_process_benchmark_reports_provider_configuration_drift(
     harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
     provider_pool_id: str | None,
+    executor_authority_kwargs: Any,
 ) -> None:
     task_ids = ["task_0", "task_1"]
     request, benchmark = _queued_run(contract, harness_config, database_session, task_ids, pool_id="expected-pool")
@@ -362,21 +374,28 @@ async def test_queued_process_benchmark_reports_provider_configuration_drift(
         benchmark,
         {
             "task_0": TaskStatus.BUILDING,
+            "task_1": TaskStatus.PENDING,
             "task_unrelated": TaskStatus.PENDING,
         },
     )
     sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id=provider_pool_id)
     monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", Mock(return_value=sandbox_provider))
 
-    await process_benchmark(request.model_dump(), str(benchmark.id), task_ids)
+    authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
+    await process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs)
 
     database_session.refresh(benchmark)
     tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).all()
     task_statuses = {task.task_id: task.status for task in tasks}
-    assert benchmark.status == BenchmarkStatus.IN_PROGRESS
-    assert benchmark.error_message is None
+    assert benchmark.status == BenchmarkStatus.ERROR
+    expected_error = (
+        "Sandbox provider configuration is unavailable"
+        if provider_pool_id is None
+        else "Configured sandbox provider does not match the run's queued provider pool"
+    )
+    assert benchmark.error_message is not None and expected_error in benchmark.error_message
     assert task_statuses == {
         "task_unrelated": TaskStatus.PENDING,
-        "task_0": TaskStatus.BUILDING,
+        "task_0": TaskStatus.ERROR,
         "task_1": TaskStatus.ERROR,
     }

@@ -138,6 +138,10 @@ class StartBenchmarkResponse(BaseModel):
     task_count: int
     cloudwatch_url: str
     s3_bucket_url: str
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
 
 
 class FetchBenchmarkResponse(BaseModel):
@@ -148,6 +152,10 @@ class FetchBenchmarkResponse(BaseModel):
     label: str | None = None
     final_score: float | None = None
     error_message: str | None = None
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
 
 
 class AverageTaskBreakdown(BaseModel):
@@ -232,6 +240,10 @@ class BenchmarkTableRow(BaseModel):
     agent_name: str
     label: str | None = None
     model: str | None
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
     dataset: str = "default"
     started_by_email: str | None
     started_at: datetime
@@ -241,7 +253,7 @@ class BenchmarkTableRow(BaseModel):
     finished_tasks: int
     # Per-TaskStatus counts: {"PENDING": 1, "IN_PROGRESS": 2, "FINISHED": 4, ...}.
     # Absent keys mean zero; sum equals total_tasks.
-    task_state_counts: dict[str, int] = {}
+    task_state_counts: dict[str, int] = Field(default_factory=dict)
     final_score: float | None = None
     error_message: str | None = None
 
@@ -267,6 +279,11 @@ class FetchBenchmarkMetadataResponse(BaseModel):
     benchmark_name: str
     benchmark_arguments: BenchmarkArguments
     started_by_email: str | None = None
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_uri: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
 
 
 class AnalyzeBenchmarkRequest(BaseModel):
@@ -313,9 +330,13 @@ class BenchmarkStatusEntry(BaseModel):
     status: BenchmarkStatus
     finished_at: datetime | None
     total_tasks: int
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
     finished_tasks: int
     # Per-TaskStatus counts; same shape as BenchmarkTableRow.task_state_counts.
-    task_state_counts: dict[str, int] = {}
+    task_state_counts: dict[str, int] = Field(default_factory=dict)
 
     @field_serializer("finished_at")
     def _serialize_dt(self, value: datetime | None) -> str | None:
@@ -333,12 +354,16 @@ class SingleBenchmarkResponse(BaseModel):
     name: str
     agent_name: str
     model: str | None
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
     started_at: datetime
     finished_at: datetime | None
     status: BenchmarkStatus
     total_tasks: int
     finished_tasks: int
-    task_state_counts: dict[str, int] = {}
+    task_state_counts: dict[str, int] = Field(default_factory=dict)
     started_by_email: str | None = None
     final_score: float | None = None
     error_message: str | None = None

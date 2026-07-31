@@ -1,0 +1,1296 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "mcp-excalidraw-server",
+  "elements": [
+    {
+      "id": "d-canvas",
+      "type": "rectangle",
+      "x": 20,
+      "y": 120,
+      "width": 1580,
+      "height": 780,
+      "backgroundColor": "#ffffff",
+      "strokeColor": "#ffffff",
+      "strokeWidth": 1,
+      "roughness": 0,
+      "fillStyle": "solid",
+      "createdAt": "2026-07-22T00:46:47.741Z",
+      "updatedAt": "2026-07-22T00:46:47.741Z",
+      "version": 1
+    },
+    {
+      "id": "d-title",
+      "type": "text",
+      "x": 40,
+      "y": 20,
+      "width": 1023.1199999999999,
+      "height": 45,
+      "strokeColor": "#1e1e1e",
+      "text": "How one dispatch runs the exact selected artifact",
+      "fontSize": 36,
+      "fontFamily": 2,
+      "createdAt": "2026-07-22T00:46:47.741Z",
+      "updatedAt": "2026-07-22T00:46:47.741Z",
+      "version": 1
+    },
+    {
+      "id": "d-subtitle",
+      "type": "text",
+      "x": 40,
+      "y": 68,
+      "width": 1301.52,
+      "height": 27.5,
+      "strokeColor": "#495057",
+      "text": "Tracker resolves ownership and persists a dispatch snapshot before Redis; ExecutorHost claims it once.",
+      "fontSize": 22,
+      "fontFamily": 2,
+      "createdAt": "2026-07-22T00:46:47.741Z",
+      "updatedAt": "2026-07-22T00:46:47.741Z",
+      "version": 1
+    },
+    {
+      "id": "d-services",
+      "type": "text",
+      "x": 60,
+      "y": 112,
+      "width": 208.79999999999998,
+      "height": 25,
+      "strokeColor": "#495057",
+      "text": "ROUTING + SERVICES",
+      "fontSize": 20,
+      "fontFamily": 2,
+      "createdAt": "2026-07-22T00:46:47.741Z",
+      "updatedAt": "2026-07-22T00:46:47.741Z",
+      "version": 1
+    },
+    {
+      "id": "d-state",
+      "type": "text",
+      "x": 1020,
+      "y": 112,
+      "width": 371.2,
+      "height": 25,
+      "strokeColor": "#495057",
+      "text": "POSTGRESQL \u2014 AUTHORITATIVE STATE",
+      "fontSize": 20,
+      "fontFamily": 2,
+      "createdAt": "2026-07-22T00:46:47.741Z",
+      "updatedAt": "2026-07-22T00:46:47.741Z",
+      "version": 1
+    },
+    {
+      "id": "d-state-domain",
+      "type": "rectangle",
+      "x": 980,
+      "y": 145,
+      "width": 540,
+      "height": 710,
+      "backgroundColor": "transparent",
+      "strokeColor": "#adb5bd",
+      "strokeWidth": 1,
+      "strokeStyle": "dashed",
+      "roughness": 1,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-22T00:46:47.741Z",
+      "updatedAt": "2026-07-22T00:46:47.741Z",
+      "version": 1
+    },
+    {
+      "id": "d-div-1",
+      "type": "line",
+      "x": 60,
+      "y": 400,
+      "strokeColor": "#ced4da",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          860,
+          0
+        ]
+      ],
+      "createdAt": "2026-07-22T00:46:47.741Z",
+      "updatedAt": "2026-07-22T00:46:47.741Z",
+      "version": 1
+    },
+    {
+      "id": "d-div-2",
+      "type": "line",
+      "x": 60,
+      "y": 640,
+      "strokeColor": "#ced4da",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          860,
+          0
+        ]
+      ],
+      "createdAt": "2026-07-22T00:46:47.741Z",
+      "updatedAt": "2026-07-22T00:46:47.741Z",
+      "version": 1
+    },
+    {
+      "id": "d-row-1",
+      "type": "text",
+      "x": 60,
+      "y": 145,
+      "width": 654.24,
+      "height": 30,
+      "strokeColor": "#1e1e1e",
+      "text": "1. Resolve ownership, then persist the dispatch",
+      "fontSize": 24,
+      "fontFamily": 2,
+      "createdAt": "2026-07-22T00:46:47.741Z",
+      "updatedAt": "2026-07-22T00:46:47.741Z",
+      "version": 1
+    },
+    {
+      "id": "d-row-2",
+      "type": "text",
+      "x": 60,
+      "y": 420,
+      "width": 849.1199999999999,
+      "height": 30,
+      "strokeColor": "#1e1e1e",
+      "text": "2. Redis carries invocation + snapshot; ExecutorHost claims once",
+      "fontSize": 24,
+      "fontFamily": 2,
+      "createdAt": "2026-07-22T00:46:47.741Z",
+      "updatedAt": "2026-07-22T00:46:47.741Z",
+      "version": 1
+    },
+    {
+      "id": "d-row-3",
+      "type": "text",
+      "x": 60,
+      "y": 660,
+      "width": 515.04,
+      "height": 30,
+      "strokeColor": "#1e1e1e",
+      "text": "3. Verify and launch the pinned bytes",
+      "fontSize": 24,
+      "fontFamily": 2,
+      "createdAt": "2026-07-22T00:46:47.741Z",
+      "updatedAt": "2026-07-22T00:46:47.741Z",
+      "version": 1
+    },
+    {
+      "id": "d1-router",
+      "type": "rectangle",
+      "x": 80,
+      "y": 205,
+      "width": 650,
+      "height": 130,
+      "backgroundColor": "#e3fafc",
+      "strokeColor": "#0b7285",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-22T00:46:47.741Z",
+      "updatedAt": "2026-07-22T00:46:47.741Z",
+      "version": 1,
+      "boundElements": [
+        {
+          "id": "d-a-owner",
+          "type": "arrow"
+        },
+        {
+          "id": "d-a-dispatch",
+          "type": "arrow"
+        },
+        {
+          "id": "d1-router-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d1-router-text",
+      "type": "text",
+      "x": 158.50000000000003,
+      "y": 223.125,
+      "width": 492.99999999999994,
+      "height": 93.75,
+      "strokeColor": "#0b7285",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 1910506070,
+      "version": 1,
+      "versionNonce": 249647394,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "Route by state\nIN_PROGRESS \u2192 existing owner\nSTART / terminal recovery \u2192 ACTIVE",
+      "originalText": "Route by state\nIN_PROGRESS \u2192 existing owner\nSTART / terminal recovery \u2192 ACTIVE",
+      "fontSize": 25,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d1-router",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d1-owner",
+      "type": "rectangle",
+      "x": 1030,
+      "y": 165,
+      "width": 430,
+      "height": 95,
+      "backgroundColor": "#f1f3f5",
+      "strokeColor": "#495057",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-22T00:46:47.741Z",
+      "updatedAt": "2026-07-22T00:46:47.741Z",
+      "version": 1,
+      "boundElements": [
+        {
+          "id": "d-a-owner",
+          "type": "arrow"
+        },
+        {
+          "id": "d1-owner-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d1-owner-text",
+      "type": "text",
+      "x": 1064.91,
+      "y": 169.375,
+      "width": 360.17999999999995,
+      "height": 86.25,
+      "strokeColor": "#495057",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 1415025869,
+      "version": 1,
+      "versionNonce": 735433097,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "Benchmark ownership\ninitial (immutable)\ncurrent execution (mutable)",
+      "originalText": "Benchmark ownership\ninitial (immutable)\ncurrent execution (mutable)",
+      "fontSize": 23,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d1-owner",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d1-dispatch",
+      "type": "rectangle",
+      "x": 1030,
+      "y": 285,
+      "width": 430,
+      "height": 100,
+      "backgroundColor": "#f1f3f5",
+      "strokeColor": "#495057",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-22T00:46:47.741Z",
+      "updatedAt": "2026-07-22T00:46:47.741Z",
+      "version": 1,
+      "boundElements": [
+        {
+          "id": "d-a-dispatch",
+          "type": "arrow"
+        },
+        {
+          "id": "d1-dispatch-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d1-dispatch-text",
+      "type": "text",
+      "x": 1091.59,
+      "y": 291.875,
+      "width": 306.82,
+      "height": 86.25,
+      "strokeColor": "#495057",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 322642480,
+      "version": 1,
+      "versionNonce": 163046252,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "Dispatch \u00b7 QUEUED\nrelease \u00b7 URI \u00b7 SHA-256\nprotocol \u00b7 operation",
+      "originalText": "Dispatch \u00b7 QUEUED\nrelease \u00b7 URI \u00b7 SHA-256\nprotocol \u00b7 operation",
+      "fontSize": 23,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d1-dispatch",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d2-redis",
+      "type": "rectangle",
+      "x": 60,
+      "y": 475,
+      "width": 270,
+      "height": 105,
+      "backgroundColor": "#f8f9fa",
+      "strokeColor": "#495057",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-22T00:46:47.742Z",
+      "updatedAt": "2026-07-22T00:46:47.742Z",
+      "version": 1,
+      "boundElements": [
+        {
+          "id": "d-a-redis",
+          "type": "arrow"
+        },
+        {
+          "id": "d2-redis-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d2-redis-text",
+      "type": "text",
+      "x": 70.0,
+      "y": 490.0,
+      "width": 250,
+      "height": 75.0,
+      "strokeColor": "#495057",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 640970510,
+      "version": 1,
+      "versionNonce": 1610336942,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "Redis\ninvocation + ID\nsnapshot assertions",
+      "originalText": "Redis\ninvocation + ID\nsnapshot assertions",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d2-redis",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d2-host",
+      "type": "rectangle",
+      "x": 470,
+      "y": 460,
+      "width": 300,
+      "height": 135,
+      "backgroundColor": "#f3f0ff",
+      "strokeColor": "#7048e8",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-22T00:46:47.742Z",
+      "updatedAt": "2026-07-22T00:46:47.742Z",
+      "version": 1,
+      "boundElements": [
+        {
+          "id": "d-a-redis",
+          "type": "arrow"
+        },
+        {
+          "id": "d-a-claim",
+          "type": "arrow"
+        },
+        {
+          "id": "d2-host-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d2-host-text",
+      "type": "text",
+      "x": 508.64,
+      "y": 482.5,
+      "width": 222.71999999999997,
+      "height": 90.0,
+      "strokeColor": "#7048e8",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 380213516,
+      "version": 1,
+      "versionNonce": 1900690749,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "ExecutorHost\nclaim once\nduplicate \u2192 skip",
+      "originalText": "ExecutorHost\nclaim once\nduplicate \u2192 skip",
+      "fontSize": 24,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d2-host",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d2-running",
+      "type": "rectangle",
+      "x": 1030,
+      "y": 470,
+      "width": 430,
+      "height": 115,
+      "backgroundColor": "#f1f3f5",
+      "strokeColor": "#495057",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-22T00:46:47.742Z",
+      "updatedAt": "2026-07-22T00:46:47.742Z",
+      "version": 1,
+      "boundElements": [
+        {
+          "id": "d-a-claim",
+          "type": "arrow"
+        },
+        {
+          "id": "d2-running-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d2-running-text",
+      "type": "text",
+      "x": 1119.72,
+      "y": 497.5,
+      "width": 250.55999999999997,
+      "height": 60.0,
+      "strokeColor": "#495057",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 1515829241,
+      "version": 1,
+      "versionNonce": 941135794,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "Dispatch \u00b7 RUNNING\nclaimed atomically",
+      "originalText": "Dispatch \u00b7 RUNNING\nclaimed atomically",
+      "fontSize": 24,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d2-running",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d3-s3",
+      "type": "rectangle",
+      "x": 60,
+      "y": 710,
+      "width": 270,
+      "height": 105,
+      "backgroundColor": "#e7f5ff",
+      "strokeColor": "#1971c2",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-22T00:46:47.742Z",
+      "updatedAt": "2026-07-22T00:46:47.742Z",
+      "version": 1,
+      "boundElements": [
+        {
+          "id": "d-a-verify",
+          "type": "arrow"
+        },
+        {
+          "id": "d3-s3-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d3-s3-text",
+      "type": "text",
+      "x": 70.0,
+      "y": 732.5,
+      "width": 250,
+      "height": 60.0,
+      "strokeColor": "#1971c2",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 1453926095,
+      "version": 1,
+      "versionNonce": 881151803,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "S3 artifact\npinned URI + SHA-256",
+      "originalText": "S3 artifact\npinned URI + SHA-256",
+      "fontSize": 24,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d3-s3",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d3-process",
+      "type": "rectangle",
+      "x": 470,
+      "y": 695,
+      "width": 300,
+      "height": 135,
+      "backgroundColor": "#f3f0ff",
+      "strokeColor": "#7048e8",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-22T00:46:47.742Z",
+      "updatedAt": "2026-07-22T00:46:47.742Z",
+      "version": 1,
+      "boundElements": [
+        {
+          "id": "d-a-verify",
+          "type": "arrow"
+        },
+        {
+          "id": "d-a-result",
+          "type": "arrow"
+        },
+        {
+          "id": "d3-process-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d3-process-text",
+      "type": "text",
+      "x": 480.0,
+      "y": 717.5,
+      "width": 280,
+      "height": 90.0,
+      "strokeColor": "#7048e8",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 66848444,
+      "version": 1,
+      "versionNonce": 639763804,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "Executor process\nverified package\nruns selected release",
+      "originalText": "Executor process\nverified package\nruns selected release",
+      "fontSize": 24,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d3-process",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d3-terminal",
+      "type": "rectangle",
+      "x": 1030,
+      "y": 705,
+      "width": 430,
+      "height": 115,
+      "backgroundColor": "#f1f3f5",
+      "strokeColor": "#495057",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-22T00:46:47.742Z",
+      "updatedAt": "2026-07-22T00:46:47.742Z",
+      "version": 1,
+      "boundElements": [
+        {
+          "id": "d-a-result",
+          "type": "arrow"
+        },
+        {
+          "id": "d3-terminal-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d3-terminal-text",
+      "type": "text",
+      "x": 1112.76,
+      "y": 732.5,
+      "width": 264.47999999999996,
+      "height": 60.0,
+      "strokeColor": "#495057",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 1328589688,
+      "version": 1,
+      "versionNonce": 385546006,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "Dispatch \u00b7 terminal\nFINISHED or FAILED",
+      "originalText": "Dispatch \u00b7 terminal\nFINISHED or FAILED",
+      "fontSize": 24,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d3-terminal",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d-a-owner",
+      "type": "arrow",
+      "x": 737.9813226981712,
+      "y": 247.2066356486371,
+      "strokeColor": "#0b7285",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "roundness": {
+        "type": 2
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          284.0373546036576,
+          -19.443033202036105
+        ]
+      ],
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-22T00:46:48.757Z",
+      "updatedAt": "2026-07-22T00:46:48.757Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "d1-router",
+        "focus": -0.3506671438671215,
+        "gap": 7.981322698171198
+      },
+      "endBinding": {
+        "elementId": "d1-owner",
+        "focus": 0.3213389988758105,
+        "gap": 7.981322698171198
+      },
+      "boundElements": [
+        {
+          "id": "d-a-owner-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d-a-owner-text",
+      "type": "text",
+      "x": 800.83,
+      "y": 224.36011904761904,
+      "width": 158.33999999999997,
+      "height": 26.25,
+      "strokeColor": "#0b7285",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 877793156,
+      "version": 1,
+      "versionNonce": 1411033335,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "resolve owner",
+      "originalText": "resolve owner",
+      "fontSize": 21,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d-a-owner",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d-a-dispatch",
+      "type": "arrow",
+      "x": 737.9761557805857,
+      "y": 295.7660120544501,
+      "strokeColor": "#0b7285",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "roundness": {
+        "type": 2
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          284.0476884388286,
+          21.979880653004557
+        ]
+      ],
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-22T00:46:48.757Z",
+      "updatedAt": "2026-07-22T00:46:48.757Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "d1-router",
+        "focus": 0.39640018545307804,
+        "gap": 7.976155780585714
+      },
+      "endBinding": {
+        "elementId": "d1-dispatch",
+        "focus": -0.3450821458509074,
+        "gap": 7.976155780585714
+      },
+      "boundElements": [
+        {
+          "id": "d-a-dispatch-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d-a-dispatch-text",
+      "type": "text",
+      "x": 782.56,
+      "y": 293.63095238095235,
+      "width": 194.88,
+      "height": 26.25,
+      "strokeColor": "#0b7285",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 341737121,
+      "version": 1,
+      "versionNonce": 1503894464,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "persist snapshot",
+      "originalText": "persist snapshot",
+      "fontSize": 21,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d-a-dispatch",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d-a-redis",
+      "type": "arrow",
+      "x": 338,
+      "y": 527.5,
+      "strokeColor": "#343a40",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          124,
+          0
+        ]
+      ],
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-22T00:46:48.757Z",
+      "updatedAt": "2026-07-22T00:46:48.757Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "d2-redis",
+        "focus": 0.0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "d2-host",
+        "focus": 0.0,
+        "gap": 8
+      },
+      "boundElements": [
+        {
+          "id": "d-a-redis-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d-a-redis-text",
+      "type": "text",
+      "x": 358.0,
+      "y": 515.0,
+      "width": 84.0,
+      "height": 25.0,
+      "strokeColor": "#343a40",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 1633588797,
+      "version": 1,
+      "versionNonce": 1200138534,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "payload",
+      "originalText": "payload",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d-a-redis",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d-a-claim",
+      "type": "arrow",
+      "x": 778,
+      "y": 527.5,
+      "strokeColor": "#7048e8",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          244,
+          0
+        ]
+      ],
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-22T00:46:48.757Z",
+      "updatedAt": "2026-07-22T00:46:48.757Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "d2-host",
+        "focus": 0.0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "d2-running",
+        "focus": 0.0,
+        "gap": 8
+      },
+      "boundElements": [
+        {
+          "id": "d-a-claim-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d-a-claim-text",
+      "type": "text",
+      "x": 807.2,
+      "y": 515.0,
+      "width": 185.6,
+      "height": 25.0,
+      "strokeColor": "#7048e8",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 308273784,
+      "version": 1,
+      "versionNonce": 842093612,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "QUEUED \u2192 RUNNING",
+      "originalText": "QUEUED \u2192 RUNNING",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d-a-claim",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d-a-verify",
+      "type": "arrow",
+      "x": 338,
+      "y": 762.5,
+      "strokeColor": "#1971c2",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          124,
+          0
+        ]
+      ],
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-22T00:46:48.757Z",
+      "updatedAt": "2026-07-22T00:46:48.757Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "d3-s3",
+        "focus": 0.0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "d3-process",
+        "focus": 0.0,
+        "gap": 8
+      },
+      "boundElements": [
+        {
+          "id": "d-a-verify-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d-a-verify-text",
+      "type": "text",
+      "x": 365.2,
+      "y": 750.0,
+      "width": 69.6,
+      "height": 25.0,
+      "strokeColor": "#1971c2",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 969447922,
+      "version": 1,
+      "versionNonce": 531342010,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "verify",
+      "originalText": "verify",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d-a-verify",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d-a-result",
+      "type": "arrow",
+      "x": 778,
+      "y": 762.5,
+      "strokeColor": "#7048e8",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          244,
+          0
+        ]
+      ],
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-22T00:46:48.757Z",
+      "updatedAt": "2026-07-22T00:46:48.757Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "d3-process",
+        "focus": 0.0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "d3-terminal",
+        "focus": 0.0,
+        "gap": 8
+      },
+      "boundElements": [
+        {
+          "id": "d-a-result-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "d-a-result-text",
+      "type": "text",
+      "x": 818.8,
+      "y": 750.0,
+      "width": 162.39999999999998,
+      "height": 25.0,
+      "strokeColor": "#7048e8",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 568481787,
+      "version": 1,
+      "versionNonce": 1604725132,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "process result",
+      "originalText": "process result",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "d-a-result",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "d-note-3",
+      "type": "text",
+      "x": 80,
+      "y": 605,
+      "width": 591.5999999999999,
+      "height": 25,
+      "strokeColor": "#495057",
+      "text": "PostgreSQL owns state \u00b7 Redis only carries messages",
+      "fontSize": 20,
+      "fontFamily": 2,
+      "createdAt": "2026-07-22T00:46:49.499Z",
+      "updatedAt": "2026-07-22T00:46:49.499Z",
+      "version": 1
+    },
+    {
+      "id": "d-note-2",
+      "type": "text",
+      "x": 1040,
+      "y": 825,
+      "width": 510.4,
+      "height": 25,
+      "strokeColor": "#495057",
+      "text": "Only lifecycle status and timestamps change.",
+      "fontSize": 20,
+      "fontFamily": 2,
+      "createdAt": "2026-07-22T00:46:49.499Z",
+      "updatedAt": "2026-07-22T00:46:49.499Z",
+      "version": 1
+    }
+  ],
+  "appState": {
+    "viewBackgroundColor": "#ffffff",
+    "gridSize": null
+  }
+}

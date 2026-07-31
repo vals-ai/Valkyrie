@@ -5,7 +5,7 @@ from asyncio import Semaphore
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from datetime import datetime, timedelta
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
@@ -432,6 +432,7 @@ async def test_setup_retry_reenters_fifo_before_competitor(
     postgres_session: Session,
     monkeypatch: pytest.MonkeyPatch,
     harness_config: HarnessConfig,
+    executor_authority: Any,
 ) -> None:
     provider_pool_id = f"daytona:{uuid4()}"
     pool_id = store.queue_pool_id(provider_pool_id)
@@ -480,6 +481,7 @@ async def test_setup_retry_reenters_fifo_before_competitor(
     )
     monkeypatch.setattr(task_execution, "run_agent", AsyncMock(return_value=(None, 0.0)))
     context = _context(postgres_engine, provider_pool_id, events, on_check=observe_admission)
+    authority = executor_authority(benchmark, session=postgres_session)
 
     await task_execution.process_task(
         retrying,
@@ -489,9 +491,10 @@ async def test_setup_retry_reenters_fifo_before_competitor(
         retrying.task_id,
         harness_config,
         org,
-        cast(SandboxProviderConfig, object()),
-        context.provider,
-        Semaphore(1),
+        sandbox_provider_config=cast(SandboxProviderConfig, object()),
+        sandbox_provider=context.provider,
+        creation_semaphore=Semaphore(1),
+        authority=authority,
         queue_context=context,
     )
 

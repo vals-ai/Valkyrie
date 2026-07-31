@@ -94,6 +94,7 @@ class TestConfigureLogging:
         ("environment", "logger_name", "message", "structured", "expects_request_id"),
         [
             ("development", "tracker.test_dev", "hello dev", False, False),
+            ("release-test", "tracker.test_release_test", "hello release-test", False, False),
             ("production", "tracker.test_prod", "hello prod", True, True),
             ("dev", "tracker.test_deployed_dev", "hello deployed dev", True, False),
         ],

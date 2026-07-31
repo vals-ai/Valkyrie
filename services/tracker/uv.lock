@@ -383,8 +383,8 @@ wheels = [
 
 [[package]]
 name = "create-benchmark-service"
-version = "0.20.1.dev7+g003824254"
-source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=00382425481c02f37271e5a85c1ecbaedb129ec8#00382425481c02f37271e5a85c1ecbaedb129ec8" }
+version = "0.23.0"
+source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=f473b297aac4b8746860fec5674d8ecce8cefc95#f473b297aac4b8746860fec5674d8ecce8cefc95" }
 dependencies = [
     { name = "boto3" },
     { name = "cachetools" },
@@ -1993,6 +1993,7 @@ dependencies = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
     { name = "psycopg2-binary" },
+    { name = "python-dotenv" },
     { name = "python-json-logger" },
     { name = "sentry-sdk", extra = ["fastapi"] },
     { name = "sqlmodel" },
@@ -2021,7 +2022,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.18.4" },
     { name = "boto3", specifier = ">=1.42.20" },
     { name = "boto3-stubs", extras = ["s3"] },
-    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=00382425481c02f37271e5a85c1ecbaedb129ec8" },
+    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=f473b297aac4b8746860fec5674d8ecce8cefc95" },
     { name = "descope", specifier = ">=0.9.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.135.3" },
     { name = "httpx", specifier = ">=0.28.1" },
@@ -2030,6 +2031,7 @@ requires-dist = [
     { name = "opentelemetry-api", specifier = ">=1.20.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.20.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.11" },
+    { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "python-json-logger", specifier = ">=3.2.1" },
     { name = "sentry-sdk", extras = ["fastapi"], specifier = "==2.58.0" },
     { name = "sqlmodel", specifier = ">=0.0.38" },

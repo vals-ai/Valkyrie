@@ -36,10 +36,10 @@ Installs `valkyrie` as a standalone executable so you can run it without the `uv
 ### Tracker service
 
 ```bash
-make tracker-service   # Build and run Docker container
+make tracker-service   # Start Tracker, PostgreSQL, and Redis locally
 ```
 
-The service will be available at `http://localhost:8000`.
+The service will be available at `http://localhost:8000`. Local Compose does not run benchmark execution; use a deployed release environment for that workflow.
 
 ## Environment Setup
 

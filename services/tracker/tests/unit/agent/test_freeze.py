@@ -39,13 +39,14 @@ class TestCopyAgentToBenchmark:
         monkeypatch.setattr(s3_module, "s3_object_exists", exists_mock)
         monkeypatch.setattr(s3_module, "copy_s3_object", copy_mock)
 
-        await copy_agent_to_benchmark(
+        created = await copy_agent_to_benchmark(
             benchmark_id="bench-123",
             contract_name="my_agent",
             aws=harness_config.aws,
             s3_bucket="test-bucket",
         )
 
+        assert created is not destination_exists
         exists_mock.assert_awaited_once_with("benchmarks/bench-123/my_agent.zip", harness_config.aws, "test-bucket")
         if destination_exists:
             copy_mock.assert_not_awaited()

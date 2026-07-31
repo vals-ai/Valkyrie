@@ -4,12 +4,13 @@ import os
 from typing import Any
 
 from dotenv import load_dotenv
+from executor_protocol import DEFAULT_STABLE_QUEUE_NAME
 from taskiq import InMemoryBroker, TaskiqEvents
 from taskiq_redis import RedisStreamBroker
 from taskiq_redis.redis_backend import RedisAsyncResultBackend
 
 from tracker.logging import configure_logging
-from tracker.middleware import LoggingContextMiddleware, TaskProtectionMiddleware, TracingContextMiddleware
+from tracker.middleware import LoggingContextMiddleware, TracingContextMiddleware
 from tracker.observability import configure_observability
 from tracker.outbound_security import validate_benchmark_name
 
@@ -42,6 +43,7 @@ AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
 BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+STABLE_QUEUE_NAME = os.environ.get("STABLE_QUEUE_NAME", DEFAULT_STABLE_QUEUE_NAME)
 
 
 def _build_database_url() -> str:
@@ -65,13 +67,15 @@ result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
 
 # Tracing precedes Logging so that anything emitted after (logs, child spans
 # from middlewares or the task body) is captured under the propagated parent trace.
-_BROKER_MIDDLEWARES = (TaskProtectionMiddleware(), TracingContextMiddleware(), LoggingContextMiddleware())
+_BROKER_MIDDLEWARES = (TracingContextMiddleware(), LoggingContextMiddleware())
 
 broker = (
     InMemoryBroker().with_middlewares(*_BROKER_MIDDLEWARES)
     if BROKER_ENVIRONMENT == "testing"
     else RedisStreamBroker(
         url=REDIS_URL,
+        queue_name=STABLE_QUEUE_NAME,
+        consumer_group_name=STABLE_QUEUE_NAME,
         idle_timeout=86400000,  # 24 hours
     )
     .with_result_backend(result_backend)

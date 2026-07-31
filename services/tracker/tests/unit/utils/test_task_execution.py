@@ -7,12 +7,14 @@ import asyncio
 from datetime import timedelta
 from typing import Any
 from unittest.mock import MagicMock, Mock
+from uuid import uuid4
 
 import pytest
 from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import Benchmark, Org, Task, TaskStatus
+from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.utils import ResizableLimiter, TaskMonitor, TrackedTask, TrackedTaskStatus
 
 
@@ -105,12 +107,17 @@ class TestTaskExecution:
         await third
 
     async def test_task_monitor(
-        self, database_session: Session, example_benchmark_object: Benchmark, monkeypatch: pytest.MonkeyPatch
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        monkeypatch: pytest.MonkeyPatch,
+        executor_authority: Any,
     ) -> None:
         """The monitor removes completed work and cancels invalid attempts once."""
         benchmark_row = example_benchmark_object
         database_session.add(benchmark_row)
         database_session.commit()
+        authority = executor_authority(benchmark_row, session=database_session)
 
         stopped_row = Task(
             org_id=TEST_ORG_ID,
@@ -122,9 +129,9 @@ class TestTaskExecution:
         database_session.add_all([stopped_row, superseded_row])
         database_session.commit()
 
-        done = TrackedTask(asyncio.sleep(0), self._test_org, stopped_row.started_at)
-        stopped = TrackedTask(asyncio.sleep(0), self._test_org, stopped_row.started_at)
-        superseded = TrackedTask(asyncio.sleep(0), self._test_org, superseded_row.started_at)
+        done = TrackedTask(asyncio.sleep(0), self._test_org, authority, stopped_row.started_at)
+        stopped = TrackedTask(asyncio.sleep(0), self._test_org, authority, stopped_row.started_at)
+        superseded = TrackedTask(asyncio.sleep(0), self._test_org, authority, superseded_row.started_at)
         setattr(done, "_status", TrackedTaskStatus.DONE)
         setattr(stopped, "_status", TrackedTaskStatus.RUNNING)
         setattr(superseded, "_status", TrackedTaskStatus.RUNNING)
@@ -146,6 +153,7 @@ class TestTaskExecution:
             task_tracking,
             org=self._test_org,
             limiter=ResizableLimiter(limit=1),
+            authority=authority,
         )
         sleep_count = 0
 
@@ -192,14 +200,17 @@ class TestTaskExecution:
         release_waiting = asyncio.Event()
         running_row = MagicMock(spec=Task, task_id="task_id_1")
         waiting_row = MagicMock(spec=Task, task_id="task_id_2")
+        authority = ExecutionAuthority(benchmark_id=uuid4(), dispatch_id=uuid4())
         running = TrackedTask(
             controlled_result("task_id_1", running_started, release_running),
             self._test_org,
+            authority,
             running_row.started_at,
         )
         waiting = TrackedTask(
             controlled_result("task_id_2", waiting_started, release_waiting),
             self._test_org,
+            authority,
             waiting_row.started_at,
         )
 

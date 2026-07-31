@@ -1,6 +1,7 @@
 """Shared process-task setup for tracker unit tests."""
 
 from asyncio import Semaphore
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -10,7 +11,17 @@ from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
-from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task
+from tracker.database.models import (
+    AgentContractRequest,
+    BenchmarkStatus,
+    ExecutorDispatch,
+    ExecutorDispatchKind,
+    ExecutorDispatchStatus,
+    ExecutorRelease,
+    Org,
+    Task,
+)
+from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.scheduler.admission import SandboxQueueContext
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
@@ -47,7 +58,7 @@ def create_task_environment(
     database_session: Session,
     harness_config: HarnessConfig,
     run_starter: RequestIdentity | None = None,
-) -> tuple[StartBenchmarkRequest, Task, UUID]:
+) -> tuple[StartBenchmarkRequest, Task, UUID, ExecutionAuthority]:
     """Persist the benchmark and task rows required by process-task tests.
 
     Arguments
@@ -75,7 +86,30 @@ def create_task_environment(
     database_session.add(task_row)
     database_session.commit()
 
-    return start_benchmark_request, task_row, benchmark_row.id
+    release = ExecutorRelease(
+        id="task-execution-test-release",
+        artifact_uri="s3://artifacts/task-execution-test.pex",
+        artifact_digest="a" * 64,
+        protocol_version="1",
+        readiness_verified=True,
+    )
+    database_session.add(release)
+    database_session.flush()
+    dispatch = ExecutorDispatch(
+        benchmark_id=benchmark_row.id,
+        kind=ExecutorDispatchKind.START,
+        status=ExecutorDispatchStatus.RUNNING,
+        executor_release_id=release.id,
+        executor_artifact_uri=release.artifact_uri,
+        executor_artifact_digest=release.artifact_digest,
+        executor_protocol_version=release.protocol_version,
+        started_at=datetime.now(UTC),
+    )
+    database_session.add(dispatch)
+    database_session.commit()
+
+    authority = ExecutionAuthority(benchmark_id=benchmark_row.id, dispatch_id=dispatch.id)
+    return start_benchmark_request, task_row, benchmark_row.id, authority
 
 
 async def run_process_task(
@@ -83,6 +117,7 @@ async def run_process_task(
     task_row: Task,
     benchmark_id: UUID,
     harness_config: HarnessConfig,
+    authority: ExecutionAuthority,
     *,
     queue_context: SandboxQueueContext | None = None,
 ) -> dict[str, dict[str, Any] | None]:
@@ -115,4 +150,5 @@ async def run_process_task(
         sandbox_provider=benchmark_service.get_sandbox_provider(sandbox_provider_config),
         creation_semaphore=Semaphore(1),
         queue_context=queue_context,
+        authority=authority,
     )

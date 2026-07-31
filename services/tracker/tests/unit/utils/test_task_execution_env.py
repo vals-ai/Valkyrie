@@ -4,7 +4,7 @@ Run: uv run pytest tests/unit/utils/test_task_execution_env.py
 """
 
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
@@ -16,7 +16,13 @@ from sqlmodel import Session
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
 from tracker.auth import RequestIdentity
-from tracker.database.models import AgentContractRequest
+from tracker.database.models import (
+    AgentContractRequest,
+    ExecutorDispatch,
+    ExecutorDispatchStatus,
+    Task,
+    TaskStatus,
+)
 from tracker.types import HarnessConfig
 
 
@@ -49,7 +55,7 @@ class TestProcessTaskEnvironment:
             email="starter@example.com",
             name="Starter User",
         )
-        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
             harness_config,
@@ -80,7 +86,7 @@ class TestProcessTaskEnvironment:
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert len(captured_env_vars) == 1
@@ -105,7 +111,7 @@ class TestProcessTaskEnvironment:
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
             harness_config,
@@ -122,7 +128,7 @@ class TestProcessTaskEnvironment:
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert len(captured_env_vars) == 1
@@ -133,3 +139,60 @@ class TestProcessTaskEnvironment:
         }
         assert "MODEL_GATEWAY_URL" not in env_vars
         assert "MODEL_GATEWAY_API_KEY" not in env_vars
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_stopped_task_output_is_fenced_while_sibling_keeps_dispatch_active(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        sibling = Task(
+            org_id=task_row.org_id,
+            benchmark=benchmark_id,
+            task_id="task_sibling",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        database_session.add(sibling)
+        database_session.commit()
+        output_authority_checks: list[bool] = []
+
+        async def stop_before_output(
+            *_args: Any,
+            execution_is_current: Callable[[], bool],
+            **_kwargs: Any,
+        ) -> tuple[None, float]:
+            selected = database_session.get(Task, task_row.id)
+            assert selected is not None
+            selected.status = TaskStatus.STOPPED
+            database_session.add(selected)
+            database_session.commit()
+
+            dispatch = database_session.get(ExecutorDispatch, authority.dispatch_id)
+            assert dispatch is not None
+            assert dispatch.status == ExecutorDispatchStatus.RUNNING
+            persisted_sibling = database_session.get(Task, sibling.id)
+            assert persisted_sibling is not None
+            assert persisted_sibling.status == TaskStatus.IN_PROGRESS
+
+            output_authority_checks.append(execution_is_current())
+            return None, 0.0
+
+        monkeypatch.setattr(utils_module, "run_agent", stop_before_output)
+
+        result = await run_process_task(
+            start_benchmark_request,
+            task_row,
+            benchmark_id,
+            harness_config,
+            authority,
+        )
+
+        assert output_authority_checks == [False]
+        assert result == {task_row.task_id: None}

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from aws_cdk import aws_logs
-from stage import DEV, PROD, Stage
+from stage import DEV, PROD, RELEASE_TEST, Stage
 
 
 @dataclass(frozen=True)
@@ -59,9 +59,21 @@ DEV_CONFIG = StageConfig(
     service_log_retention=aws_logs.RetentionDays.ONE_WEEK,
 )
 
+RELEASE_TEST_CONFIG = StageConfig(
+    runtime_environment=RELEASE_TEST,
+    tracker=DEV_CONFIG.tracker,
+    worker=DEV_CONFIG.worker,
+    database=DEV_CONFIG.database,
+    service_log_retention=DEV_CONFIG.service_log_retention,
+)
+
+RELEASE_TEST_BENCHMARK_SERVICE_BASE_URL = "benchmarks.vals.ai"
+
+
 _STAGE_CONFIGS = {
     PROD: PROD_CONFIG,
     DEV: DEV_CONFIG,
+    RELEASE_TEST: RELEASE_TEST_CONFIG,
 }
 
 
@@ -69,4 +81,11 @@ def config_for(stage: Stage) -> StageConfig:
     try:
         return _STAGE_CONFIGS[stage.name]
     except KeyError:
-        raise ValueError(f"unknown stage {stage.name!r}; expected {PROD!r} or {DEV!r}") from None
+        raise ValueError(f"unknown stage {stage.name!r}; expected {PROD!r}, {DEV!r}, or 'release-test'") from None
+
+
+def benchmark_service_base_url(stage: Stage) -> str | None:
+    """Return the externally reachable benchmark-service base URL for isolated stages."""
+    if not stage.is_release_test:
+        return None
+    return RELEASE_TEST_BENCHMARK_SERVICE_BASE_URL
