@@ -9,6 +9,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from benchmark_service import SandboxNotFoundError, SandboxRecoveryPolicy
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse, VolumeMount
 from sqlmodel import Session
@@ -157,6 +158,85 @@ class TestTaskExecutionRetry:
         assert sandbox_entry_count == 2
         assert call_count == 2
         assert dependency_modes == expected_dependency_modes
+
+        database_session.refresh(task_row)
+        assert task_row.status == expected_status
+
+    @pytest.mark.parametrize(
+        "max_attempts,failures,expected_attempts,expected_status",
+        [
+            (3, 1, 2, TaskStatus.FINISHED),
+            (3, 2, 3, TaskStatus.FINISHED),
+            (2, 2, 2, TaskStatus.ERROR),
+            (None, 1, 1, TaskStatus.ERROR),
+        ],
+    )
+    async def test_lost_sandbox_recovery_is_opt_in_and_bounded(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        max_attempts: int | None,
+        failures: int,
+        expected_attempts: int,
+        expected_status: TaskStatus,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        retryable_process_task = getattr(task_execution_module, "_process_task_attempt")
+        monkeypatch.setattr(retryable_process_task.retry, "wait", wait_none())
+        monkeypatch.setattr("tracker.utils.task_execution.time.time", lambda: 1_234.5)
+
+        sandbox_envs: list[dict[str, str]] = []
+
+        @asynccontextmanager
+        async def _mock_create_sandbox(*_args: Any, **kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+            sandbox_envs.append(kwargs["env_vars"])
+            sandbox = AsyncMock()
+            sandbox.id = f"mock-sandbox-{len(sandbox_envs)}"
+            sandbox.name = sandbox.id
+            yield sandbox
+
+        run_count = 0
+
+        async def _mock_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            nonlocal run_count
+            run_count += 1
+            if run_count <= failures:
+                raise SandboxNotFoundError("sandbox was preempted")
+            return None, 0.0
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            response = make_retrieve_task_response(problem_path="/tmp/problem.txt")
+            if max_attempts is not None:
+                response.sandbox_recovery = SandboxRecoveryPolicy(max_sandbox_attempts=max_attempts)
+            return response
+
+        async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {"status": "success", "score": 1.0}
+
+        monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock())
+        monkeypatch.setattr(task_execution_module, "create_sandbox", _mock_create_sandbox)
+        monkeypatch.setattr(task_execution_module, "run_agent", _mock_run_agent)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+
+        expected_result = None if expected_status is TaskStatus.ERROR else {"status": "success", "score": 1.0}
+        assert result == {"task_0": expected_result}
+        assert len(sandbox_envs) == expected_attempts
+        assert all(env["RUN_ID"] == str(benchmark_id) for env in sandbox_envs)
+        assert "VALKYRIE_SANDBOX_OUTAGE_ID" not in sandbox_envs[0]
+        for lost_attempt, env in enumerate(sandbox_envs[1:], start=1):
+            assert env["VALKYRIE_SANDBOX_OUTAGE_STARTED_EPOCH"] == "1234.5"
+            assert env["VALKYRIE_SANDBOX_OUTAGE_ID"] == f"{benchmark_id}:task_0:{lost_attempt}"
 
         database_session.refresh(task_row)
         assert task_row.status == expected_status

@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import logfire
 import sentry_sdk
 from benchmark_service import (
+    SandboxNotFoundError,
     SandboxProviderConfig,
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
@@ -67,11 +68,38 @@ from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 logger = get_logger(__name__)
 
 _PTY_TASK_RETRY_LIMIT: int = 1
+_SANDBOX_ATTEMPT_HARD_LIMIT: int = 20
 
 
 @dataclass
 class _DependencySetupRecoveryState:
     mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES
+
+
+@dataclass
+class _SandboxRecoveryState:
+    attempts: int = 0
+    max_attempts: int | None = None
+    setup_retries: int = 0
+    outage_id: str | None = None
+    outage_started_epoch: float | None = None
+
+    def start_attempt(self) -> None:
+        self.attempts += 1
+
+    def record_loss(self, benchmark_id: UUID, task_id: str) -> None:
+        if self.outage_started_epoch is None:
+            self.outage_started_epoch = time.time()
+            self.outage_id = f"{benchmark_id}:{task_id}:{self.attempts}"
+        self.setup_retries = 0
+
+    def mark_replacement_ready(self) -> None:
+        self.outage_id = None
+        self.outage_started_epoch = None
+
+
+class _RetryTaskAttempt(Exception):
+    """Signal tenacity to replace the current sandbox without failing the task."""
 
 
 def _normalized_attempt_time(value: datetime) -> datetime:
@@ -454,13 +482,14 @@ async def process_task(
         sandbox_provider_config,
         creation_semaphore,
         dependency_setup_recovery=_DependencySetupRecoveryState(),
+        sandbox_recovery=_SandboxRecoveryState(),
         authority=authority,
     )
 
 
 @tenacity_retry(
-    retry=retry_if_exception_type(SandboxSetupError),
-    stop=stop_after_attempt(_PTY_TASK_RETRY_LIMIT + 1),
+    retry=retry_if_exception_type(_RetryTaskAttempt),
+    stop=stop_after_attempt(_SANDBOX_ATTEMPT_HARD_LIMIT),
     wait=wait_fixed(2),
     before_sleep=retry_callback("valkyrie.task"),
     reraise=True,
@@ -476,6 +505,7 @@ async def _process_task_attempt(
     sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,
     dependency_setup_recovery: _DependencySetupRecoveryState,
+    sandbox_recovery: _SandboxRecoveryState,
     authority: ExecutionAuthority,
 ) -> dict[str, dict[str, Any] | None]:
     """
@@ -485,6 +515,7 @@ async def _process_task_attempt(
     the evaluation will fail since the instance no longer exists. We handle this inside of the exception caught.
     """
     task_id_var.set(task_id)
+    sandbox_recovery.start_attempt()
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
     trace.get_current_span().set_attributes(
@@ -605,6 +636,9 @@ async def _process_task_attempt(
                 raise e from e
 
         task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
+        sandbox_recovery.max_attempts = (
+            task_data.sandbox_recovery.max_sandbox_attempts if task_data.sandbox_recovery is not None else None
+        )
         sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
 
         # Labels that show up in the UI we can use to filter sandboxes
@@ -647,6 +681,10 @@ async def _process_task_attempt(
                 f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={ENVIRONMENT}"
             ),
         }
+        if sandbox_recovery.outage_started_epoch is not None:
+            env_vars["VALKYRIE_SANDBOX_OUTAGE_STARTED_EPOCH"] = str(sandbox_recovery.outage_started_epoch)
+        if sandbox_recovery.outage_id is not None:
+            env_vars["VALKYRIE_SANDBOX_OUTAGE_ID"] = sandbox_recovery.outage_id
 
         # We don't want to track the task until the sandbox is actually created.
         task_breakdown = TaskBreakdown()
@@ -695,6 +733,10 @@ async def _process_task_attempt(
                     dataset=start_benchmark_request.dataset,
                     sandbox_provider=sandbox_provider_config,
                 )
+                # The benchmark has now had an opportunity to persist the
+                # outage metadata in its restored volume. A later loss is a
+                # distinct outage and must receive a new identity.
+                sandbox_recovery.mark_replacement_ready()
 
                 # Force flush the logs if anything has been buffered
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
@@ -821,7 +863,41 @@ async def _process_task_attempt(
         if task_is_stopped():
             return {task_id: None}
         log_output(f"\n[ERROR] {_exception_message(e)}")
+        within_policy = (
+            sandbox_recovery.max_attempts is None
+            or sandbox_recovery.attempts < sandbox_recovery.max_attempts
+        )
+        if sandbox_recovery.setup_retries < _PTY_TASK_RETRY_LIMIT and within_policy:
+            sandbox_recovery.setup_retries += 1
+            raise _RetryTaskAttempt("retrying task in a fresh sandbox after setup failure") from e
         raise
+    except SandboxNotFoundError as e:
+        if task_is_stopped():
+            return {task_id: None}
+        max_attempts = sandbox_recovery.max_attempts
+        if max_attempts is not None and sandbox_recovery.attempts < max_attempts:
+            sandbox_recovery.record_loss(benchmark_id, task_row.task_id)
+            message = (
+                "Sandbox disappeared; restoring the task from its durable volume "
+                f"(attempt {sandbox_recovery.attempts + 1}/{max_attempts})"
+            )
+            logger.warning(message)
+            log_output(f"\n[WARNING] {message}\n")
+            raise _RetryTaskAttempt(message) from e
+
+        error_message = _exception_message(e)
+        logger.error(error_message)
+        log_output(f"\n[ERROR] {error_message}")
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(
+                task,
+                task_session,
+                error_message,
+                expected_started_at=attempt_started_at,
+                authority=authority,
+            )
+        return {task_id: None}
     except OutputArtifactError as e:
         if task_is_stopped():
             return {task_id: None}
