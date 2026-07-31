@@ -99,7 +99,13 @@ async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", 
 
 @logfire.instrument("upload_stream_to_s3", extract_args=("s3_key", "s3_bucket"))
 @handle_s3_error(message="Failed to upload stream to S3")
-async def upload_stream_to_s3(chunks: AsyncIterable[bytes], s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> int:
+async def upload_stream_to_s3(
+    chunks: AsyncIterable[bytes],
+    s3_key: str,
+    aws: "AWSCredentials",
+    s3_bucket: str,
+    should_continue: Callable[[], bool] | None = None,
+) -> int:
     """
     Upload a byte stream to S3 via multipart upload, buffering at most one part in memory.
 
@@ -108,6 +114,7 @@ async def upload_stream_to_s3(chunks: AsyncIterable[bytes], s3_key: str, aws: "A
         s3_key: S3 object key (path in bucket)
         aws: AWS credentials for authentication
         s3_bucket: S3 bucket name
+        should_continue: Optional authority check before each part and completion
 
     Returns:
         Total number of bytes uploaded
@@ -124,6 +131,8 @@ async def upload_stream_to_s3(chunks: AsyncIterable[bytes], s3_key: str, aws: "A
             buffer = bytearray()
 
             async def _upload_part() -> None:
+                if should_continue is not None and not should_continue():
+                    raise S3Error("S3 stream upload authority was revoked")
                 part_number = len(parts) + 1
                 response = await client.upload_part(
                     Bucket=s3_bucket, Key=s3_key, PartNumber=part_number, UploadId=upload_id, Body=bytes(buffer)
@@ -139,6 +148,9 @@ async def upload_stream_to_s3(chunks: AsyncIterable[bytes], s3_key: str, aws: "A
 
             if buffer or not parts:
                 await _upload_part()
+
+            if should_continue is not None and not should_continue():
+                raise S3Error("S3 stream upload authority was revoked")
 
             await client.complete_multipart_upload(
                 Bucket=s3_bucket, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts}
@@ -238,20 +250,24 @@ async def copy_s3_object(source_key: str, dest_key: str, aws: "AWSCredentials", 
         raise S3Error(f"Failed to copy S3 object from {source_key} to {dest_key}: {e}") from e
 
 
-async def copy_agent_to_benchmark(benchmark_id: str, contract_name: str, aws: "AWSCredentials", s3_bucket: str) -> None:
+async def copy_agent_to_benchmark(benchmark_id: str, contract_name: str, aws: "AWSCredentials", s3_bucket: str) -> bool:
     """
     Freeze the agent for a benchmark run by copying
     agents/<name>.zip -> benchmarks/<benchmark_id>/<name>.zip.
 
     # NOTE: Skips if it already exists at that location
+
+    Returns:
+        True when this call created the benchmark copy, otherwise False.
     """
     source_key = get_contract_s3_key(contract_name)
     dest_key = get_benchmark_contract_s3_key(benchmark_id, contract_name)
 
     if await s3_object_exists(dest_key, aws, s3_bucket):
-        return
+        return False
 
     await copy_s3_object(source_key, dest_key, aws, s3_bucket)
+    return True
 
 
 @handle_s3_error(message="Failed to check S3 object existence")

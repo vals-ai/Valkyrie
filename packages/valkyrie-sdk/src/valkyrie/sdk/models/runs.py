@@ -136,6 +136,10 @@ class StartBenchmarkResponse(ResponseModel):
     task_count: int
     cloudwatch_url: str
     s3_bucket_url: str
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
 
 
 class FetchBenchmarkResponse(ResponseModel):
@@ -148,6 +152,10 @@ class FetchBenchmarkResponse(ResponseModel):
     label: str | None = None
     final_score: float | None = None
     error_message: str | None = None
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
 
 
 class BenchmarkTableRow(ResponseModel):
@@ -158,6 +166,10 @@ class BenchmarkTableRow(ResponseModel):
     agent_name: str
     label: str | None = None
     model: str | None
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
     dataset: str = "default"
     started_by_email: str | None
     started_at: datetime
@@ -210,6 +222,11 @@ class FetchBenchmarkMetadataResponse(ResponseModel):
     benchmark_name: str
     benchmark_arguments: BenchmarkArguments
     started_by_email: str | None = None
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_uri: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
 
 
 class FinalEvaluation(ResponseModel):

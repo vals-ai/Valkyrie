@@ -5,7 +5,7 @@ Run: uv run pytest tests/unit/utils/test_run_state.py
 
 from datetime import datetime
 from typing import Any, Sequence
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -28,11 +28,13 @@ from tracker.database.models import (
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
+    ExecutorRelease,
     Org,
     Task,
     TaskStatus,
 )
 from tracker.exceptions import TrackerServiceError
+from tracker.executor.release_control import promote_release
 from tracker.types import AWSCredentials, FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     commit_task_error,
@@ -50,6 +52,29 @@ from tracker.utils import (
 _parse_log_retention_policy = getattr(harness_config_module, "_parse_log_retention_policy")
 
 client = TestClient(app)
+
+
+@pytest.fixture
+def example_benchmark_object(contract: AgentContractRequest, database_session: Session) -> Benchmark:
+    """Build state-transition benchmarks with a persisted executor release identity."""
+    release = ExecutorRelease(
+        id="test-release",
+        artifact_uri="s3://artifacts/test-release.pex",
+        artifact_digest="digest-test-release",
+        protocol_version="1",
+        readiness_verified=True,
+    )
+    database_session.add(release)
+    database_session.commit()
+    promote_release(database_session, release.id)
+    database_session.commit()
+
+    benchmark = make_benchmark(contract=contract, concurrency=5)
+    benchmark.executor_release_id = release.id
+    benchmark.executor_artifact_uri = release.artifact_uri
+    benchmark.executor_artifact_digest = release.artifact_digest
+    benchmark.executor_protocol_version = release.protocol_version
+    return benchmark
 
 
 class TestRunState:
@@ -87,13 +112,17 @@ class TestRunState:
             "DAYTONA_TARGET": "target",
         }
 
-    def test_stop_benchmark(self, example_benchmark_object: Benchmark, database_session: Session) -> None:
+    def test_stop_benchmark(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """Tests the flow of updating the benchmark related objects to the proper states when stopping a benchmark
 
         Test Cases:
-            - Benchmark can be stopped if it is in progress and tasks that have not pending yet exist
-            - After stopping, the benchmark status is "stopping" and tasks have been set to "stopped"
-            - Tasks not in pending state are left alone
+            - A graceful whole-run stop leaves the benchmark stopping.
+            - Queued and evaluating tasks stop while in-progress tasks continue.
         """
 
         # Create benchmark that has already been started
@@ -119,12 +148,26 @@ class TestRunState:
         database_session.add_all(initial_task_rows)
         database_session.commit()
 
+        locked_fetches: list[bool] = []
+
+        def capture_locked_fetch(
+            benchmark_id: UUID,
+            session: Session,
+            org: Org,
+            *,
+            for_update: bool = False,
+        ) -> Benchmark:
+            locked_fetches.append(for_update)
+            return fetch_benchmark_row(benchmark_id, session, org, for_update=for_update)
+
+        monkeypatch.setattr("main.fetch_benchmark_row", capture_locked_fetch)
+
         # Test request to stop the benchmark
         response: Response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=false")
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
+        assert locked_fetches == [True]
 
-        # Check that the benchmark status is now "stopping"
         benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session, self._test_org)
         assert benchmark_row.status == BenchmarkStatus.STOPPING
 
@@ -145,7 +188,6 @@ class TestRunState:
         ).one()
         assert task_rows == 7
 
-        # The remaining tasks have been left alone in in progress state
         task_rows = database_session.exec(
             select(func.count(col(Task.id)))
             .where(Task.benchmark == benchmark_row.id)
@@ -371,7 +413,12 @@ class TestRunState:
         assert len(task_rows) == 5
         assert all(task_row.status == TaskStatus.PENDING for task_row in task_rows)
 
-    def test_create_task_rows(self, example_benchmark_object: Benchmark, database_session: Session) -> None:
+    def test_create_task_rows(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        executor_authority: Any,
+    ) -> None:
         """Tests different scenarios for creating task rows
 
         Test Cases:
@@ -385,12 +432,15 @@ class TestRunState:
         benchmark_row = example_benchmark_object
         database_session.add(benchmark_row)
         database_session.commit()
+        authority = executor_authority(benchmark_row, session=database_session)
 
         # Verified tasks to create
         verified_task_ids = [f"task_{i}" for i in range(5)]
 
         # Creates all tasks in pending state
-        task_rows = create_task_rows(verified_task_ids, benchmark_row, database_session, self._test_org)
+        task_rows = create_task_rows(
+            verified_task_ids, benchmark_row, database_session, self._test_org, authority=authority
+        )
         assert len(task_rows) == len(verified_task_ids)
         assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
 
@@ -399,7 +449,9 @@ class TestRunState:
             assert task_row[0] == verified_task_ids[i]
 
         # Try calling the same method again when the tasks already exist
-        task_rows = create_task_rows(verified_task_ids, benchmark_row, database_session, self._test_org)
+        task_rows = create_task_rows(
+            verified_task_ids, benchmark_row, database_session, self._test_org, authority=authority
+        )
         assert len(task_rows) == len(verified_task_ids)
         assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
 
@@ -408,7 +460,7 @@ class TestRunState:
         assert len(all_tasks) == len(verified_task_ids)
         assert all(task.status == TaskStatus.PENDING for task in all_tasks)
 
-        task_rows = create_task_rows(["task_1"], benchmark_row, database_session, self._test_org)
+        task_rows = create_task_rows(["task_1"], benchmark_row, database_session, self._test_org, authority=authority)
         assert [task_id for task_id, _ in task_rows] == ["task_1"]
 
     def test_fetch_final_score_inputs_waits_for_runnable_tasks(
@@ -463,7 +515,11 @@ class TestRunState:
         }
 
     def test_commit_task_error_spans_status_transition(
-        self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        executor_authority: Any,
     ) -> None:
         log_records: list[dict[str, Any]] = []
         span_records: list[dict[str, Any]] = []
@@ -490,6 +546,10 @@ class TestRunState:
         monkeypatch.setattr("tracker.utils.task_execution.logger.info", fake_info)
         monkeypatch.setattr("tracker.utils.task_execution.logfire.span", fake_span)
 
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        authority = executor_authority(example_benchmark_object, session=database_session)
+
         task_row = Task(
             org_id=TEST_ORG_ID,
             task_id="task_0",
@@ -499,7 +559,7 @@ class TestRunState:
         database_session.add(task_row)
         database_session.commit()
 
-        commit_task_error(task_row, database_session, "agent failed")
+        commit_task_error(task_row, database_session, "agent failed", authority=authority)
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
@@ -515,11 +575,14 @@ class TestRunState:
         assert transition_record["task_id"] == "task_0"
         assert transition_record["benchmark_id"] == str(example_benchmark_object.id)
         assert transition_record["entered"] and transition_record["exited"]
-        assert transition_record["has_error_message"] is True
+        assert transition_record["has_error_message"]
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
 
     async def test_set_benchmark_final_status(
-        self, example_benchmark_object: Benchmark, database_session: Session
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        executor_authority: Any,
     ) -> None:
         """Tests the end to end flow when stopping and resuming a benchmark
 
@@ -533,16 +596,17 @@ class TestRunState:
         benchmark_row = example_benchmark_object
         database_session.add(benchmark_row)
         database_session.commit()
+        authority = executor_authority(benchmark_row, session=database_session)
 
         # Create some pending tasks
         task_ids = [f"task_{i}" for i in range(5)]
-        task_rows = create_task_rows(task_ids, benchmark_row, database_session, self._test_org)
+        task_rows = create_task_rows(task_ids, benchmark_row, database_session, self._test_org, authority=authority)
         assert len(task_rows) == len(task_ids)
         assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
 
         # Error is raised because tasks are still in the pending state
         with pytest.raises(TrackerServiceError):
-            set_benchmark_final_status(benchmark_row, database_session, self._test_org)
+            set_benchmark_final_status(benchmark_row, database_session, self._test_org, authority=authority)
 
         # Make all tasks in finished state
         # NOTE: Need to manually set the finished_at timestamp because the event listener is not triggered with bulk updates
@@ -554,7 +618,7 @@ class TestRunState:
         database_session.commit()
 
         # Benchmark status is set to finished
-        set_benchmark_final_status(benchmark_row, database_session, self._test_org)
+        set_benchmark_final_status(benchmark_row, database_session, self._test_org, authority=authority)
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.FINISHED
 
@@ -573,7 +637,7 @@ class TestRunState:
         database_session.commit()
 
         # Benchmark status is set to stopped when stopped tasks exist
-        set_benchmark_final_status(benchmark_row, database_session, self._test_org)
+        set_benchmark_final_status(benchmark_row, database_session, self._test_org, authority=authority)
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.STOPPED
 
@@ -609,7 +673,7 @@ class TestFetchStartedByFilter:
             org,
         )
         assert total == 2
-        assert sorted(email for r in rows if (email := r.started_by_email) is not None) == [
+        assert sorted(email for r in rows if isinstance((email := r.started_by_email), str)) == [
             "alice@vals.ai",
             "bob@vals.ai",
         ]

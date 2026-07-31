@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import RetrieveTaskResponse
+from benchmark_service.schemas import RetrieveTaskResponse, VolumeMount
 from sqlmodel import Session
 from tenacity import wait_none
 
@@ -90,7 +90,7 @@ class TestTaskExecutionRetry:
             - Task ends in FINISHED state after the retry succeeds
             - The sandbox context manager is entered twice (one per attempt)
         """
-        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
             harness_config,
@@ -150,7 +150,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         expected_result = None if expected_status is TaskStatus.ERROR else {"status": "success", "score": 1.0}
         assert result == {"task_0": expected_result}
@@ -168,21 +168,33 @@ class TestTaskExecutionRetry:
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
             harness_config,
         )
 
+        create_sandbox_kwargs: dict[str, Any] = {}
+
         @asynccontextmanager
-        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+        async def _mock_create_sandbox(*_args: Any, **kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+            create_sandbox_kwargs.update(kwargs)
             mock_sandbox = AsyncMock()
             mock_sandbox.id = "mock-sandbox-id"
             mock_sandbox.name = "mock-sandbox-name"
             yield mock_sandbox
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
-            return make_retrieve_task_response(problem_path="/tmp/problem.txt")
+            response = make_retrieve_task_response(problem_path="/tmp/problem.txt")
+            response.volumes = [
+                VolumeMount(
+                    name="shared-fixtures",
+                    mount_path="/fixtures",
+                    read_only=True,
+                    subpath="{run_id}",
+                )
+            ]
+            return response
 
         async def _mock_upload_agent_artifacts(*_args: Any, **_kwargs: Any) -> None:
             return None
@@ -228,7 +240,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         transition_records = [record for record in span_records if record["message"] == "task.status_transition"]
 
@@ -243,6 +255,15 @@ class TestTaskExecutionRetry:
         assert all(record["entered"] and record["exited"] for record in transition_records)
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
         assert run_agent_kwargs["benchmark_id"] == str(benchmark_id)
+        assert create_sandbox_kwargs["labels"]["run-id"] == str(benchmark_id)
+        assert create_sandbox_kwargs["volumes"] == [
+            VolumeMount(
+                name="shared-fixtures",
+                mount_path="/fixtures",
+                read_only=True,
+                subpath="{run_id}",
+            )
+        ]
 
         event_names = [record["message"] for record in log_records]
         assert "agent.run.complete" in event_names

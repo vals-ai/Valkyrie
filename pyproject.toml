@@ -56,7 +56,13 @@ reportGeneralTypeIssues = false
 reportTypedDictNotRequiredAccess = false
 enableTypeIgnoreComments = true
 
-include = ["src", "packages/valkyrie-sdk/src"]
+include = [
+  "src",
+  "packages/valkyrie-sdk/src",
+  "services/executor_artifact",
+  "services/executor_host",
+  "tests/unit/executor_host",
+]
 
 [build-system]
 requires = ["hatchling"]

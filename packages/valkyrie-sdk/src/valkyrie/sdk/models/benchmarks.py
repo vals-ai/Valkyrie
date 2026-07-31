@@ -30,6 +30,10 @@ class BenchmarkStatusEntry(ResponseModel):
     status: BenchmarkStatus
     finished_at: datetime | None
     total_tasks: int
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
     finished_tasks: int
     task_state_counts: dict[str, int] = Field(default_factory=dict)
 
@@ -52,6 +56,10 @@ class SingleBenchmarkResponse(ResponseModel):
     name: str
     agent_name: str
     model: str | None
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
     started_at: datetime
     finished_at: datetime | None
     status: BenchmarkStatus

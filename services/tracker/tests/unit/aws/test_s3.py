@@ -121,3 +121,26 @@ class TestUploadStreamToS3:
 
         assert client.aborted
         assert client.completed_parts is None
+
+    async def test_aborts_before_completion_when_authority_is_revoked(
+        self,
+        fake_client: FakeS3Client,
+        aws_credentials: AWSCredentials,
+    ) -> None:
+        authority_checks = iter([True, False])
+
+        async def chunks() -> AsyncIterator[bytes]:
+            yield b"final"
+
+        with pytest.raises(S3Error, match="authority was revoked"):
+            await upload_stream_to_s3(
+                chunks(),
+                "key",
+                aws_credentials,
+                "bucket",
+                should_continue=lambda: next(authority_checks),
+            )
+
+        assert fake_client.parts == [(1, b"final")]
+        assert fake_client.completed_parts is None
+        assert fake_client.aborted

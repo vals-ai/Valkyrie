@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from types import TracebackType
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -46,10 +46,12 @@ from tracker.database.models import (
 from tracker.database.session import engine
 from tracker.exceptions import (
     DependencySetupExhaustedError,
+    ExecutionAuthorityRevoked,
     OutputArtifactError,
     SandboxSetupError,
     TrackerServiceError,
 )
+from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
@@ -129,9 +131,15 @@ class TrackedTask:
     _task: asyncio.Task[Any] | None
     _org: Org
 
-    def __init__(self, coro: Coroutine[Any, Any, Any], org: Org):
+    def __init__(
+        self,
+        coro: Coroutine[Any, Any, Any],
+        org: Org,
+        authority: ExecutionAuthority,
+    ):
         self._coro = coro
         self._org = org
+        self._authority = authority
         self._status = TrackedTaskStatus.WAITING
         self._task = None
 
@@ -167,7 +175,13 @@ class TrackedTask:
             sentry_sdk.capture_exception(e)
             with Session(bind=engine) as session:
                 task = fetch_task_row(task_row.id, session, self._org)
-                commit_task_error(task, session, error_message, expected_started_at=task_row.started_at)
+                commit_task_error(
+                    task,
+                    session,
+                    error_message,
+                    expected_started_at=task_row.started_at,
+                    authority=self._authority,
+                )
 
             return {task_row.task_id: None}
         finally:
@@ -180,6 +194,7 @@ class TaskMonitor:
     _notifier: SlackNotifier | None
     _org: Org
     _limiter: ResizableLimiter
+    _authority: ExecutionAuthority
     _TRACK_INTERVAL: int = 2
 
     def __init__(
@@ -188,6 +203,8 @@ class TaskMonitor:
         task_tracking: dict[str, TrackedTask],
         org: Org,
         limiter: ResizableLimiter,
+        *,
+        authority: ExecutionAuthority,
         notifier: SlackNotifier | None = None,
     ):
         self._benchmark_id = benchmark_id
@@ -195,6 +212,7 @@ class TaskMonitor:
         self._org = org
         self._notifier = notifier
         self._limiter = limiter
+        self._authority = authority
 
     async def _refresh_concurrency(self) -> None:
         with Session(bind=engine) as session:
@@ -216,6 +234,16 @@ class TaskMonitor:
                 raise ValueError(f"Task with id {task_id} not found")
 
             return task_row
+
+    def _authority_is_current(self) -> bool:
+        with Session(bind=engine) as session:
+            try:
+                lock_execution_authority(session, self._authority)
+            except ExecutionAuthorityRevoked:
+                session.rollback()
+                return False
+            session.rollback()
+            return True
 
     def _validate_task(self, task_id: str) -> bool:
         """
@@ -254,6 +282,7 @@ class TaskMonitor:
 
         while not exit_condition_met and self._task_tracking:
             await self._refresh_concurrency()
+            authority_current = self._authority_is_current()
             tasks_to_check: list[str] = list(self._task_tracking.keys())
             for task_id in tasks_to_check:
                 task = self._task_tracking[task_id]
@@ -262,7 +291,11 @@ class TaskMonitor:
                     del self._task_tracking[task_id]
                     continue
 
-                if not self._validate_task(task_id) and task.task is not None and not task.task.done():
+                if (
+                    (not authority_current or not self._validate_task(task_id))
+                    and task.task is not None
+                    and not task.task.done()
+                ):
                     task.task.cancel(f"Task {task_id} has been invalidated. Run has been requested to stop")
 
             await self._check_notifications()
@@ -273,11 +306,12 @@ class TaskMonitor:
             await asyncio.sleep(self._TRACK_INTERVAL)
 
 
-def handle_early_exit(task_row: Task, task_session: Session) -> bool:
+def handle_early_exit(task_row: Task, task_session: Session, authority: ExecutionAuthority) -> bool:
     return _commit_task_status(
         task_row,
         task_session,
         TaskStatus.STOPPED,
+        authority=authority,
         expected_started_at=task_row.started_at,
     )
 
@@ -305,9 +339,15 @@ def save_eval_resume_state(
     org: Org,
     eval_resume_state: dict[str, Any],
     *,
+    authority: ExecutionAuthority,
     expected_started_at: datetime | None = None,
 ) -> bool:
     with Session(bind=engine) as session:
+        try:
+            lock_execution_authority(session, authority)
+        except ExecutionAuthorityRevoked:
+            session.rollback()
+            return False
         task_update = (
             update(Task)
             .where(col(Task.id) == task_row_id)
@@ -327,6 +367,7 @@ def _commit_task_status(
     session: Session,
     to_status: TaskStatus,
     *,
+    authority: ExecutionAuthority,
     error_message: str | None = None,
     extra: dict[str, Any] | None = None,
     expected_started_at: datetime | None = None,
@@ -343,6 +384,11 @@ def _commit_task_status(
         span_attributes["has_error_message"] = True
 
     with logfire.span("task.status_transition", **span_attributes):  # pyright: ignore[reportArgumentType]
+        try:
+            lock_execution_authority(session, authority)
+        except ExecutionAuthorityRevoked:
+            session.rollback()
+            return False
         values: dict[str, TaskStatus | datetime] = {"status": to_status}
         if to_status in [TaskStatus.FINISHED, TaskStatus.ERROR]:
             values["finished_at"] = datetime.now(ZoneInfo("UTC"))
@@ -368,6 +414,7 @@ def commit_task_status_transition(
     org: Org,
     to_status: TaskStatus,
     *,
+    authority: ExecutionAuthority,
     expected_started_at: datetime | None = None,
 ) -> bool:
     fetch_start = time.monotonic()
@@ -378,6 +425,7 @@ def commit_task_status_transition(
         to_status,
         extra={"fetch_duration_ms": elapsed_ms(fetch_start)},
         expected_started_at=expected_started_at,
+        authority=authority,
     )
 
 
@@ -392,6 +440,7 @@ async def process_task(
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,
+    authority: ExecutionAuthority,
 ) -> dict[str, dict[str, Any] | None]:
     """Process one task while retaining dependency recovery state across sandbox attempts."""
     return await _process_task_attempt(
@@ -405,6 +454,7 @@ async def process_task(
         sandbox_provider_config,
         creation_semaphore,
         dependency_setup_recovery=_DependencySetupRecoveryState(),
+        authority=authority,
     )
 
 
@@ -426,6 +476,7 @@ async def _process_task_attempt(
     sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,
     dependency_setup_recovery: _DependencySetupRecoveryState,
+    authority: ExecutionAuthority,
 ) -> dict[str, dict[str, Any] | None]:
     """
     Processes a task and returns the evaluation result
@@ -454,7 +505,7 @@ async def _process_task_attempt(
             return {task_id: None}
         attempt_started_at = task_row.started_at
         if benchmark_row.status == BenchmarkStatus.STOPPING or task_row.status == TaskStatus.STOPPED:
-            handle_early_exit(task_row, task_session)
+            handle_early_exit(task_row, task_session, authority)
             return {task_id: None}
         benchmark_name = benchmark_row.name
         benchmark_agent_name = benchmark_row.arguments.contract.name
@@ -486,12 +537,22 @@ async def _process_task_attempt(
     flush_task = asyncio.create_task(auto_flush_logs())
 
     def on_eval_resume_state(state: dict[str, Any]) -> None:
-        save_eval_resume_state(task_row.id, org, state, expected_started_at=attempt_started_at)
+        save_eval_resume_state(task_row.id, org, state, expected_started_at=attempt_started_at, authority=authority)
+
+    def execution_is_current() -> bool:
+        with Session(bind=engine) as task_session:
+            try:
+                lock_execution_authority(task_session, authority)
+            except ExecutionAuthorityRevoked:
+                task_session.rollback()
+                return False
+            task = fetch_task_row(task_row.id, task_session, org)
+            is_current = task.status != TaskStatus.STOPPED and task.started_at == attempt_started_at
+            task_session.rollback()
+            return is_current
 
     def task_is_stopped() -> bool:
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            return task.status == TaskStatus.STOPPED or task.started_at != attempt_started_at
+        return not execution_is_current()
 
     try:
         if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
@@ -513,7 +574,7 @@ async def _process_task_attempt(
                     org_id=org.id,
                     task=task_row.id,
                     instance_id=None,
-                    result=evaluation_result,
+                    result=cast(dict[str, Any], evaluation_result),
                     agent_caused_exit_reason=None,
                 )
 
@@ -530,6 +591,7 @@ async def _process_task_attempt(
                         org,
                         TaskStatus.FINISHED,
                         expected_started_at=attempt_started_at,
+                        authority=authority,
                     ):
                         return {task_id: None}
 
@@ -549,6 +611,9 @@ async def _process_task_attempt(
         labels = {
             "Benchmark": start_benchmark_request.benchmark_name,
             "Id": str(benchmark_id),
+            # CBS resolves VolumeMount's {run_id} placeholder from the
+            # "run-id" label and hard-fails if this isolation identity is absent.
+            "run-id": str(benchmark_id),
             "Task": task_row.task_id,
         }
 
@@ -559,6 +624,7 @@ async def _process_task_attempt(
                 org,
                 TaskStatus.BUILDING,
                 expected_started_at=attempt_started_at,
+                authority=authority,
             ):
                 return {task_id: None}
 
@@ -593,6 +659,7 @@ async def _process_task_attempt(
             labels=labels,
             env_vars=env_vars,
             resources=task_data.resources,
+            volumes=task_data.volumes,
             creation_semaphore=creation_semaphore,
         ) as sandbox:
             task_breakdown.sandbox_build_duration = time.perf_counter() - start_sandbox_build_time
@@ -606,6 +673,7 @@ async def _process_task_attempt(
                         org,
                         TaskStatus.IN_PROGRESS,
                         expected_started_at=attempt_started_at,
+                        authority=authority,
                     ):
                         return {task_id: None}
 
@@ -651,6 +719,7 @@ async def _process_task_attempt(
                         benchmark_id=str(benchmark_id),
                         runtime_source=task_data.source,
                         dependency_setup_mode=dependency_setup_recovery.mode,
+                        execution_is_current=execution_is_current,
                     )
                 except DependencySetupExhaustedError:
                     dependency_setup_recovery.mode = DependencySetupMode.FINAL_FRESH_SANDBOX
@@ -677,6 +746,7 @@ async def _process_task_attempt(
                         org,
                         TaskStatus.EVALUATING,
                         expected_started_at=attempt_started_at,
+                        authority=authority,
                     ):
                         return {task_id: None}
 
@@ -716,7 +786,7 @@ async def _process_task_attempt(
                     org_id=org.id,
                     task=task_row.id,
                     instance_id=sandbox.id,
-                    result=evaluation_result,
+                    result=cast(dict[str, Any], evaluation_result),
                     agent_caused_exit_reason=exit_reason,
                 )
 
@@ -734,6 +804,7 @@ async def _process_task_attempt(
                         org,
                         TaskStatus.FINISHED,
                         expected_started_at=attempt_started_at,
+                        authority=authority,
                     ):
                         return {task_id: None}
 
@@ -760,7 +831,9 @@ async def _process_task_attempt(
 
         with Session(bind=engine) as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(task, task_session, error_message, expected_started_at=attempt_started_at)
+            commit_task_error(
+                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
+            )
 
         return {task_id: None}
     except ConnectionClosedError as e:
@@ -775,7 +848,9 @@ async def _process_task_attempt(
 
         with Session(bind=engine) as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(task, task_session, error_message, expected_started_at=attempt_started_at)
+            commit_task_error(
+                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
+            )
 
         return {task_id: None}
     except ValidationError as e:
@@ -789,7 +864,9 @@ async def _process_task_attempt(
 
         with Session(bind=engine) as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(task, task_session, error_message, expected_started_at=attempt_started_at)
+            commit_task_error(
+                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
+            )
 
         return {task_id: None}
     except InvalidStatus as e:
@@ -800,7 +877,9 @@ async def _process_task_attempt(
 
         with Session(bind=engine) as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(task, task_session, error_message, expected_started_at=attempt_started_at)
+            commit_task_error(
+                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
+            )
 
         return {task_id: None}
     except BenchmarkServiceError as e:
@@ -811,7 +890,9 @@ async def _process_task_attempt(
 
         with Session(bind=engine) as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(task, task_session, error_message, expected_started_at=attempt_started_at)
+            commit_task_error(
+                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
+            )
 
         return {task_id: None}
     except Exception as e:
@@ -828,7 +909,9 @@ async def _process_task_attempt(
 
         with Session(bind=engine) as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(task, task_session, error_message, expected_started_at=attempt_started_at)
+            commit_task_error(
+                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
+            )
 
         return {task_id: None}
     finally:
@@ -843,6 +926,7 @@ def commit_task_error(
     session: Session,
     error_message: str,
     *,
+    authority: ExecutionAuthority,
     expected_started_at: datetime | None = None,
 ) -> bool:
     session.add(ErrorResult(org_id=task_row.org_id, task=task_row.id, error_message=error_message))
@@ -852,4 +936,5 @@ def commit_task_error(
         TaskStatus.ERROR,
         error_message=error_message,
         expected_started_at=expected_started_at,
+        authority=authority,
     )

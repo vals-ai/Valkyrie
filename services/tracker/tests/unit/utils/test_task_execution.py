@@ -6,12 +6,14 @@ Run: uv run pytest tests/unit/utils/test_task_execution.py
 import asyncio
 from typing import Any
 from unittest.mock import MagicMock, Mock
+from uuid import uuid4
 
 import pytest
 from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import Benchmark, Org, Task, TaskStatus
+from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.utils import ResizableLimiter, TaskMonitor, TrackedTask, TrackedTaskStatus
 
 
@@ -104,7 +106,11 @@ class TestTaskExecution:
         await third
 
     async def test_task_monitor(
-        self, database_session: Session, example_benchmark_object: Benchmark, monkeypatch: pytest.MonkeyPatch
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        monkeypatch: pytest.MonkeyPatch,
+        executor_authority: Any,
     ) -> None:
         """The monitor must notice persisted stops and cancel active work.
 
@@ -116,6 +122,7 @@ class TestTaskExecution:
         benchmark_row = example_benchmark_object
         database_session.add(benchmark_row)
         database_session.commit()
+        authority = executor_authority(benchmark_row, session=database_session)
 
         tasks_to_track: list[str] = ["task_id_1"]
         for task_id in tasks_to_track:
@@ -124,7 +131,8 @@ class TestTaskExecution:
             database_session.commit()
 
         task_tracking: dict[str, TrackedTask] = {
-            task_id: TrackedTask(coro=asyncio.sleep(0), org=self._test_org) for task_id in tasks_to_track
+            task_id: TrackedTask(coro=asyncio.sleep(0), org=self._test_org, authority=authority)
+            for task_id in tasks_to_track
         }
 
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
@@ -134,6 +142,7 @@ class TestTaskExecution:
             task_tracking.copy(),
             org=self._test_org,
             limiter=ResizableLimiter(limit=1),
+            authority=authority,
         )
         monkeypatch.setattr(monitor, "_TRACK_INTERVAL", 0)
 
@@ -199,8 +208,17 @@ class TestTaskExecution:
         release_waiting = asyncio.Event()
         running_row = MagicMock(spec=Task, task_id="task_id_1")
         waiting_row = MagicMock(spec=Task, task_id="task_id_2")
-        running = TrackedTask(controlled_result("task_id_1", running_started, release_running), self._test_org)
-        waiting = TrackedTask(controlled_result("task_id_2", waiting_started, release_waiting), self._test_org)
+        authority = ExecutionAuthority(benchmark_id=uuid4(), dispatch_id=uuid4())
+        running = TrackedTask(
+            controlled_result("task_id_1", running_started, release_running),
+            self._test_org,
+            authority,
+        )
+        waiting = TrackedTask(
+            controlled_result("task_id_2", waiting_started, release_waiting),
+            self._test_org,
+            authority,
+        )
 
         assert running.status == TrackedTaskStatus.WAITING
         assert running.task is None

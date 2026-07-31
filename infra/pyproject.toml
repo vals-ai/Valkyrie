@@ -25,5 +25,7 @@ dev = [
 [tool.basedpyright]
 exclude = [
   ".*",
+  "cdk.out",
+  "executor_release/.venv",
 ]
 typeCheckingMode = "strict"
