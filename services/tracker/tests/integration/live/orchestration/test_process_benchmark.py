@@ -6,7 +6,7 @@ Exercise tracker orchestration against real services and sandboxes.
 from __future__ import annotations
 
 from asyncio import gather
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from sqlite3 import OperationalError
 from typing import Any
 
@@ -18,10 +18,10 @@ from sqlmodel import Session, select
 import tracker.utils as tracker_utils
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
+from tracker.aws.s3 import copy_agent_to_benchmark, delete_from_s3, get_benchmark_contract_s3_key
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
-    BenchmarkArguments,
     BenchmarkStatus,
     Org,
     Task,
@@ -40,15 +40,27 @@ _BENCHMARK: str = "swebench"
 pytestmark = pytest.mark.usefixtures("tracker_database")
 
 
-def _create_benchmark(
+@pytest.fixture
+async def frozen_contract_keys(harness_config: HarnessConfig) -> AsyncGenerator[set[str], None]:
+    """Delete benchmark-scoped contract copies created by each live test."""
+    keys: set[str] = set()
+    try:
+        yield keys
+    finally:
+        for key in sorted(keys):
+            await delete_from_s3(key, harness_config.aws, harness_config.s3_bucket)
+
+
+async def _create_benchmark(
     contract: AgentContractRequest,
     harness_config: HarnessConfig,
+    frozen_contract_keys: set[str],
     session: Session,
     service_headers: dict[str, str],
     task_ids: list[str] | None = None,
     concurrency: int = 5,
 ) -> tuple[Benchmark, StartBenchmarkRequest]:
-    """Create a benchmark row and matching StartBenchmarkRequest."""
+    """Create an admitted benchmark and matching StartBenchmarkRequest."""
     request = StartBenchmarkRequest(
         benchmark_name=_BENCHMARK,
         contract=contract,
@@ -61,6 +73,14 @@ def _create_benchmark(
         request,
         RequestIdentity(org=Org(id=TEST_ORG_ID, name="default"), access_key_id=None, email=None, name=None),
     )
+    copied = await copy_agent_to_benchmark(
+        str(benchmark.id),
+        contract.name,
+        harness_config.aws,
+        harness_config.s3_bucket,
+    )
+    if copied:
+        frozen_contract_keys.add(get_benchmark_contract_s3_key(str(benchmark.id), contract.name))
     session.add(benchmark)
     session.commit()
     return benchmark, request
@@ -89,7 +109,9 @@ class TestProcessBenchmark:
         contract: AgentContractRequest,
         database_session: Session,
         harness_config: HarnessConfig,
+        frozen_contract_keys: set[str],
         service_headers: dict[str, str],
+        executor_authority_kwargs: Any,
     ) -> None:
         """Multiple tasks run concurrently and produce a complete benchmark result.
 
@@ -97,11 +119,17 @@ class TestProcessBenchmark:
         - Every task finishes without a captured task error.
         - Evaluation results, task breakdowns, and final evaluation exist for the completed benchmark.
         """
-        benchmark, request = _create_benchmark(
-            contract, harness_config, database_session, service_headers, task_ids=_TASK_IDS
+        benchmark, request = await _create_benchmark(
+            contract,
+            harness_config,
+            frozen_contract_keys,
+            database_session,
+            service_headers,
+            task_ids=_TASK_IDS,
         )
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), _TASK_IDS)
+        authority_kwargs = executor_authority_kwargs(benchmark)
+        await process_benchmark(request.model_dump(), str(benchmark.id), _TASK_IDS, **authority_kwargs)
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.FINISHED
@@ -126,8 +154,10 @@ class TestProcessBenchmark:
         contract: AgentContractRequest,
         database_session: Session,
         harness_config: HarnessConfig,
+        frozen_contract_keys: set[str],
         monkeypatch: pytest.MonkeyPatch,
         service_headers: dict[str, str],
+        executor_authority_kwargs: Any,
     ) -> None:
         """Benchmark-level errors set the benchmark status and error message.
 
@@ -135,8 +165,13 @@ class TestProcessBenchmark:
         - A database commit failure during benchmark startup marks the benchmark as ERROR.
         - The benchmark error message includes the underlying failure.
         """
-        benchmark, request = _create_benchmark(
-            contract, harness_config, database_session, service_headers, task_ids=[_TASK_ID]
+        benchmark, request = await _create_benchmark(
+            contract,
+            harness_config,
+            frozen_contract_keys,
+            database_session,
+            service_headers,
+            task_ids=[_TASK_ID],
         )
 
         original_commit = Session.commit
@@ -150,9 +185,10 @@ class TestProcessBenchmark:
 
             original_commit(self)
 
+        authority_kwargs = executor_authority_kwargs(benchmark)
         monkeypatch.setattr(Session, "commit", failing_commit)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID])
+        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID], **authority_kwargs)
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.ERROR
@@ -163,8 +199,10 @@ class TestProcessBenchmark:
         contract: AgentContractRequest,
         database_session: Session,
         harness_config: HarnessConfig,
+        frozen_contract_keys: set[str],
         monkeypatch: pytest.MonkeyPatch,
         service_headers: dict[str, str],
+        executor_authority_kwargs: Any,
     ) -> None:
         """One task can fail setup while the other still completes through the real service path.
 
@@ -175,8 +213,13 @@ class TestProcessBenchmark:
         failing_task = "astropy__astropy-13033"
         task_ids = [_TASK_ID, failing_task]
 
-        benchmark, request = _create_benchmark(
-            contract, harness_config, database_session, service_headers, task_ids=task_ids
+        benchmark, request = await _create_benchmark(
+            contract,
+            harness_config,
+            frozen_contract_keys,
+            database_session,
+            service_headers,
+            task_ids=task_ids,
         )
 
         original_setup_task = BenchmarkServiceClient.setup_task
@@ -202,8 +245,9 @@ class TestProcessBenchmark:
             )
 
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", setup_task_with_failure)
+        authority_kwargs = executor_authority_kwargs(benchmark)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), task_ids)
+        await process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs)
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.FINISHED, benchmark.error_message
@@ -234,7 +278,9 @@ class TestProcessBenchmark:
         contract: AgentContractRequest,
         database_session: Session,
         harness_config: HarnessConfig,
+        frozen_contract_keys: set[str],
         service_headers: dict[str, str],
+        executor_authority_kwargs: Any,
     ) -> None:
         """A run with no successful task results fails before final scoring.
 
@@ -243,11 +289,17 @@ class TestProcessBenchmark:
         - The benchmark is marked ERROR instead of attempting final scoring with only failed task inputs.
         """
         failing_contract = contract.model_copy(update={"output_artifacts": ["missing-artifact.json"]})
-        benchmark, request = _create_benchmark(
-            failing_contract, harness_config, database_session, service_headers, task_ids=[_TASK_ID]
+        benchmark, request = await _create_benchmark(
+            failing_contract,
+            harness_config,
+            frozen_contract_keys,
+            database_session,
+            service_headers,
+            task_ids=[_TASK_ID],
         )
+        authority_kwargs = executor_authority_kwargs(benchmark)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID])
+        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID], **authority_kwargs)
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.ERROR
@@ -269,7 +321,9 @@ class TestProcessBenchmark:
         contract: AgentContractRequest,
         database_session: Session,
         harness_config: HarnessConfig,
+        frozen_contract_keys: set[str],
         service_headers: dict[str, str],
+        executor_authority_kwargs: Any,
     ) -> None:
         """Same task ID can run across two separate benchmarks concurrently without result collisions.
 
@@ -277,30 +331,34 @@ class TestProcessBenchmark:
         - Both benchmarks finish without benchmark or task errors.
         - Each benchmark has its own task row, evaluation result, and final evaluation.
         """
-        benchmarks: list[Benchmark] = []
-        for _ in range(2):
-            benchmark = Benchmark(
-                org_id=TEST_ORG_ID,
-                name=_BENCHMARK,
-                arguments=BenchmarkArguments(contract=contract, concurrency=5, task_ids=[_TASK_ID]),
+        benchmark_requests = [
+            await _create_benchmark(
+                contract,
+                harness_config,
+                frozen_contract_keys,
+                database_session,
+                service_headers,
+                task_ids=[_TASK_ID],
             )
-            benchmarks.append(benchmark)
-            database_session.add(benchmark)
-
-        database_session.commit()
+            for _ in range(2)
+        ]
+        authority_by_benchmark = {
+            benchmark.id: executor_authority_kwargs(benchmark) for benchmark, _ in benchmark_requests
+        }
 
         await gather(
             *[
                 process_benchmark(
-                    benchmark.start_benchmark_request(harness_config, service_headers=service_headers).model_dump(),
+                    request.model_dump(),
                     str(benchmark.id),
                     [_TASK_ID],
+                    **authority_by_benchmark[benchmark.id],
                 )
-                for benchmark in benchmarks
+                for benchmark, request in benchmark_requests
             ]
         )
 
-        for benchmark in benchmarks:
+        for benchmark, _ in benchmark_requests:
             database_session.refresh(benchmark)
             assert benchmark.status == BenchmarkStatus.FINISHED, (
                 f"Benchmark {benchmark.id} error: {benchmark.error_message}"

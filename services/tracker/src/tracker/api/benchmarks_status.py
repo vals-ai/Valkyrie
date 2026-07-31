@@ -38,7 +38,7 @@ def get_benchmarks_status(
     ).all()
     counts_by_benchmark_id: dict[UUID, dict[TaskStatus, int]] = {}
     for benchmark_id, status, count in count_rows:
-        counts_by_benchmark_id.setdefault(benchmark_id, {})[status] = count
+        counts_by_benchmark_id.setdefault(benchmark_id, {})[TaskStatus(status)] = count
 
     entries: list[BenchmarkStatusEntry] = []
     for benchmark in benchmarks:
@@ -48,6 +48,10 @@ def get_benchmarks_status(
                 id=benchmark.id,
                 status=benchmark.status,
                 finished_at=benchmark.finished_at,
+                executor_release_id=benchmark.executor_release_id,
+                current_execution_release_id=benchmark.current_execution_release_id,
+                executor_artifact_digest=benchmark.executor_artifact_digest,
+                executor_protocol_version=benchmark.executor_protocol_version,
                 total_tasks=sum(counts.values()),
                 finished_tasks=(
                     counts.get(TaskStatus.FINISHED, 0)

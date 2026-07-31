@@ -181,7 +181,7 @@ def update_benchmark_resume_arguments(
         benchmark_row.custom_benchmark_service = benchmark_url
 
     benchmark_row.arguments = arguments
-    session.commit()
+    session.add(benchmark_row)
     return benchmark_row
 
 

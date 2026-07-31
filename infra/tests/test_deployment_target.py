@@ -15,7 +15,7 @@ PRODUCTION_ACCOUNT_ID = "210987654321"
 
 
 def environment_for(stage: str) -> dict[str, str]:
-    account_id = DEV_ACCOUNT_ID if stage == "dev" else PRODUCTION_ACCOUNT_ID
+    account_id = DEV_ACCOUNT_ID if stage in ("dev", "release-test") else PRODUCTION_ACCOUNT_ID
     return {
         "STAGE": stage,
         "AWS_REGION": DEPLOYMENT_REGION,
@@ -34,6 +34,21 @@ class DeploymentTargetTest(unittest.TestCase):
                     target_from_environment(environment_for(stage)),
                     DeploymentTarget(stage=stage, account_id=account_id, region=DEPLOYMENT_REGION),
                 )
+
+    def test_accepts_release_test_in_dev_account(self) -> None:
+        self.assertEqual(
+            target_from_environment(environment_for("release-test")),
+            DeploymentTarget(stage="release-test", account_id=DEV_ACCOUNT_ID, region=DEPLOYMENT_REGION),
+        )
+
+    def test_accepts_release_test_in_production_account(self) -> None:
+        environment = environment_for("release-test")
+        environment["DEV_ACCOUNT_ID"] = PRODUCTION_ACCOUNT_ID
+        environment["CDK_DEFAULT_ACCOUNT"] = PRODUCTION_ACCOUNT_ID
+        self.assertEqual(
+            target_from_environment(environment),
+            DeploymentTarget(stage="release-test", account_id=PRODUCTION_ACCOUNT_ID, region=DEPLOYMENT_REGION),
+        )
 
     def test_rejects_target_mismatches(self) -> None:
         cases = (

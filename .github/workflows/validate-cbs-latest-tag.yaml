@@ -1,0 +1,15 @@
+name: validate-cbs-latest-tag
+
+on:
+  pull_request:
+    branches: [prod]
+  push:
+    branches: [prod]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cbs:
+    uses: vals-ai/.github/.github/workflows/validate-cbs-latest-tag.yaml@main

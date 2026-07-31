@@ -58,6 +58,10 @@
     "started_at": "2026-07-08T12:00:00Z",
     "task_count": 1,
     "cloudwatch_url": "https://logs.test/run",
-    "s3_bucket_url": "s3://runs-bucket/run"
+    "s3_bucket_url": "s3://runs-bucket/run",
+    "executor_release_id": null,
+    "current_execution_release_id": null,
+    "executor_artifact_digest": null,
+    "executor_protocol_version": null
   }
 }

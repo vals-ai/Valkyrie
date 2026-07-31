@@ -1,0 +1,93 @@
+name: Executor build checks
+
+on:
+  push:
+    branches: [dev, prod]
+    paths:
+      - ".dockerignore"
+      - ".github/workflows/executor-build.yaml"
+      - ".github/workflows/deploy.yaml"
+      - "infra/executor_stack.py"
+      - "infra/tracker_stack.py"
+      - "services/executor_artifact/**"
+      - "services/executor_host/**"
+      - "services/tracker/**"
+      - "tests/unit/executor_host/**"
+  pull_request:
+    paths:
+      - ".dockerignore"
+      - ".github/workflows/executor-build.yaml"
+      - ".github/workflows/deploy.yaml"
+      - "infra/executor_stack.py"
+      - "infra/tracker_stack.py"
+      - "services/executor_artifact/**"
+      - "services/executor_host/**"
+      - "services/tracker/**"
+      - "tests/unit/executor_host/**"
+
+permissions:
+  contents: read
+
+jobs:
+  executor-build:
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            services/executor_artifact/uv.lock
+            services/tracker/uv.lock
+            services/executor_host/uv.lock
+
+      - name: Verify locked service dependencies
+        run: |
+          uv lock --project services/executor_artifact --check
+          uv lock --project services/tracker --check
+          uv lock --project services/executor_host --check
+          uv export \
+            --project services/executor_host \
+            --locked \
+            --no-dev \
+            --no-emit-project \
+            --format requirements.txt \
+            --output-file services/executor_host/requirements.txt
+          git diff --exit-code -- services/executor_host/requirements.txt
+
+      - name: Install ExecutorHost test dependencies
+        run: uv sync --frozen
+
+      - name: Run executor support unit tests
+        run: uv run pytest tests/unit/executor_host services/executor_artifact/tests
+
+      - name: Build and inspect immutable executor PEX
+        run: |
+          PYTHONPATH=services/tracker/src python services/executor_artifact/build.py \
+            --output-directory "$RUNNER_TEMP/executor-release" \
+            --source-revision "$GITHUB_SHA"
+          test -s "$RUNNER_TEMP/executor-release/executor.pex"
+          python -m json.tool "$RUNNER_TEMP/executor-release/manifest.json" >/dev/null
+
+      - name: Build ARM64 Tracker image
+        run: docker build --platform linux/arm64 -t valkyrie-tracker:ci services/tracker
+
+      - name: Build ARM64 ExecutorHost image
+        run: docker build --platform linux/arm64 -f services/executor_host/Dockerfile -t valkyrie-executor-host:ci .
+
+      - name: Verify image architectures
+        run: |
+          test "$(docker image inspect valkyrie-tracker:ci --format '{{.Architecture}}')" = "arm64"
+          test "$(docker image inspect valkyrie-executor-host:ci --format '{{.Architecture}}')" = "arm64"

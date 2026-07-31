@@ -72,14 +72,13 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_upload_to_s3(*_args: Any, **_kwargs: Any) -> None:
         return None
 
-    async def _mock_copy_agent_to_benchmark(*_args: Any, **_kwargs: Any) -> None:
-        return None
+    async def _mock_copy_agent_to_benchmark(*_args: Any, **_kwargs: Any) -> bool:
+        return False
 
     monkeypatch.setattr("tracker.aws.s3.download_from_s3", _mock_download_from_s3)
     monkeypatch.setattr("tracker.aws.s3.get_contract_s3_key", _mock_get_contract_s3_key)
     monkeypatch.setattr("tracker.utils.reporting.upload_to_s3", _mock_upload_to_s3)
     monkeypatch.setattr("main.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
-    monkeypatch.setattr("tracker.utils.run_orchestration.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
 
 
 @pytest.fixture(autouse=True)
@@ -193,7 +192,6 @@ def mock_kicker(monkeypatch: pytest.MonkeyPatch) -> MockKicker:
     """Record queued benchmark work without starting the broker."""
     kicker = MockKicker()
     monkeypatch.setattr("main.process_benchmark.kicker", lambda: kicker)
-
     return kicker
 
 

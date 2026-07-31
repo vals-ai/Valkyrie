@@ -32,8 +32,8 @@ from stage_config import config_for
 class MonitoringStack(cdk.Stack):
     """CloudWatch dashboards and alarms for Valkyrie infrastructure.
 
-    Depends on SharedStack (cluster, Redis), TrackerStack (RDS, ALB,
-    Tracker service), and WorkerStack (Worker service).
+    Depends on SharedStack (cluster, Redis) and TrackerStack (RDS, ALB,
+    Tracker service).
 
     Alarms publish to the ``Valkyrie-Alerts`` SNS topic.
     """
@@ -46,7 +46,6 @@ class MonitoringStack(cdk.Stack):
         stage: Stage,
         cluster: aws_ecs.ICluster,
         tracker_service: aws_ecs.FargateService,
-        worker_service: aws_ecs.FargateService,
         load_balancer: aws_elb.ApplicationLoadBalancer,
         target_group: aws_elb.ApplicationTargetGroup,
         database: aws_rds.DatabaseInstance,
@@ -59,7 +58,6 @@ class MonitoringStack(cdk.Stack):
 
         self.cluster = cluster
         self.tracker_service = tracker_service
-        self.worker_service = worker_service
         self.load_balancer = load_balancer
         self.target_group = target_group
         self.database = database
@@ -84,8 +82,6 @@ class MonitoringStack(cdk.Stack):
             self.alerts_slack.add_notification_topic(self.alerts_topic)  # type: ignore[arg-type]
 
         self._create_alarms(
-            tracker_service=tracker_service,
-            worker_service=worker_service,
             load_balancer=load_balancer,
             target_group=target_group,
             database=database,
@@ -96,7 +92,6 @@ class MonitoringStack(cdk.Stack):
             self,
             stage=self.stage,
             tracker_service=tracker_service,
-            worker_service=worker_service,
             load_balancer=load_balancer,
             target_group=target_group,
             database=database,
@@ -106,7 +101,6 @@ class MonitoringStack(cdk.Stack):
             self,
             stage=self.stage,
             tracker_service=tracker_service,
-            worker_service=worker_service,
         )
         self.alb_dashboard = create_alb_dashboard(
             self,
@@ -129,8 +123,6 @@ class MonitoringStack(cdk.Stack):
     def _create_alarms(
         self,
         *,
-        tracker_service: aws_ecs.FargateService,
-        worker_service: aws_ecs.FargateService,
         load_balancer: aws_elb.ApplicationLoadBalancer,
         target_group: aws_elb.ApplicationTargetGroup,
         database: aws_rds.DatabaseInstance,
@@ -157,34 +149,7 @@ class MonitoringStack(cdk.Stack):
             treat_missing_data=aws_cloudwatch.TreatMissingData.NOT_BREACHING,
         ).add_alarm_action(sns_action)
 
-        # Alarm 2: Worker service down (min=1 autoscale floor breached)
-        # Note: this alarm assumes min=1 autoscaling.
-        aws_cloudwatch.Alarm(
-            self,
-            "WorkerServiceDownAlarm",
-            alarm_name=self.stage.phys("Valkyrie-Worker-Service-Down"),
-            alarm_description=(
-                "Worker Fargate running task count = 0 for 3+ minutes. "
-                "Worker containers not running (min=1 autoscale floor breached)."
-            ),
-            metric=aws_cloudwatch.Metric(
-                namespace="ECS/ContainerInsights",
-                metric_name="RunningTaskCount",
-                dimensions_map={
-                    "ClusterName": worker_service.cluster.cluster_name,
-                    "ServiceName": worker_service.service_name,
-                },
-                period=cdk.Duration.minutes(1),
-                statistic="Maximum",
-            ),
-            threshold=1,
-            evaluation_periods=3,
-            datapoints_to_alarm=3,
-            comparison_operator=aws_cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-            treat_missing_data=aws_cloudwatch.TreatMissingData.BREACHING,
-        ).add_alarm_action(sns_action)
-
-        # Alarm 3: High 5xx rate
+        # Alarm 2: High 5xx rate
         aws_cloudwatch.Alarm(
             self,
             "HighFiveXXRateAlarm",
@@ -201,7 +166,7 @@ class MonitoringStack(cdk.Stack):
             treat_missing_data=aws_cloudwatch.TreatMissingData.NOT_BREACHING,
         ).add_alarm_action(sns_action)
 
-        # Alarm 4: High API latency (p99)
+        # Alarm 3: High API latency (p99)
         aws_cloudwatch.Alarm(
             self,
             "HighApiLatencyAlarm",
@@ -218,7 +183,7 @@ class MonitoringStack(cdk.Stack):
             treat_missing_data=aws_cloudwatch.TreatMissingData.NOT_BREACHING,
         ).add_alarm_action(sns_action)
 
-        # Alarm 5: DB connections high
+        # Alarm 4: DB connections high
         db_connection_threshold = self.stage_config.database.connection_alarm_threshold
         aws_cloudwatch.Alarm(
             self,
@@ -236,7 +201,7 @@ class MonitoringStack(cdk.Stack):
             treat_missing_data=aws_cloudwatch.TreatMissingData.NOT_BREACHING,
         ).add_alarm_action(sns_action)
 
-        # Alarm 6: DB storage low
+        # Alarm 5: DB storage low
         aws_cloudwatch.Alarm(
             self,
             "DbStorageLowAlarm",
@@ -252,7 +217,7 @@ class MonitoringStack(cdk.Stack):
             treat_missing_data=aws_cloudwatch.TreatMissingData.NOT_BREACHING,
         ).add_alarm_action(sns_action)
 
-        # Alarm 7: DB CPU high
+        # Alarm 6: DB CPU high
         aws_cloudwatch.Alarm(
             self,
             "DbCpuHighAlarm",
@@ -269,7 +234,7 @@ class MonitoringStack(cdk.Stack):
             treat_missing_data=aws_cloudwatch.TreatMissingData.NOT_BREACHING,
         ).add_alarm_action(sns_action)
 
-        # Alarm 8: Redis memory high (DatabaseMemoryUsagePercentage >= 80 for 5 min)
+        # Alarm 7: Redis memory high (DatabaseMemoryUsagePercentage >= 80 for 5 min)
         aws_cloudwatch.Alarm(
             self,
             "RedisMemoryHighAlarm",
@@ -289,7 +254,7 @@ class MonitoringStack(cdk.Stack):
             treat_missing_data=aws_cloudwatch.TreatMissingData.NOT_BREACHING,
         ).add_alarm_action(sns_action)
 
-        # Alarm 9: Redis evictions
+        # Alarm 8: Redis evictions
         aws_cloudwatch.Alarm(
             self,
             "RedisEvictionsAlarm",

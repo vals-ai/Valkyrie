@@ -1,0 +1,13 @@
+[project]
+name = "valkyrie-executor-artifact"
+version = "0.1.0"
+description = "Locked runtime dependencies for immutable executor PEX artifacts"
+requires-python = "==3.12.*"
+dependencies = ["tracker"]
+
+[tool.uv]
+prerelease = "allow"
+
+[tool.uv.sources]
+create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "v0.23.0" }
+tracker = { path = "../tracker" }
