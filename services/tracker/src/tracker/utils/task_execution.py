@@ -586,11 +586,6 @@ async def _process_task_attempt(
         return not execution_is_current()
 
     try:
-        task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
-        sandbox_recovery.max_attempts = (
-            task_data.sandbox_recovery.max_sandbox_attempts if task_data.sandbox_recovery is not None else None
-        )
-
         if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
             try:
                 log_output("Resuming evaluation from durable benchmark state\n")
@@ -632,6 +627,25 @@ async def _process_task_attempt(
                         return {task_id: None}
 
                     return {task_id: evaluation_result_row.result}
+            except SandboxNotFoundError:
+                with Session(bind=engine) as task_session:
+                    task = fetch_task_row(task_row.id, task_session, org)
+                    if task.status == TaskStatus.STOPPED:
+                        return {task_id: None}
+
+                # Successful durable evaluation resumes do not need the task
+                # payload or a generation sandbox. Fetch the opt-in policy only
+                # after provider loss so that fast resume remains independent
+                # of retrieve_task availability.
+                task_data = await benchmark_service.retrieve_task(
+                    task_id=task_id, dataset=start_benchmark_request.dataset
+                )
+                sandbox_recovery.max_attempts = (
+                    task_data.sandbox_recovery.max_sandbox_attempts
+                    if task_data.sandbox_recovery is not None
+                    else None
+                )
+                raise
             except Exception as e:
                 with Session(bind=engine) as task_session:
                     task = fetch_task_row(task_row.id, task_session, org)
@@ -640,6 +654,10 @@ async def _process_task_attempt(
 
                 raise e from e
 
+        task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
+        sandbox_recovery.max_attempts = (
+            task_data.sandbox_recovery.max_sandbox_attempts if task_data.sandbox_recovery is not None else None
+        )
         sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
 
         # Labels that show up in the UI we can use to filter sandboxes

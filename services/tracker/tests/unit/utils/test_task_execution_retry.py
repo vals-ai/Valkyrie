@@ -289,7 +289,7 @@ class TestTaskExecutionRetry:
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
-        assert retrieve_count == 2
+        assert retrieve_count == 1
         assert resume_count == 2
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.FINISHED
