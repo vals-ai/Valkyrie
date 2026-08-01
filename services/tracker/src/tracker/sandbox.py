@@ -701,19 +701,20 @@ async def upload_output_artifacts(
                 return
             total_bytes = updated_total_bytes
         except Exception as error:
+            artifact_required = _output_artifact_is_required(artifact)
             logger.warning(
                 "output_artifact.skip",
                 extra={
                     "sandbox_id": sandbox.id,
                     "sandbox_name": sandbox.name,
                     "artifact_path": artifact_path,
-                    "artifact_required": _output_artifact_is_required(artifact),
+                    "artifact_required": artifact_required,
                     "benchmark_id": benchmark_id,
                     "task_id": task_id,
                 },
                 exc_info=True,
             )
-            if log_output is not None and _output_artifact_is_required(artifact):
+            if log_output is not None and artifact_required:
                 log_output(f"[WARNING] Skipping output artifact {artifact_path}: {error}")
 
 
