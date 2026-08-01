@@ -273,7 +273,7 @@ class TestProcessBenchmark:
         assert _TASK_ID in results
         assert failing_task not in results
 
-    async def test_process_benchmark_finishes_when_output_artifact_is_missing(
+    async def test_process_benchmark_errors_when_all_tasks_fail_before_evaluation(
         self,
         contract: AgentContractRequest,
         database_session: Session,
@@ -282,11 +282,11 @@ class TestProcessBenchmark:
         service_headers: dict[str, str],
         executor_authority_kwargs: Any,
     ) -> None:
-        """A missing declared output artifact does not prevent evaluation.
+        """A run with no successful task results fails before final scoring.
 
         Test cases:
-        - The missing artifact is skipped through the real sandbox path instead of erroring the task.
-        - The task is evaluated and the benchmark finishes with a final evaluation.
+        - A missing declared output artifact marks the task as ERROR through the real sandbox path.
+        - The benchmark is marked ERROR instead of attempting final scoring with only failed task inputs.
         """
         failing_contract = contract.model_copy(update={"output_artifacts": ["missing-artifact.json"]})
         benchmark, request = await _create_benchmark(
@@ -302,15 +302,19 @@ class TestProcessBenchmark:
         await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID], **authority_kwargs)
 
         database_session.refresh(benchmark)
-        assert benchmark.status == BenchmarkStatus.FINISHED
-        assert benchmark.error_message is None
-        assert benchmark.final_evaluation is not None
+        assert benchmark.status == BenchmarkStatus.ERROR
+        assert "No tasks were completed successfully" in (benchmark.error_message or "")
+        assert "Required output artifact missing" in (benchmark.error_message or "")
+        assert "Traceback" not in (benchmark.error_message or "")
+        assert benchmark.final_evaluation is None
 
         tasks = _task_rows(benchmark, database_session)
         assert len(tasks) == 1
-        assert tasks[0].status == TaskStatus.FINISHED
-        results = benchmark.fetch_evaluation_results(database_session)
-        assert _TASK_ID in results
+        assert tasks[0].status == TaskStatus.ERROR
+        task_errors = benchmark.fetch_tasks_with_errors(database_session)
+        assert task_errors is not None
+        assert "Required output artifact missing" in task_errors[_TASK_ID]
+        assert benchmark.fetch_evaluation_results(database_session) == {}
 
     async def test_concurrent_benchmarks_same_task(
         self,

@@ -47,6 +47,7 @@ from tracker.database.session import engine
 from tracker.exceptions import (
     DependencySetupExhaustedError,
     ExecutionAuthorityRevoked,
+    OutputArtifactError,
     SandboxSetupError,
     TrackerServiceError,
 )
@@ -821,6 +822,20 @@ async def _process_task_attempt(
             return {task_id: None}
         log_output(f"\n[ERROR] {_exception_message(e)}")
         raise
+    except OutputArtifactError as e:
+        if task_is_stopped():
+            return {task_id: None}
+        error_message = _exception_message(e)
+        logger.warning(error_message)
+        log_output(f"\n[ERROR] {error_message}")
+
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(
+                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
+            )
+
+        return {task_id: None}
     except ConnectionClosedError as e:
         if task_is_stopped():
             return {task_id: None}
