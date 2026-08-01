@@ -266,6 +266,9 @@ class TestCountedStarts:
 
         # Each launch publishes only the run it confirms, so no run is repeated.
         assert [record["runs"] for record in records[:2]] == [[run] for run in records[-1]["runs"]]
+        # outcome is in_progress while runs remain to request, then completed on the last one.
+        assert [record["outcome"] for record in records[:2]] == ["in_progress", "completed"]
+        assert [record["confirmed_count"] for record in records[:2]] == [1, 2]
 
         payload = records[-1]
         assert payload["kind"] == "run_start"
@@ -342,6 +345,9 @@ class TestCountedStarts:
         assert [record.get("event") for record in records] == ["launch", "snapshot", None]
         assert records[0]["runs"] == records[-1]["runs"]
         assert [run["run_id"] for run in records[0]["runs"]] == [str(_FIRST_RUN_ID)]
+        # A connected launch requests exactly one run, so it is complete immediately.
+        assert records[0]["outcome"] == "completed"
+        assert records[0]["confirmed_count"] == 1
         start_testbed.stream_status.assert_called_once_with(
             start_testbed.tracker,
             _FIRST_RUN_ID,

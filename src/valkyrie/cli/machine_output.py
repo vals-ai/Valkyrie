@@ -76,11 +76,13 @@ def json_errors(func: Callable[..., None]) -> Callable[..., None]:
             func(*args, **kwargs)
         except (click.UsageError, click.exceptions.Exit):
             raise
-        except Exception as error:
+        except (Exception, KeyboardInterrupt) as error:
             if kwargs.get("json_output"):
                 message = (
                     error.format_message()
                     if isinstance(error, click.ClickException)
+                    else "Interrupted before completion."
+                    if isinstance(error, KeyboardInterrupt)
                     else f"{type(error).__name__}: {error}"
                 )
                 # ``command_path`` leads with the program name, so the ``run retry`` alias reports itself.

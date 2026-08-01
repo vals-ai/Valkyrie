@@ -43,6 +43,8 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None, json_ou
         valkyrie run outputs 123e4567-e89b-12d3-a456-426614174000
         valkyrie run outputs 123e4567-e89b-12d3-a456-426614174000 --task-ids astropy__astropy-7606,django__django-10880
     """
+    selected_task_ids = resolve_task_ids(task_ids)
+
     try:
         with TrackerService() as tracker:
             metadata = tracker.fetch_benchmark_metadata(run_id)
@@ -55,7 +57,6 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None, json_ou
             if not json_output:
                 click.echo(f"\r\033[KFetching run outputs for run {run_id}...", nl=False)
 
-            selected_task_ids = resolve_task_ids(task_ids)
             response = tracker.fetch_run_outputs(run_id, task_ids=selected_task_ids)
 
             download_run_outputs(response, output_dir)

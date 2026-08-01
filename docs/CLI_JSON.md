@@ -27,8 +27,9 @@ valk run list --status IN_PROGRESS --json --all
   or response models. Secret mappings, credentials, header values, and presigned
   URLs are omitted. Existing fetch fields retain their current semantics and may
   contain service URLs. Free-form diagnostic strings can contain sensitive upstream
-  text; only the terminal `error` document is scrubbed, replacing a quoted URL that
-  carries credentials, a query, or a fragment with `<redacted-url>`.
+  text; the terminal `error` document and `run analyze`'s `error` event scrub a
+  quoted URL that carries credentials, a query, or a fragment to `<redacted-url>`,
+  but treat any other free-form field as untrusted.
 - Exit status remains authoritative. A nonzero command may first emit a useful
   partial receipt or valid JSONL prefix, while a zero exit does not mean that a
   benchmark run itself succeeded.
@@ -93,8 +94,11 @@ that fails ends at the `error` document instead. Treat `disconnect` and
 `run analyze` emits nonterminal `started` and `heartbeat` events. On `complete`,
 `reading_plan_url_status` says whether the URL is `present`, `absent` because the
 analyzer returned none, or `withheld` because the source URL was not already
-credential-free HTTPS. `reading_plan_url` is null unless the status is `present`;
-use a fresh fetch when access to that service URL is required.
+credential-free HTTPS. `reading_plan_url` is null unless the status is `present`.
+A withheld URL is not recoverable through this contract: `run fetch`'s
+`docent_reading_url` is an existing field with existing semantics and returns the
+same source URL unfiltered, so treat it exactly like the other fetch fields that
+"may contain service URLs" above.
 
 ## Compatibility
 

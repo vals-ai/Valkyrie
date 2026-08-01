@@ -114,6 +114,54 @@ class TestAnalyzeCommand:
         assert "url-secret-sentinel" not in result.stdout
         assert "Invoking" not in result.stdout
 
+    @pytest.mark.parametrize(
+        ("reading_plan_url", "expected_status"),
+        [
+            ("https://docent.example/plan", "present"),
+            (None, "absent"),
+        ],
+    )
+    def test_json_analysis_reading_plan_url_status_covers_present_and_absent(
+        self,
+        reading_plan_url: str | None,
+        expected_status: str,
+        monkeypatch: pytest.MonkeyPatch,
+        cli_runner: CliRunner,
+    ) -> None:
+        """`reading_plan_url_status` must distinguish an already-safe URL from none at all."""
+        tracker = _tracker()
+        tracker.analyze_benchmark.return_value = iter([("done", {"reading_plan_url": reading_plan_url})])
+        monkeypatch.setattr(analyze_module, "TrackerService", lambda: tracker)
+        monkeypatch.setattr(analyze_module, "get_ingest_lambda_from_s3", AsyncMock(return_value="docent-ingest"))
+
+        result = cli_runner.invoke(analyze, [str(_RUN_ID), "--json"])
+
+        assert result.exit_code == 0, result.output
+        record = json.loads(result.stdout.splitlines()[-1])
+        assert record["reading_plan_url_status"] == expected_status
+        assert record["reading_plan_url"] == reading_plan_url
+
+    def test_json_analysis_mid_stream_error_redacts_and_exits_nonzero(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        cli_runner: CliRunner,
+    ) -> None:
+        """A mid-stream analyzer failure must redact its message and still fail the command."""
+        tracker = _tracker()
+        tracker.analyze_benchmark.return_value = iter(
+            [("error", {"message": "fetch https://user:pw@host/path?tok=url-secret-sentinel failed"})]
+        )
+        monkeypatch.setattr(analyze_module, "TrackerService", lambda: tracker)
+        monkeypatch.setattr(analyze_module, "get_ingest_lambda_from_s3", AsyncMock(return_value="docent-ingest"))
+
+        result = cli_runner.invoke(analyze, [str(_RUN_ID), "--json"])
+
+        assert result.exit_code == 1
+        records = [json.loads(line) for line in result.stdout.splitlines()]
+        assert [record["kind"] for record in records] == ["run_analysis_event", "error"]
+        assert records[0]["event"] == "error"
+        assert "url-secret-sentinel" not in result.stdout
+
     def test_json_analysis_disconnect_preserves_records_and_exits_nonzero(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -198,3 +246,29 @@ class TestAnalyzeCommand:
         assert result.exit_code == 1
         assert expected_message in result.output
         assert "Traceback" not in result.output
+
+    def test_json_non_finished_run_emits_unavailable_with_no_further_error_document(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        cli_runner: CliRunner,
+    ) -> None:
+        """`--json` on a non-finished run must emit exactly one `unavailable` receipt."""
+        tracker = _tracker()
+        tracker.analyze_benchmark.side_effect = TrackerServiceError(
+            f"Cannot analyze run {_RUN_ID}: status is IN_PROGRESS (must be FINISHED)."
+        )
+        monkeypatch.setattr(analyze_module, "TrackerService", lambda: tracker)
+        monkeypatch.setattr(analyze_module, "get_ingest_lambda_from_s3", AsyncMock(return_value="docent-ingest"))
+
+        result = cli_runner.invoke(analyze, [str(_RUN_ID), "--json"])
+
+        assert result.exit_code == 1
+        assert len(result.stdout.splitlines()) == 1
+        record = json.loads(result.stdout)
+        assert record == {
+            "event": "unavailable",
+            "kind": "run_analysis_event",
+            "run_id": str(_RUN_ID),
+            "run_status": "IN_PROGRESS",
+            "schema_version": 1,
+        }

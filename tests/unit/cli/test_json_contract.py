@@ -104,7 +104,6 @@ class TestJsonPolicy:
     def test_redact_urls_drops_only_credential_bearing_urls(self, message: str, expected: str) -> None:
         """Receipts are persisted, so a quoted URL must not carry credentials into one."""
         assert redact_urls(message) == expected
-        assert "url-secret-sentinel" not in redact_urls(message)
 
     @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
     def test_strict_json_rejects_non_finite_numbers(self, value: float) -> None:
