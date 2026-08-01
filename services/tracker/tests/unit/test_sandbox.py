@@ -232,21 +232,37 @@ class TestOutputArtifacts:
 
         assert uploaded == [(b'{"turns":[]}\n', "benchmarks/benchmark-123/task_0/artifacts/result.json")]
 
-    async def test_upload_output_artifacts_fails_when_declared_file_is_missing(
+    async def test_upload_output_artifacts_skips_missing_required_file_with_warning(
         self,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: Any,
     ) -> None:
         artifact = "artifacts/missing.json"
+        warnings: list[str] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
             assert command == "test -f /tmp/valkyrie/artifacts/missing.json"
             return ExecResult(exit_code=1, output="")
 
+        upload_mock = AsyncMock()
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "upload_to_s3", upload_mock)
 
-        with pytest.raises(OutputArtifactError, match="Required output artifact missing"):
-            await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
+        await upload_output_artifacts(
+            Mock(),
+            [artifact],
+            "benchmark-123",
+            "task_0",
+            harness_config.aws,
+            "bucket",
+            log_output=warnings.append,
+        )
+
+        upload_mock.assert_not_awaited()
+        assert warnings == [
+            "[WARNING] Skipping output artifact artifacts/missing.json: "
+            "Output artifact error: Required output artifact missing: /tmp/valkyrie/artifacts/missing.json"
+        ]
 
     async def test_upload_output_artifacts_skips_missing_optional_model_patch(
         self,
@@ -381,28 +397,50 @@ class TestOutputArtifacts:
             )
         ]
 
-    async def test_upload_output_artifacts_fails_when_file_exceeds_tracker_limit(
+    async def test_upload_output_artifacts_skips_oversized_file_and_uploads_remaining(
         self,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: Any,
     ) -> None:
-        artifact = "artifacts/large.json"
+        oversized = "trajectory.json"
+        small = "console.log"
+        warnings: list[str] = []
+        uploaded: list[str] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            if command == "test -f /tmp/valkyrie/artifacts/large.json":
+            if command in {"test -f /tmp/valkyrie/trajectory.json", "test -f /tmp/valkyrie/console.log"}:
                 return ExecResult(exit_code=0, output="")
-            if command == "stat -c%s /tmp/valkyrie/artifacts/large.json":
+            if command == "stat -c%s /tmp/valkyrie/trajectory.json":
                 return ExecResult(exit_code=0, output=str(MAX_OUTPUT_ARTIFACT_BYTES + 1))
+            if command == "stat -c%s /tmp/valkyrie/console.log":
+                return ExecResult(exit_code=0, output="5")
             raise AssertionError(f"unexpected command: {command}")
 
-        upload_mock = AsyncMock()
+        async def fake_upload_to_s3(_file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+            uploaded.append(s3_key)
+
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "upload_to_s3", upload_mock)
+        monkeypatch.setattr(sandbox_module, "upload_to_s3", fake_upload_to_s3)
 
-        with pytest.raises(OutputArtifactError, match="too large"):
-            await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
+        mock_sandbox = Mock()
+        mock_sandbox.download_file = AsyncMock(return_value=b"hello")
 
-        upload_mock.assert_not_awaited()
+        await upload_output_artifacts(
+            mock_sandbox,
+            [oversized, small],
+            "benchmark-123",
+            "task_0",
+            harness_config.aws,
+            "bucket",
+            log_output=warnings.append,
+        )
+
+        assert uploaded == ["benchmarks/benchmark-123/task_0/console.log"]
+        assert warnings == [
+            "[WARNING] Skipping output artifact trajectory.json: "
+            f"Output artifact error: Output artifact /tmp/valkyrie/trajectory.json is too large: "
+            f"{MAX_OUTPUT_ARTIFACT_BYTES + 1} bytes > {MAX_OUTPUT_ARTIFACT_BYTES} bytes"
+        ]
 
     @pytest.mark.parametrize(
         ("stat_result", "total_bytes", "error"),
@@ -582,6 +620,7 @@ class TestRunAgent:
             _aws: Any,
             _s3_bucket: str,
             _execution_is_current: Any,
+            _log_output: Any,
         ) -> None:
             artifact_calls.append(f"{benchmark_id}:{task_id}:{artifacts[0]}")
 

@@ -672,8 +672,14 @@ async def upload_output_artifacts(
     aws: AWSCredentials,
     s3_bucket: str,
     execution_is_current: Callable[[], bool] | None = None,
+    log_output: Callable[[str], None] | None = None,
 ) -> None:
-    """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
+    """Upload declared small output artifacts from the sandbox directly to task S3 keys.
+
+    Artifact failures (missing, oversized, download/upload errors) are nonfatal: each
+    failing artifact is skipped with a warning so remaining artifacts still upload and
+    evaluation can proceed.
+    """
     total_bytes = 0
     required_artifacts = [artifact for artifact in artifacts if _output_artifact_is_required(artifact)]
     optional_artifacts = [artifact for artifact in artifacts if not _output_artifact_is_required(artifact)]
@@ -694,20 +700,21 @@ async def upload_output_artifacts(
             if updated_total_bytes is None:
                 return
             total_bytes = updated_total_bytes
-        except Exception:
-            if _output_artifact_is_required(artifact):
-                raise
+        except Exception as error:
             logger.warning(
-                "output_artifact.optional_skip",
+                "output_artifact.skip",
                 extra={
                     "sandbox_id": sandbox.id,
                     "sandbox_name": sandbox.name,
                     "artifact_path": artifact_path,
+                    "artifact_required": _output_artifact_is_required(artifact),
                     "benchmark_id": benchmark_id,
                     "task_id": task_id,
                 },
                 exc_info=True,
             )
+            if log_output is not None and _output_artifact_is_required(artifact):
+                log_output(f"[WARNING] Skipping output artifact {artifact_path}: {error}")
 
 
 async def _upload_output_artifact(
@@ -872,6 +879,7 @@ async def run_agent(
             aws,
             s3_bucket,
             execution_is_current,
+            log_output,
         )
 
     # Return why the agent terminated abnormally, or None on clean exit

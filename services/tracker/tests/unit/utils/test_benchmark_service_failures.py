@@ -168,7 +168,7 @@ class TestBenchmarkServiceFailures:
         assert "404" in error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
-    async def test_required_missing_output_artifact_persists_compatible_error(
+    async def test_required_missing_output_artifact_is_skipped_and_evaluation_proceeds(
         self,
         contract: AgentContractRequest,
         database_session: Session,
@@ -213,14 +213,15 @@ class TestBenchmarkServiceFailures:
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
         await asyncio.wait_for(log_written.wait(), timeout=1)
 
-        assert result == {"task_0": None}
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
 
         database_session.refresh(task_row)
-        assert task_row.status == TaskStatus.ERROR
-        error_message = self._latest_task_error(database_session, task_row)
-        expected_error = "Output artifact error: Required output artifact missing: /tmp/valkyrie/artifacts/missing.json"
-        assert error_message == expected_error
-        assert any(f"[ERROR] {expected_error}" in message for message in logged_messages)
+        assert task_row.status == TaskStatus.FINISHED
+        expected_warning = (
+            "[WARNING] Skipping output artifact artifacts/missing.json: "
+            "Output artifact error: Required output artifact missing: /tmp/valkyrie/artifacts/missing.json"
+        )
+        assert any(expected_warning in message for message in logged_messages)
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_benchmark_service_error_produces_human_readable_message(
