@@ -608,7 +608,7 @@ async def archive_and_upload_output(
 
 
 OUTPUT_ARTIFACTS_SANDBOX_ROOT = PurePosixPath("/tmp/valkyrie")
-OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES = 50 * 1024 * 1024
+OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES = 100 * 1024 * 1024
 
 
 def _output_artifact_path(artifact: OutputArtifactSpec) -> str:
