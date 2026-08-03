@@ -161,6 +161,18 @@ def _set_sandbox_span_attributes(sandbox: Sandbox) -> None:
     span.set_attribute("valkyrie.sandbox_state", sandbox.state)
 
 
+def _reject_plaintext_secret_collisions(
+    env_vars: dict[str, str] | None,
+    sandbox_secrets: dict[str, str] | None,
+) -> None:
+    overlapping_env_names = sorted(set(env_vars or {}) & set(sandbox_secrets or {}))
+    if overlapping_env_names:
+        raise InvalidSandboxConfigurationError(
+            "Sandbox environment variables cannot be both plaintext and provider-managed secrets: "
+            f"{', '.join(overlapping_env_names)}"
+        )
+
+
 @logfire.instrument("sandbox.create", extract_args=False)
 async def _create_sandbox(
     provider: SandboxProvider,
@@ -173,12 +185,7 @@ async def _create_sandbox(
     sandbox_secrets: dict[str, str] | None = None,
 ) -> Sandbox:
     """Create a sandbox through its provider."""
-    overlapping_env_names = sorted(set(env_vars or {}) & set(sandbox_secrets or {}))
-    if overlapping_env_names:
-        raise InvalidSandboxConfigurationError(
-            "Sandbox environment variables cannot be both plaintext and provider-managed secrets: "
-            f"{', '.join(overlapping_env_names)}"
-        )
+    _reject_plaintext_secret_collisions(env_vars, sandbox_secrets)
     provider_source = _provider_source(source)
     _set_sandbox_create_span_attributes(sandbox_name, provider_source, resources)
     return await provider.create_sandbox(
