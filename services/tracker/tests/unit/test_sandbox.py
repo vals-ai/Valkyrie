@@ -35,6 +35,7 @@ from tracker.database.models import (
 from tracker.exceptions import (
     AgentRunFailedError,
     DependencySetupExhaustedError,
+    InvalidSandboxConfigurationError,
     OutputArtifactError,
     SSLConnectionError,
     SandboxError,
@@ -993,12 +994,14 @@ class TestSandboxLifecycle:
                 subpath="{run_id}",
             )
         ]
+        sandbox_secrets = {"TAVILY_API_KEY": "daytona-tavily"}
         sandbox = await _create_sandbox(
             provider,
             "task-alias",
             ImageSource(image="ghcr.io/vals/swebench:latest"),
             resources,
             labels={"run-id": "run-123"},
+            sandbox_secrets=sandbox_secrets,
             volumes=volumes,
         )
 
@@ -1008,9 +1011,25 @@ class TestSandboxLifecycle:
         assert request.name == "task-alias"
         assert request.resources == resources
         assert request.labels == {"run-id": "run-123"}
+        assert request.sandbox_secrets == sandbox_secrets
         assert request.volumes == volumes
         assert request.auto_stop_interval == sandbox_module.SANDBOX_AUTO_STOP_INTERVAL
         assert request.create_timeout == sandbox_module.SANDBOX_CREATE_TIMEOUT
+
+    async def test_create_sandbox_rejects_plaintext_and_secret_environment_collision(self) -> None:
+        provider = AsyncMock()
+
+        with pytest.raises(InvalidSandboxConfigurationError, match="TAVILY_API_KEY"):
+            await _create_sandbox(
+                provider,
+                "task-alias",
+                ImageSource(image="ghcr.io/vals/swebench:latest"),
+                Resources(vcpu=1, memory=2, disk=3),
+                env_vars={"TAVILY_API_KEY": "plaintext-value"},
+                sandbox_secrets={"TAVILY_API_KEY": "daytona-tavily"},
+            )
+
+        provider.create_sandbox.assert_not_awaited()
 
     async def test_create_sandbox_unwraps_compose_source_before_provider_create(
         self, monkeypatch: pytest.MonkeyPatch
