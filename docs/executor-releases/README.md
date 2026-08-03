@@ -223,14 +223,11 @@ admission target before committing. PostgreSQL serializes overlapping activation
 on the singleton admission row before either task creates or matches the release.
 
 Dev executor operations follow a successful core deployment unless an incompatible
-migration must run inside maintenance. Production uses a separate no-op approval
-job on the protected `production-release` GitHub Environment. Waiting for approval
-does not hold the deployment mutex; the mutating executor job starts only after
-both that approval and its same-revision core dependency succeed. The Environment
-must require reviewers, permit only `prod`, and define
-`PRODUCTION_RELEASE_APPROVAL_CONFIGURED=true`. The AWS accounts must already
-contain the account-owned GitHub OIDC provider used by the environment-bound
-release roles.
+migration must run inside maintenance. Production executor operations use the
+protected `prod` GitHub Environment directly on the mutating job, mirroring the
+`dev` Environment wiring. The mutating executor job starts only after its
+same-revision core dependency succeeds. The AWS accounts must already contain the
+account-owned GitHub OIDC provider used by the environment-bound release roles.
 
 The `maintenance-classification` job runs the same classifier used by deployment.
 New tables, explicitly nullable default-free columns, changes that make an existing

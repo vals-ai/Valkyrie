@@ -225,17 +225,23 @@ class MonitoringStackTest(unittest.TestCase):
         )
         self.assertFalse(_shared_template(DEV).find_resources("AWS::ECR::Repository"))
 
-    def test_production_release_role_is_bound_to_protected_environment(self) -> None:
-        _, executor_template, _ = _service_templates(PROD)
-        roles = executor_template.find_resources("AWS::IAM::Role")
-        release_role = next(
-            role for role in roles.values() if role["Properties"].get("RoleName") == "ValkyrieExecutorRelease"
-        )
-        trust = json.dumps(release_role["Properties"]["AssumeRolePolicyDocument"])
-        self.assertIn("repo:vals-ai/Valkyrie:environment:production-release", trust)
-        self.assertNotIn("refs/heads/prod", trust)
+    def test_release_roles_are_bound_to_stage_environments(self) -> None:
+        for stage, role_name, expected_subject in (
+            (DEV, "ValkyrieExecutorRelease-dev", "repo:vals-ai/Valkyrie:environment:dev"),
+            (PROD, "ValkyrieExecutorRelease", "repo:vals-ai/Valkyrie:environment:prod"),
+        ):
+            with self.subTest(stage=stage):
+                env = TEST_DEV_ENV if stage == DEV else {}
+                with mock.patch.dict(os.environ, env, clear=False):
+                    _, executor_template, _ = _service_templates(stage)
+                roles = executor_template.find_resources("AWS::IAM::Role")
+                release_role = next(role for role in roles.values() if role["Properties"].get("RoleName") == role_name)
+                trust = json.dumps(release_role["Properties"]["AssumeRolePolicyDocument"])
+                self.assertIn(expected_subject, trust)
+                self.assertNotIn("production-release", trust)
+                self.assertNotIn("refs/heads/prod", trust)
 
-        synthesized = json.dumps(executor_template.to_json())
+        synthesized = json.dumps(_service_templates(PROD)[1].to_json())
         self.assertIn("tracker.executor.release_entrypoint", synthesized)
         self.assertIn("ecs:UpdateTaskProtection", synthesized)
         self.assertIn("ecs:StopTask", synthesized)

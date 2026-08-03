@@ -344,7 +344,7 @@ class ExecutorStack(Stack):
             "GitHubOidcProvider",
             f"arn:{self.partition}:iam::{self.account}:oidc-provider/token.actions.githubusercontent.com",
         )
-        github_environment = "production-release" if stage.is_prod else "dev"
+        github_environment = stage.name
         release_role = aws_iam.Role(
             self,
             "ExecutorReleaseRole",
