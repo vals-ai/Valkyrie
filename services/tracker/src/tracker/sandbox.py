@@ -175,8 +175,6 @@ async def _create_sandbox(
     """Create a sandbox through its provider."""
     overlapping_env_names = sorted(set(env_vars or {}) & set(sandbox_secrets or {}))
     if overlapping_env_names:
-        # Deterministic misconfiguration: SandboxSetupError would trigger the
-        # fresh-sandbox retry in _process_task_attempt, which cannot help here.
         raise InvalidSandboxConfigurationError(
             "Sandbox environment variables cannot be both plaintext and provider-managed secrets: "
             f"{', '.join(overlapping_env_names)}"
