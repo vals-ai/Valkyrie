@@ -455,45 +455,22 @@ jobs:
           --stage dev
           --target-sha "$GITHUB_SHA"
 
-  production-executor-approval:
-    if: >-
-      github.event_name == 'push' && github.ref == 'refs/heads/prod' &&
-      needs.classify-deployment.result == 'success' &&
-      (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
-       needs.classify-deployment.outputs.executor_release_required == 'true' ||
-       needs.classify-deployment.outputs.database_maintenance_required == 'true')
-    needs: classify-deployment
-    runs-on: ubuntu-24.04-arm
-    environment: production-release
-    permissions:
-      contents: read
-    env:
-      PRODUCTION_RELEASE_APPROVAL_CONFIGURED: ${{ vars.PRODUCTION_RELEASE_APPROVAL_CONFIGURED }}
-
-    steps:
-      - name: Require configured production approval
-        run: |
-          if [[ "$PRODUCTION_RELEASE_APPROVAL_CONFIGURED" != "true" ]]; then
-            echo "::error::The production-release Environment must require reviewers, restrict prod, and set PRODUCTION_RELEASE_APPROVAL_CONFIGURED=true."
-            exit 1
-          fi
-
   executor-production:
     if: >-
       always() && github.event_name == 'push' && github.ref == 'refs/heads/prod' &&
       needs.classify-deployment.result == 'success' &&
-      needs.production-executor-approval.result == 'success' &&
       (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
        needs.classify-deployment.outputs.executor_release_required == 'true' ||
        needs.classify-deployment.outputs.database_maintenance_required == 'true') &&
       (needs.classify-deployment.outputs.core_maintenance_required == 'true' ||
        needs.classify-deployment.outputs.database_maintenance_required == 'true' ||
        needs.deploy-production-core.result == 'success')
-    needs: [classify-deployment, deploy-production-core, production-executor-approval]
+    needs: [classify-deployment, deploy-production-core]
     concurrency:
       group: valkyrie-prod-deploy
       cancel-in-progress: false
     runs-on: ubuntu-24.04-arm
+    environment: prod
     permissions:
       contents: read
       id-token: write

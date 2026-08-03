@@ -30,9 +30,8 @@ and certificate. Configure the protected `dev` GitHub Environment with
 `DESCOPE_PROJECT_ID`. To enable Sentry in dev, also set `SENTRY_DSN_SECRET_NAME`
 to the name of an account-local Secrets Manager secret containing the DSN.
 
-Before production executor activation, create a protected `production-release`
-GitHub Environment that requires reviewers, permits only `prod`, and defines
-`PRODUCTION_RELEASE_APPROVAL_CONFIGURED=true`. Both AWS accounts must already
+Before production executor activation, configure the protected `prod` GitHub
+Environment used by the production executor job. Both AWS accounts must already
 have the account-owned `token.actions.githubusercontent.com` OIDC provider with
 the `sts.amazonaws.com` audience. The stacks import that provider and create
 separate environment-bound executor release roles; they do not create a fallback
