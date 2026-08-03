@@ -253,10 +253,7 @@ async def create_sandbox(
                 await delete_sandbox(sandbox, provider)
                 raise
     except Exception as e:
-        # Deterministic config errors are caught before any provider call and
-        # would skew the infra-error signal this metric exists to track.
-        if not isinstance(e, InvalidSandboxConfigurationError):
-            incr("valkyrie.sandbox.create.errors", tags={"error_class": type(e).__name__})
+        incr("valkyrie.sandbox.create.errors", tags={"error_class": type(e).__name__})
         raise
 
     distribution(
