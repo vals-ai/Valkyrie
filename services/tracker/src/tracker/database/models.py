@@ -102,7 +102,7 @@ class RetryMode(str, Enum):
     FROM_SCRATCH = "from_scratch"
 
 
-MAX_OUTPUT_ARTIFACT_BYTES = 50 * 1024 * 1024
+MAX_OUTPUT_ARTIFACT_BYTES = 100 * 1024 * 1024
 MAX_OUTPUT_ARTIFACT_COUNT = 10
 
 
@@ -396,11 +396,20 @@ class Benchmark(SQLModel, table=True):
             service_headers=service_headers or {},
         )
 
-    def benchmark_service(self, service_headers: dict[str, str] | None = None) -> "BenchmarkServiceClient":
+    def benchmark_service(
+        self,
+        service_headers: dict[str, str] | None = None,
+        *,
+        benchmark_url: str | None = None,
+    ) -> "BenchmarkServiceClient":
         from tracker.config import create_benchmark_service_url
         from tracker.utils import create_benchmark_service_client
 
-        url = self.custom_benchmark_service or create_benchmark_service_url(self.name)
+        url = (
+            benchmark_url
+            if benchmark_url is not None
+            else self.custom_benchmark_service or create_benchmark_service_url(self.name)
+        )
         return create_benchmark_service_client(url=url, service_headers=service_headers)
 
     @property

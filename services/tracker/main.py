@@ -93,6 +93,7 @@ from tracker.executor.release_control import MaintenanceModeError, ReleaseContro
 from tracker.executor.release_retirement import AutomaticReleaseRetirement
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
+from tracker.outbound_security import validate_service_url_syntax
 from tracker.scheduler.store import queue_pool_id
 from tracker.types import (
     AnalyzeBenchmarkRequest,
@@ -938,6 +939,7 @@ async def retry_or_resume_benchmark(
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
     secrets: dict[str, str] = Body(default={}),
+    benchmark_url: str | None = Body(default=None),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
@@ -955,6 +957,7 @@ async def retry_or_resume_benchmark(
         concurrency: Optional new concurrency level (overrides original value)
         task_ids: Optional list of specific task IDs to run. If a task id is not yet
             registered but is valid in the current dataset, a fresh PENDING row is created.
+        benchmark_url: Optional replacement benchmark service URL stored on the run.
 
     Returns:
         RetryOrResumeBenchmarkResponse
@@ -966,6 +969,12 @@ async def retry_or_resume_benchmark(
             status_code=400,
             detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
         )
+
+    if benchmark_url is not None:
+        try:
+            benchmark_url = validate_service_url_syntax(benchmark_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     recovery_task_ids: list[str] | None = None
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and concurrency is None:
@@ -998,15 +1007,33 @@ async def retry_or_resume_benchmark(
             recovery_task_ids = [task_row.task_id for task_row in scheduler_rows]
 
         if recovery_task_ids is None:
-            return RetryOrResumeBenchmarkResponse(
-                status="success",
-            )
+            if secrets or benchmark_url is not None:
+                update_benchmark_resume_arguments(
+                    benchmark_id,
+                    session,
+                    org,
+                    secrets=secrets,
+                    concurrency=None,
+                    benchmark_url=benchmark_url,
+                )
+                session.commit()
+            return RetryOrResumeBenchmarkResponse(status="success")
 
     if concurrency is not None and concurrency < 1:
         raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
 
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and concurrency is not None:
         _update_benchmark_concurrency(benchmark_id, concurrency, session, org)
+        if secrets or benchmark_url is not None:
+            update_benchmark_resume_arguments(
+                benchmark_id,
+                session,
+                org,
+                secrets=secrets,
+                concurrency=None,
+                benchmark_url=benchmark_url,
+            )
+            session.commit()
         return RetryOrResumeBenchmarkResponse(status="success")
 
     effective_service_headers = forward_tracker_api_key(
@@ -1032,7 +1059,10 @@ async def retry_or_resume_benchmark(
             verified_task_ids = await reset_to_in_progress_status(
                 benchmark_row=benchmark_row,
                 session=session,
-                benchmark_service=benchmark_row.benchmark_service(service_headers=effective_service_headers),
+                benchmark_service=benchmark_row.benchmark_service(
+                    service_headers=effective_service_headers,
+                    benchmark_url=benchmark_url,
+                ),
                 retry=retry,
                 retry_mode=retry_mode,
                 rerun_task_ids=task_ids,
@@ -1040,16 +1070,28 @@ async def retry_or_resume_benchmark(
             )
 
         if pre_action_status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids and recovery_task_ids is None:
-            session.rollback()
+            if secrets or concurrency is not None or benchmark_url is not None:
+                update_benchmark_resume_arguments(
+                    benchmark_id,
+                    session,
+                    org,
+                    secrets=secrets,
+                    concurrency=concurrency,
+                    benchmark_url=benchmark_url,
+                )
+                session.commit()
+            else:
+                session.rollback()
             return RetryOrResumeBenchmarkResponse(status="success")
 
-        if secrets or concurrency is not None:
+        if secrets or concurrency is not None or benchmark_url is not None:
             benchmark_row = update_benchmark_resume_arguments(
                 benchmark_id,
                 session,
                 org,
                 secrets=secrets,
                 concurrency=concurrency,
+                benchmark_url=benchmark_url,
             )
 
         resume_request = benchmark_row.start_benchmark_request(

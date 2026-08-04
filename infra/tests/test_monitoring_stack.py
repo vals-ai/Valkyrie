@@ -213,6 +213,49 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertEqual(stage.phys("AgenticHarnessCluster"), "AgenticHarnessCluster-release-test")
         self.assertEqual(stage.domain("benchmark-tracker.vals.ai"), "benchmark-tracker-release-test.vals.ai")
 
+    def test_tracker_transport_follows_stage_contract(self) -> None:
+        tracker_templates: dict[str, assertions.Template] = {}
+        for stage_name, environment in (
+            (PROD, {}),
+            (DEV, TEST_DEV_ENV),
+            (RELEASE_TEST, {"DESCOPE_PROJECT_ID": "release-test"}),
+        ):
+            with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
+                tracker_templates[stage_name] = _service_templates(stage_name)[0]
+
+        for stage_name in (PROD, DEV):
+            listeners = {
+                (resource["Properties"]["Port"], resource["Properties"]["Protocol"]): resource
+                for resource in tracker_templates[stage_name]
+                .find_resources("AWS::ElasticLoadBalancingV2::Listener")
+                .values()
+            }
+            self.assertEqual(set(listeners), {(80, "HTTP"), (443, "HTTPS")})
+            self.assertTrue(listeners[(443, "HTTPS")]["Properties"]["Certificates"])
+            redirect = listeners[(80, "HTTP")]["Properties"]["DefaultActions"][0]
+            self.assertEqual(redirect["Type"], "redirect")
+            self.assertEqual(
+                redirect["RedirectConfig"],
+                {"Port": "443", "Protocol": "HTTPS", "StatusCode": "HTTP_301"},
+            )
+
+        for stage_name in (PROD, DEV):
+            self.assertEqual(
+                len(tracker_templates[stage_name].find_resources("AWS::CertificateManager::Certificate")),
+                1,
+            )
+
+        release_test_template = tracker_templates[RELEASE_TEST]
+        self.assertFalse(release_test_template.find_resources("AWS::CertificateManager::Certificate"))
+        release_test_template.has_resource_properties(
+            "AWS::ElasticLoadBalancingV2::Listener",
+            {"Port": 80, "Protocol": "HTTP"},
+        )
+        self.assertEqual(
+            len(release_test_template.find_resources("AWS::ElasticLoadBalancingV2::Listener")),
+            1,
+        )
+
     def test_release_test_owns_immutable_service_image_repositories(self) -> None:
         release_template = _shared_template(RELEASE_TEST)
         repositories = release_template.find_resources("AWS::ECR::Repository")
@@ -225,17 +268,23 @@ class MonitoringStackTest(unittest.TestCase):
         )
         self.assertFalse(_shared_template(DEV).find_resources("AWS::ECR::Repository"))
 
-    def test_production_release_role_is_bound_to_protected_environment(self) -> None:
-        _, executor_template, _ = _service_templates(PROD)
-        roles = executor_template.find_resources("AWS::IAM::Role")
-        release_role = next(
-            role for role in roles.values() if role["Properties"].get("RoleName") == "ValkyrieExecutorRelease"
-        )
-        trust = json.dumps(release_role["Properties"]["AssumeRolePolicyDocument"])
-        self.assertIn("repo:vals-ai/Valkyrie:environment:production-release", trust)
-        self.assertNotIn("refs/heads/prod", trust)
+    def test_release_roles_are_bound_to_stage_environments(self) -> None:
+        for stage, role_name, expected_subject in (
+            (DEV, "ValkyrieExecutorRelease-dev", "repo:vals-ai/Valkyrie:environment:dev"),
+            (PROD, "ValkyrieExecutorRelease", "repo:vals-ai/Valkyrie:environment:prod"),
+        ):
+            with self.subTest(stage=stage):
+                env = TEST_DEV_ENV if stage == DEV else {}
+                with mock.patch.dict(os.environ, env, clear=False):
+                    _, executor_template, _ = _service_templates(stage)
+                roles = executor_template.find_resources("AWS::IAM::Role")
+                release_role = next(role for role in roles.values() if role["Properties"].get("RoleName") == role_name)
+                trust = json.dumps(release_role["Properties"]["AssumeRolePolicyDocument"])
+                self.assertIn(expected_subject, trust)
+                self.assertNotIn("production-release", trust)
+                self.assertNotIn("refs/heads/prod", trust)
 
-        synthesized = json.dumps(executor_template.to_json())
+        synthesized = json.dumps(_service_templates(PROD)[1].to_json())
         self.assertIn("tracker.executor.release_entrypoint", synthesized)
         self.assertIn("ecs:UpdateTaskProtection", synthesized)
         self.assertIn("ecs:StopTask", synthesized)

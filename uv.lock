@@ -414,7 +414,7 @@ wheels = [
 
 [[package]]
 name = "create-benchmark-service"
-version = "0.23.0"
+version = "0.23.1.dev6+gf473b297a"
 source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=f473b297aac4b8746860fec5674d8ecce8cefc95#f473b297aac4b8746860fec5674d8ecce8cefc95" }
 dependencies = [
     { name = "boto3" },
@@ -2444,7 +2444,7 @@ dev = [
 
 [[package]]
 name = "valkyrie-sdk"
-version = "0.2.3"
+version = "0.2.4"
 source = { editable = "packages/valkyrie-sdk" }
 dependencies = [
     { name = "httpx" },
