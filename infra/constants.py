@@ -96,7 +96,6 @@ def stage_parameter_name(dev_parameter: str, stage_name: str) -> str:
 
 
 # Dev account prerequisites
-DEV_TRACKER_CERTIFICATE_ARN_PARAMETER = "/valkyrie/dev/dns/tracker/certificate-arn"
 DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER = "/valkyrie/dev/dns/tracker/hosted-zone-id"
 
 # Dev shared-resource contract published for benchmark-service consumers.

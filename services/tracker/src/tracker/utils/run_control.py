@@ -230,8 +230,10 @@ async def reset_to_in_progress_status(
             task_ids=all_requested_task_ids, slice_str=None, dataset=benchmark_row.arguments.dataset
         )
 
-        if benchmark_row.final_evaluation:
-            session.delete(benchmark_row.final_evaluation)
+        old_evaluation = benchmark_row.final_evaluation
+        if old_evaluation is not None:
+            benchmark_row.final_evaluation = None
+            session.delete(old_evaluation)
 
         # Retry/resume always starts a new active execution.
         if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:

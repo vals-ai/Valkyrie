@@ -26,7 +26,7 @@ from sqlmodel import Session, select
 
 from main import app
 from tests.factories import make_benchmark, make_error_result, make_evaluation_result
-from tests.unit.utils.task_execution_support import make_retrieve_task_response
+from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity
 from tracker.database.models import (
@@ -1209,6 +1209,123 @@ class TestRunRecovery:
         database_session.refresh(benchmark_row)
         assert benchmark_row.arguments.contract.secrets == admitted_request["contract"]["secrets"]
 
+    async def test_retry_or_resume_replaces_benchmark_url(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+    ) -> None:
+        """A retry URL override should be validated, normalized, and persisted.
+
+        Test cases:
+        - Invalid overrides fail before task state changes.
+        - Task verification uses the normalized replacement benchmark URL.
+        - The queued request and stored run retain the replacement URL.
+        - An active resume stores URL and secret overrides without queueing duplicate work.
+        - An active retry with no retryable tasks still stores all request overrides.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        benchmark_row.custom_benchmark_service = "https://old.example"
+        benchmark_row.arguments.contract.secrets = {"EXISTING_API_KEY": "existing-secret"}
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.STOPPED,
+        )
+        database_session.add_all([benchmark_row, task_row])
+        database_session.commit()
+        verified_urls: list[str] = []
+
+        async def _verify_task_ids(
+            benchmark_service: BenchmarkServiceClient,
+            *,
+            task_ids: list[str],
+            slice_str: str | None,
+            dataset: str | None,
+        ) -> VerifyTaskIdsResponse:
+            verified_urls.append(benchmark_service._url)
+
+            return VerifyTaskIdsResponse(task_ids=task_ids)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_task_ids)
+
+        invalid_response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={
+                "task_ids": [],
+                "service_headers": {},
+                "benchmark_url": "",
+            },
+        )
+
+        assert invalid_response.status_code == 400
+        assert invalid_response.json() == {"detail": "Invalid benchmark service URL"}
+        assert mock_kicker.queued_calls == []
+        database_session.refresh(benchmark_row)
+        database_session.refresh(task_row)
+        assert benchmark_row.custom_benchmark_service == "https://old.example"
+        assert task_row.status == TaskStatus.STOPPED
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={
+                "task_ids": [],
+                "service_headers": {},
+                "benchmark_url": "https://new.example/",
+            },
+        )
+
+        assert response.status_code == 200
+        assert verified_urls == ["https://new.example"]
+
+        queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        assert queued_request["custom_benchmark_service"] == "https://new.example"
+
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.custom_benchmark_service == "https://new.example"
+
+        active_response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={
+                "task_ids": [],
+                "service_headers": {},
+                "secrets": {"ACTIVE_API_KEY": "active-secret"},
+                "benchmark_url": "https://active.example/",
+            },
+        )
+
+        assert active_response.status_code == 200
+        assert len(mock_kicker.queued_calls) == 1
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.custom_benchmark_service == "https://active.example"
+        assert benchmark_row.arguments.contract.secrets == {
+            "EXISTING_API_KEY": "existing-secret",
+            "ACTIVE_API_KEY": "active-secret",
+        }
+
+        active_retry_response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true&concurrency=10",
+            json={
+                "task_ids": [],
+                "service_headers": {},
+                "secrets": {"ACTIVE_API_KEY": "active-retry-secret"},
+                "benchmark_url": "https://active-retry.example/",
+            },
+        )
+
+        assert active_retry_response.status_code == 200
+        assert len(mock_kicker.queued_calls) == 1
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.custom_benchmark_service == "https://active-retry.example"
+        assert benchmark_row.arguments.concurrency == 10
+        assert benchmark_row.arguments.contract.secrets == {
+            "EXISTING_API_KEY": "existing-secret",
+            "ACTIVE_API_KEY": "active-retry-secret",
+        }
+
     async def test_retry_or_resume_secret_merge_preserves_concurrent_concurrency_update(
         self,
         example_benchmark_object: Benchmark,
@@ -1445,9 +1562,12 @@ class TestRunRecovery:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
         task = Task(org_id=TEST_ORG_ID, task_id="task_error", benchmark=benchmark_row.id, status=TaskStatus.ERROR)
+        old_evaluation = FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark_row.id, final_score=0.5)
         database_session.add(benchmark_row)
         database_session.add(task)
+        database_session.add(old_evaluation)
         database_session.commit()
+        old_evaluation_id = old_evaluation.id
 
         async def _verify_error_task(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
             return VerifyTaskIdsResponse(task_ids=[task.task_id])
@@ -1472,7 +1592,63 @@ class TestRunRecovery:
             assert persisted_benchmark.current_execution_release_id == "test-release"
             assert persisted_task is not None
             assert persisted_task.status == TaskStatus.ERROR
+            assert fresh_session.get(FinalEvaluation, old_evaluation_id) is not None
+            assert persisted_benchmark.final_evaluation is not None
+            assert persisted_benchmark.final_evaluation.id == old_evaluation_id
             assert fresh_session.exec(select(ExecutorDispatch)).all() == []
+
+    @pytest.mark.parametrize(
+        ("retry", "task_status", "dispatch_kind"),
+        [
+            (False, TaskStatus.STOPPED, ExecutorDispatchKind.RESUME),
+            (True, TaskStatus.ERROR, ExecutorDispatchKind.RETRY),
+        ],
+    )
+    async def test_recovery_removes_prior_final_evaluation_before_admitting_dispatch(
+        self,
+        retry: bool,
+        task_status: TaskStatus,
+        dispatch_kind: ExecutorDispatchKind,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: Any,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        task = Task(org_id=TEST_ORG_ID, task_id="recoverable-task", benchmark=benchmark_row.id, status=task_status)
+        old_evaluation = FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark_row.id, final_score=0.5)
+        database_session.add(benchmark_row)
+        database_session.add(task)
+        database_session.add(old_evaluation)
+        database_session.commit()
+        old_evaluation_id = old_evaluation.id
+
+        async def _verify_recoverable_task(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=[task.task_id])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_recoverable_task)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true"
+            if retry
+            else f"/retry-or-resume-benchmark/{benchmark_row.id}"
+        )
+
+        assert response.status_code == 200
+
+        dispatch_id = UUID(mock_kicker.queued_calls[0]["executor_dispatch_id"])
+
+        with Session(bind=database_session.get_bind()) as fresh_session:
+            persisted_benchmark = fresh_session.get(Benchmark, benchmark_row.id)
+            dispatch = fresh_session.get(ExecutorDispatch, dispatch_id)
+
+            assert persisted_benchmark is not None
+            assert persisted_benchmark.final_evaluation is None
+            assert fresh_session.get(FinalEvaluation, old_evaluation_id) is None
+            assert dispatch is not None
+            assert dispatch.status == ExecutorDispatchStatus.QUEUED
+            assert dispatch.kind == dispatch_kind
 
     async def test_terminal_resume_without_active_release_returns_503_without_mutation(
         self,

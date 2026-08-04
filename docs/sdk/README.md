@@ -76,8 +76,14 @@ page = await client.runs.list()
 results = await client.runs.results(run.benchmark_id)
 await client.runs.stop(run.benchmark_id)
 await client.runs.resume(run.benchmark_id, concurrency=20)
-await client.runs.retry(run.benchmark_id, task_ids=["task-1"])
+await client.runs.retry(
+    run.benchmark_id,
+    task_ids=["task-1"],
+    benchmark_url="https://new-benchmark.example",
+)
 ```
+
+If your benchmark service does not have a static URL, you can override the URL used to retry and resume.
 
 Fetch stored launch metadata or check whether canonical S3 results already exist:
 
