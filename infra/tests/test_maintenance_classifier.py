@@ -6,6 +6,12 @@ from pathlib import Path
 import classify_repository_change
 
 _MIGRATION_DIRECTORY = "services/tracker/src/tracker/database/migrations/versions"
+_CONSTANTS_WITH_CERTIFICATE = (
+    'TRACKER_ONLY = "unchanged"\n'
+    'DEV_TRACKER_CERTIFICATE_ARN_PARAMETER = "/valkyrie/dev/dns/tracker/certificate-arn"\n'
+    'OTHER = "unchanged"\n'
+)
+_CONSTANTS_WITHOUT_CERTIFICATE = 'TRACKER_ONLY = "unchanged"\nOTHER = "unchanged"\n'
 
 
 class MaintenanceClassifierTest(unittest.TestCase):
@@ -33,9 +39,13 @@ class MaintenanceClassifierTest(unittest.TestCase):
         ).stdout
 
     def _commit_file(self, path: str, source: str) -> str:
-        destination = self.repository / path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(source, encoding="utf-8")
+        return self._commit_files({path: source})
+
+    def _commit_files(self, sources: dict[str, str]) -> str:
+        for path, source in sources.items():
+            destination = self.repository / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(source, encoding="utf-8")
         self._git("add", ".")
         self._git("commit", "-qm", "change")
         return self._git("rev-parse", "HEAD").strip()
@@ -235,6 +245,180 @@ def upgrade() -> None:
 
         self.assertEqual(result.classification, "maintenance-required")
         self.assertEqual(result.findings[0].operation, "For")
+
+    def test_policy_only_change_requires_approval_without_runtime_maintenance(self) -> None:
+        head_sha = self._commit_file("infra/classify_repository_change.py", "policy = True\n")
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "safe")
+        self.assertTrue(result.policy_approval_required)
+        self.assertFalse(result.executor_stack_deploy_required)
+        self.assertFalse(result.executor_release_required)
+        self.assertFalse(result.core_maintenance_required)
+        self.assertFalse(result.database_maintenance_required)
+        self.assertEqual(result.reasons, ["deployment-policy-change"])
+
+    def test_policy_workflow_change_requires_approval_without_runtime_maintenance(self) -> None:
+        head_sha = self._commit_file(
+            ".github/workflows/maintenance-classification.yaml",
+            "name: changed policy\n",
+        )
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "safe")
+        self.assertTrue(result.policy_approval_required)
+        self.assertFalse(result.executor_stack_deploy_required)
+        self.assertFalse(result.executor_release_required)
+        self.assertFalse(result.core_maintenance_required)
+        self.assertFalse(result.database_maintenance_required)
+        self.assertEqual(result.reasons, ["deployment-policy-change"])
+
+    def test_policy_and_runtime_changes_require_both_approvals(self) -> None:
+        head_sha = self._commit_files(
+            {
+                "infra/classify_repository_change.py": "policy = True\n",
+                "services/executor_host/supervisor.py": "runtime = True\n",
+            }
+        )
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.policy_approval_required)
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertFalse(result.executor_release_required)
+        self.assertFalse(result.core_maintenance_required)
+        self.assertFalse(result.database_maintenance_required)
+        self.assertEqual(result.reasons, ["deployment-policy-change", "executor-core-change"])
+
+    def test_exact_certificate_parameter_deletion_is_release_only_when_policy_matches_both_shas(self) -> None:
+        self.base_sha = self._commit_files(
+            {
+                "infra/constants.py": _CONSTANTS_WITH_CERTIFICATE,
+                ".github/workflows/maintenance-classification.yaml": "name: trusted policy\n",
+            }
+        )
+        head_sha = self._commit_files(
+            {
+                "infra/constants.py": _CONSTANTS_WITHOUT_CERTIFICATE,
+                "services/tracker/src/tracker/sandbox.py": "release = True\n",
+            }
+        )
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "safe")
+        self.assertFalse(result.policy_approval_required)
+        self.assertFalse(result.executor_stack_deploy_required)
+        self.assertTrue(result.executor_release_required)
+        self.assertFalse(result.core_maintenance_required)
+        self.assertFalse(result.database_maintenance_required)
+        self.assertEqual(result.reasons, ["executor-release-change"])
+
+    def test_certificate_parameter_value_change_requires_maintenance(self) -> None:
+        self.base_sha = self._commit_file("infra/constants.py", _CONSTANTS_WITH_CERTIFICATE)
+        head_sha = self._commit_file(
+            "infra/constants.py",
+            _CONSTANTS_WITH_CERTIFICATE.replace("certificate-arn", "replacement-certificate-arn"),
+        )
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertTrue(result.core_maintenance_required)
+
+    def test_certificate_parameter_addition_or_relocation_requires_maintenance(self) -> None:
+        self.base_sha = self._commit_file("infra/constants.py", _CONSTANTS_WITHOUT_CERTIFICATE)
+        head_sha = self._commit_file(
+            "infra/constants.py",
+            'DEV_TRACKER_CERTIFICATE_ARN_PARAMETER = "replacement"\n' + _CONSTANTS_WITHOUT_CERTIFICATE,
+        )
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertTrue(result.core_maintenance_required)
+
+    def test_certificate_parameter_relocation_requires_maintenance(self) -> None:
+        self.base_sha = self._commit_file("infra/constants.py", _CONSTANTS_WITH_CERTIFICATE)
+        head_sha = self._commit_file(
+            "infra/constants.py",
+            'TRACKER_ONLY = "unchanged"\nOTHER = "unchanged"\n'
+            'DEV_TRACKER_CERTIFICATE_ARN_PARAMETER = "/valkyrie/dev/dns/tracker/certificate-arn"\n',
+        )
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertTrue(result.core_maintenance_required)
+
+    def test_certificate_parameter_duplicate_or_nested_binding_requires_maintenance(self) -> None:
+        self.base_sha = self._commit_file("infra/constants.py", _CONSTANTS_WITH_CERTIFICATE)
+        head_sha = self._commit_file(
+            "infra/constants.py",
+            _CONSTANTS_WITHOUT_CERTIFICATE
+            + 'DEV_TRACKER_CERTIFICATE_ARN_PARAMETER = "duplicate"\n'
+            + 'if True:\n    DEV_TRACKER_CERTIFICATE_ARN_PARAMETER = "nested"\n',
+        )
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertTrue(result.core_maintenance_required)
+
+    def test_certificate_parameter_nested_base_binding_requires_maintenance(self) -> None:
+        self.base_sha = self._commit_file(
+            "infra/constants.py",
+            'TRACKER_ONLY = "unchanged"\nif True:\n    DEV_TRACKER_CERTIFICATE_ARN_PARAMETER = "nested"\n',
+        )
+        head_sha = self._commit_file("infra/constants.py", 'TRACKER_ONLY = "unchanged"\n')
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertTrue(result.core_maintenance_required)
+
+    def test_certificate_parameter_deletion_with_mixed_or_invalid_source_requires_maintenance(self) -> None:
+        self.base_sha = self._commit_file("infra/constants.py", _CONSTANTS_WITH_CERTIFICATE)
+        head_sha = self._commit_file(
+            "infra/constants.py",
+            _CONSTANTS_WITHOUT_CERTIFICATE.replace("unchanged", "changed", 1),
+        )
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertTrue(result.core_maintenance_required)
+
+    def test_certificate_parameter_parse_failure_requires_maintenance(self) -> None:
+        self.base_sha = self._commit_file("infra/constants.py", _CONSTANTS_WITH_CERTIFICATE)
+        head_sha = self._commit_file("infra/constants.py", "not valid python(\n")
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertTrue(result.core_maintenance_required)
+
+    def test_certificate_parameter_rename_requires_maintenance(self) -> None:
+        self.base_sha = self._commit_file("infra/constants.py", _CONSTANTS_WITH_CERTIFICATE)
+        self._git("mv", "infra/constants.py", "infra/renamed_constants.py")
+        self._git("commit", "-qm", "rename")
+        head_sha = self._git("rev-parse", "HEAD").strip()
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertTrue(result.core_maintenance_required)
 
     def test_executor_host_change_requires_maintenance(self) -> None:
         head_sha = self._commit_file("services/executor_host/supervisor.py", "changed = True\n")

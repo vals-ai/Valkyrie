@@ -1,5 +1,9 @@
 """Tests for deployment workflow contracts."""
 
+import json
+import subprocess
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -229,6 +233,13 @@ class DeployWorkflowTest(unittest.TestCase):
             "database_maintenance_required",
         ):
             self.assertIn(output, workflow)
+        self.assertNotIn("policy_approval_required", workflow)
+        self.assertIn("policy_approval_required", classification_workflow)
+        self.assertIn("Deployment-policy change requires an authorized force merge", classification_workflow)
+        self.assertIn("no runtime maintenance or outage is implied", classification_workflow)
+        self.assertIn(
+            "Maintenance is required. Use an authorized force merge to approve the outage.", classification_workflow
+        )
         self.assertIn("pull_request_target:", classification_workflow)
         trusted_checkout = classification_workflow.split("      - name: Checkout trusted classifier", maxsplit=1)[
             1
@@ -243,6 +254,88 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn('test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA"', classification_workflow)
         self.assertNotIn("checks: write", classification_workflow)
         self.assertNotIn("actions/github-script", classification_workflow)
+
+    def test_release_only_deployment_does_not_enter_maintenance(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        for step_name in (
+            "Begin dev maintenance",
+            "Finish dev maintenance",
+            "Begin production maintenance",
+            "Finish production maintenance",
+        ):
+            with self.subTest(step_name=step_name):
+                condition = workflow.split(f"- name: {step_name}", maxsplit=1)[1].split(
+                    "working-directory:", maxsplit=1
+                )[0]
+                self.assertIn("executor_stack_deploy_required", condition)
+                self.assertIn("database_maintenance_required", condition)
+                self.assertNotIn("executor_release_required", condition)
+
+    def test_maintenance_classification_approval_step_behavior(self) -> None:
+        workflow = (Path(__file__).parents[2] / ".github" / "workflows" / "maintenance-classification.yaml").read_text(
+            encoding="utf-8"
+        )
+        approval_step = workflow.split("      - name: Require approval for maintenance or policy\n", maxsplit=1)[1]
+        shell_block = textwrap.dedent(approval_step.split("        run: |\n", maxsplit=1)[1])
+        maintenance_message = "Maintenance is required. Use an authorized force merge to approve the outage."
+        policy_message = (
+            "Deployment-policy change requires an authorized force merge; no runtime maintenance or outage is implied."
+        )
+
+        cases = (
+            (
+                "release-only",
+                {"classification": "safe", "policy_approval_required": False, "executor_release_required": True},
+                0,
+                False,
+                False,
+            ),
+            (
+                "policy-only",
+                {"classification": "safe", "policy_approval_required": True, "executor_release_required": False},
+                1,
+                False,
+                True,
+            ),
+            (
+                "maintenance-only",
+                {
+                    "classification": "maintenance-required",
+                    "policy_approval_required": False,
+                    "executor_release_required": False,
+                },
+                1,
+                True,
+                False,
+            ),
+            (
+                "combined",
+                {
+                    "classification": "maintenance-required",
+                    "policy_approval_required": True,
+                    "executor_release_required": True,
+                },
+                1,
+                True,
+                True,
+            ),
+        )
+        for name, fixture, expected_returncode, expects_maintenance, expects_policy in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary_directory:
+                fixture_path = Path(temporary_directory) / "maintenance-classification.json"
+                fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+                result = subprocess.run(
+                    ["bash", "-c", shell_block],
+                    cwd=temporary_directory,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+                self.assertEqual(expected_returncode, result.returncode, result.stderr)
+                self.assertEqual(expects_maintenance, maintenance_message in result.stdout)
+                self.assertEqual(expects_policy, policy_message in result.stdout)
 
     def test_executor_build_check_covers_real_arm_images_and_pex(self) -> None:
         workflow = EXECUTOR_BUILD_WORKFLOW.read_text(encoding="utf-8")

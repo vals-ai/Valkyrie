@@ -11,15 +11,19 @@ from pathlib import Path
 
 _EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 _MIGRATION_DIRECTORY = "services/tracker/src/tracker/database/migrations/versions/"
+_CONSTANTS_PATH = "infra/constants.py"
+_EXEMPT_CONSTANT_DELETION = "DEV_TRACKER_CERTIFICATE_ARN_PARAMETER"
+_POLICY_FILES = {
+    ".github/workflows/maintenance-classification.yaml",
+    "infra/classify_repository_change.py",
+}
 _EXECUTOR_STACK_FILES = {
     ".dockerignore",
     ".github/workflows/deploy.yaml",
-    ".github/workflows/maintenance-classification.yaml",
     "infra/Makefile",
     "infra/app.py",
     "infra/cdk.json",
-    "infra/classify_repository_change.py",
-    "infra/constants.py",
+    _CONSTANTS_PATH,
     "infra/executor_release/main.py",
     "infra/executor_stack.py",
     "infra/shared.py",
@@ -79,6 +83,7 @@ class Finding:
 @dataclass(frozen=True)
 class Classification:
     classification: str
+    policy_approval_required: bool
     base_sha: str
     head_sha: str
     executor_stack_deploy_required: bool
@@ -221,6 +226,56 @@ def _is_executor_stack_path(path: str) -> bool:
     return path in _EXECUTOR_STACK_FILES or path.startswith(_EXECUTOR_STACK_DIRECTORIES)
 
 
+def _is_exact_certificate_parameter_deletion(
+    repository: Path,
+    *,
+    base_sha: str,
+    head_sha: str,
+    status: str,
+    paths: list[str],
+) -> bool:
+    if status != "M" or paths != [_CONSTANTS_PATH]:
+        return False
+
+    base_source = _git(repository, "show", f"{base_sha}:{_CONSTANTS_PATH}")
+    head_source = _git(repository, "show", f"{head_sha}:{_CONSTANTS_PATH}")
+    try:
+        base_tree = ast.parse(base_source)
+        head_tree = ast.parse(head_source)
+    except SyntaxError:
+        return False
+
+    base_names = [
+        node for node in ast.walk(base_tree) if isinstance(node, ast.Name) and node.id == _EXEMPT_CONSTANT_DELETION
+    ]
+    if len(base_names) != 1:
+        return False
+    statement = next(
+        (
+            node
+            for node in base_tree.body
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and node.targets[0] is base_names[0]
+            and isinstance(node.targets[0], ast.Name)
+        ),
+        None,
+    )
+    if statement is None or statement.lineno != statement.end_lineno or statement.col_offset != 0:
+        return False
+
+    lines = base_source.splitlines(keepends=True)
+    statement_source = "".join(lines[statement.lineno - 1 : statement.end_lineno])
+    if statement_source.rstrip("\n") != ast.get_source_segment(base_source, statement):
+        return False
+    if any(isinstance(node, ast.Name) and node.id == _EXEMPT_CONSTANT_DELETION for node in ast.walk(head_tree)):
+        return False
+
+    start = sum(len(line) for line in lines[: statement.lineno - 1])
+    end = start + len(statement_source)
+    return base_source[:start] + base_source[end:] == head_source
+
+
 def _is_executor_release_path(path: str) -> bool:
     if path.startswith(_MIGRATION_DIRECTORY):
         return False
@@ -236,16 +291,27 @@ def classify_repository_change(
     changed_migrations: list[str] = []
     findings: list[Finding] = []
     reasons: set[str] = set()
+    policy_approval_required = False
     executor_stack_deploy_required = False
     executor_release_required = False
     core_maintenance_required = False
     database_maintenance_required = False
 
     for status, paths in _changed_entries(repository, base_sha, head_sha):
-        if any(_is_executor_stack_path(path) for path in paths):
+        if any(path in _POLICY_FILES for path in paths):
+            policy_approval_required = True
+            reasons.add("deployment-policy-change")
+        certificate_parameter_deletion = _is_exact_certificate_parameter_deletion(
+            repository,
+            base_sha=base_sha,
+            head_sha=head_sha,
+            status=status,
+            paths=paths,
+        )
+        if not certificate_parameter_deletion and any(_is_executor_stack_path(path) for path in paths):
             executor_stack_deploy_required = True
             reasons.add("executor-core-change")
-        if any(path in _EXECUTOR_SHARED_FILES for path in paths):
+        if not certificate_parameter_deletion and any(path in _EXECUTOR_SHARED_FILES for path in paths):
             core_maintenance_required = True
         if any(_is_executor_release_path(path) for path in paths):
             executor_release_required = True
@@ -268,6 +334,7 @@ def classify_repository_change(
     classification = "maintenance-required" if maintenance_required else "safe"
     return Classification(
         classification=classification,
+        policy_approval_required=policy_approval_required,
         base_sha=base_sha,
         head_sha=head_sha,
         executor_stack_deploy_required=executor_stack_deploy_required,

@@ -230,9 +230,13 @@ same-revision core dependency succeeds. The AWS accounts must already contain th
 account-owned GitHub OIDC provider used by the environment-bound release roles.
 
 The `maintenance-classification` job runs the same classifier used by deployment.
-New tables, explicitly nullable default-free columns, changes that make an existing
-column nullable, and explicitly non-unique indexes are safe. ExecutorStack and
-release-control changes require executor maintenance. Other migration operations
+The protected default branch is the trusted classifier source: candidate revisions
+are fetched only as Git objects and are never executed by the required check.
+Deployment-policy changes require an authorized force merge, but policy approval
+is separate from runtime maintenance and never closes admission or stops active
+work. New tables, explicitly nullable default-free columns, changes that make an
+existing column nullable, and explicitly non-unique indexes are safe. ExecutorStack
+and release-control changes require executor maintenance. Other migration operations
 require database maintenance. The required check deliberately fails for those
 changes, so an authorized force merge is the maintenance approval.
 
