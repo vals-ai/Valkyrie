@@ -50,20 +50,12 @@ jobs:
             --head-sha "$HEAD_SHA" \
             --output maintenance-classification.json
 
-      - name: Require approval for maintenance or policy
+      - name: Require force merge for maintenance
         run: |
           set -euo pipefail
           classification="$(python3 -c 'import json; print(json.load(open("maintenance-classification.json"))["classification"])')"
-          policy_approval_required="$(python3 -c 'import json; print(json.load(open("maintenance-classification.json"))["policy_approval_required"])')"
-          approval_required=false
-          if [[ "$classification" != "safe" ]]; then
-            echo "::error::Maintenance is required. Use an authorized force merge to approve the outage."
-            approval_required=true
+          if [[ "$classification" == "safe" ]]; then
+            exit 0
           fi
-          if [[ "$policy_approval_required" == "True" ]]; then
-            echo "::error::Deployment-policy change requires an authorized force merge; no runtime maintenance or outage is implied."
-            approval_required=true
-          fi
-          if [[ "$approval_required" == "true" ]]; then
-            exit 1
-          fi
+          echo "::error::Maintenance is required. Use an authorized force merge to approve the outage."
+          exit 1

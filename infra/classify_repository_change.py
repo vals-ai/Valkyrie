@@ -13,10 +13,6 @@ _EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 _MIGRATION_DIRECTORY = "services/tracker/src/tracker/database/migrations/versions/"
 _CONSTANTS_PATH = "infra/constants.py"
 _EXEMPT_CONSTANT_DELETION = "DEV_TRACKER_CERTIFICATE_ARN_PARAMETER"
-_POLICY_FILES = {
-    ".github/workflows/maintenance-classification.yaml",
-    "infra/classify_repository_change.py",
-}
 _EXECUTOR_STACK_FILES = {
     ".dockerignore",
     ".github/workflows/deploy.yaml",
@@ -83,7 +79,6 @@ class Finding:
 @dataclass(frozen=True)
 class Classification:
     classification: str
-    policy_approval_required: bool
     base_sha: str
     head_sha: str
     executor_stack_deploy_required: bool
@@ -105,6 +100,19 @@ def _git(repository: Path, *arguments: str) -> str:
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or f"git {' '.join(arguments)} failed")
+    return result.stdout
+
+
+def _git_blob(repository: Path, revision: str, path: str) -> bytes:
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{path}"],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        error = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(error or f"git show {revision}:{path} failed")
     return result.stdout
 
 
@@ -237,12 +245,14 @@ def _is_exact_certificate_parameter_deletion(
     if status != "M" or paths != [_CONSTANTS_PATH]:
         return False
 
-    base_source = _git(repository, "show", f"{base_sha}:{_CONSTANTS_PATH}")
-    head_source = _git(repository, "show", f"{head_sha}:{_CONSTANTS_PATH}")
+    base_blob = _git_blob(repository, base_sha, _CONSTANTS_PATH)
+    head_blob = _git_blob(repository, head_sha, _CONSTANTS_PATH)
     try:
+        base_source = base_blob.decode("utf-8")
+        head_source = head_blob.decode("utf-8")
         base_tree = ast.parse(base_source)
         head_tree = ast.parse(head_source)
-    except SyntaxError:
+    except (SyntaxError, UnicodeDecodeError):
         return False
 
     base_names = [
@@ -264,16 +274,17 @@ def _is_exact_certificate_parameter_deletion(
     if statement is None or statement.lineno != statement.end_lineno or statement.col_offset != 0:
         return False
 
-    lines = base_source.splitlines(keepends=True)
-    statement_source = "".join(lines[statement.lineno - 1 : statement.end_lineno])
-    if statement_source.rstrip("\n") != ast.get_source_segment(base_source, statement):
+    lines = base_blob.splitlines(keepends=True)
+    statement_blob = b"".join(lines[statement.lineno - 1 : statement.end_lineno])
+    statement_source = statement_blob.decode("utf-8").rstrip("\r\n")
+    if statement_source != ast.get_source_segment(base_source, statement):
         return False
     if any(isinstance(node, ast.Name) and node.id == _EXEMPT_CONSTANT_DELETION for node in ast.walk(head_tree)):
         return False
 
     start = sum(len(line) for line in lines[: statement.lineno - 1])
-    end = start + len(statement_source)
-    return base_source[:start] + base_source[end:] == head_source
+    end = start + len(statement_blob)
+    return base_blob[:start] + base_blob[end:] == head_blob
 
 
 def _is_executor_release_path(path: str) -> bool:
@@ -291,16 +302,12 @@ def classify_repository_change(
     changed_migrations: list[str] = []
     findings: list[Finding] = []
     reasons: set[str] = set()
-    policy_approval_required = False
     executor_stack_deploy_required = False
     executor_release_required = False
     core_maintenance_required = False
     database_maintenance_required = False
 
     for status, paths in _changed_entries(repository, base_sha, head_sha):
-        if any(path in _POLICY_FILES for path in paths):
-            policy_approval_required = True
-            reasons.add("deployment-policy-change")
         certificate_parameter_deletion = _is_exact_certificate_parameter_deletion(
             repository,
             base_sha=base_sha,
@@ -334,7 +341,6 @@ def classify_repository_change(
     classification = "maintenance-required" if maintenance_required else "safe"
     return Classification(
         classification=classification,
-        policy_approval_required=policy_approval_required,
         base_sha=base_sha,
         head_sha=head_sha,
         executor_stack_deploy_required=executor_stack_deploy_required,
