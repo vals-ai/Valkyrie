@@ -29,6 +29,10 @@ class RunStatusEntry(ResponseModel):
     run_id: UUID
     status: RunStatus
     finished_at: datetime | None
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
     total_tasks: int
     finished_tasks: int
     task_state_counts: dict[str, int] = Field(default_factory=dict)

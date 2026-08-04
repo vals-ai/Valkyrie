@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 
-from valkyrie.sdk import ValkyrieAPIError, ValkyrieStreamError
+from valkyrie.sdk import FetchBenchmarkMetadataResponse, ValkyrieAPIError, ValkyrieStreamError
 
 _STOP_RUN_ID = UUID("11111111-1111-4111-8111-111111111111")
 
@@ -55,6 +55,9 @@ async def test_metadata_returns_typed_run_metadata(make_client) -> None:
 
     assert result.run_id == run_id
     assert result.run_arguments.contract.name == "sweagent"
+    assert type(result) is FetchBenchmarkMetadataResponse
+    assert set(result.model_dump()) >= {"benchmark_id", "benchmark_arguments"}
+    assert not {"run_id", "run_arguments"} & set(result.model_dump())
 
 
 async def test_results_exist_returns_typed_s3_state(make_client) -> None:

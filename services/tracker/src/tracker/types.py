@@ -392,7 +392,7 @@ class StartRunRequest(BaseModel):
 
     contract: AgentContractRequest
     benchmark_name: str
-    concurrency: int = 5
+    concurrency: int = Field(default=5, ge=1, strict=True)
     label: str | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None
@@ -582,6 +582,10 @@ class RunStatusEntry(CanonicalRunModel):
     run_id: UUID = Field(validation_alias=AliasChoices("run_id", "id"))
     status: RunStatus
     finished_at: datetime | None
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
     total_tasks: int
     finished_tasks: int
     task_state_counts: dict[str, int] = Field(default_factory=dict)

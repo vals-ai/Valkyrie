@@ -1021,6 +1021,11 @@ class TestTrackerAPI:
         example_benchmark_object: Benchmark,
     ) -> None:
         benchmark_row = example_benchmark_object
+        benchmark_row.executor_release_id = "initial-release"
+        benchmark_row.current_execution_release_id = "current-release"
+        benchmark_row.executor_artifact_uri = "s3://artifacts/initial-release.pex"
+        benchmark_row.executor_artifact_digest = "a" * 64
+        benchmark_row.executor_protocol_version = "1"
         database_session.add(benchmark_row)
         database_session.commit()
         database_session.add(Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id))
@@ -1073,6 +1078,31 @@ class TestTrackerAPI:
 
         assert statuses.status_code == 200
         assert statuses.json()["runs"][0]["run_id"] == str(benchmark_row.id)
+        assert statuses.json()["runs"][0]["executor_release_id"] == "initial-release"
+        assert statuses.json()["runs"][0]["current_execution_release_id"] == "current-release"
+        assert statuses.json()["runs"][0]["executor_artifact_digest"] == "a" * 64
+        assert statuses.json()["runs"][0]["executor_protocol_version"] == "1"
+
+    @pytest.mark.parametrize("concurrency", [0, -1, 1.5, "2", True])
+    def test_canonical_start_rejects_invalid_concurrency_without_creating_a_run(
+        self,
+        concurrency: object,
+        contract: AgentContractRequest,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ) -> None:
+        request = StartRunRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            harness_config=harness_config,
+        ).model_dump(mode="json")
+        request["concurrency"] = concurrency
+
+        response = client.post("/runs", json=request)
+
+        assert response.status_code == 422
+        assert database_session.exec(select(Benchmark)).all() == []
 
     async def test_canonical_run_actions_forward_to_legacy_handlers(
         self,

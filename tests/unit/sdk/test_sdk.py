@@ -17,9 +17,13 @@ from pydantic import ValidationError
 
 from valkyrie.sdk import (
     AgentContractRequest,
+    FetchBenchmarkResponse,
+    FetchBenchmarksResponse,
+    FinalViewResponse,
     ListRunsRequest,
-    RunResultsResponse,
     S3UploadResultsResponse,
+    StartBenchmarkResponse,
+    StopBenchmarkResponse,
     ValkyrieAPIError,
     ValkyrieClient,
     ValkyrieConfig,
@@ -182,7 +186,9 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
         )
 
     assert response.run_id == run_id
-    assert response.run_id == run_id
+    assert type(response) is StartBenchmarkResponse
+    assert "benchmark_id" in response.model_dump()
+    assert "run_id" not in response.model_dump()
     request = requests[0]
     body = json.loads(request.content)
     assert request.url.path == "/runs"
@@ -339,11 +345,18 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
         results = await client.runs.results(run_id, task_ids=["task-1"], upload_to_s3=True)
 
     assert fetched.run_id == run_id
+    assert type(fetched) is FetchBenchmarkResponse
+    assert type(listed) is FetchBenchmarksResponse
     assert listed.total_count == 0
+    assert listed.runs == listed.benchmarks
+    assert type(stopped) is StopBenchmarkResponse
     assert stopped.status == "success"
-    assert_type(inline_results, RunResultsResponse)
+    assert_type(inline_results, FinalViewResponse)
     assert_type(results, S3UploadResultsResponse)
+    assert type(inline_results) is FinalViewResponse
     assert inline_results.run_id == run_id
+    assert "benchmark_id" in inline_results.model_dump()
+    assert "run_id" not in inline_results.model_dump()
     assert results.s3_url == "s3://runs-bucket/results.json"
     assert paths == [
         f"/runs/{run_id}",
@@ -457,6 +470,7 @@ async def test_stream_yields_snapshots_and_stops_on_complete(make_client, fetch_
         snapshots = [snapshot async for snapshot in client.runs.stream(run_id)]
 
     assert [str(snapshot.run_id) for snapshot in snapshots] == [run_id]
+    assert all(type(snapshot) is FetchBenchmarkResponse for snapshot in snapshots)
     assert timeout == {"connect": 120, "read": None, "write": 120, "pool": 120}
 
 
