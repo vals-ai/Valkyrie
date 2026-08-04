@@ -73,3 +73,5 @@ make migrate-gen        # Generate a new migration from model changes
 ```
 
 See the dedicated [database README](src/tracker/database/README.md) for the full migration guide.
+
+<!-- ci-guard test: temporary, will be closed -->
