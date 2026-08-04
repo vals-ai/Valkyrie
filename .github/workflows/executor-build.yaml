@@ -24,6 +24,7 @@ on:
       - "services/executor_host/**"
       - "services/tracker/**"
       - "tests/unit/executor_host/**"
+  workflow_call:
 
 permissions:
   contents: read

@@ -1,0 +1,58 @@
+name: Tracker live integration tests
+
+# Two explicit modes, no attempt-number-based intentional failure/rerun:
+#   * workflow_call  -> required live validation, invoked by required-ci only for
+#     policy-selected, SAME-REPOSITORY tracker changes. Runs inside the protected
+#     `tracker-live-tests` GitHub Environment (reviewer approval + least-privileged OIDC).
+#     Fork PRs never reach this workflow: required-ci routes them to an explicit blocked
+#     job that receives no secrets or OIDC credentials.
+#   * workflow_dispatch -> optional manual diagnostics, a DISTINCT non-required context.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  tracker-live-integration:
+    runs-on: ubuntu-latest
+    environment: tracker-live-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "services/tracker/uv.lock"
+
+      - name: Install tracker dependencies
+        run: |
+          cd services/tracker
+          uv venv --python 3.12
+          uv sync --group dev
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::613431292675:role/github-actions-valkyrie-tests
+          aws-region: us-east-1
+
+      - name: Run live integration tests
+        run: |
+          cd services/tracker
+          make test-integration-live
+        env:
+          TEST_AWS_S3_BUCKET: ${{ secrets.TEST_AWS_S3_BUCKET }}
+          TEST_LOG_GROUP: ${{ secrets.TEST_LOG_GROUP }}
+          TEST_DAYTONA_SECRET_NAME: ${{ secrets.TEST_DAYTONA_SECRET_NAME }}
+          BENCHMARK_SERVICE_BASE_URL: ${{ secrets.BENCHMARK_SERVICE_BASE_URL }}
+          BENCHMARK_SERVICE_AUTH_KEY: ${{ secrets.BENCHMARK_SERVICE_AUTH_KEY }}
+          AWS_DEFAULT_REGION: us-east-1

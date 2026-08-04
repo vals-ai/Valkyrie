@@ -4,6 +4,7 @@ on:
     branches: [dev]
   pull_request:
     branches: [dev]
+  workflow_call:
 
 jobs:
   cli-tests:

@@ -362,6 +362,43 @@ def upgrade() -> None:
         self.assertFalse(result.database_maintenance_required)
         self.assertEqual(result.reasons, ["executor-release-change"])
 
+    def test_required_ci_workflow_change_requires_maintenance(self) -> None:
+        head_sha = self._commit_file(".github/workflows/required-ci.yaml", "name: required-ci\n")
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.ci_policy_change)
+        self.assertFalse(result.executor_stack_deploy_required)
+        self.assertFalse(result.executor_release_required)
+        self.assertFalse(result.database_maintenance_required)
+        self.assertEqual(result.reasons, ["ci-policy-change"])
+
+    def test_required_ci_selector_change_requires_maintenance(self) -> None:
+        head_sha = self._commit_file(".github/scripts/required_ci_select.py", "changed = True\n")
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.ci_policy_change)
+        self.assertFalse(result.executor_stack_deploy_required)
+
+    def test_required_context_manifest_change_requires_maintenance(self) -> None:
+        head_sha = self._commit_file(".github/required-contexts.json", "{}\n")
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.ci_policy_change)
+
+    def test_unrelated_change_is_not_a_ci_policy_change(self) -> None:
+        head_sha = self._commit_file("src/valkyrie/__init__.py", "changed = True\n")
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "safe")
+        self.assertFalse(result.ci_policy_change)
+
     def test_existing_migration_history_cannot_be_changed(self) -> None:
         path = f"{_MIGRATION_DIRECTORY}/existing.py"
         first_sha = self._commit_file(path, "def upgrade() -> None:\n    pass\n")

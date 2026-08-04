@@ -31,6 +31,17 @@ _EXECUTOR_STACK_FILES = {
     "services/tracker/src/tracker/executor/release_entrypoint.py",
 }
 _EXECUTOR_STACK_DIRECTORIES = ("infra/executor_release/", "services/executor_host/")
+# Files that define the required-ci gate. A candidate that edits its own gate (workflow,
+# selector, aggregate, or required-context manifest) must not be able to self-approve, so
+# such a change is classified maintenance-required here — this classifier is trusted,
+# defined on the base branch, and never executes candidate code. It does NOT trigger an
+# executor deployment.
+_CI_POLICY_FILES = {
+    ".github/workflows/required-ci.yaml",
+    ".github/scripts/required_ci_select.py",
+    ".github/scripts/required_ci_aggregate.py",
+    ".github/required-contexts.json",
+}
 _EXECUTOR_SHARED_FILES = {
     "infra/app.py",
     "infra/constants.py",
@@ -85,6 +96,7 @@ class Classification:
     executor_release_required: bool
     core_maintenance_required: bool
     database_maintenance_required: bool
+    ci_policy_change: bool
     changed_migrations: list[str]
     reasons: list[str]
     findings: list[Finding]
@@ -240,8 +252,12 @@ def classify_repository_change(
     executor_release_required = False
     core_maintenance_required = False
     database_maintenance_required = False
+    ci_policy_change = False
 
     for status, paths in _changed_entries(repository, base_sha, head_sha):
+        if any(path in _CI_POLICY_FILES for path in paths):
+            ci_policy_change = True
+            reasons.add("ci-policy-change")
         if any(_is_executor_stack_path(path) for path in paths):
             executor_stack_deploy_required = True
             reasons.add("executor-core-change")
@@ -264,7 +280,7 @@ def classify_repository_change(
             reasons.add("unsafe-migration")
             findings.extend(migration_findings)
 
-    maintenance_required = executor_stack_deploy_required or database_maintenance_required
+    maintenance_required = executor_stack_deploy_required or database_maintenance_required or ci_policy_change
     classification = "maintenance-required" if maintenance_required else "safe"
     return Classification(
         classification=classification,
@@ -274,6 +290,7 @@ def classify_repository_change(
         executor_release_required=executor_release_required,
         core_maintenance_required=core_maintenance_required,
         database_maintenance_required=database_maintenance_required,
+        ci_policy_change=ci_policy_change,
         changed_migrations=sorted(changed_migrations),
         reasons=sorted(reasons),
         findings=findings,

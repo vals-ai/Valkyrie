@@ -1,0 +1,214 @@
+name: required-ci
+
+# Single always-emitted PR-validation gate for PRs targeting dev or prod.
+#
+# A relevance selector decides which subsystem validations are required for the exact
+# base..head diff; each leaf runs only when selected; the `required-ci` aggregate inspects
+# every leaf through `needs` and fails on any failed/cancelled/unexpectedly-skipped required
+# leaf. Only this workflow emits the `required-ci` context, and it runs on pull_request only
+# (never push), so no push run can satisfy the required rule and no duplicate context is
+# produced on the same SHA.
+#
+# Self-modification: changes to this workflow, the selector, the aggregate, or the
+# required-context manifest force full validation here AND are independently gated by the
+# trusted `maintenance-classification` context (defined on the base branch, never executing
+# candidate code). required-ci therefore cannot be the sole authority over its own gate.
+
+on:
+  pull_request:
+    branches: [dev, prod]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  # Cancel superseded revisions of THIS PR only; unrelated PRs are unaffected.
+  group: required-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  select:
+    name: relevance-selector
+    runs-on: ubuntu-latest
+    outputs:
+      is_fork: ${{ steps.select.outputs.is_fork }}
+      is_prod: ${{ steps.select.outputs.is_prod }}
+      force_all: ${{ steps.select.outputs.force_all }}
+      run_lint: ${{ steps.select.outputs.run_lint }}
+      run_typecheck: ${{ steps.select.outputs.run_typecheck }}
+      run_cli: ${{ steps.select.outputs.run_cli }}
+      run_cli_smoke: ${{ steps.select.outputs.run_cli_smoke }}
+      run_tracker_unit: ${{ steps.select.outputs.run_tracker_unit }}
+      run_tracker_live: ${{ steps.select.outputs.run_tracker_live }}
+      run_tracker_live_fork_blocked: ${{ steps.select.outputs.run_tracker_live_fork_blocked }}
+      run_executor: ${{ steps.select.outputs.run_executor }}
+      run_infra: ${{ steps.select.outputs.run_infra }}
+      run_sdk: ${{ steps.select.outputs.run_sdk }}
+      run_lockfile_root: ${{ steps.select.outputs.run_lockfile_root }}
+      run_lockfile_tracker: ${{ steps.select.outputs.run_lockfile_tracker }}
+      run_lockfile_infra: ${{ steps.select.outputs.run_lockfile_infra }}
+      run_cbs: ${{ steps.select.outputs.run_cbs }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Self-test selector and aggregate scripts
+        run: python3 -m unittest discover -s tests/ci -p "test_*.py"
+
+      - name: Select relevant validations
+        id: select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+        run: python3 .github/scripts/required_ci_select.py
+
+  lint:
+    needs: select
+    if: needs.select.outputs.run_lint == 'true'
+    uses: ./.github/workflows/ruff-lint.yaml
+
+  typecheck:
+    needs: select
+    if: needs.select.outputs.run_typecheck == 'true'
+    uses: ./.github/workflows/based-pyright.yaml
+
+  cli:
+    needs: select
+    if: needs.select.outputs.run_cli == 'true'
+    uses: ./.github/workflows/cli-unit-tests.yaml
+    secrets: inherit
+
+  cli-smoke:
+    needs: select
+    if: needs.select.outputs.run_cli_smoke == 'true'
+    uses: ./.github/workflows/cli-tool-smoke-test.yaml
+
+  tracker-unit:
+    needs: select
+    if: needs.select.outputs.run_tracker_unit == 'true'
+    uses: ./.github/workflows/tracker-unit-tests.yaml
+    secrets: inherit
+
+  tracker-live:
+    needs: select
+    if: needs.select.outputs.run_tracker_live == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/tracker-live-tests.yaml
+    secrets: inherit
+
+  tracker-live-fork-blocked:
+    needs: select
+    if: needs.select.outputs.run_tracker_live_fork_blocked == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Block credentialed live validation for fork PRs
+        run: |
+          echo "::error::This fork PR changes services/tracker/** and requires credentialed live"
+          echo "::error::validation, which forks never receive. A maintainer must review and import"
+          echo "::error::the candidate commit onto a same-repository branch, then run required"
+          echo "::error::validation on that new PR revision. See docs/ci/required-checks.md."
+          exit 1
+
+  executor:
+    needs: select
+    if: needs.select.outputs.run_executor == 'true'
+    uses: ./.github/workflows/executor-build.yaml
+
+  infra:
+    needs: select
+    if: needs.select.outputs.run_infra == 'true'
+    uses: ./.github/workflows/infra-ci.yaml
+
+  sdk:
+    needs: select
+    if: needs.select.outputs.run_sdk == 'true'
+    uses: ./.github/workflows/sdk-package.yml
+
+  lockfile-root:
+    needs: select
+    if: needs.select.outputs.run_lockfile_root == 'true'
+    uses: vals-ai/.github/.github/workflows/validate-lockfile.yaml@c8f15bdf23ce1aa11b266eb9edca0a11d6dcaae1
+    with:
+      project_path: "."
+    secrets:
+      GH_PAT: ${{ secrets.GH_PAT }}
+      SSH_PRIVATE_KEY: ${{ secrets.SUBMODULES_SSH_KEY }}
+
+  lockfile-tracker:
+    needs: select
+    if: needs.select.outputs.run_lockfile_tracker == 'true'
+    uses: vals-ai/.github/.github/workflows/validate-lockfile.yaml@c8f15bdf23ce1aa11b266eb9edca0a11d6dcaae1
+    with:
+      project_path: services/tracker
+    secrets:
+      GH_PAT: ${{ secrets.GH_PAT }}
+      SSH_PRIVATE_KEY: ${{ secrets.SUBMODULES_SSH_KEY }}
+
+  lockfile-infra:
+    needs: select
+    if: needs.select.outputs.run_lockfile_infra == 'true'
+    uses: vals-ai/.github/.github/workflows/validate-lockfile.yaml@c8f15bdf23ce1aa11b266eb9edca0a11d6dcaae1
+    with:
+      project_path: infra
+    secrets:
+      GH_PAT: ${{ secrets.GH_PAT }}
+      SSH_PRIVATE_KEY: ${{ secrets.SUBMODULES_SSH_KEY }}
+
+  cbs:
+    needs: select
+    if: needs.select.outputs.run_cbs == 'true'
+    uses: vals-ai/.github/.github/workflows/validate-cbs-latest-tag.yaml@c8f15bdf23ce1aa11b266eb9edca0a11d6dcaae1
+
+  required-ci:
+    name: required-ci
+    needs:
+      - select
+      - lint
+      - typecheck
+      - cli
+      - cli-smoke
+      - tracker-unit
+      - tracker-live
+      - tracker-live-fork-blocked
+      - executor
+      - infra
+      - sdk
+      - lockfile-root
+      - lockfile-tracker
+      - lockfile-infra
+      - cbs
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Aggregate required-ci result
+        env:
+          SELECT_RESULT: ${{ needs.select.result }}
+          JOBS_JSON: >-
+            [
+              {"name":"lint","required":"${{ needs.select.outputs.run_lint }}","result":"${{ needs.lint.result }}"},
+              {"name":"typecheck","required":"${{ needs.select.outputs.run_typecheck }}","result":"${{ needs.typecheck.result }}"},
+              {"name":"cli","required":"${{ needs.select.outputs.run_cli }}","result":"${{ needs.cli.result }}"},
+              {"name":"cli-smoke","required":"${{ needs.select.outputs.run_cli_smoke }}","result":"${{ needs.cli-smoke.result }}"},
+              {"name":"tracker-unit","required":"${{ needs.select.outputs.run_tracker_unit }}","result":"${{ needs.tracker-unit.result }}"},
+              {"name":"tracker-live","required":"${{ needs.select.outputs.run_tracker_live }}","result":"${{ needs.tracker-live.result }}"},
+              {"name":"tracker-live-fork-blocked","required":"${{ needs.select.outputs.run_tracker_live_fork_blocked }}","result":"${{ needs.tracker-live-fork-blocked.result }}"},
+              {"name":"executor","required":"${{ needs.select.outputs.run_executor }}","result":"${{ needs.executor.result }}"},
+              {"name":"infra","required":"${{ needs.select.outputs.run_infra }}","result":"${{ needs.infra.result }}"},
+              {"name":"sdk","required":"${{ needs.select.outputs.run_sdk }}","result":"${{ needs.sdk.result }}"},
+              {"name":"lockfile-root","required":"${{ needs.select.outputs.run_lockfile_root }}","result":"${{ needs.lockfile-root.result }}"},
+              {"name":"lockfile-tracker","required":"${{ needs.select.outputs.run_lockfile_tracker }}","result":"${{ needs.lockfile-tracker.result }}"},
+              {"name":"lockfile-infra","required":"${{ needs.select.outputs.run_lockfile_infra }}","result":"${{ needs.lockfile-infra.result }}"},
+              {"name":"cbs","required":"${{ needs.select.outputs.run_cbs }}","result":"${{ needs.cbs.result }}"}
+            ]
+        run: python3 .github/scripts/required_ci_aggregate.py

@@ -37,6 +37,7 @@ on:
       - "scripts/sdk/**"
       - ".github/workflows/sdk-package.yml"
       - ".github/workflows/publish-sdk.yml"
+  workflow_call:
 
 jobs:
   package:

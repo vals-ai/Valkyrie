@@ -1,5 +1,8 @@
 name: ruff-lint
-on: [pull_request, push]
+on:
+  pull_request:
+  push:
+  workflow_call:
 
 jobs:
   run-ruff-lint:

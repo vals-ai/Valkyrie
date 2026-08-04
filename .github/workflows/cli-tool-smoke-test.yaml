@@ -3,6 +3,7 @@ name: CLI tool smoke test
 on:
   pull_request:
     branches: [dev, prod]
+  workflow_call:
 
 jobs:
   cli-tool-smoke-test:
