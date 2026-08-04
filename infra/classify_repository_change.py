@@ -8,18 +8,24 @@ import json
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import cast
+
+from classify_executor_template_change import (
+    ExecutorHostTemplateEffect,
+    classify_executor_host_template_change,
+)
 
 _EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 _MIGRATION_DIRECTORY = "services/tracker/src/tracker/database/migrations/versions/"
-_CONSTANTS_PATH = "infra/constants.py"
-_EXEMPT_CONSTANT_DELETION = "DEV_TRACKER_CERTIFICATE_ARN_PARAMETER"
 _EXECUTOR_STACK_FILES = {
     ".dockerignore",
     ".github/workflows/deploy.yaml",
+    ".github/workflows/maintenance-classification.yaml",
     "infra/Makefile",
     "infra/app.py",
     "infra/cdk.json",
-    _CONSTANTS_PATH,
+    "infra/classify_repository_change.py",
+    "infra/constants.py",
     "infra/executor_release/main.py",
     "infra/executor_stack.py",
     "infra/shared.py",
@@ -82,6 +88,7 @@ class Classification:
     base_sha: str
     head_sha: str
     executor_stack_deploy_required: bool
+    executor_host_redeploy_required: bool
     executor_release_required: bool
     core_maintenance_required: bool
     database_maintenance_required: bool
@@ -100,19 +107,6 @@ def _git(repository: Path, *arguments: str) -> str:
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or f"git {' '.join(arguments)} failed")
-    return result.stdout
-
-
-def _git_blob(repository: Path, revision: str, path: str) -> bytes:
-    result = subprocess.run(
-        ["git", "show", f"{revision}:{path}"],
-        cwd=repository,
-        check=False,
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        error = result.stderr.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(error or f"git show {revision}:{path} failed")
     return result.stdout
 
 
@@ -234,59 +228,6 @@ def _is_executor_stack_path(path: str) -> bool:
     return path in _EXECUTOR_STACK_FILES or path.startswith(_EXECUTOR_STACK_DIRECTORIES)
 
 
-def _is_exact_certificate_parameter_deletion(
-    repository: Path,
-    *,
-    base_sha: str,
-    head_sha: str,
-    status: str,
-    paths: list[str],
-) -> bool:
-    if status != "M" or paths != [_CONSTANTS_PATH]:
-        return False
-
-    base_blob = _git_blob(repository, base_sha, _CONSTANTS_PATH)
-    head_blob = _git_blob(repository, head_sha, _CONSTANTS_PATH)
-    try:
-        base_source = base_blob.decode("utf-8")
-        head_source = head_blob.decode("utf-8")
-        base_tree = ast.parse(base_source)
-        head_tree = ast.parse(head_source)
-    except (SyntaxError, UnicodeDecodeError):
-        return False
-
-    base_names = [
-        node for node in ast.walk(base_tree) if isinstance(node, ast.Name) and node.id == _EXEMPT_CONSTANT_DELETION
-    ]
-    if len(base_names) != 1:
-        return False
-    statement = next(
-        (
-            node
-            for node in base_tree.body
-            if isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and node.targets[0] is base_names[0]
-            and isinstance(node.targets[0], ast.Name)
-        ),
-        None,
-    )
-    if statement is None or statement.lineno != statement.end_lineno or statement.col_offset != 0:
-        return False
-
-    lines = base_blob.splitlines(keepends=True)
-    statement_blob = b"".join(lines[statement.lineno - 1 : statement.end_lineno])
-    statement_source = statement_blob.decode("utf-8").rstrip("\r\n")
-    if statement_source != ast.get_source_segment(base_source, statement):
-        return False
-    if any(isinstance(node, ast.Name) and node.id == _EXEMPT_CONSTANT_DELETION for node in ast.walk(head_tree)):
-        return False
-
-    start = sum(len(line) for line in lines[: statement.lineno - 1])
-    end = start + len(statement_blob)
-    return base_blob[:start] + base_blob[end:] == head_blob
-
-
 def _is_executor_release_path(path: str) -> bool:
     if path.startswith(_MIGRATION_DIRECTORY):
         return False
@@ -298,6 +239,7 @@ def classify_repository_change(
     *,
     base_sha: str,
     head_sha: str,
+    executor_effect: ExecutorHostTemplateEffect,
 ) -> Classification:
     changed_migrations: list[str] = []
     findings: list[Finding] = []
@@ -308,17 +250,10 @@ def classify_repository_change(
     database_maintenance_required = False
 
     for status, paths in _changed_entries(repository, base_sha, head_sha):
-        certificate_parameter_deletion = _is_exact_certificate_parameter_deletion(
-            repository,
-            base_sha=base_sha,
-            head_sha=head_sha,
-            status=status,
-            paths=paths,
-        )
-        if not certificate_parameter_deletion and any(_is_executor_stack_path(path) for path in paths):
+        if any(_is_executor_stack_path(path) for path in paths):
             executor_stack_deploy_required = True
             reasons.add("executor-core-change")
-        if not certificate_parameter_deletion and any(path in _EXECUTOR_SHARED_FILES for path in paths):
+        if any(path in _EXECUTOR_SHARED_FILES for path in paths):
             core_maintenance_required = True
         if any(_is_executor_release_path(path) for path in paths):
             executor_release_required = True
@@ -337,13 +272,17 @@ def classify_repository_change(
             reasons.add("unsafe-migration")
             findings.extend(migration_findings)
 
-    maintenance_required = executor_stack_deploy_required or database_maintenance_required
+    if executor_effect.redeploy_required:
+        executor_stack_deploy_required = True
+        reasons.update(executor_effect.reasons)
+    maintenance_required = executor_effect.redeploy_required or database_maintenance_required
     classification = "maintenance-required" if maintenance_required else "safe"
     return Classification(
         classification=classification,
         base_sha=base_sha,
         head_sha=head_sha,
         executor_stack_deploy_required=executor_stack_deploy_required,
+        executor_host_redeploy_required=executor_effect.redeploy_required,
         executor_release_required=executor_release_required,
         core_maintenance_required=core_maintenance_required,
         database_maintenance_required=database_maintenance_required,
@@ -358,6 +297,9 @@ def _parse_arguments() -> argparse.Namespace:
     parser.add_argument("--base-sha", required=True)
     parser.add_argument("--head-sha", required=True)
     parser.add_argument("--repository-root", type=Path, default=Path("."))
+    parser.add_argument("--executor-base-template", type=Path, required=True)
+    parser.add_argument("--executor-head-template", type=Path, required=True)
+    parser.add_argument("--expected-stack-id", required=True)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 
@@ -365,11 +307,21 @@ def _parse_arguments() -> argparse.Namespace:
 def main() -> None:
     arguments = _parse_arguments()
     try:
+        base_template = json.loads(arguments.executor_base_template.read_text(encoding="utf-8"))
+        head_template = json.loads(arguments.executor_head_template.read_text(encoding="utf-8"))
+        if not isinstance(base_template, dict) or not isinstance(head_template, dict):
+            raise ValueError("WorkerStack templates must be JSON objects")
+        executor_effect = classify_executor_host_template_change(
+            cast(dict[str, object], base_template),
+            cast(dict[str, object], head_template),
+            expected_stack_id=arguments.expected_stack_id,
+        )
         payload: dict[str, object] = asdict(
             classify_repository_change(
                 arguments.repository_root.resolve(),
                 base_sha=arguments.base_sha,
                 head_sha=arguments.head_sha,
+                executor_effect=executor_effect,
             )
         )
     except Exception as error:
