@@ -36,8 +36,15 @@ def _select(paths, base_ref="dev", is_fork=False):
 class SelectorTest(unittest.TestCase):
     def test_docs_only_change_requires_no_code_validation(self) -> None:
         out = _select(["docs/guide.md", "README.md"])
-        for flag in ("run_lint", "run_typecheck", "run_cli", "run_tracker_unit",
-                     "run_executor", "run_infra", "run_sdk"):
+        for flag in (
+            "run_lint",
+            "run_typecheck",
+            "run_cli",
+            "run_tracker_unit",
+            "run_executor",
+            "run_infra",
+            "run_sdk",
+        ):
             self.assertEqual(out[flag], "false", flag)
 
     def test_infra_only_change_does_not_require_tracker_or_sdk_or_cli(self) -> None:
@@ -79,8 +86,16 @@ class SelectorTest(unittest.TestCase):
     def test_self_modification_forces_full_validation(self) -> None:
         out = _select([".github/workflows/required-ci.yaml"])
         self.assertEqual(out["force_all"], "true")
-        for flag in ("run_lint", "run_typecheck", "run_cli", "run_tracker_unit",
-                     "run_executor", "run_infra", "run_sdk", "run_lockfile_root"):
+        for flag in (
+            "run_lint",
+            "run_typecheck",
+            "run_cli",
+            "run_tracker_unit",
+            "run_executor",
+            "run_infra",
+            "run_sdk",
+            "run_lockfile_root",
+        ):
             self.assertEqual(out[flag], "true", flag)
 
 

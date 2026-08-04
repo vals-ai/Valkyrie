@@ -41,8 +41,7 @@ def main() -> int:
 
     if select_result != _OK:
         failures.append(f"relevance selector did not succeed (result={select_result!r})")
-    rows.append(f"| relevance-selector | (gate) | {select_result} | "
-                f"{'PASS' if select_result == _OK else 'FAIL'} |")
+    rows.append(f"| relevance-selector | (gate) | {select_result} | {'PASS' if select_result == _OK else 'FAIL'} |")
 
     for job in jobs:
         name = job["name"]
@@ -58,8 +57,7 @@ def main() -> int:
             if not ok:
                 failures.append(f"non-required leaf {name!r} ended in {result!r}")
 
-        rows.append(f"| {name} | {'yes' if required else 'no'} | {result} | "
-                    f"{'PASS' if ok else 'FAIL'} |")
+        rows.append(f"| {name} | {'yes' if required else 'no'} | {result} | {'PASS' if ok else 'FAIL'} |")
 
     _summary(["## required-ci aggregate", "", *rows])
 
