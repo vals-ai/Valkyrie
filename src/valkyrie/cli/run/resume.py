@@ -68,6 +68,12 @@ from valkyrie.cli.tracker_client import TrackerService
     help="Clear durable eval state and rerun generation.",
 )
 @click.option(
+    "--benchmark-url",
+    type=str,
+    default=None,
+    help="Replace the benchmark service URL for this run.",
+)
+@click.option(
     "--connect",
     is_flag=True,
     required=False,
@@ -84,6 +90,7 @@ def resume(
     secrets: tuple[tuple[str, str]],
     update_agent: bool,
     from_scratch: bool,
+    benchmark_url: str | None,
     connect: bool,
 ):
     """
@@ -118,6 +125,7 @@ def resume(
                 retry_task_ids,
                 service_headers=service_headers,
                 secrets={key: value for key, value in secrets},
+                benchmark_url=benchmark_url,
             )
             action_label = "retried" if retry else "resumed"
             click.echo(click.style(f"✓ Run {action_label} successfully!", fg="green", bold=True))

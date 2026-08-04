@@ -340,6 +340,7 @@ class RunsResource:
         secrets: Mapping[str, str] | None = None,
         service_headers: Mapping[str, str] | None = None,
         from_scratch: bool = False,
+        benchmark_url: str | None = None,
     ) -> RetryOrResumeRunResponse:
         """Resume unfinished work for a run."""
         return await self._retry_or_resume(
@@ -350,6 +351,7 @@ class RunsResource:
             secrets=secrets,
             service_headers=service_headers,
             from_scratch=from_scratch,
+            benchmark_url=benchmark_url,
         )
 
     async def retry(
@@ -361,6 +363,7 @@ class RunsResource:
         secrets: Mapping[str, str] | None = None,
         service_headers: Mapping[str, str] | None = None,
         from_scratch: bool = False,
+        benchmark_url: str | None = None,
     ) -> RetryOrResumeRunResponse:
         """Retry failed or selected work for a run."""
         return await self._retry_or_resume(
@@ -371,6 +374,7 @@ class RunsResource:
             secrets=secrets,
             service_headers=service_headers,
             from_scratch=from_scratch,
+            benchmark_url=benchmark_url,
         )
 
     async def _retry_or_resume(
@@ -383,6 +387,7 @@ class RunsResource:
         secrets: Mapping[str, str] | None,
         service_headers: Mapping[str, str] | None,
         from_scratch: bool,
+        benchmark_url: str | None,
     ) -> RetryOrResumeRunResponse:
         """Send a retry or resume request."""
         if concurrency is not None and concurrency < 1:
@@ -396,16 +401,20 @@ class RunsResource:
         if concurrency is not None:
             params["concurrency"] = concurrency
 
+        body: dict[str, Any] = {
+            "task_ids": list(task_ids or []),
+            "service_headers": effective_headers,
+            "secrets": dict(secrets or {}),
+        }
+        if benchmark_url is not None:
+            body["benchmark_url"] = benchmark_url
+
         return await self._sdk.request_model(
             "POST",
             f"/runs/{run_id}/{'retry' if retry else 'resume'}",
             RetryOrResumeRunResponse,
             params=params,
-            json={
-                "task_ids": list(task_ids or []),
-                "service_headers": effective_headers,
-                "secrets": dict(secrets or {}),
-            },
+            json=body,
         )
 
     def _service_headers(self, benchmark: str, explicit_headers: Mapping[str, str] | None) -> dict[str, str]:

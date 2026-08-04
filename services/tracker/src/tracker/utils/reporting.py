@@ -1,7 +1,9 @@
 """Read-only queries that fetch and shape run data for API responses and listings."""
 
 import asyncio
+from asyncio import CancelledError
 import base64
+import binascii
 import io
 import json
 from collections.abc import AsyncGenerator, Buffer
@@ -288,6 +290,10 @@ async def stream_run_results(
                         str(fresh_run.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
                     ),
                     label=fresh_run.label,
+                    executor_release_id=fresh_run.executor_release_id,
+                    current_execution_release_id=fresh_run.current_execution_release_id,
+                    executor_artifact_digest=fresh_run.executor_artifact_digest,
+                    executor_protocol_version=fresh_run.executor_protocol_version,
                     final_score=fresh_run.final_evaluation.final_score if fresh_run.final_evaluation else None,
                     error_message=fresh_run.error_message if fresh_run.status == BenchmarkStatus.ERROR else None,
                 )
@@ -301,7 +307,7 @@ async def stream_run_results(
 
             await asyncio.sleep(PULL_INTERVAL)
 
-    except asyncio.CancelledError:
+    except CancelledError:
         logger.info(f"Client disconnected from run {run_id} stream")
         yield DISCONNECT
 
@@ -322,8 +328,11 @@ def encode_cursor(started_at: datetime, row_id: UUID) -> str:
 def decode_cursor(cursor: str) -> tuple[datetime, UUID]:
     """Decode a keyset pagination cursor into a started_at timestamp and row id."""
     padded = cursor + "=" * (-len(cursor) % 4)
-    payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
-    return datetime.fromisoformat(payload["started_at"]), UUID(payload["id"])
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+        return datetime.fromisoformat(payload["started_at"]), UUID(payload["id"])
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Invalid benchmark cursor") from exc
 
 
 def fetch_filtered_run_rows(
@@ -470,6 +479,11 @@ def build_run_table_rows(run_rows: Sequence[Benchmark], session: Session) -> lis
                 label=run_row.label,
                 model=run_row.arguments.contract.model,
                 dataset=run_row.arguments.dataset or "default",
+                executor_release_id=run_row.executor_release_id,
+                current_execution_release_id=run_row.current_execution_release_id,
+                executor_artifact_digest=run_row.executor_artifact_digest,
+                executor_protocol_version=run_row.executor_protocol_version,
+                error_message=run_row.error_message if run_row.status == BenchmarkStatus.ERROR else None,
                 started_by_email=run_row.started_by_email,
                 started_at=run_row.started_at,
                 finished_at=run_row.finished_at,

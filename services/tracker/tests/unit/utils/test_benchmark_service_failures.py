@@ -3,6 +3,7 @@
 Run: uv run pytest tests/unit/utils/test_benchmark_service_failures.py
 """
 
+import asyncio
 import time
 from typing import Any, Never
 
@@ -48,7 +49,7 @@ class TestBenchmarkServiceFailures:
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
 
@@ -59,7 +60,7 @@ class TestBenchmarkServiceFailures:
         real_monotonic = time.monotonic
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         assert result == {"task_0": None}
 
@@ -87,7 +88,7 @@ class TestBenchmarkServiceFailures:
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
 
@@ -96,7 +97,7 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         assert result == {"task_0": None}
 
@@ -116,7 +117,7 @@ class TestBenchmarkServiceFailures:
         harness_config: HarnessConfig,
     ) -> None:
         """VALKYRIE-5D: ValidationError from retrieve_task is caught with field names."""
-        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
 
@@ -127,7 +128,7 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_invalid)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         assert result == {"task_0": None}
 
@@ -147,7 +148,7 @@ class TestBenchmarkServiceFailures:
         harness_config: HarnessConfig,
     ) -> None:
         """VALKYRIE-5A: InvalidStatus from WebSocket rejection is caught with HTTP status."""
-        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
 
@@ -156,7 +157,7 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         assert result == {"task_0": None}
 
@@ -175,10 +176,12 @@ class TestBenchmarkServiceFailures:
         harness_config: HarnessConfig,
     ) -> None:
         contract.output_artifacts = ["artifacts/missing.json"]
-        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
         logged_messages: list[str] = []
+        log_written = asyncio.Event()
+        event_loop = asyncio.get_running_loop()
 
         async def _mock_install_agent_dependencies(*_args: Any, **_kwargs: Any) -> None:
             return None
@@ -195,6 +198,7 @@ class TestBenchmarkServiceFailures:
 
         def _mock_write_benchmark_log_event(_stream_key: str, message: str, *_args: Any, **_kwargs: Any) -> None:
             logged_messages.append(message)
+            event_loop.call_soon_threadsafe(log_written.set)
 
         monkeypatch.setattr(utils_module, "run_agent", sandbox_module.run_agent)
         monkeypatch.setattr(sandbox_module, "install_agent_dependencies", _mock_install_agent_dependencies)
@@ -206,7 +210,8 @@ class TestBenchmarkServiceFailures:
         monkeypatch.setattr(sandbox_module, "_exec", _mock_exec)
         monkeypatch.setattr(utils_module, "write_benchmark_log_event", _mock_write_benchmark_log_event)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        await asyncio.wait_for(log_written.wait(), timeout=1)
 
         assert result == {"task_0": None}
 
@@ -226,7 +231,7 @@ class TestBenchmarkServiceFailures:
         harness_config: HarnessConfig,
     ) -> None:
         """VALKYRIE-59: BenchmarkServiceError from setup_task is caught and stored."""
-        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
 
@@ -237,7 +242,7 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         assert result == {"task_0": None}
 
@@ -260,7 +265,7 @@ class TestBenchmarkServiceFailures:
         - Empty-string httpx.ConnectTimeout stores its exception type in the DB.
         - The task log path receives the same visible exception type.
         """
-        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
         logged_messages: list[str] = []
@@ -274,7 +279,7 @@ class TestBenchmarkServiceFailures:
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_timeout)
         monkeypatch.setattr(utils_module, "write_benchmark_log_event", _mock_write_benchmark_log_event)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         assert result == {"task_0": None}
 
@@ -290,9 +295,10 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        executor_authority_kwargs: Any,
     ) -> None:
         """VALKYRIE-1Z: BenchmarkServiceError from final_score is caught at the benchmark level."""
-        start_benchmark_request, _task_row, benchmark_id = create_task_environment(
+        start_benchmark_request, _task_row, benchmark_id, _authority = create_task_environment(
             contract, database_session, harness_config
         )
 
@@ -304,11 +310,14 @@ class TestBenchmarkServiceFailures:
             raise BenchmarkServiceError(html_error)
 
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
+        benchmark_row = fetch_run_row(benchmark_id, database_session, TEST_ORG)
+        authority_kwargs = executor_authority_kwargs(benchmark_row)
 
         await process_run(
             start_benchmark_request_json=start_benchmark_request.model_dump(),
             benchmark_id_str=str(benchmark_id),
             verified_task_ids=["task_0"],
+            **authority_kwargs,
         )
 
         with Session(bind=database_session.bind) as session:

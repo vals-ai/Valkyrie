@@ -3,12 +3,13 @@
 import logging
 import logging.config
 import os
+from typing import ClassVar
 
 
 class DevFormatter(logging.Formatter):
     """Colored human-readable formatter that includes context fields."""
 
-    COLORS = {
+    COLORS: ClassVar[dict[str, str]] = {
         "DEBUG": "\033[36m",
         "INFO": "\033[32m",
         "WARNING": "\033[33m",
@@ -44,13 +45,16 @@ _JSON_FORMATTER = {
     },
 }
 
+_DEVELOPMENT_FORMATTER = {
+    "()": "tracker.logging.config.DevFormatter",
+    "fmt": "%(message)s",
+}
+
 _FORMATTERS = {
     "production": _JSON_FORMATTER,
     "dev": _JSON_FORMATTER,
-    "development": {
-        "()": "tracker.logging.config.DevFormatter",
-        "fmt": "%(message)s",
-    },
+    "development": _DEVELOPMENT_FORMATTER,
+    "release-test": _DEVELOPMENT_FORMATTER,
 }
 
 

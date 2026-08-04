@@ -23,6 +23,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.executor.dispatch_control import terminalize_active_dispatches
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.sandbox import delete_sandbox
@@ -35,6 +36,30 @@ from tracker.utils.resources import fetch_run_row, fetch_sandbox_provider_config
 logger = get_logger(__name__)
 
 
+def apply_stop_run(
+    run_row: Benchmark,
+    session: Session,
+    force: bool,
+    org: Org,
+    task_ids: list[str] | None = None,
+) -> None:
+    """Apply the Stop state transition without committing the transaction."""
+    task_update = (
+        update(Task)
+        .where(col(Task.benchmark) == run_row.id)
+        .where(col(Task.org_id) == org.id)
+        .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]))
+    )
+    if task_ids:
+        task_update = task_update.where(col(Task.task_id).in_(task_ids))
+
+    result = session.exec(task_update.values(status=TaskStatus.STOPPED))
+
+    if task_ids is None and (result.rowcount > 0 or force):
+        run_row.status = BenchmarkStatus.STOPPING
+        session.add(run_row)
+
+
 async def initiate_stop_run(
     run_row: Benchmark,
     session: Session,
@@ -42,28 +67,10 @@ async def initiate_stop_run(
     org: Org,
     task_ids: list[str] | None = None,
 ) -> None:
-    """Set the flags that initiate the stopping process for a run.
-
-    NOTE: Tasks that have already started will continue to run and finish.
-    """
+    """Initiate Stop without interrupting work that already started unless forced."""
     try:
-        # Update all rows where tasks are pending or building to stopped
-        task_update = (
-            update(Task)
-            .where(col(Task.benchmark) == run_row.id)
-            .where(col(Task.org_id) == org.id)
-            .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]))
-        )
-        if task_ids:
-            task_update = task_update.where(col(Task.task_id).in_(task_ids))
-
-        result = session.exec(task_update.values(status=TaskStatus.STOPPED))
+        apply_stop_run(run_row, session, force, org, task_ids)
         session.commit()
-
-        if task_ids is None and (result.rowcount > 0 or force):
-            run_row.status = BenchmarkStatus.STOPPING
-            session.add(run_row)
-            session.commit()
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error stopping run {run_row.id}: {str(e)}") from e
 
@@ -151,7 +158,9 @@ async def force_stop_sandboxes(
         f"{task_alias}: {error_message}" for task_alias, error_message in results.items() if error_message
     )
 
-    # If all tasks are already in a stopped state, we need to update the final status here since the worker has exited
+    # Sandbox teardown releases the request's original benchmark lock. Reacquire
+    # it so Retry admission cannot land between the runnable check and revocation.
+    run_row = fetch_run_row(run_row.id, session, org, for_update=True)
     finished_statuses: list[TaskStatus] = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
     tasks_still_running: int = session.exec(
         select(func.count(col(Task.id)))
@@ -162,8 +171,9 @@ async def force_stop_sandboxes(
 
     if not tasks_still_running:
         run_row.status = BenchmarkStatus.STOPPED
+        terminalize_active_dispatches(session, run_row.id)
         session.add(run_row)
-        session.commit()
+    session.commit()
 
     if error_message:
         raise TrackerServiceError(f"Unexpected errors stopping sandboxes:\n{error_message}")
@@ -210,7 +220,6 @@ async def reset_to_in_progress_status(
 
         # Allow re-running the end of the benchmark without running any tasks
         if not existing_rows and not new_task_ids:
-            session.commit()
             return []
 
         # Verify the task ids are still valid before priming to resume
@@ -220,13 +229,16 @@ async def reset_to_in_progress_status(
             task_ids=all_requested_task_ids, slice_str=None, dataset=run_row.arguments.dataset
         )
 
-        if run_row.final_evaluation:
-            session.delete(run_row.final_evaluation)
+        old_evaluation = run_row.final_evaluation
+        if old_evaluation is not None:
+            run_row.final_evaluation = None
+            session.delete(old_evaluation)
 
-        # Can already be in progress when retrying errored tasks while the run is ongoing.
+        # Retry/resume always starts a new active execution.
         if run_row.status != BenchmarkStatus.IN_PROGRESS:
             run_row.status = BenchmarkStatus.IN_PROGRESS
-            session.add(run_row)
+        run_row.finished_at = None
+        session.add(run_row)
 
         for task in existing_rows:
             task.status = (
@@ -242,8 +254,6 @@ async def reset_to_in_progress_status(
 
         for task_id in new_task_ids:
             session.add(Task(org_id=org.id, task_id=task_id, benchmark=run_row.id, status=TaskStatus.PENDING))
-
-        session.commit()
 
         return verify_response.task_ids
     except (TrackerServiceError, BenchmarkServiceError):

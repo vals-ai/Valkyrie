@@ -1,4 +1,4 @@
-"""Sentry SDK initialization shared by the Tracker API and Worker processes."""
+"""Sentry SDK initialization for Valkyrie service processes."""
 
 import logging
 import os
@@ -52,7 +52,7 @@ def init_sentry(service_name: str, environment: str) -> None:
     """Initialize Sentry SDK. No-op if SENTRY_DSN is not set.
 
     Args:
-        service_name: Identifies the process in Sentry (e.g. "valkyrie-tracker", "valkyrie-worker").
+        service_name: Identifies the process in Sentry (e.g. "valkyrie-tracker").
         environment: Deployment environment tag (e.g. "development", "production").
     """
     dsn = os.environ.get("SENTRY_DSN", "")
