@@ -114,3 +114,5 @@ executor.add_dependency(tracker)
 monitoring.add_dependency(tracker)
 
 app.synth()
+
+# ci-guard test: infra-only, temporary, will be closed
