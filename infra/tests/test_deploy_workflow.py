@@ -57,9 +57,6 @@ class DeployWorkflowTest(unittest.TestCase):
     def test_executor_jobs_own_build_deploy_activation_and_maintenance(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         dev_executor = workflow.split("  executor-development:", maxsplit=1)[1].split(
-            "  production-executor-approval:", maxsplit=1
-        )[0]
-        production_approval = workflow.split("  production-executor-approval:", maxsplit=1)[1].split(
             "  executor-production:", maxsplit=1
         )[0]
         prod_executor = workflow.split("  executor-production:", maxsplit=1)[1]
@@ -87,14 +84,10 @@ class DeployWorkflowTest(unittest.TestCase):
 
         self.assertIn("needs: [classify-deployment, run-dev-operation]", dev_executor)
         self.assertIn("environment: dev", dev_executor)
-        self.assertIn("environment: production-release", production_approval)
-        self.assertNotIn("concurrency:", production_approval)
-        self.assertIn(
-            "needs: [classify-deployment, deploy-production-core, production-executor-approval]",
-            prod_executor,
-        )
-        self.assertNotIn("environment: production-release", prod_executor)
-        self.assertIn("needs.production-executor-approval.result == 'success'", prod_executor)
+        self.assertIn("needs: [classify-deployment, deploy-production-core]", prod_executor)
+        self.assertIn("environment: prod", prod_executor)
+        self.assertNotIn("production-executor-approval", workflow)
+        self.assertNotIn("production-release", workflow)
         self.assertEqual(
             workflow.count("PYTHONPATH=services/tracker/src python services/executor_artifact/build.py"),
             2,
@@ -107,7 +100,7 @@ class DeployWorkflowTest(unittest.TestCase):
     def test_maintenance_paths_bypass_the_skipped_core_job_and_preserve_failed_fences(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         dev_executor = workflow.split("  executor-development:", maxsplit=1)[1].split(
-            "  production-executor-approval:", maxsplit=1
+            "  executor-production:", maxsplit=1
         )[0]
         prod_executor = workflow.split("  executor-production:", maxsplit=1)[1]
 
@@ -131,7 +124,7 @@ class DeployWorkflowTest(unittest.TestCase):
     def test_executor_bootstrap_fails_closed_until_release_control_exists(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         dev_executor = workflow.split("  executor-development:", maxsplit=1)[1].split(
-            "  production-executor-approval:", maxsplit=1
+            "  executor-production:", maxsplit=1
         )[0]
         prod_executor = workflow.split("  executor-production:", maxsplit=1)[1]
 
@@ -209,7 +202,7 @@ class DeployWorkflowTest(unittest.TestCase):
     def test_mutations_share_stage_mutex_and_stale_executor_jobs_do_nothing(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         dev_executor = workflow.split("  executor-development:", maxsplit=1)[1].split(
-            "  production-executor-approval:", maxsplit=1
+            "  executor-production:", maxsplit=1
         )[0]
         prod_executor = workflow.split("  executor-production:", maxsplit=1)[1]
 

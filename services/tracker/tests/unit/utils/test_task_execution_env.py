@@ -11,10 +11,16 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from benchmark_service.client import BenchmarkServiceClient
 from sqlmodel import Session
 
 import tracker.utils.task_execution as utils_module
-from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
+from tests.unit.utils.task_execution_support import (
+    TEST_ORG,
+    create_task_environment,
+    make_retrieve_task_response,
+    run_process_task,
+)
 from tracker.auth import RequestIdentity
 from tracker.database.models import (
     AgentContractRequest,
@@ -139,6 +145,50 @@ class TestProcessTaskEnvironment:
         }
         assert "MODEL_GATEWAY_URL" not in env_vars
         assert "MODEL_GATEWAY_API_KEY" not in env_vars
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_process_task_forwards_native_secret_references_without_resolving_values(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        contract = contract.model_copy(update={"secrets": {"LEGACY_API_KEY": "aws-secret"}})
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        captured: dict[str, dict[str, str]] = {}
+        resolved_inputs: list[dict[str, str]] = []
+
+        def _mock_resolve_secrets(secrets: dict[str, str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
+            resolved_inputs.append(secrets)
+            return {"LEGACY_API_KEY": "legacy-value"}
+
+        @asynccontextmanager
+        async def _capture_sandbox(*_args: Any, **kwargs: Any) -> AsyncGenerator[SimpleNamespace, None]:
+            captured["env_vars"] = kwargs["env_vars"]
+            captured["sandbox_secrets"] = kwargs["sandbox_secrets"]
+            yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> Any:
+            response = make_retrieve_task_response()
+            response.sandbox_secrets = {"TAVILY_API_KEY": "daytona-tavily"}
+            return response
+
+        monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr(utils_module, "create_sandbox", _capture_sandbox)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        assert resolved_inputs == [{"LEGACY_API_KEY": "aws-secret"}]
+        assert captured["sandbox_secrets"] == {"TAVILY_API_KEY": "daytona-tavily"}
+        assert captured["env_vars"]["LEGACY_API_KEY"] == "legacy-value"
+        assert "TAVILY_API_KEY" not in captured["env_vars"]
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_stopped_task_output_is_fenced_while_sibling_keeps_dispatch_active(
