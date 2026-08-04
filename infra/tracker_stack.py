@@ -8,7 +8,6 @@ import aws_cdk as cdk
 from aws_cdk import (
     Duration,
     Stack,
-    aws_certificatemanager,
     aws_ec2,
     aws_ecr,
     aws_ecs,
@@ -31,7 +30,6 @@ from constants import (
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
     CONTAINER_HEALTH_TIMEOUT_SECONDS,
     DEV_TRACKER_ALB_DNS_PARAMETER,
-    DEV_TRACKER_CERTIFICATE_ARN_PARAMETER,
     DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER,
     DEV_TRACKER_SECURITY_GROUP_PARAMETER,
     DOCKER_ASSET_EXCLUDES,
@@ -232,7 +230,6 @@ class TrackerStack(Stack):
 
         tracker_domain: str | None = None
         tracker_hosted_zone: aws_route53.IHostedZone | None = None
-        certificate: aws_certificatemanager.ICertificate | None = None
         if stage.is_prod:
             if hosted_zone is None:
                 raise ValueError("Production requires the vals.ai hosted zone")
@@ -249,14 +246,7 @@ class TrackerStack(Stack):
                 ),
                 zone_name=tracker_domain,
             )
-            certificate = aws_certificatemanager.Certificate.from_certificate_arn(
-                self,
-                "DevTrackerCertificate",
-                aws_ssm.StringParameter.value_for_string_parameter(
-                    self,
-                    DEV_TRACKER_CERTIFICATE_ARN_PARAMETER,
-                ),
-            )
+        tls_enabled = not stage.is_release_test
 
         self.service = aws_ecs_patterns.ApplicationLoadBalancedFargateService(
             self,
@@ -268,13 +258,12 @@ class TrackerStack(Stack):
             circuit_breaker=aws_ecs.DeploymentCircuitBreaker(rollback=True),
             domain_name=tracker_domain,
             domain_zone=tracker_hosted_zone,
-            certificate=certificate,
             protocol=(
                 aws_elasticloadbalancingv2.ApplicationProtocol.HTTPS
-                if certificate is not None
+                if tls_enabled
                 else aws_elasticloadbalancingv2.ApplicationProtocol.HTTP
             ),
-            redirect_http=certificate is not None,
+            redirect_http=tls_enabled,
             open_listener=False,
             assign_public_ip=True,
             public_load_balancer=not stage.is_release_test,

@@ -658,6 +658,7 @@ async def _process_task_attempt(
             source=task_data.source,
             labels=labels,
             env_vars=env_vars,
+            sandbox_secrets=task_data.sandbox_secrets,
             resources=task_data.resources,
             volumes=task_data.volumes,
             creation_semaphore=creation_semaphore,

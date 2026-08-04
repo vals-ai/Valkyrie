@@ -20,7 +20,6 @@ from constants import (
     DEV_SHARED_PUBLIC_SUBNET_IDS_PARAMETER,
     DEV_SHARED_VPC_ID_PARAMETER,
     DEV_TRACKER_ALB_DNS_PARAMETER,
-    DEV_TRACKER_CERTIFICATE_ARN_PARAMETER,
     DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER,
     DEV_TRACKER_SECURITY_GROUP_PARAMETER,
     executor_release_launch_parameter,
@@ -204,14 +203,13 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         bucket = next(iter(buckets.values()))
         self.assertEqual(bucket["Properties"]["BucketName"], f"agentic-harness-release-test-{TEST_ACCOUNT}")
 
-    def test_dev_tracker_imports_account_local_dns_and_auth(self) -> None:
+    def test_dev_tracker_owns_certificate_in_account_local_hosted_zone(self) -> None:
         dev_auth = {"AUTH_REQUIRED": "false", "DESCOPE_PROJECT_ID": "dev-project"}
         with mock.patch.dict(os.environ, dev_auth, clear=True):
             tracker_template = dev_tracker_template()
 
         template = cast(Mapping[str, object], tracker_template.to_json())
         hosted_zone_parameter = ssm_parameter_id(template, DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER)
-        certificate_parameter = ssm_parameter_id(template, DEV_TRACKER_CERTIFICATE_ARN_PARAMETER)
         rendered = json.dumps(template)
         iam_policies = tracker_template.find_resources("AWS::IAM::Policy")
         rendered_policies = json.dumps(iam_policies)
@@ -219,10 +217,23 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         self.assertIn("devEvalInfraDescopeManagementKey", rendered)
         self.assertNotIn("/vals/dev/descope/project-id", rendered)
         self.assertNotIn("valkyrie/sentry-dsn", rendered)
-        self.assertFalse(tracker_template.find_resources("AWS::CertificateManager::Certificate"))
+        self.assertNotIn("/valkyrie/dev/dns/tracker/certificate-arn", rendered)
+        certificates = tracker_template.find_resources("AWS::CertificateManager::Certificate")
+        self.assertEqual(len(certificates), 1)
+        certificate_id, certificate = next(iter(certificates.items()))
+        self.assertEqual(certificate["Properties"]["DomainName"], "benchmark-tracker-dev.vals.ai")
+        self.assertEqual(
+            certificate["Properties"]["DomainValidationOptions"],
+            [
+                {
+                    "DomainName": "benchmark-tracker-dev.vals.ai",
+                    "HostedZoneId": {"Ref": hosted_zone_parameter},
+                }
+            ],
+        )
         tracker_template.has_resource_properties(
             "AWS::ElasticLoadBalancingV2::Listener",
-            {"Certificates": [{"CertificateArn": {"Ref": certificate_parameter}}]},
+            {"Certificates": [{"CertificateArn": {"Ref": certificate_id}}]},
         )
         tracker_template.has_resource_properties(
             "AWS::Route53::RecordSet",

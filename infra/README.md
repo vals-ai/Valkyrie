@@ -13,8 +13,9 @@ AWS CDK infrastructure for the Agentic Harness benchmark platform.
 physical CloudFormation name remains `WorkerStack` so deployments update the
 existing stack and retained resources in place.
 
-Production imports the existing `vals.ai` hosted zone. Development imports the
-account-local `benchmark-tracker-dev.vals.ai` child zone and certificate.
+Production imports the existing `vals.ai` hosted zone. Development imports only
+the account-local `benchmark-tracker-dev.vals.ai` child zone. Each production
+and development Tracker stack creates and owns its ACM certificate.
 
 ## Prerequisites
 
@@ -24,11 +25,14 @@ account-local `benchmark-tracker-dev.vals.ai` child zone and certificate.
 - AWS CDK CLI
 
 The deployment account must be bootstrapped before deploying this application.
-Account setup owns the GitHub OIDC provider and deploy role, child hosted zone,
-and certificate. Configure the protected `dev` GitHub Environment with
-`DEV_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`, `AWS_REGION=us-east-1`, and
-`DESCOPE_PROJECT_ID`. To enable Sentry in dev, also set `SENTRY_DSN_SECRET_NAME`
-to the name of an account-local Secrets Manager secret containing the DSN.
+Account setup owns the GitHub OIDC provider and deploy role and the child hosted
+zone. Before deploying the development Tracker, the production root zone must
+delegate `benchmark-tracker-dev.vals.ai` to the account-local child hosted zone
+so CDK DNS validation can complete. Configure the protected `dev` GitHub
+Environment with `DEV_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`,
+`AWS_REGION=us-east-1`, and `DESCOPE_PROJECT_ID`. To enable Sentry in dev, also
+set `SENTRY_DSN_SECRET_NAME` to the name of an account-local Secrets Manager
+secret containing the DSN.
 
 Before production executor activation, configure the protected `prod` GitHub
 Environment used by the production executor job. Both AWS accounts must already
@@ -40,7 +44,6 @@ provider.
 The application imports these account-local values:
 
 - `/valkyrie/dev/dns/tracker/hosted-zone-id`
-- `/valkyrie/dev/dns/tracker/certificate-arn`
 - Secrets Manager secret `devEvalInfraDescopeManagementKey`
 
 ## Setup

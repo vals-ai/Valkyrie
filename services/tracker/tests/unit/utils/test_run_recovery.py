@@ -1562,9 +1562,12 @@ class TestRunRecovery:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
         task = Task(org_id=TEST_ORG_ID, task_id="task_error", benchmark=benchmark_row.id, status=TaskStatus.ERROR)
+        old_evaluation = FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark_row.id, final_score=0.5)
         database_session.add(benchmark_row)
         database_session.add(task)
+        database_session.add(old_evaluation)
         database_session.commit()
+        old_evaluation_id = old_evaluation.id
 
         async def _verify_error_task(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
             return VerifyTaskIdsResponse(task_ids=[task.task_id])
@@ -1589,7 +1592,63 @@ class TestRunRecovery:
             assert persisted_benchmark.current_execution_release_id == "test-release"
             assert persisted_task is not None
             assert persisted_task.status == TaskStatus.ERROR
+            assert fresh_session.get(FinalEvaluation, old_evaluation_id) is not None
+            assert persisted_benchmark.final_evaluation is not None
+            assert persisted_benchmark.final_evaluation.id == old_evaluation_id
             assert fresh_session.exec(select(ExecutorDispatch)).all() == []
+
+    @pytest.mark.parametrize(
+        ("retry", "task_status", "dispatch_kind"),
+        [
+            (False, TaskStatus.STOPPED, ExecutorDispatchKind.RESUME),
+            (True, TaskStatus.ERROR, ExecutorDispatchKind.RETRY),
+        ],
+    )
+    async def test_recovery_removes_prior_final_evaluation_before_admitting_dispatch(
+        self,
+        retry: bool,
+        task_status: TaskStatus,
+        dispatch_kind: ExecutorDispatchKind,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: Any,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        task = Task(org_id=TEST_ORG_ID, task_id="recoverable-task", benchmark=benchmark_row.id, status=task_status)
+        old_evaluation = FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark_row.id, final_score=0.5)
+        database_session.add(benchmark_row)
+        database_session.add(task)
+        database_session.add(old_evaluation)
+        database_session.commit()
+        old_evaluation_id = old_evaluation.id
+
+        async def _verify_recoverable_task(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=[task.task_id])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_recoverable_task)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true"
+            if retry
+            else f"/retry-or-resume-benchmark/{benchmark_row.id}"
+        )
+
+        assert response.status_code == 200
+
+        dispatch_id = UUID(mock_kicker.queued_calls[0]["executor_dispatch_id"])
+
+        with Session(bind=database_session.get_bind()) as fresh_session:
+            persisted_benchmark = fresh_session.get(Benchmark, benchmark_row.id)
+            dispatch = fresh_session.get(ExecutorDispatch, dispatch_id)
+
+            assert persisted_benchmark is not None
+            assert persisted_benchmark.final_evaluation is None
+            assert fresh_session.get(FinalEvaluation, old_evaluation_id) is None
+            assert dispatch is not None
+            assert dispatch.status == ExecutorDispatchStatus.QUEUED
+            assert dispatch.kind == dispatch_kind
 
     async def test_terminal_resume_without_active_release_returns_503_without_mutation(
         self,

@@ -213,6 +213,49 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertEqual(stage.phys("AgenticHarnessCluster"), "AgenticHarnessCluster-release-test")
         self.assertEqual(stage.domain("benchmark-tracker.vals.ai"), "benchmark-tracker-release-test.vals.ai")
 
+    def test_tracker_transport_follows_stage_contract(self) -> None:
+        tracker_templates: dict[str, assertions.Template] = {}
+        for stage_name, environment in (
+            (PROD, {}),
+            (DEV, TEST_DEV_ENV),
+            (RELEASE_TEST, {"DESCOPE_PROJECT_ID": "release-test"}),
+        ):
+            with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
+                tracker_templates[stage_name] = _service_templates(stage_name)[0]
+
+        for stage_name in (PROD, DEV):
+            listeners = {
+                (resource["Properties"]["Port"], resource["Properties"]["Protocol"]): resource
+                for resource in tracker_templates[stage_name]
+                .find_resources("AWS::ElasticLoadBalancingV2::Listener")
+                .values()
+            }
+            self.assertEqual(set(listeners), {(80, "HTTP"), (443, "HTTPS")})
+            self.assertTrue(listeners[(443, "HTTPS")]["Properties"]["Certificates"])
+            redirect = listeners[(80, "HTTP")]["Properties"]["DefaultActions"][0]
+            self.assertEqual(redirect["Type"], "redirect")
+            self.assertEqual(
+                redirect["RedirectConfig"],
+                {"Port": "443", "Protocol": "HTTPS", "StatusCode": "HTTP_301"},
+            )
+
+        for stage_name in (PROD, DEV):
+            self.assertEqual(
+                len(tracker_templates[stage_name].find_resources("AWS::CertificateManager::Certificate")),
+                1,
+            )
+
+        release_test_template = tracker_templates[RELEASE_TEST]
+        self.assertFalse(release_test_template.find_resources("AWS::CertificateManager::Certificate"))
+        release_test_template.has_resource_properties(
+            "AWS::ElasticLoadBalancingV2::Listener",
+            {"Port": 80, "Protocol": "HTTP"},
+        )
+        self.assertEqual(
+            len(release_test_template.find_resources("AWS::ElasticLoadBalancingV2::Listener")),
+            1,
+        )
+
     def test_release_test_owns_immutable_service_image_repositories(self) -> None:
         release_template = _shared_template(RELEASE_TEST)
         repositories = release_template.find_resources("AWS::ECR::Repository")
