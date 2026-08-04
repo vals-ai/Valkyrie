@@ -1636,7 +1636,9 @@ class TestRunRecovery:
         )
 
         assert response.status_code == 200
+
         dispatch_id = UUID(mock_kicker.queued_calls[0]["executor_dispatch_id"])
+
         with Session(bind=database_session.get_bind()) as fresh_session:
             persisted_benchmark = fresh_session.get(Benchmark, benchmark_row.id)
             dispatch = fresh_session.get(ExecutorDispatch, dispatch_id)
