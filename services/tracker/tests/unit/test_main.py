@@ -1161,6 +1161,52 @@ class TestTrackerAPI:
         assert calls[3][1]["retry_mode"].value == "from_scratch"
         assert calls[3][1]["secrets"] == {"TOKEN": "secret-name"}
 
+    @pytest.mark.parametrize("action", ["resume", "retry"])
+    async def test_canonical_continue_without_benchmark_url_uses_none(
+        self,
+        action: str,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        run_row = example_benchmark_object
+        run_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(run_row)
+        database_session.commit()
+
+        response = client.post(
+            f"/runs/{run_row.id}/{action}",
+            json={"task_ids": [], "service_headers": {}, "secrets": {}},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "success"}
+
+    @pytest.mark.parametrize("action", ["resume", "retry"])
+    async def test_canonical_continue_forwards_benchmark_url(
+        self,
+        action: str,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        run_row = example_benchmark_object
+        run_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(run_row)
+        database_session.commit()
+
+        response = client.post(
+            f"/runs/{run_row.id}/{action}",
+            json={
+                "task_ids": [],
+                "service_headers": {},
+                "secrets": {},
+                "benchmark_url": "https://new.example/",
+            },
+        )
+
+        assert response.status_code == 200
+        database_session.refresh(run_row)
+        assert run_row.custom_benchmark_service == "https://new.example"
+
     async def test_retrieve_results(
         self, monkeypatch: MonkeyPatch, database_session: Session, example_benchmark_object: Benchmark
     ) -> None:
