@@ -248,7 +248,7 @@ class DeployWorkflowTest(unittest.TestCase):
         workflow = EXECUTOR_BUILD_WORKFLOW.read_text(encoding="utf-8")
 
         self.assertIn("runs-on: ubuntu-24.04-arm", workflow)
-        self.assertEqual(workflow.count('"tests/unit/executor_host/**"'), 2)
+        self.assertEqual(workflow.count('"tests/unit/executor_host/**"'), 1)
         self.assertIn('"services/executor_artifact/**"', workflow)
         self.assertIn('"services/executor_host/**"', workflow)
         self.assertIn('"services/tracker/**"', workflow)
