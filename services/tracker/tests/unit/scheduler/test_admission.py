@@ -23,6 +23,7 @@ async def test_queued_admission_rejects_targeted_snapshots_before_provider_acces
                 context=context,
                 task_row_id=MagicMock(),
                 expected_started_at=MagicMock(),
+                authority=MagicMock(),
                 source=TargetedSnapshotSource(snapshot="snapshot", target="different-pool"),
                 resources=Resources(vcpu=1, memory=1, disk=1),
                 create=MagicMock(),

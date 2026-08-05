@@ -22,6 +22,7 @@ from benchmark_service.sandbox import DaytonaProviderConfig
 from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse, VerifyTaskIdsResponse
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
+from sqlalchemy.engine import Connection, Engine
 from sqlmodel import Session, col, select
 
 from main import app
@@ -69,6 +70,49 @@ UTC = ZoneInfo("UTC")
 _ORIGINAL_ATTEMPT_AT = datetime(2026, 7, 8)
 _RESUMED_ATTEMPT_AT = datetime(2026, 7, 9)
 client = TestClient(app)
+
+
+class _UnitEvaluationLock:
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+        self._connection: Connection | None = None
+
+    @property
+    def connection(self) -> Connection:
+        assert self._connection is not None
+        return self._connection
+
+    async def __aenter__(self) -> bool:
+        self._connection = self._engine.connect()
+        return True
+
+    async def __aexit__(self, *_args: object) -> None:
+        self.connection.close()
+        self._connection = None
+
+
+@pytest.fixture(autouse=True)
+def sqlite_evaluation_locks(database_session: Session, monkeypatch: MonkeyPatch) -> None:
+    bind = database_session.get_bind()
+    assert isinstance(bind, Engine)
+
+    def try_transaction_lock(_session: Session, _task_row_id: UUID) -> bool:
+        return True
+
+    def evaluation_lock(_engine: Engine, _task_row_id: UUID) -> _UnitEvaluationLock:
+        return _UnitEvaluationLock(bind)
+
+    monkeypatch.setattr("main.try_task_evaluation_transaction_lock", try_transaction_lock)
+    monkeypatch.setattr("tracker.utils.task_execution.task_evaluation_lock", evaluation_lock)
+
+
+def _bind_task_to_dispatch(session: Session, task: Task, authority: ExecutionAuthority) -> None:
+    dispatch = session.get(ExecutorDispatch, authority.dispatch_id)
+    assert dispatch is not None
+    task.started_at = dispatch.created_at
+    session.add(task)
+    session.commit()
+    session.refresh(task)
 
 
 @pytest.fixture
@@ -990,6 +1034,7 @@ class TestRunRecovery:
         database_session.add(task_row)
         database_session.commit()
         authority = executor_authority(benchmark_row, session=database_session)
+        _bind_task_to_dispatch(database_session, task_row, authority)
 
         create_sandbox = Mock(side_effect=AssertionError("eval resume should not create a sandbox"))
 
@@ -1088,6 +1133,7 @@ class TestRunRecovery:
         database_session.add(task_row)
         database_session.commit()
         authority = executor_authority(benchmark_row, session=database_session)
+        _bind_task_to_dispatch(database_session, task_row, authority)
 
         async def _mock_resume_evaluation(
             _self: BenchmarkServiceClient,
@@ -1137,6 +1183,62 @@ class TestRunRecovery:
         assert result == {"task_0": None}
         assert task_row.status == TaskStatus.STOPPED
         assert evaluations == []
+
+    async def test_stale_resume_token_skips_external_evaluation(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+        executor_authority: Any,
+    ) -> None:
+        request = StartBenchmarkRequest(
+            benchmark_name="vcb",
+            contract=contract,
+            concurrency=1,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
+        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
+        database_session.add(benchmark_row)
+        database_session.commit()
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.EVALUATING,
+            eval_resume_state={"job_id": "stale-job"},
+        )
+        database_session.add(task_row)
+        database_session.commit()
+        authority = executor_authority(benchmark_row, session=database_session)
+        dispatch = database_session.get(ExecutorDispatch, authority.dispatch_id)
+        assert dispatch is not None
+        assert task_row.started_at != dispatch.created_at
+
+        service = AsyncMock(spec=BenchmarkServiceClient)
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+
+        result = await process_task(
+            task_row,
+            request,
+            cast(BenchmarkServiceClient, service),
+            benchmark_row.id,
+            task_row.task_id,
+            harness_config,
+            self._test_org,
+            sandbox_provider_config=cast(DaytonaProviderConfig, object()),
+            sandbox_provider=cast(SandboxProvider, object()),
+            creation_semaphore=asyncio.Semaphore(1),
+            authority=authority,
+        )
+
+        assert result == {"task_0": None}
+        service.resume_evaluation.assert_not_awaited()
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.EVALUATING
+        assert task_row.eval_resume_state == {"job_id": "stale-job"}
 
     async def test_retry_or_resume_forwards_tracker_api_key_to_benchmark_service(
         self,
@@ -1581,9 +1683,21 @@ class TestRunRecovery:
         persisted_tasks = database_session.exec(
             select(Task).where(Task.benchmark == benchmark_row.id).order_by(col(Task.started_at), col(Task.id))
         ).all()
-        assert {
-            task_row.task_id: (task_row.status, task_row.started_at) for task_row in persisted_tasks
-        } == original_states
+        persisted_states = {task_row.task_id: (task_row.status, task_row.started_at) for task_row in persisted_tasks}
+        if expected_status == 409:
+            assert persisted_states == original_states
+        else:
+            dispatch = database_session.exec(
+                select(ExecutorDispatch)
+                .where(ExecutorDispatch.benchmark_id == benchmark_row.id)
+                .order_by(col(ExecutorDispatch.created_at).desc())
+            ).first()
+            assert dispatch is not None
+            for task_row in persisted_tasks:
+                if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
+                    assert task_row.started_at == dispatch.created_at
+                else:
+                    assert persisted_states[task_row.task_id] == original_states[task_row.task_id]
 
     async def test_running_resume_updates_concurrency_without_enqueuing_work(
         self,

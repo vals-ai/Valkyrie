@@ -65,6 +65,7 @@ _EXECUTOR_RELEASE_DIRECTORIES = (
     "services/tracker/src/tracker/logging/",
     "services/tracker/src/tracker/middleware/",
     "services/tracker/src/tracker/observability/",
+    "services/tracker/src/tracker/scheduler/",
     "services/tracker/src/tracker/utils/",
 )
 

@@ -5,6 +5,7 @@ from contextlib import suppress
 from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, Mock
+from uuid import UUID
 
 import pytest
 from benchmark_service import SandboxProvider
@@ -18,6 +19,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     EvaluationResult,
+    ExecutorDispatch,
     Org,
     Task,
     TaskStatus,
@@ -261,11 +263,20 @@ async def test_queued_process_benchmark_recovers_existing_work_before_finalizing
     )
 
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
+    dispatch = database_session.get(ExecutorDispatch, UUID(str(authority_kwargs["executor_dispatch_id"])))
+    assert dispatch is not None
+    resumed_task = database_session.exec(
+        select(Task).where(Task.benchmark == benchmark.id).where(Task.task_id == "resume_eval")
+    ).one()
+    resumed_task.started_at = dispatch.created_at
+    database_session.add(resumed_task)
+    database_session.commit()
     await asyncio.wait_for(
         process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs),
         timeout=5,
     )
 
+    database_session.expire_all()
     database_session.refresh(benchmark)
     tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).all()
     assert initial_statuses == {
@@ -276,8 +287,61 @@ async def test_queued_process_benchmark_recovers_existing_work_before_finalizing
         "resume_eval": TaskStatus.FINISHED,
         "recover_build": TaskStatus.FINISHED,
     }
-    assert resumed_at is not None and resumed_at > original_resume_started_at
+    assert resumed_at is not None
+    assert resumed_at == dispatch.created_at
+    assert resumed_at > original_resume_started_at
     assert benchmark.status == BenchmarkStatus.FINISHED
+
+
+@pytest.mark.usefixtures("process_benchmark_env")
+async def test_queued_coordinator_retires_stale_evaluation_runner(
+    contract: AgentContractRequest,
+    database_session: Session,
+    harness_config: HarnessConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    executor_authority_kwargs: Any,
+) -> None:
+    request, benchmark = _queued_run(
+        contract,
+        harness_config,
+        database_session,
+        ["resume_eval"],
+        pool_id="stale-evaluation-pool",
+        concurrency=1,
+    )
+    _add_tasks(database_session, benchmark, {"resume_eval": TaskStatus.EVALUATING})
+    calls = 0
+
+    async def process_task(_task_row: Task, *_args: Any, **_kwargs: Any) -> dict[str, None]:
+        nonlocal calls
+        calls += 1
+        return {"resume_eval": None}
+
+    async def recover_queued_pool(_context: object) -> None:
+        return None
+
+    provider = Mock(spec=SandboxProvider, admission_pool_id="stale-evaluation-pool")
+    monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
+    monkeypatch.setattr("tracker.utils.run_orchestration.recover_queued_pool", recover_queued_pool)
+    monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", Mock(return_value=provider))
+    authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
+    dispatch = database_session.get(ExecutorDispatch, UUID(str(authority_kwargs["executor_dispatch_id"])))
+    assert dispatch is not None
+    task = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).one()
+    task.started_at = dispatch.created_at
+    database_session.add(task)
+    database_session.commit()
+
+    await asyncio.wait_for(
+        process_benchmark(request.model_dump(), str(benchmark.id), ["resume_eval"], **authority_kwargs),
+        timeout=2,
+    )
+
+    database_session.expire_all()
+    persisted_task = database_session.get(Task, task.id)
+    assert persisted_task is not None
+    assert persisted_task.status == TaskStatus.EVALUATING
+    assert calls == 1
 
 
 @pytest.mark.usefixtures("process_benchmark_env")

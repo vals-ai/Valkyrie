@@ -16,14 +16,27 @@ from sqlmodel import Session, col, select, update
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 
 _ACTIVE_TASK_STATUSES = (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
+_TASK_EVALUATION_LOCK_SCOPE = "task-evaluation"
 
 
-class PostgresPoolLock:
+def _advisory_lock_key(resource_id: str) -> int:
+    return int.from_bytes(
+        sha256(resource_id.encode()).digest()[:8],
+        byteorder="big",
+        signed=True,
+    )
+
+
+def _task_evaluation_lock_resource_id(task_row_id: UUID) -> str:
+    return f"{_TASK_EVALUATION_LOCK_SCOPE}:{task_row_id}"
+
+
+class PostgresAdvisoryLock:
     """A nonblocking session advisory lock held on one dedicated connection."""
 
-    def __init__(self, engine: Engine, pool_id: str) -> None:
+    def __init__(self, engine: Engine, *, resource_id: str) -> None:
         self._engine = engine
-        self._lock_key = int.from_bytes(sha256(pool_id.encode()).digest()[:8], byteorder="big", signed=True)
+        self._lock_key = _advisory_lock_key(resource_id)
         self._connection: Connection | None = None
 
     @property
@@ -58,7 +71,7 @@ class PostgresPoolLock:
             raise
 
     def _try_acquire(self) -> bool:
-        connection = self._engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+        connection = self._engine.connect()
         try:
             acquired = bool(
                 connection.execute(
@@ -66,6 +79,7 @@ class PostgresPoolLock:
                     {"lock_key": self._lock_key},
                 ).scalar_one()
             )
+            connection.commit()
             if acquired:
                 self._connection = connection
 
@@ -90,11 +104,32 @@ class PostgresPoolLock:
             )
             if not unlocked:
                 raise RuntimeError("PostgreSQL advisory lock ownership was lost before release")
+            connection.commit()
         except BaseException:
             connection.invalidate()
             raise
         finally:
             connection.close()
+
+
+def queue_pool_lock(engine: Engine, pool_id: str) -> PostgresAdvisoryLock:
+    return PostgresAdvisoryLock(engine, resource_id=pool_id)
+
+
+def task_evaluation_lock(engine: Engine, task_row_id: UUID) -> PostgresAdvisoryLock:
+    return PostgresAdvisoryLock(engine, resource_id=_task_evaluation_lock_resource_id(task_row_id))
+
+
+def try_task_evaluation_transaction_lock(session: Session, task_row_id: UUID) -> bool:
+    """Fence a task evaluation until the caller's current transaction ends."""
+    return bool(
+        session.connection()
+        .execute(
+            text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
+            {"lock_key": _advisory_lock_key(_task_evaluation_lock_resource_id(task_row_id))},
+        )
+        .scalar_one()
+    )
 
 
 def queue_pool_id(provider_pool_id: str) -> str:
@@ -166,7 +201,6 @@ def claim_eligible_task(
         .where(col(Task.id) == _eligible_task_id(pool_id))
         .values(status=TaskStatus.BUILDING)
     )
-    session.commit()
 
     return result.rowcount == 1
 

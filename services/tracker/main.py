@@ -19,7 +19,7 @@ from fastapi.routing import APIRoute
 from opentelemetry.propagate import inject
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, select, update
 
 from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
@@ -94,7 +94,7 @@ from tracker.executor.release_retirement import AutomaticReleaseRetirement
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.outbound_security import validate_service_url_syntax
-from tracker.scheduler.store import queue_pool_id
+from tracker.scheduler.store import queue_pool_id, try_task_evaluation_transaction_lock
 from tracker.types import (
     AnalyzeBenchmarkRequest,
     FetchBenchmarkMetadataResponse,
@@ -976,48 +976,30 @@ async def retry_or_resume_benchmark(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    queued_running_recovery = (
+        benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        and not retry
+        and concurrency is None
+        and benchmark_row.arguments.queue_pool_id is not None
+    )
     recovery_task_ids: list[str] | None = None
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and concurrency is None:
-        if benchmark_row.arguments.queue_pool_id is not None:
-            scheduler_rows = session.exec(
-                select(Task)
-                .where(Task.benchmark == benchmark_row.id)
-                .where(Task.org_id == org.id)
-                .where(
-                    col(Task.status).in_(
-                        [
-                            TaskStatus.PENDING,
-                            TaskStatus.BUILDING,
-                            TaskStatus.IN_PROGRESS,
-                            TaskStatus.EVALUATING,
-                        ]
-                    )
-                )
-                .order_by(col(Task.started_at), col(Task.id))
-            ).all()
-            if any(
-                task_row.status == TaskStatus.IN_PROGRESS
-                or (task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is None)
-                for task_row in scheduler_rows
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail="Run has active tasks that cannot be resumed safely; stop the run before resuming",
-                )
-            recovery_task_ids = [task_row.task_id for task_row in scheduler_rows]
-
-        if recovery_task_ids is None:
-            if secrets or benchmark_url is not None:
-                update_benchmark_resume_arguments(
-                    benchmark_id,
-                    session,
-                    org,
-                    secrets=secrets,
-                    concurrency=None,
-                    benchmark_url=benchmark_url,
-                )
-                session.commit()
-            return RetryOrResumeBenchmarkResponse(status="success")
+    if (
+        benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        and not retry
+        and concurrency is None
+        and not queued_running_recovery
+    ):
+        if secrets or benchmark_url is not None:
+            update_benchmark_resume_arguments(
+                benchmark_id,
+                session,
+                org,
+                secrets=secrets,
+                concurrency=None,
+                benchmark_url=benchmark_url,
+            )
+            session.commit()
+        return RetryOrResumeBenchmarkResponse(status="success")
 
     if concurrency is not None and concurrency < 1:
         raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
@@ -1054,6 +1036,35 @@ async def retry_or_resume_benchmark(
             )
         pre_action_status = benchmark_row.status
 
+        if queued_running_recovery and pre_action_status == BenchmarkStatus.IN_PROGRESS:
+            scheduler_rows = session.exec(
+                select(Task)
+                .where(Task.benchmark == benchmark_row.id)
+                .where(Task.org_id == org.id)
+                .where(
+                    col(Task.status).in_(
+                        [
+                            TaskStatus.PENDING,
+                            TaskStatus.BUILDING,
+                            TaskStatus.IN_PROGRESS,
+                            TaskStatus.EVALUATING,
+                        ]
+                    )
+                )
+                .order_by(col(Task.started_at), col(Task.id))
+                .with_for_update()
+            ).all()
+            if any(
+                task_row.status == TaskStatus.IN_PROGRESS
+                or (task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is None)
+                for task_row in scheduler_rows
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Run has active tasks that cannot be resumed safely; stop the run before resuming",
+                )
+            recovery_task_ids = [task_row.task_id for task_row in scheduler_rows]
+
         verified_task_ids = recovery_task_ids
         if verified_task_ids is None:
             verified_task_ids = await reset_to_in_progress_status(
@@ -1084,6 +1095,22 @@ async def retry_or_resume_benchmark(
                 session.rollback()
             return RetryOrResumeBenchmarkResponse(status="success")
 
+        resumable_evaluations = session.exec(
+            select(Task)
+            .where(Task.benchmark == benchmark_row.id)
+            .where(Task.org_id == org.id)
+            .where(col(Task.task_id).in_(verified_task_ids))
+            .where(col(Task.status) == TaskStatus.EVALUATING)
+            .with_for_update()
+        ).all()
+        resumable_evaluations = [task for task in resumable_evaluations if task.eval_resume_state is not None]
+        for task in resumable_evaluations:
+            if not try_task_evaluation_transaction_lock(session, task.id):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Run has an evaluation that is already owned by an active executor",
+                )
+
         if secrets or concurrency is not None or benchmark_url is not None:
             benchmark_row = update_benchmark_resume_arguments(
                 benchmark_id,
@@ -1106,6 +1133,15 @@ async def retry_or_resume_benchmark(
             dispatch_id=dispatch_id,
             kind=dispatch_kind,
         )
+        if resumable_evaluations:
+            transferred = session.exec(
+                update(Task)
+                .where(col(Task.id).in_([task.id for task in resumable_evaluations]))
+                .where(col(Task.status) == TaskStatus.EVALUATING)
+                .values(started_at=executor_dispatch.created_at)
+            )
+            if transferred.rowcount != len(resumable_evaluations):
+                raise TrackerServiceError("Recovery evaluation ownership changed before dispatch admission")
         session.commit()
     except ReleaseControlError as exc:
         session.rollback()

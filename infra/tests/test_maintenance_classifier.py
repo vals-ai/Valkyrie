@@ -362,6 +362,20 @@ def upgrade() -> None:
         self.assertFalse(result.database_maintenance_required)
         self.assertEqual(result.reasons, ["executor-release-change"])
 
+    def test_scheduler_runtime_change_requires_only_an_executor_release(self) -> None:
+        head_sha = self._commit_file(
+            "services/tracker/src/tracker/scheduler/admission.py",
+            "changed = True\n",
+        )
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "safe")
+        self.assertFalse(result.executor_stack_deploy_required)
+        self.assertTrue(result.executor_release_required)
+        self.assertFalse(result.database_maintenance_required)
+        self.assertEqual(result.reasons, ["executor-release-change"])
+
     def test_existing_migration_history_cannot_be_changed(self) -> None:
         path = f"{_MIGRATION_DIRECTORY}/existing.py"
         first_sha = self._commit_file(path, "def upgrade() -> None:\n    pass\n")

@@ -3,7 +3,7 @@
 import asyncio
 import traceback
 from asyncio import Semaphore, gather
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Callable, Sequence, cast
 from uuid import UUID
 
@@ -78,6 +78,7 @@ async def _run_queued_tasks(
     """Run durable queued rows with active work plus one local pending contender."""
     owned_task_row_ids = {task_row.id for _, task_row in task_rows}
     local_runners: dict[UUID, tuple[datetime, asyncio.Task[dict[str, dict[str, Any] | None]]]] = {}
+    retired_evaluation_row_ids: set[UUID] = set()
     tracked_tasks: dict[str, TrackedTask] = {}
     coordinator_done = asyncio.Event()
     monitor = TaskMonitor(
@@ -89,25 +90,6 @@ async def _run_queued_tasks(
         coordinator_done=coordinator_done,
         authority=authority,
     )
-    with Session(bind=engine) as session:
-        resumable_evaluations = session.exec(
-            select(Task)
-            .where(col(Task.id).in_(owned_task_row_ids))
-            .where(Task.benchmark == benchmark_id)
-            .where(Task.org_id == org.id)
-            .where(Task.status == TaskStatus.EVALUATING)
-            .with_for_update()
-        ).all()
-        for task_row in resumable_evaluations:
-            if task_row.eval_resume_state is None:
-                continue
-            resumed_at = datetime.now(task_row.started_at.tzinfo)
-            if resumed_at <= task_row.started_at:
-                resumed_at = task_row.started_at + timedelta(microseconds=1)
-            task_row.started_at = resumed_at
-            session.add(task_row)
-        session.commit()
-
     await recover_queued_pool(queue_context)
     monitor_task = asyncio.create_task(monitor.track_tasks())
     cancellation_attempts: dict[UUID, datetime] | None = None
@@ -138,10 +120,12 @@ async def _run_queued_tasks(
 
     try:
         while True:
+            completed_task_row_ids: set[UUID] = set()
             for task_row_id, (_attempt, runner) in list(local_runners.items()):
                 if runner.done():
                     await runner
                     del local_runners[task_row_id]
+                    completed_task_row_ids.add(task_row_id)
 
             with Session(bind=engine) as session:
                 benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
@@ -151,6 +135,13 @@ async def _run_queued_tasks(
                 current_rows = [task_row for task_row in benchmark_task_rows if task_row.id in owned_task_row_ids]
 
             current_by_id = {task_row.id: task_row for task_row in current_rows}
+            retired_evaluation_row_ids.update(
+                task_row_id
+                for task_row_id in completed_task_row_ids
+                if (completed_row := current_by_id.get(task_row_id)) is not None
+                and completed_row.status == TaskStatus.EVALUATING
+                and completed_row.eval_resume_state is not None
+            )
             active_task_row_ids = {
                 task_row_id
                 for task_row_id, (attempt, _runner) in local_runners.items()
@@ -181,6 +172,7 @@ async def _run_queued_tasks(
                         if task_row.status == TaskStatus.EVALUATING
                         and task_row.eval_resume_state is not None
                         and task_row.id not in local_runners
+                        and task_row.id not in retired_evaluation_row_ids
                     ),
                     key=lambda task_row: (task_row.started_at, task_row.id),
                 )
@@ -205,7 +197,11 @@ async def _run_queued_tasks(
 
             actionable_rows_remain = any(
                 task_row.status in (TaskStatus.PENDING, TaskStatus.BUILDING)
-                or (task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None)
+                or (
+                    task_row.status == TaskStatus.EVALUATING
+                    and task_row.eval_resume_state is not None
+                    and task_row.id not in retired_evaluation_row_ids
+                )
                 for task_row in current_rows
             )
             if not local_runners and not actionable_rows_remain:

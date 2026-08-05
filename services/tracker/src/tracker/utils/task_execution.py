@@ -25,6 +25,7 @@ from benchmark_service import (
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from opentelemetry import trace
 from pydantic import ValidationError
+from sqlalchemy.engine import Connection
 from sqlmodel import Session, col, select, update
 from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
@@ -40,6 +41,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     ErrorResult,
+    ExecutorDispatch,
     EvaluationResult,
     Org,
     Task,
@@ -60,6 +62,7 @@ from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.scheduler.admission import SandboxQueueContext, enter_queued_sandbox
+from tracker.scheduler.store import PostgresAdvisoryLock, task_evaluation_lock
 from tracker.types import (
     AWSCredentials,
     HarnessConfig,
@@ -353,8 +356,9 @@ def save_eval_resume_state(
     *,
     expected_started_at: datetime,
     authority: ExecutionAuthority,
+    connection: Connection | None = None,
 ) -> bool:
-    with Session(bind=engine) as session:
+    with Session(bind=connection if connection is not None else engine) as session:
         try:
             lock_execution_authority(session, authority)
         except ExecutionAuthorityRevoked:
@@ -568,12 +572,25 @@ async def _process_task_attempt(
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
     flush_task = asyncio.create_task(auto_flush_logs())
+    evaluation_lock: PostgresAdvisoryLock | None = None
+    evaluation_lock_acquired = False
+
+    def open_task_session() -> Session:
+        bind = evaluation_lock.connection if evaluation_lock_acquired and evaluation_lock is not None else engine
+        return Session(bind=bind)
 
     def on_eval_resume_state(state: dict[str, Any]) -> None:
-        save_eval_resume_state(task_row.id, org, state, expected_started_at=attempt_started_at, authority=authority)
+        save_eval_resume_state(
+            task_row.id,
+            org,
+            state,
+            expected_started_at=attempt_started_at,
+            authority=authority,
+            connection=evaluation_lock.connection if evaluation_lock_acquired and evaluation_lock is not None else None,
+        )
 
     def execution_is_current() -> bool:
-        with Session(bind=engine) as task_session:
+        with open_task_session() as task_session:
             try:
                 lock_execution_authority(task_session, authority)
             except ExecutionAuthorityRevoked:
@@ -588,7 +605,7 @@ async def _process_task_attempt(
         return not execution_is_current()
 
     def commit_attempt_error(error_message: str) -> bool:
-        with Session(bind=engine) as task_session:
+        with open_task_session() as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
             return commit_task_error(
                 task,
@@ -602,6 +619,34 @@ async def _process_task_attempt(
     try:
         evaluation_resume_state = task_row.eval_resume_state
         if task_row.status == TaskStatus.EVALUATING and evaluation_resume_state is not None:
+            evaluation_lock = task_evaluation_lock(engine, task_row.id)
+            evaluation_lock_acquired = await evaluation_lock.__aenter__()
+            if not evaluation_lock_acquired:
+                return {task_id: None}
+
+            with open_task_session() as ownership_session:
+                try:
+                    lock_execution_authority(ownership_session, authority)
+                except ExecutionAuthorityRevoked:
+                    ownership_session.rollback()
+                    return {task_id: None}
+                dispatch_created_at = ownership_session.exec(
+                    select(col(ExecutorDispatch.created_at)).where(col(ExecutorDispatch.id) == authority.dispatch_id)
+                ).one()
+                owned_task = ownership_session.exec(
+                    select(Task)
+                    .where(col(Task.id) == task_row.id)
+                    .where(col(Task.org_id) == org.id)
+                    .where(col(Task.status) == TaskStatus.EVALUATING)
+                    .where(col(Task.started_at) == dispatch_created_at)
+                    .with_for_update()
+                ).one_or_none()
+                if owned_task is None or owned_task.eval_resume_state is None:
+                    ownership_session.rollback()
+                    return {task_id: None}
+                evaluation_resume_state = owned_task.eval_resume_state
+                ownership_session.rollback()
+
             try:
                 log_output("Resuming evaluation from durable benchmark state\n")
                 resume_eval_start_time = time.perf_counter()
@@ -624,7 +669,7 @@ async def _process_task_attempt(
                     agent_caused_exit_reason=None,
                 )
 
-                with Session(bind=engine) as task_session:
+                with open_task_session() as task_session:
                     task_session.add(evaluation_result_row)
                     task_in_session = fetch_task_row(task_row.id, task_session, org)
                     if task_in_session.task_breakdown:
@@ -644,7 +689,7 @@ async def _process_task_attempt(
 
                     return {task_id: evaluation_result_row.result}
             except Exception as e:
-                with Session(bind=engine) as task_session:
+                with open_task_session() as task_session:
                     task = fetch_task_row(task_row.id, task_session, org)
                     if task.status == TaskStatus.STOPPED:
                         return {task_id: None}
@@ -731,6 +776,7 @@ async def _process_task_attempt(
                     context=queue_context,
                     task_row_id=task_row.id,
                     expected_started_at=attempt_started_at,
+                    authority=authority,
                     source=task_data.source,
                     resources=task_data.resources,
                     create=sandbox_context,
@@ -980,6 +1026,8 @@ async def _process_task_attempt(
 
         return {task_id: None}
     finally:
+        if evaluation_lock is not None:
+            await evaluation_lock.__aexit__(None, None, None)
         flush_task.cancel()
         with suppress(asyncio.CancelledError):
             await flush_task

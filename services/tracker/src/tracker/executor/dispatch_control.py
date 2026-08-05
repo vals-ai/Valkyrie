@@ -5,7 +5,7 @@ from enum import Enum
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import update
+from sqlalchemy import and_, or_, update
 from sqlmodel import Session, col, select
 
 from tracker.database.models import (
@@ -144,8 +144,8 @@ def record_dispatch_failure(
 ) -> bool:
     """Record a dispatch failure without overwriting attempts admitted by a newer dispatch.
 
-    Admission timestamps selected tasks before creating the dispatch, so its creation time
-    is the durable upper bound for task attempts owned by that dispatch.
+    Resumable evaluations carry the dispatch creation time as their exact ownership token.
+    Other admitted attempts retain the dispatch creation time as their durable upper bound.
     """
     dispatch = session.exec(
         select(ExecutorDispatch)
@@ -164,10 +164,16 @@ def record_dispatch_failure(
         select(Task)
         .where(col(Task.benchmark) == benchmark.id)
         .where(col(Task.task_id).in_(task_ids))
-        .where(col(Task.started_at) <= dispatch.created_at)
         .where(
-            col(Task.status).in_(
-                (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
+            or_(
+                and_(
+                    col(Task.status) == TaskStatus.EVALUATING,
+                    col(Task.started_at) == dispatch.created_at,
+                ),
+                and_(
+                    col(Task.status).in_((TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS)),
+                    col(Task.started_at) <= dispatch.created_at,
+                ),
             )
         )
     ).all()

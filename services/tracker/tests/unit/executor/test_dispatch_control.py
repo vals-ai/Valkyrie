@@ -278,16 +278,34 @@ def test_running_dispatch_failure_preserves_active_sibling(
         status=TaskStatus.PENDING,
         started_at=failing_dispatch.created_at + timedelta(seconds=1),
     )
+    owned_evaluation = Task(
+        org_id=example_benchmark_object.org_id,
+        benchmark=example_benchmark_object.id,
+        task_id="owned-evaluation",
+        status=TaskStatus.EVALUATING,
+        started_at=failing_dispatch.created_at,
+    )
+    stale_evaluation = Task(
+        org_id=example_benchmark_object.org_id,
+        benchmark=example_benchmark_object.id,
+        task_id="stale-evaluation",
+        status=TaskStatus.EVALUATING,
+        started_at=failing_dispatch.created_at - timedelta(seconds=1),
+    )
     database_session.add(example_benchmark_object)
-    database_session.add(retry_task)
-    database_session.add(newer_retry_task)
+    database_session.add_all([retry_task, newer_retry_task, owned_evaluation, stale_evaluation])
     database_session.commit()
 
     assert record_dispatch_failure(
         database_session,
         benchmark=example_benchmark_object,
         dispatch_id=failing_dispatch.id,
-        task_ids=[retry_task.task_id, newer_retry_task.task_id],
+        task_ids=[
+            retry_task.task_id,
+            newer_retry_task.task_id,
+            owned_evaluation.task_id,
+            stale_evaluation.task_id,
+        ],
         error_message="retry failed",
     )
     database_session.commit()
@@ -296,12 +314,16 @@ def test_running_dispatch_failure_preserves_active_sibling(
     database_session.refresh(sibling_dispatch)
     database_session.refresh(retry_task)
     database_session.refresh(newer_retry_task)
+    database_session.refresh(owned_evaluation)
+    database_session.refresh(stale_evaluation)
 
     assert example_benchmark_object.status == BenchmarkStatus.IN_PROGRESS
     assert failing_dispatch.status == ExecutorDispatchStatus.FAILED
     assert sibling_dispatch.status == ExecutorDispatchStatus.RUNNING
     assert retry_task.status == TaskStatus.ERROR
     assert newer_retry_task.status == TaskStatus.PENDING
+    assert owned_evaluation.status == TaskStatus.ERROR
+    assert stale_evaluation.status == TaskStatus.EVALUATING
 
 
 def test_terminal_recovery_terminalizes_active_dispatches(
