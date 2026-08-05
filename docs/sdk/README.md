@@ -65,6 +65,10 @@ async for update in client.runs.stream(run.benchmark_id):
     print(update.details.status)
 ```
 
+Run responses include executor-release provenance fields. Their ownership and
+nullability semantics are documented in
+[Executor releases](../executor-releases/README.md#benchmark-release-provenance).
+
 Use the other run methods:
 
 ```python
@@ -72,8 +76,14 @@ page = await client.runs.list()
 results = await client.runs.results(run.benchmark_id)
 await client.runs.stop(run.benchmark_id)
 await client.runs.resume(run.benchmark_id, concurrency=20)
-await client.runs.retry(run.benchmark_id, task_ids=["task-1"])
+await client.runs.retry(
+    run.benchmark_id,
+    task_ids=["task-1"],
+    benchmark_url="https://new-benchmark.example",
+)
 ```
+
+If your benchmark service does not have a static URL, you can override the URL used to retry and resume.
 
 Fetch stored launch metadata or check whether canonical S3 results already exist:
 

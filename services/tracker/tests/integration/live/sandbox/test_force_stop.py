@@ -4,7 +4,7 @@ Exercise force-stop behavior against real sandbox infrastructure.
 """
 
 import asyncio
-from typing import Optional
+from typing import Any, Optional
 
 import pytest
 from benchmark_service import ImageSource, Resources, Sandbox, SandboxNotFoundError, SandboxProvider, SandboxQuery
@@ -296,6 +296,7 @@ class TestForceStop:
         harness_headers: dict[str, str],
         service_headers: dict[str, str],
         live_api_client: TestClient,
+        executor_authority_kwargs: Any,
     ) -> None:
         """Verify the HTTP force-stop path interrupts a live benchmark without task errors.
 
@@ -320,6 +321,7 @@ class TestForceStop:
                 slice_str=example_benchmark_object.arguments.slice_str,
             )
 
+            authority_kwargs = executor_authority_kwargs(example_benchmark_object)
             benchmark_task = asyncio.create_task(
                 process_benchmark(
                     start_benchmark_request_json=example_benchmark_object.start_benchmark_request(
@@ -327,6 +329,7 @@ class TestForceStop:
                     ).model_dump(),
                     benchmark_id_str=str(example_benchmark_object.id),
                     verified_task_ids=verify_response.task_ids,
+                    **authority_kwargs,
                 )
             )
 

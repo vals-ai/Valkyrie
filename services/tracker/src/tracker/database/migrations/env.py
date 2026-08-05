@@ -1,7 +1,7 @@
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, text
 from sqlmodel import SQLModel
 
 from tracker.config import DATABASE_URL
@@ -24,6 +24,9 @@ if config.config_file_name is not None:
 # from myapp import mymodel
 # target_metadata = mymodel.Base.metadata
 target_metadata = SQLModel.metadata
+
+# Serialize schema upgrades from concurrent rolling Tracker task starts.
+_MIGRATION_ADVISORY_LOCK_ID = 0x56414C4B59524945
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
@@ -69,10 +72,22 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        connection.execute(
+            text("SELECT pg_advisory_lock(:lock_id)"),
+            {"lock_id": _MIGRATION_ADVISORY_LOCK_ID},
+        )
+        connection.commit()
+        try:
+            context.configure(connection=connection, target_metadata=target_metadata)
 
-        with context.begin_transaction():
-            context.run_migrations()
+            with context.begin_transaction():
+                context.run_migrations()
+        finally:
+            connection.execute(
+                text("SELECT pg_advisory_unlock(:lock_id)"),
+                {"lock_id": _MIGRATION_ADVISORY_LOCK_ID},
+            )
+            connection.commit()
 
 
 if context.is_offline_mode():
