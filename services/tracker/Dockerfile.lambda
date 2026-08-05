@@ -14,5 +14,6 @@ RUN uv export --frozen --no-dev --no-emit-project --output-file requirements.txt
     && rm requirements.txt
 
 COPY src/tracker ./tracker
+COPY src/executor_protocol.py ./executor_protocol.py
 
 CMD ["tracker.sandbox_cleanup.lambda_handler"]
