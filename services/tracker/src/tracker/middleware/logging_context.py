@@ -8,7 +8,7 @@ from tracker.logging import benchmark_id_var, request_id_var, task_id_var
 
 
 class LoggingContextMiddleware(TaskiqMiddleware):
-    """Sets logging context vars for Taskiq worker jobs."""
+    """Set logging context variables during Taskiq task execution."""
 
     async def pre_execute(self, message: TaskiqMessage) -> TaskiqMessage:
         request_id_var.set("")

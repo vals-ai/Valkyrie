@@ -1,20 +1,14 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Testing
-tests/
-.pytest_cache/
-
-# Logs
-logs/
-
-# Database (exclude local dev database)
+*
+!.dockerignore
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!alembic.ini
+!main.py
+!entrypoint.sh
+!src/
+!src/**
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
 src/tracker/database/tracker.db
-
-# Docker files
-.dockerignore
-
-# Documentation
-README.md

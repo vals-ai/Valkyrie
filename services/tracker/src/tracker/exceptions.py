@@ -9,6 +9,10 @@ class TrackerServiceError(Exception):
     pass
 
 
+class ExecutionAuthorityRevoked(TrackerServiceError):
+    """The executor dispatch no longer owns benchmark execution."""
+
+
 class BundlerError(Exception):
     """Exception raised for agent contract bundler errors."""
 

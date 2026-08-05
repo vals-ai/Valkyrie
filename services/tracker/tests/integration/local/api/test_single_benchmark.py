@@ -15,6 +15,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     ErrorResult,
+    ExecutorRelease,
     FinalEvaluation,
     TaskStatus,
 )
@@ -29,7 +30,28 @@ class TestSingleBenchmark:
         Test cases:
         - An authenticated request returns the expected run payload and counts.
         """
+        initial_release = ExecutorRelease(
+            id="initial-release",
+            artifact_uri="s3://artifacts/initial.pex",
+            artifact_digest="a" * 64,
+            protocol_version="1",
+        )
+        current_release = ExecutorRelease(
+            id="current-release",
+            artifact_uri="s3://artifacts/current.pex",
+            artifact_digest="b" * 64,
+            protocol_version="1",
+        )
+        database_session.add_all([initial_release, current_release])
+        database_session.commit()
         benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
+        benchmark.executor_release_id = initial_release.id
+        benchmark.current_execution_release_id = current_release.id
+        benchmark.executor_artifact_uri = initial_release.artifact_uri
+        benchmark.executor_artifact_digest = initial_release.artifact_digest
+        benchmark.executor_protocol_version = initial_release.protocol_version
+        database_session.add(benchmark)
+        database_session.commit()
 
         response = client.get(f"/benchmarks/{benchmark.id}", headers={"Authorization": "Bearer fake"})
 
@@ -38,6 +60,8 @@ class TestSingleBenchmark:
         assert response_body["id"] == str(benchmark.id)
         assert response_body["name"] == "bench-1"
         assert response_body["status"] == "FINISHED"
+        assert response_body["executor_release_id"] == initial_release.id
+        assert response_body["current_execution_release_id"] == current_release.id
         assert response_body["final_score"] is None
         assert response_body["total_tasks"] == 0
 
@@ -153,6 +177,55 @@ class TestBenchmarkStatusStream:
         assert streamed_status["benchmark_name"] == "streamed-benchmark"
         assert streamed_status["details"]["status"] == "FINISHED"
         assert streamed_status["final_score"] == 0.75
+
+    def test_error_benchmark_streams_release_provenance_and_message(
+        self,
+        client: TestClient,
+        database_session: Session,
+    ) -> None:
+        """Terminal error streams expose the saved run error and current release ownership."""
+        initial_release = ExecutorRelease(
+            id="initial-release",
+            artifact_uri="s3://artifacts/initial.pex",
+            artifact_digest="a" * 64,
+            protocol_version="1",
+        )
+        current_release = ExecutorRelease(
+            id="current-release",
+            artifact_uri="s3://artifacts/current.pex",
+            artifact_digest="b" * 64,
+            protocol_version="1",
+        )
+        database_session.add_all([initial_release, current_release])
+        database_session.commit()
+
+        benchmark = make_benchmark(name="errored-benchmark", status=BenchmarkStatus.ERROR, session=database_session)
+        benchmark.error_message = "Dominant task error"
+        benchmark.executor_release_id = initial_release.id
+        benchmark.current_execution_release_id = current_release.id
+        benchmark.executor_artifact_uri = initial_release.artifact_uri
+        benchmark.executor_artifact_digest = initial_release.artifact_digest
+        benchmark.executor_protocol_version = initial_release.protocol_version
+        database_session.add(benchmark)
+        database_session.commit()
+
+        with client.stream(
+            "GET",
+            "/fetch-benchmark",
+            params={"benchmark_id": str(benchmark.id), "connect": "true"},
+            headers={"Authorization": "Bearer fake"},
+        ) as response:
+            event_lines = [line for line in response.iter_lines() if line]
+
+        assert response.status_code == 200
+        assert event_lines[-1] == "event: complete"
+
+        streamed_status = json.loads(event_lines[0].removeprefix("data: "))
+        assert streamed_status["error_message"] == "Dominant task error"
+        assert streamed_status["executor_release_id"] == initial_release.id
+        assert streamed_status["current_execution_release_id"] == current_release.id
+        assert streamed_status["executor_artifact_digest"] == initial_release.artifact_digest
+        assert streamed_status["executor_protocol_version"] == initial_release.protocol_version
 
 
 class TestBenchmarkTaskListing:

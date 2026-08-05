@@ -76,10 +76,12 @@ EXPECTED_SIGNATURES = {
     RunsResource.stream_outputs: "self, run_id, *, task_ids=None",
     RunsResource.stop: "self, run_id, *, force=False, task_ids=None",
     RunsResource.resume: (
-        "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False"
+        "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False, "
+        "benchmark_url=None"
     ),
     RunsResource.retry: (
-        "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False"
+        "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False, "
+        "benchmark_url=None"
     ),
     BenchmarksResource.fetch: "self, run_id",
     BenchmarksResource.statuses: "self, run_ids",

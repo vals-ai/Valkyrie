@@ -19,30 +19,18 @@ on:
       - "scripts/sdk/**"
       - ".github/workflows/sdk-package.yml"
       - ".github/workflows/publish-sdk.yml"
+  # Runs on every PR so the required compatibility checks are always reported;
+  # the guard below skips the work when the PR does not touch SDK-related paths.
   pull_request:
     branches: [dev, prod]
-    paths:
-      - "packages/valkyrie-sdk/**"
-      - "src/valkyrie/__init__.py"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "tests/unit/sdk/**"
-      - "tests/contract/**"
-      - "tests/fixtures/sdk_api/**"
-      - "services/tracker/main.py"
-      - "services/tracker/pyproject.toml"
-      - "services/tracker/uv.lock"
-      - "services/tracker/src/tracker/**"
-      - "docs/sdk/examples/**"
-      - "scripts/sdk/**"
-      - ".github/workflows/sdk-package.yml"
-      - ".github/workflows/publish-sdk.yml"
 
 jobs:
   package:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    outputs:
+      relevant: ${{ steps.rel.outputs.relevant }}
 
     steps:
       - name: Check out source
@@ -51,12 +39,34 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Check for relevant changes
+        id: rel
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"; then
+            echo "Could not compute the PR diff; running SDK checks to be safe."
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if printf '%s\n' "$changed" | grep -qE '^(packages/valkyrie-sdk/|src/valkyrie/__init__\.py|pyproject\.toml|uv\.lock|tests/(unit/sdk|contract|fixtures/sdk_api)/|services/tracker/(main\.py|pyproject\.toml|uv\.lock|src/tracker/)|docs/sdk/examples/|scripts/sdk/|\.github/workflows/(sdk-package|publish-sdk)\.yml)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No SDK-related changes; skipping SDK package checks."
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Python
+        if: steps.rel.outputs.relevant == 'true'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
       - name: Set up uv
+        if: steps.rel.outputs.relevant == 'true'
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           version: "0.11.26"
@@ -64,14 +74,17 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       - name: Install workspace and package test tools
+        if: steps.rel.outputs.relevant == 'true'
         run: uv sync --locked --group dev
 
       - name: Check independent SDK version
+        if: steps.rel.outputs.relevant == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: uv run python scripts/sdk/check_sdk_version.py "$BASE_SHA"
 
       - name: Enforce SDK import boundary
+        if: steps.rel.outputs.relevant == 'true'
         run: |
           if rg -n "from tracker|import tracker|from valkyrie\.cli|import valkyrie\.cli" \
             packages/valkyrie-sdk/src tests/unit/sdk; then
@@ -80,35 +93,44 @@ jobs:
           fi
 
       - name: Run SDK and Tracker contract tests
+        if: steps.rel.outputs.relevant == 'true'
         run: uv run pytest tests/unit/sdk tests/contract -q
 
       - name: Lint SDK and release tooling
+        if: steps.rel.outputs.relevant == 'true'
         run: uv run ruff check packages/valkyrie-sdk/src scripts tests/unit/sdk tests/contract
 
       - name: Type check
+        if: steps.rel.outputs.relevant == 'true'
         run: uv run basedpyright
 
       - name: Build SDK distributions
+        if: steps.rel.outputs.relevant == 'true'
         run: uv build --package valkyrie-sdk --no-sources --out-dir release/packages
 
       - name: Validate SDK distributions
+        if: steps.rel.outputs.relevant == 'true'
         run: |
           uv run python scripts/sdk/validate_sdk_artifacts.py release/packages/*
           uv run twine check --strict release/packages/*
           uv run check-wheel-contents release/packages/*.whl
 
       - name: Verify installed distributions and namespace
+        if: steps.rel.outputs.relevant == 'true'
         run: uv run python scripts/sdk/verify_sdk_install.py --dist release/packages
 
       - name: Create artifact checksums
+        if: steps.rel.outputs.relevant == 'true'
         working-directory: release
         run: sha256sum packages/* > SHA256SUMS
 
       - name: Read SDK version
         id: version
+        if: steps.rel.outputs.relevant == 'true'
         run: echo "version=$(uv version --package valkyrie-sdk --short)" >> "$GITHUB_OUTPUT"
 
       - name: Upload verified SDK artifacts
+        if: steps.rel.outputs.relevant == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: valkyrie-sdk-${{ steps.version.outputs.version }}
@@ -128,16 +150,19 @@ jobs:
 
     steps:
       - name: Set up Python
+        if: needs.package.outputs.relevant == 'true'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Set up uv
+        if: needs.package.outputs.relevant == 'true'
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           version: "0.11.26"
 
       - name: Download SDK artifact
+        if: needs.package.outputs.relevant == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: valkyrie-sdk-*
@@ -145,6 +170,7 @@ jobs:
           merge-multiple: true
 
       - name: Install and import SDK
+        if: needs.package.outputs.relevant == 'true'
         env:
           PYTHON_VERSION: ${{ matrix.python-version }}
         run: |
