@@ -592,9 +592,10 @@ class TestTrackerAPI:
             *,
             executor_dispatch_id: str,
             dispatch: executor_host.ArtifactDispatch,
-            start_benchmark_request_json: dict[str, object],
+            start_benchmark_request_json: dict[str, object] | None,
             benchmark_id_str: str,
             verified_task_ids: list[str],
+            execution_context_json: dict[str, object] | None = None,
         ) -> None:
             observed_host.update(
                 executor_dispatch_id=executor_dispatch_id,

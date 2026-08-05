@@ -502,19 +502,27 @@ class ExecutorSupervisor:
         artifact_path: Path,
         dispatch: ArtifactDispatch,
         *,
-        start_benchmark_request_json: Mapping[str, object],
+        start_benchmark_request_json: Mapping[str, object] | None,
         verified_task_ids: list[str],
         authority: DispatchAuthority,
         is_current: Callable[[], Awaitable[bool]],
+        execution_context_json: Mapping[str, object] | None = None,
     ) -> None:
         if not await is_current():
             raise DispatchAuthorityLostError(f"Executor dispatch {authority.dispatch_id} was superseded before spawn")
-        payload = {
-            "start_benchmark_request_json": dict(start_benchmark_request_json),
-            "benchmark_id_str": authority.benchmark_id,
-            "verified_task_ids": verified_task_ids,
-            "executor_dispatch_id": authority.dispatch_id,
-        }
+        payload: dict[str, object]
+        if execution_context_json is not None:
+            payload = {
+                "execution_context_json": dict(execution_context_json),
+                "executor_dispatch_id": authority.dispatch_id,
+            }
+        else:
+            payload = {
+                "start_benchmark_request_json": dict(start_benchmark_request_json or {}),
+                "benchmark_id_str": authority.benchmark_id,
+                "verified_task_ids": verified_task_ids,
+                "executor_dispatch_id": authority.dispatch_id,
+            }
         with tempfile.TemporaryDirectory(dir=self.cache_dir, prefix=".dispatch-") as temporary_directory:
             payload_path = Path(temporary_directory) / "payload.json"
             payload_path.write_text(json.dumps(payload))
@@ -636,9 +644,10 @@ async def run_executor_dispatch(
     *,
     executor_dispatch_id: str,
     dispatch: ArtifactDispatch,
-    start_benchmark_request_json: Mapping[str, object],
+    start_benchmark_request_json: Mapping[str, object] | None,
     benchmark_id_str: str,
     verified_task_ids: list[str],
+    execution_context_json: Mapping[str, object] | None = None,
 ) -> None:
     protection_task = asyncio.create_task(_acquire_task_protection())
     try:
@@ -681,6 +690,7 @@ async def run_executor_dispatch(
                 verified_task_ids=verified_task_ids,
                 authority=authority,
                 is_current=lambda: store.is_current(authority),
+                execution_context_json=execution_context_json,
             )
             if not await store.finish(authority):
                 logger.warning(
@@ -703,12 +713,25 @@ async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
     raw_payload: dict[str, object] = dict(payload)
     dispatch_id = _required_string(raw_payload, "executor_dispatch_id")
     dispatch = ArtifactDispatch.from_payload(raw_payload)
+    execution_context_json = payload.get("execution_context_json")
+    if execution_context_json is not None:
+        raw_benchmark_id = execution_context_json.get("benchmark_id")
+        raw_task_ids = execution_context_json.get("verified_task_ids")
+    else:
+        raw_benchmark_id = payload.get("benchmark_id_str")
+        raw_task_ids = payload.get("verified_task_ids")
+    if not isinstance(raw_benchmark_id, str) or not raw_benchmark_id:
+        raise ValueError("Executor payload has no valid benchmark ID")
+    verified_task_ids: list[str] = (
+        [str(task_id) for task_id in cast(list[object], raw_task_ids)] if isinstance(raw_task_ids, list) else []
+    )
     await run_executor_dispatch(
         supervisor,
         dispatch_store,
         executor_dispatch_id=dispatch_id,
         dispatch=dispatch,
-        start_benchmark_request_json=payload["start_benchmark_request_json"],
-        benchmark_id_str=payload["benchmark_id_str"],
-        verified_task_ids=payload["verified_task_ids"],
+        start_benchmark_request_json=payload.get("start_benchmark_request_json"),
+        benchmark_id_str=raw_benchmark_id,
+        verified_task_ids=verified_task_ids,
+        execution_context_json=execution_context_json,
     )
