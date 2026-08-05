@@ -333,7 +333,7 @@ def _queued_benchmark_id(
         raise ValueError("Queued benchmark request has no valid benchmark ID.") from None
 
 
-def _prepare_managed_aws(
+def _preflight_managed_aws(
     execution: _QueuedExecution,
     runtime: AWSRuntime,
 ) -> SandboxProviderConfig:
@@ -354,19 +354,6 @@ def _prepare_managed_aws(
     if request.lambda_function:
         dry_run_lambda(runtime.clients, request.lambda_function)
     return sandbox_provider_config
-
-
-def _prepare_access_key_aws(execution: _QueuedExecution) -> tuple[AWSRuntime, SandboxProviderConfig]:
-    """Build the caller-owned AWS runtime and sandbox provider configuration."""
-    request = execution.request
-    harness_config = cast(HarnessConfig, request.harness_config)
-    runtime = AWSRuntime.from_harness_config(harness_config)
-    sandbox_provider_config = fetch_sandbox_provider_config(
-        harness_config.sandbox_provider_secret_name,
-        runtime.clients,
-        request.sandbox_provider,
-    )
-    return runtime, sandbox_provider_config
 
 
 async def upload_final_view_if_current(
@@ -446,9 +433,15 @@ async def process_benchmark(
 
         if execution.aws_managed:
             aws_runtime = deployment_aws_runtime(org.id)
-            sandbox_provider_config = _prepare_managed_aws(execution, aws_runtime)
+            sandbox_provider_config = _preflight_managed_aws(execution, aws_runtime)
         else:
-            aws_runtime, sandbox_provider_config = _prepare_access_key_aws(execution)
+            harness_config = cast(HarnessConfig, start_benchmark_request.harness_config)
+            aws_runtime = AWSRuntime.from_harness_config(harness_config)
+            sandbox_provider_config = fetch_sandbox_provider_config(
+                harness_config.sandbox_provider_secret_name,
+                aws_runtime.clients,
+                start_benchmark_request.sandbox_provider,
+            )
 
         benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
         if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:

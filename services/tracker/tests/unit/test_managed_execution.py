@@ -14,7 +14,7 @@ from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkSt
 from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmarkRequest
 from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
 from tracker.utils.run_orchestration import (
-    _prepare_managed_aws,  # pyright: ignore[reportPrivateUsage]
+    _preflight_managed_aws,  # pyright: ignore[reportPrivateUsage]
     _parse_queued_execution,  # pyright: ignore[reportPrivateUsage]
 )
 
@@ -160,7 +160,7 @@ def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(
         _parse_queued_execution(None, None, None, context_without_provider)
 
 
-async def test_worker_parse_failure_marks_run_error(
+async def test_queued_execution_parse_failure_marks_run_error(
     contract: AgentContractRequest,
     database_session: Session,
     process_benchmark_env: None,
@@ -354,7 +354,7 @@ def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     monkeypatch.setattr("tracker.utils.run_orchestration.fetch_aws_secret", fetch_webhook_secret)
     monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
 
-    result = _prepare_managed_aws(execution, aws_runtime)
+    result = _preflight_managed_aws(execution, aws_runtime)
 
     assert result is provider_config
     assert calls == ["logs", "sandbox_provider_secret", "agent_secrets", "webhook_secret", "lambda"]
