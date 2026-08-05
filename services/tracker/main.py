@@ -24,6 +24,7 @@ from sqlmodel import Session, col, select
 from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
+from tracker.api.dependencies import RunWithAWS
 from tracker.api.filter_options import router as filter_options_router
 from tracker.api.single_benchmark import router as single_benchmark_router
 from tracker.api.single_task import router as single_task_router
@@ -40,6 +41,7 @@ from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.resolver import (
     resolve_aws_runtime_metadata,
     resolve_run_aws_runtime,
+    resolve_run_aws_runtime_with_config,
     resolve_start_aws_runtime,
 )
 from tracker.aws.runtime import AWSRuntime
@@ -599,7 +601,7 @@ async def fetch_benchmark_tasks(
 @app.get("/fetch-benchmark", response_model=None)
 async def fetch_benchmark(
     benchmark_id: TrackedBenchmarkId,
-    http_request: Request,
+    run_with_aws: RunWithAWS,
     connect: bool = Query(default=False),
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
@@ -617,12 +619,7 @@ async def fetch_benchmark(
     - 200 OK if benchmark is found
     - 404 Not Found if benchmark is not found
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
-    aws_runtime = resolve_run_aws_runtime(
-        http_request,
-        aws_managed=benchmark_row.aws_managed,
-        org_id=org.id,
-    ).runtime
+    benchmark_row, aws_runtime = run_with_aws
 
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
@@ -657,7 +654,7 @@ async def fetch_benchmark(
 @app.post("/analyze-benchmark/{benchmark_id}", response_model=None)
 async def analyze_benchmark(
     benchmark_id: TrackedBenchmarkId,
-    http_request: Request,
+    run_with_aws: RunWithAWS,
     body: AnalyzeBenchmarkRequest,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
@@ -670,12 +667,7 @@ async def analyze_benchmark(
     Cache short-circuit: when the benchmark already has docent_reading_status=DONE and
     no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
-    aws_runtime = resolve_run_aws_runtime(
-        http_request,
-        aws_managed=benchmark_row.aws_managed,
-        org_id=org.id,
-    ).runtime
+    benchmark_row, aws_runtime = run_with_aws
 
     if benchmark_row.status != BenchmarkStatus.FINISHED:
         raise HTTPException(
@@ -756,7 +748,7 @@ async def retrieve_results(
         http_request,
         aws_managed=benchmark_row.aws_managed,
         org_id=org.id,
-    ).runtime
+    )
 
     final_view = create_final_view(benchmark_row, session, org)
 
@@ -814,7 +806,7 @@ async def retrieve_results(
 @app.get("/check-results-exist")
 async def check_results_exist(
     benchmark_id: TrackedBenchmarkId,
-    http_request: Request,
+    run_with_aws: RunWithAWS,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> dict[str, bool]:
@@ -827,12 +819,7 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
-    aws_runtime = resolve_run_aws_runtime(
-        http_request,
-        aws_managed=benchmark_row.aws_managed,
-        org_id=org.id,
-    ).runtime
+    benchmark_row, aws_runtime = run_with_aws
 
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_row.name}.json"
     exists = await s3_object_exists(s3_key, aws_runtime)
@@ -918,7 +905,7 @@ async def stop_benchmark(
         await validate_tasks_exist(benchmark_row, task_ids, session, org) if task_ids is not None else None
     )
 
-    runtime_resolution = resolve_run_aws_runtime(
+    runtime_resolution = resolve_run_aws_runtime_with_config(
         http_request,
         aws_managed=benchmark_row.aws_managed,
         org_id=org.id,
@@ -1030,7 +1017,7 @@ async def retry_or_resume_benchmark(
         RetryOrResumeBenchmarkResponse
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
-    runtime_resolution = resolve_run_aws_runtime(
+    runtime_resolution = resolve_run_aws_runtime_with_config(
         http_request,
         aws_managed=benchmark_row.aws_managed,
         org_id=org.id,
@@ -1321,7 +1308,7 @@ async def _tar_output_stream(
 @app.get("/fetch-run-outputs/{benchmark_id}", response_model=None)
 async def fetch_run_outputs(
     benchmark_id: TrackedBenchmarkId,
-    http_request: Request,
+    run_with_aws: RunWithAWS,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
     task_ids: list[str] | None = Query(default=None),
@@ -1335,12 +1322,7 @@ async def fetch_run_outputs(
     Returns:
         StreamingResponse
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
-    aws_runtime = resolve_run_aws_runtime(
-        http_request,
-        aws_managed=benchmark_row.aws_managed,
-        org_id=org.id,
-    ).runtime
+    benchmark_row, aws_runtime = run_with_aws
 
     benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
 

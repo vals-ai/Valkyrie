@@ -45,7 +45,7 @@ class AWSRuntimeResolution:
 
 
 @dataclass(frozen=True)
-class HarnessHeaderState:
+class HarnessHeaderInspection:
     """Presence and completeness of access-key request headers."""
 
     present: bool
@@ -99,11 +99,11 @@ def _build_harness_config(flat: dict[str, str]) -> HarnessConfig:
     )
 
 
-def inspect_harness_headers(request: Request) -> HarnessHeaderState:
+def inspect_harness_headers(request: Request) -> HarnessHeaderInspection:
     """Inspect access-key headers without treating their absence as an error."""
     flat = _parse_harness_headers(request)
     first_missing_key = next((key for key in _REQUIRED_HARNESS_HEADER_KEYS if not flat.get(key)), None)
-    return HarnessHeaderState(
+    return HarnessHeaderInspection(
         present=bool(flat),
         config=_build_harness_config(flat) if first_missing_key is None else None,
         first_missing_key=first_missing_key,
@@ -123,11 +123,11 @@ def try_fetch_harness_config(request: Request) -> HarnessConfig | None:
 
 def fetch_harness_config(request: Request) -> HarnessConfig:
     """Return complete access-key request headers or name the first missing header."""
-    state = inspect_harness_headers(request)
-    if state.config is not None:
-        return state.config
-    assert state.first_missing_key is not None
-    _raise_missing_header(state.first_missing_key)
+    header_inspection = inspect_harness_headers(request)
+    if header_inspection.config is not None:
+        return header_inspection.config
+    assert header_inspection.first_missing_key is not None
+    _raise_missing_header(header_inspection.first_missing_key)
 
 
 def resolve_start_harness_config(request: Request, body_config: HarnessConfig | None) -> HarnessConfig | None:
@@ -236,8 +236,22 @@ def resolve_run_aws_runtime(
     *,
     aws_managed: bool,
     org_id: UUID,
-) -> AWSRuntimeResolution:
+) -> AWSRuntime:
     """Resolve AWS authority from a persisted run mode."""
+    return resolve_run_aws_runtime_with_config(
+        request,
+        aws_managed=aws_managed,
+        org_id=org_id,
+    ).runtime
+
+
+def resolve_run_aws_runtime_with_config(
+    request: Request,
+    *,
+    aws_managed: bool,
+    org_id: UUID,
+) -> AWSRuntimeResolution:
+    """Resolve AWS authority and retain any access-key harness configuration."""
     if aws_managed:
         return AWSRuntimeResolution(_http_deployment_runtime(org_id), None)
     harness_config = fetch_harness_config(request)
