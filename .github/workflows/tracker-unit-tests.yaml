@@ -8,7 +8,6 @@ on:
   # no "waiting for status" deadlock); the guard below skips the work when the
   # PR does not touch services/tracker/**, and the job still reports success.
   pull_request:
-    branches: [dev, prod]
 
 jobs:
   tracker-unit-tests:
@@ -18,6 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Check for relevant changes
         id: rel
@@ -28,7 +28,11 @@ jobs:
           if [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^services/tracker/'; then
+          if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"; then
+            echo "Could not compute the PR diff; running tracker tests to be safe."
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if printf '%s\n' "$changed" | grep -qE '^services/tracker/'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "No changes under services/tracker/; skipping tracker tests."
