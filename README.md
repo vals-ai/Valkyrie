@@ -296,7 +296,13 @@ valkyrie run stop <id> --force
 
 # Force stop only selected tasks and remove their sandboxes
 valkyrie run stop <id> --task-ids task-a,task-b --force
+
+# Machine-readable receipt instead of a human confirmation prompt
+valkyrie run stop <id> --force --json
 ```
+
+`--force` also skips the confirmation prompt. Without it, `--json` callers with no answer available get
+a `blocked` receipt naming `--force` instead of hanging on stdin.
 
 ### Resume / Retry a run
 

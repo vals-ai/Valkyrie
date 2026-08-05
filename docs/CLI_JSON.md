@@ -4,7 +4,7 @@ The agent-facing run workflows below accept `--json`. Human-readable output
 remains the default.
 
 `start`, `fetch`, `status`, `list`, `errors`, `resume`, `retry`, `update`,
-`analyze`, `results`, and `outputs`
+`analyze`, `results`, `outputs`, and `stop`
 
 ```bash
 valk run start --agent sweagent --benchmark swebench --json
@@ -51,21 +51,23 @@ no `error` document: rejected usage exits `2` with empty stdout because validati
 always precedes the first tracker request, and `run analyze` reporting `unavailable`
 is already a complete terminal receipt.
 
-## Overwrite decisions
+## Confirmation decisions
 
-`run results` prompts on stderr before replacing an existing local file or S3
-result, and distinguishes three outcomes:
+`run results` (replacing an existing local file or S3 result) and `run stop`
+(without `--force`) prompt on stderr before acting, and both distinguish three
+outcomes:
 
 | `status` | Meaning | Exit |
 | --- | --- | --- |
-| `completed` | The target was written. | 0 |
-| `cancelled` | The operator declined; nothing was written. | 0 |
-| `blocked` | No answer was obtainable, so nothing was written. | nonzero |
+| `completed` | The action was taken. | 0 |
+| `cancelled` | The operator declined; nothing happened. | 0 |
+| `blocked` | No answer was obtainable, so nothing happened. | nonzero |
 
-A `blocked` receipt carries `reason: "target_exists"` and is followed by an
-`error` document naming `--force`, rather than a bare abort. Pass `--force` to
-overwrite without prompting. Neither a cancelled nor a blocked receipt is fresh
-retrieval evidence.
+A `blocked` receipt carries a `reason` (`target_exists` for `run results`,
+`confirmation_required` for `run stop`) and is followed by an `error` document
+naming `--force`, rather than a bare abort. Pass `--force` to proceed without
+prompting. Neither a cancelled nor a blocked receipt is evidence that the
+underlying run state changed.
 
 ## Starting runs
 

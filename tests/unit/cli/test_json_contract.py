@@ -19,7 +19,7 @@ from valkyrie.cli.main import cli
 
 _RUN_ID = "123e4567-e89b-12d3-a456-426614174000"
 _EXPECTED_JSON_LEAVES = {
-    f"run {name}" for name in "analyze errors fetch list outputs results resume retry start status update".split()
+    f"run {name}" for name in "analyze errors fetch list outputs results resume retry start status stop update".split()
 }
 
 

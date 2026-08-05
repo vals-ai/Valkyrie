@@ -5,7 +5,7 @@ import click
 from tracker.types import FinalViewResponse, RetrieveResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.machine_output import confirm_overwrite, emit_json, json_errors, json_option
+from valkyrie.cli.machine_output import confirm_action, emit_json, json_errors, json_option
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -157,7 +157,7 @@ def authorize_overwrite(run_id: UUID, output_path: Path | None, *, json_output: 
         if output_path is not None
         else "Results already exist in S3. Overwrite?"
     )
-    decision = confirm_overwrite(prompt, json_output=json_output, force=force)
+    decision = confirm_action(prompt, json_output=json_output, force=force)
 
     if decision is None:
         if json_output:

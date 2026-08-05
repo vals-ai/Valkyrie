@@ -5,6 +5,7 @@ Run: uv run pytest tests/unit/cli/run/test_stop.py
 Covers CLI task selection and conflicting task sources for `valkyrie run stop`.
 """
 
+import json
 from importlib import import_module
 from pathlib import Path
 from uuid import UUID
@@ -12,6 +13,8 @@ from uuid import UUID
 import pytest
 from click.testing import CliRunner
 from tracker.types import StopBenchmarkResponse
+
+from valkyrie.cli.exceptions import TrackerServiceError
 
 stop_module = import_module("valkyrie.cli.run.stop")
 stop_command = stop_module.stop
@@ -107,3 +110,77 @@ def test_stop_task_selection(
     assert "mutually exclusive" in conflicting_result.output
     assert empty_result.exit_code == 2
     assert "No task ids provided" in empty_result.output
+
+
+def test_json_stop_covers_completed_cancelled_and_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = UUID("123e4567-e89b-12d3-a456-426614174000")
+    tracker = MockTrackerService()
+    monkeypatch.setattr(stop_module, "TrackerService", lambda: tracker)
+    runner = CliRunner()
+
+    forced = runner.invoke(stop_command, [str(run_id), "--force", "--json"])
+
+    assert forced.exit_code == 0, forced.output
+    assert json.loads(forced.stdout) == {
+        "action": "stop",
+        "force": True,
+        "kind": "run_stop",
+        "run_id": str(run_id),
+        "schema_version": 1,
+        "status": "completed",
+        "task_ids": None,
+    }
+    assert MockTrackerService.stop_calls == [{"benchmark_id": run_id, "force": True, "task_ids": None}]
+
+    cancelled = runner.invoke(stop_command, [str(run_id), "--json"], input="n\n")
+
+    assert cancelled.exit_code == 0, cancelled.output
+    assert json.loads(cancelled.stdout)["status"] == "cancelled"
+
+    blocked = runner.invoke(stop_command, [str(run_id), "--json"], input="")
+
+    assert blocked.exit_code == 1
+    records = [json.loads(line) for line in blocked.stdout.splitlines()]
+    assert [record["kind"] for record in records] == ["run_stop", "error"]
+    assert records[0]["status"] == "blocked"
+    assert records[0]["reason"] == "confirmation_required"
+    assert "--force" in records[1]["error_message"]
+    assert MockTrackerService.stop_calls == [{"benchmark_id": run_id, "force": True, "task_ids": None}]
+
+
+def test_stop_declines_and_force_messages_in_human_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = UUID("123e4567-e89b-12d3-a456-426614174000")
+    tracker = MockTrackerService()
+    monkeypatch.setattr(stop_module, "TrackerService", lambda: tracker)
+    runner = CliRunner()
+
+    declined = runner.invoke(stop_command, [str(run_id)], input="n\n")
+
+    assert declined.exit_code == 0, declined.output
+    assert "Cancelled." in declined.output
+    assert MockTrackerService.stop_calls == []
+
+    forced = runner.invoke(stop_command, [str(run_id), "--force"])
+
+    assert forced.exit_code == 0, forced.output
+    assert "force stopped" in forced.output
+
+
+def test_stop_reports_tracker_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = UUID("123e4567-e89b-12d3-a456-426614174000")
+
+    class FailingTrackerService(MockTrackerService):
+        def stop_benchmark(
+            self,
+            benchmark_id: UUID,
+            force: bool,
+            task_ids: list[str] | None = None,
+        ) -> StopBenchmarkResponse:
+            raise TrackerServiceError("run not found")
+
+    monkeypatch.setattr(stop_module, "TrackerService", FailingTrackerService)
+
+    result = CliRunner().invoke(stop_command, [str(run_id), "--force"])
+
+    assert result.exit_code == 1
+    assert "run not found" in result.output

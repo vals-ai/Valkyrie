@@ -93,8 +93,8 @@ def json_errors(func: Callable[..., None]) -> Callable[..., None]:
     return wrapper  # type: ignore[return-value]
 
 
-def confirm_overwrite(text: str, *, json_output: bool, force: bool) -> bool | None:
-    """Resolve an overwrite decision without stranding non-interactive callers.
+def confirm_action(text: str, *, json_output: bool, force: bool) -> bool | None:
+    """Resolve a yes/no confirmation without stranding non-interactive callers.
 
     Returns ``True`` to proceed, ``False`` when the operator declines, and
     ``None`` when no answer is obtainable, so the caller can emit an actionable
