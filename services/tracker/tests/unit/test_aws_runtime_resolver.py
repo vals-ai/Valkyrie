@@ -74,27 +74,27 @@ def test_run_runtime_uses_stored_mode(
 ) -> None:
     _configure_managed_runtime(monkeypatch)
 
-    resolution = resolve_run_aws_runtime(
+    runtime = resolve_run_aws_runtime(
         _request(_COMPLETE_HARNESS_HEADERS),
         aws_managed=aws_managed,
         org_id=_ORG_ID,
     )
 
-    assert resolution.runtime.resources.s3_bucket == expected_bucket
-    assert isinstance(resolution.runtime.clients, expected_provider)
+    assert runtime.resources.s3_bucket == expected_bucket
+    assert isinstance(runtime.clients, expected_provider)
 
 
 def test_managed_run_ignores_partial_access_key_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_managed_runtime(monkeypatch)
 
-    resolution = resolve_run_aws_runtime(
+    runtime = resolve_run_aws_runtime(
         _request({"x-harness-aws-access-key-id": "ignored"}),
         aws_managed=True,
         org_id=_ORG_ID,
     )
 
-    assert resolution.runtime.resources.s3_bucket == "deployment-bucket"
-    assert isinstance(resolution.runtime.clients, DefaultChainAWSClientProvider)
+    assert runtime.resources.s3_bucket == "deployment-bucket"
+    assert isinstance(runtime.clients, DefaultChainAWSClientProvider)
 
 
 @pytest.mark.parametrize(

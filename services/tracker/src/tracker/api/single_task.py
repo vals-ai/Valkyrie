@@ -121,7 +121,7 @@ async def get_task_artifacts(
         request,
         aws_managed=benchmark.aws_managed,
         org_id=org.id,
-    ).runtime
+    )
 
     cloudwatch_url: str | None = None
     if aws_runtime.resources.log_group and aws_runtime.resources.region:
