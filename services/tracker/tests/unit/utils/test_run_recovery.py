@@ -1899,7 +1899,9 @@ class TestRunRecovery:
         database_session.add(task)
         database_session.commit()
 
-        retry_response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true", headers=harness_headers)
+        retry_response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true", headers=harness_headers
+        )
 
         assert retry_response.status_code == 200
         database_session.refresh(benchmark_row)

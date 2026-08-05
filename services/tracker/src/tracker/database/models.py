@@ -360,7 +360,7 @@ class Benchmark(SQLModel, table=True):
         from tracker.types import StartBenchmarkRequest
 
         if self.aws_managed:
-            raise ValueError("Managed runs cannot create access-key worker requests")
+            raise ValueError("Managed runs cannot create access-key execution requests")
 
         # Older rows may persist the provider secret only in benchmark arguments.
         if self.arguments.sandbox_provider_secret_name:
@@ -388,7 +388,7 @@ class Benchmark(SQLModel, table=True):
         from tracker.types import StartBenchmarkRequest
 
         if not self.aws_managed:
-            raise ValueError("Access-key runs cannot create managed worker requests")
+            raise ValueError("Access-key runs cannot create managed execution requests")
         if not self.arguments.sandbox_provider_secret_name:
             raise ValueError("Managed runs require a sandbox provider secret name")
 

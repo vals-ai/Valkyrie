@@ -14,8 +14,8 @@ from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkSt
 from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmarkRequest
 from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
 from tracker.utils.run_orchestration import (
-    _managed_worker_preflight,  # pyright: ignore[reportPrivateUsage]
-    _parse_worker_execution,  # pyright: ignore[reportPrivateUsage]
+    _prepare_managed_aws,  # pyright: ignore[reportPrivateUsage]
+    _parse_queued_execution,  # pyright: ignore[reportPrivateUsage]
 )
 
 
@@ -82,7 +82,7 @@ def test_taskiq_adapter_accepts_exact_access_key_shape(
     request = _access_key_request(contract, harness_config)
     benchmark_id = uuid4()
 
-    execution = _parse_worker_execution(
+    execution = _parse_queued_execution(
         request.model_dump(mode="json"),
         str(benchmark_id),
         _TASK_IDS,
@@ -92,14 +92,14 @@ def test_taskiq_adapter_accepts_exact_access_key_shape(
     assert execution.request == request
     assert execution.benchmark_id == benchmark_id
     assert execution.verified_task_ids == _TASK_IDS
-    assert execution.managed is False
+    assert execution.aws_managed is False
 
 
 def test_taskiq_adapter_accepts_v2_envelope_only(contract: AgentContractRequest) -> None:
     request = _managed_request(contract)
     benchmark_id = uuid4()
 
-    execution = _parse_worker_execution(
+    execution = _parse_queued_execution(
         None,
         None,
         None,
@@ -109,7 +109,7 @@ def test_taskiq_adapter_accepts_v2_envelope_only(contract: AgentContractRequest)
     assert execution.request == request
     assert execution.benchmark_id == benchmark_id
     assert execution.verified_task_ids == _TASK_IDS
-    assert execution.managed is True
+    assert execution.aws_managed is True
 
 
 def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(
@@ -121,11 +121,11 @@ def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(
     context = _execution_context(request, benchmark_id)
 
     with pytest.raises(ValueError, match="mixes access-key and managed"):
-        _parse_worker_execution({}, None, None, context)
+        _parse_queued_execution({}, None, None, context)
 
     invalid_version = {**context, "version": 1}
     with pytest.raises(ValueError, match="managed execution context is invalid"):
-        _parse_worker_execution(None, None, None, invalid_version)
+        _parse_queued_execution(None, None, None, invalid_version)
 
     request_with_credentials = request.model_copy(update={"harness_config": harness_config})
     context_with_credentials = {
@@ -133,10 +133,10 @@ def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(
         "start_benchmark_request": request_with_credentials.model_dump(mode="json"),
     }
     with pytest.raises(ValueError, match="managed execution context is invalid"):
-        _parse_worker_execution(None, None, None, context_with_credentials)
+        _parse_queued_execution(None, None, None, context_with_credentials)
 
     with pytest.raises(ValueError, match="incomplete"):
-        _parse_worker_execution(
+        _parse_queued_execution(
             _access_key_request(contract, harness_config).model_dump(mode="json"),
             None,
             _TASK_IDS,
@@ -144,7 +144,7 @@ def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(
         )
 
     with pytest.raises(ValueError, match="access-key benchmark request has no AWS configuration"):
-        _parse_worker_execution(
+        _parse_queued_execution(
             request.model_dump(mode="json"),
             str(benchmark_id),
             _TASK_IDS,
@@ -157,7 +157,7 @@ def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(
         "start_benchmark_request": request_without_provider.model_dump(mode="json"),
     }
     with pytest.raises(ValueError, match="managed execution context is invalid"):
-        _parse_worker_execution(None, None, None, context_without_provider)
+        _parse_queued_execution(None, None, None, context_without_provider)
 
 
 async def test_worker_parse_failure_marks_run_error(
@@ -177,7 +177,7 @@ async def test_worker_parse_failure_marks_run_error(
     assert "Queued managed execution context is invalid" in (benchmark.error_message or "")
 
 
-async def test_managed_worker_input_for_access_key_row_marks_run_error(
+async def test_managed_execution_for_access_key_row_marks_run_error(
     contract: AgentContractRequest,
     harness_config: HarnessConfig,
     database_session: Session,
@@ -192,10 +192,10 @@ async def test_managed_worker_input_for_access_key_row_marks_run_error(
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
-    assert "Managed worker input does not match the stored run mode" in (benchmark.error_message or "")
+    assert "Queued managed execution does not match the stored access-key run mode" in (benchmark.error_message or "")
 
 
-async def test_access_key_worker_input_for_managed_row_marks_run_error(
+async def test_access_key_execution_for_managed_row_marks_run_error(
     contract: AgentContractRequest,
     harness_config: HarnessConfig,
     database_session: Session,
@@ -215,10 +215,10 @@ async def test_access_key_worker_input_for_managed_row_marks_run_error(
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
-    assert "Access-key worker input does not match the stored run mode" in (benchmark.error_message or "")
+    assert "Queued access-key execution does not match the stored managed run mode" in (benchmark.error_message or "")
 
 
-async def test_ineligible_managed_worker_marks_run_error(
+async def test_ineligible_managed_execution_marks_run_error(
     contract: AgentContractRequest,
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -243,7 +243,7 @@ async def test_ineligible_managed_worker_marks_run_error(
     assert "Managed AWS access is not available for this organization" in (benchmark.error_message or "")
 
 
-async def test_managed_worker_completes_with_the_deployment_runtime(
+async def test_managed_execution_completes_with_the_deployment_runtime(
     contract: AgentContractRequest,
     aws_runtime: AWSRuntime,
     database_session: Session,
@@ -313,7 +313,7 @@ async def test_managed_worker_completes_with_the_deployment_runtime(
     assert calls[-2:] == ["s3-final-upload", "lambda-post-run"]
 
 
-def test_managed_worker_preflight_checks_aws_dependencies_in_order(
+def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     contract: AgentContractRequest,
     aws_runtime: AWSRuntime,
     monkeypatch: pytest.MonkeyPatch,
@@ -325,7 +325,7 @@ def test_managed_worker_preflight_checks_aws_dependencies_in_order(
             "lambda_function": "result-handler",
         }
     )
-    execution = _parse_worker_execution(None, None, None, _execution_context(request, uuid4()))
+    execution = _parse_queued_execution(None, None, None, _execution_context(request, uuid4()))
     calls: list[str] = []
     provider_config = cast(SandboxProviderConfig, MagicMock())
 
@@ -354,7 +354,7 @@ def test_managed_worker_preflight_checks_aws_dependencies_in_order(
     monkeypatch.setattr("tracker.utils.run_orchestration.fetch_aws_secret", fetch_webhook_secret)
     monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
 
-    result = _managed_worker_preflight(execution, aws_runtime)
+    result = _prepare_managed_aws(execution, aws_runtime)
 
     assert result is provider_config
     assert calls == ["logs", "sandbox_provider_secret", "agent_secrets", "webhook_secret", "lambda"]

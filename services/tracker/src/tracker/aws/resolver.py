@@ -132,14 +132,14 @@ def fetch_harness_config(request: Request) -> HarnessConfig:
 
 def resolve_start_harness_config(request: Request, body_config: HarnessConfig | None) -> HarnessConfig | None:
     """Apply access-key header-over-body precedence for a start request."""
-    state = inspect_harness_headers(request)
-    if state.config is not None:
-        return state.config
+    header_inspection = inspect_harness_headers(request)
+    if header_inspection.config is not None:
+        return header_inspection.config
     if body_config is not None:
         return body_config
-    if state.present:
-        assert state.first_missing_key is not None
-        _raise_missing_header(state.first_missing_key)
+    if header_inspection.present:
+        assert header_inspection.first_missing_key is not None
+        _raise_missing_header(header_inspection.first_missing_key)
     return None
 
 
@@ -276,11 +276,11 @@ def resolve_non_run_aws_runtime(
     org_id: UUID,
 ) -> AWSRuntime:
     """Resolve agent-library operations from complete headers or managed eligibility."""
-    header_state = inspect_harness_headers(request)
-    if header_state.config is not None:
-        return AWSRuntime.from_harness_config(header_state.config)
-    if header_state.first_missing_key is not None and header_state.present:
-        _raise_missing_header(header_state.first_missing_key)
+    header_inspection = inspect_harness_headers(request)
+    if header_inspection.config is not None:
+        return AWSRuntime.from_harness_config(header_inspection.config)
+    if header_inspection.first_missing_key is not None and header_inspection.present:
+        _raise_missing_header(header_inspection.first_missing_key)
     return _http_deployment_runtime(org_id)
 
 

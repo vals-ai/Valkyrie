@@ -280,30 +280,30 @@ def _parse_start_benchmark_request(payload: dict[str, Any]) -> StartBenchmarkReq
 
 
 @dataclass(frozen=True)
-class _WorkerExecution:
+class _QueuedExecution:
     request: StartBenchmarkRequest
     benchmark_id: UUID
     verified_task_ids: list[str]
-    managed: bool
+    aws_managed: bool
 
 
-def _parse_worker_execution(
+def _parse_queued_execution(
     start_benchmark_request_json: dict[str, Any] | None,
     benchmark_id_str: str | None,
     verified_task_ids: list[str] | None,
     execution_context_json: dict[str, Any] | None,
-) -> _WorkerExecution:
+) -> _QueuedExecution:
     if execution_context_json is None:
         if start_benchmark_request_json is None or benchmark_id_str is None or verified_task_ids is None:
             raise ValueError("Queued benchmark request is incomplete and cannot be processed.")
         request = _parse_start_benchmark_request(start_benchmark_request_json)
         if request.harness_config is None:
             raise ValueError("Queued access-key benchmark request has no AWS configuration.")
-        return _WorkerExecution(
+        return _QueuedExecution(
             request=request,
             benchmark_id=UUID(benchmark_id_str),
             verified_task_ids=verified_task_ids,
-            managed=False,
+            aws_managed=False,
         )
 
     if start_benchmark_request_json is not None or benchmark_id_str is not None or verified_task_ids is not None:
@@ -312,11 +312,11 @@ def _parse_worker_execution(
         context = ManagedExecutionContext.model_validate(execution_context_json)
     except ValidationError:
         raise ValueError("Queued managed execution context is invalid and cannot be processed.") from None
-    return _WorkerExecution(
+    return _QueuedExecution(
         request=context.start_benchmark_request,
         benchmark_id=context.benchmark_id,
         verified_task_ids=context.verified_task_ids,
-        managed=True,
+        aws_managed=True,
     )
 
 
@@ -333,11 +333,11 @@ def _queued_benchmark_id(
         raise ValueError("Queued benchmark request has no valid benchmark ID.") from None
 
 
-def _managed_worker_preflight(
-    execution: _WorkerExecution,
+def _prepare_managed_aws(
+    execution: _QueuedExecution,
     runtime: AWSRuntime,
 ) -> SandboxProviderConfig:
-    """Verify worker-owned AWS access before starting sandbox work."""
+    """Verify executor-owned AWS access before starting sandbox work."""
     create_benchmark_log_group(str(execution.benchmark_id), runtime)
     request = execution.request
     provider_secret_name = request.sandbox_provider_secret_name
@@ -354,6 +354,19 @@ def _managed_worker_preflight(
     if request.lambda_function:
         dry_run_lambda(runtime.clients, request.lambda_function)
     return sandbox_provider_config
+
+
+def _prepare_access_key_aws(execution: _QueuedExecution) -> tuple[AWSRuntime, SandboxProviderConfig]:
+    """Build the caller-owned AWS runtime and sandbox provider configuration."""
+    request = execution.request
+    harness_config = cast(HarnessConfig, request.harness_config)
+    runtime = AWSRuntime.from_harness_config(harness_config)
+    sandbox_provider_config = fetch_sandbox_provider_config(
+        harness_config.sandbox_provider_secret_name,
+        runtime.clients,
+        request.sandbox_provider,
+    )
+    return runtime, sandbox_provider_config
 
 
 async def upload_final_view_if_current(
@@ -403,7 +416,7 @@ async def process_benchmark(
     benchmark_service: BenchmarkServiceClient | None = None
     notifier: SlackNotifier | None = None
     try:
-        execution = _parse_worker_execution(
+        execution = _parse_queued_execution(
             start_benchmark_request_json,
             benchmark_id_str,
             verified_task_ids,
@@ -424,21 +437,18 @@ async def process_benchmark(
             }
         )
 
-        if execution.managed:
-            if not benchmark_row.aws_managed:
-                raise TrackerServiceError("Managed worker input does not match the stored run mode")
-            aws_runtime = deployment_aws_runtime(org.id)
-            sandbox_provider_config = _managed_worker_preflight(execution, aws_runtime)
-        else:
-            if benchmark_row.aws_managed:
-                raise TrackerServiceError("Access-key worker input does not match the stored run mode")
-            harness_config = cast(HarnessConfig, start_benchmark_request.harness_config)
-            aws_runtime = AWSRuntime.from_harness_config(harness_config)
-            sandbox_provider_config = fetch_sandbox_provider_config(
-                harness_config.sandbox_provider_secret_name,
-                aws_runtime.clients,
-                start_benchmark_request.sandbox_provider,
+        if execution.aws_managed != benchmark_row.aws_managed:
+            queued_mode = "managed" if execution.aws_managed else "access-key"
+            stored_mode = "managed" if benchmark_row.aws_managed else "access-key"
+            raise TrackerServiceError(
+                f"Queued {queued_mode} execution does not match the stored {stored_mode} run mode"
             )
+
+        if execution.aws_managed:
+            aws_runtime = deployment_aws_runtime(org.id)
+            sandbox_provider_config = _prepare_managed_aws(execution, aws_runtime)
+        else:
+            aws_runtime, sandbox_provider_config = _prepare_access_key_aws(execution)
 
         benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
         if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
@@ -448,7 +458,7 @@ async def process_benchmark(
                 intervals=start_benchmark_request.webhook_intervals,
             )
 
-        if not execution.managed:
+        if not execution.aws_managed:
             create_benchmark_log_group(str(benchmark_id), aws_runtime)
 
         # Create tasks inside of the database for each task id
