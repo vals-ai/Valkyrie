@@ -32,6 +32,21 @@ class TestTrackerSchema:
 
         assert {"benchmark", "task", "evaluationresult", "finalevaluation"} <= tables
 
+    def test_current_execution_release_is_nullable_indexed_foreign_key(self, postgres_engine: Engine) -> None:
+        inspector = inspect(postgres_engine)
+        columns = {column["name"]: column for column in inspector.get_columns("benchmark")}
+        assert columns["current_execution_release_id"]["nullable"] is True
+
+        foreign_keys = inspector.get_foreign_keys("benchmark")
+        assert any(
+            foreign_key["constrained_columns"] == ["current_execution_release_id"]
+            and foreign_key["referred_table"] == "executorrelease"
+            and foreign_key["referred_columns"] == ["id"]
+            for foreign_key in foreign_keys
+        )
+        indexes = inspector.get_indexes("benchmark")
+        assert any(index["column_names"] == ["current_execution_release_id"] for index in indexes)
+
     def test_terminal_statuses_set_finished_timestamps_in_postgres(self, postgres_session: Session) -> None:
         """Terminal state transitions must persist completion timestamps in production Postgres.
 

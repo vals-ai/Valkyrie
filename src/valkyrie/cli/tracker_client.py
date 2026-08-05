@@ -677,6 +677,7 @@ class TrackerService:
         task_ids: list[str],
         service_headers: dict[str, str] | None = None,
         secrets: dict[str, str] | None = None,
+        benchmark_url: str | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
         """
         Run a benchmark that has already been created by its benchmark id.
@@ -689,6 +690,7 @@ class TrackerService:
                 are created as fresh PENDING if valid in the current dataset.
             service_headers: Optional headers for benchmark service authentication
             secrets: Optional agent secret mappings to merge into the stored contract
+            benchmark_url: Optional replacement benchmark service URL
 
         Returns:
             RetryOrResumeBenchmarkResponse with status and message
@@ -702,6 +704,8 @@ class TrackerService:
             body: dict[str, Any] = {"task_ids": task_ids, "service_headers": service_headers or {}}
             if secrets:
                 body["secrets"] = secrets
+            if benchmark_url is not None:
+                body["benchmark_url"] = benchmark_url
 
             response = self._client.post(
                 f"{self._base_url}/retry-or-resume-benchmark/{benchmark_id}",

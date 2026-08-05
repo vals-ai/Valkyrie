@@ -14,15 +14,11 @@ from sqlmodel import Session, col, desc, func, select
 
 from tracker._lambda import invoke_lambda, lambda_client
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group
-from tracker.aws.s3 import (
-    copy_agent_to_benchmark,
-)
 from tracker.config import broker
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     DocentReadingStatus,
-    ErrorResult,
     EvaluationResult,
     FinalEvaluation,
     Org,
@@ -30,7 +26,10 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import engine
-from tracker.exceptions import TrackerServiceError
+from tracker.executor.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
+from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
+from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
+from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.types import (
@@ -54,10 +53,18 @@ _SANDBOX_CREATION_CAP: int = 10
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 
 
-def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: Org) -> None:
+def set_benchmark_final_status(
+    benchmark_row: Benchmark,
+    session: Session,
+    org: Org,
+    *,
+    authority: ExecutionAuthority,
+) -> None:
     """
     Delegates status depending on if any tasks have been stopped.
     """
+
+    lock_execution_authority(session, authority)
 
     # Check if any tasks are still in the pending or in progress state
     tasks_not_finished: int = session.exec(
@@ -86,6 +93,11 @@ def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: 
     if tasks_stopped:
         benchmark_status = BenchmarkStatus.STOPPED
 
+    terminalize_active_dispatches(
+        session,
+        benchmark_row.id,
+        except_dispatch_id=authority.dispatch_id if benchmark_status == BenchmarkStatus.FINISHED else None,
+    )
     benchmark_row.status = benchmark_status
     benchmark_row.error_message = None
     session.add(benchmark_row)
@@ -97,12 +109,16 @@ def create_task_rows(
     benchmark_row: Benchmark,
     session: Session,
     org: Org,
+    *,
+    authority: ExecutionAuthority,
 ) -> Sequence[tuple[str, Task]]:
     """
     Create task_rows that do not already exist in the database for the benchmark row.
 
     NOTE: Only return runnable tasks to support resuming the benchmark.
     """
+    lock_execution_authority(session, authority)
+
     # Find task ids that already exist so that we can filter them out
     existing_task_ids: Sequence[str] = session.exec(
         select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(col(Task.task_id).in_(verified_task_ids))
@@ -192,7 +208,12 @@ def fetch_final_score_inputs(session: Session, benchmark_row: Benchmark, org: Or
     }
 
 
-async def finalize_all_error_run(benchmark_id: UUID, org: Org) -> bool:
+async def finalize_all_error_run(
+    benchmark_id: UUID,
+    org: Org,
+    *,
+    authority: ExecutionAuthority,
+) -> bool:
     """Finalize a run whose tasks produced no evaluation results.
 
     Arguments
@@ -203,11 +224,20 @@ async def finalize_all_error_run(benchmark_id: UUID, org: Org) -> bool:
     - True when a concurrent retry defers finalization, otherwise False.
     """
     with Session(bind=engine) as session:
-        benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+        benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        lock_execution_authority(session, authority)
+        if has_runnable_tasks(session, benchmark_row, org):
+            return True
+        terminalize_active_dispatches(
+            session,
+            benchmark_id,
+            except_dispatch_id=authority.dispatch_id,
+        )
         if has_stopped_tasks(session, benchmark_row, org):
-            set_benchmark_final_status(benchmark_row, session, org)
+            set_benchmark_final_status(benchmark_row, session, org, authority=authority)
             return False
         task_errors = benchmark_row.fetch_tasks_with_errors(session) or {}
+        session.commit()
 
     error_message = await asyncio.to_thread(summarize_task_errors, task_errors)
 
@@ -216,26 +246,47 @@ async def finalize_all_error_run(benchmark_id: UUID, org: Org) -> bool:
         if has_runnable_tasks(session, benchmark_row, org):
             return True
         if has_stopped_tasks(session, benchmark_row, org):
-            set_benchmark_final_status(benchmark_row, session, org)
+            set_benchmark_final_status(benchmark_row, session, org, authority=authority)
             return False
 
         # Mark the run as errored so future fetches return the discovered task errors.
-        commit_benchmark_error(benchmark_row, session, error_message)
+        commit_benchmark_error(benchmark_row, session, error_message, authority=authority)
         return False
 
 
-# Pin the Taskiq task name to its pre-refactor value so in-flight messages
-# enqueued as `tracker.utils:process_benchmark` still match after the module move.
-@broker.task("tracker.utils:process_benchmark")
+async def upload_final_view_if_current(
+    benchmark: Benchmark,
+    final_view: FinalViewResponse,
+    harness_config: HarnessConfig,
+    authority: ExecutionAuthority,
+) -> None:
+    """Upload the canonical final view only while this dispatch still owns the run."""
+    with Session(bind=engine) as session:
+        lock_execution_authority(session, authority, require_in_progress=False)
+        session.rollback()
+    await upload_final_view(benchmark, final_view, harness_config)
+
+
+# Keep the Tracker producer and ExecutorHost on one stable Taskiq wire name.
+@broker.task(EXECUTOR_TASK_NAME)
 @logfire.instrument("process_benchmark")
 async def process_benchmark(
     start_benchmark_request_json: dict[str, Any],
     benchmark_id_str: str,
     verified_task_ids: list[str],
+    executor_dispatch_id: str,
 ) -> None:
+    try:
+        authority = ExecutionAuthority(
+            benchmark_id=UUID(benchmark_id_str),
+            dispatch_id=UUID(executor_dispatch_id),
+        )
+    except ValueError as error:
+        raise TrackerServiceError("Executor dispatch authority is invalid") from error
+
     # Was serialized to make it compatible with the broker
     start_benchmark_request: StartBenchmarkRequest = StartBenchmarkRequest(**start_benchmark_request_json)
-    benchmark_id: UUID = UUID(benchmark_id_str)
+    benchmark_id = authority.benchmark_id
     harness_config: HarnessConfig = start_benchmark_request.harness_config
     sandbox_provider_config = fetch_sandbox_provider_config(
         harness_config.sandbox_provider_secret_name,
@@ -252,6 +303,7 @@ async def process_benchmark(
             "benchmark_name": start_benchmark_request.benchmark_name,
             "agent_name": start_benchmark_request.contract.name,
             "task_count": len(verified_task_ids),
+            "executor_dispatch_id": executor_dispatch_id,
         }
     )
 
@@ -273,14 +325,6 @@ async def process_benchmark(
 
     finalization_deferred = False
     try:
-        # Copy the agent into the benchmarks S3 folder
-        await copy_agent_to_benchmark(
-            str(benchmark_id),
-            start_benchmark_request.contract.name,
-            harness_config.aws,
-            harness_config.s3_bucket,
-        )
-
         # Create benchmark cloudwatch log group
         create_benchmark_log_group(
             str(benchmark_id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy
@@ -289,14 +333,20 @@ async def process_benchmark(
         # Create tasks inside of the database for each task id
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            task_rows: Sequence[tuple[str, Task]] = create_task_rows(verified_task_ids, benchmark_row, session, org)
+            task_rows: Sequence[tuple[str, Task]] = create_task_rows(
+                verified_task_ids,
+                benchmark_row,
+                session,
+                org,
+                authority=authority,
+            )
             limiter = ResizableLimiter(benchmark_row.arguments.concurrency)
 
         task_row_ids: set[str] = {task_id for task_id, _ in task_rows}
         missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
         if missing_task_ids:
             raise TrackerServiceError(
-                f"Race condition occured when resuming run {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
+                f"Race condition occurred when resuming run {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
             )
 
         # Semaphore to isolate concurrent sandboxes that are being made for the benchmark
@@ -315,14 +365,23 @@ async def process_benchmark(
                     org,
                     sandbox_provider_config=sandbox_provider_config,
                     creation_semaphore=creation_semaphore,
+                    authority=authority,
                 ),
                 org,
+                authority,
             )
             for task_id, task_row in task_rows
         }
 
         # Start the monitor to track the state the tasks are in and cancel them when no longer valid
-        monitor = TaskMonitor(benchmark_id, tracked_tasks, org, limiter=limiter, notifier=notifier)
+        monitor = TaskMonitor(
+            benchmark_id,
+            tracked_tasks,
+            org,
+            limiter=limiter,
+            notifier=notifier,
+            authority=authority,
+        )
         monitor_task = asyncio.create_task(monitor.track_tasks())
 
         await gather(*[tracked_tasks[task_id].run(limiter, task_row) for task_id, task_row in task_rows])
@@ -330,14 +389,21 @@ async def process_benchmark(
         await monitor_task
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+            lock_execution_authority(session, authority)
             if has_runnable_tasks(session, benchmark_row, org):
                 finalization_deferred = True
                 return
+            terminalize_active_dispatches(
+                session,
+                benchmark_id,
+                except_dispatch_id=authority.dispatch_id,
+            )
             evaluation_results = fetch_final_score_inputs(session, benchmark_row, org)
+            session.commit()
 
         if not any(result is not None for result in evaluation_results.values()):
-            finalization_deferred = await finalize_all_error_run(benchmark_id, org)
+            finalization_deferred = await finalize_all_error_run(benchmark_id, org, authority=authority)
             return
 
         # Calculate the final score based off the tasks that were ran
@@ -346,7 +412,8 @@ async def process_benchmark(
         )
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+            lock_execution_authority(session, authority)
             # final_score is a network call; a concurrent retry can make tasks runnable before we write FinalEvaluation.
             if has_runnable_tasks(session, benchmark_row, org):
                 finalization_deferred = True
@@ -373,74 +440,153 @@ async def process_benchmark(
 
             session.add(final_evaluation_row)
             # Commit the final score and terminal status together while retry/resume is blocked.
-            set_benchmark_final_status(benchmark_row, session, org)
+            set_benchmark_final_status(benchmark_row, session, org, authority=authority)
 
-            # Push the final benchmark view to the bucket
+            # Recheck dispatch authority after the status commit without holding the
+            # Retry admission lock across external operations.
+            lock_execution_authority(session, authority, require_in_progress=False)
+            session.commit()
+
             final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
-
-            await upload_final_view(benchmark_row, final_view, harness_config)
-
-            # Invoke the configured lambda after the benchmark's final view is uploaded.
-            arguments = benchmark_row.arguments
-            if arguments.lambda_function:
-                # Expose the benchmark arguments, id, and name inside of the lambda
-                lambda_payload: dict[str, Any] = arguments.model_dump()
+            final_view_benchmark = benchmark_row
+            lambda_function = benchmark_row.arguments.lambda_function
+            lambda_payload: dict[str, Any] | None = None
+            if lambda_function:
+                lambda_payload = benchmark_row.arguments.model_dump()
                 lambda_payload["benchmark_id"] = str(benchmark_id)
                 lambda_payload["benchmark_name"] = benchmark_row.name
 
-                invoke_lambda(lambda_client(harness_config.aws), arguments.lambda_function, lambda_payload)
+        await upload_final_view_if_current(
+            final_view_benchmark,
+            final_view,
+            harness_config,
+            authority,
+        )
 
+        # A Retry may win while the upload is in flight. Do not emit follow-on
+        # callbacks for an execution that no longer owns the run.
+        with Session(bind=engine) as authority_session:
+            lock_execution_authority(
+                authority_session,
+                authority,
+                require_in_progress=False,
+            )
+            authority_session.commit()
+
+        if lambda_function and lambda_payload is not None:
+            invoke_lambda(lambda_client(harness_config.aws), lambda_function, lambda_payload)
+
+    except ExecutionAuthorityRevoked:
+        finalization_deferred = True
     except BenchmarkServiceUnauthenticatedError as e:
         logfire.warn("process_benchmark failed due to benchmark service auth error")
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = f"{str(e)}\n{traceback.format_exc()}"
             logger.warning(error_message)
-            commit_benchmark_error(benchmark_row, session, error_message)
+            commit_benchmark_error(
+                benchmark_row,
+                session,
+                error_message,
+                authority=authority,
+                task_ids=verified_task_ids,
+            )
     except BenchmarkServiceError as e:
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = str(e)
-            commit_benchmark_error(benchmark_row, session, error_message)
+            commit_benchmark_error(
+                benchmark_row,
+                session,
+                error_message,
+                authority=authority,
+                task_ids=verified_task_ids,
+            )
     except Exception as e:
         logfire.exception("process_benchmark failed")
         sentry_sdk.capture_exception(e)
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = f"{str(e)}\n{traceback.format_exc()}"
-            commit_benchmark_error(benchmark_row, session, error_message)
+            commit_benchmark_error(
+                benchmark_row,
+                session,
+                error_message,
+                authority=authority,
+                task_ids=verified_task_ids,
+            )
     finally:
+        authority_current = False
         if not finalization_deferred:
             with Session(bind=engine) as session:
                 # Handle any misalignments between the benchmark status and tasks
-                catch_errors_during_cleanup(benchmark_id, session, org)
+                authority_current = catch_errors_during_cleanup(
+                    benchmark_id,
+                    session,
+                    org,
+                    authority=authority,
+                    task_ids=verified_task_ids,
+                )
 
-        if notifier and not finalization_deferred:
+        if notifier and not finalization_deferred and authority_current:
             try:
                 with Session(bind=engine) as session:
-                    benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+                    benchmark_row = lock_execution_authority(
+                        session,
+                        authority,
+                        require_in_progress=False,
+                    )
                     notification_context = NotificationContext.from_benchmark(benchmark_row, session, org)
                     final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
+                    notification_status = benchmark_row.status
+                    notification_error_message = benchmark_row.error_message
+                    session.commit()
                     await notifier.send_terminal_notification(
                         notification_context,
-                        status=benchmark_row.status,
+                        status=notification_status,
                         final_score=final_score,
-                        error_message=benchmark_row.error_message,
+                        error_message=notification_error_message,
                     )
+            except ExecutionAuthorityRevoked:
+                pass
             except Exception as notification_error:
                 logger.warning(f"Failed to send terminal notification: {notification_error}")
 
         await benchmark_service.close()
 
 
-def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_message: str) -> None:
-    benchmark_row.status = BenchmarkStatus.ERROR
-    benchmark_row.error_message = error_message
-    session.add(benchmark_row)
+def commit_benchmark_error(
+    benchmark_row: Benchmark,
+    session: Session,
+    error_message: str,
+    *,
+    authority: ExecutionAuthority,
+    task_ids: list[str] | None = None,
+) -> bool:
+    try:
+        benchmark_row = lock_execution_authority(session, authority)
+    except ExecutionAuthorityRevoked:
+        session.rollback()
+        return False
+    committed = record_dispatch_failure(
+        session,
+        benchmark=benchmark_row,
+        dispatch_id=authority.dispatch_id,
+        task_ids=task_ids or [],
+        error_message=error_message,
+    )
     session.commit()
+    return committed
 
 
-def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) -> None:
+def catch_errors_during_cleanup(
+    benchmark_id: UUID,
+    session: Session,
+    org: Org,
+    *,
+    authority: ExecutionAuthority,
+    task_ids: list[str] | None = None,
+) -> bool:
     """
     On task exit we must clean up any edge cases so that it does not affect the users experience.
     There are sometimes fishy things that may occur with the sandboxes that if not dealt with could become an issue.
@@ -451,33 +597,45 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
     terminal_statuses = [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]
 
     benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+    try:
+        benchmark_row = lock_execution_authority(
+            session,
+            authority,
+            require_in_progress=False,
+        )
+    except ExecutionAuthorityRevoked:
+        session.rollback()
+        return False
     if benchmark_row.status in terminal_statuses:
-        return
+        return True
 
     # Force non exited tasks to be ERROR
     task_terminal_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
-    undetected_exit_tasks = session.exec(
+    undetected_exit_tasks_query = (
         select(Task)
         .where(col(Task.benchmark) == benchmark_id)
         .where(col(Task.org_id) == org.id)
         .where(col(Task.status).notin_(task_terminal_statuses))
-    ).all()
-    for task in undetected_exit_tasks:
-        session.add(ErrorResult(org_id=org.id, task=task.id, error_message="Undetected exit of task"))
-        task.status = TaskStatus.ERROR
-        session.add(task)
-    session.commit()
+    )
+    if task_ids is not None:
+        undetected_exit_tasks_query = undetected_exit_tasks_query.where(col(Task.task_id).in_(task_ids))
+    undetected_exit_tasks = session.exec(undetected_exit_tasks_query).all()
 
     # Sweep stale RUNNING analyzer invocations to ERROR. The invoke_analyzer
-    # helper uses try/finally so this only fires when the worker process was
+    # helper uses try/finally so this only fires when the executor process was
     # killed mid-invocation (no try/finally cleanup ran).
     if benchmark_row.docent_reading_status == DocentReadingStatus.RUNNING:
         benchmark_row.docent_reading_status = DocentReadingStatus.ERROR
         session.add(benchmark_row)
 
-    # Force benchmark to ERROR so that the user knows they can retry any failed tasks
-    commit_benchmark_error(
-        benchmark_row,
+    # Force benchmark to ERROR so that the user knows they can retry any failed tasks.
+    error_message = f"Run {benchmark_id} exited without finishing"
+    committed = record_dispatch_failure(
         session,
-        f"Run {benchmark_id} exited without finishing",
+        benchmark=benchmark_row,
+        dispatch_id=authority.dispatch_id,
+        task_ids=[task.task_id for task in undetected_exit_tasks],
+        error_message=error_message,
     )
+    session.commit()
+    return committed

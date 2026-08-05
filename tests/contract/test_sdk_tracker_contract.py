@@ -305,12 +305,17 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
     retry_schema_ref = retry["requestBody"]["content"]["application/json"]["schema"]["$ref"]
     retry_schema = schema["components"]["schemas"][retry_schema_ref.rsplit("/", 1)[-1]]
     retry_fixture = load_fixture("retry_resume.json")
-    assert set(retry_schema["properties"]) == set(retry_fixture["body"])
-    assert {name: (value["type"], value["default"]) for name, value in retry_schema["properties"].items()} == {
+    assert set(retry_schema["properties"]) == {*retry_fixture["body"], "benchmark_url"}
+    retry_properties = retry_schema["properties"]
+    assert {
+        name: (retry_properties[name]["type"], retry_properties[name]["default"])
+        for name in ("task_ids", "service_headers", "secrets")
+    } == {
         "task_ids": ("array", []),
         "service_headers": ("object", {}),
         "secrets": ("object", {}),
     }
+    assert retry_properties["benchmark_url"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
 
     retry_parameters = {parameter["name"]: parameter for parameter in retry["parameters"]}
     assert retry_parameters["retry"]["schema"]["default"] == retry_fixture["query"]["retry"]

@@ -2,7 +2,7 @@
 
 import json
 from functools import lru_cache
-from typing import Any
+from typing import Any, cast
 
 import boto3
 from botocore.exceptions import ClientError
@@ -15,23 +15,28 @@ logger = get_logger(__name__)
 
 
 @lru_cache(maxsize=32)
-def _secretsmanager_client(aws: AWSCredentials) -> Any:
+def _secretsmanager_client(aws: AWSCredentials | None) -> Any:
     """Cached Secrets Manager client, shared per credential tuple."""
-    return boto3.client(  # pyright: ignore[reportUnknownMemberType]
-        "secretsmanager",
-        aws_access_key_id=aws.aws_access_key_id,
-        aws_secret_access_key=aws.aws_secret_access_key,
-        aws_session_token=aws.aws_session_token,
-        region_name=aws.aws_default_region,
+    if aws is None:
+        return cast(Any, boto3.client("secretsmanager"))  # pyright: ignore[reportUnknownMemberType]
+    return cast(
+        Any,
+        boto3.client(  # pyright: ignore[reportUnknownMemberType]
+            "secretsmanager",
+            aws_access_key_id=aws.aws_access_key_id,
+            aws_secret_access_key=aws.aws_secret_access_key,
+            aws_session_token=aws.aws_session_token,
+            region_name=aws.aws_default_region,
+        ),
     )
 
 
-def fetch_aws_secret(secret_name: str, aws: AWSCredentials) -> dict[str, Any] | str:
+def fetch_aws_secret(secret_name: str, aws: AWSCredentials | None = None) -> dict[str, Any] | str:
     """Fetch a JSON secret from AWS Secrets Manager by name.
 
     Args:
         secret_name: The name of the secret to retrieve.
-        aws: User's AWS credentials for accessing Secrets Manager.
+        aws: AWS credentials, or ``None`` to use the ambient credential chain.
 
     Returns:
         Parsed JSON contents of the secret as a dict or the string value
