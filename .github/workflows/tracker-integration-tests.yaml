@@ -1,9 +1,10 @@
 name: Tracker live integration tests
 on:
-  # Runs on every PR so the required check is always reported; the guard skips
-  # the (AWS-credentialed) live tests when the PR does not touch the tracker.
+  # Runs on every PR so the required check is always reported. The guard below
+  # only assumes the AWS role and runs the live suite in trusted contexts (a
+  # prod-targeting PR or a maintainer's manual re-run); otherwise it reports
+  # success without minting credentials, preserving the manual-approval gate.
   pull_request:
-    branches: [dev, prod]
     types: [opened, reopened, synchronize]
 
 permissions:
@@ -17,17 +18,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Check for relevant changes
         id: rel
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.base_ref }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^services/tracker/'; then
+          if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"; then
+            echo "Could not compute the PR diff; treating as tracker-relevant."
+            changed="services/tracker/"
+          fi
+          if ! printf '%s\n' "$changed" | grep -qE '^services/tracker/'; then
+            echo "No changes under services/tracker/; skipping live integration tests."
+            echo "relevant=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$BASE_REF" = "prod" ] || [ "${RUN_ATTEMPT:-1}" != "1" ]; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No changes under services/tracker/; skipping live integration tests."
+            echo "Tracker changed, but the live (AWS-credentialed) tests require a manual re-run on non-prod PRs; reporting success without running them."
             echo "relevant=false" >> "$GITHUB_OUTPUT"
           fi
 
