@@ -561,7 +561,7 @@ class MonitoringStackTest(unittest.TestCase):
             },
             clear=True,
         ):
-            _, worker_template = _service_templates(DEV)
+            _, worker_template, _ = _service_templates(DEV)
 
         worker_template.resource_count_is("AWS::Scheduler::Schedule", 0)
         worker_template.resource_count_is("AWS::Lambda::Function", 0)
@@ -569,7 +569,7 @@ class MonitoringStackTest(unittest.TestCase):
 
     def test_prod_sandbox_cleanup_is_disabled_and_bounded_by_default(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
-            _, worker_template = _service_templates(PROD)
+            _, worker_template, _ = _service_templates(PROD)
 
         worker_template.resource_count_is("AWS::Scheduler::Schedule", 1)
         worker_template.resource_count_is("AWS::Lambda::Function", 1)
@@ -639,7 +639,7 @@ class MonitoringStackTest(unittest.TestCase):
                     clear=True,
                 ),
             ):
-                _, worker_template = _service_templates(PROD)
+                _, worker_template, _ = _service_templates(PROD)
 
             worker_template.has_resource_properties(
                 "AWS::Scheduler::Schedule",
