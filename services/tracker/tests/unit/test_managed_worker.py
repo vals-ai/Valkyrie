@@ -164,12 +164,13 @@ async def test_worker_parse_failure_marks_run_error(
     contract: AgentContractRequest,
     database_session: Session,
     process_benchmark_env: None,
+    executor_authority_kwargs: Any,
 ) -> None:
     request = _managed_request(contract)
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
     invalid_context = {**_execution_context(request, benchmark.id), "version": 1}
 
-    await process_benchmark(execution_context_json=invalid_context)
+    await process_benchmark(execution_context_json=invalid_context, **executor_authority_kwargs(benchmark))
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
@@ -181,12 +182,13 @@ async def test_managed_worker_input_for_access_key_row_marks_run_error(
     harness_config: HarnessConfig,
     database_session: Session,
     process_benchmark_env: None,
+    executor_authority_kwargs: Any,
 ) -> None:
     access_key_request = _access_key_request(contract, harness_config)
     benchmark = _persist_benchmark(database_session, access_key_request, aws_managed=False)
     context = _execution_context(_managed_request(contract), benchmark.id)
 
-    await process_benchmark(execution_context_json=context)
+    await process_benchmark(execution_context_json=context, **executor_authority_kwargs(benchmark))
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
@@ -198,6 +200,7 @@ async def test_access_key_worker_input_for_managed_row_marks_run_error(
     harness_config: HarnessConfig,
     database_session: Session,
     process_benchmark_env: None,
+    executor_authority_kwargs: Any,
 ) -> None:
     managed_request = _managed_request(contract)
     benchmark = _persist_benchmark(database_session, managed_request, aws_managed=True)
@@ -207,6 +210,7 @@ async def test_access_key_worker_input_for_managed_row_marks_run_error(
         start_benchmark_request_json=access_key_request.model_dump(mode="json"),
         benchmark_id_str=str(benchmark.id),
         verified_task_ids=_TASK_IDS,
+        **executor_authority_kwargs(benchmark),
     )
 
     database_session.refresh(benchmark)
@@ -219,6 +223,7 @@ async def test_ineligible_managed_worker_marks_run_error(
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
     process_benchmark_env: None,
+    executor_authority_kwargs: Any,
 ) -> None:
     request = _managed_request(contract)
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
@@ -228,7 +233,10 @@ async def test_ineligible_managed_worker_marks_run_error(
 
     monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", reject_managed_runtime)
 
-    await process_benchmark(execution_context_json=_execution_context(request, benchmark.id))
+    await process_benchmark(
+        execution_context_json=_execution_context(request, benchmark.id),
+        **executor_authority_kwargs(benchmark),
+    )
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
@@ -241,6 +249,7 @@ async def test_managed_worker_completes_with_the_deployment_runtime(
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
     process_benchmark_env: None,
+    executor_authority_kwargs: Any,
 ) -> None:
     request = _managed_request(contract.model_copy(update={"secrets": {"MODEL_API_KEY": "model-secret"}})).model_copy(
         update={"lambda_function": "post-run-handler"}
@@ -271,10 +280,6 @@ async def test_managed_worker_completes_with_the_deployment_runtime(
         assert clients is aws_runtime.clients
         calls.append("lambda-dry-run")
 
-    async def copy_agent(_benchmark_id: str, _agent_name: str, runtime: AWSRuntime) -> None:
-        assert runtime is aws_runtime
-        calls.append("s3-copy")
-
     async def upload_results(_benchmark: Benchmark, _final_view: object, runtime: AWSRuntime) -> None:
         assert runtime is aws_runtime
         calls.append("s3-final-upload")
@@ -290,7 +295,6 @@ async def test_managed_worker_completes_with_the_deployment_runtime(
     monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
-    monkeypatch.setattr("tracker.utils.run_orchestration.copy_agent_to_benchmark", copy_agent)
     monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", upload_results)
     monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", invoke_post_run)
 
@@ -300,11 +304,11 @@ async def test_managed_worker_completes_with_the_deployment_runtime(
     database_session.add(benchmark)
     database_session.commit()
 
-    await process_benchmark(execution_context_json=execution_context)
+    await process_benchmark(execution_context_json=execution_context, **executor_authority_kwargs(benchmark))
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.FINISHED
-    assert calls[:5] == ["logs", "provider-secret", "agent-secrets", "lambda-dry-run", "s3-copy"]
+    assert calls[:4] == ["logs", "provider-secret", "agent-secrets", "lambda-dry-run"]
     assert calls.count("agent-secrets") >= 2
     assert calls[-2:] == ["s3-final-upload", "lambda-post-run"]
 
@@ -356,16 +360,16 @@ def test_managed_worker_preflight_checks_aws_dependencies_in_order(
     assert calls == ["logs", "sandbox_provider_secret", "agent_secrets", "webhook_secret", "lambda"]
 
 
-async def test_managed_preflight_failure_happens_before_copy_or_sandbox(
+async def test_managed_preflight_failure_happens_before_sandbox(
     contract: AgentContractRequest,
     aws_runtime: AWSRuntime,
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
     process_benchmark_env: None,
+    executor_authority_kwargs: Any,
 ) -> None:
     request = _managed_request(contract)
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
-    copy_agent = AsyncMock()
     create_sandbox = AsyncMock()
 
     def deployment_runtime(_org_id: UUID) -> AWSRuntime:
@@ -376,13 +380,14 @@ async def test_managed_preflight_failure_happens_before_copy_or_sandbox(
 
     monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
     monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", fail_log_preflight)
-    monkeypatch.setattr("tracker.utils.run_orchestration.copy_agent_to_benchmark", copy_agent)
     monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", create_sandbox)
 
-    await process_benchmark(execution_context_json=_execution_context(request, benchmark.id))
+    await process_benchmark(
+        execution_context_json=_execution_context(request, benchmark.id),
+        **executor_authority_kwargs(benchmark),
+    )
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
     assert "managed log preflight failed" in (benchmark.error_message or "")
-    copy_agent.assert_not_awaited()
     create_sandbox.assert_not_awaited()

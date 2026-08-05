@@ -24,6 +24,7 @@ from sqlmodel import (
 )
 
 from tracker.database.utils import has_field_changed
+from executor_protocol import ExecutorDispatchStatus as ExecutorDispatchStatus
 
 if TYPE_CHECKING:
     from benchmark_service.client import BenchmarkServiceClient
@@ -62,6 +63,19 @@ class BenchmarkStatus(str, Enum):
     ERROR = "ERROR"
 
 
+class ExecutorReleaseStatus(str, Enum):
+    CANDIDATE = "CANDIDATE"
+    ACTIVE = "ACTIVE"
+    DRAINING = "DRAINING"
+    RETIRED = "RETIRED"
+
+
+class ExecutorDispatchKind(str, Enum):
+    START = "START"
+    RETRY = "RETRY"
+    RESUME = "RESUME"
+
+
 class DocentReadingStatus(str, Enum):
     IDLE = "IDLE"
     RUNNING = "RUNNING"
@@ -81,7 +95,7 @@ class RetryMode(str, Enum):
     FROM_SCRATCH = "from_scratch"
 
 
-MAX_OUTPUT_ARTIFACT_BYTES = 50 * 1024 * 1024
+MAX_OUTPUT_ARTIFACT_BYTES = 100 * 1024 * 1024
 MAX_OUTPUT_ARTIFACT_COUNT = 10
 
 
@@ -223,11 +237,61 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
         return BenchmarkArguments(**value)
 
 
+class ExecutorRelease(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    artifact_uri: str
+    artifact_digest: str
+    protocol_version: str
+    status: ExecutorReleaseStatus = Field(default=ExecutorReleaseStatus.CANDIDATE)
+    readiness_verified: bool = False
+    readiness_metadata: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+    activated_at: datetime | None = None
+    draining_at: datetime | None = None
+    retired_at: datetime | None = None
+    artifact_retention_until: datetime | None = None
+
+
+class ExecutorAdmission(SQLModel, table=True):
+    id: int = Field(default=1, primary_key=True)
+    release_id: str | None = Field(default=None, foreign_key="executorrelease.id")
+    maintenance_target_sha: str | None = None
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+
+
+class ExecutorDispatch(SQLModel, table=True):
+    """Immutable release identity and lifecycle for one executor invocation."""
+
+    __table_args__ = (
+        Index("ix_executordispatch_release_status", "executor_release_id", "status"),
+        Index("ix_executordispatch_benchmark_kind", "benchmark_id", "kind"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    benchmark_id: UUID = Field(foreign_key="benchmark.id")
+    kind: ExecutorDispatchKind
+    status: ExecutorDispatchStatus = Field(default=ExecutorDispatchStatus.QUEUED)
+    executor_release_id: str = Field(foreign_key="executorrelease.id")
+    executor_artifact_uri: str
+    executor_artifact_digest: str
+    executor_protocol_version: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
 class Benchmark(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint(
             "(status != 'FINISHED' AND status != 'ERROR') OR (finished_at IS NOT NULL)",
             name="benchmark_finished_requires_timestamp",
+        ),
+        CheckConstraint(
+            "(executor_release_id IS NULL AND executor_artifact_uri IS NULL AND executor_artifact_digest IS NULL "
+            "AND executor_protocol_version IS NULL) OR "
+            "(executor_release_id IS NOT NULL AND executor_artifact_uri IS NOT NULL "
+            "AND executor_artifact_digest IS NOT NULL AND executor_protocol_version IS NOT NULL)",
+            name="benchmark_executor_ownership_complete",
         ),
         Index(
             "ix_benchmark_org_started_at_id",
@@ -245,6 +309,11 @@ class Benchmark(SQLModel, table=True):
     status: BenchmarkStatus = Field(default=BenchmarkStatus.IN_PROGRESS)
     label: str | None = Field(default=None, index=True)
     aws_managed: bool = Field(default=False, nullable=False)
+    executor_release_id: str | None = Field(default=None, foreign_key="executorrelease.id", index=True)
+    current_execution_release_id: str | None = Field(default=None, foreign_key="executorrelease.id", index=True)
+    executor_artifact_uri: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
 
     error_message: str | None = Field(default=None)
     webhook_secret_name: str | None = Field(default=None)
@@ -341,11 +410,20 @@ class Benchmark(SQLModel, table=True):
             service_headers=service_headers or {},
         )
 
-    def benchmark_service(self, service_headers: dict[str, str] | None = None) -> "BenchmarkServiceClient":
+    def benchmark_service(
+        self,
+        service_headers: dict[str, str] | None = None,
+        *,
+        benchmark_url: str | None = None,
+    ) -> "BenchmarkServiceClient":
         from tracker.config import create_benchmark_service_url
         from tracker.utils import create_benchmark_service_client
 
-        url = self.custom_benchmark_service or create_benchmark_service_url(self.name)
+        url = (
+            benchmark_url
+            if benchmark_url is not None
+            else self.custom_benchmark_service or create_benchmark_service_url(self.name)
+        )
         return create_benchmark_service_client(url=url, service_headers=service_headers)
 
     @property
@@ -357,6 +435,11 @@ class Benchmark(SQLModel, table=True):
             benchmark_name=self.name,
             benchmark_arguments=self.arguments,
             started_by_email=self.started_by_email,
+            executor_release_id=self.executor_release_id,
+            current_execution_release_id=self.current_execution_release_id,
+            executor_artifact_uri=self.executor_artifact_uri,
+            executor_artifact_digest=self.executor_artifact_digest,
+            executor_protocol_version=self.executor_protocol_version,
         )
 
     def create_benchmark_table_row(self, session: Session) -> "BenchmarkTableRow":
@@ -386,6 +469,10 @@ class Benchmark(SQLModel, table=True):
             agent_name=self.arguments.contract.name,
             model=self.arguments.contract.model,
             dataset=self.arguments.dataset or "default",
+            executor_release_id=self.executor_release_id,
+            current_execution_release_id=self.current_execution_release_id,
+            executor_artifact_digest=self.executor_artifact_digest,
+            executor_protocol_version=self.executor_protocol_version,
             started_by_email=self.started_by_email,
             started_at=self.started_at,
             finished_at=self.finished_at,

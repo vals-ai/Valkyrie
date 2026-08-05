@@ -12,17 +12,26 @@ from sqlmodel import Session, select
 from main import app
 from tests.conftest import TEST_ORG_ID
 from tracker import config
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, ExecutorRelease
+from tracker.executor.release_control import promote_release
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 
 
 client = TestClient(app)
 
+_DISPATCH_TASK_KWARGS = {
+    "executor_dispatch_id",
+    "executor_release_id",
+    "executor_artifact_uri",
+    "executor_artifact_digest",
+    "executor_protocol_version",
+}
 _ACCESS_KEY_TASK_KWARGS = {
     "start_benchmark_request_json",
     "benchmark_id_str",
     "verified_task_ids",
-}
+} | _DISPATCH_TASK_KWARGS
+_MANAGED_TASK_KWARGS = {"execution_context_json"} | _DISPATCH_TASK_KWARGS
 _CALLER_AWS_HEADERS = {
     "x-harness-aws-access-key-id": "caller-access-key",
     "x-harness-aws-secret-access-key": "caller-secret-key",
@@ -62,6 +71,20 @@ def _stop_benchmark(benchmark: Benchmark, session: Session) -> None:
     session.commit()
 
 
+def _promote_test_release(session: Session) -> None:
+    release = ExecutorRelease(
+        id="producer-test-release",
+        artifact_uri="s3://artifacts/producer-test-release.pex",
+        artifact_digest="a" * 64,
+        protocol_version="1",
+        readiness_verified=True,
+    )
+    session.add(release)
+    session.commit()
+    promote_release(session, release.id)
+    session.commit()
+
+
 def _assert_no_aws_authority(payload: dict[str, Any]) -> None:
     serialized = json.dumps(payload).lower().replace("-", "_")
     for forbidden_key in (
@@ -91,6 +114,7 @@ def test_managed_start_and_resume_emit_credential_free_v2(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_managed_runtime(monkeypatch)
+    _promote_test_release(database_session)
     payloads = _capture_task_payloads(monkeypatch)
 
     async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
@@ -101,6 +125,7 @@ def test_managed_start_and_resume_emit_credential_free_v2(
 
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
     monkeypatch.setattr("main.s3_object_exists", agent_exists)
+    monkeypatch.setattr("main.copy_agent_to_benchmark", AsyncMock(return_value=True))
     reset_to_in_progress = AsyncMock(return_value=["task-2"])
     monkeypatch.setattr("main.reset_to_in_progress_status", reset_to_in_progress)
 
@@ -111,7 +136,7 @@ def test_managed_start_and_resume_emit_credential_free_v2(
     assert benchmark is not None
     assert benchmark.aws_managed is True
     assert len(payloads) == 1
-    assert set(payloads[0]) == {"execution_context_json"}
+    assert set(payloads[0]) == _MANAGED_TASK_KWARGS
     start_context = payloads[0]["execution_context_json"]
     assert start_context["version"] == 2
     assert start_context["start_benchmark_request"]["harness_config"] is None
@@ -129,7 +154,7 @@ def test_managed_start_and_resume_emit_credential_free_v2(
 
     assert response.status_code == 200
     assert len(payloads) == 1
-    assert set(payloads[0]) == {"execution_context_json"}
+    assert set(payloads[0]) == _MANAGED_TASK_KWARGS
     resume_context = payloads[0]["execution_context_json"]
     assert resume_context["version"] == 2
     assert resume_context["benchmark_id"] == str(benchmark.id)
@@ -203,6 +228,7 @@ def test_access_key_start_and_resume_keep_v1_task_kwargs(
     harness_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _promote_test_release(database_session)
     payloads = _capture_task_payloads(monkeypatch)
 
     async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
@@ -212,6 +238,7 @@ def test_access_key_start_and_resume_keep_v1_task_kwargs(
         return ["task-1"]
 
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
+    monkeypatch.setattr("main.copy_agent_to_benchmark", AsyncMock(return_value=True))
     monkeypatch.setattr("main.reset_to_in_progress_status", reset_to_in_progress)
 
     response = client.post(
