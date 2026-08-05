@@ -169,8 +169,9 @@ def update_benchmark_resume_arguments(
     *,
     secrets: dict[str, str],
     concurrency: int | None,
+    benchmark_url: str | None,
 ) -> Benchmark:
-    """Lock and freshly merge JSON-backed arguments used by resume and retry."""
+    """Lock and persist argument and service URL overrides used by resume and retry."""
     benchmark_row = _fetch_locked_benchmark(benchmark_id, session, org)
     arguments = benchmark_row.arguments
 
@@ -180,9 +181,11 @@ def update_benchmark_resume_arguments(
         arguments = arguments.model_copy(update={"contract": updated_contract})
     if concurrency is not None:
         arguments = arguments.model_copy(update={"concurrency": concurrency})
+    if benchmark_url is not None:
+        benchmark_row.custom_benchmark_service = benchmark_url
 
     benchmark_row.arguments = arguments
-    session.commit()
+    session.add(benchmark_row)
     return benchmark_row
 
 

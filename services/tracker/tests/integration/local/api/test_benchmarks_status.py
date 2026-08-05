@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from tests.factories import make_benchmark
-from tracker.database.models import BenchmarkStatus
+from tracker.database.models import BenchmarkStatus, ExecutorRelease
 
 
 class TestBenchmarksStatus:
@@ -21,9 +21,16 @@ class TestBenchmarksStatus:
         Test cases:
         - An authenticated request receives entries for its requested benchmark IDs.
         """
+        release = ExecutorRelease(
+            id="status-release",
+            artifact_uri="s3://artifacts/status.pex",
+            artifact_digest="a" * 64,
+            protocol_version="1",
+        )
         running_benchmark = make_benchmark("running", status=BenchmarkStatus.IN_PROGRESS)
+        running_benchmark.current_execution_release_id = release.id
         finished_benchmark = make_benchmark("finished", status=BenchmarkStatus.FINISHED)
-        database_session.add_all([running_benchmark, finished_benchmark])
+        database_session.add_all([release, running_benchmark, finished_benchmark])
         database_session.commit()
 
         response = client.get(
@@ -33,8 +40,10 @@ class TestBenchmarksStatus:
 
         assert response.status_code == 200, response.text
         response_body = response.json()
-        returned_ids = {entry["id"] for entry in response_body["entries"]}
-        assert returned_ids == {str(running_benchmark.id), str(finished_benchmark.id)}
+        entries = {entry["id"]: entry for entry in response_body["entries"]}
+        assert set(entries) == {str(running_benchmark.id), str(finished_benchmark.id)}
+        assert entries[str(running_benchmark.id)]["current_execution_release_id"] == release.id
+        assert entries[str(finished_benchmark.id)]["current_execution_release_id"] is None
 
     def test_status_ignores_foreign_ids(self, client: TestClient, database_session: Session) -> None:
         """Status polling must not reveal runs from another organization.

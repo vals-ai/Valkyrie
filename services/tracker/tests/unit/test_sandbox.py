@@ -6,7 +6,7 @@ Run: pytest services/tracker/tests/unit/test_sandbox.py
 import asyncio
 import shlex
 from collections import deque
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any, Never, cast
 from unittest.mock import AsyncMock, Mock, call
 
@@ -20,6 +20,7 @@ from benchmark_service import (
     SandboxSource,
     SnapshotSource,
     TargetedSnapshotSource,
+    VolumeMount,
 )
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
@@ -34,6 +35,7 @@ from tracker.database.models import (
 from tracker.exceptions import (
     AgentRunFailedError,
     DependencySetupExhaustedError,
+    InvalidSandboxConfigurationError,
     OutputArtifactError,
     SSLConnectionError,
     SandboxError,
@@ -111,6 +113,43 @@ class TestOutputArtifacts:
         )
 
         assert uploaded == [(artifact_content, "benchmarks/benchmark-123/task_0/artifacts/turns.jsonl")]
+
+    async def test_upload_output_artifacts_rechecks_authority_after_download(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        artifact = "artifacts/turns.jsonl"
+        authority_checks = iter([True, False])
+        uploaded: list[bytes] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command == "test -f /tmp/valkyrie/artifacts/turns.jsonl":
+                return ExecResult(exit_code=0, output="")
+            if command == "stat -c%s /tmp/valkyrie/artifacts/turns.jsonl":
+                return ExecResult(exit_code=0, output="3")
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fake_upload_to_s3(file_content: bytes, *_args: Any, **_kwargs: Any) -> None:
+            uploaded.append(file_content)
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "upload_to_s3", fake_upload_to_s3)
+        mock_sandbox = Mock()
+        mock_sandbox.download_file = AsyncMock(return_value=b"old")
+
+        await upload_output_artifacts(
+            mock_sandbox,
+            [artifact],
+            "benchmark-123",
+            "task_0",
+            harness_config.aws,
+            harness_config.s3_bucket,
+            execution_is_current=lambda: next(authority_checks),
+        )
+
+        mock_sandbox.download_file.assert_awaited_once()
+        assert uploaded == []
 
     async def test_upload_output_artifacts_can_upload_explicit_glob_sources(
         self,
@@ -470,7 +509,13 @@ class TestArchiveAndUploadOutput:
             exec_commands.append(command)
             return ExecResult(exit_code=0, output="")
 
-        async def fake_upload_stream_to_s3(chunks: Any, s3_key: str, _aws: Any, _s3_bucket: str) -> int:
+        async def fake_upload_stream_to_s3(
+            chunks: Any,
+            s3_key: str,
+            _aws: Any,
+            _s3_bucket: str,
+            should_continue: Any = None,
+        ) -> int:
             data = b"".join([chunk async for chunk in chunks])
             uploaded.append((data, s3_key))
             return len(data)
@@ -537,6 +582,7 @@ class TestRunAgent:
             task_id: str,
             _aws: Any,
             _s3_bucket: str,
+            _execution_is_current: Any,
         ) -> None:
             artifact_calls.append(f"{benchmark_id}:{task_id}:{artifacts[0]}")
 
@@ -592,6 +638,7 @@ class TestRunAgent:
             *,
             benchmark_id: str | None = None,
             task_id: str | None = None,
+            execution_is_current: Callable[[], bool] | None = None,
         ) -> None:
             archive_calls.append(f"{benchmark_id}:{task_id}:{output_path}")
 
@@ -617,6 +664,22 @@ class TestRunAgent:
         )
 
         assert archive_calls == ["benchmark-123:task_0:/tmp/agent_output"]
+
+        archive_calls.clear()
+        await run_agent(
+            mock_sandbox,
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            lambda _msg: None,
+            "/testbed",
+            aws=harness_config.aws,
+            s3_bucket=harness_config.s3_bucket,
+            agent_output_s3_key="benchmarks/run/task/agent_output.tar.gz",
+            benchmark_id="benchmark-123",
+            execution_is_current=lambda: False,
+        )
+        assert archive_calls == []
 
     async def test_run_agent_wraps_compose_runtime_source(
         self,
@@ -923,11 +986,23 @@ class TestSandboxLifecycle:
         provider.create_sandbox = AsyncMock(return_value=mock_sandbox)
 
         resources = Resources(vcpu=2, memory=4, disk=5)
+        volumes = [
+            VolumeMount(
+                name="shared-fixtures",
+                mount_path="/fixtures",
+                read_only=True,
+                subpath="{run_id}",
+            )
+        ]
+        sandbox_secrets = {"TAVILY_API_KEY": "daytona-tavily"}
         sandbox = await _create_sandbox(
             provider,
             "task-alias",
             ImageSource(image="ghcr.io/vals/swebench:latest"),
             resources,
+            labels={"run-id": "run-123"},
+            sandbox_secrets=sandbox_secrets,
+            volumes=volumes,
         )
 
         assert sandbox is mock_sandbox
@@ -935,8 +1010,26 @@ class TestSandboxLifecycle:
         request = provider.create_sandbox.await_args.args[0]
         assert request.name == "task-alias"
         assert request.resources == resources
+        assert request.labels == {"run-id": "run-123"}
+        assert request.sandbox_secrets == sandbox_secrets
+        assert request.volumes == volumes
         assert request.auto_stop_interval == sandbox_module.SANDBOX_AUTO_STOP_INTERVAL
         assert request.create_timeout == sandbox_module.SANDBOX_CREATE_TIMEOUT
+
+    async def test_create_sandbox_rejects_plaintext_and_secret_environment_collision(self) -> None:
+        provider = AsyncMock()
+
+        with pytest.raises(InvalidSandboxConfigurationError, match="TAVILY_API_KEY"):
+            await _create_sandbox(
+                provider,
+                "task-alias",
+                ImageSource(image="ghcr.io/vals/swebench:latest"),
+                Resources(vcpu=1, memory=2, disk=3),
+                env_vars={"TAVILY_API_KEY": "plaintext-value"},
+                sandbox_secrets={"TAVILY_API_KEY": "daytona-tavily"},
+            )
+
+        provider.create_sandbox.assert_not_awaited()
 
     async def test_create_sandbox_unwraps_compose_source_before_provider_create(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1320,8 +1413,11 @@ class TestEgressAllowlist:
 class TestStreamCommandOutputAgentFailure:
     """Agent command failure cleanup and error classification."""
 
-    async def test_stream_command_output_removes_timing_files(self) -> None:
-        async def stream_command(_command: str) -> AsyncIterator[str]:
+    async def test_stream_command_output_uses_sandbox_timing_and_removes_files(self) -> None:
+        observed_commands: list[str] = []
+
+        async def stream_command(command: str) -> AsyncIterator[str]:
+            observed_commands.append(command)
             yield "done\n"
 
         exec_commands: list[str] = []
@@ -1347,9 +1443,40 @@ class TestStreamCommandOutputAgentFailure:
 
         assert exit_reason is None
         assert duration == 2
+        # Timing is embedded in the sandbox command, not run raw.
+        assert observed_commands and "run-agent.sh" in observed_commands[0]
+        assert ".start_ns" in observed_commands[0]
         assert exec_commands[-1].startswith("rm -f ")
         assert ".start_ns" in exec_commands[-1]
         assert ".end_ns" in exec_commands[-1]
+
+    async def test_stream_command_output_falls_back_when_timing_files_missing(self) -> None:
+        async def stream_command(_command: str) -> AsyncIterator[str]:
+            yield "done\n"
+
+        async def exec_command(command: str) -> ExecResult:
+            if command.startswith("cat "):
+                # `cat` on a missing file: non-zero exit and an error string on stdout.
+                return ExecResult(
+                    exit_code=1,
+                    output="cat: /tmp/.valkyrie/abc.end_ns: No such file or directory",
+                )
+            return ExecResult(exit_code=0)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "test-sandbox"
+        mock_sandbox.state = "started"
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = exec_command
+
+        exit_reason, duration = await sandbox_module.stream_command_output(
+            mock_sandbox, "run-agent.sh", on_output=lambda _: None
+        )
+
+        # No crash on int() of the cat error text; duration degrades to the monotonic fallback.
+        assert exit_reason is None
+        assert duration >= 0
 
     @pytest.mark.parametrize("exit_code", [1, 2, 127])
     async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(
@@ -1364,12 +1491,7 @@ class TestStreamCommandOutputAgentFailure:
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "test-sandbox"
         mock_sandbox.command = stream_command
-        mock_sandbox.exec = AsyncMock(
-            side_effect=[
-                ExecResult(exit_code=0, output="1000000000"),
-                ExecResult(exit_code=0, output="3000000000"),
-            ]
-        )
+        mock_sandbox.exec = AsyncMock()
 
         def fake_set_tag(key: str, value: object) -> None:
             tagged[key] = str(value)
@@ -1403,13 +1525,7 @@ class TestStreamCommandOutputAgentFailure:
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "test-sandbox"
         mock_sandbox.command = stream_command
-        mock_sandbox.exec = AsyncMock(
-            side_effect=[
-                ExecResult(exit_code=0, output="1000000000"),
-                ExecResult(exit_code=0, output="3000000000"),
-                ExecResult(exit_code=0, output=""),
-            ]
-        )
+        mock_sandbox.exec = AsyncMock()
 
         def fake_set_tag(_key: str, _value: object) -> None:
             pass
