@@ -41,7 +41,7 @@ from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.resolver import (
     resolve_aws_runtime_metadata,
     resolve_run_aws_runtime,
-    resolve_run_aws_runtime_with_config,
+    resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
 )
 from tracker.aws.runtime import AWSRuntime
@@ -905,7 +905,7 @@ async def stop_benchmark(
         await validate_tasks_exist(benchmark_row, task_ids, session, org) if task_ids is not None else None
     )
 
-    runtime_resolution = resolve_run_aws_runtime_with_config(
+    runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
         http_request,
         aws_managed=benchmark_row.aws_managed,
         org_id=org.id,
@@ -1017,7 +1017,7 @@ async def retry_or_resume_benchmark(
         RetryOrResumeBenchmarkResponse
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
-    runtime_resolution = resolve_run_aws_runtime_with_config(
+    runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
         http_request,
         aws_managed=benchmark_row.aws_managed,
         org_id=org.id,

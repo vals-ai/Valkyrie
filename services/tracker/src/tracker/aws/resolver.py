@@ -238,14 +238,14 @@ def resolve_run_aws_runtime(
     org_id: UUID,
 ) -> AWSRuntime:
     """Resolve AWS authority from a persisted run mode."""
-    return resolve_run_aws_runtime_with_config(
+    return resolve_run_aws_runtime_and_access_key_config(
         request,
         aws_managed=aws_managed,
         org_id=org_id,
     ).runtime
 
 
-def resolve_run_aws_runtime_with_config(
+def resolve_run_aws_runtime_and_access_key_config(
     request: Request,
     *,
     aws_managed: bool,
@@ -258,7 +258,7 @@ def resolve_run_aws_runtime_with_config(
     return AWSRuntimeResolution(AWSRuntime.from_harness_config(harness_config), harness_config)
 
 
-def resolve_optional_run_aws_runtime(
+def resolve_run_metadata_aws_runtime(
     request: Request,
     *,
     aws_managed: bool,
@@ -271,7 +271,7 @@ def resolve_optional_run_aws_runtime(
     return AWSRuntime.from_harness_config(harness_config) if harness_config is not None else None
 
 
-def resolve_non_run_aws_runtime(
+def resolve_agent_library_aws_runtime(
     request: Request,
     org_id: UUID,
 ) -> AWSRuntime:
