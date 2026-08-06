@@ -67,3 +67,20 @@ def test_dry_run_lambda_maps_client_errors() -> None:
 
     with pytest.raises(LambdaError, match="Lambda invoke preflight failed for 'benchmark-function'"):
         dry_run_lambda(cast(AWSClientProvider, provider), "benchmark-function")
+
+
+def test_invoke_lambda_raises_for_function_error() -> None:
+    client = MagicMock()
+    client.invoke.return_value = {
+        "FunctionError": "Unhandled",
+        "Payload": io.BytesIO(b'{"errorMessage": "analysis failed"}'),
+    }
+    provider = MagicMock(spec=AWSClientProvider)
+    provider.lambda_client.return_value = client
+
+    with pytest.raises(LambdaError, match="analysis failed"):
+        invoke_lambda(
+            cast(AWSClientProvider, provider),
+            "analyzer-function",
+            {"benchmark_id": "benchmark-1"},
+        )
