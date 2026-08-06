@@ -59,3 +59,19 @@ def test_invoke_lambda_raises_for_function_error() -> None:
             "analyzer-function",
             {"benchmark_id": "benchmark-1"},
         )
+
+
+def test_invoke_lambda_raises_for_error_status() -> None:
+    client = MagicMock()
+    client.invoke.return_value = {
+        "Payload": io.BytesIO(b'{"statusCode": 503, "errorMessage": "service unavailable"}'),
+    }
+    provider = MagicMock(spec=AWSClientProvider)
+    provider.lambda_client.return_value = client
+
+    with pytest.raises(LambdaError, match="returned status 503"):
+        invoke_lambda(
+            cast(AWSClientProvider, provider),
+            "analyzer-function",
+            {"benchmark_id": "benchmark-1"},
+        )
