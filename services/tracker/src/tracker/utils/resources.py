@@ -35,7 +35,11 @@ class BenchmarkConcurrencyUpdate:
     concurrency: int
 
 
-def fetch_sandbox_provider_config(secret_name: str, aws: AWSCredentials, provider_type: str) -> SandboxProviderConfig:
+def fetch_sandbox_provider_config(
+    secret_name: str,
+    aws: AWSCredentials | None,
+    provider_type: str,
+) -> SandboxProviderConfig:
     """Resolve sandbox provider config from the selected provider type and secret."""
     secret = fetch_aws_secret(secret_name, aws)
     if not isinstance(secret, dict):

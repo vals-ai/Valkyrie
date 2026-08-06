@@ -11,14 +11,214 @@ on:
 permissions:
   contents: read
 
+env:
+  BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+  HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+  TARGET_BRANCH: ${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}
+
 jobs:
+  synthesize-base:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      artifact_id: ${{ steps.upload-base.outputs.artifact-id }}
+      run_attempt: ${{ steps.identity.outputs.run_attempt }}
+    steps:
+      - name: Record base synthesis attempt
+        id: identity
+        run: echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact base revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ env.BASE_SHA }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv without cache
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+        with:
+          enable-cache: false
+
+      - name: Synthesize exact base WorkerStack
+        env:
+          SOURCE_SHA: ${{ env.BASE_SHA }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          target_branch="${TARGET_BRANCH#refs/heads/}"
+          case "$target_branch" in
+            dev)
+              stage=dev
+              stack_id=ValkDevWorkerStack
+              account_id=111111111111
+              ;;
+            prod)
+              stage=prod
+              stack_id=WorkerStack
+              account_id=613431292675
+              ;;
+            *)
+              echo "::error::Unsupported target branch '$target_branch'."
+              exit 1
+              ;;
+          esac
+          npm install -g aws-cdk@2.1132.0
+          artifact="$RUNNER_TEMP/worker-template-base"
+          assembly="$RUNNER_TEMP/cdk-base"
+          mkdir -p "$artifact"
+          (
+            cd infra
+            PRODUCTION_ACCOUNT_ID=613431292675 \
+            DEV_ACCOUNT_ID=111111111111 \
+            CDK_DEFAULT_ACCOUNT="$account_id" \
+            CDK_DEFAULT_REGION=us-east-1 \
+            AWS_REGION=us-east-1 \
+            STAGE="$stage" \
+            DESCOPE_PROJECT_ID=offline-synth \
+              uv run --frozen cdk synth "$stack_id" -c stage="$stage" --output "$assembly"
+          )
+          cp "$assembly/$stack_id.template.json" "$artifact/WorkerStack.template.json"
+          SOURCE_SHA="$SOURCE_SHA" TARGET_BRANCH="$target_branch" STACK_ID="$stack_id" \
+            python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          artifact = Path(os.environ["RUNNER_TEMP"]) / "worker-template-base"
+          manifest = {
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "stack_id": os.environ["STACK_ID"],
+              "target_branch": os.environ["TARGET_BRANCH"],
+          }
+          (artifact / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload base WorkerStack template
+        id: upload-base
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: worker-template-base-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/worker-template-base/manifest.json
+            ${{ runner.temp }}/worker-template-base/WorkerStack.template.json
+          if-no-files-found: error
+          retention-days: 1
+
+  synthesize-head:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      artifact_id: ${{ steps.upload-head.outputs.artifact-id }}
+      run_attempt: ${{ steps.identity.outputs.run_attempt }}
+    steps:
+      - name: Record candidate synthesis attempt
+        id: identity
+        run: echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact candidate revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ env.HEAD_SHA }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv without cache
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+        with:
+          enable-cache: false
+
+      - name: Synthesize exact candidate WorkerStack
+        env:
+          SOURCE_SHA: ${{ env.HEAD_SHA }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          target_branch="${TARGET_BRANCH#refs/heads/}"
+          case "$target_branch" in
+            dev)
+              stage=dev
+              stack_id=ValkDevWorkerStack
+              account_id=111111111111
+              ;;
+            prod)
+              stage=prod
+              stack_id=WorkerStack
+              account_id=613431292675
+              ;;
+            *)
+              echo "::error::Unsupported target branch '$target_branch'."
+              exit 1
+              ;;
+          esac
+          npm install -g aws-cdk@2.1132.0
+          artifact="$RUNNER_TEMP/worker-template-head"
+          assembly="$RUNNER_TEMP/cdk-head"
+          mkdir -p "$artifact"
+          (
+            cd infra
+            PRODUCTION_ACCOUNT_ID=613431292675 \
+            DEV_ACCOUNT_ID=111111111111 \
+            CDK_DEFAULT_ACCOUNT="$account_id" \
+            CDK_DEFAULT_REGION=us-east-1 \
+            AWS_REGION=us-east-1 \
+            STAGE="$stage" \
+            DESCOPE_PROJECT_ID=offline-synth \
+              uv run --frozen cdk synth "$stack_id" -c stage="$stage" --output "$assembly"
+          )
+          cp "$assembly/$stack_id.template.json" "$artifact/WorkerStack.template.json"
+          SOURCE_SHA="$SOURCE_SHA" TARGET_BRANCH="$target_branch" STACK_ID="$stack_id" \
+            python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          artifact = Path(os.environ["RUNNER_TEMP"]) / "worker-template-head"
+          manifest = {
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "stack_id": os.environ["STACK_ID"],
+              "target_branch": os.environ["TARGET_BRANCH"],
+          }
+          (artifact / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload candidate WorkerStack template
+        id: upload-head
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: worker-template-head-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/worker-template-head/manifest.json
+            ${{ runner.temp }}/worker-template-head/WorkerStack.template.json
+          if-no-files-found: error
+          retention-days: 1
+
   classify:
     name: maintenance-classification
+    needs: [synthesize-base, synthesize-head]
     runs-on: ubuntu-24.04-arm
-    env:
-      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
-
     steps:
       - name: Checkout trusted classifier
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -42,12 +242,92 @@ jobs:
           fi
           test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA"
 
+      - name: Download base WorkerStack template by upload identity
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.synthesize-base.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/worker-template-base
+
+      - name: Download candidate WorkerStack template by upload identity
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.synthesize-head.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/worker-template-head
+
+      - name: Validate untrusted template artifacts
+        id: template
+        env:
+          BASE_ARTIFACT_ID: ${{ needs.synthesize-base.outputs.artifact_id }}
+          BASE_ARTIFACT_RUN_ATTEMPT: ${{ needs.synthesize-base.outputs.run_attempt }}
+          HEAD_ARTIFACT_ID: ${{ needs.synthesize-head.outputs.artifact_id }}
+          HEAD_ARTIFACT_RUN_ATTEMPT: ${{ needs.synthesize-head.outputs.run_attempt }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          from pathlib import Path
+
+          target_branch = os.environ["TARGET_BRANCH"].removeprefix("refs/heads/")
+          stack_ids = {"dev": "ValkDevWorkerStack", "prod": "WorkerStack"}
+          try:
+              expected_stack_id = stack_ids[target_branch]
+          except KeyError as error:
+              raise SystemExit(f"Unsupported target branch {target_branch!r}") from error
+
+          expected = {
+              "base": (
+                  os.environ["BASE_SHA"],
+                  os.environ["BASE_ARTIFACT_ID"],
+                  os.environ["BASE_ARTIFACT_RUN_ATTEMPT"],
+              ),
+              "head": (
+                  os.environ["HEAD_SHA"],
+                  os.environ["HEAD_ARTIFACT_ID"],
+                  os.environ["HEAD_ARTIFACT_RUN_ATTEMPT"],
+              ),
+          }
+          for label, (source_sha, artifact_id, artifact_run_attempt) in expected.items():
+              if not artifact_id.isdecimal() or not artifact_run_attempt.isdecimal():
+                  raise SystemExit(f"{label} artifact job outputs are not numeric")
+              directory = Path(os.environ["RUNNER_TEMP"]) / f"worker-template-{label}"
+              expected_names = {"manifest.json", "WorkerStack.template.json"}
+              entries = list(directory.iterdir())
+              names = {path.name for path in entries}
+              if names != expected_names or any(not path.is_file() for path in entries):
+                  raise SystemExit(f"Unexpected {label} artifact entries: {sorted(names)!r}")
+              template = directory / "WorkerStack.template.json"
+              manifest_path = directory / "manifest.json"
+              if template.stat().st_size > 2_000_000:
+                  raise SystemExit(f"{label} WorkerStack template exceeds 2 MB")
+              if manifest_path.stat().st_size > 10_000:
+                  raise SystemExit(f"{label} manifest exceeds 10 KB")
+              template_payload = json.loads(template.read_text(encoding="utf-8"))
+              if not isinstance(template_payload, dict):
+                  raise SystemExit(f"{label} WorkerStack template must be a JSON object")
+              manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+              if manifest != {
+                  "run_attempt": int(artifact_run_attempt),
+                  "run_id": os.environ["GITHUB_RUN_ID"],
+                  "source_sha": source_sha,
+                  "stack_id": expected_stack_id,
+                  "target_branch": target_branch,
+              }:
+                  raise SystemExit(f"{label} artifact manifest does not match trusted event identity")
+          print(f"expected_stack_id={expected_stack_id}")
+          PY
+
       - name: Classify candidate
         run: |
           set -euo pipefail
           python3 infra/classify_repository_change.py \
             --base-sha "$BASE_SHA" \
             --head-sha "$HEAD_SHA" \
+            --executor-base-template "$RUNNER_TEMP/worker-template-base/WorkerStack.template.json" \
+            --executor-head-template "$RUNNER_TEMP/worker-template-head/WorkerStack.template.json" \
+            --expected-stack-id "${{ steps.template.outputs.expected_stack_id }}" \
             --output maintenance-classification.json
 
       - name: Require force merge for maintenance

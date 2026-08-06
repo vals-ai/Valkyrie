@@ -38,6 +38,7 @@ jobs:
     outputs:
       classification: ${{ steps.result.outputs.classification }}
       executor_stack_deploy_required: ${{ steps.result.outputs.executor_stack_deploy_required }}
+      executor_host_redeploy_required: ${{ steps.result.outputs.executor_host_redeploy_required }}
       executor_release_required: ${{ steps.result.outputs.executor_release_required }}
       core_maintenance_required: ${{ steps.result.outputs.core_maintenance_required }}
       database_maintenance_required: ${{ steps.result.outputs.database_maintenance_required }}
@@ -49,11 +50,83 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv without cache
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+        with:
+          enable-cache: false
+
+      - name: Synthesize exact base and head WorkerStack templates
+        env:
+          BASE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF_NAME" in
+            dev)
+              stage=dev
+              stack_id=ValkDevWorkerStack
+              account_id=111111111111
+              ;;
+            prod)
+              stage=prod
+              stack_id=WorkerStack
+              account_id=613431292675
+              ;;
+            *)
+              echo "::error::Unsupported deployment branch '$GITHUB_REF_NAME'."
+              exit 1
+              ;;
+          esac
+          npm install -g aws-cdk@2.1132.0
+
+          synth_revision() {
+            local revision="$1"
+            local label="$2"
+            local source="$RUNNER_TEMP/source-$label"
+            local assembly="$RUNNER_TEMP/cdk-$label"
+            local artifact="$RUNNER_TEMP/worker-template-$label"
+            mkdir -p "$source" "$artifact"
+            if [[ "$revision" =~ ^0+$ ]]; then
+              printf '{"Resources": {}}\n' > "$artifact/WorkerStack.template.json"
+              return
+            fi
+            git archive "$revision" | tar -x -C "$source"
+            (
+              cd "$source/infra"
+              PRODUCTION_ACCOUNT_ID=613431292675 \
+              DEV_ACCOUNT_ID=111111111111 \
+              CDK_DEFAULT_ACCOUNT="$account_id" \
+              CDK_DEFAULT_REGION=us-east-1 \
+              AWS_REGION=us-east-1 \
+              STAGE="$stage" \
+              DESCOPE_PROJECT_ID=offline-synth \
+                uv run --frozen cdk synth "$stack_id" -c stage="$stage" --output "$assembly"
+            )
+            cp "$assembly/$stack_id.template.json" "$artifact/WorkerStack.template.json"
+          }
+
+          synth_revision "$BASE_SHA" base
+          synth_revision "$HEAD_SHA" head
+          echo "STACK_ID=$stack_id" >> "$GITHUB_ENV"
+
       - name: Classify deployment
         run: >-
           python3 infra/classify_repository_change.py
           --base-sha "${{ github.event.before }}"
           --head-sha "$GITHUB_SHA"
+          --executor-base-template "$RUNNER_TEMP/worker-template-base/WorkerStack.template.json"
+          --executor-head-template "$RUNNER_TEMP/worker-template-head/WorkerStack.template.json"
+          --expected-stack-id "$STACK_ID"
           --output maintenance-classification.json
 
       - name: Read classification
@@ -66,6 +139,7 @@ jobs:
           for key in (
               "classification",
               "executor_stack_deploy_required",
+              "executor_host_redeploy_required",
               "executor_release_required",
               "core_maintenance_required",
               "database_maintenance_required",
@@ -357,7 +431,7 @@ jobs:
       - name: Begin dev maintenance
         if: >-
           steps.freshness.outputs.current == 'true' &&
-          (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
         working-directory: infra
         run: >-
@@ -444,7 +518,7 @@ jobs:
       - name: Finish dev maintenance
         if: >-
           steps.freshness.outputs.current == 'true' &&
-          (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
         working-directory: infra
         run: >-
@@ -553,7 +627,7 @@ jobs:
       - name: Begin production maintenance
         if: >-
           steps.freshness.outputs.current == 'true' &&
-          (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
         working-directory: infra
         run: >-
@@ -614,6 +688,10 @@ jobs:
         if: >-
           steps.freshness.outputs.current == 'true' &&
           needs.classify-deployment.outputs.executor_stack_deploy_required == 'true'
+        env:
+          SANDBOX_CLEANUP_ENABLED: ${{ vars.SANDBOX_CLEANUP_ENABLED }}
+          SANDBOX_CLEANUP_PROVIDER: ${{ vars.SANDBOX_CLEANUP_PROVIDER }}
+          SANDBOX_CLEANUP_SECRET_NAME: ${{ vars.SANDBOX_CLEANUP_SECRET_NAME }}
         working-directory: infra
         run: make deploy STAGE=prod SCOPE=executor AWS_REGION="$AWS_REGION"
 
@@ -647,7 +725,7 @@ jobs:
       - name: Finish production maintenance
         if: >-
           steps.freshness.outputs.current == 'true' &&
-          (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
         working-directory: infra
         run: >-

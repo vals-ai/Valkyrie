@@ -8,6 +8,12 @@ import json
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import cast
+
+from classify_executor_template_change import (
+    ExecutorHostTemplateEffect,
+    classify_executor_host_template_change,
+)
 
 _EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 _MIGRATION_DIRECTORY = "services/tracker/src/tracker/database/migrations/versions/"
@@ -82,6 +88,7 @@ class Classification:
     base_sha: str
     head_sha: str
     executor_stack_deploy_required: bool
+    executor_host_redeploy_required: bool
     executor_release_required: bool
     core_maintenance_required: bool
     database_maintenance_required: bool
@@ -232,6 +239,7 @@ def classify_repository_change(
     *,
     base_sha: str,
     head_sha: str,
+    executor_effect: ExecutorHostTemplateEffect,
 ) -> Classification:
     changed_migrations: list[str] = []
     findings: list[Finding] = []
@@ -264,13 +272,17 @@ def classify_repository_change(
             reasons.add("unsafe-migration")
             findings.extend(migration_findings)
 
-    maintenance_required = executor_stack_deploy_required or database_maintenance_required
+    if executor_effect.redeploy_required:
+        executor_stack_deploy_required = True
+        reasons.update(executor_effect.reasons)
+    maintenance_required = executor_effect.redeploy_required or database_maintenance_required
     classification = "maintenance-required" if maintenance_required else "safe"
     return Classification(
         classification=classification,
         base_sha=base_sha,
         head_sha=head_sha,
         executor_stack_deploy_required=executor_stack_deploy_required,
+        executor_host_redeploy_required=executor_effect.redeploy_required,
         executor_release_required=executor_release_required,
         core_maintenance_required=core_maintenance_required,
         database_maintenance_required=database_maintenance_required,
@@ -285,6 +297,9 @@ def _parse_arguments() -> argparse.Namespace:
     parser.add_argument("--base-sha", required=True)
     parser.add_argument("--head-sha", required=True)
     parser.add_argument("--repository-root", type=Path, default=Path("."))
+    parser.add_argument("--executor-base-template", type=Path, required=True)
+    parser.add_argument("--executor-head-template", type=Path, required=True)
+    parser.add_argument("--expected-stack-id", required=True)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 
@@ -292,11 +307,21 @@ def _parse_arguments() -> argparse.Namespace:
 def main() -> None:
     arguments = _parse_arguments()
     try:
+        base_template = json.loads(arguments.executor_base_template.read_text(encoding="utf-8"))
+        head_template = json.loads(arguments.executor_head_template.read_text(encoding="utf-8"))
+        if not isinstance(base_template, dict) or not isinstance(head_template, dict):
+            raise ValueError("WorkerStack templates must be JSON objects")
+        executor_effect = classify_executor_host_template_change(
+            cast(dict[str, object], base_template),
+            cast(dict[str, object], head_template),
+            expected_stack_id=arguments.expected_stack_id,
+        )
         payload: dict[str, object] = asdict(
             classify_repository_change(
                 arguments.repository_root.resolve(),
                 base_sha=arguments.base_sha,
                 head_sha=arguments.head_sha,
+                executor_effect=executor_effect,
             )
         )
     except Exception as error:

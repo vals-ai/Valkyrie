@@ -45,6 +45,13 @@ DRIVER_LOG_GROUP_NAME = "/valkyrie/package-r-driver"
 WORKER_SCALING_CPU_PERCENT = 70
 WORKER_STOP_TIMEOUT_SECONDS = 120  # If protection is enabled the task will not be deleted
 
+# Sandbox cleanup
+SANDBOX_CLEANUP_FUNCTION_NAME = "valkyrie-sandbox-cleanup"
+SANDBOX_CLEANUP_LOG_GROUP_NAME = "/valkyrie/sandbox-cleanup"
+SANDBOX_CLEANUP_SCHEDULE_NAME = "valkyrie-sandbox-cleanup"
+SANDBOX_CLEANUP_DLQ_NAME = "valkyrie-sandbox-cleanup-dlq"
+SANDBOX_CLEANUP_SECRET_NAME = "AgenticHarnessSecrets"
+
 # PostgreSQL
 POSTGRES_HEALTH_INTERVAL_SECONDS = 60
 POSTGRES_HEALTH_START_PERIOD_SECONDS = 10

@@ -17,6 +17,10 @@ from aws_cdk import (
 
 from constants import (
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV,
+    SANDBOX_CLEANUP_DLQ_NAME,
+    SANDBOX_CLEANUP_FUNCTION_NAME,
+    SANDBOX_CLEANUP_SCHEDULE_NAME,
+    SANDBOX_CLEANUP_SECRET_NAME,
     SLACK_WORKSPACE_ID_ENV,
     TRACKER_LOG_GROUP_NAME,
     VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV,
@@ -547,6 +551,114 @@ class MonitoringStackTest(unittest.TestCase):
                         )
                     },
                 )
+
+    def test_dev_does_not_create_sandbox_cleanup_resources(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                **TEST_DEV_ENV,
+                "SANDBOX_CLEANUP_ENABLED": "true",
+            },
+            clear=True,
+        ):
+            _, worker_template, _ = _service_templates(DEV)
+
+        worker_template.resource_count_is("AWS::Scheduler::Schedule", 0)
+        worker_template.resource_count_is("AWS::Lambda::Function", 0)
+        worker_template.resource_count_is("AWS::SQS::Queue", 0)
+
+    def test_prod_sandbox_cleanup_is_disabled_and_bounded_by_default(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            _, worker_template, _ = _service_templates(PROD)
+
+        worker_template.resource_count_is("AWS::Scheduler::Schedule", 1)
+        worker_template.resource_count_is("AWS::Lambda::Function", 1)
+        worker_template.resource_count_is("AWS::Lambda::EventInvokeConfig", 1)
+        worker_template.resource_count_is("AWS::SQS::Queue", 1)
+        worker_template.has_resource_properties(
+            "AWS::Scheduler::Schedule",
+            {
+                "Name": SANDBOX_CLEANUP_SCHEDULE_NAME,
+                "ScheduleExpression": "rate(1 hour)",
+                "State": "DISABLED",
+                "Target": assertions.Match.object_like({"DeadLetterConfig": assertions.Match.any_value()}),
+            },
+        )
+        worker_template.has_resource_properties(
+            "AWS::Lambda::Function",
+            {
+                "FunctionName": SANDBOX_CLEANUP_FUNCTION_NAME,
+                "ReservedConcurrentExecutions": 1,
+                "Timeout": 14 * 60,
+                "Environment": {
+                    "Variables": {
+                        "SANDBOX_CLEANUP_PROVIDER": "daytona",
+                        "SANDBOX_CLEANUP_SECRET_NAME": SANDBOX_CLEANUP_SECRET_NAME,
+                        "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
+                        "ENVIRONMENT": "production",
+                    }
+                },
+            },
+        )
+        worker_template.has_resource_properties(
+            "AWS::Lambda::EventInvokeConfig",
+            {
+                "DestinationConfig": {
+                    "OnFailure": {"Destination": assertions.Match.any_value()},
+                },
+            },
+        )
+        worker_template.has_resource_properties(
+            "AWS::SQS::Queue",
+            {
+                "QueueName": SANDBOX_CLEANUP_DLQ_NAME,
+                "SqsManagedSseEnabled": True,
+            },
+        )
+        secret_statements = [
+            statement
+            for policy in worker_template.find_resources("AWS::IAM::Policy").values()
+            for statement in policy["Properties"]["PolicyDocument"]["Statement"]
+            if statement.get("Action") == ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+            and SANDBOX_CLEANUP_SECRET_NAME in str(statement.get("Resource"))
+        ]
+        self.assertEqual(len(secret_statements), 1)
+        self.assertNotEqual(secret_statements[0]["Resource"], "*")
+
+    def test_prod_sandbox_cleanup_schedule_requires_exact_true(self) -> None:
+        for enabled, expected_state in (("true", "ENABLED"), ("TRUE", "DISABLED")):
+            with (
+                self.subTest(enabled=enabled),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "SANDBOX_CLEANUP_ENABLED": enabled,
+                        "SANDBOX_CLEANUP_PROVIDER": "daytona",
+                        "SANDBOX_CLEANUP_SECRET_NAME": "custom/cleanup-credentials",
+                    },
+                    clear=True,
+                ),
+            ):
+                _, worker_template, _ = _service_templates(PROD)
+
+            worker_template.has_resource_properties(
+                "AWS::Scheduler::Schedule",
+                {"State": expected_state},
+            )
+            worker_template.has_resource_properties(
+                "AWS::Lambda::Function",
+                {
+                    "Environment": {
+                        "Variables": assertions.Match.object_like(
+                            {
+                                "SANDBOX_CLEANUP_PROVIDER": "daytona",
+                                "SANDBOX_CLEANUP_SECRET_NAME": "custom/cleanup-credentials",
+                                "ENVIRONMENT": "production",
+                            }
+                        )
+                    }
+                },
+            )
 
     def test_dev_sentry_secret_is_optional(self) -> None:
         with mock.patch.dict(os.environ, TEST_DEV_ENV, clear=True):

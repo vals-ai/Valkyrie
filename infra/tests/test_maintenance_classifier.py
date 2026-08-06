@@ -1,11 +1,14 @@
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 import classify_repository_change
+from classify_executor_template_change import ExecutorHostTemplateEffect
 
 _MIGRATION_DIRECTORY = "services/tracker/src/tracker/database/migrations/versions"
+_NO_EXECUTOR_EFFECT = ExecutorHostTemplateEffect(redeploy_required=False, reasons=())
 
 
 class MaintenanceClassifierTest(unittest.TestCase):
@@ -32,19 +35,32 @@ class MaintenanceClassifierTest(unittest.TestCase):
             text=True,
         ).stdout
 
-    def _commit_file(self, path: str, source: str) -> str:
-        destination = self.repository / path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(source, encoding="utf-8")
+    def _commit_file(self, path: str, source: str | bytes) -> str:
+        return self._commit_files({path: source})
+
+    def _commit_files(self, sources: dict[str, str | bytes]) -> str:
+        for path, source in sources.items():
+            destination = self.repository / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(source, bytes):
+                destination.write_bytes(source)
+            else:
+                destination.write_text(source, encoding="utf-8")
         self._git("add", ".")
         self._git("commit", "-qm", "change")
         return self._git("rev-parse", "HEAD").strip()
 
-    def _classify(self, head_sha: str) -> classify_repository_change.Classification:
+    def _classify(
+        self,
+        head_sha: str,
+        *,
+        executor_effect: ExecutorHostTemplateEffect = _NO_EXECUTOR_EFFECT,
+    ) -> classify_repository_change.Classification:
         return classify_repository_change.classify_repository_change(
             self.repository,
             base_sha=self.base_sha,
             head_sha=head_sha,
+            executor_effect=executor_effect,
         )
 
     def test_initial_branch_push_uses_the_empty_tree(self) -> None:
@@ -54,10 +70,12 @@ class MaintenanceClassifierTest(unittest.TestCase):
             self.repository,
             base_sha="0" * 40,
             head_sha=head_sha,
+            executor_effect=_NO_EXECUTOR_EFFECT,
         )
 
-        self.assertEqual(result.classification, "maintenance-required")
+        self.assertEqual(result.classification, "safe")
         self.assertTrue(result.executor_stack_deploy_required)
+        self.assertFalse(result.executor_host_redeploy_required)
         self.assertFalse(result.executor_release_required)
         self.assertFalse(result.database_maintenance_required)
         self.assertEqual(result.reasons, ["executor-core-change"])
@@ -236,41 +254,139 @@ def upgrade() -> None:
         self.assertEqual(result.classification, "maintenance-required")
         self.assertEqual(result.findings[0].operation, "For")
 
-    def test_executor_host_change_requires_maintenance(self) -> None:
+    def test_classifier_change_requires_stack_without_assuming_maintenance(self) -> None:
+        head_sha = self._commit_file("infra/classify_repository_change.py", "policy = True\n")
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "safe")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertFalse(result.executor_host_redeploy_required)
+        self.assertFalse(result.executor_release_required)
+        self.assertFalse(result.core_maintenance_required)
+        self.assertFalse(result.database_maintenance_required)
+        self.assertEqual(result.reasons, ["executor-core-change"])
+
+    def test_maintenance_classification_workflow_requires_stack_without_assuming_maintenance(self) -> None:
+        head_sha = self._commit_file(
+            ".github/workflows/maintenance-classification.yaml",
+            "name: changed policy\n",
+        )
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "safe")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertFalse(result.executor_host_redeploy_required)
+        self.assertFalse(result.executor_release_required)
+        self.assertFalse(result.core_maintenance_required)
+        self.assertFalse(result.database_maintenance_required)
+        self.assertEqual(result.reasons, ["executor-core-change"])
+
+    def test_cli_requires_template_effect_inputs_before_classification(self) -> None:
+        output = self.repository / "classification.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(classify_repository_change.__file__)),
+                "--base-sha",
+                self.base_sha,
+                "--head-sha",
+                self.base_sha,
+                "--output",
+                str(output),
+            ],
+            cwd=self.repository,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--executor-base-template", result.stderr)
+        self.assertIn("--executor-head-template", result.stderr)
+        self.assertIn("--expected-stack-id", result.stderr)
+        self.assertFalse(output.exists())
+
+    def test_excluded_classifier_change_does_not_hide_template_effect(self) -> None:
+        head_sha = self._commit_files(
+            {
+                "infra/classify_repository_change.py": "policy = True\n",
+                "services/executor_host/supervisor.py": "runtime = True\n",
+            }
+        )
+        effect = ExecutorHostTemplateEffect(
+            redeploy_required=True,
+            reasons=("executor-host-task-definition-changed",),
+        )
+
+        result = self._classify(head_sha, executor_effect=effect)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertTrue(result.executor_host_redeploy_required)
+        self.assertFalse(result.executor_release_required)
+        self.assertFalse(result.core_maintenance_required)
+        self.assertFalse(result.database_maintenance_required)
+        self.assertEqual(
+            result.reasons,
+            ["executor-core-change", "executor-host-task-definition-changed"],
+        )
+
+    def test_executor_source_change_requires_stack_without_assuming_maintenance(self) -> None:
         head_sha = self._commit_file("services/executor_host/supervisor.py", "changed = True\n")
 
         result = self._classify(head_sha)
 
-        self.assertEqual(result.classification, "maintenance-required")
+        self.assertEqual(result.classification, "safe")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertFalse(result.executor_host_redeploy_required)
         self.assertEqual(result.reasons, ["executor-core-change"])
 
-    def test_executor_host_context_change_requires_maintenance(self) -> None:
+    def test_executor_template_effect_requires_maintenance_and_stack_deploy(self) -> None:
+        head_sha = self._commit_file("README.md", "unrelated source change\n")
+        effect = ExecutorHostTemplateEffect(
+            redeploy_required=True,
+            reasons=("executor-host-task-definition-changed",),
+        )
+
+        result = self._classify(head_sha, executor_effect=effect)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertTrue(result.executor_host_redeploy_required)
+        self.assertIn("executor-host-task-definition-changed", result.reasons)
+
+    def test_executor_host_context_change_requires_stack_without_assuming_maintenance(self) -> None:
         head_sha = self._commit_file(".dockerignore", "changed\n")
 
         result = self._classify(head_sha)
 
-        self.assertEqual(result.classification, "maintenance-required")
+        self.assertEqual(result.classification, "safe")
         self.assertTrue(result.executor_stack_deploy_required)
+        self.assertFalse(result.executor_host_redeploy_required)
         self.assertEqual(result.reasons, ["executor-core-change"])
 
-    def test_deploy_workflow_change_requires_stack_without_release(self) -> None:
+    def test_deploy_workflow_change_requires_stack_without_release_or_maintenance(self) -> None:
         head_sha = self._commit_file(".github/workflows/deploy.yaml", "changed\n")
 
         result = self._classify(head_sha)
 
-        self.assertEqual(result.classification, "maintenance-required")
+        self.assertEqual(result.classification, "safe")
         self.assertTrue(result.executor_stack_deploy_required)
+        self.assertFalse(result.executor_host_redeploy_required)
         self.assertFalse(result.executor_release_required)
         self.assertFalse(result.core_maintenance_required)
         self.assertFalse(result.database_maintenance_required)
 
-    def test_shared_executor_input_requires_core_maintenance(self) -> None:
+    def test_shared_executor_input_coordinates_core_without_assuming_maintenance(self) -> None:
         head_sha = self._commit_file("infra/shared.py", "changed = True\n")
 
         result = self._classify(head_sha)
 
-        self.assertEqual(result.classification, "maintenance-required")
+        self.assertEqual(result.classification, "safe")
         self.assertTrue(result.executor_stack_deploy_required)
+        self.assertFalse(result.executor_host_redeploy_required)
         self.assertFalse(result.executor_release_required)
         self.assertTrue(result.core_maintenance_required)
         self.assertFalse(result.database_maintenance_required)
@@ -307,13 +423,14 @@ def upgrade() -> None:
         self.assertFalse(result.core_maintenance_required)
         self.assertFalse(result.database_maintenance_required)
 
-    def test_executor_release_helper_requires_stack_deploy(self) -> None:
+    def test_executor_release_helper_requires_stack_without_assuming_maintenance(self) -> None:
         head_sha = self._commit_file("infra/executor_release/main.py", "changed = True\n")
 
         result = self._classify(head_sha)
 
-        self.assertEqual(result.classification, "maintenance-required")
+        self.assertEqual(result.classification, "safe")
         self.assertTrue(result.executor_stack_deploy_required)
+        self.assertFalse(result.executor_host_redeploy_required)
         self.assertFalse(result.executor_release_required)
         self.assertFalse(result.core_maintenance_required)
         self.assertFalse(result.database_maintenance_required)

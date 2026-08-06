@@ -51,6 +51,8 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn('stage.stack_id("WorkerStack")', app)
         self.assertIn("STACKS_executor = $(STACK_PREFIX)WorkerStack", makefile)
         self.assertIn('"infra/executor_stack.py"', classifier)
+        self.assertIn('"infra/classify_repository_change.py"', classifier)
+        self.assertIn('".github/workflows/maintenance-classification.yaml"', classifier)
         self.assertIn('"infra/executor_stack.py"', build_workflow)
         self.assertNotIn("worker_stack.py", app + classifier + build_workflow)
 
@@ -64,6 +66,7 @@ class DeployWorkflowTest(unittest.TestCase):
         for executor_job, stage in ((dev_executor, "dev"), (prod_executor, "production")):
             with self.subTest(stage=stage):
                 self.assertIn("executor_stack_deploy_required", executor_job)
+                self.assertIn("executor_host_redeploy_required", executor_job)
                 self.assertIn("executor_release_required", executor_job)
                 self.assertIn("core_maintenance_required", executor_job)
                 self.assertIn("database_maintenance_required", executor_job)
@@ -78,6 +81,14 @@ class DeployWorkflowTest(unittest.TestCase):
                     "PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py",
                     executor_job,
                 )
+                begin = executor_job.split(f"      - name: Begin {stage} maintenance", maxsplit=1)[1].split(
+                    "        working-directory:", maxsplit=1
+                )[0]
+                finish = executor_job.split(f"      - name: Finish {stage} maintenance", maxsplit=1)[1]
+                self.assertIn("executor_host_redeploy_required == 'true'", begin)
+                self.assertNotIn("executor_stack_deploy_required == 'true'", begin)
+                self.assertIn("executor_host_redeploy_required == 'true'", finish)
+                self.assertNotIn("executor_stack_deploy_required == 'true'", finish)
                 self.assertLess(executor_job.index("Begin"), executor_job.index("SCOPE=executor"))
                 self.assertLess(executor_job.index("SCOPE=executor"), executor_job.index("Publish and activate"))
                 self.assertLess(executor_job.index("Publish and activate"), executor_job.index("Finish"))
@@ -224,12 +235,21 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn(command, classification_workflow)
         for output in (
             "executor_stack_deploy_required",
+            "executor_host_redeploy_required",
             "executor_release_required",
             "core_maintenance_required",
             "database_maintenance_required",
         ):
             self.assertIn(output, workflow)
+        self.assertIn("--executor-base-template", workflow)
+        self.assertIn("--executor-head-template", workflow)
+        self.assertIn("--expected-stack-id", workflow)
         self.assertIn("pull_request_target:", classification_workflow)
+        self.assertIn("synthesize-base:", classification_workflow)
+        self.assertIn("synthesize-head:", classification_workflow)
+        self.assertIn("needs: [synthesize-base, synthesize-head]", classification_workflow)
+        self.assertEqual(classification_workflow.count("enable-cache: false"), 2)
+        self.assertNotIn("id-token: write", classification_workflow)
         trusted_checkout = classification_workflow.split("      - name: Checkout trusted classifier", maxsplit=1)[
             1
         ].split("      - name: Fetch base and candidate without executing them", maxsplit=1)[0]
@@ -241,6 +261,43 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn('git fetch --no-tags origin "pull/$PR_NUMBER/head"', classification_workflow)
         self.assertIn('git fetch --no-tags origin "${MERGE_GROUP_HEAD_REF#refs/heads/}"', classification_workflow)
         self.assertIn('test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA"', classification_workflow)
+        self.assertIn("Validate untrusted template artifacts", classification_workflow)
+        self.assertIn("template exceeds 2 MB", classification_workflow)
+        self.assertIn("artifact manifest does not match trusted event identity", classification_workflow)
+        self.assertIn("actions/upload-artifact@043fb46d", classification_workflow)
+        self.assertIn("actions/download-artifact@3e5f45b", classification_workflow)
+        self.assertIn("artifact_id: ${{ steps.upload-base.outputs.artifact-id }}", classification_workflow)
+        self.assertIn("artifact_id: ${{ steps.upload-head.outputs.artifact-id }}", classification_workflow)
+        self.assertEqual(
+            classification_workflow.count("run_attempt: ${{ steps.identity.outputs.run_attempt }}"),
+            2,
+        )
+        self.assertEqual(
+            classification_workflow.count('run: echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"'),
+            2,
+        )
+        self.assertIn(
+            "name: worker-template-base-${{ github.run_id }}-${{ github.run_attempt }}",
+            classification_workflow,
+        )
+        self.assertIn(
+            "name: worker-template-head-${{ github.run_id }}-${{ github.run_attempt }}",
+            classification_workflow,
+        )
+        self.assertIn(
+            "artifact-ids: ${{ needs.synthesize-base.outputs.artifact_id }}",
+            classification_workflow,
+        )
+        self.assertIn(
+            "artifact-ids: ${{ needs.synthesize-head.outputs.artifact_id }}",
+            classification_workflow,
+        )
+        self.assertEqual(classification_workflow.count("merge-multiple: true"), 2)
+        self.assertNotIn("name: worker-template-base-${{ github.run_id }}\n", classification_workflow)
+        self.assertNotIn("name: worker-template-head-${{ github.run_id }}\n", classification_workflow)
+        self.assertIn('"run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"])', classification_workflow)
+        self.assertIn('"run_id": os.environ["GITHUB_RUN_ID"]', classification_workflow)
+        self.assertIn("artifact job outputs are not numeric", classification_workflow)
         self.assertNotIn("checks: write", classification_workflow)
         self.assertNotIn("actions/github-script", classification_workflow)
 
@@ -248,7 +305,7 @@ class DeployWorkflowTest(unittest.TestCase):
         workflow = EXECUTOR_BUILD_WORKFLOW.read_text(encoding="utf-8")
 
         self.assertIn("runs-on: ubuntu-24.04-arm", workflow)
-        self.assertEqual(workflow.count('"tests/unit/executor_host/**"'), 2)
+        self.assertEqual(workflow.count('"tests/unit/executor_host/**"'), 1)
         self.assertIn('"services/executor_artifact/**"', workflow)
         self.assertIn('"services/executor_host/**"', workflow)
         self.assertIn('"services/tracker/**"', workflow)
@@ -267,7 +324,7 @@ class DeployWorkflowTest(unittest.TestCase):
     def test_deployment_tools_are_pinned_and_release_dependencies_are_isolated(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
-        self.assertEqual(workflow.count("npm install -g aws-cdk@2.1132.0"), 4)
+        self.assertEqual(workflow.count("npm install -g aws-cdk@2.1132.0"), 5)
         self.assertIn("uv sync --frozen --python 3.12 --project infra", workflow)
         self.assertIn("infra/executor_release/uv.lock", workflow)
         self.assertIn("services/executor_artifact/uv.lock", workflow)
