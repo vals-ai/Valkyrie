@@ -13,7 +13,7 @@ from tracker import config
 from tracker.aws.clients import DefaultChainAWSClientProvider, ExplicitCredentialsAWSClientProvider
 from tracker.aws.resolver import (
     resolve_aws_runtime_metadata,
-    resolve_optional_run_aws_runtime,
+    resolve_run_metadata_aws_runtime,
     resolve_run_aws_runtime,
 )
 from tracker.aws.runtime import AWSRuntime
@@ -111,7 +111,7 @@ def test_optional_run_runtime_preserves_stored_mode(
 ) -> None:
     _configure_managed_runtime(monkeypatch)
 
-    runtime = resolve_optional_run_aws_runtime(
+    runtime = resolve_run_metadata_aws_runtime(
         _request(),
         aws_managed=aws_managed,
         org_id=_ORG_ID,

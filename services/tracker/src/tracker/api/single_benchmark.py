@@ -12,7 +12,7 @@ from sqlmodel import Session, col, desc, func, select
 from tracker.api.parsing import parse_csv
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
-from tracker.aws.resolver import resolve_optional_run_aws_runtime
+from tracker.aws.resolver import resolve_run_metadata_aws_runtime
 from tracker.aws.s3 import create_benchmark_url
 from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
@@ -64,7 +64,7 @@ def get_single_benchmark(
 
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
-    aws_runtime = resolve_optional_run_aws_runtime(
+    aws_runtime = resolve_run_metadata_aws_runtime(
         request,
         aws_managed=benchmark.aws_managed,
         org_id=org.id,

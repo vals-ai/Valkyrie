@@ -42,7 +42,7 @@ from tracker.aws.resolver import (
     fetch_harness_config,
     resolve_aws_runtime_metadata,
     resolve_run_aws_runtime,
-    resolve_run_aws_runtime_with_config,
+    resolve_run_aws_runtime_and_access_key_config,
     try_fetch_harness_config,
 )
 from tracker.aws.runtime import AWSRuntime
@@ -850,7 +850,7 @@ async def stop_benchmark(
         await validate_tasks_exist(benchmark_row, task_ids, session, org) if task_ids is not None else None
     )
 
-    runtime_resolution = resolve_run_aws_runtime_with_config(
+    runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
         http_request,
         aws_managed=benchmark_row.aws_managed,
         org_id=org.id,
