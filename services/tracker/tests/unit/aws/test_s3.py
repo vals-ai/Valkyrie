@@ -13,7 +13,7 @@ from botocore.exceptions import ClientError
 from tracker.aws import s3 as s3_module
 from tracker.aws.clients import DefaultChainAWSClientProvider
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import create_presigned_url, upload_stream_to_s3
+from tracker.aws.s3 import copy_s3_object, create_presigned_url, delete_from_s3, upload_stream_to_s3
 from tracker.exceptions import S3Error
 
 
@@ -80,6 +80,31 @@ class TestCreatePresignedUrl:
             Params={"Bucket": "test-bucket", "Key": "agents/demo.zip"},
             ExpiresIn=3_600,
         )
+
+
+async def test_versioned_copy_can_be_deleted_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+) -> None:
+    client = AsyncMock()
+    client.copy_object.return_value = {"VersionId": "version-1"}
+    client_context = AsyncMock()
+    client_context.__aenter__.return_value = client
+
+    def s3_client(_provider: object) -> AsyncMock:
+        return client_context
+
+    monkeypatch.setattr(type(aws_runtime.clients), "s3_client", s3_client)
+
+    version_id = await copy_s3_object("agents/demo.zip", "benchmarks/run/demo.zip", aws_runtime)
+    await delete_from_s3("benchmarks/run/demo.zip", aws_runtime, version_id=version_id)
+
+    assert version_id == "version-1"
+    client.delete_object.assert_awaited_once_with(
+        Bucket="test-bucket",
+        Key="benchmarks/run/demo.zip",
+        VersionId="version-1",
+    )
 
 
 @pytest.fixture

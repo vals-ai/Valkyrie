@@ -49,6 +49,7 @@ from tracker.aws.secrets import resolve_secrets
 from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
+    S3ObjectCopy,
     copy_agent_to_benchmark,
     create_benchmark_url,
     delete_from_s3,
@@ -276,17 +277,18 @@ async def _enqueue_executor_dispatch(
 
 async def _delete_uncommitted_agent_copy(
     *,
-    created: bool,
+    created_copy: S3ObjectCopy | None,
     benchmark_id: UUID,
     request: StartBenchmarkRequest,
     aws_runtime: AWSRuntime,
 ) -> None:
-    if not created:
+    if created_copy is None:
         return
     try:
         await delete_from_s3(
             get_benchmark_contract_s3_key(str(benchmark_id), request.contract.name),
             aws_runtime,
+            version_id=created_copy.version_id,
         )
     except Exception:
         logger.exception(
@@ -504,14 +506,12 @@ async def start_benchmark(
         aws_managed=aws_managed,
     )
     dispatch_id = uuid4()
-    agent_copy_created = False
+    created_agent_copy: S3ObjectCopy | None = None
     try:
-        agent_copy_created = bool(
-            await copy_agent_to_benchmark(
-                str(benchmark_row.id),
-                request.contract.name,
-                aws_runtime,
-            )
+        created_agent_copy = await copy_agent_to_benchmark(
+            str(benchmark_row.id),
+            request.contract.name,
+            aws_runtime,
         )
         for task_id in verify_response.task_ids:
             session.add(Task(org_id=benchmark_row.org_id, benchmark=benchmark_row.id, task_id=task_id))
@@ -524,7 +524,7 @@ async def start_benchmark(
     except ReleaseControlError as exc:
         session.rollback()
         await _delete_uncommitted_agent_copy(
-            created=agent_copy_created,
+            created_copy=created_agent_copy,
             benchmark_id=benchmark_row.id,
             request=request,
             aws_runtime=aws_runtime,
@@ -533,7 +533,7 @@ async def start_benchmark(
     except Exception as exc:
         session.rollback()
         await _delete_uncommitted_agent_copy(
-            created=agent_copy_created,
+            created_copy=created_agent_copy,
             benchmark_id=benchmark_row.id,
             request=request,
             aws_runtime=aws_runtime,

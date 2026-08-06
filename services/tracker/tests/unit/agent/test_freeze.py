@@ -9,7 +9,7 @@ import pytest
 
 import tracker.aws.s3 as s3_module
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import copy_agent_to_benchmark
+from tracker.aws.s3 import S3ObjectCopy, copy_agent_to_benchmark
 from tracker.types import HarnessConfig
 
 
@@ -30,7 +30,7 @@ class TestCopyAgentToBenchmark:
         - An existing destination is not overwritten during retry or resume.
         """
         exists_mock = AsyncMock(return_value=destination_exists)
-        copy_mock = AsyncMock()
+        copy_mock = AsyncMock(return_value="version-1")
 
         # Restore the production key layout replaced by the unit-test S3 fixture.
         def get_contract_s3_key(name: str) -> str:
@@ -47,7 +47,7 @@ class TestCopyAgentToBenchmark:
             runtime=aws_runtime,
         )
 
-        assert created is not destination_exists
+        assert created == (None if destination_exists else S3ObjectCopy(version_id="version-1"))
         exists_mock.assert_awaited_once_with("benchmarks/bench-123/my_agent.zip", aws_runtime)
         if destination_exists:
             copy_mock.assert_not_awaited()

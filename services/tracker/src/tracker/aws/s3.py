@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Iterable
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar
@@ -23,6 +24,13 @@ S3_BENCHMARKS_PREFIX = "benchmarks"
 
 # S3 multipart uploads require every part except the last to be at least 5 MiB.
 _MULTIPART_PART_BYTES = 8 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class S3ObjectCopy:
+    """Identify an object created by a copy operation."""
+
+    version_id: str | None
 
 
 def get_contract_s3_key(contract_name: str) -> str:
@@ -191,7 +199,7 @@ async def download_many_from_s3(
 
 
 @handle_s3_error(message="Failed to delete from S3")
-async def delete_from_s3(s3_key: str, runtime: AWSRuntime) -> None:
+async def delete_from_s3(s3_key: str, runtime: AWSRuntime, *, version_id: str | None = None) -> None:
     """
     Delete file from S3.
 
@@ -203,10 +211,13 @@ async def delete_from_s3(s3_key: str, runtime: AWSRuntime) -> None:
         S3Error: If deletion fails due to AWS errors or network issues
     """
     async with runtime.clients.s3_client() as client:
-        await client.delete_object(Bucket=runtime.resources.s3_bucket, Key=s3_key)
+        if version_id is None:
+            await client.delete_object(Bucket=runtime.resources.s3_bucket, Key=s3_key)
+        else:
+            await client.delete_object(Bucket=runtime.resources.s3_bucket, Key=s3_key, VersionId=version_id)
 
 
-async def copy_s3_object(source_key: str, dest_key: str, runtime: AWSRuntime) -> None:
+async def copy_s3_object(source_key: str, dest_key: str, runtime: AWSRuntime) -> str | None:
     """
     Copy an S3 object from source_key to dest_key within the same bucket.
 
@@ -215,16 +226,18 @@ async def copy_s3_object(source_key: str, dest_key: str, runtime: AWSRuntime) ->
     """
     try:
         async with runtime.clients.s3_client() as client:
-            await client.copy_object(
+            response = await client.copy_object(
                 Bucket=runtime.resources.s3_bucket,
                 CopySource={"Bucket": runtime.resources.s3_bucket, "Key": source_key},
                 Key=dest_key,
             )
+            version_id = response.get("VersionId")
+            return str(version_id) if version_id is not None else None
     except (ClientError, BotoCoreError) as e:
         raise S3Error(f"Failed to copy S3 object from {source_key} to {dest_key}: {e}") from e
 
 
-async def copy_agent_to_benchmark(benchmark_id: str, contract_name: str, runtime: AWSRuntime) -> bool:
+async def copy_agent_to_benchmark(benchmark_id: str, contract_name: str, runtime: AWSRuntime) -> S3ObjectCopy | None:
     """
     Freeze the agent for a benchmark run by copying
     agents/<name>.zip -> benchmarks/<benchmark_id>/<name>.zip.
@@ -232,16 +245,16 @@ async def copy_agent_to_benchmark(benchmark_id: str, contract_name: str, runtime
     # NOTE: Skips if it already exists at that location
 
     Returns:
-        True when this call created the benchmark copy, otherwise False.
+        The created object identity, or None when the destination already exists.
     """
     source_key = get_contract_s3_key(contract_name)
     dest_key = get_benchmark_contract_s3_key(benchmark_id, contract_name)
 
     if await s3_object_exists(dest_key, runtime):
-        return False
+        return None
 
-    await copy_s3_object(source_key, dest_key, runtime)
-    return True
+    version_id = await copy_s3_object(source_key, dest_key, runtime)
+    return S3ObjectCopy(version_id=version_id)
 
 
 @handle_s3_error(message="Failed to check S3 object existence")

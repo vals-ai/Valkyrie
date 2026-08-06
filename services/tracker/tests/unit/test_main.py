@@ -34,6 +34,7 @@ from main import app, tracker_service_error_handler
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.aws.runtime import AWSRuntime
+from tracker.aws.s3 import S3ObjectCopy
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -674,7 +675,8 @@ class TestTrackerAPI:
         assert admission is not None
         database_session.delete(admission)
         database_session.commit()
-        copy_agent = AsyncMock(return_value=agent_copy_created)
+        created_copy = S3ObjectCopy(version_id="copy-version") if agent_copy_created else None
+        copy_agent = AsyncMock(return_value=created_copy)
         delete_agent_copy = AsyncMock()
         monkeypatch.setattr("main.copy_agent_to_benchmark", copy_agent)
         monkeypatch.setattr("main.delete_from_s3", delete_agent_copy)
@@ -699,6 +701,7 @@ class TestTrackerAPI:
             delete_agent_copy.assert_awaited_once_with(
                 f"benchmarks/{copied_benchmark_id}/{contract.name}.zip",
                 AWSRuntime.from_harness_config(harness_config),
+                version_id="copy-version",
             )
         else:
             delete_agent_copy.assert_not_awaited()
@@ -710,7 +713,7 @@ class TestTrackerAPI:
         harness_config: HarnessConfig,
         monkeypatch: MonkeyPatch,
     ) -> None:
-        copy_agent = AsyncMock(return_value=True)
+        copy_agent = AsyncMock(return_value=S3ObjectCopy(version_id="copy-version"))
         delete_agent_copy = AsyncMock()
         admit_start_dispatch = main_module.admit_start_dispatch
 
@@ -745,6 +748,7 @@ class TestTrackerAPI:
         delete_agent_copy.assert_awaited_once_with(
             f"benchmarks/{copied_benchmark_id}/{contract.name}.zip",
             AWSRuntime.from_harness_config(harness_config),
+            version_id="copy-version",
         )
 
     async def test_start_benchmark_returns_502_when_benchmark_service_is_unreachable(
