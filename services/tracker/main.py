@@ -297,6 +297,56 @@ async def _delete_uncommitted_agent_copy(
         )
 
 
+def _start_admission_is_absent(
+    session: Session,
+    *,
+    benchmark_id: UUID,
+    dispatch_id: UUID,
+) -> bool:
+    """Return whether a fresh database read proves the start admission was not committed."""
+    try:
+        with Session(bind=session.get_bind()) as verification_session:
+            benchmark = verification_session.get(Benchmark, benchmark_id)
+            dispatch = verification_session.get(ExecutorDispatch, dispatch_id)
+    except Exception:
+        logger.exception(
+            "Could not verify failed benchmark admission; retaining its agent copy",
+            extra={"benchmark_id": str(benchmark_id), "executor_dispatch_id": str(dispatch_id)},
+        )
+        return False
+    return benchmark is None and dispatch is None
+
+
+async def _rollback_failed_start_admission(
+    session: Session,
+    *,
+    benchmark_id: UUID,
+    dispatch_id: UUID,
+    created_copy: S3ObjectCopy | None,
+    request: StartBenchmarkRequest,
+    aws_runtime: AWSRuntime,
+) -> None:
+    try:
+        session.rollback()
+    except Exception:
+        logger.exception(
+            "Failed to roll back benchmark admission",
+            extra={"benchmark_id": str(benchmark_id), "executor_dispatch_id": str(dispatch_id)},
+        )
+    if not _start_admission_is_absent(
+        session,
+        benchmark_id=benchmark_id,
+        dispatch_id=dispatch_id,
+    ):
+        return
+    await _delete_uncommitted_agent_copy(
+        created_copy=created_copy,
+        benchmark_id=benchmark_id,
+        request=request,
+        aws_runtime=aws_runtime,
+    )
+
+
 @app.exception_handler(TrackerServiceError)
 async def tracker_service_error_handler(_request: Request, exc: TrackerServiceError):
     logger.error(exc, exc_info=True)
@@ -521,23 +571,17 @@ async def start_benchmark(
             dispatch_id=dispatch_id,
         )
         session.commit()
-    except ReleaseControlError as exc:
-        session.rollback()
-        await _delete_uncommitted_agent_copy(
-            created_copy=created_agent_copy,
-            benchmark_id=benchmark_row.id,
-            request=request,
-            aws_runtime=aws_runtime,
-        )
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
-        session.rollback()
-        await _delete_uncommitted_agent_copy(
-            created_copy=created_agent_copy,
+        await _rollback_failed_start_admission(
+            session,
             benchmark_id=benchmark_row.id,
+            dispatch_id=dispatch_id,
+            created_copy=created_agent_copy,
             request=request,
             aws_runtime=aws_runtime,
         )
+        if isinstance(exc, ReleaseControlError):
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         raise TrackerServiceError("Failed to admit benchmark execution") from exc
 
     benchmark_id_var.set(str(benchmark_row.id))

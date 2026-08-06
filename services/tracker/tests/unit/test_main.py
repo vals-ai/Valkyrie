@@ -751,6 +751,45 @@ class TestTrackerAPI:
             version_id="copy-version",
         )
 
+    async def test_start_commit_acknowledgement_failure_retains_durable_copy(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        copy_agent = AsyncMock(return_value=S3ObjectCopy(version_id="copy-version"))
+        delete_agent_copy = AsyncMock()
+        commit = database_session.commit
+
+        def commit_then_fail() -> None:
+            commit()
+            raise RuntimeError("commit acknowledgement lost")
+
+        monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent)
+        monkeypatch.setattr(main_module, "delete_from_s3", delete_agent_copy)
+        monkeypatch.setattr(database_session, "commit", commit_then_fail)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
+
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/start-benchmark",
+            json=request.model_dump(),
+        )
+
+        assert response.status_code == 500
+        benchmark = database_session.exec(select(Benchmark)).one()
+        dispatch = database_session.exec(select(ExecutorDispatch)).one()
+        assert dispatch.benchmark_id == benchmark.id
+        assert dispatch.status == ExecutorDispatchStatus.QUEUED
+        delete_agent_copy.assert_not_awaited()
+
     async def test_start_benchmark_returns_502_when_benchmark_service_is_unreachable(
         self,
         contract: AgentContractRequest,
