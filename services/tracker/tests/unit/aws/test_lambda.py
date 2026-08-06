@@ -8,10 +8,12 @@ import json
 from typing import cast
 from unittest.mock import MagicMock
 
+import pytest
 from botocore.config import Config
 
 from tracker._lambda import invoke_lambda
 from tracker.aws.clients import AWSClientProvider
+from tracker.exceptions import LambdaError
 
 
 def test_invoke_lambda_uses_provider_config_and_returns_parsed_payload() -> None:
@@ -40,3 +42,20 @@ def test_invoke_lambda_uses_provider_config_and_returns_parsed_payload() -> None
         "statusCode": 200,
         "reading_plan_url": "https://example.test/plan",
     }
+
+
+def test_invoke_lambda_raises_for_function_error() -> None:
+    client = MagicMock()
+    client.invoke.return_value = {
+        "FunctionError": "Unhandled",
+        "Payload": io.BytesIO(b'{"errorMessage": "analysis failed"}'),
+    }
+    provider = MagicMock(spec=AWSClientProvider)
+    provider.lambda_client.return_value = client
+
+    with pytest.raises(LambdaError, match="analysis failed"):
+        invoke_lambda(
+            cast(AWSClientProvider, provider),
+            "analyzer-function",
+            {"benchmark_id": "benchmark-1"},
+        )
