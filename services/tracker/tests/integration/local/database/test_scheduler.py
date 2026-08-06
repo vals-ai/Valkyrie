@@ -1,4 +1,7 @@
-"""PostgreSQL scheduler behavior tests."""
+"""Run with `uv run pytest tests/integration/local/database/test_scheduler.py`.
+
+Exercise PostgreSQL-backed sandbox scheduling against disposable PostgreSQL.
+"""
 
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
@@ -30,7 +33,7 @@ _SOURCE = ImageSource(image="scheduler-test-image")
 _RESOURCES = Resources(vcpu=1, memory=2, disk=3)
 
 
-class _Provider:
+class MockProvider:
     def __init__(
         self,
         pool_id: str,
@@ -135,7 +138,7 @@ def _context(
     capacity: Sequence[bool] = (True,),
     on_check: Callable[[], Awaitable[None]] | None = None,
 ) -> admission.SandboxQueueContext:
-    provider = _Provider(provider_pool_id, events, capacity=capacity, on_check=on_check)
+    provider = MockProvider(provider_pool_id, events, capacity=capacity, on_check=on_check)
     return admission.SandboxQueueContext(
         provider=cast(SandboxProvider, provider),
         pool_id=store.queue_pool_id(provider_pool_id),
