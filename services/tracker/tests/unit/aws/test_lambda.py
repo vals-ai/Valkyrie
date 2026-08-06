@@ -100,3 +100,20 @@ def test_invoke_lambda_raises_for_error_status() -> None:
             "analyzer-function",
             {"benchmark_id": "benchmark-1"},
         )
+
+
+def test_invoke_lambda_returns_non_object_payload() -> None:
+    client = MagicMock()
+    client.invoke.return_value = {
+        "Payload": io.BytesIO(b'["result"]'),
+    }
+    provider = MagicMock(spec=AWSClientProvider)
+    provider.lambda_client.return_value = client
+
+    result = invoke_lambda(
+        cast(AWSClientProvider, provider),
+        "analyzer-function",
+        {"benchmark_id": "benchmark-1"},
+    )
+
+    assert result == ["result"]
