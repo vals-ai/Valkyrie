@@ -75,6 +75,57 @@ def _persist_benchmark(
     return benchmark
 
 
+def test_persisted_request_reconstruction_rejects_invalid_aws_modes(
+    contract: AgentContractRequest,
+    harness_config: HarnessConfig,
+    database_session: Session,
+) -> None:
+    access_key_benchmark = _persist_benchmark(
+        database_session,
+        _access_key_request(contract, harness_config),
+        aws_managed=False,
+    )
+    managed_benchmark = _persist_benchmark(
+        database_session,
+        _managed_request(contract),
+        aws_managed=True,
+    )
+
+    with pytest.raises(ValueError, match="Managed runs cannot create access-key"):
+        managed_benchmark.access_key_start_benchmark_request(harness_config)
+    with pytest.raises(ValueError, match="Access-key runs cannot create managed"):
+        access_key_benchmark.managed_start_benchmark_request()
+
+    managed_benchmark.arguments = managed_benchmark.arguments.model_copy(update={"sandbox_provider_secret_name": None})
+    with pytest.raises(ValueError, match="Managed runs require a sandbox provider secret name"):
+        managed_benchmark.managed_start_benchmark_request()
+
+
+def test_benchmark_creation_rejects_inconsistent_managed_inputs(
+    contract: AgentContractRequest,
+    harness_config: HarnessConfig,
+    database_session: Session,
+) -> None:
+    with pytest.raises(ValueError, match="AWS mode does not match"):
+        _persist_benchmark(
+            database_session,
+            _access_key_request(contract, harness_config),
+            aws_managed=True,
+        )
+    with pytest.raises(ValueError, match="AWS mode does not match"):
+        _persist_benchmark(
+            database_session,
+            _managed_request(contract),
+            aws_managed=False,
+        )
+
+    invalid_managed_request = _managed_request(contract).model_copy(
+        update={"sandbox_provider": None, "sandbox_provider_secret_name": None}
+    )
+    with pytest.raises(ValueError, match="Managed runs require a sandbox provider and provider secret name"):
+        _persist_benchmark(database_session, invalid_managed_request, aws_managed=True)
+
+
 def test_taskiq_adapter_accepts_exact_access_key_shape(
     contract: AgentContractRequest,
     harness_config: HarnessConfig,
