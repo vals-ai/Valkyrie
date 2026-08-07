@@ -408,23 +408,29 @@ async def start_benchmark(
     # Validate benchmark service is reachable + tasks resolve BEFORE creating the DB row,
     # so failed auth / unreachable services don't pollute the benchmark list.
     try:
-        _ = await benchmark_service.health_check()
-    except httpx.ConnectError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Benchmark service '{request.benchmark_name}' is not reachable",
-        ) from exc
+        try:
+            _ = await benchmark_service.health_check()
+        except httpx.ConnectError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Benchmark service '{request.benchmark_name}' is not reachable",
+            ) from exc
 
-    try:
-        verify_response = await benchmark_service.verify_task_ids(
-            task_ids=request.task_ids, slice_str=request.slice_str, dataset=request.dataset
-        )
-    except BenchmarkServiceUnauthenticatedError as exc:
-        logger.warning("Benchmark service authentication failed for %s: %s", request.benchmark_name, exc)
-        raise HTTPException(status_code=502, detail="Benchmark service authentication failed") from exc
-    except Exception as exc:
-        logger.error("Failed to verify task ids for %s", request.benchmark_name, exc_info=True)
-        raise HTTPException(status_code=502, detail="Failed to verify task ids") from exc
+        try:
+            verify_response = await benchmark_service.verify_task_ids(
+                task_ids=request.task_ids, slice_str=request.slice_str, dataset=request.dataset
+            )
+        except BenchmarkServiceUnauthenticatedError as exc:
+            logger.warning("Benchmark service authentication failed for %s: %s", request.benchmark_name, exc)
+            raise HTTPException(status_code=502, detail="Benchmark service authentication failed") from exc
+        except Exception as exc:
+            logger.error("Failed to verify task ids for %s", request.benchmark_name, exc_info=True)
+            raise HTTPException(status_code=502, detail="Failed to verify task ids") from exc
+    finally:
+        try:
+            await benchmark_service.close()
+        except Exception:
+            logger.exception("Failed to close benchmark service client for %s", request.benchmark_name)
 
     benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
     dispatch_id = uuid4()

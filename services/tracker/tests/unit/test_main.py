@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from benchmark_service import SandboxProvider
 from benchmark_service.client import (
     BenchmarkServiceClient,
     BenchmarkServiceError,
@@ -502,6 +503,103 @@ class TestTrackerAPI:
         assert json_response["executor_artifact_digest"] == "digest-test-release"
         assert json_response["executor_protocol_version"] == "1"
         assert json_response["concurrency"] == request.concurrency
+
+    async def test_start_benchmark_closes_client_after_success(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        http_client = AsyncMock(spec=httpx.AsyncClient)
+        sandbox_provider = MagicMock(spec=SandboxProvider)
+        benchmark_service = BenchmarkServiceClient(url="https://benchmark.example", headers={})
+        setattr(benchmark_service, "_http_client", http_client)
+        setattr(benchmark_service, "_sandbox_providers", {"cached-provider": sandbox_provider})
+
+        def _return_controlled_client(
+            url: str, service_headers: dict[str, str] | None = None
+        ) -> BenchmarkServiceClient:
+            _ = (url, service_headers)
+
+            return benchmark_service
+
+        monkeypatch.setattr("tracker.utils.create_benchmark_service_client", _return_controlled_client)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 200
+        http_client.aclose.assert_awaited_once()
+        sandbox_provider.close.assert_awaited_once()
+
+    async def test_start_benchmark_returns_success_when_client_close_fails(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        close_client = AsyncMock(side_effect=RuntimeError("close failed"))
+        monkeypatch.setattr(BenchmarkServiceClient, "close", close_client)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
+
+        with caplog.at_level(logging.ERROR, logger="main"):
+            response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 200
+        assert response.json()["task_count"] == 1
+        close_client.assert_awaited_once()
+        assert any(
+            record.message == "Failed to close benchmark service client for swebench"
+            and record.exc_info is not None
+            and isinstance(record.exc_info[1], RuntimeError)
+            and str(record.exc_info[1]) == "close failed"
+            for record in caplog.records
+        )
+
+    async def test_start_benchmark_closes_client_after_preflight_failure(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        close_client = AsyncMock(side_effect=RuntimeError("close failed"))
+
+        async def _mock_health_check(*_args: Any, **_kwargs: Any) -> None:
+            raise httpx.ConnectError("benchmark service unavailable")
+
+        monkeypatch.setattr(BenchmarkServiceClient, "close", close_client)
+        monkeypatch.setattr(BenchmarkServiceClient, "health_check", _mock_health_check)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
+
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/start-benchmark",
+            json=request.model_dump(),
+        )
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == "Benchmark service 'swebench' is not reachable"
+        close_client.assert_awaited_once()
 
     async def test_start_benchmark_serializes_committed_dispatch_for_executor_host(
         self,
