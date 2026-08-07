@@ -4,9 +4,10 @@ on:
     branches: [dev]
     paths:
       - "services/tracker/**"
+  # Runs on every PR so the required check is always reported (no path filter =
+  # no "waiting for status" deadlock); the guard below skips the work when the
+  # PR does not touch services/tracker/**, and the job still reports success.
   pull_request:
-    paths:
-      - "services/tracker/**"
 
 jobs:
   tracker-unit-tests:
@@ -14,29 +15,57 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check for relevant changes
+        id: rel
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"; then
+            echo "Could not compute the PR diff; running tracker tests to be safe."
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if printf '%s\n' "$changed" | grep -qE '^services/tracker/'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No changes under services/tracker/; skipping tracker tests."
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/setup-python@v5
+        if: steps.rel.outputs.relevant == 'true'
         with:
           python-version: "3.12"
 
       - name: Install uv
+        if: steps.rel.outputs.relevant == 'true'
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
           cache-dependency-glob: "services/tracker/uv.lock"
 
       - name: Install tracker dependencies
+        if: steps.rel.outputs.relevant == 'true'
         run: |
           cd services/tracker
           uv venv --python 3.12
           uv sync --group dev
 
       - name: Run tracker tests with coverage
+        if: steps.rel.outputs.relevant == 'true'
         run: |
           cd services/tracker
           make test
 
       - name: Upload coverage to Codecov
+        if: steps.rel.outputs.relevant == 'true'
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

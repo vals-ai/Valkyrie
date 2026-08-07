@@ -120,3 +120,21 @@ that value for their own production account.
 ```bash
 export BENCHMARK_CATALOG_URL=https://<api-id>.execute-api.us-east-1.amazonaws.com
 ```
+
+## Sandbox cleanup schedule
+
+Production includes an hourly EventBridge schedule for a singleton, 14-minute cleanup Lambda. The schedule is disabled
+unless `SANDBOX_CLEANUP_ENABLED` is exactly `true`; Scheduler delivery and asynchronous Lambda failures go to an encrypted
+dead-letter queue.
+
+The Lambda loads the selected Create Benchmark Service (CBS) provider configuration from Secrets Manager and uses the
+provider directly to list, refresh, and delete sandboxes in its configured scope. Sandboxes strictly older than 48 hours
+are deleted unless their exact `clean-up` label is `false` after trimming and case-folding. The secret must contain the
+JSON fields required by the selected CBS provider. Providers must support creation-time-filtered inventory metadata;
+currently Daytona is the only compatible provider and uses `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET`.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SANDBOX_CLEANUP_ENABLED` | `false` | Enables the hourly production schedule |
+| `SANDBOX_CLEANUP_PROVIDER` | `daytona` | Selects a cleanup-compatible CBS sandbox provider |
+| `SANDBOX_CLEANUP_SECRET_NAME` | `AgenticHarnessSecrets` | Selects the provider credentials secret |
