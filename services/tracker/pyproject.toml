@@ -9,6 +9,7 @@ requires-python = "==3.12.*"
 dependencies = [
   "boto3>=1.42.20",
   "boto3-stubs[s3]",
+  "cachetools>=7.1.1,<8",
   "moto[s3]",
   "fastapi[standard]>=0.135.3",
   "starlette>=1.0.1",

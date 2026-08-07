@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+import hashlib
+import hmac
+import math
+import secrets
+from threading import Condition
+import time
+from typing import Any, cast
 
-from descope import AuthException, DescopeClient
+from cachetools import TLRUCache, cached
+from descope import DescopeClient
+from descope.exceptions import AuthException
 from fastapi import Depends, HTTPException, Request
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import ReadTimeout
@@ -26,6 +34,9 @@ DESCOPE_ACCESS_KEY_ID_FIELD = "keyId"
 DESCOPE_CUSTOM_CLAIMS_FIELD = "customClaims"
 DESCOPE_SESSION_TOKEN_FIELD = "sessionToken"
 DESCOPE_USER_ID_CLAIM = "user_id"
+_ACCESS_KEY_CACHE_MAX_SIZE = 1024
+_ACCESS_KEY_CACHE_TTL_SECONDS = 10.0
+_ACCESS_KEY_EXPIRY_SKEW_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -58,7 +69,24 @@ class DescopeIdentity:
     name: str | None
 
 
+@dataclass(frozen=True)
+class _CachedAccessKeyClaims:
+    tenant_name: str
+    access_key_id: str
+    email: str | None
+    name: str | None
+    user_id: str | None
+    cache_deadline_monotonic: float
+
+
 _cached_default_org: Org | None = None
+_access_key_digest_secret = secrets.token_bytes(32)
+_access_key_cache_condition = Condition()
+_access_key_cache: TLRUCache[bytes, _CachedAccessKeyClaims, float] = TLRUCache(
+    maxsize=_ACCESS_KEY_CACHE_MAX_SIZE,
+    ttu=lambda _key, claims, _now: claims.cache_deadline_monotonic,
+    timer=time.monotonic,
+)
 _descope_client: DescopeClient | None = (
     DescopeClient(
         project_id=DESCOPE_PROJECT_ID,
@@ -122,12 +150,12 @@ def _load_descope_user_profile(user_id: str) -> DescopeUserProfile:
     try:
         user_response = _descope_client.mgmt.user.load_by_user_id(user_id)
     except Exception:
-        logger.warning("Failed to load Descope user profile for user_id=%s", user_id, exc_info=True)
+        logger.warning("Failed to load Descope user profile")
         return DescopeUserProfile(email=None, name=None)
 
     user = user_response.get("user")
     if not isinstance(user, Mapping):
-        logger.warning("Descope user profile response did not include a user object for user_id=%s", user_id)
+        logger.warning("Descope user profile response did not include a user object")
         return DescopeUserProfile(email=None, name=None)
 
     email = _normalize_optional_string(user.get("email"), lowercase=True)
@@ -163,38 +191,26 @@ def extract_api_key(request: Request) -> str:
 )
 def _exchange_access_key(api_key: str, descope_client: DescopeClient) -> dict[str, Any]:
     """Call Descope with retries on transient network errors."""
-    return descope_client.exchange_access_key(api_key)
+    return cast(dict[str, Any], descope_client.exchange_access_key(api_key))
 
 
-def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False) -> DescopeIdentity:
-    """Validate an API key and return its Descope tenant and attribution identity.
+def _access_key_digest(api_key: str) -> bytes:
+    """Return a process-keyed digest without retaining the presented credential."""
+    return hmac.digest(_access_key_digest_secret, api_key.encode(), hashlib.sha256)
 
-    Lightweight callers use only the exchanged access-key JWT. Callers that need
-    attribution can request the bound user profile, which adds one Descope
-    management API lookup when the JWT carries user_id but no email.
 
-    Supported access-key response shape:
-        {
-            "tenants": {"vals.ai": {}},
-            "keyId": "K2abc",
-            "sessionToken": {
-                "sub": "K2abc",
-                "customClaims": {"user_id": "U2abc"},
-            },
-        }
-    """
-    if not _descope_client:
-        raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
-    try:
-        jwt_response = _exchange_access_key(api_key, _descope_client)
-    except AuthException as exc:
-        logger.warning("Descope API key validation failed: %s", exc.error_message)
-        raise HTTPException(status_code=401, detail="Invalid API key") from exc
-    except Exception as exc:
-        logger.exception("Descope API key validation failed")
-        raise HTTPException(status_code=503, detail="Auth service unavailable") from exc
+def _cache_deadline(jwt_expires_at: float, *, wall_now: float, monotonic_now: float) -> float:
+    remaining = jwt_expires_at - wall_now - _ACCESS_KEY_EXPIRY_SKEW_SECONDS
+    cache_seconds = min(_ACCESS_KEY_CACHE_TTL_SECONDS, max(0.0, remaining))
+    return monotonic_now + cache_seconds
 
-    tenants = list(jwt_response.get("tenants", {}).keys())
+
+def _normalize_access_key_claims(jwt_response: Mapping[str, object]) -> _CachedAccessKeyClaims:
+    tenants_value = jwt_response.get("tenants")
+    tenant_mapping: Mapping[object, object] = (
+        cast(Mapping[object, object], tenants_value) if isinstance(tenants_value, Mapping) else {}
+    )
+    tenants = [str(tenant) for tenant in tenant_mapping]
     if len(tenants) != 1:
         raise HTTPException(
             status_code=400,
@@ -207,16 +223,64 @@ def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False
     if not access_key_id:
         raise HTTPException(status_code=400, detail="Descope JWT missing access key id")
 
-    email = _get_descope_string_claim(jwt_response, "email", lowercase=True)
-    name = _get_descope_string_claim(jwt_response, "name")
-    user_id = _get_descope_custom_string_claim(jwt_response, DESCOPE_USER_ID_CLAIM)
+    expires_value = _get_descope_claim(jwt_response, "exp")
+    if isinstance(expires_value, (int, float)) and not isinstance(expires_value, bool):
+        try:
+            jwt_expires_at = float(expires_value)
+        except OverflowError:
+            jwt_expires_at = 0.0
+        if not math.isfinite(jwt_expires_at):
+            jwt_expires_at = 0.0
+    else:
+        jwt_expires_at = 0.0
+    cache_deadline = _cache_deadline(
+        jwt_expires_at,
+        wall_now=time.time(),
+        monotonic_now=time.monotonic(),
+    )
+    return _CachedAccessKeyClaims(
+        tenant_name=str(tenants[0]),
+        access_key_id=access_key_id,
+        email=_get_descope_string_claim(jwt_response, "email", lowercase=True),
+        name=_get_descope_string_claim(jwt_response, "name"),
+        user_id=_get_descope_custom_string_claim(jwt_response, DESCOPE_USER_ID_CLAIM),
+        cache_deadline_monotonic=cache_deadline,
+    )
 
-    if include_user_profile and email is None and user_id is not None:
-        profile = _load_descope_user_profile(user_id)
+
+@cached(cache=_access_key_cache, key=_access_key_digest, condition=_access_key_cache_condition)
+def _exchange_and_normalize_access_key(api_key: str) -> _CachedAccessKeyClaims:
+    if not _descope_client:
+        raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
+
+    try:
+        jwt_response = _exchange_access_key(api_key, _descope_client)
+    except AuthException as exc:
+        logger.warning("Descope API key validation failed")
+        raise HTTPException(status_code=401, detail="Invalid API key") from exc
+    except Exception as exc:
+        logger.warning("Descope API key validation failed because the provider is unavailable")
+        raise HTTPException(status_code=503, detail="Auth service unavailable") from exc
+
+    return _normalize_access_key_claims(jwt_response)
+
+
+def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False) -> DescopeIdentity:
+    """Validate an API key and return its Descope tenant and attribution identity."""
+    claims = _exchange_and_normalize_access_key(api_key)
+    email = claims.email
+    name = claims.name
+    if include_user_profile and email is None and claims.user_id is not None:
+        profile = _load_descope_user_profile(claims.user_id)
         email = profile.email
         name = name or profile.name
 
-    return DescopeIdentity(tenant_name=tenants[0], access_key_id=access_key_id, email=email, name=name)
+    return DescopeIdentity(
+        tenant_name=claims.tenant_name,
+        access_key_id=claims.access_key_id,
+        email=email,
+        name=name,
+    )
 
 
 def find_org_by_tenant(tenant_name: str, session: Session) -> Org | None:
@@ -266,7 +330,7 @@ def resolve_bearer_session(jwt: str, session: Session) -> Org:
     try:
         jwt_response = _descope_client.validate_session(jwt)
     except AuthException as exc:
-        logger.warning("Descope session validation failed: %s", exc.error_message)
+        logger.warning("Descope session validation failed")
         raise HTTPException(status_code=401, detail="Invalid session") from exc
 
     tenants = list(jwt_response.get("tenants", {}).keys())
