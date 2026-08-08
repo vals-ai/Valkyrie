@@ -1015,8 +1015,9 @@ class TestTrackerAPI:
         benchmark_row = example_benchmark_object
         database_session.add(benchmark_row)
         database_session.commit()
+        benchmark_id = benchmark_row.id
 
-        query_params = {"benchmark_id": str(benchmark_row.id)}
+        query_params = {"benchmark_id": str(benchmark_id)}
         response = client.get("/retrieve-results", params=query_params)
         assert response.status_code == 200
         response_json = response.json()
@@ -1160,7 +1161,7 @@ class TestTrackerAPI:
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
         response = client.get(
             "/retrieve-results",
-            params=[("benchmark_id", str(benchmark_row.id)), ("task_ids", "task_1"), ("task_ids", "task_3")],
+            params=[("benchmark_id", str(benchmark_id)), ("task_ids", "task_1"), ("task_ids", "task_3")],
             headers={"X-Api-Key": "tracker-api-key"},
         )
         assert response.status_code == 200
@@ -1174,13 +1175,29 @@ class TestTrackerAPI:
         # the denominator rather than being silently dropped from the subset.
         response = client.get(
             "/retrieve-results",
-            params=[("benchmark_id", str(benchmark_row.id)), ("task_ids", "task_1"), ("task_ids", "task_11")],
+            params=[("benchmark_id", str(benchmark_id)), ("task_ids", "task_1"), ("task_ids", "task_11")],
             headers={"X-Api-Key": "tracker-api-key"},
         )
         assert response.status_code == 200
         assert observed_results.keys() == {"task_1", "task_11"}
         assert observed_results["task_11"] is None
         assert response.json()["final_evaluation"]["final_score"] == 2.0
+
+        detached_snapshot = False
+
+        async def _assert_detached_snapshot(benchmark: Benchmark, *_args: Any, **_kwargs: Any) -> str:
+            nonlocal detached_snapshot
+            detached_snapshot = not hasattr(benchmark, "_sa_instance_state")
+            return "benchmarks/final-view.json"
+
+        monkeypatch.setattr(main_module, "upload_final_view", _assert_detached_snapshot)
+        monkeypatch.setattr(main_module, "create_presigned_url", AsyncMock(return_value="https://example.test/view"))
+        response = client.get(
+            "/retrieve-results",
+            params={"benchmark_id": str(benchmark_id), "s3": "true"},
+        )
+        assert response.status_code == 200
+        assert detached_snapshot
 
     async def test_benchmark_error_handling(
         self,

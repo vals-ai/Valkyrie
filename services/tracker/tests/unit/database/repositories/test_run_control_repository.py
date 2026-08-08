@@ -12,8 +12,17 @@ from sqlmodel import Session, select
 
 from tests.factories import make_benchmark, make_task
 from tracker.database.models import Benchmark, BenchmarkStatus, FinalEvaluation, Org, RetryMode, Task, TaskStatus
-from tracker.database.repositories import RetrySelection, RunControlRepository
+from tracker.database.repositories import BenchmarkRepository, RetrySelection, RunControlRepository, TaskRepository
 from tracker.exceptions import TrackerServiceError
+
+
+def test_run_control_uses_supplied_same_session_repositories(empty_database_session: Session) -> None:
+    benchmark_repository = BenchmarkRepository(empty_database_session)
+    task_repository = TaskRepository(empty_database_session)
+    repository = RunControlRepository(empty_database_session, benchmark_repository, task_repository)
+
+    assert vars(repository)["_benchmarks"] is benchmark_repository
+    assert vars(repository)["_tasks"] is task_repository
 
 
 def test_task_status_counts_scope_benchmark_and_organization(empty_database_session: Session) -> None:
@@ -37,7 +46,11 @@ def test_task_status_counts_scope_benchmark_and_organization(empty_database_sess
     )
     empty_database_session.commit()
 
-    repository = RunControlRepository(empty_database_session)
+    repository = RunControlRepository(
+        empty_database_session,
+        BenchmarkRepository(empty_database_session),
+        TaskRepository(empty_database_session),
+    )
 
     assert repository.count_runnable_tasks(benchmark.id, owner.id) == 2
     assert repository.count_stopped_tasks(benchmark.id, owner.id) == 1
@@ -55,7 +68,11 @@ def test_lock_and_task_mutations_are_organization_scoped(empty_database_session:
     task.org_id = other.id
     empty_database_session.add(task)
     empty_database_session.commit()
-    repository = RunControlRepository(empty_database_session)
+    repository = RunControlRepository(
+        empty_database_session,
+        BenchmarkRepository(empty_database_session),
+        TaskRepository(empty_database_session),
+    )
 
     assert repository.lock_benchmark(benchmark.id, other.id) is None
     assert repository.stop_active_tasks(benchmark.id, owner.id, task_ids=None) == 0
@@ -68,7 +85,11 @@ def test_explicit_empty_task_ids_never_means_whole_run(empty_database_session: S
     task = make_task(benchmark, "task", status=TaskStatus.PENDING)
     empty_database_session.add(task)
     empty_database_session.commit()
-    repository = RunControlRepository(empty_database_session)
+    repository = RunControlRepository(
+        empty_database_session,
+        BenchmarkRepository(empty_database_session),
+        TaskRepository(empty_database_session),
+    )
 
     assert repository.apply_stop(benchmark, benchmark.org_id, force=True, task_ids=[]) == 0
     assert benchmark.status == BenchmarkStatus.IN_PROGRESS
@@ -82,7 +103,11 @@ def test_stop_writes_remain_uncommitted_until_caller_decides(empty_database_sess
     task = make_task(benchmark, "task", status=TaskStatus.PENDING)
     empty_database_session.add(task)
     empty_database_session.commit()
-    repository = RunControlRepository(empty_database_session)
+    repository = RunControlRepository(
+        empty_database_session,
+        BenchmarkRepository(empty_database_session),
+        TaskRepository(empty_database_session),
+    )
 
     assert repository.apply_stop(benchmark, benchmark.org_id, force=False, task_ids=None) == 1
     assert task.status == TaskStatus.STOPPED
@@ -103,7 +128,11 @@ def test_retry_selection_is_deterministic_and_preserves_status_matrix(empty_data
     finished = make_task(benchmark, "finished", status=TaskStatus.FINISHED, finished_at=now)
     empty_database_session.add_all([first, second, stopped, finished])
     empty_database_session.commit()
-    repository = RunControlRepository(empty_database_session)
+    repository = RunControlRepository(
+        empty_database_session,
+        BenchmarkRepository(empty_database_session),
+        TaskRepository(empty_database_session),
+    )
 
     active = repository.select_retryable(benchmark, benchmark.org_id, retry=True, rerun_task_ids=["first", "second"])
     assert [task.task_id for task in active.existing_tasks] == ["second", "first"]
@@ -121,7 +150,11 @@ def test_active_retry_rejects_non_error_ids_without_mutating_rows(empty_database
     task = make_task(benchmark, "stopped", status=TaskStatus.STOPPED)
     empty_database_session.add(task)
     empty_database_session.commit()
-    repository = RunControlRepository(empty_database_session)
+    repository = RunControlRepository(
+        empty_database_session,
+        BenchmarkRepository(empty_database_session),
+        TaskRepository(empty_database_session),
+    )
 
     with pytest.raises(TrackerServiceError, match="cannot be retried"):
         repository.select_retryable(benchmark, benchmark.org_id, retry=True, rerun_task_ids=["stopped"])
@@ -137,7 +170,11 @@ def test_failed_retry_precondition_leaves_database_state_unchanged(empty_databas
     other_org = Org(id=uuid4(), name="other")
     empty_database_session.add_all([task, evaluation, other_org])
     empty_database_session.commit()
-    repository = RunControlRepository(empty_database_session)
+    repository = RunControlRepository(
+        empty_database_session,
+        BenchmarkRepository(empty_database_session),
+        TaskRepository(empty_database_session),
+    )
     selection = RetrySelection(benchmark, [task], [])
 
     with pytest.raises(TrackerServiceError, match="does not belong"):
@@ -165,7 +202,11 @@ def test_apply_retry_deletes_only_owned_final_evaluation_and_creates_missing_row
     foreign_evaluation = FinalEvaluation(org_id=other.id, benchmark=benchmark.id, final_score=2, properties={})
     empty_database_session.add_all([owner_evaluation, foreign_evaluation])
     empty_database_session.commit()
-    repository = RunControlRepository(empty_database_session)
+    repository = RunControlRepository(
+        empty_database_session,
+        BenchmarkRepository(empty_database_session),
+        TaskRepository(empty_database_session),
+    )
     selection = RetrySelection(benchmark, [existing], ["missing"])
 
     repository.apply_retry(
@@ -199,7 +240,11 @@ def test_apply_retry_clears_loaded_owned_final_evaluation(empty_database_session
     empty_database_session.commit()
     assert benchmark.final_evaluation is not None
 
-    RunControlRepository(empty_database_session).apply_retry(
+    RunControlRepository(
+        empty_database_session,
+        BenchmarkRepository(empty_database_session),
+        TaskRepository(empty_database_session),
+    ).apply_retry(
         RetrySelection(benchmark, [task], []),
         benchmark.org_id,
         retry_mode=RetryMode.FROM_SCRATCH,

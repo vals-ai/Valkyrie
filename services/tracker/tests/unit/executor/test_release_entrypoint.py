@@ -229,7 +229,10 @@ def test_release_entrypoint_digest_failure_does_not_commit_release(
         release_entrypoint.main()
 
     database_session.expire_all()
-    assert database_session.get(ExecutorRelease, "git-abc123-def456") is None
+    stored = database_session.get(ExecutorRelease, "git-abc123-def456")
+    assert stored is not None
+    assert stored.status == ExecutorReleaseStatus.CANDIDATE
+    assert not stored.readiness_verified
 
 
 def test_release_entrypoint_rejects_invalid_release_id_before_reading_secret(monkeypatch: MonkeyPatch) -> None:

@@ -22,7 +22,14 @@ from main import app
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
-from tracker.database.repositories import BenchmarkRepository, ReportingRepository, RunControlRepository, TaskRepository
+from tracker.database.repositories import (
+    BenchmarkRepository,
+    ExecutorControlRepository,
+    ReportingRepository,
+    RunControlRepository,
+    TaskExecutionRepository,
+    TaskRepository,
+)
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -35,7 +42,6 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.exceptions import TrackerServiceError
-from tracker.executor.release_control import promote_release
 from tracker.types import AWSCredentials, FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     commit_task_error,
@@ -65,7 +71,7 @@ def example_benchmark_object(contract: AgentContractRequest, database_session: S
     )
     database_session.add(release)
     database_session.commit()
-    promote_release(database_session, release.id)
+    ExecutorControlRepository(database_session).promote_release(release.id)
     database_session.commit()
 
     benchmark = make_benchmark(contract=contract, concurrency=5)
@@ -446,6 +452,7 @@ class TestRunState:
         verified_task_ids = [f"task_{i}" for i in range(5)]
 
         # Creates all tasks in pending state
+        task_execution_repository = TaskExecutionRepository(database_session)
         task_rows = create_task_rows(
             verified_task_ids,
             benchmark_row,
@@ -453,6 +460,7 @@ class TestRunState:
             self._test_org,
             authority=authority,
             task_repository=task_repository,
+            task_execution_repository=task_execution_repository,
         )
         assert len(task_rows) == len(verified_task_ids)
         assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
@@ -469,6 +477,7 @@ class TestRunState:
             self._test_org,
             authority=authority,
             task_repository=task_repository,
+            task_execution_repository=task_execution_repository,
         )
         assert len(task_rows) == len(verified_task_ids)
         assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
@@ -485,6 +494,7 @@ class TestRunState:
             self._test_org,
             authority=authority,
             task_repository=task_repository,
+            task_execution_repository=task_execution_repository,
         )
         assert [task_id for task_id, _ in task_rows] == ["task_1"]
 
@@ -525,7 +535,11 @@ class TestRunState:
         database_session.add(EvaluationResult(org_id=TEST_ORG_ID, task=finished_task.id, result={"score": 1.0}))
         database_session.commit()
 
-        run_control_repository = RunControlRepository(database_session)
+        run_control_repository = RunControlRepository(
+            database_session,
+            BenchmarkRepository(database_session),
+            TaskRepository(database_session),
+        )
         assert run_control_repository.count_runnable_tasks(benchmark_row.id, self._test_org.id) > 0
 
         pending_task.status = TaskStatus.ERROR
@@ -585,7 +599,13 @@ class TestRunState:
         database_session.add(task_row)
         database_session.commit()
 
-        commit_task_error(task_row, database_session, "agent failed", authority=authority)
+        commit_task_error(
+            task_row,
+            database_session,
+            "agent failed",
+            task_execution_repository=TaskExecutionRepository(database_session),
+            authority=authority,
+        )
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
@@ -623,6 +643,7 @@ class TestRunState:
         database_session.add(benchmark_row)
         database_session.commit()
         authority = executor_authority(benchmark_row, session=database_session)
+        task_execution_repository = TaskExecutionRepository(database_session)
 
         # Create some pending tasks
         task_ids = [f"task_{i}" for i in range(5)]
@@ -633,6 +654,7 @@ class TestRunState:
             self._test_org,
             authority=authority,
             task_repository=TaskRepository(database_session),
+            task_execution_repository=task_execution_repository,
         )
         assert len(task_rows) == len(task_ids)
         assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
@@ -644,7 +666,14 @@ class TestRunState:
                 database_session,
                 self._test_org,
                 authority=authority,
-                run_control_repository=RunControlRepository(database_session),
+                run_control_repository=RunControlRepository(
+                    database_session,
+                    BenchmarkRepository(database_session),
+                    TaskRepository(database_session),
+                ),
+                task_execution_repository=task_execution_repository,
+                executor_control_repository=ExecutorControlRepository(database_session),
+                benchmark_repository=BenchmarkRepository(database_session),
             )
 
         # Make all tasks in finished state
@@ -662,7 +691,14 @@ class TestRunState:
             database_session,
             self._test_org,
             authority=authority,
-            run_control_repository=RunControlRepository(database_session),
+            run_control_repository=RunControlRepository(
+                database_session,
+                BenchmarkRepository(database_session),
+                TaskRepository(database_session),
+            ),
+            task_execution_repository=task_execution_repository,
+            executor_control_repository=ExecutorControlRepository(database_session),
+            benchmark_repository=BenchmarkRepository(database_session),
         )
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.FINISHED
@@ -687,7 +723,14 @@ class TestRunState:
             database_session,
             self._test_org,
             authority=authority,
-            run_control_repository=RunControlRepository(database_session),
+            run_control_repository=RunControlRepository(
+                database_session,
+                BenchmarkRepository(database_session),
+                TaskRepository(database_session),
+            ),
+            task_execution_repository=task_execution_repository,
+            executor_control_repository=ExecutorControlRepository(database_session),
+            benchmark_repository=BenchmarkRepository(database_session),
         )
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.STOPPED

@@ -11,7 +11,12 @@ import pytest
 from sqlmodel import Session
 
 from tracker.database.models import Benchmark, BenchmarkStatus, DocentReadingStatus
-from tracker.database.repositories import BenchmarkRepository, TaskRepository
+from tracker.database.repositories import (
+    BenchmarkRepository,
+    ExecutorControlRepository,
+    TaskExecutionRepository,
+    TaskRepository,
+)
 from tracker.docent_analysis import invoke_analyzer
 from tracker.types import AWSCredentials
 from tracker.utils import catch_errors_during_cleanup
@@ -136,7 +141,9 @@ def test_cleanup_sweeps_running_docent_status_to_error(
         org,
         authority=authority,
         benchmark_repository=BenchmarkRepository(database_session),
+        task_execution_repository=TaskExecutionRepository(database_session),
         task_repository=TaskRepository(database_session),
+        executor_control_repository=ExecutorControlRepository(database_session),
     )
 
     database_session.refresh(example_benchmark_object)

@@ -14,7 +14,7 @@ from sqlalchemy import inspect
 from sqlmodel import Session
 
 from tests.factories import make_benchmark, make_error_result, make_evaluation_result, make_task
-from tracker.database.models import FinalEvaluation, Org, TaskStatus
+from tracker.database.models import BenchmarkStatus, DocentReadingStatus, FinalEvaluation, Org, TaskStatus
 from tracker.database.repositories import (
     BenchmarkRepository,
     OrgRepository,
@@ -89,6 +89,34 @@ class TestBenchmarkRepository:
 
         assert repository.get_for_org(benchmark.id, owner.id) == benchmark
         assert repository.get_for_org(benchmark.id, other_org.id) is None
+
+    def test_benchmark_writes_stage_without_commit(self, empty_database_session: Session) -> None:
+        benchmark = make_benchmark(session=empty_database_session)
+        evaluation = FinalEvaluation(org_id=benchmark.org_id, benchmark=benchmark.id, final_score=2.0, properties={})
+        empty_database_session.add(evaluation)
+        empty_database_session.commit()
+        empty_database_session.refresh(benchmark)
+
+        repository = BenchmarkRepository(empty_database_session)
+        repository.stage_concurrency(benchmark, 9)
+        repository.stage_resume_arguments(benchmark, benchmark.arguments, "https://service.example")
+        repository.stage_docent_running(benchmark.id)
+        repository.stage_docent_done(benchmark, "https://reading.example")
+        repository.replace_final_evaluation(
+            benchmark,
+            FinalEvaluation(org_id=benchmark.org_id, benchmark=benchmark.id, final_score=3.0, properties={}),
+        )
+        repository.stage_final_status(benchmark, BenchmarkStatus.FINISHED)
+
+        empty_database_session.rollback()
+        empty_database_session.refresh(benchmark)
+        assert benchmark.arguments.concurrency != 9
+        assert benchmark.custom_benchmark_service is None
+        assert benchmark.docent_reading_status == DocentReadingStatus.IDLE
+        assert benchmark.docent_reading_url is None
+        assert benchmark.status == BenchmarkStatus.IN_PROGRESS
+        assert benchmark.final_evaluation is not None
+        assert benchmark.final_evaluation.final_score == 2.0
 
     def test_get_for_org_with_final_evaluation_eagerly_loads_and_scopes(self, empty_database_session: Session) -> None:
         """Eager final-evaluation lookup returns only an organization-owned benchmark."""

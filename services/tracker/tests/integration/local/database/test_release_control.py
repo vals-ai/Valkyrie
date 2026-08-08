@@ -8,7 +8,7 @@ from collections.abc import Callable
 from io import BytesIO
 from threading import Event, Thread
 from time import monotonic, sleep
-from typing import cast
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -29,22 +29,74 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.database.repositories import BenchmarkRepository, RunControlRepository
-from tracker.executor.dispatch_control import admit_recovery_dispatch, admit_start_dispatch
-from tracker.executor.maintenance_control import begin_maintenance
+from tracker.database.repositories import (
+    BenchmarkRepository,
+    ExecutorControlRepository,
+    RunControlRepository,
+    TaskRepository,
+)
+from tracker.executor.dispatch_control import (
+    admit_recovery_dispatch as _admit_recovery_dispatch,
+    admit_start_dispatch as _admit_start_dispatch,
+)
+from tracker.exceptions import ReleaseControlError
 from tracker.executor.release_control import (
-    ReleaseControlError,
-    activate_release,
+    complete_release_activation,
     pin_benchmark_to_release,
-    promote_release,
-    register_release,
-    retire_drained_releases,
+    prepare_release_activation,
+    validate_release_manifest,
+    verify_release_artifact,
 )
 from tracker.utils.resources import fetch_benchmark_row
 
 
 _EXECUTOR_ARTIFACT = b"immutable executor artifact"
 _EXECUTOR_ARTIFACT_DIGEST = hashlib.sha256(_EXECUTOR_ARTIFACT).hexdigest()
+
+
+def _repository(session: Session) -> ExecutorControlRepository:
+    return ExecutorControlRepository(session)
+
+
+def register_release(session: Session, release: ExecutorRelease) -> ExecutorRelease:
+    validate_release_manifest(release)
+    return _repository(session).register_release(release)
+
+
+def promote_release(session: Session, release_id: str) -> ExecutorRelease:
+    return _repository(session).promote_release(release_id)
+
+
+def retire_drained_releases(session: Session) -> list[str]:
+    return _repository(session).retire_drained_releases()
+
+
+def activate_release(session: Session, release: ExecutorRelease, **kwargs: Any) -> ExecutorRelease:
+    repository = _repository(session)
+    prepared = prepare_release_activation(
+        repository,
+        release,
+        expected_bucket=kwargs["expected_bucket"],
+        expected_prefix=kwargs["expected_prefix"],
+    )
+    session.commit()
+    metadata = verify_release_artifact(prepared, s3_client=kwargs.get("s3_client"))
+    activated = complete_release_activation(repository, release, metadata)
+    session.commit()
+    return activated
+
+
+def admit_start_dispatch(session: Session, **kwargs: Any) -> ExecutorDispatch:
+    return _admit_start_dispatch(
+        session,
+        executor_control_repository=_repository(session),
+        **kwargs,
+    )
+
+
+def admit_recovery_dispatch(session: Session, **kwargs: Any) -> ExecutorDispatch:
+    kwargs.setdefault("executor_control_repository", _repository(session))
+    return _admit_recovery_dispatch(session, **kwargs)
 
 
 class _S3Client:
@@ -292,6 +344,7 @@ def test_terminal_recovery_and_promotion_use_the_winning_admission_lock_order(
             pre_action_status=pre_action_status,
             dispatch_id=uuid4(),
             kind=ExecutorDispatchKind.RESUME,
+            executor_control_repository=ExecutorControlRepository(session),
         )
 
     outcomes = _run_while_first_transaction_holds_locks(
@@ -480,6 +533,7 @@ def test_in_progress_retry_blocks_retirement_of_the_owned_release(
             pre_action_status=pre_action_status,
             dispatch_id=uuid4(),
             kind=ExecutorDispatchKind.RETRY,
+            executor_control_repository=ExecutorControlRepository(session),
         )
 
     outcomes = _run_while_first_transaction_holds_locks(
@@ -538,6 +592,7 @@ def test_terminal_retry_after_retirement_uses_the_active_release(postgres_sessio
         pre_action_status=pre_action_status,
         dispatch_id=uuid4(),
         kind=ExecutorDispatchKind.RETRY,
+        executor_control_repository=ExecutorControlRepository(postgres_session),
     )
     postgres_session.commit()
 
@@ -567,14 +622,14 @@ def test_run_control_repository_lock_serializes_whole_run_stop(
     postgres_session.commit()
 
     def stop(session: Session) -> None:
-        repository = RunControlRepository(session)
+        repository = RunControlRepository(session, BenchmarkRepository(session), TaskRepository(session))
         locked_benchmark = repository.lock_benchmark(benchmark.id, org.id)
         assert locked_benchmark is not None
         repository.apply_stop(locked_benchmark, org.id, force=True, task_ids=None)
         session.flush()
 
     def observe_stopped(session: Session) -> None:
-        repository = RunControlRepository(session)
+        repository = RunControlRepository(session, BenchmarkRepository(session), TaskRepository(session))
         locked_benchmark = repository.lock_benchmark(benchmark.id, org.id)
         assert locked_benchmark is not None
         assert locked_benchmark.status == BenchmarkStatus.STOPPING
@@ -618,7 +673,11 @@ def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
         benchmark = fetch_benchmark_row(benchmark_id, benchmark_repository, org, for_update=True)
         if benchmark.status not in (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPING):
             raise ReleaseControlError(f"Cannot stop benchmark from {benchmark.status}")
-        RunControlRepository(session).apply_stop(
+        RunControlRepository(
+            session,
+            benchmark_repository,
+            TaskRepository(session),
+        ).apply_stop(
             benchmark,
             org.id,
             force=True,
@@ -638,6 +697,7 @@ def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
             pre_action_status=pre_action_status,
             dispatch_id=uuid4(),
             kind=ExecutorDispatchKind.RETRY,
+            executor_control_repository=ExecutorControlRepository(session),
         )
 
     stop_first = add_error_benchmark("stop-first")
@@ -690,7 +750,7 @@ def test_maintenance_commit_rejects_start_waiting_on_admission_lock(
         admit_start_dispatch(session, benchmark=benchmark, dispatch_id=uuid4())
 
     outcomes = _run_while_first_transaction_holds_locks(
-        lambda session: begin_maintenance(session, target_sha="a" * 40),
+        lambda session: ExecutorControlRepository(session).begin_maintenance("a" * 40),
         admit_start,
         postgres_engine,
     )

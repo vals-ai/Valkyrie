@@ -1,7 +1,7 @@
 """Operations that stop, resume, or retry a run and tear down its sandboxes."""
 
 import traceback
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 
 from benchmark_service import (
     Sandbox,
@@ -12,10 +12,10 @@ from benchmark_service import (
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from sqlmodel import Session
 
-from tracker.database.models import Benchmark, Org, RetryMode
-from tracker.database.repositories import BenchmarkRepository, RunControlRepository
-from tracker.executor.dispatch_control import terminalize_active_dispatches
-from tracker.exceptions import TrackerServiceError
+from tracker.database.models import Benchmark, BenchmarkStatus, Org, RetryMode
+from tracker.database.repositories import BenchmarkRepository, ExecutorControlRepository, RunControlRepository
+from tracker.database.transaction import TrackerTransaction
+from tracker.exceptions import ReleaseControlError, TrackerServiceError
 from tracker.logging import get_logger
 from tracker.sandbox import delete_sandbox
 from tracker.types import (
@@ -94,6 +94,7 @@ async def force_stop_sandboxes(
     *,
     repository: RunControlRepository,
     benchmark_repository: BenchmarkRepository,
+    executor_control_repository: ExecutorControlRepository,
 ) -> None:
     """
     Stops and deletes all sandboxes which are in progress or evaluating.
@@ -125,15 +126,18 @@ async def force_stop_sandboxes(
     )
 
     # Sandbox teardown releases the request's original benchmark lock. Reacquire
-    # it so Retry admission cannot land between the runnable check and revocation.
-    locked_benchmark = repository.lock_benchmark(benchmark_row.id, org.id)
-    if locked_benchmark is None:
-        # Preserve the legacy distinction between a missing run and a wrong-org run.
-        locked_benchmark = fetch_benchmark_row(benchmark_row.id, benchmark_repository, org, for_update=True)
-    if repository.count_nonterminal_tasks(locked_benchmark.id, org.id) == 0:
-        repository.mark_stopped(locked_benchmark)
-        terminalize_active_dispatches(session, locked_benchmark.id)
-    session.commit()
+    # it in a fresh transaction so Retry admission cannot land between the runnable
+    # check and revocation.
+    with Session(bind=session.bind) as post_session:
+        transaction = TrackerTransaction.from_session(post_session)
+        locked_benchmark = transaction.run_control.lock_benchmark(benchmark_row.id, org.id)
+        if locked_benchmark is None:
+            # Preserve the legacy distinction between a missing run and a wrong-org run.
+            locked_benchmark = fetch_benchmark_row(benchmark_row.id, transaction.benchmarks, org, for_update=True)
+        if transaction.run_control.count_nonterminal_tasks(locked_benchmark.id, org.id) == 0:
+            transaction.run_control.mark_stopped(locked_benchmark)
+            transaction.executor_control.terminalize_active_dispatches(locked_benchmark.id)
+        post_session.commit()
 
     if error_message:
         raise TrackerServiceError(f"Unexpected errors stopping sandboxes:\n{error_message}")
@@ -149,6 +153,10 @@ async def reset_to_in_progress_status(
     *,
     repository: RunControlRepository,
     benchmark_repository: BenchmarkRepository,
+    executor_control_repository: ExecutorControlRepository | None = None,
+    phase_status: list[BenchmarkStatus] | None = None,
+    phase_session_factory: Callable[[], Session] | None = None,
+    phase_session_commit: Callable[[Session], None] | None = None,
 ) -> list[str]:
     """
     Resets valid tasks to in progress and to allow for retrying or resuming the benchmark.
@@ -162,38 +170,92 @@ async def reset_to_in_progress_status(
 
     NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
     """
+    session = repository.session
     try:
-        # Serialize retries with final-score persistence for this benchmark and keep
-        # the row lock while the service verifies IDs and the caller admits dispatch.
+        # Phase one serializes selection with final-score persistence, then releases
+        # the lock before contacting the benchmark service.
+        if executor_control_repository is not None:
+            executor_control_repository.lock_executor_admission()
         locked_benchmark = repository.lock_benchmark(benchmark_row.id, org.id)
         if locked_benchmark is None:
             # Preserve the legacy distinction between a missing run and a wrong-org run.
             locked_benchmark = fetch_benchmark_row(benchmark_row.id, benchmark_repository, org, for_update=True)
 
+        if phase_status is not None:
+            phase_status[:] = [locked_benchmark.status]
+        if locked_benchmark.status == BenchmarkStatus.STOPPING:
+            session.rollback()
+            raise ReleaseControlError(
+                f"Run {benchmark_row.id} is in the {locked_benchmark.status} state. Cannot continue a run that is stopping."
+            )
         selection = repository.select_retryable(
             locked_benchmark,
             org.id,
             retry=retry,
             rerun_task_ids=rerun_task_ids,
         )
+        selected_task_ids = [task.task_id for task in selection.existing_tasks] + selection.new_task_ids
+        dataset = locked_benchmark.arguments.dataset
 
         # Allow re-running the end of the benchmark without running any tasks.
-        if not selection.existing_tasks and not selection.new_task_ids:
+        if not selected_task_ids:
+            session.rollback()
             return []
+        session.rollback()
 
-        # Verify the task ids are still valid before priming to resume.
+        # Verify task IDs outside the database transaction.
         verify_response = await benchmark_service.verify_task_ids(
-            task_ids=[task.task_id for task in selection.existing_tasks] + selection.new_task_ids,
+            task_ids=selected_task_ids,
             slice_str=None,
-            dataset=locked_benchmark.arguments.dataset,
+            dataset=dataset,
         )
-        repository.apply_retry(
-            selection,
-            org.id,
-            retry_mode=retry_mode,
-        )
-        return verify_response.task_ids
-    except (TrackerServiceError, BenchmarkServiceError):
+
+        # Phase two reacquires the locks and reselects the rows. If another writer
+        # changed the selection while verification ran, refuse to apply stale results.
+        phase_session = phase_session_factory() if phase_session_factory is not None else session
+        try:
+            transaction = TrackerTransaction.from_session(phase_session)
+            if executor_control_repository is not None:
+                transaction.executor_control.lock_executor_admission()
+            locked_benchmark = transaction.run_control.lock_benchmark(benchmark_row.id, org.id)
+            if locked_benchmark is None:
+                locked_benchmark = fetch_benchmark_row(benchmark_row.id, transaction.benchmarks, org, for_update=True)
+            benchmark_row.status = locked_benchmark.status
+            if phase_status is not None:
+                phase_status[:] = [locked_benchmark.status]
+            if locked_benchmark.status == BenchmarkStatus.STOPPING:
+                phase_session.rollback()
+                raise ReleaseControlError(
+                    f"Run {benchmark_row.id} is in the {locked_benchmark.status} state. Cannot continue a run that is stopping."
+                )
+            current_selection = transaction.run_control.select_retryable(
+                locked_benchmark,
+                org.id,
+                retry=retry,
+                rerun_task_ids=rerun_task_ids,
+            )
+            current_task_ids = [
+                task.task_id for task in current_selection.existing_tasks
+            ] + current_selection.new_task_ids
+            if current_task_ids != selected_task_ids:
+                phase_session.rollback()
+                raise TrackerServiceError("Run changed while task IDs were being verified; please retry")
+            transaction.run_control.apply_retry(
+                current_selection,
+                org.id,
+                retry_mode=retry_mode,
+            )
+            if phase_session_commit is not None:
+                phase_session_commit(phase_session)
+            return verify_response.task_ids
+        except Exception:
+            phase_session.rollback()
+            raise
+        finally:
+            if phase_session is not session:
+                phase_session.close()
+    except (TrackerServiceError, BenchmarkServiceError, ReleaseControlError):
         raise
     except Exception as e:
+        session.rollback()
         raise TrackerServiceError(f"Unexpected error resuming run {benchmark_row.id}: {str(e)}") from e

@@ -15,7 +15,13 @@ from sqlmodel import Session, col, select
 import tracker.utils as tracker_utils
 from tests.utils import TEST_ORG_ID, random_task_id
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
-from tracker.database.repositories import BenchmarkRepository, ReportingRepository, RunControlRepository
+from tracker.database.repositories import (
+    BenchmarkRepository,
+    ExecutorControlRepository,
+    ReportingRepository,
+    RunControlRepository,
+    TaskRepository,
+)
 from tracker.logging import get_logger
 from tracker.sandbox import create_sandbox
 from tracker.types import AWSCredentials, HarnessConfig
@@ -151,8 +157,13 @@ class TestForceStop:
                     live_aws_credentials,
                     Org(id=TEST_ORG_ID, name="default"),
                     sandbox_provider="daytona",
-                    repository=RunControlRepository(database_session),
+                    repository=RunControlRepository(
+                        database_session,
+                        BenchmarkRepository(database_session),
+                        TaskRepository(database_session),
+                    ),
                     benchmark_repository=BenchmarkRepository(database_session),
+                    executor_control_repository=ExecutorControlRepository(database_session),
                 )
             finally:
                 release_sandbox.set()
@@ -267,8 +278,13 @@ class TestForceStop:
                 live_aws_credentials,
                 Org(id=TEST_ORG_ID, name="default"),
                 sandbox_provider="daytona",
-                repository=RunControlRepository(database_session),
+                repository=RunControlRepository(
+                    database_session,
+                    BenchmarkRepository(database_session),
+                    TaskRepository(database_session),
+                ),
                 benchmark_repository=BenchmarkRepository(database_session),
+                executor_control_repository=ExecutorControlRepository(database_session),
             )
         finally:
             release_sandboxes.set()
@@ -385,8 +401,13 @@ class TestForceStop:
                         live_aws_credentials,
                         Org(id=TEST_ORG_ID, name="default"),
                         sandbox_provider="daytona",
-                        repository=RunControlRepository(database_session),
+                        repository=RunControlRepository(
+                            database_session,
+                            BenchmarkRepository(database_session),
+                            TaskRepository(database_session),
+                        ),
                         benchmark_repository=BenchmarkRepository(database_session),
+                        executor_control_repository=ExecutorControlRepository(database_session),
                     )
                     await _wait_until_no_sandboxes(example_benchmark_object, provider)
             finally:

@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
+from tracker.database.repositories import ExecutorControlRepository
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -17,17 +18,13 @@ from tracker.database.models import (
     ExecutorRelease,
     ExecutorReleaseStatus,
 )
+from tracker.exceptions import ReleaseControlError
 from tracker.executor.release_control import (
-    ReleaseControlError,
-    activate_release,
-    active_executor_release_work,
-    artifact_deletion_allowed,
+    complete_release_activation,
     create_executor_dispatch,
-    promote_release,
-    register_release,
-    retire_drained_releases,
-    select_active_release,
-    verify_release_artifact,
+    prepare_release_activation,
+    validate_release_manifest,
+    verify_release_artifact as _verify_release_artifact,
 )
 
 
@@ -54,6 +51,60 @@ def _dispatch(
         kind,
         dispatch_id=dispatch_id,
     )
+
+
+def _repository(session: Session) -> ExecutorControlRepository:
+    return ExecutorControlRepository(session)
+
+
+def register_release(session: Session, release: ExecutorRelease) -> ExecutorRelease:
+    validate_release_manifest(release)
+    return _repository(session).register_release(release)
+
+
+def activate_release(session: Session, release: ExecutorRelease, **kwargs: object) -> ExecutorRelease:
+    repository = _repository(session)
+    prepared = prepare_release_activation(
+        repository,
+        release,
+        expected_bucket=str(kwargs["expected_bucket"]),
+        expected_prefix=str(kwargs["expected_prefix"]),
+    )
+    session.commit()
+    metadata = _verify_release_artifact(prepared, s3_client=kwargs.get("s3_client"))  # type: ignore[arg-type]
+    activated = complete_release_activation(repository, release, metadata)
+    session.commit()
+    return activated
+
+
+def active_executor_release_work(session: Session):
+    return _repository(session).active_executor_release_work()
+
+
+def artifact_deletion_allowed(session: Session, release_id: str, *, now: datetime | None = None) -> bool:
+    return _repository(session).artifact_deletion_allowed(release_id, now=now)
+
+
+def promote_release(session: Session, release_id: str) -> ExecutorRelease:
+    return _repository(session).promote_release(release_id)
+
+
+def retire_drained_releases(session: Session) -> list[str]:
+    return _repository(session).retire_drained_releases()
+
+
+def select_active_release(session: Session) -> ExecutorRelease:
+    return _repository(session).select_active_release()
+
+
+def verify_release_artifact(session: Session, release_id: str, **kwargs: object) -> ExecutorRelease:
+    repository = _repository(session)
+    release = repository.get_release(release_id)
+    session.commit()
+    metadata = _verify_release_artifact(release, s3_client=kwargs.get("s3_client"))  # type: ignore[arg-type]
+    verified = repository.mark_release_verified(release_id, metadata)
+    session.flush()
+    return verified
 
 
 class FakeS3Client:
@@ -125,6 +176,18 @@ def test_activate_release_is_idempotent_for_exact_active_release(database_sessio
     assert second.activated_at is not None
     assert activated_at is not None
     assert second.activated_at.replace(tzinfo=None) == activated_at.replace(tzinfo=None)
+
+
+def test_complete_release_activation_requires_prepared_release(database_session: Session) -> None:
+    candidate = ExecutorRelease(
+        id="missing-prepared-release",
+        artifact_uri="not-an-s3-uri",
+        artifact_digest="not-a-digest",
+        protocol_version="unsupported",
+    )
+
+    with pytest.raises(ReleaseControlError, match="Prepared executor release"):
+        complete_release_activation(_repository(database_session), candidate, {"artifact_bytes": 1})
 
 
 def test_activate_release_rejects_draining_release(database_session: Session) -> None:
@@ -241,7 +304,10 @@ def test_activate_release_digest_failure_rolls_back_new_candidate(database_sessi
         )
     database_session.rollback()
 
-    assert database_session.get(ExecutorRelease, release.id) is None
+    stored = database_session.get(ExecutorRelease, release.id)
+    assert stored is not None
+    assert stored.status == ExecutorReleaseStatus.CANDIDATE
+    assert not stored.readiness_verified
 
 
 def test_activate_release_rejects_artifact_outside_configured_location(database_session: Session) -> None:

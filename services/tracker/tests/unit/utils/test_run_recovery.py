@@ -29,7 +29,13 @@ from tests.factories import make_benchmark, make_error_result, make_evaluation_r
 from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity
-from tracker.database.repositories import BenchmarkRepository, RunControlRepository
+from tracker.database.repositories import (
+    BenchmarkRepository,
+    ExecutorControlRepository,
+    RunControlRepository,
+    TaskExecutionRepository,
+    TaskRepository,
+)
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -46,8 +52,9 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
-from tracker.executor.release_control import ReleaseControlError, promote_release
+from tracker.exceptions import ReleaseControlError
+from tracker.executor.execution_authority import ExecutionAuthority
+
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     ResizableLimiter,
@@ -68,6 +75,10 @@ UTC = ZoneInfo("UTC")
 _ORIGINAL_ATTEMPT_AT = datetime(2026, 7, 8)
 _RESUMED_ATTEMPT_AT = datetime(2026, 7, 9)
 client = TestClient(app)
+
+
+def promote_release(session: Session, release_id: str) -> ExecutorRelease:
+    return ExecutorControlRepository(session).promote_release(release_id)
 
 
 @pytest.fixture
@@ -132,6 +143,82 @@ class TestRunRecovery:
 
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
+
+    async def test_reset_rejects_stopping_after_verification(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        example_benchmark_object.status = BenchmarkStatus.STOPPING
+        task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="stopping-task",
+            benchmark=example_benchmark_object.id,
+            status=TaskStatus.STOPPED,
+        )
+        database_session.add_all([example_benchmark_object, task])
+        database_session.commit()
+
+        async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=[task.task_id])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
+        benchmark_service = example_benchmark_object.benchmark_service()
+        try:
+            with pytest.raises(ReleaseControlError, match="Cannot continue a run that is stopping"):
+                await reset_to_in_progress_status(
+                    benchmark_row=example_benchmark_object,
+                    benchmark_service=benchmark_service,
+                    retry=False,
+                    retry_mode=RetryMode.AUTO,
+                    rerun_task_ids=[task.task_id],
+                    org=self._test_org,
+                    repository=RunControlRepository(
+                        database_session,
+                        BenchmarkRepository(database_session),
+                        TaskRepository(database_session),
+                    ),
+                    benchmark_repository=BenchmarkRepository(database_session),
+                    executor_control_repository=ExecutorControlRepository(database_session),
+                )
+        finally:
+            await benchmark_service.close()
+
+    async def test_reset_rejects_stopping_before_empty_selection(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        example_benchmark_object.status = BenchmarkStatus.STOPPING
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        async def reject_verification(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            raise AssertionError("STOPPING runs must be rejected before task verification")
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", reject_verification)
+        benchmark_service = example_benchmark_object.benchmark_service()
+        try:
+            with pytest.raises(ReleaseControlError, match="Cannot continue a run that is stopping"):
+                await reset_to_in_progress_status(
+                    benchmark_row=example_benchmark_object,
+                    benchmark_service=benchmark_service,
+                    retry=False,
+                    retry_mode=RetryMode.AUTO,
+                    rerun_task_ids=[],
+                    org=self._test_org,
+                    repository=RunControlRepository(
+                        database_session,
+                        BenchmarkRepository(database_session),
+                        TaskRepository(database_session),
+                    ),
+                    benchmark_repository=BenchmarkRepository(database_session),
+                    executor_control_repository=ExecutorControlRepository(database_session),
+                )
+        finally:
+            await benchmark_service.close()
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_benchmark_uses_persisted_and_refreshed_concurrency(
@@ -454,6 +541,7 @@ class TestRunRecovery:
         database_session.add_all([selected_task, benchmark_row])
         database_session.commit()
         with Session(bind=database_session.get_bind()) as stale_session:
+            task_execution_repository = TaskExecutionRepository(stale_session)
             stale_task = stale_session.get(Task, selected_task.id)
             assert stale_task is not None
             benchmark_row.status = BenchmarkStatus.STOPPED
@@ -463,7 +551,12 @@ class TestRunRecovery:
                 f"/retry-or-resume-benchmark/{benchmark_row.id}",
                 json={"task_ids": [selected_task.task_id]},
             )
-            handle_early_exit(stale_task, stale_session, authority)
+            handle_early_exit(
+                stale_task,
+                stale_session,
+                task_execution_repository=task_execution_repository,
+                authority=authority,
+            )
 
         assert late_resume_response.status_code == 200, late_resume_response.text
 
@@ -547,7 +640,11 @@ class TestRunRecovery:
             database_session,
             force=False,
             org=self._test_org,
-            repository=RunControlRepository(database_session),
+            repository=RunControlRepository(
+                database_session,
+                BenchmarkRepository(database_session),
+                TaskRepository(database_session),
+            ),
         )
 
         # Verify: 2 tasks are finished, 3 tasks are stopped
@@ -576,7 +673,11 @@ class TestRunRecovery:
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=[],
             org=self._test_org,
-            repository=RunControlRepository(database_session),
+            repository=RunControlRepository(
+                database_session,
+                BenchmarkRepository(database_session),
+                TaskRepository(database_session),
+            ),
             benchmark_repository=BenchmarkRepository(database_session),
         )
         database_session.commit()
@@ -646,7 +747,11 @@ class TestRunRecovery:
             retry_mode=retry_mode,
             rerun_task_ids=[],
             org=self._test_org,
-            repository=RunControlRepository(database_session),
+            repository=RunControlRepository(
+                database_session,
+                BenchmarkRepository(database_session),
+                TaskRepository(database_session),
+            ),
             benchmark_repository=BenchmarkRepository(database_session),
         )
         database_session.commit()
@@ -708,7 +813,11 @@ class TestRunRecovery:
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=["task_error", "task_result"],
             org=self._test_org,
-            repository=RunControlRepository(database_session),
+            repository=RunControlRepository(
+                database_session,
+                BenchmarkRepository(database_session),
+                TaskRepository(database_session),
+            ),
             benchmark_repository=BenchmarkRepository(database_session),
         )
 
@@ -758,7 +867,11 @@ class TestRunRecovery:
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=["task_1", "task_2"],
             org=self._test_org,
-            repository=RunControlRepository(database_session),
+            repository=RunControlRepository(
+                database_session,
+                BenchmarkRepository(database_session),
+                TaskRepository(database_session),
+            ),
             benchmark_repository=BenchmarkRepository(database_session),
         )
 
@@ -804,7 +917,11 @@ class TestRunRecovery:
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=["task_requested"],
             org=self._test_org,
-            repository=RunControlRepository(database_session),
+            repository=RunControlRepository(
+                database_session,
+                BenchmarkRepository(database_session),
+                TaskRepository(database_session),
+            ),
             benchmark_repository=BenchmarkRepository(database_session),
         )
 
@@ -887,7 +1004,11 @@ class TestRunRecovery:
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=[new_task_id],
             org=self._test_org,
-            repository=RunControlRepository(database_session),
+            repository=RunControlRepository(
+                database_session,
+                BenchmarkRepository(database_session),
+                TaskRepository(database_session),
+            ),
             benchmark_repository=BenchmarkRepository(database_session),
         )
         database_session.commit()
@@ -1598,7 +1719,8 @@ class TestRunRecovery:
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_error_task)
         monkeypatch.setattr(
-            "tracker.executor.dispatch_control.resolve_current_execution_release",
+            ExecutorControlRepository,
+            "resolve_current_execution_release",
             _fail_release_resolution,
         )
 
@@ -2146,7 +2268,11 @@ class TestRunRecovery:
             database_session,
             force=False,
             org=self._test_org,
-            repository=RunControlRepository(database_session),
+            repository=RunControlRepository(
+                database_session,
+                BenchmarkRepository(database_session),
+                TaskRepository(database_session),
+            ),
         )
 
         database_session.refresh(benchmark_row)
@@ -2158,7 +2284,7 @@ class TestRunRecovery:
         assert running_task.status == TaskStatus.IN_PROGRESS
         assert dispatch is not None
         assert dispatch.status == ExecutorDispatchStatus.RUNNING
-        assert lock_execution_authority(database_session, authority).id == benchmark_row.id
+        assert TaskExecutionRepository(database_session).lock_execution_authority(authority).id == benchmark_row.id
         database_session.rollback()
 
     async def test_force_stop_edge_case(
@@ -2194,7 +2320,11 @@ class TestRunRecovery:
             database_session,
             force=True,
             org=self._test_org,
-            repository=RunControlRepository(database_session),
+            repository=RunControlRepository(
+                database_session,
+                BenchmarkRepository(database_session),
+                TaskRepository(database_session),
+            ),
         )
         assert benchmark_row.status == BenchmarkStatus.STOPPING
 
@@ -2228,8 +2358,13 @@ class TestRunRecovery:
             harness_config.aws,
             self._test_org,
             sandbox_provider="daytona",
-            repository=RunControlRepository(database_session),
+            repository=RunControlRepository(
+                database_session,
+                BenchmarkRepository(database_session),
+                TaskRepository(database_session),
+            ),
             benchmark_repository=BenchmarkRepository(database_session),
+            executor_control_repository=ExecutorControlRepository(database_session),
         )
 
         database_session.refresh(benchmark_row)

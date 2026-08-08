@@ -20,8 +20,12 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.executor.maintenance_control import MaintenanceOwnershipError, begin_maintenance, finish_maintenance
-from tracker.executor.release_control import MaintenanceModeError, select_active_release
+from tracker.database.repositories import ExecutorControlRepository
+from tracker.exceptions import MaintenanceModeError, MaintenanceOwnershipError
+
+
+def select_active_release(session: Session, *, for_update: bool = False) -> ExecutorRelease:
+    return ExecutorControlRepository(session).select_active_release(for_update=for_update)
 
 
 def _release(release_id: str = "maintenance-release") -> ExecutorRelease:
@@ -87,7 +91,7 @@ def test_begin_maintenance_globally_stops_work_and_closes_admission(database_ses
         )
     database_session.commit()
 
-    summary = begin_maintenance(database_session, target_sha="a" * 40)
+    summary = ExecutorControlRepository(database_session).begin_maintenance("a" * 40)
     database_session.commit()
 
     assert summary.benchmarks == 2
@@ -104,14 +108,14 @@ def test_begin_maintenance_globally_stops_work_and_closes_admission(database_ses
 
 
 def test_finish_maintenance_requires_current_target(database_session: Session) -> None:
-    begin_maintenance(database_session, target_sha="a" * 40)
+    ExecutorControlRepository(database_session).begin_maintenance("a" * 40)
     database_session.commit()
 
     with pytest.raises(MaintenanceOwnershipError, match="does not own"):
-        finish_maintenance(database_session, target_sha="b" * 40)
+        ExecutorControlRepository(database_session).finish_maintenance("b" * 40)
     database_session.rollback()
 
-    finish_maintenance(database_session, target_sha="a" * 40)
+    ExecutorControlRepository(database_session).finish_maintenance("a" * 40)
     database_session.commit()
 
     admission = database_session.get(ExecutorAdmission, 1)
@@ -120,19 +124,19 @@ def test_finish_maintenance_requires_current_target(database_session: Session) -
 
 
 def test_begin_maintenance_is_idempotent_for_same_target(database_session: Session) -> None:
-    first = begin_maintenance(database_session, target_sha="a" * 40)
+    first = ExecutorControlRepository(database_session).begin_maintenance("a" * 40)
     database_session.commit()
-    second = begin_maintenance(database_session, target_sha="a" * 40)
+    second = ExecutorControlRepository(database_session).begin_maintenance("a" * 40)
 
     assert first == second
 
 
 def test_begin_maintenance_rejects_a_different_target(database_session: Session) -> None:
-    begin_maintenance(database_session, target_sha="a" * 40)
+    ExecutorControlRepository(database_session).begin_maintenance("a" * 40)
     database_session.commit()
 
     with pytest.raises(MaintenanceOwnershipError, match="another deployment"):
-        begin_maintenance(database_session, target_sha="b" * 40)
+        ExecutorControlRepository(database_session).begin_maintenance("b" * 40)
     database_session.rollback()
 
     admission = database_session.get(ExecutorAdmission, 1)

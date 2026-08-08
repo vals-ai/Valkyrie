@@ -35,10 +35,20 @@ class RetrySelection:
 class RunControlRepository:
     """Persist run-control state transitions without owning the transaction."""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        session: Session,
+        benchmark_repository: BenchmarkRepository,
+        task_repository: TaskRepository,
+    ) -> None:
         self._session = session
-        self._benchmarks = BenchmarkRepository(session)
-        self._tasks = TaskRepository(session)
+        self._benchmarks = benchmark_repository
+        self._tasks = task_repository
+
+    @property
+    def session(self) -> Session:
+        """Return the caller-owned session used by this repository."""
+        return self._session
 
     def lock_benchmark(self, benchmark_id: UUID, org_id: UUID) -> Benchmark | None:
         """Return an organization-owned benchmark while acquiring its row lock."""

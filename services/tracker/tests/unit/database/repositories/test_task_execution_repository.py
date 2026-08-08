@@ -38,6 +38,16 @@ def _task_with_authority(
     return task, authority
 
 
+def test_lock_execution_authority_returns_locked_benchmark(
+    database_session: Session, executor_authority: Callable[..., ExecutionAuthority]
+) -> None:
+    task, authority = _task_with_authority(database_session, executor_authority)
+    repository = TaskExecutionRepository(database_session)
+
+    assert repository.lock_execution_authority(authority).id == task.benchmark
+    database_session.rollback()
+
+
 def test_revoked_authority_rolls_back_error_row(
     database_session: Session, executor_authority: Callable[..., ExecutionAuthority]
 ) -> None:

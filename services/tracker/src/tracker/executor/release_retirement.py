@@ -8,7 +8,7 @@ from threading import Event, Thread
 from sqlmodel import Session
 
 from tracker.database.session import engine
-from tracker.executor.release_control import retire_drained_releases
+from tracker.database.transaction import TrackerTransaction
 
 _RECONCILIATION_INTERVAL_SECONDS = 60.0
 _SHUTDOWN_TIMEOUT_SECONDS = 5.0
@@ -17,12 +17,12 @@ _logger = logging.getLogger(__name__)
 
 def retire_drained_releases_once() -> list[str]:
     """Run one atomic retirement pass in a fresh database session."""
-    with Session(engine) as session:
+    with TrackerTransaction.open(lambda: Session(engine)) as transaction:
         try:
-            retired_ids = retire_drained_releases(session)
-            session.commit()
+            retired_ids = transaction.executor_control.retire_drained_releases()
+            transaction.commit()
         except Exception:
-            session.rollback()
+            transaction.rollback()
             raise
     return retired_ids
 

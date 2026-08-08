@@ -10,6 +10,9 @@ from sqlmodel import Session, col, desc, func, select
 
 from tracker.database.models import (
     Benchmark,
+    BenchmarkArguments,
+    BenchmarkStatus,
+    DocentReadingStatus,
     ErrorResult,
     FinalEvaluation,
     Task,
@@ -55,6 +58,72 @@ class BenchmarkRepository:
         if for_update:
             statement = statement.with_for_update().execution_options(populate_existing=True)
         return self._session.exec(statement).one_or_none()
+
+    def stage_docent_running(self, benchmark_id: UUID) -> Benchmark:
+        """Stage the running status for a manually invoked Docent analyzer."""
+        benchmark = self.get_by_id(benchmark_id)
+        if benchmark is None:
+            raise ValueError(f"benchmark {benchmark_id} not found")
+        benchmark.docent_reading_status = DocentReadingStatus.RUNNING
+        self._session.add(benchmark)
+        return benchmark
+
+    def stage_docent_done(self, benchmark: Benchmark, reading_plan_url: str | None) -> None:
+        """Stage successful Docent completion and its optional reading-plan URL."""
+        if reading_plan_url:
+            benchmark.docent_reading_url = reading_plan_url
+        benchmark.docent_reading_status = DocentReadingStatus.DONE
+        self._session.add(benchmark)
+
+    def stage_docent_done_by_id(self, benchmark_id: UUID, reading_plan_url: str | None) -> None:
+        """Stage successful Docent completion in a fresh transaction phase."""
+        benchmark = self.get_by_id(benchmark_id)
+        if benchmark is None:
+            raise ValueError(f"benchmark {benchmark_id} not found")
+        self.stage_docent_done(benchmark, reading_plan_url)
+
+    def stage_docent_error(self, benchmark: Benchmark) -> None:
+        """Stage a failed Docent invocation."""
+        benchmark.docent_reading_status = DocentReadingStatus.ERROR
+        self._session.add(benchmark)
+
+    def stage_docent_error_by_id(self, benchmark_id: UUID) -> None:
+        """Stage failed Docent completion in a fresh transaction phase."""
+        benchmark = self.get_by_id(benchmark_id)
+        if benchmark is None:
+            raise ValueError(f"benchmark {benchmark_id} not found")
+        self.stage_docent_error(benchmark)
+
+    def stage_concurrency(self, benchmark: Benchmark, concurrency: int) -> None:
+        """Stage an active benchmark concurrency update."""
+        benchmark.arguments = benchmark.arguments.model_copy(update={"concurrency": concurrency})
+        self._session.add(benchmark)
+
+    def stage_resume_arguments(
+        self,
+        benchmark: Benchmark,
+        arguments: BenchmarkArguments,
+        benchmark_url: str | None,
+    ) -> Benchmark:
+        """Stage resume/retry arguments and an optional benchmark-service URL."""
+        benchmark.arguments = arguments
+        if benchmark_url is not None:
+            benchmark.custom_benchmark_service = benchmark_url
+        self._session.add(benchmark)
+        return benchmark
+
+    def stage_final_status(self, benchmark: Benchmark, status: BenchmarkStatus) -> None:
+        """Stage terminal benchmark status while preserving the caller's commit boundary."""
+        benchmark.status = status
+        benchmark.error_message = None
+
+    def replace_final_evaluation(self, benchmark: Benchmark, evaluation: FinalEvaluation) -> None:
+        """Replace a benchmark's final evaluation in the caller-owned transaction."""
+        if benchmark.final_evaluation is not None:
+            self._session.delete(benchmark.final_evaluation)
+            self._session.flush()
+        benchmark.final_evaluation = evaluation
+        self._session.add(evaluation)
 
     def get_for_org_with_final_evaluation(self, benchmark_id: UUID, org_id: UUID) -> Benchmark | None:
         """Return an organization-owned benchmark with its scoped final evaluation eagerly loaded."""

@@ -12,6 +12,7 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     PostgresExecutorDispatchStore,
 )
 from tests.factories import make_benchmark, make_task
+from tracker.database.repositories import ExecutorControlRepository
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkStatus,
@@ -21,7 +22,16 @@ from tracker.database.models import (
     Org,
     TaskStatus,
 )
-from tracker.executor.release_control import create_executor_dispatch, pin_benchmark_to_release, register_release
+from tracker.executor.release_control import (
+    create_executor_dispatch,
+    pin_benchmark_to_release,
+    validate_release_manifest,
+)
+
+
+def register_release(session: Session, release: ExecutorRelease) -> ExecutorRelease:
+    validate_release_manifest(release)
+    return ExecutorControlRepository(session).register_release(release)
 
 
 @pytest.mark.asyncio

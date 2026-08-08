@@ -21,6 +21,8 @@ from tracker.aws.s3 import (
 )
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, TaskStatus
 from tracker.database.repositories import BenchmarkRepository, BenchmarkTaskCounts, ReportingRepository
+from tracker.database.session import engine
+from tracker.database.transaction import TrackerTransaction
 from tracker.logging import get_logger
 from tracker.types import (
     BenchmarkDetails,
@@ -86,9 +88,7 @@ class BenchmarkContext:
         )
 
 
-async def stream_benchmark_results(
-    benchmark_id: UUID, session: Session, harness_config: HarnessConfig, org: Org
-) -> AsyncGenerator[str]:
+async def stream_benchmark_results(benchmark_id: UUID, harness_config: HarnessConfig, org: Org) -> AsyncGenerator[str]:
     """
     Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
 
@@ -107,40 +107,46 @@ async def stream_benchmark_results(
 
     try:
         while True:
-            with Session(bind=session.bind) as fresh_session:
-                benchmark_repository = BenchmarkRepository(fresh_session)
-                fresh_benchmark = benchmark_repository.get_for_org(benchmark_id, org.id)
+            terminal = False
+            found = False
+            with Session(bind=engine) as fresh_session:
+                transaction = TrackerTransaction.from_session(fresh_session)
+                fresh_benchmark = transaction.benchmarks.get_for_org(benchmark_id, org.id)
                 if fresh_benchmark is None:
-                    yield f"{EVENT_ERROR} {json.dumps({'error': 'Run not found'})}\n\n"
-                    break
+                    event = f"{EVENT_ERROR} {json.dumps({'error': 'Run not found'})}\n\n"
+                    terminal = True
+                else:
+                    found = True
+                    benchmark_context = BenchmarkContext(fresh_benchmark, transaction.reporting, org)
+                    response_data = FetchBenchmarkResponse(
+                        benchmark_name=fresh_benchmark.name,
+                        benchmark_id=fresh_benchmark.id,
+                        details=benchmark_context.benchmark_details,
+                        s3_bucket_url=create_benchmark_url(
+                            str(fresh_benchmark.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
+                        ),
+                        label=fresh_benchmark.label,
+                        executor_release_id=fresh_benchmark.executor_release_id,
+                        current_execution_release_id=fresh_benchmark.current_execution_release_id,
+                        executor_artifact_digest=fresh_benchmark.executor_artifact_digest,
+                        executor_protocol_version=fresh_benchmark.executor_protocol_version,
+                        final_score=transaction.benchmarks.get_final_score(fresh_benchmark.id, org.id),
+                        error_message=fresh_benchmark.error_message
+                        if fresh_benchmark.status == BenchmarkStatus.ERROR
+                        else None,
+                    )
+                    event = f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
+                    terminal = fresh_benchmark.status in (
+                        BenchmarkStatus.FINISHED,
+                        BenchmarkStatus.ERROR,
+                        BenchmarkStatus.STOPPED,
+                    )
 
-                reporting_repository = ReportingRepository(fresh_session)
-                benchmark_context = BenchmarkContext(fresh_benchmark, reporting_repository, org)
-
-                response_data = FetchBenchmarkResponse(
-                    benchmark_name=fresh_benchmark.name,
-                    benchmark_id=fresh_benchmark.id,
-                    details=benchmark_context.benchmark_details,
-                    s3_bucket_url=create_benchmark_url(
-                        str(fresh_benchmark.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
-                    ),
-                    label=fresh_benchmark.label,
-                    executor_release_id=fresh_benchmark.executor_release_id,
-                    current_execution_release_id=fresh_benchmark.current_execution_release_id,
-                    executor_artifact_digest=fresh_benchmark.executor_artifact_digest,
-                    executor_protocol_version=fresh_benchmark.executor_protocol_version,
-                    final_score=benchmark_repository.get_final_score(fresh_benchmark.id, org.id),
-                    error_message=fresh_benchmark.error_message
-                    if fresh_benchmark.status == BenchmarkStatus.ERROR
-                    else None,
-                )
-
-                yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
-
-                if fresh_benchmark.status in [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]:
+            yield event
+            if terminal:
+                if found:
                     yield EVENT_COMPLETE
-                    break
-
+                break
             await asyncio.sleep(PULL_INTERVAL)
 
     except CancelledError:

@@ -21,7 +21,7 @@ from sqlmodel import Session, select
 import tracker.utils.run_control as run_control_module
 import tracker.utils.run_orchestration as run_orchestration_module
 from tests.factories import make_benchmark, make_task
-from tracker.database.repositories import BenchmarkRepository, ReportingRepository, RunControlRepository
+from tracker.database.repositories import BenchmarkRepository, ReportingRepository, RunControlRepository, TaskRepository
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -31,16 +31,17 @@ from tracker.database.models import (
     ExecutorDispatch,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
+    ExecutorRelease,
     FinalEvaluation,
     Org,
     RetryMode,
     Task,
     TaskStatus,
 )
+from tracker.database.repositories import ExecutorControlRepository
 from tracker.exceptions import ExecutionAuthorityRevoked
-from tracker.executor.dispatch_control import admit_recovery_dispatch, terminalize_active_dispatches
+from tracker.executor.dispatch_control import admit_recovery_dispatch as _admit_recovery_dispatch
 from tracker.executor.execution_authority import ExecutionAuthority
-from tracker.executor.release_control import promote_release
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import force_stop_sandboxes, process_benchmark, reset_to_in_progress_status
 from tracker.utils.reporting import create_final_view
@@ -48,6 +49,15 @@ from tracker.utils.resources import fetch_benchmark_row
 from tracker.utils.run_orchestration import upload_final_view_if_current
 from tracker.utils.task_error_summary import summarize_task_errors
 from tracker.utils.task_execution import TaskMonitor
+
+
+def promote_release(session: Session, release_id: str) -> ExecutorRelease:
+    return ExecutorControlRepository(session).promote_release(release_id)
+
+
+def admit_recovery_dispatch(session: Session, **kwargs: Any) -> ExecutorDispatch:
+    kwargs.setdefault("executor_control_repository", ExecutorControlRepository(session))
+    return _admit_recovery_dispatch(session, **kwargs)
 
 
 class TestRunFinalization:
@@ -290,7 +300,11 @@ class TestRunFinalization:
                         retry_mode=RetryMode.FROM_SCRATCH,
                         rerun_task_ids=[task.task_id],
                         org=org,
-                        repository=RunControlRepository(retry_session),
+                        repository=RunControlRepository(
+                            retry_session,
+                            BenchmarkRepository(retry_session),
+                            TaskRepository(retry_session),
+                        ),
                         benchmark_repository=BenchmarkRepository(retry_session),
                     )
                 finally:
@@ -302,6 +316,7 @@ class TestRunFinalization:
                     pre_action_status=pre_action_status,
                     dispatch_id=uuid4(),
                     kind=ExecutorDispatchKind.RETRY,
+                    executor_control_repository=ExecutorControlRepository(retry_session),
                 )
                 retry_session.commit()
                 retry_dispatch_ids.append(dispatch.id)
@@ -623,16 +638,21 @@ class TestRunFinalization:
                         pre_action_status=pre_action_status,
                         dispatch_id=uuid4(),
                         kind=ExecutorDispatchKind.RESUME,
+                        executor_control_repository=ExecutorControlRepository(retry_session),
                     )
                     retry_session.commit()
                     retry_dispatch_ids.append(dispatch.id)
             except BaseException as exc:
                 retry_errors.append(exc)
 
-        original_terminalize = terminalize_active_dispatches
+        original_terminalize = ExecutorControlRepository.terminalize_active_dispatches
         retry_thread: Thread | None = None
 
-        def terminalize_with_concurrent_retry(*args: Any, **kwargs: Any) -> None:
+        def terminalize_with_concurrent_retry(
+            repository: ExecutorControlRepository,
+            *args: Any,
+            **kwargs: Any,
+        ) -> None:
             nonlocal retry_thread
             retry_thread = Thread(target=admit_retry)
             retry_thread.start()
@@ -640,7 +660,7 @@ class TestRunFinalization:
             assert len(retry_backend_pids) == 1
             allow_retry_lock.set()
 
-            force_session = args[0]
+            force_session = postgres_session
             deadline = monotonic() + 2
             blocking_pids: list[int] = []
             while monotonic() < deadline:
@@ -653,9 +673,11 @@ class TestRunFinalization:
                     break
                 sleep(0.01)
             assert blocking_pids
-            original_terminalize(*args, **kwargs)
+            original_terminalize(repository, *args, **kwargs)
 
-        monkeypatch.setattr(run_control_module, "terminalize_active_dispatches", terminalize_with_concurrent_retry)
+        monkeypatch.setattr(
+            ExecutorControlRepository, "terminalize_active_dispatches", terminalize_with_concurrent_retry
+        )
 
         try:
             await force_stop_sandboxes(
@@ -664,8 +686,13 @@ class TestRunFinalization:
                 harness_config.sandbox_provider_secret_name,
                 harness_config.aws,
                 org,
-                repository=RunControlRepository(postgres_session),
+                repository=RunControlRepository(
+                    postgres_session,
+                    BenchmarkRepository(postgres_session),
+                    TaskRepository(postgres_session),
+                ),
                 benchmark_repository=BenchmarkRepository(postgres_session),
+                executor_control_repository=ExecutorControlRepository(postgres_session),
             )
         finally:
             allow_retry_lock.set()

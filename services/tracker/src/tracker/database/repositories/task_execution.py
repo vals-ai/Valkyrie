@@ -8,14 +8,18 @@ from sqlalchemy.sql.dml import Update
 from sqlmodel import Session, col, select, update
 
 from tracker.database.models import (
+    Benchmark,
+    BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
+    ExecutorDispatch,
+    ExecutorDispatchStatus,
     Task,
     TaskBreakdown,
     TaskStatus,
 )
 from tracker.exceptions import ExecutionAuthorityRevoked
-from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
+from tracker.execution_authority import ExecutionAuthority
 
 
 class TaskExecutionRepository:
@@ -23,6 +27,34 @@ class TaskExecutionRepository:
 
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def lock_execution_authority(
+        self,
+        authority: ExecutionAuthority,
+        *,
+        require_in_progress: bool = True,
+    ) -> Benchmark:
+        """Lock the benchmark and prove that the exact dispatch remains authoritative."""
+        benchmark = self._session.exec(
+            select(Benchmark).where(col(Benchmark.id) == authority.benchmark_id).with_for_update()
+        ).one_or_none()
+        if (
+            benchmark is None
+            or benchmark.status == BenchmarkStatus.STOPPED
+            or (require_in_progress and benchmark.status not in (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING))
+        ):
+            raise ExecutionAuthorityRevoked("Executor benchmark authority was revoked")
+
+        dispatch_id = self._session.exec(
+            select(ExecutorDispatch.id)
+            .where(col(ExecutorDispatch.id) == authority.dispatch_id)
+            .where(col(ExecutorDispatch.benchmark_id) == authority.benchmark_id)
+            .where(col(ExecutorDispatch.status) == ExecutorDispatchStatus.RUNNING)
+            .with_for_update()
+        ).one_or_none()
+        if dispatch_id is None:
+            raise ExecutionAuthorityRevoked("Executor dispatch authority was revoked")
+        return benchmark
 
     def get_for_execution(self, task_id: UUID, org_id: UUID) -> Task | None:
         """Return a task only when it belongs to the requested organization."""
@@ -46,7 +78,7 @@ class TaskExecutionRepository:
     ) -> bool:
         """Check authority and attempt identity without committing the read transaction."""
         try:
-            lock_execution_authority(self._session, authority)
+            self.lock_execution_authority(authority)
             task = self.get_for_execution(task_id, org_id)
             is_current = (
                 task is not None
@@ -72,7 +104,7 @@ class TaskExecutionRepository:
     ) -> bool:
         """Save resumable evaluator state if the task attempt is still writable."""
         try:
-            lock_execution_authority(self._session, authority)
+            self.lock_execution_authority(authority)
         except ExecutionAuthorityRevoked:
             self._session.rollback()
             return False
@@ -106,7 +138,7 @@ class TaskExecutionRepository:
     ) -> bool:
         """Transition a task status with authority and attempt compare-and-set guards."""
         try:
-            lock_execution_authority(self._session, authority)
+            self.lock_execution_authority(authority)
         except ExecutionAuthorityRevoked:
             self._session.rollback()
             return False
@@ -146,7 +178,7 @@ class TaskExecutionRepository:
     ) -> bool:
         """Atomically record an error and transition its task to ``ERROR``."""
         try:
-            lock_execution_authority(self._session, authority)
+            self.lock_execution_authority(authority)
         except ExecutionAuthorityRevoked:
             self._session.rollback()
             return False
@@ -181,7 +213,7 @@ class TaskExecutionRepository:
     ) -> bool:
         """Atomically attach a breakdown and transition the task."""
         try:
-            lock_execution_authority(self._session, authority)
+            self.lock_execution_authority(authority)
         except ExecutionAuthorityRevoked:
             self._session.rollback()
             return False
@@ -217,7 +249,7 @@ class TaskExecutionRepository:
     ) -> bool:
         """Atomically record an evaluation, update durations, and finish the task."""
         try:
-            lock_execution_authority(self._session, authority)
+            self.lock_execution_authority(authority)
         except ExecutionAuthorityRevoked:
             self._session.rollback()
             return False

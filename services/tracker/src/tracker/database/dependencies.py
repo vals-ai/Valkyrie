@@ -7,12 +7,24 @@ from sqlmodel import Session
 
 from tracker.database.repositories import (
     BenchmarkRepository,
+    ExecutorControlRepository,
     OrgRepository,
     ReportingRepository,
     RunControlRepository,
     TaskRepository,
 )
 from tracker.database.session import get_session
+from tracker.database.transaction import TrackerTransaction
+
+
+def get_tracker_transaction(session: Session = Depends(get_session)) -> TrackerTransaction:
+    """Provide a multi-repository composition bound to the request session."""
+    return TrackerTransaction.from_session(session)
+
+
+def get_executor_control_repository(session: Session = Depends(get_session)) -> ExecutorControlRepository:
+    """Provide an executor-control repository bound to the request session."""
+    return ExecutorControlRepository(session)
 
 
 def get_org_repository(session: Session = Depends(get_session)) -> OrgRepository:
@@ -35,13 +47,19 @@ def get_reporting_repository(session: Session = Depends(get_session)) -> Reporti
     return ReportingRepository(session)
 
 
-def get_run_control_repository(session: Session = Depends(get_session)) -> RunControlRepository:
+def get_run_control_repository(
+    session: Session = Depends(get_session),
+    benchmark_repository: BenchmarkRepository = Depends(get_benchmark_repository),
+    task_repository: TaskRepository = Depends(get_task_repository),
+) -> RunControlRepository:
     """Provide a run-control repository bound to the request session."""
-    return RunControlRepository(session)
+    return RunControlRepository(session, benchmark_repository, task_repository)
 
 
+ExecutorControlRepositoryDep = Annotated[ExecutorControlRepository, Depends(get_executor_control_repository)]
 OrgRepositoryDep = Annotated[OrgRepository, Depends(get_org_repository)]
 BenchmarkRepositoryDep = Annotated[BenchmarkRepository, Depends(get_benchmark_repository)]
 TaskRepositoryDep = Annotated[TaskRepository, Depends(get_task_repository)]
 ReportingRepositoryDep = Annotated[ReportingRepository, Depends(get_reporting_repository)]
 RunControlRepositoryDep = Annotated[RunControlRepository, Depends(get_run_control_repository)]
+TrackerTransactionDep = Annotated[TrackerTransaction, Depends(get_tracker_transaction)]

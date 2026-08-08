@@ -131,8 +131,7 @@ def update_benchmark_concurrency(
             concurrency=benchmark_row.arguments.concurrency,
         )
 
-    benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": concurrency})
-    session.add(benchmark_row)
+    benchmark_repository.stage_concurrency(benchmark_row, concurrency)
     return BenchmarkConcurrencyUpdate(
         benchmark_id=benchmark_row.id,
         status=benchmark_row.status,
@@ -160,11 +159,7 @@ def update_benchmark_resume_arguments(
         arguments = arguments.model_copy(update={"contract": updated_contract})
     if concurrency is not None:
         arguments = arguments.model_copy(update={"concurrency": concurrency})
-    if benchmark_url is not None:
-        benchmark_row.custom_benchmark_service = benchmark_url
-
-    benchmark_row.arguments = arguments
-    session.add(benchmark_row)
+    benchmark_repository.stage_resume_arguments(benchmark_row, arguments, benchmark_url)
     return benchmark_row
 
 

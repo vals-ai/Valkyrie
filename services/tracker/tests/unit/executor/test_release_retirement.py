@@ -10,15 +10,15 @@ from sqlmodel import Session
 import main as main_module
 from tracker.executor import release_retirement
 from tracker.database.models import ExecutorRelease, ExecutorReleaseStatus
-from tracker.executor.release_control import promote_release, register_release
+from tracker.database.repositories import ExecutorControlRepository
 
 
 def test_retirement_loop_retires_a_blocker_free_release(
     database_session: Session,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    old_release = register_release(
-        database_session,
+    repository = ExecutorControlRepository(database_session)
+    old_release = repository.register_release(
         ExecutorRelease(
             id="old",
             artifact_uri="s3://artifacts/old.pex",
@@ -27,8 +27,7 @@ def test_retirement_loop_retires_a_blocker_free_release(
             readiness_verified=True,
         ),
     )
-    register_release(
-        database_session,
+    repository.register_release(
         ExecutorRelease(
             id="active",
             artifact_uri="s3://artifacts/active.pex",
@@ -37,8 +36,8 @@ def test_retirement_loop_retires_a_blocker_free_release(
             readiness_verified=True,
         ),
     )
-    promote_release(database_session, old_release.id)
-    promote_release(database_session, "active")
+    repository.promote_release(old_release.id)
+    repository.promote_release("active")
     database_session.commit()
     stop_event = Event()
     reconcile_once = release_retirement.retire_drained_releases_once

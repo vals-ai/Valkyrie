@@ -13,6 +13,18 @@ class ExecutionAuthorityRevoked(TrackerServiceError):
     """The executor dispatch no longer owns benchmark execution."""
 
 
+class ReleaseControlError(ValueError):
+    """Raised when an executor release lifecycle transition violates ownership rules."""
+
+
+class MaintenanceModeError(ReleaseControlError):
+    """Raised when executor admission is closed for deployment maintenance."""
+
+
+class MaintenanceOwnershipError(ReleaseControlError):
+    """Raised when a deployment does not own the maintenance fence."""
+
+
 class BundlerError(Exception):
     """Exception raised for agent contract bundler errors."""
 

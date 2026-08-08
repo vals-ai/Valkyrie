@@ -1,36 +1,48 @@
 """Canonical durable dispatch-intent transaction contracts."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
 import pytest
 from sqlmodel import Session
 
+from tracker.database.repositories import EnqueueFailureResolution, ExecutorControlRepository, TaskExecutionRepository
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
+    ExecutorDispatch,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
     Task,
     TaskStatus,
 )
-from tracker.executor.dispatch_control import (
-    EnqueueFailureResolution,
-    admit_recovery_dispatch,
-    admit_start_dispatch,
-    record_dispatch_failure,
-    resolve_enqueue_failure,
-    terminalize_active_dispatches,
-)
+from tracker.executor.dispatch_control import admit_recovery_dispatch, admit_start_dispatch as _admit_start_dispatch
 from tracker.exceptions import ExecutionAuthorityRevoked
-from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
+from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.executor.release_control import (
     create_executor_dispatch,
     pin_benchmark_to_release,
-    promote_release,
-    register_release,
+    validate_release_manifest,
 )
+
+
+def register_release(session: Session, release: ExecutorRelease) -> ExecutorRelease:
+    validate_release_manifest(release)
+    return ExecutorControlRepository(session).register_release(release)
+
+
+def promote_release(session: Session, release_id: str) -> ExecutorRelease:
+    return ExecutorControlRepository(session).promote_release(release_id)
+
+
+def admit_start_dispatch(session: Session, **kwargs: Any) -> ExecutorDispatch:
+    return _admit_start_dispatch(
+        session,
+        executor_control_repository=ExecutorControlRepository(session),
+        **kwargs,
+    )
 
 
 def _release(release_id: str) -> ExecutorRelease:
@@ -91,6 +103,7 @@ def test_in_progress_retry_keeps_release_and_original_dispatch_active(
         pre_action_status=BenchmarkStatus.IN_PROGRESS,
         dispatch_id=uuid4(),
         kind=ExecutorDispatchKind.RETRY,
+        executor_control_repository=ExecutorControlRepository(database_session),
     )
     database_session.commit()
     database_session.refresh(old_dispatch)
@@ -121,8 +134,7 @@ def test_enqueue_failure_makes_start_retryable(
     database_session.add(task)
     database_session.commit()
 
-    resolution = resolve_enqueue_failure(
-        database_session,
+    resolution = ExecutorControlRepository(database_session).resolve_enqueue_failure(
         benchmark_id=example_benchmark_object.id,
         dispatch_id=dispatch.id,
         task_ids=[task.task_id],
@@ -193,8 +205,7 @@ def test_additive_retry_enqueue_failure_keeps_original_execution_active(
     database_session.add(dispatch)
     database_session.commit()
 
-    resolution = resolve_enqueue_failure(
-        database_session,
+    resolution = ExecutorControlRepository(database_session).resolve_enqueue_failure(
         benchmark_id=example_benchmark_object.id,
         dispatch_id=dispatch.id,
         task_ids=[retry_task.task_id, stopped_task.task_id, newer_retry_task.task_id],
@@ -229,8 +240,7 @@ def test_enqueue_failure_does_not_override_claimed_delivery(
     database_session.add(dispatch)
     database_session.commit()
 
-    resolution = resolve_enqueue_failure(
-        database_session,
+    resolution = ExecutorControlRepository(database_session).resolve_enqueue_failure(
         benchmark_id=example_benchmark_object.id,
         dispatch_id=dispatch.id,
         task_ids=[],
@@ -283,8 +293,7 @@ def test_running_dispatch_failure_preserves_active_sibling(
     database_session.add(newer_retry_task)
     database_session.commit()
 
-    assert record_dispatch_failure(
-        database_session,
+    assert ExecutorControlRepository(database_session).record_dispatch_failure(
         benchmark=example_benchmark_object,
         dispatch_id=failing_dispatch.id,
         task_ids=[retry_task.task_id, newer_retry_task.task_id],
@@ -333,6 +342,7 @@ def test_terminal_recovery_terminalizes_active_dispatches(
         pre_action_status=BenchmarkStatus.ERROR,
         dispatch_id=uuid4(),
         kind=ExecutorDispatchKind.RESUME,
+        executor_control_repository=ExecutorControlRepository(database_session),
     )
     database_session.commit()
     database_session.refresh(old_dispatch)
@@ -371,8 +381,7 @@ def test_terminalize_active_dispatches_preserves_selected_finalizer(
     database_session.add(sibling)
     database_session.commit()
 
-    terminalize_active_dispatches(
-        database_session,
+    ExecutorControlRepository(database_session).terminalize_active_dispatches(
         example_benchmark_object.id,
         except_dispatch_id=finalizer.id,
     )
@@ -424,13 +433,13 @@ def test_terminal_authority_rejects_stopped_state(
         dispatch_id=dispatch.id,
     )
 
+    repository = TaskExecutionRepository(database_session)
     if allowed:
         assert (
-            lock_execution_authority(database_session, authority, require_in_progress=False).id
-            == example_benchmark_object.id
+            repository.lock_execution_authority(authority, require_in_progress=False).id == example_benchmark_object.id
         )
         database_session.rollback()
     else:
         with pytest.raises(ExecutionAuthorityRevoked):
-            lock_execution_authority(database_session, authority, require_in_progress=False)
+            repository.lock_execution_authority(authority, require_in_progress=False)
         database_session.rollback()

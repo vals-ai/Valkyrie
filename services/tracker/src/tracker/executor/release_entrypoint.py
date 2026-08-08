@@ -131,21 +131,50 @@ def _activate_sealed_release(task: ReleaseTaskConfig, release: ReleaseInput) -> 
     from sqlmodel import Session
 
     from tracker.database.models import ExecutorRelease
+    from tracker.database.repositories import ExecutorControlRepository
     from tracker.database.session import engine
-    from tracker.executor.release_control import ReleaseControlError, activate_release
+    from tracker.exceptions import ReleaseControlError
+    from tracker.executor.release_control import (
+        complete_release_activation,
+        prepare_release_activation,
+        verify_release_artifact,
+    )
 
+    candidate = ExecutorRelease(
+        id=release.release_id,
+        artifact_uri=release.artifact_uri,
+        artifact_digest=release.artifact_digest,
+        protocol_version=release.protocol_version,
+    )
     try:
         with Session(engine) as session:
-            activate_release(
-                session,
+            prepare_release_activation(
+                ExecutorControlRepository(session),
+                candidate,
+                expected_bucket=task.release_bucket,
+                expected_prefix=task.release_prefix,
+            )
+            session.commit()
+
+        verification_metadata = verify_release_artifact(
+            ExecutorRelease(
+                id=release.release_id,
+                artifact_uri=release.artifact_uri,
+                artifact_digest=release.artifact_digest,
+                protocol_version=release.protocol_version,
+            )
+        )
+
+        with Session(engine) as session:
+            complete_release_activation(
+                ExecutorControlRepository(session),
                 ExecutorRelease(
                     id=release.release_id,
                     artifact_uri=release.artifact_uri,
                     artifact_digest=release.artifact_digest,
                     protocol_version=release.protocol_version,
                 ),
-                expected_bucket=task.release_bucket,
-                expected_prefix=task.release_prefix,
+                verification_metadata,
             )
             session.commit()
     except ReleaseControlError as error:
@@ -191,12 +220,13 @@ def _force_stop_executor_hosts(client: EcsClient, task: ReleaseTaskConfig) -> in
 def _begin_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) -> dict[str, int]:
     from sqlmodel import Session
 
+    from tracker.database.repositories import ExecutorControlRepository
     from tracker.database.session import engine
-    from tracker.executor.maintenance_control import MaintenanceOwnershipError, begin_maintenance
+    from tracker.exceptions import MaintenanceOwnershipError
 
     try:
         with Session(engine) as session:
-            summary = begin_maintenance(session, target_sha=maintenance.target_sha)
+            summary = ExecutorControlRepository(session).begin_maintenance(maintenance.target_sha)
             session.commit()
     except MaintenanceOwnershipError as error:
         raise SystemExit(f"Maintenance begin failed: {error}") from error
@@ -220,8 +250,9 @@ def _begin_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) -
 def _finish_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) -> None:
     from sqlmodel import Session
 
+    from tracker.database.repositories import ExecutorControlRepository
     from tracker.database.session import engine
-    from tracker.executor.maintenance_control import MaintenanceOwnershipError, finish_maintenance
+    from tracker.exceptions import MaintenanceOwnershipError
 
     client = create_ecs_client()
     client.update_service(
@@ -241,7 +272,7 @@ def _finish_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) 
 
     try:
         with Session(engine) as session:
-            finish_maintenance(session, target_sha=maintenance.target_sha)
+            ExecutorControlRepository(session).finish_maintenance(maintenance.target_sha)
             session.commit()
     except MaintenanceOwnershipError as error:
         raise SystemExit(f"Maintenance finish failed: {error}") from error
