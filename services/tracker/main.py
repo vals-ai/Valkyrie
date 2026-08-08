@@ -17,9 +17,7 @@ from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from opentelemetry.propagate import inject
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import joinedload
-from sqlmodel import Session, col, select
+from sqlmodel import Session
 
 from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
@@ -30,7 +28,6 @@ from tracker.api.single_task import router as single_task_router
 from tracker.auth import (
     RequestIdentity,
     extract_api_key,
-    find_org_by_tenant,
     forward_tracker_api_key,
     get_current_org,
     get_current_starter,
@@ -55,6 +52,13 @@ from tracker.aws.s3 import (
 )
 from tracker.agent.schemas import AgentConfig
 from tracker.config import AUTH_REQUIRED, ENVIRONMENT, broker, create_benchmark_service_url
+from tracker.database.dependencies import (
+    BenchmarkRepositoryDep,
+    OrgRepositoryDep,
+    ReportingRepositoryDep,
+    RunControlRepositoryDep,
+    TaskRepositoryDep,
+)
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -65,9 +69,9 @@ from tracker.database.models import (
     FinalEvaluation,
     Org,
     RetryMode,
-    Task,
 )
-from tracker.database.scoping import assert_org, get_scoped
+from tracker.database.repositories import BenchmarkRepository, TaskRepository
+from tracker.database.scoping import assert_org
 from tracker.executor.dispatch_control import (
     EnqueueFailureResolution,
     admit_recovery_dispatch,
@@ -311,6 +315,7 @@ def health_check() -> dict[str, str]:
 
 @app.post("/init")
 def init_org(
+    org_repository: OrgRepositoryDep,
     request: Request,
     session: Session = Depends(get_session),
 ) -> dict[str, str | bool]:
@@ -321,12 +326,9 @@ def init_org(
     api_key = extract_api_key(request)
     identity = resolve_descope_identity(api_key, include_user_profile=True)
 
-    stmt = pg_insert(Org).values(name=identity.tenant_name).on_conflict_do_nothing(index_elements=["name"])
-    result = session.exec(stmt)
-    created = result.rowcount > 0
+    org, created = org_repository.ensure_by_name(identity.tenant_name)
     session.commit()
 
-    org = find_org_by_tenant(identity.tenant_name, session)
     if not org:
         raise HTTPException(status_code=500, detail="Internal error during org creation")
 
@@ -349,6 +351,7 @@ async def _resolve_contract_from_s3(request: StartBenchmarkRequest) -> AgentCont
 
 @app.post("/start-benchmark")
 async def start_benchmark(
+    task_repository: TaskRepositoryDep,
     http_request: Request,
     request: StartBenchmarkRequest,
     session: Session = Depends(get_session),
@@ -444,8 +447,13 @@ async def start_benchmark(
                 request.harness_config.s3_bucket,
             )
         )
-        for task_id in verify_response.task_ids:
-            session.add(Task(org_id=benchmark_row.org_id, benchmark=benchmark_row.id, task_id=task_id))
+        session.add(benchmark_row)
+        session.flush()
+        task_repository.create_missing_task_rows(
+            benchmark_row.id,
+            verify_response.task_ids,
+            benchmark_row.org_id,
+        )
         executor_dispatch = admit_start_dispatch(
             session,
             benchmark=benchmark_row,
@@ -534,6 +542,8 @@ async def fetch_benchmark_tasks(
 
 @app.get("/fetch-benchmark", response_model=None)
 async def fetch_benchmark(
+    benchmark_repository: BenchmarkRepositoryDep,
+    reporting_repository: ReportingRepositoryDep,
     benchmark_id: TrackedBenchmarkId,
     connect: bool = Query(default=False),
     session: Session = Depends(get_session),
@@ -553,7 +563,7 @@ async def fetch_benchmark(
     - 200 OK if benchmark is found
     - 404 Not Found if benchmark is not found
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    benchmark_row = assert_org(benchmark_repository.get_for_org_with_final_evaluation(benchmark_id, org.id), org)
 
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
@@ -568,7 +578,7 @@ async def fetch_benchmark(
             },
         )
 
-    benchmark_context = BenchmarkContext(benchmark_row, session, org)
+    benchmark_context = BenchmarkContext(benchmark_row, reporting_repository, org)
 
     return FetchBenchmarkResponse(
         benchmark_name=benchmark_row.name,
@@ -589,6 +599,7 @@ async def fetch_benchmark(
 
 @app.post("/analyze-benchmark/{benchmark_id}", response_model=None)
 async def analyze_benchmark(
+    benchmark_repository: BenchmarkRepositoryDep,
     benchmark_id: TrackedBenchmarkId,
     body: AnalyzeBenchmarkRequest,
     session: Session = Depends(get_session),
@@ -603,7 +614,7 @@ async def analyze_benchmark(
     Cache short-circuit: when the benchmark already has docent_reading_status=DONE and
     no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    benchmark_row = assert_org(benchmark_repository.get_for_org(benchmark_id, org.id), org)
 
     if benchmark_row.status != BenchmarkStatus.FINISHED:
         raise HTTPException(
@@ -656,6 +667,8 @@ async def analyze_benchmark(
 
 @app.get("/retrieve-results")
 async def retrieve_results(
+    benchmark_repository: BenchmarkRepositoryDep,
+    reporting_repository: ReportingRepositoryDep,
     benchmark_id: TrackedBenchmarkId,
     http_request: Request,
     s3: bool = Query(default=False),
@@ -677,12 +690,14 @@ async def retrieve_results(
     curl -X GET http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=false
     curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'
     """
-    benchmark_row = session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)])
+    benchmark_row = benchmark_repository.get_for_org_with_final_evaluation(benchmark_id, org.id)
     if benchmark_row is None:
+        # Keep the legacy distinction between a missing run and a run owned by another org.
+        if benchmark_repository.get_by_id(benchmark_id) is not None:
+            raise HTTPException(status_code=404, detail="Not found")
         raise HTTPException(status_code=404, detail=f"Run {benchmark_id} not found")
-    assert_org(benchmark_row, org)
 
-    final_view = create_final_view(benchmark_row, session, org)
+    final_view = create_final_view(benchmark_row, reporting_repository, org)
 
     if task_ids:
         task_ids_set = set(task_ids)
@@ -697,7 +712,7 @@ async def retrieve_results(
         # (e.g. stopped/errored) still count toward the denominator instead of being dropped.
         scored_results = {
             task_id: result
-            for task_id, result in fetch_final_score_inputs(session, benchmark_row, org).items()
+            for task_id, result in fetch_final_score_inputs(reporting_repository, benchmark_row, org).items()
             if task_id in task_ids_set
         }
 
@@ -733,6 +748,7 @@ async def retrieve_results(
 
 @app.get("/check-results-exist")
 async def check_results_exist(
+    benchmark_repository: BenchmarkRepositoryDep,
     benchmark_id: TrackedBenchmarkId,
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
@@ -747,7 +763,7 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    benchmark_row = assert_org(benchmark_repository.get_for_org(benchmark_id, org.id), org)
 
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_row.name}.json"
     exists = await s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
@@ -757,7 +773,7 @@ async def check_results_exist(
 async def validate_tasks_exist(
     benchmark_row: Benchmark,
     task_ids: list[str],
-    session: Session,
+    task_repository: TaskRepository,
     org: Org,
 ) -> list[str]:
     """Validate that selected tasks belong to the run."""
@@ -765,14 +781,7 @@ async def validate_tasks_exist(
         raise HTTPException(status_code=400, detail="task_ids cannot be empty")
 
     requested_task_ids = list(dict.fromkeys(task_ids))
-    existing_task_ids = set(
-        session.exec(
-            select(Task.task_id)
-            .where(col(Task.benchmark) == benchmark_row.id)
-            .where(col(Task.org_id) == org.id)
-            .where(col(Task.task_id).in_(requested_task_ids))
-        ).all()
-    )
+    existing_task_ids = task_repository.get_existing_task_ids(benchmark_row.id, requested_task_ids, org.id)
     missing_task_ids = [task_id for task_id in requested_task_ids if task_id not in existing_task_ids]
     if missing_task_ids:
         raise HTTPException(
@@ -785,6 +794,9 @@ async def validate_tasks_exist(
 
 @app.post("/stop-benchmark/{benchmark_id}")
 async def stop_benchmark(
+    benchmark_repository: BenchmarkRepositoryDep,
+    task_repository: TaskRepositoryDep,
+    run_control_repository: RunControlRepositoryDep,
     benchmark_id: TrackedBenchmarkId,
     force: bool = Query(default=False),
     task_ids: list[str] | None = Body(default=None, embed=True),
@@ -802,7 +814,7 @@ async def stop_benchmark(
     Returns:
         StopBenchmarkResponse
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    benchmark_row = assert_org(benchmark_repository.get_for_org(benchmark_id, org.id), org)
 
     valid_stop_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPING]
 
@@ -813,17 +825,24 @@ async def stop_benchmark(
         )
 
     selected_task_ids = (
-        await validate_tasks_exist(benchmark_row, task_ids, session, org) if task_ids is not None else None
+        await validate_tasks_exist(benchmark_row, task_ids, task_repository, org) if task_ids is not None else None
     )
 
-    benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+    benchmark_row = fetch_benchmark_row(benchmark_id, benchmark_repository, org, for_update=True)
     if benchmark_row.status not in valid_stop_states:
         raise HTTPException(
             status_code=400,
             detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress or error run.",
         )
 
-    await initiate_stop_benchmark(benchmark_row, session, force, org, task_ids=selected_task_ids)
+    await initiate_stop_benchmark(
+        benchmark_row,
+        session,
+        force,
+        org,
+        task_ids=selected_task_ids,
+        repository=run_control_repository,
+    )
 
     if force:
         # TODO: Drop the row fallback after legacy benchmark rows have aged out.
@@ -838,6 +857,8 @@ async def stop_benchmark(
             org,
             sandbox_provider=benchmark_row.arguments.sandbox_provider,
             task_ids=selected_task_ids,
+            repository=run_control_repository,
+            benchmark_repository=benchmark_repository,
         )
 
     return StopBenchmarkResponse(
@@ -849,34 +870,56 @@ def _update_benchmark_concurrency(
     benchmark_id: UUID,
     concurrency: int,
     session: Session,
+    benchmark_repository: BenchmarkRepository,
     org: Org,
 ) -> BenchmarkConcurrencyUpdate:
     try:
         with session.no_autoflush:
             lock_executor_admission(session)
-        benchmark_row = update_benchmark_concurrency(benchmark_id, concurrency, session, org)
+        benchmark_row = update_benchmark_concurrency(
+            benchmark_id,
+            concurrency,
+            session,
+            benchmark_repository,
+            org,
+        )
+        if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+            status = benchmark_row.status
+            raise HTTPException(
+                status_code=409,
+                detail=f"Run {benchmark_id} is currently in the {status} state.",
+            )
+        session.commit()
+        return benchmark_row
     except MaintenanceModeError as exc:
         session.rollback()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
+        session.rollback()
         raise HTTPException(status_code=404, detail="Not found") from exc
-
-    if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state.",
-        )
-    return benchmark_row
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception:
+        session.rollback()
+        raise
 
 
 @app.patch("/benchmarks/{benchmark_id}/concurrency")
 def patch_benchmark_concurrency(
+    benchmark_repository: BenchmarkRepositoryDep,
     benchmark_id: TrackedBenchmarkId,
     request: UpdateBenchmarkConcurrencyRequest,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> UpdateBenchmarkConcurrencyResponse:
-    benchmark_row = _update_benchmark_concurrency(benchmark_id, request.concurrency, session, org)
+    benchmark_row = _update_benchmark_concurrency(
+        benchmark_id,
+        request.concurrency,
+        session,
+        benchmark_repository,
+        org,
+    )
     return UpdateBenchmarkConcurrencyResponse(
         benchmark_id=benchmark_row.benchmark_id,
         status=benchmark_row.status,
@@ -886,6 +929,8 @@ def patch_benchmark_concurrency(
 
 @app.post("/retry-or-resume-benchmark/{benchmark_id}")
 async def retry_or_resume_benchmark(
+    benchmark_repository: BenchmarkRepositoryDep,
+    run_control_repository: RunControlRepositoryDep,
     benchmark_id: TrackedBenchmarkId,
     http_request: Request,
     retry: bool = Query(default=False),
@@ -917,7 +962,7 @@ async def retry_or_resume_benchmark(
     Returns:
         RetryOrResumeBenchmarkResponse
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    benchmark_row = assert_org(benchmark_repository.get_for_org(benchmark_id, org.id), org)
 
     if benchmark_row.status == BenchmarkStatus.STOPPING:
         raise HTTPException(
@@ -936,10 +981,11 @@ async def retry_or_resume_benchmark(
 
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
         if concurrency is not None:
-            _update_benchmark_concurrency(benchmark_id, concurrency, session, org)
+            _update_benchmark_concurrency(benchmark_id, concurrency, session, benchmark_repository, org)
         if secrets or benchmark_url is not None:
             update_benchmark_resume_arguments(
                 benchmark_id,
+                benchmark_repository,
                 session,
                 org,
                 secrets=secrets,
@@ -959,7 +1005,7 @@ async def retry_or_resume_benchmark(
     try:
         with session.no_autoflush:
             lock_executor_admission(session)
-        benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        benchmark_row = fetch_benchmark_row(benchmark_id, benchmark_repository, org, for_update=True)
         if benchmark_row.status == BenchmarkStatus.STOPPING:
             raise HTTPException(
                 status_code=400,
@@ -967,23 +1013,33 @@ async def retry_or_resume_benchmark(
             )
         pre_action_status = benchmark_row.status
 
-        verified_task_ids = await reset_to_in_progress_status(
-            benchmark_row=benchmark_row,
-            session=session,
-            benchmark_service=benchmark_row.benchmark_service(
-                service_headers=effective_service_headers,
-                benchmark_url=benchmark_url,
-            ),
-            retry=retry,
-            retry_mode=retry_mode,
-            rerun_task_ids=task_ids,
-            org=org,
+        benchmark_service = benchmark_row.benchmark_service(
+            service_headers=effective_service_headers,
+            benchmark_url=benchmark_url,
         )
+        try:
+            verified_task_ids = await reset_to_in_progress_status(
+                benchmark_row=benchmark_row,
+                session=session,
+                repository=run_control_repository,
+                benchmark_repository=benchmark_repository,
+                benchmark_service=benchmark_service,
+                retry=retry,
+                retry_mode=retry_mode,
+                rerun_task_ids=task_ids,
+                org=org,
+            )
+        finally:
+            try:
+                await benchmark_service.close()
+            except Exception:
+                logger.exception("Failed to close benchmark service client for %s", benchmark_row.name)
 
         if pre_action_status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
             if secrets or concurrency is not None or benchmark_url is not None:
                 update_benchmark_resume_arguments(
                     benchmark_id,
+                    benchmark_repository,
                     session,
                     org,
                     secrets=secrets,
@@ -998,6 +1054,7 @@ async def retry_or_resume_benchmark(
         if secrets or concurrency is not None or benchmark_url is not None:
             benchmark_row = update_benchmark_resume_arguments(
                 benchmark_id,
+                benchmark_repository,
                 session,
                 org,
                 secrets=secrets,
@@ -1041,6 +1098,8 @@ async def retry_or_resume_benchmark(
 
 @app.get("/fetch-benchmarks")
 async def fetch_benchmarks(
+    reporting_repository: ReportingRepositoryDep,
+    benchmark_repository: BenchmarkRepositoryDep,
     agent_name: list[str] | None = Query(default=None),
     benchmark_name: list[str] | None = Query(default=None),
     status: list[BenchmarkStatus] | None = Query(default=None),
@@ -1081,10 +1140,10 @@ async def fetch_benchmarks(
         offset=offset,
     )
 
-    benchmark_rows, total_count, next_cursor = fetch_filtered_benchmark_rows(request, session, org)
+    benchmark_rows, total_count, next_cursor = fetch_filtered_benchmark_rows(request, reporting_repository, org)
 
     return FetchBenchmarksResponse(
-        benchmarks=build_benchmark_table_rows(benchmark_rows, session),
+        benchmarks=build_benchmark_table_rows(benchmark_rows, benchmark_repository),
         total_count=total_count,
         next_cursor=next_cursor,
     )
@@ -1092,6 +1151,7 @@ async def fetch_benchmarks(
 
 @app.get("/fetch-benchmark-metadata/{benchmark_id}")
 async def fetch_benchmark_metadata(
+    benchmark_repository: BenchmarkRepositoryDep,
     benchmark_id: TrackedBenchmarkId,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
@@ -1105,7 +1165,7 @@ async def fetch_benchmark_metadata(
     Returns:
         FetchBenchmarkMetadataResponse
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    benchmark_row = assert_org(benchmark_repository.get_for_org(benchmark_id, org.id), org)
 
     return benchmark_row.benchmark_metadata
 
@@ -1177,6 +1237,7 @@ async def _tar_output_stream(
 
 @app.get("/fetch-run-outputs/{benchmark_id}", response_model=None)
 async def fetch_run_outputs(
+    benchmark_repository: BenchmarkRepositoryDep,
     benchmark_id: TrackedBenchmarkId,
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
@@ -1192,7 +1253,7 @@ async def fetch_run_outputs(
     Returns:
         StreamingResponse
     """
-    get_scoped(Benchmark, benchmark_id, session, org)
+    assert_org(benchmark_repository.get_for_org(benchmark_id, org.id), org)
 
     benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
 

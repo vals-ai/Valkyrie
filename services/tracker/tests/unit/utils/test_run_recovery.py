@@ -29,6 +29,7 @@ from tests.factories import make_benchmark, make_error_result, make_evaluation_r
 from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity
+from tracker.database.repositories import BenchmarkRepository, RunControlRepository
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -395,7 +396,7 @@ class TestRunRecovery:
 
         monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", get_sandbox_provider)
         monkeypatch.setattr(
-            "tracker.utils.run_control.datetime",
+            "tracker.database.repositories.run_control.datetime",
             SimpleNamespace(now=resumed_attempt_time),
         )
 
@@ -541,7 +542,13 @@ class TestRunRecovery:
         database_session.commit()
 
         # Stop benchmark - only tasks that are pending become stopped
-        await initiate_stop_benchmark(benchmark_row, database_session, force=False, org=self._test_org)
+        await initiate_stop_benchmark(
+            benchmark_row,
+            database_session,
+            force=False,
+            org=self._test_org,
+            repository=RunControlRepository(database_session),
+        )
 
         # Verify: 2 tasks are finished, 3 tasks are stopped
         finished_count = len(
@@ -570,6 +577,8 @@ class TestRunRecovery:
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=[],
             org=self._test_org,
+            repository=RunControlRepository(database_session),
+            benchmark_repository=BenchmarkRepository(database_session),
         )
         database_session.commit()
         # Only 3 tasks should be verified for resume (the 3 tasks that are stopped)
@@ -639,6 +648,8 @@ class TestRunRecovery:
             retry_mode=retry_mode,
             rerun_task_ids=[],
             org=self._test_org,
+            repository=RunControlRepository(database_session),
+            benchmark_repository=BenchmarkRepository(database_session),
         )
         database_session.commit()
 
@@ -700,6 +711,8 @@ class TestRunRecovery:
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=["task_error", "task_result"],
             org=self._test_org,
+            repository=RunControlRepository(database_session),
+            benchmark_repository=BenchmarkRepository(database_session),
         )
 
         assert verified_task_ids == ["task_error", "task_result"]
@@ -749,6 +762,8 @@ class TestRunRecovery:
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=["task_1", "task_2"],
             org=self._test_org,
+            repository=RunControlRepository(database_session),
+            benchmark_repository=BenchmarkRepository(database_session),
         )
 
         task_statuses = {
@@ -794,6 +809,8 @@ class TestRunRecovery:
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=["task_requested"],
             org=self._test_org,
+            repository=RunControlRepository(database_session),
+            benchmark_repository=BenchmarkRepository(database_session),
         )
 
         task_statuses = {
@@ -876,6 +893,8 @@ class TestRunRecovery:
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=[new_task_id],
             org=self._test_org,
+            repository=RunControlRepository(database_session),
+            benchmark_repository=BenchmarkRepository(database_session),
         )
         database_session.commit()
         assert verified_task_ids == [new_task_id]
@@ -1143,6 +1162,7 @@ class TestRunRecovery:
             *,
             sandbox_provider: str,
             task_ids: list[str] | None = None,
+            **_kwargs: Any,
         ) -> None:
             captured["sandbox_provider_secret_name"] = sandbox_provider_secret_name
             captured["sandbox_provider"] = sandbox_provider
@@ -1346,7 +1366,14 @@ class TestRunRecovery:
                 persisted.status = BenchmarkStatus.IN_PROGRESS
                 control_session.add(persisted)
                 control_session.commit()
-                update_benchmark_concurrency(benchmark_row.id, 9, control_session, self._test_org)
+                update_benchmark_concurrency(
+                    benchmark_row.id,
+                    9,
+                    control_session,
+                    BenchmarkRepository(control_session),
+                    self._test_org,
+                )
+                control_session.commit()
             return ["task_0"]
 
         monkeypatch.setattr("main.reset_to_in_progress_status", _concurrent_reset)
@@ -2120,7 +2147,13 @@ class TestRunRecovery:
         database_session.commit()
         authority = executor_authority(benchmark_row, session=database_session)
 
-        await initiate_stop_benchmark(benchmark_row, database_session, force=False, org=self._test_org)
+        await initiate_stop_benchmark(
+            benchmark_row,
+            database_session,
+            force=False,
+            org=self._test_org,
+            repository=RunControlRepository(database_session),
+        )
 
         database_session.refresh(benchmark_row)
         database_session.refresh(pending_task)
@@ -2162,7 +2195,13 @@ class TestRunRecovery:
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
 
-        await initiate_stop_benchmark(benchmark_row, database_session, force=True, org=self._test_org)
+        await initiate_stop_benchmark(
+            benchmark_row,
+            database_session,
+            force=True,
+            org=self._test_org,
+            repository=RunControlRepository(database_session),
+        )
         assert benchmark_row.status == BenchmarkStatus.STOPPING
 
         def _empty_list_sandboxes(*_args: Any, **_kwargs: Any) -> AsyncIterator[None]:
@@ -2195,6 +2234,8 @@ class TestRunRecovery:
             harness_config.aws,
             self._test_org,
             sandbox_provider="daytona",
+            repository=RunControlRepository(database_session),
+            benchmark_repository=BenchmarkRepository(database_session),
         )
 
         database_session.refresh(benchmark_row)

@@ -24,6 +24,7 @@ from tracker.auth import (
     resolve_descope_identity,
 )
 from tracker.database.models import DEFAULT_ORG_NAME, Org
+from tracker.database.repositories import OrgRepository
 
 
 @pytest.fixture
@@ -89,7 +90,7 @@ class TestDescopeIdentityResolution:
         mock_descope.exchange_access_key.return_value = descope_access_key_response()
 
         identity = resolve_descope_identity("valid-key")
-        org = find_org_by_tenant(identity.tenant_name, empty_database_session)
+        org = find_org_by_tenant(identity.tenant_name, OrgRepository(empty_database_session))
         assert org is not None
         assert org.id == test_org.id
 
@@ -111,14 +112,14 @@ class TestDescopeIdentityResolution:
         )
 
         with pytest.raises(HTTPException) as exc_info:
-            resolve_bearer_session("bad-session", empty_database_session)
+            resolve_bearer_session("bad-session", OrgRepository(empty_database_session))
 
         assert exc_info.value.status_code == 401
         assert exc_info.value.detail == "Invalid session"
         assert "Sensitive provider detail" not in str(exc_info.value.detail)
 
     def test_org_not_in_db_returns_none(self, empty_database_session: Session) -> None:
-        org = find_org_by_tenant("nonexistent-org", empty_database_session)
+        org = find_org_by_tenant("nonexistent-org", OrgRepository(empty_database_session))
         assert org is None
 
     def test_resolve_descope_identity_full_claims(self, mock_descope: MagicMock) -> None:
@@ -251,7 +252,7 @@ class TestCurrentStarterResolution:
         monkeypatch.setattr("tracker.auth._cached_default_org", None)
 
         mock_request = MagicMock()
-        identity = get_current_starter(mock_request, empty_database_session)
+        identity = get_current_starter(mock_request, OrgRepository(empty_database_session))
 
         assert isinstance(identity, RequestIdentity)
         assert identity.org.name == DEFAULT_ORG_NAME
@@ -272,7 +273,7 @@ class TestCurrentStarterResolution:
         mock_request = MagicMock()
         mock_request.headers = {"x-api-key": "valid-key"}
 
-        identity = get_current_starter(mock_request, empty_database_session)
+        identity = get_current_starter(mock_request, OrgRepository(empty_database_session))
 
         assert isinstance(identity, RequestIdentity)
         assert identity.org.id == test_org.id
@@ -299,7 +300,7 @@ class TestCurrentStarterResolution:
         mock_request = MagicMock()
         mock_request.headers = {"x-api-key": "valid-key"}
 
-        identity = get_current_starter(mock_request, empty_database_session)
+        identity = get_current_starter(mock_request, OrgRepository(empty_database_session))
 
         assert identity.org.id == test_org.id
         assert identity.access_key_id == "K2abc"
@@ -319,7 +320,7 @@ class TestCurrentStarterResolution:
         mock_request = MagicMock()
         mock_request.headers = {"x-api-key": "valid-key"}
 
-        org = get_current_org(mock_request, empty_database_session)
+        org = get_current_org(mock_request, OrgRepository(empty_database_session))
 
         assert org.id == test_org.id
         mock_descope.mgmt.user.load_by_user_id.assert_not_called()

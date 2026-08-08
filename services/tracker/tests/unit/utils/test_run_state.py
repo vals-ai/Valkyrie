@@ -22,6 +22,7 @@ from main import app
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
+from tracker.database.repositories import BenchmarkRepository, ReportingRepository, TaskRepository
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -152,13 +153,13 @@ class TestRunState:
 
         def capture_locked_fetch(
             benchmark_id: UUID,
-            session: Session,
+            benchmark_repository: BenchmarkRepository,
             org: Org,
             *,
             for_update: bool = False,
         ) -> Benchmark:
             locked_fetches.append(for_update)
-            return fetch_benchmark_row(benchmark_id, session, org, for_update=for_update)
+            return fetch_benchmark_row(benchmark_id, benchmark_repository, org, for_update=for_update)
 
         monkeypatch.setattr("main.fetch_benchmark_row", capture_locked_fetch)
 
@@ -168,7 +169,11 @@ class TestRunState:
         assert response.json() == {"status": "success"}
         assert locked_fetches == [True]
 
-        benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session, self._test_org)
+        benchmark_row = fetch_benchmark_row(
+            benchmark_row.id,
+            BenchmarkRepository(database_session),
+            self._test_org,
+        )
         assert benchmark_row.status == BenchmarkStatus.STOPPING
 
         # Task status in pending state should be set to "stopped" / otherwise known as no pending tasks left
@@ -263,7 +268,11 @@ class TestRunState:
         assert len(task_ids) == 5
 
         # Validate the benchmark is now in progress state
-        benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session, self._test_org)
+        benchmark_row = fetch_benchmark_row(
+            benchmark_row.id,
+            BenchmarkRepository(database_session),
+            self._test_org,
+        )
         assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
 
         # Reset benchmark row to stopped state
@@ -433,13 +442,19 @@ class TestRunState:
         database_session.add(benchmark_row)
         database_session.commit()
         authority = executor_authority(benchmark_row, session=database_session)
+        task_repository = TaskRepository(database_session)
 
         # Verified tasks to create
         verified_task_ids = [f"task_{i}" for i in range(5)]
 
         # Creates all tasks in pending state
         task_rows = create_task_rows(
-            verified_task_ids, benchmark_row, database_session, self._test_org, authority=authority
+            verified_task_ids,
+            benchmark_row,
+            database_session,
+            self._test_org,
+            authority=authority,
+            task_repository=task_repository,
         )
         assert len(task_rows) == len(verified_task_ids)
         assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
@@ -450,7 +465,12 @@ class TestRunState:
 
         # Try calling the same method again when the tasks already exist
         task_rows = create_task_rows(
-            verified_task_ids, benchmark_row, database_session, self._test_org, authority=authority
+            verified_task_ids,
+            benchmark_row,
+            database_session,
+            self._test_org,
+            authority=authority,
+            task_repository=task_repository,
         )
         assert len(task_rows) == len(verified_task_ids)
         assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
@@ -460,7 +480,14 @@ class TestRunState:
         assert len(all_tasks) == len(verified_task_ids)
         assert all(task.status == TaskStatus.PENDING for task in all_tasks)
 
-        task_rows = create_task_rows(["task_1"], benchmark_row, database_session, self._test_org, authority=authority)
+        task_rows = create_task_rows(
+            ["task_1"],
+            benchmark_row,
+            database_session,
+            self._test_org,
+            authority=authority,
+            task_repository=task_repository,
+        )
         assert [task_id for task_id, _ in task_rows] == ["task_1"]
 
     def test_fetch_final_score_inputs_waits_for_runnable_tasks(
@@ -507,7 +534,7 @@ class TestRunState:
         database_session.commit()
 
         assert not has_runnable_tasks(database_session, benchmark_row, self._test_org)
-        assert fetch_final_score_inputs(database_session, benchmark_row, self._test_org) == {
+        assert fetch_final_score_inputs(ReportingRepository(database_session), benchmark_row, self._test_org) == {
             "task_finished": {"score": 1.0},
             "task_error": None,
             "task_stopped": None,
@@ -600,7 +627,14 @@ class TestRunState:
 
         # Create some pending tasks
         task_ids = [f"task_{i}" for i in range(5)]
-        task_rows = create_task_rows(task_ids, benchmark_row, database_session, self._test_org, authority=authority)
+        task_rows = create_task_rows(
+            task_ids,
+            benchmark_row,
+            database_session,
+            self._test_org,
+            authority=authority,
+            task_repository=TaskRepository(database_session),
+        )
         assert len(task_rows) == len(task_ids)
         assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
 
@@ -654,7 +688,7 @@ class TestFetchStartedByFilter:
 
         rows, total, _ = fetch_filtered_benchmark_rows(
             FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
-            database_session,
+            ReportingRepository(database_session),
             org,
         )
         assert total == 1
@@ -669,7 +703,7 @@ class TestFetchStartedByFilter:
 
         rows, total, _ = fetch_filtered_benchmark_rows(
             FetchBenchmarksRequest(started_by=["alice@vals.ai", "bob@vals.ai"], limit=10),
-            database_session,
+            ReportingRepository(database_session),
             org,
         )
         assert total == 2
@@ -686,7 +720,7 @@ class TestFetchStartedByFilter:
 
         rows, total, _ = fetch_filtered_benchmark_rows(
             FetchBenchmarksRequest(started_by=["ALICE@VALS.AI"], limit=10),
-            database_session,
+            ReportingRepository(database_session),
             org,
         )
         assert total == 1
@@ -700,7 +734,7 @@ class TestFetchStartedByFilter:
 
         _, total, _ = fetch_filtered_benchmark_rows(
             FetchBenchmarksRequest(started_by=None, limit=10),
-            database_session,
+            ReportingRepository(database_session),
             org,
         )
         assert total == 2
@@ -713,7 +747,7 @@ class TestFetchStartedByFilter:
 
         rows, total, _ = fetch_filtered_benchmark_rows(
             FetchBenchmarksRequest(started_by=["  alice@vals.ai  "], limit=10),
-            database_session,
+            ReportingRepository(database_session),
             org,
         )
         assert total == 1
@@ -739,7 +773,7 @@ class TestFetchStartedByFilter:
 
         rows, total, _ = fetch_filtered_benchmark_rows(
             FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
-            database_session,
+            ReportingRepository(database_session),
             default_org,
         )
         assert total == 1
@@ -761,7 +795,7 @@ def test_fetch_filtered_by_label(database_session: Session) -> None:
 
     rows, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(label="nightLY", limit=10),
-        database_session,
+        ReportingRepository(database_session),
         org,
     )
 

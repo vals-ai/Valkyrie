@@ -29,6 +29,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.database.repositories import BenchmarkRepository, RunControlRepository
 from tracker.executor.dispatch_control import admit_recovery_dispatch, admit_start_dispatch
 from tracker.executor.maintenance_control import begin_maintenance
 from tracker.executor.release_control import (
@@ -548,6 +549,46 @@ def test_terminal_retry_after_retirement_uses_the_active_release(postgres_sessio
     assert dispatch.executor_release_id == "terminal-active"
 
 
+def test_run_control_repository_lock_serializes_whole_run_stop(
+    postgres_session: Session,
+    postgres_engine: Engine,
+) -> None:
+    org = Org(id=uuid4(), name="repository-stop-race-org")
+    postgres_session.add(org)
+    benchmark = Benchmark(
+        org_id=org.id,
+        name="repository-stop-race",
+        status=BenchmarkStatus.IN_PROGRESS,
+        arguments=BenchmarkArguments(
+            contract=AgentContractRequest(name="race-agent", install_cmd="true", run_cmd="true"),
+            concurrency=1,
+        ),
+    )
+    postgres_session.add(benchmark)
+    postgres_session.commit()
+
+    def stop(session: Session) -> None:
+        repository = RunControlRepository(session)
+        locked_benchmark = repository.lock_benchmark(benchmark.id, org.id)
+        assert locked_benchmark is not None
+        repository.apply_stop(locked_benchmark, org.id, force=True, task_ids=None)
+        session.flush()
+
+    def observe_stopped(session: Session) -> None:
+        repository = RunControlRepository(session)
+        locked_benchmark = repository.lock_benchmark(benchmark.id, org.id)
+        assert locked_benchmark is not None
+        assert locked_benchmark.status == BenchmarkStatus.STOPPING
+
+    outcomes = _run_while_first_transaction_holds_locks(stop, observe_stopped, postgres_engine)
+
+    assert sorted(outcomes) == ["first-committed", "second-committed"]
+    postgres_session.expire_all()
+    stored_benchmark = postgres_session.get(Benchmark, benchmark.id)
+    assert stored_benchmark is not None
+    assert stored_benchmark.status == BenchmarkStatus.STOPPING
+
+
 def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
     postgres_session: Session,
     postgres_engine: Engine,
@@ -574,14 +615,21 @@ def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
         return benchmark
 
     def whole_stop(session: Session, benchmark_id: UUID) -> None:
-        benchmark = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        benchmark_repository = BenchmarkRepository(session)
+        benchmark = fetch_benchmark_row(benchmark_id, benchmark_repository, org, for_update=True)
         if benchmark.status not in (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPING):
             raise ReleaseControlError(f"Cannot stop benchmark from {benchmark.status}")
-        apply_stop_benchmark(benchmark, session, force=True, org=org)
+        apply_stop_benchmark(
+            benchmark,
+            session,
+            force=True,
+            org=org,
+            repository=RunControlRepository(session),
+        )
         session.flush()
 
     def retry(session: Session, benchmark_id: UUID) -> None:
-        benchmark = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        benchmark = fetch_benchmark_row(benchmark_id, BenchmarkRepository(session), org, for_update=True)
         if benchmark.status == BenchmarkStatus.STOPPING:
             raise ReleaseControlError("Cannot retry a stopping benchmark")
         pre_action_status = benchmark.status

@@ -11,12 +11,12 @@ from pydantic import BaseModel
 
 from tracker.aws.secrets import fetch_aws_secret
 from tracker.database.models import BenchmarkStatus
+from tracker.database.repositories import ReportingRepository
 from tracker.exceptions import SecretsError
 from tracker.logging import get_logger
 
 if TYPE_CHECKING:
     from tracker.database.models import Benchmark, Org
-    from sqlmodel import Session
     from tracker.types import AWSCredentials
 
 logger = get_logger(__name__)
@@ -38,10 +38,12 @@ class NotificationContext(BaseModel):
     model: str | None = None
 
     @classmethod
-    def from_benchmark(cls, benchmark_row: "Benchmark", session: "Session", org: "Org") -> NotificationContext:
+    def from_benchmark(
+        cls, benchmark_row: "Benchmark", reporting_repository: ReportingRepository, org: "Org"
+    ) -> NotificationContext:
         from tracker.utils import BenchmarkContext
 
-        details = BenchmarkContext(benchmark_row, session, org).benchmark_details
+        details = BenchmarkContext(benchmark_row, reporting_repository, org).benchmark_details
         return cls(
             benchmark_name=benchmark_row.name,
             agent_name=benchmark_row.arguments.contract.name,

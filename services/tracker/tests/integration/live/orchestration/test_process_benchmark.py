@@ -28,6 +28,7 @@ from tracker.database.models import (
     TaskBreakdown,
     TaskStatus,
 )
+from tracker.database.repositories import ReportingRepository
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import start_benchmark_request_to_benchmark
 
@@ -91,7 +92,7 @@ def _task_rows(benchmark: Benchmark, session: Session) -> list[Task]:
 
 
 def _assert_no_task_errors(benchmark: Benchmark, session: Session) -> None:
-    assert benchmark.fetch_tasks_with_errors(session) is None
+    assert ReportingRepository(session).get_task_errors(benchmark.id, benchmark.org_id) is None
 
 
 def _assert_task_breakdown_complete(task_breakdown: TaskBreakdown) -> None:
@@ -144,7 +145,7 @@ class TestProcessBenchmark:
             assert task_breakdown is not None
             _assert_task_breakdown_complete(task_breakdown)
 
-        results = benchmark.fetch_evaluation_results(database_session)
+        results = ReportingRepository(database_session).fetch_evaluation_results(benchmark.id, benchmark.org_id)
         assert set(results.keys()) == set(_TASK_IDS)
 
         assert benchmark.final_evaluation is not None
@@ -258,7 +259,7 @@ class TestProcessBenchmark:
         ).all()
         assert len(error_tasks) == 1
         assert error_tasks[0].task_id == failing_task
-        task_errors = benchmark.fetch_tasks_with_errors(database_session)
+        task_errors = ReportingRepository(database_session).get_task_errors(benchmark.id, benchmark.org_id)
         assert task_errors is not None
         assert "Simulated setup failure" in task_errors[failing_task]
 
@@ -268,7 +269,7 @@ class TestProcessBenchmark:
         assert len(finished_tasks) == 1
         assert finished_tasks[0].task_id == _TASK_ID
 
-        results = benchmark.fetch_evaluation_results(database_session)
+        results = ReportingRepository(database_session).fetch_evaluation_results(benchmark.id, benchmark.org_id)
         assert len(results) == 1
         assert _TASK_ID in results
         assert failing_task not in results
@@ -311,10 +312,10 @@ class TestProcessBenchmark:
         tasks = _task_rows(benchmark, database_session)
         assert len(tasks) == 1
         assert tasks[0].status == TaskStatus.ERROR
-        task_errors = benchmark.fetch_tasks_with_errors(database_session)
+        task_errors = ReportingRepository(database_session).get_task_errors(benchmark.id, benchmark.org_id)
         assert task_errors is not None
         assert "Required output artifact missing" in task_errors[_TASK_ID]
-        assert benchmark.fetch_evaluation_results(database_session) == {}
+        assert ReportingRepository(database_session).fetch_evaluation_results(benchmark.id, benchmark.org_id) == {}
 
     async def test_concurrent_benchmarks_same_task(
         self,
@@ -370,7 +371,7 @@ class TestProcessBenchmark:
             assert len(tasks) == 1
             assert tasks[0].task_id == _TASK_ID
             assert tasks[0].status == TaskStatus.FINISHED
-            assert benchmark.fetch_tasks_with_errors(database_session) is None
+            assert ReportingRepository(database_session).get_task_errors(benchmark.id, benchmark.org_id) is None
 
-            results = benchmark.fetch_evaluation_results(database_session)
+            results = ReportingRepository(database_session).fetch_evaluation_results(benchmark.id, benchmark.org_id)
             assert set(results.keys()) == {_TASK_ID}

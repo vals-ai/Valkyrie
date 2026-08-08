@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
+from tracker.database.repositories import BenchmarkRepository
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -16,6 +17,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.utils.reporting import build_benchmark_table_rows
 
 
 def test_required_output_artifact_omits_default_from_serialized_contract() -> None:
@@ -60,7 +62,7 @@ def test_agent_contract_rejects_duplicate_normalized_output_artifact_paths(
         AgentContractRequest(name="agent", output_artifacts=artifacts)
 
 
-def test_create_benchmark_table_row_counts_stopped_tasks_as_finished(database_session: Session) -> None:
+def test_build_benchmark_table_row_counts_stopped_tasks_as_finished(database_session: Session) -> None:
     benchmark = Benchmark(
         org_id=TEST_ORG_ID,
         name="swebench",
@@ -81,7 +83,7 @@ def test_create_benchmark_table_row_counts_stopped_tasks_as_finished(database_se
         database_session.add(Task(org_id=TEST_ORG_ID, benchmark=benchmark.id, task_id=task_id, status=status))
     database_session.commit()
 
-    row = benchmark.create_benchmark_table_row(database_session)
+    row = build_benchmark_table_rows([benchmark], BenchmarkRepository(database_session))[0]
 
     assert row.total_tasks == 4
     assert row.finished_tasks == 3

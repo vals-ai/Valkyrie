@@ -2,43 +2,35 @@
 
 from __future__ import annotations
 
-from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, desc, select
 
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, create_presigned_url, s3_object_exists
-from tracker.database.models import (
-    Benchmark,
-    ErrorResult,
-    EvaluationResult,
-    Org,
-    Task,
-    TaskStatus,
-)
-from tracker.database.session import get_session
+from tracker.database.dependencies import BenchmarkRepositoryDep, TaskRepositoryDep
+from tracker.database.models import Benchmark, EvaluationResult, Org, Task
+from tracker.database.repositories import BenchmarkRepository, TaskRepository
 from tracker.types import HarnessConfig, SingleTaskResponse, TaskArtifactsResponse
 from tracker.utils import fetch_harness_config
 
 router = APIRouter(prefix="/benchmarks")
 
 
-def _load_task_or_404(benchmark_id: UUID, task_id: str, org: Org, session: Session) -> tuple[Benchmark, Task]:
+def _load_task_or_404(
+    benchmark_id: UUID,
+    task_id: str,
+    org: Org,
+    benchmark_repository: BenchmarkRepository,
+    task_repository: TaskRepository,
+) -> tuple[Benchmark, Task]:
     """Return (benchmark, task) scoped to org, 404 if either is missing."""
-    benchmark = session.exec(
-        select(Benchmark).where(Benchmark.id == benchmark_id).where(Benchmark.org_id == org.id)
-    ).first()
-
+    benchmark = benchmark_repository.get_for_org(benchmark_id, org.id)
     if benchmark is None:
         raise HTTPException(status_code=404, detail="Benchmark not found")
 
-    task = session.exec(
-        select(Task).where(Task.benchmark == benchmark.id).where(Task.org_id == org.id).where(Task.task_id == task_id)
-    ).first()
-
+    task = task_repository.get_for_benchmark(benchmark.id, task_id, org.id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -50,29 +42,13 @@ def _task_prefix(benchmark_id: UUID, task_id: str) -> str:
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/"
 
 
-def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[EvaluationResult | None, str | None]:
-    """Fetches a task's evaluation result or error message depending on its status."""
-    if task.status not in (TaskStatus.FINISHED, TaskStatus.ERROR):
-        return None, None
-
-    result_model = EvaluationResult if task.status == TaskStatus.FINISHED else ErrorResult
-    result_filters = (
-        result_model.task == task.id,
-        result_model.org_id == org.id,
-    )
-    result_order = desc(result_model.created_at)
-
-    if task.status == TaskStatus.FINISHED:
-        result_select = select(EvaluationResult)
-    else:
-        result_select = select(ErrorResult.error_message)
-
-    result = session.exec(result_select.where(*result_filters).order_by(result_order)).first()
-
-    if task.status == TaskStatus.FINISHED:
-        return cast(EvaluationResult | None, result), None
-
-    return None, cast(str | None, result)
+def _fetch_result_objects(
+    task_repository: TaskRepository,
+    task: Task,
+    org: Org,
+) -> tuple[EvaluationResult | None, str | None]:
+    """Fetch a task's evaluation result or error message depending on its status."""
+    return task_repository.get_terminal_result(task, org.id)
 
 
 @router.get(
@@ -80,15 +56,16 @@ def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[Evalu
     response_model=SingleTaskResponse,
 )
 def get_single_task(
+    benchmark_repository: BenchmarkRepositoryDep,
+    task_repository: TaskRepositoryDep,
     benchmark_id: UUID,
     task_id: str,
     org: Org = Depends(get_current_org),
-    session: Session = Depends(get_session),
 ) -> SingleTaskResponse:
     """Fetch a single task's status + evaluation result for the SingleTask page."""
-    _, task = _load_task_or_404(benchmark_id, task_id, org, session)
+    _, task = _load_task_or_404(benchmark_id, task_id, org, benchmark_repository, task_repository)
 
-    eval_row, error_message = _fetch_result_objects(session, task, org)
+    eval_row, error_message = _fetch_result_objects(task_repository, task, org)
 
     return SingleTaskResponse(
         id=task.id,
@@ -109,14 +86,15 @@ def get_single_task(
     response_model=TaskArtifactsResponse,
 )
 async def get_task_artifacts(
+    benchmark_repository: BenchmarkRepositoryDep,
+    task_repository: TaskRepositoryDep,
     benchmark_id: UUID,
     task_id: str,
     org: Org = Depends(get_current_org),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
-    session: Session = Depends(get_session),
 ) -> TaskArtifactsResponse:
     """CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page."""
-    _, task = _load_task_or_404(benchmark_id, task_id, org, session)
+    _, task = _load_task_or_404(benchmark_id, task_id, org, benchmark_repository, task_repository)
 
     cloudwatch_url: str | None = None
     if harness_config.log_group and harness_config.aws.aws_default_region:

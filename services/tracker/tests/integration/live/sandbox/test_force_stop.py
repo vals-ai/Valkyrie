@@ -15,6 +15,7 @@ from sqlmodel import Session, col, select
 import tracker.utils as tracker_utils
 from tests.utils import TEST_ORG_ID, random_task_id
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
+from tracker.database.repositories import BenchmarkRepository, ReportingRepository, RunControlRepository
 from tracker.logging import get_logger
 from tracker.sandbox import create_sandbox
 from tracker.types import AWSCredentials, HarnessConfig
@@ -93,7 +94,7 @@ async def _wait_for_sandbox_setup(
 
 def _assert_no_task_errors(benchmark: Benchmark, database_session: Session) -> None:
     database_session.expire_all()
-    assert benchmark.fetch_tasks_with_errors(database_session) is None
+    assert ReportingRepository(database_session).get_task_errors(benchmark.id, benchmark.org_id) is None
 
 
 class TestForceStop:
@@ -150,6 +151,8 @@ class TestForceStop:
                     live_aws_credentials,
                     Org(id=TEST_ORG_ID, name="default"),
                     sandbox_provider="daytona",
+                    repository=RunControlRepository(database_session),
+                    benchmark_repository=BenchmarkRepository(database_session),
                 )
             finally:
                 release_sandbox.set()
@@ -264,6 +267,8 @@ class TestForceStop:
                 live_aws_credentials,
                 Org(id=TEST_ORG_ID, name="default"),
                 sandbox_provider="daytona",
+                repository=RunControlRepository(database_session),
+                benchmark_repository=BenchmarkRepository(database_session),
             )
         finally:
             release_sandboxes.set()
@@ -380,6 +385,8 @@ class TestForceStop:
                         live_aws_credentials,
                         Org(id=TEST_ORG_ID, name="default"),
                         sandbox_provider="daytona",
+                        repository=RunControlRepository(database_session),
+                        benchmark_repository=BenchmarkRepository(database_session),
                     )
                     await _wait_until_no_sandboxes(example_benchmark_object, provider)
             finally:

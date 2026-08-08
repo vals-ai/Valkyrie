@@ -23,7 +23,7 @@ from benchmark_service import (
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from opentelemetry import trace
 from pydantic import ValidationError
-from sqlmodel import Session, col, select, update
+from sqlmodel import Session, select
 from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
@@ -36,12 +36,17 @@ from tracker.aws.secrets import resolve_secrets
 from tracker.config import ENVIRONMENT
 from tracker.database.models import (
     BenchmarkStatus,
-    ErrorResult,
     EvaluationResult,
     Org,
     Task,
     TaskBreakdown,
     TaskStatus,
+)
+from tracker.database.repositories import (
+    BenchmarkRepository,
+    ReportingRepository,
+    TaskExecutionRepository,
+    TaskRepository,
 )
 from tracker.database.session import engine
 from tracker.exceptions import (
@@ -61,7 +66,6 @@ from tracker.types import (
     HarnessConfig,
     StartBenchmarkRequest,
 )
-
 from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 
 logger = get_logger(__name__)
@@ -93,7 +97,7 @@ class TrackedTaskStatus(str, Enum):
 class ResizableLimiter:
     """A per-executor admission limit that can change without preempting admitted work."""
 
-    def __init__(self, limit: int):
+    def __init__(self, limit: int) -> None:
         if limit < 1:
             raise ValueError("Limit must be greater than 0")
         self._limit = limit
@@ -136,7 +140,7 @@ class TrackedTask:
         coro: Coroutine[Any, Any, Any],
         org: Org,
         authority: ExecutionAuthority,
-    ):
+    ) -> None:
         self._coro = coro
         self._org = org
         self._authority = authority
@@ -152,8 +156,9 @@ class TrackedTask:
         return self._task
 
     async def run(self, limiter: ResizableLimiter, task_row: Task) -> dict[str, dict[str, Any] | None]:
-        async def _wrap_coro():
-            """Need to have a task created even if we are not running the coroutine so that we can cancel it before its running"""
+        async def _wrap_coro() -> dict[str, dict[str, Any] | None]:
+            """Need to have a task created even if we are not running the coroutine so that we can
+            cancel it before its running"""
             async with limiter:
                 self._status = TrackedTaskStatus.RUNNING
                 return await self._coro
@@ -166,7 +171,8 @@ class TrackedTask:
             # Need to clean up the coroutine if we cancelled the task
             self._coro.close()
 
-            # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
+            # When we cancel we return the task id still so that we can track the task when we
+            # create the final evaluation row
             return {task_row.task_id: None}
         except Exception as e:
             error_message = f"Task error was not handled: {_exception_message(e)}\n{traceback.format_exc()}"
@@ -174,7 +180,7 @@ class TrackedTask:
             logfire.exception("tracked_task_run failed")
             sentry_sdk.capture_exception(e)
             with Session(bind=engine) as session:
-                task = fetch_task_row(task_row.id, session, self._org)
+                task = fetch_task_row(task_row.id, TaskRepository(session), self._org)
                 commit_task_error(
                     task,
                     session,
@@ -206,7 +212,7 @@ class TaskMonitor:
         *,
         authority: ExecutionAuthority,
         notifier: SlackNotifier | None = None,
-    ):
+    ) -> None:
         self._benchmark_id = benchmark_id
         self._task_tracking = task_tracking
         self._org = org
@@ -216,7 +222,7 @@ class TaskMonitor:
 
     async def _refresh_concurrency(self) -> None:
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
+            benchmark_row = fetch_benchmark_row(self._benchmark_id, BenchmarkRepository(session), self._org)
             concurrency = benchmark_row.arguments.concurrency
         await self._limiter.resize(concurrency)
 
@@ -254,7 +260,7 @@ class TaskMonitor:
 
         """
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
+            benchmark_row = fetch_benchmark_row(self._benchmark_id, BenchmarkRepository(session), self._org)
             task_row = self._fetch_task_row(task_id)
 
             # If task has been stopped or benchmark has errored we need to exit
@@ -269,8 +275,10 @@ class TaskMonitor:
             return
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
-            notification_context = NotificationContext.from_benchmark(benchmark_row, session, self._org)
+            benchmark_row = fetch_benchmark_row(self._benchmark_id, BenchmarkRepository(session), self._org)
+            notification_context = NotificationContext.from_benchmark(
+                benchmark_row, ReportingRepository(session), self._org
+            )
             await self._notifier.check_and_notify(notification_context)
 
     async def track_tasks(self) -> None:
@@ -343,23 +351,17 @@ def save_eval_resume_state(
     expected_started_at: datetime | None = None,
 ) -> bool:
     with Session(bind=engine) as session:
-        try:
-            lock_execution_authority(session, authority)
-        except ExecutionAuthorityRevoked:
-            session.rollback()
-            return False
-        task_update = (
-            update(Task)
-            .where(col(Task.id) == task_row_id)
-            .where(col(Task.org_id) == org.id)
-            .where(col(Task.status) != TaskStatus.STOPPED)
+        repository = TaskExecutionRepository(session)
+        saved = repository.save_eval_resume_state(
+            task_row_id,
+            org.id,
+            eval_resume_state,
+            authority,
+            expected_started_at=expected_started_at,
         )
-        if expected_started_at is not None:
-            task_update = task_update.where(col(Task.started_at) == expected_started_at)
-
-        result = session.exec(task_update.values(eval_resume_state=eval_resume_state))
-        session.commit()
-        return result.rowcount > 0
+        if saved:
+            session.commit()
+        return saved
 
 
 def _commit_task_status(
@@ -384,28 +386,26 @@ def _commit_task_status(
         span_attributes["has_error_message"] = True
 
     with logfire.span("task.status_transition", **span_attributes):  # pyright: ignore[reportArgumentType]
-        try:
-            lock_execution_authority(session, authority)
-        except ExecutionAuthorityRevoked:
-            session.rollback()
-            return False
-        values: dict[str, TaskStatus | datetime] = {"status": to_status}
-        if to_status in [TaskStatus.FINISHED, TaskStatus.ERROR]:
-            values["finished_at"] = datetime.now(ZoneInfo("UTC"))
-
-        task_update = update(Task).where(col(Task.id) == task.id).where(col(Task.org_id) == task.org_id)
-        if to_status != TaskStatus.STOPPED:
-            task_update = task_update.where(col(Task.status) != TaskStatus.STOPPED)
-        if expected_started_at is not None:
-            task_update = task_update.where(col(Task.started_at) == expected_started_at)
-
-        result = session.exec(task_update.values(**values))
-        if result.rowcount == 0:
-            session.rollback()
-            return False
-
-        session.commit()
-        return True
+        repository = TaskExecutionRepository(session)
+        if error_message is not None:
+            transitioned = repository.record_error(
+                task.id,
+                task.org_id,
+                error_message,
+                authority,
+                expected_started_at=expected_started_at,
+            )
+        else:
+            transitioned = repository.transition_status(
+                task.id,
+                task.org_id,
+                to_status,
+                authority,
+                expected_started_at=expected_started_at,
+            )
+        if transitioned:
+            session.commit()
+        return transitioned
 
 
 def commit_task_status_transition(
@@ -418,7 +418,7 @@ def commit_task_status_transition(
     expected_started_at: datetime | None = None,
 ) -> bool:
     fetch_start = time.monotonic()
-    task = fetch_task_row(task_row_id, session, org)
+    task = fetch_task_row(task_row_id, TaskRepository(session), org)
     return _commit_task_status(
         task,
         session,
@@ -498,8 +498,8 @@ async def _process_task_attempt(
 
     requested_attempt_started_at = task_row.started_at
     with Session(bind=engine) as task_session:
-        benchmark_row = fetch_benchmark_row(benchmark_id, task_session, org)
-        task_row = fetch_task_row(task_row.id, task_session, org)
+        benchmark_row = fetch_benchmark_row(benchmark_id, BenchmarkRepository(task_session), org)
+        task_row = fetch_task_row(task_row.id, TaskRepository(task_session), org)
 
         if _normalized_attempt_time(task_row.started_at) != _normalized_attempt_time(requested_attempt_started_at):
             return {task_id: None}
@@ -541,15 +541,12 @@ async def _process_task_attempt(
 
     def execution_is_current() -> bool:
         with Session(bind=engine) as task_session:
-            try:
-                lock_execution_authority(task_session, authority)
-            except ExecutionAuthorityRevoked:
-                task_session.rollback()
-                return False
-            task = fetch_task_row(task_row.id, task_session, org)
-            is_current = task.status != TaskStatus.STOPPED and task.started_at == attempt_started_at
-            task_session.rollback()
-            return is_current
+            return TaskExecutionRepository(task_session).is_current(
+                task_row.id,
+                org.id,
+                authority,
+                attempt_started_at,
+            )
 
     def task_is_stopped() -> bool:
         return not execution_is_current()
@@ -579,26 +576,30 @@ async def _process_task_attempt(
                 )
 
                 with Session(bind=engine) as task_session:
-                    task_session.add(evaluation_result_row)
-                    task_in_session = fetch_task_row(task_row.id, task_session, org)
-                    if task_in_session.task_breakdown:
-                        existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
-                        assert existing_breakdown is not None
-                        existing_breakdown.evaluation_run_duration = resume_eval_duration
-                    if not commit_task_status_transition(
-                        task_row.id,
-                        task_session,
-                        org,
-                        TaskStatus.FINISHED,
-                        expected_started_at=attempt_started_at,
-                        authority=authority,
-                    ):
-                        return {task_id: None}
-
+                    fetch_start = time.monotonic()
+                    task_in_session = fetch_task_row(task_row.id, TaskRepository(task_session), org)
+                    span_attributes = {
+                        "benchmark_id": str(task_in_session.benchmark),
+                        "task_id": task_in_session.task_id,
+                        "from_status": task_in_session.status.value,
+                        "to_status": TaskStatus.FINISHED.value,
+                        "fetch_duration_ms": elapsed_ms(fetch_start),
+                    }
+                    with logfire.span("task.status_transition", **span_attributes):  # pyright: ignore[reportArgumentType]
+                        if not TaskExecutionRepository(task_session).record_evaluation_and_finish(
+                            task_row.id,
+                            org.id,
+                            evaluation_result_row,
+                            authority,
+                            expected_started_at=attempt_started_at,
+                            evaluation_run_duration=resume_eval_duration,
+                        ):
+                            return {task_id: None}
+                        task_session.commit()
                     return {task_id: evaluation_result_row.result}
             except Exception as e:
                 with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session, org)
+                    task = fetch_task_row(task_row.id, TaskRepository(task_session), org)
                     if task.status == TaskStatus.STOPPED:
                         return {task_id: None}
 
@@ -738,18 +739,27 @@ async def _process_task_attempt(
 
                 task_breakdown.agent_run_duration = agent_run_time
                 with Session(bind=engine) as task_session:
-                    task_session.add(task_breakdown)
-                    task_in_session = fetch_task_row(task_row.id, task_session, org)
-                    task_in_session.task_breakdown = task_breakdown.id
-                    if not commit_task_status_transition(
-                        task_row.id,
-                        task_session,
-                        org,
-                        TaskStatus.EVALUATING,
-                        expected_started_at=attempt_started_at,
-                        authority=authority,
-                    ):
-                        return {task_id: None}
+                    fetch_start = time.monotonic()
+                    task_in_session = fetch_task_row(task_row.id, TaskRepository(task_session), org)
+                    span_attributes = {
+                        "benchmark_id": str(task_in_session.benchmark),
+                        "task_id": task_in_session.task_id,
+                        "from_status": task_in_session.status.value,
+                        "to_status": TaskStatus.EVALUATING.value,
+                        "fetch_duration_ms": elapsed_ms(fetch_start),
+                    }
+                    with logfire.span("task.status_transition", **span_attributes):  # pyright: ignore[reportArgumentType]
+                        if not TaskExecutionRepository(task_session).attach_breakdown_and_transition(
+                            task_row.id,
+                            org.id,
+                            task_breakdown,
+                            TaskStatus.EVALUATING,
+                            authority,
+                            expected_started_at=attempt_started_at,
+                            expected_status=TaskStatus.IN_PROGRESS,
+                        ):
+                            return {task_id: None}
+                        task_session.commit()
 
                 # Evaluate the instance
                 evaluation_start_time = time.perf_counter()
@@ -792,27 +802,33 @@ async def _process_task_attempt(
                 )
 
                 with Session(bind=engine) as task_session:
-                    task_session.add(evaluation_result_row)
-                    task_in_session = fetch_task_row(task_row.id, task_session, org)
-                    existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
-                    if existing_breakdown is None:
+                    fetch_start = time.monotonic()
+                    task_in_session = fetch_task_row(task_row.id, TaskRepository(task_session), org)
+                    if task_in_session.task_breakdown is None:
                         raise TrackerServiceError(f"Missing task breakdown for task {task_row.id}")
-                    existing_breakdown.evaluation_run_duration = task_breakdown.evaluation_run_duration
-                    existing_breakdown.sandbox_run_duration = task_breakdown.sandbox_run_duration
-                    if not commit_task_status_transition(
-                        task_row.id,
-                        task_session,
-                        org,
-                        TaskStatus.FINISHED,
-                        expected_started_at=attempt_started_at,
-                        authority=authority,
-                    ):
-                        return {task_id: None}
-
+                    span_attributes = {
+                        "benchmark_id": str(task_in_session.benchmark),
+                        "task_id": task_in_session.task_id,
+                        "from_status": task_in_session.status.value,
+                        "to_status": TaskStatus.FINISHED.value,
+                        "fetch_duration_ms": elapsed_ms(fetch_start),
+                    }
+                    with logfire.span("task.status_transition", **span_attributes):  # pyright: ignore[reportArgumentType]
+                        if not TaskExecutionRepository(task_session).record_evaluation_and_finish(
+                            task_row.id,
+                            org.id,
+                            evaluation_result_row,
+                            authority,
+                            expected_started_at=attempt_started_at,
+                            evaluation_run_duration=task_breakdown.evaluation_run_duration,
+                            sandbox_run_duration=task_breakdown.sandbox_run_duration,
+                        ):
+                            return {task_id: None}
+                        task_session.commit()
                     return {task_id: evaluation_result_row.result}
             except Exception:
                 with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session, org)
+                    task = fetch_task_row(task_row.id, TaskRepository(task_session), org)
                     if task.status == TaskStatus.STOPPED:
                         return {task_id: None}
 
@@ -831,7 +847,7 @@ async def _process_task_attempt(
         log_output(f"\n[ERROR] {error_message}")
 
         with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
+            task = fetch_task_row(task_row.id, TaskRepository(task_session), org)
             commit_task_error(
                 task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
             )
@@ -848,7 +864,7 @@ async def _process_task_attempt(
         log_output(f"\n[ERROR] {error_message}")
 
         with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
+            task = fetch_task_row(task_row.id, TaskRepository(task_session), org)
             commit_task_error(
                 task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
             )
@@ -864,7 +880,7 @@ async def _process_task_attempt(
         log_output(f"\n[ERROR] {error_message}")
 
         with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
+            task = fetch_task_row(task_row.id, TaskRepository(task_session), org)
             commit_task_error(
                 task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
             )
@@ -877,7 +893,7 @@ async def _process_task_attempt(
         log_output(f"\n[ERROR] {error_message}")
 
         with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
+            task = fetch_task_row(task_row.id, TaskRepository(task_session), org)
             commit_task_error(
                 task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
             )
@@ -890,7 +906,7 @@ async def _process_task_attempt(
         log_output(f"\n[ERROR] {error_message}")
 
         with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
+            task = fetch_task_row(task_row.id, TaskRepository(task_session), org)
             commit_task_error(
                 task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
             )
@@ -909,7 +925,7 @@ async def _process_task_attempt(
         log_output(f"\n[ERROR] {error_message}")
 
         with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
+            task = fetch_task_row(task_row.id, TaskRepository(task_session), org)
             commit_task_error(
                 task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
             )
@@ -930,7 +946,6 @@ def commit_task_error(
     authority: ExecutionAuthority,
     expected_started_at: datetime | None = None,
 ) -> bool:
-    session.add(ErrorResult(org_id=task_row.org_id, task=task_row.id, error_message=error_message))
     return _commit_task_status(
         task_row,
         session,

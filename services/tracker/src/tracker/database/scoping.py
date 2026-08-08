@@ -1,10 +1,8 @@
 """Org-scoped query helpers for multi-tenant data isolation."""
 
 from typing import TypeVar
-from uuid import UUID
-
 from fastapi import HTTPException
-from sqlmodel import SQLModel, Session, select
+from sqlmodel import SQLModel, select
 
 from tracker.database.models import Org
 
@@ -21,8 +19,3 @@ def assert_org(row: T | None, org: Org) -> T:
     if row is None or row.org_id != org.id:  # type: ignore[attr-defined]
         raise HTTPException(status_code=404, detail="Not found")
     return row
-
-
-def get_scoped(model: type[T], row_id: UUID, session: Session, org: Org) -> T:
-    """Fetch a row by PK and validate it belongs to the given org. Returns 404 if missing or wrong org."""
-    return assert_org(session.get(model, row_id), org)

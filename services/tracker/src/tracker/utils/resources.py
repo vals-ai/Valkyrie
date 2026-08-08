@@ -8,18 +8,12 @@ from benchmark_service import (
     sandbox_provider_config_from_mapping,
 )
 from benchmark_service.client import BenchmarkServiceClient
-from sqlmodel import Session, select
-
+from sqlmodel import Session
 from tracker.auth import RequestIdentity
 from tracker.aws.secrets import fetch_aws_secret
 from tracker.config import create_benchmark_service_url
-from tracker.database.models import (
-    Benchmark,
-    BenchmarkArguments,
-    BenchmarkStatus,
-    Org,
-    Task,
-)
+from tracker.database.models import Benchmark, BenchmarkArguments, BenchmarkStatus, Org, Task
+from tracker.database.repositories import BenchmarkRepository, TaskRepository
 from tracker.exceptions import TrackerServiceError
 from tracker.outbound_security import validate_service_headers, validate_service_url_syntax
 from tracker.types import (
@@ -92,7 +86,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
 
 def fetch_benchmark_row(
     benchmark_id: UUID,
-    session: Session,
+    benchmark_repository: BenchmarkRepository,
     org: Org,
     *,
     for_update: bool = False,
@@ -101,7 +95,7 @@ def fetch_benchmark_row(
 
     Arguments
     - benchmark_id: Run identifier to fetch.
-    - session: Database session used for the query.
+    - benchmark_repository: Repository bound to the caller's database session.
     - org: Organization expected to contain the run.
     - for_update: Lock and refresh the row until the transaction completes.
 
@@ -111,40 +105,25 @@ def fetch_benchmark_row(
     Raises
     - ValueError: The run is missing or belongs to another organization.
     """
-    benchmark_row = session.get(
-        Benchmark,
-        benchmark_id,
-        populate_existing=for_update,
-        with_for_update=for_update or None,
-    )
-    if not benchmark_row:
-        raise ValueError(f"Run with id {benchmark_id} not found")
-    if benchmark_row.org_id != org.id:
+    benchmark_row = benchmark_repository.get_for_org(benchmark_id, org.id, for_update=for_update)
+    if benchmark_row:
+        return benchmark_row
+
+    if benchmark_repository.get_by_id(benchmark_id) is not None:
         raise ValueError(f"Run {benchmark_id} does not belong to org {org.id}")
-    return benchmark_row
 
-
-def _fetch_locked_benchmark(benchmark_id: UUID, session: Session, org: Org) -> Benchmark:
-    benchmark_row = session.exec(
-        select(Benchmark)
-        .where(Benchmark.id == benchmark_id)
-        .where(Benchmark.org_id == org.id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).one_or_none()
-    if benchmark_row is None:
-        raise ValueError(f"Run with id {benchmark_id} not found")
-    return benchmark_row
+    raise ValueError(f"Run with id {benchmark_id} not found")
 
 
 def update_benchmark_concurrency(
     benchmark_id: UUID,
     concurrency: int,
     session: Session,
+    benchmark_repository: BenchmarkRepository,
     org: Org,
 ) -> BenchmarkConcurrencyUpdate:
-    """Lock an org-scoped run and persist a new active-run concurrency limit."""
-    benchmark_row = _fetch_locked_benchmark(benchmark_id, session, org)
+    """Lock an org-scoped run and stage a new active-run concurrency limit for the caller to commit."""
+    benchmark_row = fetch_benchmark_row(benchmark_id, benchmark_repository, org, for_update=True)
     if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
         return BenchmarkConcurrencyUpdate(
             benchmark_id=benchmark_row.id,
@@ -153,17 +132,17 @@ def update_benchmark_concurrency(
         )
 
     benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": concurrency})
-    result = BenchmarkConcurrencyUpdate(
+    session.add(benchmark_row)
+    return BenchmarkConcurrencyUpdate(
         benchmark_id=benchmark_row.id,
         status=benchmark_row.status,
         concurrency=benchmark_row.arguments.concurrency,
     )
-    session.commit()
-    return result
 
 
 def update_benchmark_resume_arguments(
     benchmark_id: UUID,
+    benchmark_repository: BenchmarkRepository,
     session: Session,
     org: Org,
     *,
@@ -172,7 +151,7 @@ def update_benchmark_resume_arguments(
     benchmark_url: str | None,
 ) -> Benchmark:
     """Lock and persist argument and service URL overrides used by resume and retry."""
-    benchmark_row = _fetch_locked_benchmark(benchmark_id, session, org)
+    benchmark_row = fetch_benchmark_row(benchmark_id, benchmark_repository, org, for_update=True)
     arguments = benchmark_row.arguments
 
     if secrets:
@@ -189,11 +168,13 @@ def update_benchmark_resume_arguments(
     return benchmark_row
 
 
-def fetch_task_row(task_id: UUID, session: Session, org: Org) -> Task:
+def fetch_task_row(task_id: UUID, task_repository: TaskRepository, org: Org) -> Task:
     """Fetch task row with org validation. Raises domain errors (not HTTPException) for use in background tasks."""
-    task_row = session.get(Task, task_id)
-    if not task_row:
-        raise TrackerServiceError(f"Task with id {task_id} not found")
-    if task_row.org_id != org.id:
+    task_row = task_repository.get_by_id_for_org(task_id, org.id)
+    if task_row:
+        return task_row
+
+    if task_repository.get_by_id(task_id) is not None:
         raise TrackerServiceError(f"Task {task_id} does not belong to org {org.id}")
-    return task_row
+
+    raise TrackerServiceError(f"Task with id {task_id} not found")

@@ -21,6 +21,7 @@ from sqlmodel import Session, select
 import tracker.utils.run_control as run_control_module
 import tracker.utils.run_orchestration as run_orchestration_module
 from tests.factories import make_benchmark, make_task
+from tracker.database.repositories import BenchmarkRepository, ReportingRepository, RunControlRepository
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -161,7 +162,7 @@ class TestRunFinalization:
             dispatch_id=UUID(str(authority_kwargs["executor_dispatch_id"])),
         )
         postgres_session.refresh(benchmark)
-        final_view = create_final_view(benchmark, postgres_session, org)
+        final_view = create_final_view(benchmark, ReportingRepository(postgres_session), org)
 
         stale_dispatch = postgres_session.get(ExecutorDispatch, authority.dispatch_id)
         assert stale_dispatch is not None
@@ -290,6 +291,8 @@ class TestRunFinalization:
                         retry_mode=RetryMode.FROM_SCRATCH,
                         rerun_task_ids=[task.task_id],
                         org=org,
+                        repository=RunControlRepository(retry_session),
+                        benchmark_repository=BenchmarkRepository(retry_session),
                     )
                 finally:
                     await benchmark_service.close()
@@ -604,7 +607,7 @@ class TestRunFinalization:
                     assert allow_retry_lock.wait(timeout=2)
                     retry_benchmark = fetch_benchmark_row(
                         benchmark.id,
-                        retry_session,
+                        BenchmarkRepository(retry_session),
                         org,
                         for_update=True,
                     )
@@ -662,6 +665,8 @@ class TestRunFinalization:
                 harness_config.sandbox_provider_secret_name,
                 harness_config.aws,
                 org,
+                repository=RunControlRepository(postgres_session),
+                benchmark_repository=BenchmarkRepository(postgres_session),
             )
         finally:
             allow_retry_lock.set()

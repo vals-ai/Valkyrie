@@ -5,12 +5,11 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlmodel import Session, col, func, select
 
 from tracker.api.parsing import parse_csv
 from tracker.auth import get_current_org
-from tracker.database.models import Benchmark, Org, Task, TaskStatus
-from tracker.database.session import get_session
+from tracker.database.dependencies import BenchmarkRepositoryDep
+from tracker.database.models import Org, TaskStatus
 from tracker.types import BenchmarkStatusEntry, BenchmarkStatusResponse
 
 router = APIRouter(prefix="/benchmarks")
@@ -18,27 +17,20 @@ router = APIRouter(prefix="/benchmarks")
 
 @router.get("/status", response_model=BenchmarkStatusResponse)
 def get_benchmarks_status(
+    benchmark_repository: BenchmarkRepositoryDep,
     ids: str = Query(default=""),
     org: Org = Depends(get_current_org),
-    session: Session = Depends(get_session),
 ) -> BenchmarkStatusResponse:
     """Return status + task-count breakdown for the listed benchmark ids."""
     parsed_ids = parse_csv(ids, UUID)
     if not parsed_ids:
         return BenchmarkStatusResponse(entries=[])
 
-    benchmarks = session.exec(
-        select(Benchmark).where(Benchmark.org_id == org.id).where(col(Benchmark.id).in_(parsed_ids))
-    ).all()
-
-    count_rows = session.exec(
-        select(Task.benchmark, Task.status, func.count())
-        .where(col(Task.benchmark).in_([benchmark.id for benchmark in benchmarks]))
-        .group_by(col(Task.benchmark), col(Task.status))
-    ).all()
-    counts_by_benchmark_id: dict[UUID, dict[TaskStatus, int]] = {}
-    for benchmark_id, status, count in count_rows:
-        counts_by_benchmark_id.setdefault(benchmark_id, {})[TaskStatus(status)] = count
+    benchmarks = benchmark_repository.get_for_ids(parsed_ids, org.id)
+    counts_by_benchmark_id = benchmark_repository.get_task_status_counts(
+        [benchmark.id for benchmark in benchmarks],
+        org.id,
+    )
 
     entries: list[BenchmarkStatusEntry] = []
     for benchmark in benchmarks:

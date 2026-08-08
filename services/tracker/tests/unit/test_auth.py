@@ -10,6 +10,7 @@ from sqlmodel import Session
 from tests.utils import TEST_ORG_ID
 from tracker.auth import forward_tracker_api_key
 from tracker.database.models import DEFAULT_ORG_NAME, Org
+from tracker.database.repositories import OrgRepository
 
 
 class TestGetDefaultOrg:
@@ -22,7 +23,7 @@ class TestGetDefaultOrg:
         empty_database_session.add(vals_org)
         empty_database_session.commit()
 
-        result = get_default_org(empty_database_session)
+        result = get_default_org(OrgRepository(empty_database_session))
         assert result.id == TEST_ORG_ID
         assert result.name == DEFAULT_ORG_NAME
 
@@ -32,7 +33,7 @@ class TestGetDefaultOrg:
         setattr(auth_module, "_cached_default_org", None)
 
         with pytest.raises(RuntimeError, match="Default org not found"):
-            auth_module.get_default_org(empty_database_session)
+            auth_module.get_default_org(OrgRepository(empty_database_session))
 
 
 class TestForwardTrackerApiKey:

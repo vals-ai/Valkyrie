@@ -2,9 +2,6 @@
 
 import traceback
 from collections.abc import AsyncGenerator
-from datetime import datetime
-from typing import Any
-from zoneinfo import ZoneInfo
 
 from benchmark_service import (
     Sandbox,
@@ -13,16 +10,10 @@ from benchmark_service import (
     SandboxQuery,
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
-from sqlmodel import Session, asc, col, func, or_, select, update
+from sqlmodel import Session
 
-from tracker.database.models import (
-    Benchmark,
-    BenchmarkStatus,
-    Org,
-    RetryMode,
-    Task,
-    TaskStatus,
-)
+from tracker.database.models import Benchmark, Org, RetryMode
+from tracker.database.repositories import BenchmarkRepository, RunControlRepository
 from tracker.executor.dispatch_control import terminalize_active_dispatches
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
@@ -42,22 +33,16 @@ def apply_stop_benchmark(
     force: bool,
     org: Org,
     task_ids: list[str] | None = None,
+    *,
+    repository: RunControlRepository,
 ) -> None:
     """Apply the Stop state transition without committing the transaction."""
-    task_update = (
-        update(Task)
-        .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.org_id) == org.id)
-        .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]))
+    repository.apply_stop(
+        benchmark_row,
+        org.id,
+        force=force,
+        task_ids=task_ids,
     )
-    if task_ids:
-        task_update = task_update.where(col(Task.task_id).in_(task_ids))
-
-    result = session.exec(task_update.values(status=TaskStatus.STOPPED))
-
-    if task_ids is None and (result.rowcount > 0 or force):
-        benchmark_row.status = BenchmarkStatus.STOPPING
-        session.add(benchmark_row)
 
 
 async def initiate_stop_benchmark(
@@ -66,10 +51,17 @@ async def initiate_stop_benchmark(
     force: bool,
     org: Org,
     task_ids: list[str] | None = None,
+    *,
+    repository: RunControlRepository,
 ) -> None:
     """Initiate Stop without interrupting work that already started unless forced."""
     try:
-        apply_stop_benchmark(benchmark_row, session, force, org, task_ids)
+        repository.apply_stop(
+            benchmark_row,
+            org.id,
+            force=force,
+            task_ids=task_ids,
+        )
         session.commit()
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error stopping run {benchmark_row.id}: {str(e)}") from e
@@ -117,6 +109,9 @@ async def force_stop_sandboxes(
     org: Org,
     sandbox_provider: str = "daytona",
     task_ids: list[str] | None = None,
+    *,
+    repository: RunControlRepository,
+    benchmark_repository: BenchmarkRepository,
 ) -> None:
     """
     Stops and deletes all sandboxes which are in progress or evaluating.
@@ -125,28 +120,18 @@ async def force_stop_sandboxes(
     Raises:
         TrackerServiceError: If there are any errors stopping the sandboxes
     """
-    benchmark_service = benchmark_row.benchmark_service()
-    provider = benchmark_service.get_sandbox_provider(
-        fetch_sandbox_provider_config(sandbox_provider_secret_name, aws, sandbox_provider)
-    )
-
-    # Update all tasks being processed to stopped
-    task_update = (
-        update(Task)
-        .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.org_id) == org.id)
-        .where(col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]))
-    )
-    if task_ids:
-        task_update = task_update.where(col(Task.task_id).in_(task_ids))
-
-    session.exec(task_update.values(status=TaskStatus.STOPPED))
-
+    # Persist active-task STOPPED statuses before touching provider sandboxes.
+    repository.stop_active_tasks(benchmark_row.id, org.id, task_ids=task_ids)
     session.commit()
 
-    # Iterate through each running sandbox and stop it, collecting error messages
+    # Construct the service only after the stop phase is committed. Provider setup
+    # belongs in the cleanup try/finally so the service closes on setup failures too.
+    benchmark_service = benchmark_row.benchmark_service()
     results: dict[str, str | None] = {}
     try:
+        provider = benchmark_service.get_sandbox_provider(
+            fetch_sandbox_provider_config(sandbox_provider_secret_name, aws, sandbox_provider)
+        )
         async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids):
             result = await stop_sandbox(sandbox, provider)
             results[sandbox.name] = result
@@ -159,19 +144,13 @@ async def force_stop_sandboxes(
 
     # Sandbox teardown releases the request's original benchmark lock. Reacquire
     # it so Retry admission cannot land between the runnable check and revocation.
-    benchmark_row = fetch_benchmark_row(benchmark_row.id, session, org, for_update=True)
-    finished_statuses: list[TaskStatus] = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
-    tasks_still_running: int = session.exec(
-        select(func.count(col(Task.id)))
-        .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.org_id) == org.id)
-        .where(col(Task.status).notin_(finished_statuses))
-    ).one()
-
-    if not tasks_still_running:
-        benchmark_row.status = BenchmarkStatus.STOPPED
-        terminalize_active_dispatches(session, benchmark_row.id)
-        session.add(benchmark_row)
+    locked_benchmark = repository.lock_benchmark(benchmark_row.id, org.id)
+    if locked_benchmark is None:
+        # Preserve the legacy distinction between a missing run and a wrong-org run.
+        locked_benchmark = fetch_benchmark_row(benchmark_row.id, benchmark_repository, org, for_update=True)
+    if repository.count_nonterminal_tasks(locked_benchmark.id, org.id) == 0:
+        repository.mark_stopped(locked_benchmark)
+        terminalize_active_dispatches(session, locked_benchmark.id)
     session.commit()
 
     if error_message:
@@ -186,6 +165,9 @@ async def reset_to_in_progress_status(
     retry_mode: RetryMode,
     rerun_task_ids: list[str],
     org: Org,
+    *,
+    repository: RunControlRepository,
+    benchmark_repository: BenchmarkRepository,
 ) -> list[str]:
     """
     Resets valid tasks to in progress and to allow for retrying or resuming the benchmark.
@@ -200,91 +182,37 @@ async def reset_to_in_progress_status(
     NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
     """
     try:
-        # Serialize retries with final-score persistence for this benchmark.
-        benchmark_row = fetch_benchmark_row(benchmark_row.id, session, org, for_update=True)
-        existing_rows = session.exec(
-            select(Task)
-            .where(*_retry_task_filters(benchmark_row, retry, rerun_task_ids, org))
-            .order_by(asc(Task.started_at))
-        ).all()
-        existing_by_task_id: dict[str, Task] = {task.task_id: task for task in existing_rows}
+        # Serialize retries with final-score persistence for this benchmark and keep
+        # the row lock while the service verifies IDs and the caller admits dispatch.
+        locked_benchmark = repository.lock_benchmark(benchmark_row.id, org.id)
+        if locked_benchmark is None:
+            # Preserve the legacy distinction between a missing run and a wrong-org run.
+            locked_benchmark = fetch_benchmark_row(benchmark_row.id, benchmark_repository, org, for_update=True)
 
-        if benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
-            missing_task_ids = [task_id for task_id in rerun_task_ids if task_id not in existing_by_task_id]
-            if missing_task_ids:
-                raise TrackerServiceError(
-                    f"{', '.join(missing_task_ids)} cannot be retried while run {benchmark_row.id} is in progress because they are not in ERROR status"
-                )
-            new_task_ids = []
-        else:
-            new_task_ids = [tid for tid in rerun_task_ids if tid not in existing_by_task_id]
-
-        # Allow re-running the end of the benchmark without running any tasks
-        if not existing_rows and not new_task_ids:
-            return []
-
-        # Verify the task ids are still valid before priming to resume
-        # Raises if any task ids are invalid
-        all_requested_task_ids = [task.task_id for task in existing_rows] + new_task_ids
-        verify_response = await benchmark_service.verify_task_ids(
-            task_ids=all_requested_task_ids, slice_str=None, dataset=benchmark_row.arguments.dataset
+        selection = repository.select_retryable(
+            locked_benchmark,
+            org.id,
+            retry=retry,
+            rerun_task_ids=rerun_task_ids,
         )
 
-        old_evaluation = benchmark_row.final_evaluation
-        if old_evaluation is not None:
-            benchmark_row.final_evaluation = None
-            session.delete(old_evaluation)
+        # Allow re-running the end of the benchmark without running any tasks.
+        if not selection.existing_tasks and not selection.new_task_ids:
+            return []
 
-        # Retry/resume always starts a new active execution.
-        if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
-            benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-        benchmark_row.finished_at = None
-        session.add(benchmark_row)
-
-        for task in existing_rows:
-            task.status = (
-                TaskStatus.EVALUATING
-                if retry_mode == RetryMode.AUTO and task.eval_resume_state is not None
-                else TaskStatus.PENDING
-            )
-            task.started_at = datetime.now(ZoneInfo("UTC"))
-            task.finished_at = None
-            if retry_mode == RetryMode.FROM_SCRATCH:
-                task.eval_resume_state = None
-            session.add(task)
-
-        for task_id in new_task_ids:
-            session.add(Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING))
-
+        # Verify the task ids are still valid before priming to resume.
+        verify_response = await benchmark_service.verify_task_ids(
+            task_ids=[task.task_id for task in selection.existing_tasks] + selection.new_task_ids,
+            slice_str=None,
+            dataset=locked_benchmark.arguments.dataset,
+        )
+        repository.apply_retry(
+            selection,
+            org.id,
+            retry_mode=retry_mode,
+        )
         return verify_response.task_ids
     except (TrackerServiceError, BenchmarkServiceError):
         raise
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error resuming run {benchmark_row.id}: {str(e)}") from e
-
-
-def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: list[str], org: Org) -> list[Any]:
-    """Select retryable rows.
-
-    Active retries on in-progress runs are limited to ERROR tasks. Finished tasks must wait until the run is terminal.
-    """
-    filters = [
-        col(Task.benchmark) == benchmark_row.id,
-        col(Task.org_id) == org.id,
-    ]
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
-        filters.append(col(Task.status) == TaskStatus.ERROR)
-        if rerun_task_ids:
-            filters.append(col(Task.task_id).in_(rerun_task_ids))
-        return filters
-
-    if retry and rerun_task_ids:
-        filters.append(col(Task.task_id).in_(rerun_task_ids))
-        return filters
-
-    retry_statuses = [TaskStatus.STOPPED]
-    if retry:
-        retry_statuses.append(TaskStatus.ERROR)
-
-    filters.append(or_(col(Task.status).in_(retry_statuses), col(Task.task_id).in_(rerun_task_ids)))
-    return filters

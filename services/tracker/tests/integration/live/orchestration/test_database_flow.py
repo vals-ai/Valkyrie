@@ -16,6 +16,7 @@ from sqlmodel import Session, col, select
 
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import Benchmark, EvaluationResult, FinalEvaluation, Task, TaskStatus
+from tracker.database.repositories import ReportingRepository
 from tracker.sandbox import create_sandbox
 
 pytestmark = pytest.mark.usefixtures("tracker_database")
@@ -152,7 +153,9 @@ async def test_live_results_round_trip_through_tracker_database(
 
     final_score_response = await benchmark_service.final_score(evaluation_results=evaluation_results)
     final_evaluation_row = create_final_evaluation(database_session, benchmark_row, final_score_response)
-    fetched_evaluation_results = benchmark_row.fetch_evaluation_results(database_session)
+    fetched_evaluation_results = ReportingRepository(database_session).fetch_evaluation_results(
+        benchmark_row.id, benchmark_row.org_id
+    )
 
     assert set(fetched_evaluation_results) == set(task_ids)
     for task_id, evaluation_result in fetched_evaluation_results.items():

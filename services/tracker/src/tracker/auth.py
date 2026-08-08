@@ -7,15 +7,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from descope import AuthException, DescopeClient
-from fastapi import Depends, HTTPException, Request
+from fastapi import HTTPException, Request
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import ReadTimeout
-from sqlmodel import Session, select
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from tracker.config import AUTH_REQUIRED, DESCOPE_MANAGEMENT_KEY, DESCOPE_PROJECT_ID
-from tracker.database.models import DEFAULT_ORG_NAME, Org
-from tracker.database.session import get_session
+from tracker.database.models import Org
+from tracker.database.dependencies import OrgRepositoryDep
+from tracker.database.repositories import OrgRepository
 from tracker.logging import get_logger
 from tracker.outbound_security import validate_service_headers
 
@@ -135,12 +135,12 @@ def _load_descope_user_profile(user_id: str) -> DescopeUserProfile:
     return DescopeUserProfile(email=email, name=name)
 
 
-def get_default_org(session: Session) -> Org:
+def get_default_org(org_repository: OrgRepository) -> Org:
     """Fetch the default org, cached after first load. Used in self-hosted mode."""
     global _cached_default_org
     if _cached_default_org is not None:
         return _cached_default_org
-    org = session.exec(select(Org).where(Org.name == DEFAULT_ORG_NAME)).first()
+    org = org_repository.get_default()
     if not org:
         raise RuntimeError("Default org not found — run the migration")
     _cached_default_org = org
@@ -219,9 +219,9 @@ def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False
     return DescopeIdentity(tenant_name=tenants[0], access_key_id=access_key_id, email=email, name=name)
 
 
-def find_org_by_tenant(tenant_name: str, session: Session) -> Org | None:
+def find_org_by_tenant(tenant_name: str, org_repository: OrgRepository) -> Org | None:
     """Look up an org by Descope tenant name. Returns None if not found."""
-    return session.exec(select(Org).where(Org.name == tenant_name)).first()
+    return org_repository.find_by_name(tenant_name)
 
 
 def forward_tracker_api_key(
@@ -258,7 +258,7 @@ def _extract_bearer_token(request: Request) -> str | None:
     return parts[1]
 
 
-def resolve_bearer_session(jwt: str, session: Session) -> Org:
+def resolve_bearer_session(jwt: str, org_repository: OrgRepository) -> Org:
     """Validate a Descope session JWT and resolve the org."""
     if not _descope_client:
         raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
@@ -274,17 +274,17 @@ def resolve_bearer_session(jwt: str, session: Session) -> Org:
         raise HTTPException(status_code=400, detail="Session token has no tenant")
     tenant_name = tenants[0]
 
-    org = find_org_by_tenant(tenant_name, session)
+    org = find_org_by_tenant(tenant_name, org_repository)
     if not org:
         raise HTTPException(status_code=404, detail=f"Organization '{tenant_name}' not configured")
 
     return org
 
 
-def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:
+def get_current_org(request: Request, org_repository: OrgRepositoryDep) -> Org:
     """Resolve the current org from either an Authorization: Bearer or x-api-key header."""
     if not AUTH_REQUIRED:
-        return get_default_org(session)
+        return get_default_org(org_repository)
 
     bearer = _extract_bearer_token(request)
     api_key = request.headers.get("x-api-key") or ""
@@ -295,28 +295,28 @@ def get_current_org(request: Request, session: Session = Depends(get_session)) -
         raise HTTPException(status_code=401, detail="Missing Authorization or x-api-key header")
 
     if bearer:
-        return resolve_bearer_session(bearer, session)
+        return resolve_bearer_session(bearer, org_repository)
 
     identity = resolve_descope_identity(api_key)
-    org = find_org_by_tenant(identity.tenant_name, session)
+    org = find_org_by_tenant(identity.tenant_name, org_repository)
     if not org:
         raise HTTPException(status_code=404, detail=f"Organization '{identity.tenant_name}' not configured")
 
     return org
 
 
-def get_current_starter(request: Request, session: Session = Depends(get_session)) -> RequestIdentity:
+def get_current_starter(request: Request, org_repository: OrgRepositoryDep) -> RequestIdentity:
     """FastAPI dependency that returns the full identity behind the current request.
 
     Self-hosted (AUTH_REQUIRED=False): returns RequestIdentity with default org and Nones.
     Hosted (AUTH_REQUIRED=True): validates Descope API key and resolves org + identity.
     """
     if not AUTH_REQUIRED:
-        return RequestIdentity(org=get_default_org(session), access_key_id=None, email=None, name=None)
+        return RequestIdentity(org=get_default_org(org_repository), access_key_id=None, email=None, name=None)
 
     api_key = extract_api_key(request)
     identity = resolve_descope_identity(api_key, include_user_profile=True)
-    org = find_org_by_tenant(identity.tenant_name, session)
+    org = find_org_by_tenant(identity.tenant_name, org_repository)
     if not org:
         raise HTTPException(
             status_code=404,

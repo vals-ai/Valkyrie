@@ -53,6 +53,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.config import STABLE_QUEUE_NAME
+from tracker.database.repositories import BenchmarkRepository
 from tracker.exceptions import TrackerServiceError
 from tracker.types import (
     BenchmarkTableRow,
@@ -233,8 +234,10 @@ class TestTrackerAPI:
             example_benchmark_object.id,
             9,
             database_session,
+            BenchmarkRepository(database_session),
             Org(id=TEST_ORG_ID, name="default"),
         )
+        database_session.commit()
 
         assert result.status == BenchmarkStatus.STOPPED
         database_session.expire_all()
@@ -245,31 +248,27 @@ class TestTrackerAPI:
 
     def test_update_benchmark_concurrency_returns_snapshot_from_locked_transaction(
         self,
-        monkeypatch: MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
     ) -> None:
         database_session.add(example_benchmark_object)
         database_session.commit()
-        commit_update = database_session.commit
-
-        def commit_then_stop() -> None:
-            commit_update()
-            with Session(bind=database_session.get_bind()) as concurrent_session:
-                concurrent_benchmark = concurrent_session.get(Benchmark, example_benchmark_object.id)
-                assert concurrent_benchmark is not None
-                concurrent_benchmark.status = BenchmarkStatus.STOPPED
-                concurrent_session.add(concurrent_benchmark)
-                concurrent_session.commit()
-
-        monkeypatch.setattr(database_session, "commit", commit_then_stop)
 
         result = update_benchmark_concurrency(
             example_benchmark_object.id,
             9,
             database_session,
+            BenchmarkRepository(database_session),
             Org(id=TEST_ORG_ID, name="default"),
         )
+        database_session.commit()
+
+        with Session(bind=database_session.get_bind()) as concurrent_session:
+            concurrent_benchmark = concurrent_session.get(Benchmark, example_benchmark_object.id)
+            assert concurrent_benchmark is not None
+            concurrent_benchmark.status = BenchmarkStatus.STOPPED
+            concurrent_session.add(concurrent_benchmark)
+            concurrent_session.commit()
 
         assert result.status == BenchmarkStatus.IN_PROGRESS
         database_session.expire_all()
@@ -1545,6 +1544,11 @@ class TestTrackerAPI:
         body = response.json()
         assert not body["email_claim_missing"]
         assert body["org_name"] == "test-tenant"
+        assert body["created"] is True
+
+        repeat_response = client.post("/init", headers={"X-Api-Key": "valid-key"})
+        assert repeat_response.status_code == 200
+        assert repeat_response.json()["created"] is False
 
     async def test_init_org_returns_email_claim_missing(
         self,

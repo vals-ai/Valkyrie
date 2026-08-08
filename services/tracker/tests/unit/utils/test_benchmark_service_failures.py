@@ -310,7 +310,7 @@ class TestBenchmarkServiceFailures:
             raise BenchmarkServiceError(html_error)
 
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
-        benchmark_row = fetch_benchmark_row(benchmark_id, database_session, TEST_ORG)
+        benchmark_row = fetch_benchmark_row(benchmark_id, BenchmarkRepository(database_session), TEST_ORG)
         authority_kwargs = executor_authority_kwargs(benchmark_row)
 
         await process_benchmark(
@@ -321,7 +321,7 @@ class TestBenchmarkServiceFailures:
         )
 
         with Session(bind=database_session.bind) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, TEST_ORG)
+            benchmark_row = fetch_benchmark_row(benchmark_id, BenchmarkRepository(session), TEST_ORG)
             assert benchmark_row.status == BenchmarkStatus.ERROR
             assert benchmark_row.error_message is not None
             assert "Final score failed with status code 404" in benchmark_row.error_message

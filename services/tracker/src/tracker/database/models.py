@@ -14,13 +14,9 @@ from sqlmodel import (
     Column,
     Field,
     Relationship,
-    Session,
     SQLModel,
     TypeDecorator,
     UniqueConstraint,
-    col,
-    func,
-    select,
 )
 
 from tracker.database.utils import has_field_changed
@@ -30,7 +26,6 @@ if TYPE_CHECKING:
     from benchmark_service.client import BenchmarkServiceClient
 
     from tracker.types import (
-        BenchmarkTableRow,
         FetchBenchmarkMetadataResponse,
         HarnessConfig,
         StartBenchmarkRequest,
@@ -205,11 +200,6 @@ class FinalEvaluation(SQLModel, table=True):
     def serialize_uuid(self, value: UUID | str) -> str:
         return str(value)
 
-    def fetch_evaluation_results(self, session: Session) -> dict[str, dict[str, Any]]:
-        from tracker.utils import fetch_evaluation_results
-
-        return fetch_evaluation_results(self.benchmark, session, self.org_id)
-
 
 class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
     """
@@ -329,30 +319,6 @@ class Benchmark(SQLModel, table=True):
         sa_relationship_kwargs={"foreign_keys": "[FinalEvaluation.benchmark]"}
     )
 
-    def fetch_evaluation_results(self, session: Session) -> dict[str, dict[str, Any]]:
-        from tracker.utils import fetch_evaluation_results
-
-        return fetch_evaluation_results(self.id, session, self.org_id)
-
-    def fetch_tasks_with_errors(self, session: Session) -> dict[str, str] | None:
-        error_rows = session.exec(
-            select(Task.task_id, ErrorResult.error_message)
-            .outerjoin(ErrorResult, col(ErrorResult.task) == col(Task.id))
-            .where(Task.benchmark == self.id)
-            .where(Task.org_id == self.org_id)
-            .where(Task.status == TaskStatus.ERROR)
-            .order_by(col(Task.id), col(ErrorResult.created_at).desc())
-        ).all()
-
-        if not error_rows:
-            return None
-
-        errors_by_task_id: dict[str, str] = {}
-        for task_id, error_message in error_rows:
-            errors_by_task_id.setdefault(task_id, error_message or "No error message was provided")
-
-        return errors_by_task_id
-
     def start_benchmark_request(
         self, harness_config: "HarnessConfig", service_headers: dict[str, str] | None = None
     ) -> "StartBenchmarkRequest":
@@ -411,67 +377,6 @@ class Benchmark(SQLModel, table=True):
             executor_artifact_digest=self.executor_artifact_digest,
             executor_protocol_version=self.executor_protocol_version,
         )
-
-    def create_benchmark_table_row(self, session: Session) -> "BenchmarkTableRow":
-        """
-        Creates a benchmark table row object used to display the current data from this benchmark row.
-        Used in a table like feature amongst other benchmarks rows.
-
-        Args:
-            session: Session to use to fetch the total and finished tasks
-
-        Returns:
-            BenchmarkTableRow
-        """
-        from tracker.types import BenchmarkTableRow
-
-        task_state_counts = self.fetch_task_state_counts(session)
-        total_tasks = sum(task_state_counts.values())
-        finished_tasks = (
-            task_state_counts.get(TaskStatus.FINISHED, 0)
-            + task_state_counts.get(TaskStatus.ERROR, 0)
-            + task_state_counts.get(TaskStatus.STOPPED, 0)
-        )
-
-        return BenchmarkTableRow(
-            id=self.id,
-            name=self.name,
-            agent_name=self.arguments.contract.name,
-            model=self.arguments.contract.model,
-            dataset=self.arguments.dataset or "default",
-            executor_release_id=self.executor_release_id,
-            current_execution_release_id=self.current_execution_release_id,
-            executor_artifact_digest=self.executor_artifact_digest,
-            executor_protocol_version=self.executor_protocol_version,
-            started_by_email=self.started_by_email,
-            started_at=self.started_at,
-            finished_at=self.finished_at,
-            status=self.status,
-            total_tasks=total_tasks,
-            finished_tasks=finished_tasks,
-            task_state_counts={k.value: v for k, v in task_state_counts.items()},
-            final_score=(self.final_evaluation.final_score if self.final_evaluation else None),
-            label=self.label,
-        )
-
-    def fetch_task_state_counts(self, session: Session) -> dict[TaskStatus, int]:
-        """Count this benchmark's tasks grouped by TaskStatus."""
-        rows = session.exec(
-            select(col(Task.status), func.count(col(Task.task_id)))
-            .where(col(Task.benchmark) == self.id)
-            .where(col(Task.org_id) == self.org_id)
-            .group_by(col(Task.status))
-        ).all()
-        return {status: count for status, count in rows}
-
-    def fetch_final_score(self, session: Session) -> float | None:
-        """Return the FinalEvaluation.final_score for this benchmark, or None if no row exists."""
-        row = session.exec(
-            select(FinalEvaluation.final_score)
-            .where(col(FinalEvaluation.benchmark) == self.id)
-            .where(col(FinalEvaluation.org_id) == self.org_id)
-        ).first()
-        return row if row is not None else None
 
 
 @event.listens_for(Benchmark, "before_insert")
