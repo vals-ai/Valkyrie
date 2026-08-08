@@ -128,11 +128,9 @@ def _configure_database(task: ReleaseTaskConfig) -> None:
 
 
 def _activate_sealed_release(task: ReleaseTaskConfig, release: ReleaseInput) -> None:
-    from sqlmodel import Session
-
     from tracker.database.models import ExecutorRelease
-    from tracker.database.repositories import ExecutorControlRepository
     from tracker.database.session import engine
+    from tracker.database.transaction import open_tracker_transaction
     from tracker.exceptions import ReleaseControlError
     from tracker.executor.release_control import (
         complete_release_activation,
@@ -147,14 +145,14 @@ def _activate_sealed_release(task: ReleaseTaskConfig, release: ReleaseInput) -> 
         protocol_version=release.protocol_version,
     )
     try:
-        with Session(engine) as session:
+        with open_tracker_transaction(engine) as transaction:
             prepare_release_activation(
-                ExecutorControlRepository(session),
+                transaction.executor_control,
                 candidate,
                 expected_bucket=task.release_bucket,
                 expected_prefix=task.release_prefix,
             )
-            session.commit()
+            transaction.commit()
 
         verification_metadata = verify_release_artifact(
             ExecutorRelease(
@@ -165,9 +163,9 @@ def _activate_sealed_release(task: ReleaseTaskConfig, release: ReleaseInput) -> 
             )
         )
 
-        with Session(engine) as session:
+        with open_tracker_transaction(engine) as transaction:
             complete_release_activation(
-                ExecutorControlRepository(session),
+                transaction.executor_control,
                 ExecutorRelease(
                     id=release.release_id,
                     artifact_uri=release.artifact_uri,
@@ -176,7 +174,7 @@ def _activate_sealed_release(task: ReleaseTaskConfig, release: ReleaseInput) -> 
                 ),
                 verification_metadata,
             )
-            session.commit()
+            transaction.commit()
     except ReleaseControlError as error:
         raise SystemExit(f"Executor release activation failed: {error}") from error
 
@@ -218,16 +216,14 @@ def _force_stop_executor_hosts(client: EcsClient, task: ReleaseTaskConfig) -> in
 
 
 def _begin_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) -> dict[str, int]:
-    from sqlmodel import Session
-
-    from tracker.database.repositories import ExecutorControlRepository
     from tracker.database.session import engine
+    from tracker.database.transaction import open_tracker_transaction
     from tracker.exceptions import MaintenanceOwnershipError
 
     try:
-        with Session(engine) as session:
-            summary = ExecutorControlRepository(session).begin_maintenance(maintenance.target_sha)
-            session.commit()
+        with open_tracker_transaction(engine) as transaction:
+            summary = transaction.executor_control.begin_maintenance(maintenance.target_sha)
+            transaction.commit()
     except MaintenanceOwnershipError as error:
         raise SystemExit(f"Maintenance begin failed: {error}") from error
 
@@ -248,10 +244,8 @@ def _begin_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) -
 
 
 def _finish_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) -> None:
-    from sqlmodel import Session
-
-    from tracker.database.repositories import ExecutorControlRepository
     from tracker.database.session import engine
+    from tracker.database.transaction import open_tracker_transaction
     from tracker.exceptions import MaintenanceOwnershipError
 
     client = create_ecs_client()
@@ -271,9 +265,9 @@ def _finish_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) 
     )
 
     try:
-        with Session(engine) as session:
-            ExecutorControlRepository(session).finish_maintenance(maintenance.target_sha)
-            session.commit()
+        with open_tracker_transaction(engine) as transaction:
+            transaction.executor_control.finish_maintenance(maintenance.target_sha)
+            transaction.commit()
     except MaintenanceOwnershipError as error:
         raise SystemExit(f"Maintenance finish failed: {error}") from error
 

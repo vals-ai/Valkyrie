@@ -12,8 +12,6 @@ from functools import cached_property
 from typing import NamedTuple, Sequence
 from uuid import UUID
 
-from sqlmodel import Session
-
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     create_benchmark_url,
@@ -22,7 +20,7 @@ from tracker.aws.s3 import (
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, TaskStatus
 from tracker.database.repositories import BenchmarkRepository, BenchmarkTaskCounts, ReportingRepository
 from tracker.database.session import engine
-from tracker.database.transaction import TrackerTransaction
+from tracker.database.transaction import open_tracker_transaction
 from tracker.logging import get_logger
 from tracker.types import (
     BenchmarkDetails,
@@ -109,8 +107,7 @@ async def stream_benchmark_results(benchmark_id: UUID, harness_config: HarnessCo
         while True:
             terminal = False
             found = False
-            with Session(bind=engine) as fresh_session:
-                transaction = TrackerTransaction.from_session(fresh_session)
+            with open_tracker_transaction(engine) as transaction:
                 fresh_benchmark = transaction.benchmarks.get_for_org(benchmark_id, org.id)
                 if fresh_benchmark is None:
                     event = f"{EVENT_ERROR} {json.dumps({'error': 'Run not found'})}\n\n"

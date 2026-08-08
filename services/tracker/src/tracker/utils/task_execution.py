@@ -42,13 +42,9 @@ from tracker.database.models import (
     TaskBreakdown,
     TaskStatus,
 )
-from tracker.database.repositories import (
-    BenchmarkRepository,
-    TaskExecutionRepository,
-    TaskRepository,
-)
+from tracker.database.repositories import TaskExecutionRepository, TaskRepository
 from tracker.database.session import engine
-from tracker.database.transaction import TrackerTransaction
+from tracker.database.transaction import open_tracker_transaction
 from tracker.exceptions import (
     DependencySetupExhaustedError,
     ExecutionAuthorityRevoked,
@@ -179,12 +175,11 @@ class TrackedTask:
             logger.error(error_message)
             logfire.exception("tracked_task_run failed")
             sentry_sdk.capture_exception(e)
-            with Session(bind=engine) as session:
-                transaction = TrackerTransaction.from_session(session)
+            with open_tracker_transaction(engine) as transaction:
                 task = fetch_task_row(task_row.id, transaction.tasks, self._org)
                 commit_task_error(
                     task,
-                    session,
+                    transaction.session,
                     error_message,
                     task_execution_repository=transaction.task_execution,
                     expected_started_at=task_row.started_at,
@@ -223,8 +218,8 @@ class TaskMonitor:
         self._authority = authority
 
     async def _refresh_concurrency(self) -> None:
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, BenchmarkRepository(session), self._org)
+        with open_tracker_transaction(engine) as transaction:
+            benchmark_row = fetch_benchmark_row(self._benchmark_id, transaction.benchmarks, self._org)
             concurrency = benchmark_row.arguments.concurrency
         await self._limiter.resize(concurrency)
 
@@ -235,14 +230,13 @@ class TaskMonitor:
         return task_row
 
     def _authority_is_current(self) -> bool:
-        with Session(bind=engine) as session:
-            task_execution_repository = TaskExecutionRepository(session)
+        with open_tracker_transaction(engine) as transaction:
             try:
-                task_execution_repository.lock_execution_authority(self._authority)
+                transaction.task_execution.lock_execution_authority(self._authority)
             except ExecutionAuthorityRevoked:
-                session.rollback()
+                transaction.rollback()
                 return False
-            session.rollback()
+            transaction.rollback()
             return True
 
     def _validate_task(self, task_id: str) -> bool:
@@ -253,8 +247,7 @@ class TaskMonitor:
             True if the task should continue to be processed, False if the task should be stopped early
 
         """
-        with Session(bind=engine) as session:
-            transaction = TrackerTransaction.from_session(session)
+        with open_tracker_transaction(engine) as transaction:
             benchmark_row = fetch_benchmark_row(self._benchmark_id, transaction.benchmarks, self._org)
             task_row = self._fetch_task_row(task_id, transaction.tasks)
 
@@ -269,8 +262,7 @@ class TaskMonitor:
         if not self._notifier:
             return
 
-        with Session(bind=engine) as session:
-            transaction = TrackerTransaction.from_session(session)
+        with open_tracker_transaction(engine) as transaction:
             benchmark_row = fetch_benchmark_row(self._benchmark_id, transaction.benchmarks, self._org)
             notification_context = NotificationContext.from_benchmark(benchmark_row, transaction.reporting, self._org)
         await self._notifier.check_and_notify(notification_context)
@@ -351,9 +343,8 @@ def save_eval_resume_state(
     authority: ExecutionAuthority,
     expected_started_at: datetime | None = None,
 ) -> bool:
-    with Session(bind=engine) as session:
-        repository = TaskExecutionRepository(session)
-        saved = repository.save_eval_resume_state(
+    with open_tracker_transaction(engine) as transaction:
+        saved = transaction.task_execution.save_eval_resume_state(
             task_row_id,
             org.id,
             eval_resume_state,
@@ -361,7 +352,7 @@ def save_eval_resume_state(
             expected_started_at=expected_started_at,
         )
         if saved:
-            session.commit()
+            transaction.commit()
         return saved
 
 
@@ -501,8 +492,7 @@ async def _process_task_attempt(
     )
 
     requested_attempt_started_at = task_row.started_at
-    with Session(bind=engine) as task_session:
-        transaction = TrackerTransaction.from_session(task_session)
+    with open_tracker_transaction(engine) as transaction:
         benchmark_row = fetch_benchmark_row(benchmark_id, transaction.benchmarks, org)
         task_row = fetch_task_row(task_row.id, transaction.tasks, org)
 
@@ -512,7 +502,7 @@ async def _process_task_attempt(
         if benchmark_row.status == BenchmarkStatus.STOPPING or task_row.status == TaskStatus.STOPPED:
             handle_early_exit(
                 task_row,
-                task_session,
+                transaction.session,
                 task_execution_repository=transaction.task_execution,
                 authority=authority,
             )
@@ -550,8 +540,8 @@ async def _process_task_attempt(
         save_eval_resume_state(task_row.id, org, state, expected_started_at=attempt_started_at, authority=authority)
 
     def execution_is_current() -> bool:
-        with Session(bind=engine) as task_session:
-            return TaskExecutionRepository(task_session).is_current(
+        with open_tracker_transaction(engine) as transaction:
+            return transaction.task_execution.is_current(
                 task_row.id,
                 org.id,
                 authority,
@@ -585,8 +575,7 @@ async def _process_task_attempt(
                     agent_caused_exit_reason=None,
                 )
 
-                with Session(bind=engine) as task_session:
-                    transaction = TrackerTransaction.from_session(task_session)
+                with open_tracker_transaction(engine) as transaction:
                     fetch_start = time.monotonic()
                     task_in_session = fetch_task_row(task_row.id, transaction.tasks, org)
                     span_attributes = {
@@ -606,11 +595,11 @@ async def _process_task_attempt(
                             evaluation_run_duration=resume_eval_duration,
                         ):
                             return {task_id: None}
-                        task_session.commit()
+                        transaction.commit()
                     return {task_id: evaluation_result_row.result}
             except Exception as e:
-                with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, TaskRepository(task_session), org)
+                with open_tracker_transaction(engine) as transaction:
+                    task = fetch_task_row(task_row.id, transaction.tasks, org)
                     if task.status == TaskStatus.STOPPED:
                         return {task_id: None}
 
@@ -629,11 +618,10 @@ async def _process_task_attempt(
             "Task": task_row.task_id,
         }
 
-        with Session(bind=engine) as task_session:
-            transaction = TrackerTransaction.from_session(task_session)
+        with open_tracker_transaction(engine) as transaction:
             if not commit_task_status_transition(
                 task_row.id,
-                task_session,
+                transaction.session,
                 org,
                 TaskStatus.BUILDING,
                 task_repository=transaction.tasks,
@@ -682,11 +670,10 @@ async def _process_task_attempt(
             start_sandbox_run_time = time.perf_counter()
 
             try:
-                with Session(bind=engine) as task_session:
-                    transaction = TrackerTransaction.from_session(task_session)
+                with open_tracker_transaction(engine) as transaction:
                     if not commit_task_status_transition(
                         task_row.id,
-                        task_session,
+                        transaction.session,
                         org,
                         TaskStatus.IN_PROGRESS,
                         task_repository=transaction.tasks,
@@ -755,8 +742,7 @@ async def _process_task_attempt(
                 )
 
                 task_breakdown.agent_run_duration = agent_run_time
-                with Session(bind=engine) as task_session:
-                    transaction = TrackerTransaction.from_session(task_session)
+                with open_tracker_transaction(engine) as transaction:
                     fetch_start = time.monotonic()
                     task_in_session = fetch_task_row(task_row.id, transaction.tasks, org)
                     span_attributes = {
@@ -777,7 +763,7 @@ async def _process_task_attempt(
                             expected_status=TaskStatus.IN_PROGRESS,
                         ):
                             return {task_id: None}
-                        task_session.commit()
+                        transaction.commit()
 
                 # Evaluate the instance
                 evaluation_start_time = time.perf_counter()
@@ -819,8 +805,7 @@ async def _process_task_attempt(
                     agent_caused_exit_reason=exit_reason,
                 )
 
-                with Session(bind=engine) as task_session:
-                    transaction = TrackerTransaction.from_session(task_session)
+                with open_tracker_transaction(engine) as transaction:
                     fetch_start = time.monotonic()
                     task_in_session = fetch_task_row(task_row.id, transaction.tasks, org)
                     if task_in_session.task_breakdown is None:
@@ -843,11 +828,11 @@ async def _process_task_attempt(
                             sandbox_run_duration=task_breakdown.sandbox_run_duration,
                         ):
                             return {task_id: None}
-                        task_session.commit()
+                        transaction.commit()
                     return {task_id: evaluation_result_row.result}
             except Exception:
-                with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, TaskRepository(task_session), org)
+                with open_tracker_transaction(engine) as transaction:
+                    task = fetch_task_row(task_row.id, transaction.tasks, org)
                     if task.status == TaskStatus.STOPPED:
                         return {task_id: None}
 
@@ -865,12 +850,11 @@ async def _process_task_attempt(
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            transaction = TrackerTransaction.from_session(task_session)
+        with open_tracker_transaction(engine) as transaction:
             task = fetch_task_row(task_row.id, transaction.tasks, org)
             commit_task_error(
                 task,
-                task_session,
+                transaction.session,
                 error_message,
                 task_execution_repository=transaction.task_execution,
                 expected_started_at=attempt_started_at,
@@ -888,12 +872,11 @@ async def _process_task_attempt(
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            transaction = TrackerTransaction.from_session(task_session)
+        with open_tracker_transaction(engine) as transaction:
             task = fetch_task_row(task_row.id, transaction.tasks, org)
             commit_task_error(
                 task,
-                task_session,
+                transaction.session,
                 error_message,
                 task_execution_repository=transaction.task_execution,
                 expected_started_at=attempt_started_at,
@@ -910,12 +893,11 @@ async def _process_task_attempt(
         )
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            transaction = TrackerTransaction.from_session(task_session)
+        with open_tracker_transaction(engine) as transaction:
             task = fetch_task_row(task_row.id, transaction.tasks, org)
             commit_task_error(
                 task,
-                task_session,
+                transaction.session,
                 error_message,
                 task_execution_repository=transaction.task_execution,
                 expected_started_at=attempt_started_at,
@@ -929,12 +911,11 @@ async def _process_task_attempt(
         error_message = f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code})"
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            transaction = TrackerTransaction.from_session(task_session)
+        with open_tracker_transaction(engine) as transaction:
             task = fetch_task_row(task_row.id, transaction.tasks, org)
             commit_task_error(
                 task,
-                task_session,
+                transaction.session,
                 error_message,
                 task_execution_repository=transaction.task_execution,
                 expected_started_at=attempt_started_at,
@@ -948,12 +929,11 @@ async def _process_task_attempt(
         error_message = _exception_message(e)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            transaction = TrackerTransaction.from_session(task_session)
+        with open_tracker_transaction(engine) as transaction:
             task = fetch_task_row(task_row.id, transaction.tasks, org)
             commit_task_error(
                 task,
-                task_session,
+                transaction.session,
                 error_message,
                 task_execution_repository=transaction.task_execution,
                 expected_started_at=attempt_started_at,
@@ -973,12 +953,11 @@ async def _process_task_attempt(
         # include the error message
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            transaction = TrackerTransaction.from_session(task_session)
+        with open_tracker_transaction(engine) as transaction:
             task = fetch_task_row(task_row.id, transaction.tasks, org)
             commit_task_error(
                 task,
-                task_session,
+                transaction.session,
                 error_message,
                 task_execution_repository=transaction.task_execution,
                 expected_started_at=attempt_started_at,

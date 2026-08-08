@@ -31,7 +31,7 @@ from tracker.database.models import (
     Task,
 )
 from tracker.database.session import engine
-from tracker.database.transaction import TrackerTransaction, open_tracker_transaction
+from tracker.database.transaction import open_tracker_transaction
 from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
 from tracker.execution_authority import ExecutionAuthority
 from executor_protocol import EXECUTOR_TASK_NAME
@@ -204,10 +204,9 @@ async def upload_final_view_if_current(
     authority: ExecutionAuthority,
 ) -> None:
     """Upload the canonical final view only while this dispatch still owns the run."""
-    with Session(bind=engine) as session:
-        task_execution_repository = TaskExecutionRepository(session)
-        task_execution_repository.lock_execution_authority(authority, require_in_progress=False)
-        session.rollback()
+    with open_tracker_transaction(engine) as transaction:
+        transaction.task_execution.lock_execution_authority(authority, require_in_progress=False)
+        transaction.rollback()
     await upload_final_view(benchmark, final_view, harness_config)
 
 
@@ -261,8 +260,7 @@ async def process_benchmark(
         )
 
     # Resolve the org from the benchmark row (no org check on first fetch since the benchmark was just created by our system)
-    with Session(bind=engine) as session:
-        transaction = TrackerTransaction.from_session(session)
+    with open_tracker_transaction(engine) as transaction:
         benchmark_row = transaction.benchmarks.get_by_id(benchmark_id)
         if not benchmark_row:
             raise TrackerServiceError(f"Run with id {benchmark_id} not found")
@@ -278,13 +276,12 @@ async def process_benchmark(
         )
 
         # Create tasks inside of the database for each task id
-        with Session(bind=engine) as session:
-            transaction = TrackerTransaction.from_session(session)
+        with open_tracker_transaction(engine) as transaction:
             benchmark_row = fetch_benchmark_row(benchmark_id, transaction.benchmarks, org)
             task_rows: Sequence[tuple[str, Task]] = create_task_rows(
                 verified_task_ids,
                 benchmark_row,
-                session,
+                transaction.session,
                 org,
                 authority=authority,
                 task_repository=transaction.tasks,
@@ -338,8 +335,7 @@ async def process_benchmark(
 
         await monitor_task
 
-        with Session(bind=engine) as session:
-            transaction = TrackerTransaction.from_session(session)
+        with open_tracker_transaction(engine) as transaction:
             benchmark_row = fetch_benchmark_row(benchmark_id, transaction.benchmarks, org, for_update=True)
             transaction.task_execution.lock_execution_authority(authority)
             if transaction.run_control.count_runnable_tasks(benchmark_row.id, org.id):
@@ -350,7 +346,7 @@ async def process_benchmark(
                 except_dispatch_id=authority.dispatch_id,
             )
             evaluation_results = transaction.reporting.fetch_final_score_inputs(benchmark_row.id, org.id)
-            session.commit()
+            transaction.commit()
 
         if not any(result is not None for result in evaluation_results.values()):
             finalization_deferred = await finalize_all_error_run(benchmark_id, org, authority=authority)
@@ -361,8 +357,7 @@ async def process_benchmark(
             evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset
         )
 
-        with Session(bind=engine) as session:
-            transaction = TrackerTransaction.from_session(session)
+        with open_tracker_transaction(engine) as transaction:
             benchmark_row = fetch_benchmark_row(benchmark_id, transaction.benchmarks, org, for_update=True)
             transaction.task_execution.lock_execution_authority(authority)
             # final_score is a network call; a concurrent retry can make tasks runnable before we write FinalEvaluation.
@@ -378,8 +373,7 @@ async def process_benchmark(
             properties=final_score_response.metadata,
         )
 
-        with Session(bind=engine) as session:
-            transaction = TrackerTransaction.from_session(session)
+        with open_tracker_transaction(engine) as transaction:
             benchmark_row = fetch_benchmark_row(benchmark_id, transaction.benchmarks, org, for_update=True)
             if transaction.run_control.count_runnable_tasks(benchmark_row.id, org.id):
                 finalization_deferred = True
@@ -389,7 +383,7 @@ async def process_benchmark(
             # Commit the final score and terminal status together while retry/resume is blocked.
             set_benchmark_final_status(
                 benchmark_row,
-                session,
+                transaction.session,
                 org,
                 authority=authority,
                 run_control_repository=transaction.run_control,
@@ -400,7 +394,7 @@ async def process_benchmark(
             # Recheck dispatch authority after the status commit without holding the
             # Retry admission lock across external operations.
             transaction.task_execution.lock_execution_authority(authority, require_in_progress=False)
-            session.commit()
+            transaction.commit()
 
             final_view: FinalViewResponse = create_final_view(
                 benchmark_row,
@@ -424,10 +418,9 @@ async def process_benchmark(
 
         # A Retry may win while the upload is in flight. Do not emit follow-on
         # callbacks for an execution that no longer owns the run.
-        with Session(bind=engine) as authority_session:
-            task_execution_repository = TaskExecutionRepository(authority_session)
-            task_execution_repository.lock_execution_authority(authority, require_in_progress=False)
-            authority_session.commit()
+        with open_tracker_transaction(engine) as transaction:
+            transaction.task_execution.lock_execution_authority(authority, require_in_progress=False)
+            transaction.commit()
 
         if lambda_function and lambda_payload is not None:
             invoke_lambda(lambda_client(harness_config.aws), lambda_function, lambda_payload)
@@ -436,14 +429,13 @@ async def process_benchmark(
         finalization_deferred = True
     except BenchmarkServiceUnauthenticatedError as e:
         logfire.warn("process_benchmark failed due to benchmark service auth error")
-        with Session(bind=engine) as session:
-            transaction = TrackerTransaction.from_session(session)
+        with open_tracker_transaction(engine) as transaction:
             benchmark_row = fetch_benchmark_row(benchmark_id, transaction.benchmarks, org)
             error_message = f"{str(e)}\n{traceback.format_exc()}"
             logger.warning(error_message)
             commit_benchmark_error(
                 benchmark_row,
-                session,
+                transaction.session,
                 error_message,
                 authority=authority,
                 task_execution_repository=transaction.task_execution,
@@ -451,13 +443,12 @@ async def process_benchmark(
                 task_ids=verified_task_ids,
             )
     except BenchmarkServiceError as e:
-        with Session(bind=engine) as session:
-            transaction = TrackerTransaction.from_session(session)
+        with open_tracker_transaction(engine) as transaction:
             benchmark_row = fetch_benchmark_row(benchmark_id, transaction.benchmarks, org)
             error_message = str(e)
             commit_benchmark_error(
                 benchmark_row,
-                session,
+                transaction.session,
                 error_message,
                 authority=authority,
                 task_execution_repository=transaction.task_execution,
@@ -467,13 +458,12 @@ async def process_benchmark(
     except Exception as e:
         logfire.exception("process_benchmark failed")
         sentry_sdk.capture_exception(e)
-        with Session(bind=engine) as session:
-            transaction = TrackerTransaction.from_session(session)
+        with open_tracker_transaction(engine) as transaction:
             benchmark_row = fetch_benchmark_row(benchmark_id, transaction.benchmarks, org)
             error_message = f"{str(e)}\n{traceback.format_exc()}"
             commit_benchmark_error(
                 benchmark_row,
-                session,
+                transaction.session,
                 error_message,
                 authority=authority,
                 task_execution_repository=transaction.task_execution,
@@ -483,12 +473,11 @@ async def process_benchmark(
     finally:
         authority_current = False
         if not finalization_deferred:
-            with Session(bind=engine) as session:
-                transaction = TrackerTransaction.from_session(session)
+            with open_tracker_transaction(engine) as transaction:
                 # Handle any misalignments between the benchmark status and tasks
                 authority_current = catch_errors_during_cleanup(
                     benchmark_id,
-                    session,
+                    transaction.session,
                     org,
                     authority=authority,
                     task_ids=verified_task_ids,
@@ -500,8 +489,7 @@ async def process_benchmark(
 
         if notifier and not finalization_deferred and authority_current:
             try:
-                with Session(bind=engine) as session:
-                    transaction = TrackerTransaction.from_session(session)
+                with open_tracker_transaction(engine) as transaction:
                     benchmark_row = transaction.task_execution.lock_execution_authority(
                         authority,
                         require_in_progress=False,
@@ -514,7 +502,7 @@ async def process_benchmark(
                         final_score,
                         benchmark_row.error_message,
                     )
-                    session.commit()
+                    transaction.commit()
                 notification_context, notification_status, final_score, notification_error_message = (
                     terminal_notification
                 )

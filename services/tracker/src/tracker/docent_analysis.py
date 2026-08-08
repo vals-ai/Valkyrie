@@ -14,11 +14,10 @@ from typing import Any
 from uuid import UUID
 
 from botocore.config import Config
-from sqlmodel import Session
 
 from tracker._lambda import invoke_lambda, lambda_client
-from tracker.database.repositories import BenchmarkRepository
 from tracker.database.session import engine
+from tracker.database.transaction import open_tracker_transaction
 from tracker.types import AWSCredentials
 
 # Analyzer Lambdas can run up to 15 min (AWS Lambda's ceiling); retries
@@ -42,25 +41,25 @@ def invoke_analyzer(
     across the event loop / worker thread boundary). try/finally guarantees
     status is always set before returning, so no row is left at RUNNING.
     """
-    with Session(engine) as session:
-        BenchmarkRepository(session).stage_docent_running(benchmark_id)
-        session.commit()
+    with open_tracker_transaction(engine) as transaction:
+        transaction.benchmarks.stage_docent_running(benchmark_id)
+        transaction.commit()
 
     try:
         result = invoke_lambda(lambda_client(aws, _ANALYZER_CONFIG), lambda_function, payload)
     except Exception:
-        with Session(engine) as session:
-            BenchmarkRepository(session).stage_docent_error_by_id(benchmark_id)
-            session.commit()
+        with open_tracker_transaction(engine) as transaction:
+            transaction.benchmarks.stage_docent_error_by_id(benchmark_id)
+            transaction.commit()
         raise
 
     reading_plan_url = result.get("reading_plan_url")
-    with Session(engine) as session:
-        BenchmarkRepository(session).stage_docent_done_by_id(
+    with open_tracker_transaction(engine) as transaction:
+        transaction.benchmarks.stage_docent_done_by_id(
             benchmark_id,
             str(reading_plan_url) if reading_plan_url else None,
         )
-        session.commit()
+        transaction.commit()
     return result
 
 
