@@ -16,6 +16,35 @@ from tracker.database.repositories import RetrySelection, RunControlRepository
 from tracker.exceptions import TrackerServiceError
 
 
+def test_task_status_counts_scope_benchmark_and_organization(empty_database_session: Session) -> None:
+    owner = Org(id=uuid4(), name="owner")
+    other_org = Org(id=uuid4(), name="other")
+    empty_database_session.add_all([owner, other_org])
+    empty_database_session.commit()
+    benchmark = make_benchmark(org_id=owner.id, session=empty_database_session)
+    other_benchmark = make_benchmark(org_id=other_org.id, session=empty_database_session)
+    foreign_task = make_task(benchmark, "foreign", status=TaskStatus.PENDING)
+    foreign_task.org_id = other_org.id
+    empty_database_session.add_all(
+        [
+            make_task(benchmark, "pending", status=TaskStatus.PENDING),
+            make_task(benchmark, "building", status=TaskStatus.BUILDING),
+            make_task(benchmark, "stopped", status=TaskStatus.STOPPED),
+            make_task(benchmark, "finished", status=TaskStatus.FINISHED),
+            foreign_task,
+            make_task(other_benchmark, "other", status=TaskStatus.PENDING),
+        ]
+    )
+    empty_database_session.commit()
+
+    repository = RunControlRepository(empty_database_session)
+
+    assert repository.count_runnable_tasks(benchmark.id, owner.id) == 2
+    assert repository.count_stopped_tasks(benchmark.id, owner.id) == 1
+    assert repository.count_runnable_tasks(benchmark.id, other_org.id) == 0
+    assert repository.count_stopped_tasks(benchmark.id, other_org.id) == 0
+
+
 def test_lock_and_task_mutations_are_organization_scoped(empty_database_session: Session) -> None:
     owner = Org(id=uuid4(), name="owner")
     other = Org(id=uuid4(), name="other")

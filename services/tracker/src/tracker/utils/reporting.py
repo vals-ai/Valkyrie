@@ -9,7 +9,7 @@ import json
 from collections.abc import AsyncGenerator, Buffer
 from datetime import datetime
 from functools import cached_property
-from typing import Any, NamedTuple, Sequence
+from typing import NamedTuple, Sequence
 from uuid import UUID
 
 from sqlmodel import Session
@@ -23,7 +23,6 @@ from tracker.database.models import Benchmark, BenchmarkStatus, Org, TaskStatus
 from tracker.database.repositories import BenchmarkRepository, BenchmarkTaskCounts, ReportingRepository
 from tracker.logging import get_logger
 from tracker.types import (
-    AverageTaskBreakdown,
     BenchmarkDetails,
     BenchmarkTableRow,
     FetchBenchmarkResponse,
@@ -85,20 +84,6 @@ class BenchmarkContext:
             docent_reading_status=self._benchmark_row.docent_reading_status,
             docent_reading_url=self._benchmark_row.docent_reading_url,
         )
-
-
-def fetch_evaluation_results(
-    benchmark_id: UUID, reporting_repository: ReportingRepository, org_id: UUID
-) -> dict[str, dict[str, Any]]:
-    """Select the latest successful evaluation result for each finished task."""
-    return reporting_repository.fetch_evaluation_results(benchmark_id, org_id)
-
-
-def fetch_average_task_breakdown(
-    benchmark_id: UUID, reporting_repository: ReportingRepository, org_id: UUID
-) -> AverageTaskBreakdown | None:
-    """Fetch the average task breakdown for a given benchmark."""
-    return reporting_repository.fetch_average_task_breakdown(benchmark_id, org_id)
 
 
 async def stream_benchmark_results(

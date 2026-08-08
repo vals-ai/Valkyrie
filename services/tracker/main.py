@@ -117,7 +117,6 @@ from tracker.utils import (
     create_final_view,
     fetch_benchmark_row,
     fetch_filtered_benchmark_rows,
-    fetch_final_score_inputs,
     fetch_harness_config,
     try_fetch_harness_config,
     force_stop_sandboxes,
@@ -710,7 +709,7 @@ async def retrieve_results(
         # (e.g. stopped/errored) still count toward the denominator instead of being dropped.
         scored_results = {
             task_id: result
-            for task_id, result in fetch_final_score_inputs(reporting_repository, benchmark_row, org).items()
+            for task_id, result in reporting_repository.fetch_final_score_inputs(benchmark_row.id, org.id).items()
             if task_id in task_ids_set
         }
 

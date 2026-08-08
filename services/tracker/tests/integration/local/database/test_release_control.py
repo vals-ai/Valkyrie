@@ -41,7 +41,6 @@ from tracker.executor.release_control import (
     retire_drained_releases,
 )
 from tracker.utils.resources import fetch_benchmark_row
-from tracker.utils.run_control import apply_stop_benchmark
 
 
 _EXECUTOR_ARTIFACT = b"immutable executor artifact"
@@ -619,11 +618,11 @@ def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
         benchmark = fetch_benchmark_row(benchmark_id, benchmark_repository, org, for_update=True)
         if benchmark.status not in (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPING):
             raise ReleaseControlError(f"Cannot stop benchmark from {benchmark.status}")
-        apply_stop_benchmark(
+        RunControlRepository(session).apply_stop(
             benchmark,
+            org.id,
             force=True,
-            org=org,
-            repository=RunControlRepository(session),
+            task_ids=None,
         )
         session.flush()
 

@@ -23,7 +23,7 @@ from benchmark_service import (
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from opentelemetry import trace
 from pydantic import ValidationError
-from sqlmodel import Session, select
+from sqlmodel import Session
 from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
@@ -226,20 +226,11 @@ class TaskMonitor:
             concurrency = benchmark_row.arguments.concurrency
         await self._limiter.resize(concurrency)
 
-    def _fetch_task_row(self, task_id: str) -> Task:
-        with Session(bind=engine) as session:
-            task_row = session.exec(
-                select(Task)
-                .where(Task.task_id == task_id)
-                .where(Task.benchmark == self._benchmark_id)
-                .where(Task.org_id == self._org.id)
-                .limit(1)
-            ).first()
-
-            if not task_row:
-                raise ValueError(f"Task with id {task_id} not found")
-
-            return task_row
+    def _fetch_task_row(self, task_id: str, task_repository: TaskRepository) -> Task:
+        task_row = task_repository.get_for_benchmark(self._benchmark_id, task_id, self._org.id)
+        if task_row is None:
+            raise ValueError(f"Task with id {task_id} not found")
+        return task_row
 
     def _authority_is_current(self) -> bool:
         with Session(bind=engine) as session:
@@ -261,7 +252,7 @@ class TaskMonitor:
         """
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(self._benchmark_id, BenchmarkRepository(session), self._org)
-            task_row = self._fetch_task_row(task_id)
+            task_row = self._fetch_task_row(task_id, TaskRepository(session))
 
             # If task has been stopped or benchmark has errored we need to exit
             if task_row.status == TaskStatus.STOPPED or benchmark_row.status == BenchmarkStatus.ERROR:

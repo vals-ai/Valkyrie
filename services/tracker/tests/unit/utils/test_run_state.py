@@ -22,7 +22,7 @@ from main import app
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
-from tracker.database.repositories import BenchmarkRepository, ReportingRepository, TaskRepository
+from tracker.database.repositories import BenchmarkRepository, ReportingRepository, RunControlRepository, TaskRepository
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -42,10 +42,8 @@ from tracker.utils import (
     create_task_rows,
     fetch_benchmark_row,
     fetch_filtered_benchmark_rows,
-    fetch_final_score_inputs,
     fetch_harness_config,
     fetch_sandbox_provider_config,
-    has_runnable_tasks,
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
@@ -527,14 +525,15 @@ class TestRunState:
         database_session.add(EvaluationResult(org_id=TEST_ORG_ID, task=finished_task.id, result={"score": 1.0}))
         database_session.commit()
 
-        assert has_runnable_tasks(database_session, benchmark_row, self._test_org)
+        run_control_repository = RunControlRepository(database_session)
+        assert run_control_repository.count_runnable_tasks(benchmark_row.id, self._test_org.id) > 0
 
         pending_task.status = TaskStatus.ERROR
         database_session.add(pending_task)
         database_session.commit()
 
-        assert not has_runnable_tasks(database_session, benchmark_row, self._test_org)
-        assert fetch_final_score_inputs(ReportingRepository(database_session), benchmark_row, self._test_org) == {
+        assert run_control_repository.count_runnable_tasks(benchmark_row.id, self._test_org.id) == 0
+        assert ReportingRepository(database_session).fetch_final_score_inputs(benchmark_row.id, self._test_org.id) == {
             "task_finished": {"score": 1.0},
             "task_error": None,
             "task_stopped": None,
@@ -640,7 +639,13 @@ class TestRunState:
 
         # Error is raised because tasks are still in the pending state
         with pytest.raises(TrackerServiceError):
-            set_benchmark_final_status(benchmark_row, database_session, self._test_org, authority=authority)
+            set_benchmark_final_status(
+                benchmark_row,
+                database_session,
+                self._test_org,
+                authority=authority,
+                run_control_repository=RunControlRepository(database_session),
+            )
 
         # Make all tasks in finished state
         # NOTE: Need to manually set the finished_at timestamp because the event listener is not triggered with bulk updates
@@ -652,7 +657,13 @@ class TestRunState:
         database_session.commit()
 
         # Benchmark status is set to finished
-        set_benchmark_final_status(benchmark_row, database_session, self._test_org, authority=authority)
+        set_benchmark_final_status(
+            benchmark_row,
+            database_session,
+            self._test_org,
+            authority=authority,
+            run_control_repository=RunControlRepository(database_session),
+        )
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.FINISHED
 
@@ -671,7 +682,13 @@ class TestRunState:
         database_session.commit()
 
         # Benchmark status is set to stopped when stopped tasks exist
-        set_benchmark_final_status(benchmark_row, database_session, self._test_org, authority=authority)
+        set_benchmark_final_status(
+            benchmark_row,
+            database_session,
+            self._test_org,
+            authority=authority,
+            run_control_repository=RunControlRepository(database_session),
+        )
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.STOPPED
 

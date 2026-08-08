@@ -10,12 +10,18 @@ import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from opentelemetry import trace
-from sqlmodel import Session, col, func, select
+from sqlmodel import Session
 
 from tracker._lambda import invoke_lambda, lambda_client
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group
 from tracker.config import broker
-from tracker.database.repositories import BenchmarkRepository, ReportingRepository, TaskRepository
+from tracker.database.repositories import (
+    BenchmarkRepository,
+    OrgRepository,
+    ReportingRepository,
+    RunControlRepository,
+    TaskRepository,
+)
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -23,7 +29,6 @@ from tracker.database.models import (
     FinalEvaluation,
     Org,
     Task,
-    TaskStatus,
 )
 from tracker.database.session import engine
 from tracker.executor.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
@@ -50,7 +55,6 @@ from tracker.utils.task_execution import ResizableLimiter, TaskMonitor, TrackedT
 logger = get_logger(__name__)
 
 _SANDBOX_CREATION_CAP: int = 10
-_RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 
 
 def set_benchmark_final_status(
@@ -59,6 +63,7 @@ def set_benchmark_final_status(
     org: Org,
     *,
     authority: ExecutionAuthority,
+    run_control_repository: RunControlRepository,
 ) -> None:
     """
     Delegates status depending on if any tasks have been stopped.
@@ -66,13 +71,7 @@ def set_benchmark_final_status(
 
     lock_execution_authority(session, authority)
 
-    # Check if any tasks are still in the pending or in progress state
-    tasks_not_finished: int = session.exec(
-        select(func.count(col(Task.id)))
-        .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.org_id) == org.id)
-        .where(col(Task.status).in_(_RUNNABLE_TASK_STATUSES))
-    ).one()
+    tasks_not_finished = run_control_repository.count_runnable_tasks(benchmark_row.id, org.id)
 
     # Tasks will be in a non-finished state if something interrupts them while they are running and the state errors here
     if tasks_not_finished:
@@ -80,12 +79,7 @@ def set_benchmark_final_status(
             f"Cannot set final status for run {benchmark_row.id} because tasks are still runnable."
         )
 
-    tasks_stopped: int = session.exec(
-        select(func.count(col(Task.id)))
-        .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.org_id) == org.id)
-        .where(col(Task.status) == TaskStatus.STOPPED)
-    ).one()
+    tasks_stopped = run_control_repository.count_stopped_tasks(benchmark_row.id, org.id)
 
     # Default status is finished, if we stopped any tasks the benchmark status is stopped
     # Later we can use the stopped status to determine if we can resume the benchmark
@@ -130,37 +124,6 @@ def create_task_rows(
     return task_repository.get_runnable_for_benchmark(benchmark_row.id, verified_task_ids, org.id)
 
 
-def has_runnable_tasks(session: Session, benchmark_row: Benchmark, org: Org) -> bool:
-    return (
-        session.exec(
-            select(Task.id)
-            .where(Task.benchmark == benchmark_row.id)
-            .where(Task.org_id == org.id)
-            .where(col(Task.status).in_(_RUNNABLE_TASK_STATUSES))
-        ).first()
-        is not None
-    )
-
-
-def has_stopped_tasks(session: Session, benchmark_row: Benchmark, org: Org) -> bool:
-    return (
-        session.exec(
-            select(Task.id)
-            .where(Task.benchmark == benchmark_row.id)
-            .where(Task.org_id == org.id)
-            .where(Task.status == TaskStatus.STOPPED)
-        ).first()
-        is not None
-    )
-
-
-def fetch_final_score_inputs(
-    reporting_repository: ReportingRepository, benchmark_row: Benchmark, org: Org
-) -> dict[str, dict[str, Any] | None]:
-    """Return each task's latest evaluation result, or None when it is unfinished."""
-    return reporting_repository.fetch_final_score_inputs(benchmark_row.id, org.id)
-
-
 async def finalize_all_error_run(
     benchmark_id: UUID,
     org: Org,
@@ -177,17 +140,25 @@ async def finalize_all_error_run(
     - True when a concurrent retry defers finalization, otherwise False.
     """
     with Session(bind=engine) as session:
-        benchmark_row = fetch_benchmark_row(benchmark_id, BenchmarkRepository(session), org, for_update=True)
+        benchmark_repository = BenchmarkRepository(session)
+        run_control_repository = RunControlRepository(session)
+        benchmark_row = fetch_benchmark_row(benchmark_id, benchmark_repository, org, for_update=True)
         lock_execution_authority(session, authority)
-        if has_runnable_tasks(session, benchmark_row, org):
+        if run_control_repository.count_runnable_tasks(benchmark_row.id, org.id):
             return True
         terminalize_active_dispatches(
             session,
             benchmark_id,
             except_dispatch_id=authority.dispatch_id,
         )
-        if has_stopped_tasks(session, benchmark_row, org):
-            set_benchmark_final_status(benchmark_row, session, org, authority=authority)
+        if run_control_repository.count_stopped_tasks(benchmark_row.id, org.id):
+            set_benchmark_final_status(
+                benchmark_row,
+                session,
+                org,
+                authority=authority,
+                run_control_repository=run_control_repository,
+            )
             return False
         task_errors = ReportingRepository(session).get_task_errors(benchmark_id, org.id) or {}
         session.commit()
@@ -195,11 +166,19 @@ async def finalize_all_error_run(
     error_message = await asyncio.to_thread(summarize_task_errors, task_errors)
 
     with Session(bind=engine) as session:
-        benchmark_row = fetch_benchmark_row(benchmark_id, BenchmarkRepository(session), org, for_update=True)
-        if has_runnable_tasks(session, benchmark_row, org):
+        benchmark_repository = BenchmarkRepository(session)
+        run_control_repository = RunControlRepository(session)
+        benchmark_row = fetch_benchmark_row(benchmark_id, benchmark_repository, org, for_update=True)
+        if run_control_repository.count_runnable_tasks(benchmark_row.id, org.id):
             return True
-        if has_stopped_tasks(session, benchmark_row, org):
-            set_benchmark_final_status(benchmark_row, session, org, authority=authority)
+        if run_control_repository.count_stopped_tasks(benchmark_row.id, org.id):
+            set_benchmark_final_status(
+                benchmark_row,
+                session,
+                org,
+                authority=authority,
+                run_control_repository=run_control_repository,
+            )
             return False
 
         # Mark the run as errored so future fetches return the discovered task errors.
@@ -271,10 +250,12 @@ async def process_benchmark(
 
     # Resolve the org from the benchmark row (no org check on first fetch since the benchmark was just created by our system)
     with Session(bind=engine) as session:
-        benchmark_row = session.get(Benchmark, benchmark_id)
+        benchmark_row = BenchmarkRepository(session).get_by_id(benchmark_id)
         if not benchmark_row:
             raise TrackerServiceError(f"Run with id {benchmark_id} not found")
-        org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
+        org = OrgRepository(session).get_by_id(benchmark_row.org_id)
+        if org is None:
+            raise TrackerServiceError(f"Organization {benchmark_row.org_id} not found")
 
     finalization_deferred = False
     try:
@@ -345,9 +326,12 @@ async def process_benchmark(
         await monitor_task
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, BenchmarkRepository(session), org, for_update=True)
+            benchmark_repository = BenchmarkRepository(session)
+            run_control_repository = RunControlRepository(session)
+            reporting_repository = ReportingRepository(session)
+            benchmark_row = fetch_benchmark_row(benchmark_id, benchmark_repository, org, for_update=True)
             lock_execution_authority(session, authority)
-            if has_runnable_tasks(session, benchmark_row, org):
+            if run_control_repository.count_runnable_tasks(benchmark_row.id, org.id):
                 finalization_deferred = True
                 return
             terminalize_active_dispatches(
@@ -355,7 +339,7 @@ async def process_benchmark(
                 benchmark_id,
                 except_dispatch_id=authority.dispatch_id,
             )
-            evaluation_results = fetch_final_score_inputs(ReportingRepository(session), benchmark_row, org)
+            evaluation_results = reporting_repository.fetch_final_score_inputs(benchmark_row.id, org.id)
             session.commit()
 
         if not any(result is not None for result in evaluation_results.values()):
@@ -368,10 +352,12 @@ async def process_benchmark(
         )
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, BenchmarkRepository(session), org, for_update=True)
+            benchmark_repository = BenchmarkRepository(session)
+            run_control_repository = RunControlRepository(session)
+            benchmark_row = fetch_benchmark_row(benchmark_id, benchmark_repository, org, for_update=True)
             lock_execution_authority(session, authority)
             # final_score is a network call; a concurrent retry can make tasks runnable before we write FinalEvaluation.
-            if has_runnable_tasks(session, benchmark_row, org):
+            if run_control_repository.count_runnable_tasks(benchmark_row.id, org.id):
                 finalization_deferred = True
                 return
 
@@ -384,8 +370,10 @@ async def process_benchmark(
         )
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, BenchmarkRepository(session), org, for_update=True)
-            if has_runnable_tasks(session, benchmark_row, org):
+            benchmark_repository = BenchmarkRepository(session)
+            run_control_repository = RunControlRepository(session)
+            benchmark_row = fetch_benchmark_row(benchmark_id, benchmark_repository, org, for_update=True)
+            if run_control_repository.count_runnable_tasks(benchmark_row.id, org.id):
                 finalization_deferred = True
                 return
 
@@ -396,7 +384,13 @@ async def process_benchmark(
 
             session.add(final_evaluation_row)
             # Commit the final score and terminal status together while retry/resume is blocked.
-            set_benchmark_final_status(benchmark_row, session, org, authority=authority)
+            set_benchmark_final_status(
+                benchmark_row,
+                session,
+                org,
+                authority=authority,
+                run_control_repository=run_control_repository,
+            )
 
             # Recheck dispatch authority after the status commit without holding the
             # Retry admission lock across external operations.
@@ -487,6 +481,7 @@ async def process_benchmark(
                     authority=authority,
                     task_ids=verified_task_ids,
                     benchmark_repository=BenchmarkRepository(session),
+                    task_repository=TaskRepository(session),
                 )
 
         if notifier and not finalization_deferred and authority_current:
@@ -550,6 +545,7 @@ def catch_errors_during_cleanup(
     authority: ExecutionAuthority,
     task_ids: list[str] | None = None,
     benchmark_repository: BenchmarkRepository,
+    task_repository: TaskRepository,
 ) -> bool:
     """
     On task exit we must clean up any edge cases so that it does not affect the users experience.
@@ -574,16 +570,11 @@ def catch_errors_during_cleanup(
         return True
 
     # Force non exited tasks to be ERROR
-    task_terminal_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
-    undetected_exit_tasks_query = (
-        select(Task)
-        .where(col(Task.benchmark) == benchmark_id)
-        .where(col(Task.org_id) == org.id)
-        .where(col(Task.status).notin_(task_terminal_statuses))
+    undetected_exit_tasks = task_repository.get_nonterminal_for_benchmark(
+        benchmark_id,
+        org.id,
+        task_ids=task_ids,
     )
-    if task_ids is not None:
-        undetected_exit_tasks_query = undetected_exit_tasks_query.where(col(Task.task_id).in_(task_ids))
-    undetected_exit_tasks = session.exec(undetected_exit_tasks_query).all()
 
     # Sweep stale RUNNING analyzer invocations to ERROR. The invoke_analyzer
     # helper uses try/finally so this only fires when the executor process was

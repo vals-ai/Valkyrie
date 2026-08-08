@@ -30,6 +30,16 @@ from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 class TestOrgRepository:
     """Organization lookup behavior."""
 
+    def test_get_by_id_returns_only_requested_organization(self, empty_database_session: Session) -> None:
+        owner = Org(id=uuid4(), name="owner")
+        empty_database_session.add(owner)
+        empty_database_session.commit()
+
+        repository = OrgRepository(empty_database_session)
+
+        assert repository.get_by_id(owner.id) == owner
+        assert repository.get_by_id(uuid4()) is None
+
     def test_find_by_name_returns_matching_organization_only(self, empty_database_session: Session) -> None:
         """Tenant lookup returns the matching organization and no result for an unknown name."""
         first_org = Org(id=uuid4(), name="first-org")
@@ -222,6 +232,39 @@ class TestTaskRepository:
         assert repository.get_for_benchmark(benchmark.id, task.task_id, other_org.id) is None
         assert repository.get_terminal_result(task, other_org.id) == (None, None)
         assert repository.get_terminal_result(task, org.id) == (None, "new failure")
+
+    def test_get_nonterminal_for_benchmark_scopes_status_and_task_ids(self, empty_database_session: Session) -> None:
+        owner = Org(id=uuid4(), name="owner")
+        other_org = Org(id=uuid4(), name="other")
+        empty_database_session.add_all([owner, other_org])
+        empty_database_session.commit()
+        benchmark = make_benchmark(org_id=owner.id, session=empty_database_session)
+        other_benchmark = make_benchmark(org_id=other_org.id, session=empty_database_session)
+        foreign_task = make_task(benchmark, "foreign", status=TaskStatus.PENDING)
+        foreign_task.org_id = other_org.id
+        empty_database_session.add_all(
+            [
+                make_task(benchmark, "pending", status=TaskStatus.PENDING),
+                make_task(benchmark, "stopped", status=TaskStatus.STOPPED),
+                make_task(benchmark, "finished", status=TaskStatus.FINISHED),
+                foreign_task,
+                make_task(other_benchmark, "other", status=TaskStatus.PENDING),
+            ]
+        )
+        empty_database_session.commit()
+
+        repository = TaskRepository(empty_database_session)
+
+        assert [task.task_id for task in repository.get_nonterminal_for_benchmark(benchmark.id, owner.id)] == [
+            "pending"
+        ]
+        assert [
+            task.task_id
+            for task in repository.get_nonterminal_for_benchmark(
+                benchmark.id, owner.id, task_ids=["pending", "foreign"]
+            )
+        ] == ["pending"]
+        assert repository.get_nonterminal_for_benchmark(benchmark.id, other_org.id) == []
 
     def test_get_existing_task_ids_scopes_benchmark_and_organization(self, empty_database_session: Session) -> None:
         """Task validation returns only IDs owned by the requested organization and benchmark."""

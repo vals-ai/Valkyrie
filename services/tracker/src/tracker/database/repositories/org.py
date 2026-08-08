@@ -1,5 +1,7 @@
 """Organization persistence operations."""
 
+from uuid import UUID
+
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import Session, select
 
@@ -11,6 +13,10 @@ class OrgRepository:
 
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def get_by_id(self, org_id: UUID) -> Org | None:
+        """Return an organization by primary key, if it exists."""
+        return self._session.get(Org, org_id)
 
     def get_default(self) -> Org | None:
         """Return the configured default organization, if it exists."""

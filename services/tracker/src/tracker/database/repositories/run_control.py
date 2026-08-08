@@ -94,9 +94,34 @@ class RunControlRepository:
         terminal_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
         return self._session.exec(
             select(func.count(col(Task.id)))
+            .join(Benchmark)
             .where(col(Task.benchmark) == benchmark_id)
+            .where(col(Benchmark.org_id) == org_id)
             .where(col(Task.org_id) == org_id)
             .where(col(Task.status).notin_(terminal_statuses))
+        ).one()
+
+    def count_runnable_tasks(self, benchmark_id: UUID, org_id: UUID) -> int:
+        """Count organization-owned tasks that can still run or evaluate."""
+        runnable_statuses = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+        return self._session.exec(
+            select(func.count(col(Task.id)))
+            .join(Benchmark)
+            .where(col(Task.benchmark) == benchmark_id)
+            .where(col(Benchmark.org_id) == org_id)
+            .where(col(Task.org_id) == org_id)
+            .where(col(Task.status).in_(runnable_statuses))
+        ).one()
+
+    def count_stopped_tasks(self, benchmark_id: UUID, org_id: UUID) -> int:
+        """Count organization-owned tasks stopped for a benchmark."""
+        return self._session.exec(
+            select(func.count(col(Task.id)))
+            .join(Benchmark)
+            .where(col(Task.benchmark) == benchmark_id)
+            .where(col(Benchmark.org_id) == org_id)
+            .where(col(Task.org_id) == org_id)
+            .where(col(Task.status) == TaskStatus.STOPPED)
         ).one()
 
     def mark_stopped(self, benchmark: Benchmark) -> None:

@@ -13,6 +13,7 @@ from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import Benchmark, Org, Task, TaskStatus
+from tracker.database.repositories import TaskRepository
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.utils import ResizableLimiter, TaskMonitor, TrackedTask, TrackedTaskStatus
 
@@ -163,7 +164,7 @@ class TestTaskExecution:
 
         # Change the task status to stopped to make sure that it gets invalidated inside of the validate task method
         fetch_task_row = getattr(monitor, "_fetch_task_row")
-        task_row = fetch_task_row("task_id_1")
+        task_row = fetch_task_row("task_id_1", TaskRepository(database_session))
 
         # Commit the changes to the database, will be available from any session
         task_row.status = TaskStatus.STOPPED

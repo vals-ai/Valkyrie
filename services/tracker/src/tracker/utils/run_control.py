@@ -27,23 +27,6 @@ from tracker.utils.resources import fetch_benchmark_row, fetch_sandbox_provider_
 logger = get_logger(__name__)
 
 
-def apply_stop_benchmark(
-    benchmark_row: Benchmark,
-    force: bool,
-    org: Org,
-    task_ids: list[str] | None = None,
-    *,
-    repository: RunControlRepository,
-) -> None:
-    """Apply the Stop state transition without committing the transaction."""
-    repository.apply_stop(
-        benchmark_row,
-        org.id,
-        force=force,
-        task_ids=task_ids,
-    )
-
-
 async def initiate_stop_benchmark(
     benchmark_row: Benchmark,
     session: Session,

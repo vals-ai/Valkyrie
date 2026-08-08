@@ -37,6 +37,27 @@ class TaskRepository:
             .where(Task.task_id == task_id)
         ).first()
 
+    def get_nonterminal_for_benchmark(
+        self,
+        benchmark_id: UUID,
+        org_id: UUID,
+        *,
+        task_ids: Sequence[str] | None = None,
+    ) -> list[Task]:
+        """Return organization-owned benchmark tasks that have not reached a terminal status."""
+        terminal_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
+        statement = (
+            select(Task)
+            .join(Benchmark)
+            .where(Task.benchmark == benchmark_id)
+            .where(Benchmark.org_id == org_id)
+            .where(Task.org_id == org_id)
+            .where(col(Task.status).notin_(terminal_statuses))
+        )
+        if task_ids is not None:
+            statement = statement.where(col(Task.task_id).in_(task_ids))
+        return list(self._session.exec(statement).all())
+
     def get_existing_task_ids(self, benchmark_id: UUID, task_ids: Sequence[str], org_id: UUID) -> set[str]:
         """Return requested task IDs that belong to the organization-owned benchmark."""
         if not task_ids:
