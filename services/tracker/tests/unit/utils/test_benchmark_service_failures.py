@@ -20,6 +20,7 @@ from websockets.http11 import Response
 
 import tracker.sandbox as sandbox_module
 import tracker.utils.task_execution as utils_module
+from tracker.database.repositories import BenchmarkRepository
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, Task, TaskStatus
 from tracker.types import HarnessConfig
