@@ -621,7 +621,6 @@ def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
             raise ReleaseControlError(f"Cannot stop benchmark from {benchmark.status}")
         apply_stop_benchmark(
             benchmark,
-            session,
             force=True,
             org=org,
             repository=RunControlRepository(session),

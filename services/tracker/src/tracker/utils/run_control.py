@@ -29,7 +29,6 @@ logger = get_logger(__name__)
 
 def apply_stop_benchmark(
     benchmark_row: Benchmark,
-    session: Session,
     force: bool,
     org: Org,
     task_ids: list[str] | None = None,
@@ -159,7 +158,6 @@ async def force_stop_sandboxes(
 
 async def reset_to_in_progress_status(
     benchmark_row: Benchmark,
-    session: Session,
     benchmark_service: BenchmarkServiceClient,
     retry: bool,
     retry_mode: RetryMode,

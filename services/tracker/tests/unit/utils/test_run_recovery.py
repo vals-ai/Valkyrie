@@ -571,7 +571,6 @@ class TestRunRecovery:
 
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
-            session=database_session,
             benchmark_service=start_benchmark_request.benchmark_service,
             retry=False,
             retry_mode=RetryMode.AUTO,
@@ -642,7 +641,6 @@ class TestRunRecovery:
 
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
-            session=database_session,
             benchmark_service=benchmark_row.benchmark_service(),
             retry=False,
             retry_mode=retry_mode,
@@ -705,7 +703,6 @@ class TestRunRecovery:
 
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
-            session=database_session,
             benchmark_service=benchmark_row.benchmark_service(),
             retry=True,
             retry_mode=RetryMode.AUTO,
@@ -756,7 +753,6 @@ class TestRunRecovery:
 
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
-            session=database_session,
             benchmark_service=benchmark_row.benchmark_service(),
             retry=False,
             retry_mode=RetryMode.AUTO,
@@ -803,7 +799,6 @@ class TestRunRecovery:
 
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
-            session=database_session,
             benchmark_service=benchmark_row.benchmark_service(),
             retry=True,
             retry_mode=RetryMode.AUTO,
@@ -887,7 +882,6 @@ class TestRunRecovery:
         # Resume with a new task id — should be lazily created as PENDING
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
-            session=database_session,
             benchmark_service=start_benchmark_request.benchmark_service,
             retry=False,
             retry_mode=RetryMode.AUTO,

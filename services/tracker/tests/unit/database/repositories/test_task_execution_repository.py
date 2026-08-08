@@ -1,4 +1,7 @@
-"""Focused transaction and authority tests for task execution persistence."""
+"""Focused transaction and authority tests for task execution persistence.
+
+Run: uv run pytest tests/unit/database/repositories/test_task_execution_repository.py
+"""
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta

@@ -602,7 +602,6 @@ async def analyze_benchmark(
     benchmark_repository: BenchmarkRepositoryDep,
     benchmark_id: TrackedBenchmarkId,
     body: AnalyzeBenchmarkRequest,
-    session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
 ) -> dict[str, str] | StreamingResponse:
@@ -673,7 +672,6 @@ async def retrieve_results(
     http_request: Request,
     s3: bool = Query(default=False),
     task_ids: list[str] | None = Query(default=None),
-    session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
 ) -> RetrieveResultsResponse:
@@ -750,7 +748,6 @@ async def retrieve_results(
 async def check_results_exist(
     benchmark_repository: BenchmarkRepositoryDep,
     benchmark_id: TrackedBenchmarkId,
-    session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
 ) -> dict[str, bool]:
@@ -1020,7 +1017,6 @@ async def retry_or_resume_benchmark(
         try:
             verified_task_ids = await reset_to_in_progress_status(
                 benchmark_row=benchmark_row,
-                session=session,
                 repository=run_control_repository,
                 benchmark_repository=benchmark_repository,
                 benchmark_service=benchmark_service,
@@ -1113,7 +1109,6 @@ async def fetch_benchmarks(
     cursor: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> FetchBenchmarksResponse:
     """
@@ -1153,7 +1148,6 @@ async def fetch_benchmarks(
 async def fetch_benchmark_metadata(
     benchmark_repository: BenchmarkRepositoryDep,
     benchmark_id: TrackedBenchmarkId,
-    session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> FetchBenchmarkMetadataResponse:
     """
@@ -1239,7 +1233,6 @@ async def _tar_output_stream(
 async def fetch_run_outputs(
     benchmark_repository: BenchmarkRepositoryDep,
     benchmark_id: TrackedBenchmarkId,
-    session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
     task_ids: list[str] | None = Query(default=None),

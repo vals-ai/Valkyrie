@@ -1,4 +1,7 @@
-"""Focused tests for database-only run-control persistence."""
+"""Focused tests for database-only run-control persistence.
+
+Run: uv run pytest tests/unit/database/repositories/test_run_control_repository.py
+"""
 
 from datetime import datetime, timedelta
 from uuid import uuid4

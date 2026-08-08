@@ -1,6 +1,6 @@
 """Tests for named tracker persistence repositories.
 
-Run: uv run pytest tests/unit/database/test_repositories.py
+Run: uv run pytest tests/unit/database/repositories/test_repositories.py
 
 Covers organization scope and representative benchmark/task read operations.
 """

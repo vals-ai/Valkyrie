@@ -285,7 +285,6 @@ class TestRunFinalization:
                 try:
                     verified_task_ids = await reset_to_in_progress_status(
                         retry_benchmark,
-                        retry_session,
                         benchmark_service,
                         retry=True,
                         retry_mode=RetryMode.FROM_SCRATCH,
