@@ -31,7 +31,7 @@ from tracker.database.models import (
     Task,
 )
 from tracker.database.session import engine
-from tracker.database.transaction import TrackerTransaction
+from tracker.database.transaction import TrackerTransaction, open_tracker_transaction
 from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
 from tracker.execution_authority import ExecutionAuthority
 from executor_protocol import EXECUTOR_TASK_NAME
@@ -140,7 +140,7 @@ async def finalize_all_error_run(
     Returns
     - True when a concurrent retry defers finalization, otherwise False.
     """
-    with TrackerTransaction.open(lambda: Session(bind=engine)) as transaction:
+    with open_tracker_transaction(engine) as transaction:
         session = transaction.session
         benchmark_row = fetch_benchmark_row(benchmark_id, transaction.benchmarks, org, for_update=True)
         transaction.task_execution.lock_execution_authority(authority)
@@ -167,7 +167,7 @@ async def finalize_all_error_run(
 
     error_message = await asyncio.to_thread(summarize_task_errors, task_errors)
 
-    with TrackerTransaction.open(lambda: Session(bind=engine)) as transaction:
+    with open_tracker_transaction(engine) as transaction:
         session = transaction.session
         benchmark_row = fetch_benchmark_row(benchmark_id, transaction.benchmarks, org, for_update=True)
         if transaction.run_control.count_runnable_tasks(benchmark_row.id, org.id):

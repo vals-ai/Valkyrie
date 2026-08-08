@@ -1,9 +1,11 @@
 """Session and repository composition for one tracker transaction."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from functools import cached_property
 from types import TracebackType
 
+from sqlalchemy.engine import Engine
 from sqlmodel import Session
 
 from tracker.database.repositories.benchmark import BenchmarkRepository
@@ -86,3 +88,10 @@ class TrackerTransaction:
             self.rollback()
         if self._owns_session:
             self.session.close()
+
+
+@contextmanager
+def open_tracker_transaction(engine: Engine) -> Generator[TrackerTransaction, None, None]:
+    """Open a fresh tracker transaction around the supplied engine."""
+    with TrackerTransaction.open(lambda: Session(bind=engine)) as transaction:
+        yield transaction
