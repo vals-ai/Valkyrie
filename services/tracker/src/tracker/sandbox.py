@@ -91,16 +91,53 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
     return bundle_path / contract_name
 
 
-async def delete_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> None:
+def _log_sandbox_delete(
+    sandbox: Sandbox,
+    initiated_by: str,
+    org_id: str | None,
+    *,
+    outcome: str,
+    error: str | None = None,
+) -> None:
+    """Structured audit record for every sandbox deletion attempt (vtl#170)."""
+    labels = sandbox.labels or {}
+    logger.info(
+        "sandbox.delete",
+        extra={
+            "sandbox_id": sandbox.id,
+            "sandbox_name": sandbox.name,
+            "benchmark_id": labels.get("Id"),
+            "benchmark_name": labels.get("Benchmark"),
+            "task_id": labels.get("Task"),
+            "org_id": org_id,
+            "initiated_by": initiated_by,
+            "outcome": outcome,
+            "error": error,
+        },
+    )
+
+
+async def delete_sandbox(
+    sandbox: Sandbox,
+    provider: SandboxProvider,
+    *,
+    initiated_by: str,
+    org_id: str | None = None,
+) -> None:
     """Delete sandbox through its provider."""
     try:
         await provider.delete_sandbox(sandbox.id)
     except SandboxNotFoundError:
+        _log_sandbox_delete(sandbox, initiated_by, org_id, outcome="already_gone")
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
-    except ProviderSandboxError:
+    except ProviderSandboxError as e:
+        _log_sandbox_delete(sandbox, initiated_by, org_id, outcome="failed", error=str(e))
         raise
     except Exception as e:
+        _log_sandbox_delete(sandbox, initiated_by, org_id, outcome="failed", error=str(e))
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
+    else:
+        _log_sandbox_delete(sandbox, initiated_by, org_id, outcome="deleted")
 
 
 def _source_name(source: SandboxSource) -> str:
@@ -257,7 +294,7 @@ async def create_sandbox(
                 sandbox = await asyncio.shield(creation_task)
             except asyncio.CancelledError:
                 sandbox = await creation_task
-                await delete_sandbox(sandbox, provider)
+                await delete_sandbox(sandbox, provider, initiated_by="create_cancelled")
                 raise
     except Exception as e:
         incr("valkyrie.sandbox.create.errors", tags={"error_class": type(e).__name__})
@@ -276,7 +313,7 @@ async def create_sandbox(
         logger.error(f"Error during sandbox execution {sandbox.name}: {e}")
         raise
     finally:
-        await delete_sandbox(sandbox, provider)
+        await delete_sandbox(sandbox, provider, initiated_by="task_teardown")
 
 
 @retry(

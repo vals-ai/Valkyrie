@@ -18,9 +18,11 @@ def get_context_tags() -> dict[str, str]:
 
 
 class ContextFilter(logging.Filter):
-    """Injects context variables into every log record for structured logging."""
+    """Injects context variables into log records without overriding fields set explicitly via `extra`."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         for key, value in get_context_tags().items():
+            if getattr(record, key, None):
+                continue
             setattr(record, key, value)
         return True
