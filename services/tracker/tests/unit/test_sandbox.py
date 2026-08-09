@@ -1069,6 +1069,7 @@ class TestSandboxLifecycle:
         mock_sandbox = AsyncMock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
+        mock_sandbox.labels = None
 
         provider = AsyncMock()
         provider.delete_sandbox = AsyncMock(side_effect=ProviderSandboxError("state change"))
@@ -1140,6 +1141,7 @@ class TestSandboxLifecycle:
         mock_sandbox = AsyncMock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
+        mock_sandbox.labels = None
         provider = AsyncMock()
         provider.create_sandbox.return_value = mock_sandbox
         distribution = Mock()
@@ -1334,9 +1336,7 @@ class TestDeleteSandboxAudit:
         assert call_args[1]["extra"]["outcome"] == "failed"
         assert call_args[1]["extra"]["error"] == "state change"
 
-    async def test_delete_sandbox_audit_unexpected_failure_swallowed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_delete_sandbox_audit_unexpected_failure_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Unexpected exception swallowed: audit outcome=failed with error string, no raise."""
         logger_mock = Mock()
         monkeypatch.setattr(sandbox_module, "logger", logger_mock)

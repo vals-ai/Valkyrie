@@ -2204,9 +2204,7 @@ class TestRunRecovery:
         assert dispatch is not None
         assert dispatch.status == ExecutorDispatchStatus.FAILED
 
-    async def test_stop_sandbox_audits_forced_stop_deletion(
-        self, monkeypatch: MonkeyPatch
-    ) -> None:
+    async def test_stop_sandbox_audits_forced_stop_deletion(self, monkeypatch: MonkeyPatch) -> None:
         """Forced stop identifies itself and its org on every sandbox deletion."""
         delete_mock = AsyncMock()
         monkeypatch.setattr("tracker.utils.run_control.delete_sandbox", delete_mock)
@@ -2217,6 +2215,4 @@ class TestRunRecovery:
         result = await stop_sandbox(sandbox, provider, self._test_org)
 
         assert result is None
-        delete_mock.assert_awaited_once_with(
-            sandbox, provider, initiated_by="force_stop", org_id=str(TEST_ORG_ID)
-        )
+        delete_mock.assert_awaited_once_with(sandbox, provider, initiated_by="force_stop", org_id=str(TEST_ORG_ID))
