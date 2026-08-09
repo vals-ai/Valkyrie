@@ -24,6 +24,7 @@ from benchmark_service import (
 )
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
+from benchmark_service.sandbox import SandboxNotFoundError
 
 from tracker import sandbox as sandbox_module
 from tracker.database.models import (
@@ -1073,7 +1074,7 @@ class TestSandboxLifecycle:
         provider.delete_sandbox = AsyncMock(side_effect=ProviderSandboxError("state change"))
 
         with pytest.raises(ProviderSandboxError, match="state change"):
-            await _delete_sandbox(mock_sandbox, provider)
+            await _delete_sandbox(mock_sandbox, provider, initiated_by="force_stop")
 
         provider.delete_sandbox.assert_awaited_once_with("sandbox-123")
 
@@ -1219,7 +1220,7 @@ class TestSandboxLifecycle:
 
             return await asyncio.shield(remote_creation_task)
 
-        async def mock_delete_sandbox(sandbox: AsyncMock, _provider: Any) -> None:
+        async def mock_delete_sandbox(sandbox: AsyncMock, _provider: Any, **_kwargs: Any) -> None:
             active_sandbox_ids.remove(sandbox.id)
 
         monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
@@ -1247,6 +1248,136 @@ class TestSandboxLifecycle:
         assert remote_creation_task is not None
         await remote_creation_task
         assert active_sandbox_ids == set()
+
+
+_UNSET = object()
+
+
+class TestDeleteSandboxAudit:
+    """Structured audit records for sandbox deletions."""
+
+    @staticmethod
+    def _make_sandbox(
+        sandbox_id: str = "sandbox-123",
+        sandbox_name: str = "task-alias",
+        labels: dict[str, str] | None | object = _UNSET,
+    ) -> AsyncMock:
+        """Build a mock sandbox with id, name, and optional labels."""
+        sandbox = AsyncMock()
+        sandbox.id = sandbox_id
+        sandbox.name = sandbox_name
+        # Default labels if not explicitly provided; explicit None means no labels
+        if labels is _UNSET:
+            labels = {"Benchmark": "swebench", "Id": "bench-1", "Task": "task_0"}
+        sandbox.labels = labels  # type: ignore[attr-defined]
+        return sandbox
+
+    async def test_delete_sandbox_audit_success_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Successful deletion emits audit with outcome=deleted."""
+        logger_mock = Mock()
+        monkeypatch.setattr(sandbox_module, "logger", logger_mock)
+
+        sandbox = self._make_sandbox()
+        provider = AsyncMock()
+
+        await _delete_sandbox(sandbox, provider, initiated_by="force_stop", org_id="org-1")
+
+        logger_mock.info.assert_called_once_with(
+            "sandbox.delete",
+            extra={
+                "sandbox_id": "sandbox-123",
+                "sandbox_name": "task-alias",
+                "benchmark_id": "bench-1",
+                "benchmark_name": "swebench",
+                "task_id": "task_0",
+                "org_id": "org-1",
+                "initiated_by": "force_stop",
+                "outcome": "deleted",
+                "error": None,
+            },
+        )
+        provider.delete_sandbox.assert_awaited_once_with("sandbox-123")
+
+    async def test_delete_sandbox_audit_already_gone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Sandbox already deleted: audit outcome=already_gone, warning logged, no raise."""
+        logger_mock = Mock()
+        monkeypatch.setattr(sandbox_module, "logger", logger_mock)
+
+        sandbox = self._make_sandbox()
+        provider = AsyncMock()
+        provider.delete_sandbox = AsyncMock(side_effect=SandboxNotFoundError("gone"))
+
+        await _delete_sandbox(sandbox, provider, initiated_by="force_stop", org_id="org-1")
+
+        logger_mock.info.assert_called_once()
+        call_args = logger_mock.info.call_args
+        assert call_args[0][0] == "sandbox.delete"
+        assert call_args[1]["extra"]["outcome"] == "already_gone"
+        assert call_args[1]["extra"]["error"] is None
+        logger_mock.warning.assert_called_once()
+
+    async def test_delete_sandbox_audit_provider_failure_reraises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Provider error re-raised: audit outcome=failed with error string, exception raised."""
+        logger_mock = Mock()
+        monkeypatch.setattr(sandbox_module, "logger", logger_mock)
+
+        sandbox = self._make_sandbox()
+        provider = AsyncMock()
+        provider.delete_sandbox = AsyncMock(side_effect=ProviderSandboxError("state change"))
+
+        with pytest.raises(ProviderSandboxError, match="state change"):
+            await _delete_sandbox(sandbox, provider, initiated_by="force_stop", org_id="org-1")
+
+        logger_mock.info.assert_called_once()
+        call_args = logger_mock.info.call_args
+        assert call_args[0][0] == "sandbox.delete"
+        assert call_args[1]["extra"]["outcome"] == "failed"
+        assert call_args[1]["extra"]["error"] == "state change"
+
+    async def test_delete_sandbox_audit_unexpected_failure_swallowed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unexpected exception swallowed: audit outcome=failed with error string, no raise."""
+        logger_mock = Mock()
+        monkeypatch.setattr(sandbox_module, "logger", logger_mock)
+
+        sandbox = self._make_sandbox()
+        provider = AsyncMock()
+        provider.delete_sandbox = AsyncMock(side_effect=RuntimeError("boom"))
+
+        await _delete_sandbox(sandbox, provider, initiated_by="force_stop", org_id="org-1")
+
+        logger_mock.info.assert_called_once()
+        call_args = logger_mock.info.call_args
+        assert call_args[0][0] == "sandbox.delete"
+        assert call_args[1]["extra"]["outcome"] == "failed"
+        assert call_args[1]["extra"]["error"] == "boom"
+        logger_mock.error.assert_called_once()
+
+    async def test_delete_sandbox_audit_labels_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No labels: benchmark/task identity fields are None."""
+        logger_mock = Mock()
+        monkeypatch.setattr(sandbox_module, "logger", logger_mock)
+
+        sandbox = self._make_sandbox(labels=None)
+        provider = AsyncMock()
+
+        await _delete_sandbox(sandbox, provider, initiated_by="task_teardown")
+
+        logger_mock.info.assert_called_once_with(
+            "sandbox.delete",
+            extra={
+                "sandbox_id": "sandbox-123",
+                "sandbox_name": "task-alias",
+                "benchmark_id": None,
+                "benchmark_name": None,
+                "task_id": None,
+                "org_id": None,
+                "initiated_by": "task_teardown",
+                "outcome": "deleted",
+                "error": None,
+            },
+        )
 
 
 class TestUploadAgentArtifacts:
