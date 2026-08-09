@@ -6,7 +6,11 @@ Run: uv run pytest tests/unit/test_outbound_security.py
 import pytest
 from pydantic import ValidationError
 
-from tracker.config import create_benchmark_service_url
+from tracker.config import (
+    BenchmarkServiceDestination,
+    classify_benchmark_service_destination,
+    create_benchmark_service_url,
+)
 from tracker.database.models import AgentContractRequest
 from tracker.types import (
     BenchmarkServiceEntry,
@@ -77,6 +81,42 @@ class TestBenchmarkServiceNameValidation:
         assert create_benchmark_service_url("swebench") == "http://swebench.local:8001"
         assert FetchBenchmarkTasksRequest(benchmark_name="swebench").benchmark_name == "swebench"
         assert _start_benchmark_request(harness_config).benchmark_name == "swebench"
+
+
+class TestBenchmarkServiceDestination:
+    """Credential forwarding trust derives from the exact hosted-service origin."""
+
+    @pytest.mark.parametrize(
+        ("service_url", "expected"),
+        [
+            (None, BenchmarkServiceDestination.HOSTED),
+            ("https://swebench.benchmarks.vals.ai", BenchmarkServiceDestination.HOSTED),
+            ("https://swebench.benchmarks.vals.ai:443/path", BenchmarkServiceDestination.HOSTED),
+            ("http://swebench.benchmarks.vals.ai", BenchmarkServiceDestination.CUSTOM),
+            ("https://other.benchmarks.vals.ai", BenchmarkServiceDestination.CUSTOM),
+            ("https://swebench.benchmarks.vals.ai:8443", BenchmarkServiceDestination.CUSTOM),
+            ("https://swebench.benchmarks.vals.ai:0", BenchmarkServiceDestination.CUSTOM),
+        ],
+    )
+    def test_classifies_only_exact_hosted_origin(
+        self,
+        service_url: str | None,
+        expected: BenchmarkServiceDestination,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr("tracker.config._BENCHMARK_SERVICE_BASE_URL", "benchmarks.vals.ai")
+
+        assert classify_benchmark_service_destination("swebench", service_url) is expected
+
+    def test_normalizes_default_http_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("tracker.config._BENCHMARK_SERVICE_BASE_URL", None)
+        monkeypatch.setattr("tracker.config._BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "local")
+        monkeypatch.setattr("tracker.config._CLOUDMAP_PORT", 80)
+
+        assert (
+            classify_benchmark_service_destination("swebench", "http://swebench.local")
+            is BenchmarkServiceDestination.HOSTED
+        )
 
 
 class TestCustomServiceUrlValidation:

@@ -13,7 +13,12 @@ from requests.exceptions import ReadTimeout
 from sqlmodel import Session, select
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from tracker.config import AUTH_REQUIRED, DESCOPE_MANAGEMENT_KEY, DESCOPE_PROJECT_ID
+from tracker.config import (
+    AUTH_REQUIRED,
+    DESCOPE_MANAGEMENT_KEY,
+    DESCOPE_PROJECT_ID,
+    BenchmarkServiceDestination,
+)
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
 from tracker.logging import get_logger
@@ -227,8 +232,10 @@ def find_org_by_tenant(tenant_name: str, session: Session) -> Org | None:
 def forward_tracker_api_key(
     service_headers: Mapping[str, str] | None,
     tracker_api_key: str | None,
+    *,
+    destination: BenchmarkServiceDestination,
 ) -> dict[str, str]:
-    """Copy service headers and inject the tracker API key for benchmark-service auth.
+    """Copy service headers and inject the tracker API key only for hosted services.
 
     The downstream benchmark-service auth header must not reuse ``X-Api-Key`` because that
     header is already reserved for Daytona sandbox credentials.
@@ -238,7 +245,7 @@ def forward_tracker_api_key(
         validate_service_headers(forwarded_headers)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Unsupported benchmark service header") from exc
-    if not tracker_api_key:
+    if not tracker_api_key or destination is not BenchmarkServiceDestination.HOSTED:
         return forwarded_headers
 
     has_explicit_override = any(key.lower() == BENCHMARK_SERVICE_API_KEY_HEADER.lower() for key in forwarded_headers)

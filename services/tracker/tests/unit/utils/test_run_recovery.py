@@ -1112,6 +1112,42 @@ class TestRunRecovery:
         database_session.refresh(benchmark_row)
         assert benchmark_row.arguments.concurrency == 20
 
+    async def test_retry_or_resume_does_not_forward_tracker_key_to_custom_service(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: Any,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        benchmark_row.custom_benchmark_service = "https://team.example"
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        observed_headers: dict[str, str] = {}
+
+        async def _mock_reset_to_in_progress_status(
+            *_args: Any,
+            benchmark_service: BenchmarkServiceClient,
+            **_kwargs: Any,
+        ) -> list[str]:
+            observed_headers.update(getattr(benchmark_service, "_headers"))
+            return ["task_0"]
+
+        monkeypatch.setattr("main.reset_to_in_progress_status", _mock_reset_to_in_progress_status)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={"task_ids": [], "service_headers": {}},
+            headers={"X-Api-Key": "tracker-api-key"},
+        )
+
+        assert response.status_code == 200
+        assert "X-Descope-Api-Key" not in observed_headers
+        admitted_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        assert "X-Descope-Api-Key" not in admitted_request["service_headers"]
+
     async def test_force_stop_uses_stored_provider_secret(
         self,
         example_benchmark_object: Benchmark,
@@ -1238,6 +1274,7 @@ class TestRunRecovery:
         database_session.add_all([benchmark_row, task_row])
         database_session.commit()
         verified_urls: list[str] = []
+        verified_headers: list[dict[str, str]] = []
 
         async def _verify_task_ids(
             benchmark_service: BenchmarkServiceClient,
@@ -1247,6 +1284,7 @@ class TestRunRecovery:
             dataset: str | None,
         ) -> VerifyTaskIdsResponse:
             verified_urls.append(benchmark_service._url)
+            verified_headers.append(dict(getattr(benchmark_service, "_headers")))
 
             return VerifyTaskIdsResponse(task_ids=task_ids)
 
@@ -1276,13 +1314,16 @@ class TestRunRecovery:
                 "service_headers": {},
                 "benchmark_url": "https://new.example/",
             },
+            headers={"X-Api-Key": "tracker-api-key"},
         )
 
         assert response.status_code == 200
         assert verified_urls == ["https://new.example"]
+        assert "X-Descope-Api-Key" not in verified_headers[0]
 
         queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
         assert queued_request["custom_benchmark_service"] == "https://new.example"
+        assert "X-Descope-Api-Key" not in queued_request["service_headers"]
 
         database_session.refresh(benchmark_row)
         assert benchmark_row.custom_benchmark_service == "https://new.example"

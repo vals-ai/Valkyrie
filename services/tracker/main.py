@@ -54,7 +54,13 @@ from tracker.aws.s3 import (
     s3_object_exists,
 )
 from tracker.agent.schemas import AgentConfig
-from tracker.config import AUTH_REQUIRED, ENVIRONMENT, broker, create_benchmark_service_url
+from tracker.config import (
+    AUTH_REQUIRED,
+    ENVIRONMENT,
+    broker,
+    classify_benchmark_service_destination,
+    create_benchmark_service_url,
+)
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -394,6 +400,10 @@ async def start_benchmark(
             "service_headers": forward_tracker_api_key(
                 service_headers,
                 http_request.headers.get("x-api-key"),
+                destination=classify_benchmark_service_destination(
+                    request.benchmark_name,
+                    request.custom_benchmark_service,
+                ),
             ),
         }
     )
@@ -511,7 +521,14 @@ async def fetch_benchmark_tasks(
     try:
         benchmark_service = create_benchmark_service_client(
             url=request.custom_benchmark_service or create_benchmark_service_url(request.benchmark_name),
-            service_headers=forward_tracker_api_key(request.service_headers, http_request.headers.get("x-api-key")),
+            service_headers=forward_tracker_api_key(
+                request.service_headers,
+                http_request.headers.get("x-api-key"),
+                destination=classify_benchmark_service_destination(
+                    request.benchmark_name,
+                    request.custom_benchmark_service,
+                ),
+            ),
         )
         try:
             return await benchmark_service.verify_task_ids(
@@ -695,7 +712,14 @@ async def retrieve_results(
             if task_id in task_ids_set
         }
 
-        effective_service_headers = forward_tracker_api_key(None, http_request.headers.get("x-api-key"))
+        effective_service_headers = forward_tracker_api_key(
+            None,
+            http_request.headers.get("x-api-key"),
+            destination=classify_benchmark_service_destination(
+                benchmark_row.name,
+                benchmark_row.custom_benchmark_service,
+            ),
+        )
         benchmark_service = benchmark_row.benchmark_service(service_headers=effective_service_headers)
         try:
             resp = await benchmark_service.final_score(
@@ -943,17 +967,21 @@ async def retry_or_resume_benchmark(
             session.commit()
         return RetryOrResumeBenchmarkResponse(status="success")
 
-    effective_service_headers = forward_tracker_api_key(
-        service_headers,
-        http_request.headers.get("x-api-key"),
-    )
-
     dispatch_id = uuid4()
     pre_action_status: BenchmarkStatus | None = None
     try:
         with session.no_autoflush:
             lock_executor_admission(session)
         benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        effective_benchmark_url = benchmark_url if benchmark_url is not None else benchmark_row.custom_benchmark_service
+        effective_service_headers = forward_tracker_api_key(
+            service_headers,
+            http_request.headers.get("x-api-key"),
+            destination=classify_benchmark_service_destination(
+                benchmark_row.name,
+                effective_benchmark_url,
+            ),
+        )
         if benchmark_row.status == BenchmarkStatus.STOPPING:
             raise HTTPException(
                 status_code=400,

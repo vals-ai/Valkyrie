@@ -8,6 +8,10 @@ Tracker is the FastAPI control plane. It records release-bound dispatches in Pos
 
 Local Docker Compose starts only Tracker, PostgreSQL, and Redis. It does not run ExecutorHost, create an active executor release, or execute benchmarks. Use a deployed release environment for benchmark execution.
 
+### Benchmark-service authentication
+
+Tracker automatically forwards its inbound Descope API key only when the effective benchmark-service origin exactly matches the hosted origin derived from the benchmark name and Tracker configuration. Custom benchmark-service origins do not receive the Tracker key. They can still use explicit service-owned headers or secret-backed service authentication.
+
 ## Running
 
 ```bash
