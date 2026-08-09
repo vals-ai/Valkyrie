@@ -91,15 +91,15 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
     return bundle_path / contract_name
 
 
-def _log_sandbox_delete(
+def _audit_sandbox_delete(
     sandbox: Sandbox,
     initiated_by: str,
     org_id: str | None,
-    *,
     outcome: str,
     error: str | None = None,
 ) -> None:
-    """Structured audit record for every sandbox deletion attempt (vtl#170)."""
+    """Record who deleted which sandbox, on whose behalf, and what came of it."""
+    # Provider labels set at creation: {"Benchmark": name, "Id": benchmark id, "Task": task id}.
     labels = sandbox.labels or {}
     logger.info(
         "sandbox.delete",
@@ -124,20 +124,20 @@ async def delete_sandbox(
     initiated_by: str,
     org_id: str | None = None,
 ) -> None:
-    """Delete sandbox through its provider."""
+    """Delete sandbox through its provider. `initiated_by` names the caller in the audit trail."""
     try:
         await provider.delete_sandbox(sandbox.id)
     except SandboxNotFoundError:
-        _log_sandbox_delete(sandbox, initiated_by, org_id, outcome="already_gone")
+        _audit_sandbox_delete(sandbox, initiated_by, org_id, "already_gone")
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
     except ProviderSandboxError as e:
-        _log_sandbox_delete(sandbox, initiated_by, org_id, outcome="failed", error=str(e))
+        _audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", str(e))
         raise
     except Exception as e:
-        _log_sandbox_delete(sandbox, initiated_by, org_id, outcome="failed", error=str(e))
+        _audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", str(e))
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
     else:
-        _log_sandbox_delete(sandbox, initiated_by, org_id, outcome="deleted")
+        _audit_sandbox_delete(sandbox, initiated_by, org_id, "deleted")
 
 
 def _source_name(source: SandboxSource) -> str:

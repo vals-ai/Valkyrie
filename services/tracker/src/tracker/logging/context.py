@@ -22,7 +22,6 @@ class ContextFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         for key, value in get_context_tags().items():
-            if getattr(record, key, None):
-                continue
-            setattr(record, key, value)
+            if not getattr(record, key, None):
+                setattr(record, key, value)
         return True

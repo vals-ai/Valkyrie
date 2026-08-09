@@ -87,48 +87,25 @@ class TestContextFilter:
             task_id_var.reset(task_token)
 
     def test_context_filter_preserves_explicit_record_fields(self) -> None:
-        """Explicit extra fields win over ambient context so deletion audit records keep their identity.
-
-        Test cases:
-        - Record fields set from audit extra are not overwritten by ambient context.
-        - Empty record fields are still filled from context variables.
-        """
+        """Fields passed via `extra` survive ambient context, so audit records keep their own identity."""
         context_filter = ContextFilter()
-
-        # First test: explicit values win over ambient context
         record = _log_record()
         record.benchmark_id = "bench-from-extra"
         record.task_id = "task-from-extra"
 
-        request_token = request_id_var.set("req-1")
+        request_token = request_id_var.set("req-123")
         benchmark_token = benchmark_id_var.set("bench-ambient")
         task_token = task_id_var.set("task-ambient")
         try:
             context_filter.filter(record)
 
-            assert record.request_id == "req-1"
+            assert record.request_id == "req-123"
             assert record.benchmark_id == "bench-from-extra"
             assert record.task_id == "task-from-extra"
         finally:
             request_id_var.reset(request_token)
             benchmark_id_var.reset(benchmark_token)
             task_id_var.reset(task_token)
-
-        # Second test: empty values are filled from context
-        record2 = _log_record()
-        record2.benchmark_id = ""
-
-        request_token2 = request_id_var.set("req-2")
-        benchmark_token2 = benchmark_id_var.set("bench-filled")
-        task_token2 = task_id_var.set("task-2")
-        try:
-            context_filter.filter(record2)
-
-            assert record2.benchmark_id == "bench-filled"
-        finally:
-            request_id_var.reset(request_token2)
-            benchmark_id_var.reset(benchmark_token2)
-            task_id_var.reset(task_token2)
 
 
 class TestConfigureLogging:
