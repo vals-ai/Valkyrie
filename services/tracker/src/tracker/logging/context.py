@@ -18,7 +18,11 @@ def get_context_tags() -> dict[str, str]:
 
 
 class ContextFilter(logging.Filter):
-    """Injects context variables into log records without overriding fields set explicitly via `extra`."""
+    """Backfills context variables onto log records.
+
+    A truthy value already on the record (e.g. set via `extra`) takes precedence;
+    missing or falsy fields are filled from ambient context, which may be empty.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
         for key, value in get_context_tags().items():

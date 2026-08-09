@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Any, AsyncGenerator, assert_never
+from typing import Any, AsyncGenerator, Literal, assert_never
 
 import logfire
 import sentry_sdk
@@ -91,15 +91,23 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
     return bundle_path / contract_name
 
 
+SandboxDeleteInitiator = Literal["create_cancelled", "force_stop", "task_teardown"]
+"""Known sources of sandbox deletions, recorded as `initiated_by` in the sandbox.delete audit event."""
+
+SandboxDeleteOutcome = Literal["deleted", "already_gone", "cancelled", "failed"]
+"""What became of a sandbox delete attempt; `cancelled` means the provider may or may not have acted."""
+
+
 def _audit_sandbox_delete(
     sandbox: Sandbox,
-    initiated_by: str,
+    initiated_by: SandboxDeleteInitiator,
     org_id: str | None,
-    outcome: str,
+    outcome: SandboxDeleteOutcome,
     error: str | None = None,
 ) -> None:
     """Record who deleted which sandbox, on whose behalf, and what came of it."""
-    # Provider labels set at creation: {"Benchmark": name, "Id": benchmark id, "Task": task id}.
+    # Labels attached at sandbox creation (utils/task_execution.py):
+    # {"Benchmark": name, "Id": benchmark id, "Task": task id}.
     labels = sandbox.labels or {}
     logger.info(
         "sandbox.delete",
@@ -121,7 +129,7 @@ async def delete_sandbox(
     sandbox: Sandbox,
     provider: SandboxProvider,
     *,
-    initiated_by: str,
+    initiated_by: SandboxDeleteInitiator,
     org_id: str | None = None,
 ) -> None:
     """Delete sandbox through its provider. `initiated_by` names the caller in the audit trail."""
@@ -131,10 +139,15 @@ async def delete_sandbox(
         _audit_sandbox_delete(sandbox, initiated_by, org_id, "already_gone")
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
     except ProviderSandboxError as e:
-        _audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", str(e))
+        _audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", f"{type(e).__name__}: {e}")
+        raise
+    except asyncio.CancelledError:
+        # Cancelled mid-flight: the delete request may still have reached the provider.
+        # Record the attempt before propagating so the deletion is never unattributed.
+        _audit_sandbox_delete(sandbox, initiated_by, org_id, "cancelled")
         raise
     except Exception as e:
-        _audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", str(e))
+        _audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", f"{type(e).__name__}: {e}")
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
     else:
         _audit_sandbox_delete(sandbox, initiated_by, org_id, "deleted")

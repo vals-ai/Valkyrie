@@ -1223,8 +1223,11 @@ class TestSandboxLifecycle:
 
             return await asyncio.shield(remote_creation_task)
 
-        async def mock_delete_sandbox(sandbox: AsyncMock, _provider: Any, **_kwargs: Any) -> None:
+        deletion_initiators: list[Any] = []
+
+        async def mock_delete_sandbox(sandbox: AsyncMock, _provider: Any, **kwargs: Any) -> None:
             active_sandbox_ids.remove(sandbox.id)
+            deletion_initiators.append(kwargs.get("initiated_by"))
 
         monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
         monkeypatch.setattr(sandbox_module, "delete_sandbox", mock_delete_sandbox)
@@ -1251,6 +1254,34 @@ class TestSandboxLifecycle:
         assert remote_creation_task is not None
         await remote_creation_task
         assert active_sandbox_ids == set()
+        assert deletion_initiators == ["create_cancelled"]
+
+    async def test_create_sandbox_teardown_names_initiator(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Normal context-manager exit attributes the deletion to task_teardown in the audit trail."""
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+
+        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncMock:
+            return mock_sandbox
+
+        delete_mock = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "delete_sandbox", delete_mock)
+        monkeypatch.setattr(sandbox_module, "distribution", Mock(), raising=False)
+        monkeypatch.setattr(sandbox_module, "set_sandbox_context", Mock(), raising=False)
+
+        provider = AsyncMock()
+        async with create_sandbox(
+            provider=provider,
+            sandbox_name="task-alias",
+            source=ImageSource(image="ghcr.io/vals/swebench:latest"),
+            resources=Resources(vcpu=2, memory=4, disk=5),
+            creation_semaphore=asyncio.Semaphore(1),
+        ):
+            pass
+
+        delete_mock.assert_awaited_once_with(mock_sandbox, provider, initiated_by="task_teardown")
 
 
 class TestDeleteSandboxAudit:
@@ -1269,8 +1300,8 @@ class TestDeleteSandboxAudit:
         [
             (None, "deleted", None),
             (SandboxNotFoundError("gone"), "already_gone", None),
-            (ProviderSandboxError("state change"), "failed", "state change"),
-            (RuntimeError("boom"), "failed", "boom"),
+            (ProviderSandboxError("state change"), "failed", "SandboxError: state change"),
+            (RuntimeError("boom"), "failed", "RuntimeError: boom"),
         ],
         ids=["deleted", "already-gone", "provider-error", "unexpected-error"],
     )
@@ -1287,7 +1318,8 @@ class TestDeleteSandboxAudit:
         provider = AsyncMock()
         provider.delete_sandbox = AsyncMock(side_effect=provider_error)
 
-        # Only ProviderSandboxError propagates; test_delete_sandbox_raises_provider_errors pins that.
+        # Of these, only ProviderSandboxError propagates; test_delete_sandbox_raises_provider_errors
+        # pins that. Cancellation propagates too — test_delete_sandbox_audits_cancelled_delete.
         with suppress(ProviderSandboxError):
             await _delete_sandbox(self._sandbox(), provider, initiated_by="force_stop", org_id="org-1")
 
@@ -1326,6 +1358,31 @@ class TestDeleteSandboxAudit:
                 "org_id": None,
                 "initiated_by": "task_teardown",
                 "outcome": "deleted",
+                "error": None,
+            },
+        )
+
+    async def test_delete_sandbox_audits_cancelled_delete(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A delete cancelled mid-flight still leaves a record: the provider may have acted on it."""
+        logger_mock = Mock()
+        monkeypatch.setattr(sandbox_module, "logger", logger_mock)
+        provider = AsyncMock()
+        provider.delete_sandbox = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with pytest.raises(asyncio.CancelledError):
+            await _delete_sandbox(self._sandbox(), provider, initiated_by="task_teardown")
+
+        logger_mock.info.assert_called_once_with(
+            "sandbox.delete",
+            extra={
+                "sandbox_id": "sandbox-123",
+                "sandbox_name": "task-alias",
+                "benchmark_id": "bench-1",
+                "benchmark_name": "swebench",
+                "task_id": "task_0",
+                "org_id": None,
+                "initiated_by": "task_teardown",
+                "outcome": "cancelled",
                 "error": None,
             },
         )
