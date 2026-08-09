@@ -61,7 +61,13 @@ def classify_benchmark_service_destination(
     service_url: str | None,
 ) -> BenchmarkServiceDestination:
     """Trust only the exact origin derived for a hosted benchmark service."""
-    hosted_url = create_benchmark_service_url(benchmark_name)
+    try:
+        hosted_url = create_benchmark_service_url(benchmark_name)
+    except ValueError:
+        # Persisted custom-service runs can predate benchmark-name validation.
+        if service_url is not None:
+            return BenchmarkServiceDestination.CUSTOM
+        raise
     effective_url = service_url or hosted_url
     if _normalized_origin(effective_url) == _normalized_origin(hosted_url):
         return BenchmarkServiceDestination.HOSTED

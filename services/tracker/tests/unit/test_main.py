@@ -1299,13 +1299,14 @@ class TestTrackerAPI:
         assert observed_results["task_11"] is None
         assert response.json()["final_evaluation"]["final_score"] == 2.0
 
-    async def test_retrieve_results_does_not_forward_tracker_key_to_custom_service(
+    async def test_retrieve_results_does_not_forward_tracker_key_to_legacy_named_custom_service(
         self,
         monkeypatch: MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
     ) -> None:
         benchmark_row = example_benchmark_object
+        benchmark_row.name = "terminal_bench"
         benchmark_row.custom_benchmark_service = "https://team.example"
         task_row = Task(
             org_id=TEST_ORG_ID,
