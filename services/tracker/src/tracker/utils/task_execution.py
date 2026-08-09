@@ -608,8 +608,7 @@ async def _process_task_attempt(
         sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
 
         # Labels that show up in the UI we can use to filter sandboxes.
-        # The Benchmark/Id/Task keys are also read back by sandbox._audit_sandbox_delete
-        # to attribute sandbox deletions in the sandbox.delete audit event.
+        # Benchmark/Id/Task are read back by sandbox._audit_sandbox_delete.
         labels = {
             "Benchmark": start_benchmark_request.benchmark_name,
             "Id": str(benchmark_id),
