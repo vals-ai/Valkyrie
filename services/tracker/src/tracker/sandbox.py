@@ -92,10 +92,7 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
 
 
 SandboxDeleteInitiator = Literal["create_cancelled", "force_stop", "task_teardown"]
-"""Known sources of sandbox deletions, recorded as `initiated_by` in the sandbox.delete audit event."""
-
 SandboxDeleteOutcome = Literal["deleted", "already_gone", "cancelled", "failed"]
-"""What became of a sandbox delete attempt; `cancelled` means the provider may or may not have acted."""
 
 
 def _audit_sandbox_delete(
@@ -105,7 +102,6 @@ def _audit_sandbox_delete(
     outcome: SandboxDeleteOutcome,
     error: str | None = None,
 ) -> None:
-    """Record who deleted which sandbox, on whose behalf, and what came of it."""
     # Labels attached at sandbox creation (utils/task_execution.py):
     # {"Benchmark": name, "Id": benchmark id, "Task": task id}.
     labels = sandbox.labels or {}
@@ -132,7 +128,7 @@ async def delete_sandbox(
     initiated_by: SandboxDeleteInitiator,
     org_id: str | None = None,
 ) -> None:
-    """Delete sandbox through its provider. `initiated_by` names the caller in the audit trail."""
+    """Delete sandbox through its provider."""
     try:
         await provider.delete_sandbox(sandbox.id)
     except SandboxNotFoundError:
@@ -142,8 +138,7 @@ async def delete_sandbox(
         _audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", f"{type(e).__name__}: {e}")
         raise
     except asyncio.CancelledError:
-        # Cancelled mid-flight: the delete request may still have reached the provider.
-        # Record the attempt before propagating so the deletion is never unattributed.
+        # Caught only to audit: a cancelled delete may still have reached the provider.
         _audit_sandbox_delete(sandbox, initiated_by, org_id, "cancelled")
         raise
     except Exception as e:

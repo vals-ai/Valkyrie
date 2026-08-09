@@ -1258,20 +1258,18 @@ class TestSandboxLifecycle:
 
     async def test_create_sandbox_teardown_names_initiator(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Normal context-manager exit attributes the deletion to task_teardown in the audit trail."""
-        mock_sandbox = AsyncMock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.name = "task-alias"
+        mock_sandbox = Mock()
 
-        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncMock:
+        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> Mock:
             return mock_sandbox
 
         delete_mock = AsyncMock()
         monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
         monkeypatch.setattr(sandbox_module, "delete_sandbox", delete_mock)
-        monkeypatch.setattr(sandbox_module, "distribution", Mock(), raising=False)
-        monkeypatch.setattr(sandbox_module, "set_sandbox_context", Mock(), raising=False)
+        monkeypatch.setattr(sandbox_module, "distribution", Mock())
+        monkeypatch.setattr(sandbox_module, "set_sandbox_context", Mock())
 
-        provider = AsyncMock()
+        provider = Mock()
         async with create_sandbox(
             provider=provider,
             sandbox_name="task-alias",
@@ -1318,8 +1316,7 @@ class TestDeleteSandboxAudit:
         provider = AsyncMock()
         provider.delete_sandbox = AsyncMock(side_effect=provider_error)
 
-        # Of these, only ProviderSandboxError propagates; test_delete_sandbox_raises_provider_errors
-        # pins that. Cancellation propagates too — test_delete_sandbox_audits_cancelled_delete.
+        # Of these outcomes only ProviderSandboxError propagates; test_delete_sandbox_raises_provider_errors pins that.
         with suppress(ProviderSandboxError):
             await _delete_sandbox(self._sandbox(), provider, initiated_by="force_stop", org_id="org-1")
 
@@ -1339,7 +1336,7 @@ class TestDeleteSandboxAudit:
         )
 
     async def test_delete_sandbox_audits_unlabelled_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A sandbox the provider reports without labels still identifies its deleter."""
+        """Unlabelled sandboxes still audit; the other fields are pinned by the `deleted` case above."""
         logger_mock = Mock()
         monkeypatch.setattr(sandbox_module, "logger", logger_mock)
         sandbox = self._sandbox()
@@ -1347,20 +1344,9 @@ class TestDeleteSandboxAudit:
 
         await _delete_sandbox(sandbox, AsyncMock(), initiated_by="task_teardown")
 
-        logger_mock.info.assert_called_once_with(
-            "sandbox.delete",
-            extra={
-                "sandbox_id": "sandbox-123",
-                "sandbox_name": "task-alias",
-                "benchmark_id": None,
-                "benchmark_name": None,
-                "task_id": None,
-                "org_id": None,
-                "initiated_by": "task_teardown",
-                "outcome": "deleted",
-                "error": None,
-            },
-        )
+        logger_mock.info.assert_called_once()
+        extra = logger_mock.info.call_args.kwargs["extra"]
+        assert (extra["benchmark_id"], extra["benchmark_name"], extra["task_id"]) == (None, None, None)
 
     async def test_delete_sandbox_audits_cancelled_delete(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A delete cancelled mid-flight still leaves a record: the provider may have acted on it."""
