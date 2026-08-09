@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from functools import cached_property
 from types import TracebackType
 
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlmodel import Session
 
 from tracker.database.repositories.benchmark import BenchmarkRepository
@@ -91,7 +91,9 @@ class TrackerTransaction:
 
 
 @contextmanager
-def open_tracker_transaction(engine: Engine) -> Generator[TrackerTransaction, None, None]:
-    """Open a fresh tracker transaction around the supplied engine."""
-    with TrackerTransaction.open(lambda: Session(bind=engine)) as transaction:
+def open_tracker_transaction(bind: Engine | Connection | None) -> Generator[TrackerTransaction, None, None]:
+    """Open a fresh tracker transaction around the supplied database bind."""
+    if bind is None:
+        raise RuntimeError("Cannot open a tracker transaction without a database bind")
+    with TrackerTransaction.open(lambda: Session(bind=bind)) as transaction:
         yield transaction

@@ -140,7 +140,8 @@ def get_default_org(org_repository: OrgRepository) -> Org:
     global _cached_default_org
     if _cached_default_org is not None:
         return _cached_default_org
-    org = org_repository.get_default()
+    with org_repository.session.begin():
+        org = org_repository.get_default()
     if not org:
         raise RuntimeError("Default org not found — run the migration")
     _cached_default_org = org
@@ -221,7 +222,8 @@ def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False
 
 def find_org_by_tenant(tenant_name: str, org_repository: OrgRepository) -> Org | None:
     """Look up an org by Descope tenant name. Returns None if not found."""
-    return org_repository.find_by_name(tenant_name)
+    with org_repository.session.begin():
+        return org_repository.find_by_name(tenant_name)
 
 
 def forward_tracker_api_key(

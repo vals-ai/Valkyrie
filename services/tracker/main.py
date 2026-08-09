@@ -80,7 +80,7 @@ from tracker.database.repositories import (
 from tracker.database.scoping import assert_org
 from tracker.executor.dispatch_control import admit_recovery_dispatch, admit_start_dispatch
 from tracker.database.session import check_database_connection, get_session
-from tracker.database.transaction import TrackerTransaction
+from tracker.database.transaction import TrackerTransaction, open_tracker_transaction
 from tracker.docent_analysis import (
     analyze_event_stream,
 )
@@ -378,8 +378,6 @@ async def start_benchmark(
     - 400 Bad Request if parameters are invalid
     - 500 Internal Server Error if benchmark fails to start
     """
-    session.rollback()
-
     # Prefer harness_config from X-Harness-* headers (web FE); fall back to request body (CLI).
     header_harness_config = try_fetch_harness_config(http_request)
     effective_harness_config = header_harness_config or request.harness_config
@@ -454,22 +452,21 @@ async def start_benchmark(
                 request.harness_config.s3_bucket,
             )
         )
-        session.add(benchmark_row)
-        session.flush()
-        task_repository.create_missing_task_rows(
-            benchmark_row.id,
-            verify_response.task_ids,
-            benchmark_row.org_id,
-        )
-        executor_dispatch = admit_start_dispatch(
-            session,
-            benchmark=benchmark_row,
-            dispatch_id=dispatch_id,
-            executor_control_repository=executor_control_repository,
-        )
-        session.commit()
+        with session.begin():
+            session.add(benchmark_row)
+            session.flush()
+            task_repository.create_missing_task_rows(
+                benchmark_row.id,
+                verify_response.task_ids,
+                benchmark_row.org_id,
+            )
+            executor_dispatch = admit_start_dispatch(
+                session,
+                benchmark=benchmark_row,
+                dispatch_id=dispatch_id,
+                executor_control_repository=executor_control_repository,
+            )
     except ReleaseControlError as exc:
-        session.rollback()
         await _delete_uncommitted_agent_copy(
             created=agent_copy_created,
             benchmark_id=benchmark_row.id,
@@ -477,7 +474,6 @@ async def start_benchmark(
         )
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
-        session.rollback()
         await _delete_uncommitted_agent_copy(
             created=agent_copy_created,
             benchmark_id=benchmark_row.id,
@@ -493,7 +489,6 @@ async def start_benchmark(
             run_starter.access_key_id,
         )
 
-    session.rollback()
     await _enqueue_executor_dispatch(
         executor_dispatch,
         session_factory=lambda: Session(bind=session.bind, expire_on_commit=False),
@@ -533,7 +528,6 @@ async def fetch_benchmark_tasks(
     """
     Fetch all task ids for a benchmark dataset.
     """
-    session.rollback()
     try:
         benchmark_service = create_benchmark_service_client(
             url=request.custom_benchmark_service or create_benchmark_service_url(request.benchmark_name),
@@ -573,34 +567,23 @@ async def fetch_benchmark(
     - 200 OK if benchmark is found
     - 404 Not Found if benchmark is not found
     """
-    session.rollback()
-    read_session = Session(bind=session.bind)
-    try:
-        transaction = TrackerTransaction.from_session(read_session)
-        benchmark_row = assert_org(transaction.benchmarks.get_for_org_with_final_evaluation(benchmark_id, org.id), org)
-    except BaseException:
-        read_session.rollback()
-        read_session.close()
-        raise
-
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
-    if connect:
-        read_session.rollback()
-        read_session.close()
-        return StreamingResponse(
-            stream_benchmark_results(benchmark_id, harness_config, org),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
+    with open_tracker_transaction(session.bind) as transaction:
+        benchmark_row = assert_org(transaction.benchmarks.get_for_org_with_final_evaluation(benchmark_id, org.id), org)
+        if connect:
+            return StreamingResponse(
+                stream_benchmark_results(benchmark_id, harness_config, org),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
 
-    try:
         benchmark_context = BenchmarkContext(benchmark_row, transaction.reporting, org)
-        response = FetchBenchmarkResponse(
+        return FetchBenchmarkResponse(
             benchmark_name=benchmark_row.name,
             benchmark_id=benchmark_row.id,
             details=benchmark_context.benchmark_details,
@@ -615,10 +598,6 @@ async def fetch_benchmark(
             executor_artifact_digest=benchmark_row.executor_artifact_digest,
             executor_protocol_version=benchmark_row.executor_protocol_version,
         )
-    finally:
-        read_session.rollback()
-        read_session.close()
-    return response
 
 
 @app.post("/analyze-benchmark/{benchmark_id}", response_model=None)
@@ -637,59 +616,42 @@ async def analyze_benchmark(
     Cache short-circuit: when the benchmark already has docent_reading_status=DONE and
     no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
     """
-    session.rollback()
-    read_session = Session(bind=session.bind)
-    try:
-        transaction = TrackerTransaction.from_session(read_session)
+    with open_tracker_transaction(session.bind) as transaction:
         benchmark_row = assert_org(transaction.benchmarks.get_for_org(benchmark_id, org.id), org)
-    except BaseException:
-        read_session.rollback()
-        read_session.close()
-        raise
+        benchmark_status = benchmark_row.status
+        contract_name = benchmark_row.arguments.contract.name
+        if benchmark_status != BenchmarkStatus.FINISHED:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot analyze run {benchmark_id}: status is {benchmark_status.value} (must be FINISHED).",
+            )
 
-    benchmark_status = benchmark_row.status
-    contract_name = benchmark_row.arguments.contract.name
-    if benchmark_status != BenchmarkStatus.FINISHED:
-        read_session.rollback()
-        read_session.close()
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot analyze run {benchmark_id}: status is {benchmark_status.value} (must be FINISHED).",
-        )
+        if (
+            not body.no_cache
+            and benchmark_row.docent_reading_status == DocentReadingStatus.DONE
+            and benchmark_row.docent_reading_url
+        ):
+            return {
+                "status": "done",
+                "reading_plan_url": benchmark_row.docent_reading_url,
+            }
 
-    if (
-        not body.no_cache
-        and benchmark_row.docent_reading_status == DocentReadingStatus.DONE
-        and benchmark_row.docent_reading_url
-    ):
-        response = {
-            "status": "done",
-            "reading_plan_url": benchmark_row.docent_reading_url,
+        if not body.lambda_function:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No ingest_lambda provided for agent '{contract_name}'. "
+                    "The CLI normally resolves this from the agent's pushed contract — if you're "
+                    "calling this endpoint directly, supply `lambda_function` in the request body."
+                ),
+            )
+
+        payload: dict[str, Any] = {
+            "benchmark_id": str(benchmark_id),
+            "benchmark_name": benchmark_row.name,
+            "s3_bucket": harness_config.s3_bucket,
+            "contract": {"name": benchmark_row.arguments.contract.name},
         }
-        read_session.rollback()
-        read_session.close()
-        return response
-
-    if not body.lambda_function:
-        read_session.rollback()
-        read_session.close()
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"No ingest_lambda provided for agent '{contract_name}'. "
-                "The CLI normally resolves this from the agent's pushed contract — if you're "
-                "calling this endpoint directly, supply `lambda_function` in the request body."
-            ),
-        )
-
-    payload: dict[str, Any] = {
-        "benchmark_id": str(benchmark_id),
-        "benchmark_name": benchmark_row.name,
-        "s3_bucket": harness_config.s3_bucket,
-        "contract": {"name": benchmark_row.arguments.contract.name},
-    }
-    read_session.rollback()
-    read_session.close()
 
     return StreamingResponse(
         analyze_event_stream(
@@ -730,27 +692,18 @@ async def retrieve_results(
     curl -X GET http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=false
     curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'
     """
-    session.rollback()
-    read_session = Session(bind=session.bind)
-    try:
-        transaction = TrackerTransaction.from_session(read_session)
+    scored_results: dict[str, Any] = {}
+    with open_tracker_transaction(session.bind) as transaction:
         benchmark_repository = transaction.benchmarks
         reporting_repository = transaction.reporting
         benchmark_row = benchmark_repository.get_for_org_with_final_evaluation(benchmark_id, org.id)
-    except BaseException:
-        read_session.rollback()
-        read_session.close()
-        raise
-    if benchmark_row is None:
-        # Keep the legacy distinction between a missing run and a run owned by another org.
-        benchmark_exists = benchmark_repository.get_by_id(benchmark_id) is not None
-        read_session.rollback()
-        read_session.close()
-        if benchmark_exists:
-            raise HTTPException(status_code=404, detail="Not found")
-        raise HTTPException(status_code=404, detail=f"Run {benchmark_id} not found")
+        if benchmark_row is None:
+            # Keep the legacy distinction between a missing run and a run owned by another org.
+            benchmark_exists = benchmark_repository.get_by_id(benchmark_id) is not None
+            if benchmark_exists:
+                raise HTTPException(status_code=404, detail="Not found")
+            raise HTTPException(status_code=404, detail=f"Run {benchmark_id} not found")
 
-    try:
         final_view = create_final_view(benchmark_row, reporting_repository, org)
         if benchmark_row.final_evaluation is not None:
             final_view.final_evaluation = FinalEvaluation.model_validate(benchmark_row.final_evaluation.model_dump())
@@ -764,10 +717,14 @@ async def retrieve_results(
             benchmark_row.name
         )
         benchmark_snapshot = Benchmark.model_construct(id=benchmark_id_value, name=benchmark_name_value)
-    except BaseException:
-        read_session.rollback()
-        read_session.close()
-        raise
+
+        if task_ids:
+            task_ids_set = set(task_ids)
+            scored_results = {
+                task_id: result
+                for task_id, result in reporting_repository.fetch_final_score_inputs(benchmark_row.id, org.id).items()
+                if task_id in task_ids_set
+            }
 
     if task_ids:
         task_ids_set = set(task_ids)
@@ -777,19 +734,6 @@ async def retrieve_results(
 
         # Include every requested task with its result or None, so tasks without a result
         # (e.g. stopped/errored) still count toward the denominator instead of being dropped.
-        try:
-            scored_results = {
-                task_id: result
-                for task_id, result in reporting_repository.fetch_final_score_inputs(benchmark_row.id, org.id).items()
-                if task_id in task_ids_set
-            }
-        except BaseException:
-            read_session.rollback()
-            read_session.close()
-            raise
-
-        read_session.rollback()
-        read_session.close()
         final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
         final_view.task_errors = _filter_task_map(final_view.task_errors)
 
@@ -811,10 +755,6 @@ async def retrieve_results(
             final_score=resp.final_score,
             properties=resp.metadata,
         )
-
-    if not task_ids:
-        read_session.rollback()
-        read_session.close()
 
     if s3:
         s3_key = await upload_final_view(benchmark_snapshot, final_view, harness_config)
@@ -846,18 +786,9 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
-    session.rollback()
-    read_session = Session(bind=session.bind)
-    try:
-        transaction = TrackerTransaction.from_session(read_session)
+    with open_tracker_transaction(session.bind) as transaction:
         benchmark_row = assert_org(transaction.benchmarks.get_for_org(benchmark_id, org.id), org)
         benchmark_name = benchmark_row.name
-    except BaseException:
-        read_session.rollback()
-        read_session.close()
-        raise
-    read_session.rollback()
-    read_session.close()
 
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_name}.json"
     exists = await s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
@@ -990,17 +921,9 @@ def _update_benchmark_concurrency(
         session.commit()
         return benchmark_row
     except MaintenanceModeError as exc:
-        session.rollback()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
-        session.rollback()
         raise HTTPException(status_code=404, detail="Not found") from exc
-    except HTTPException:
-        session.rollback()
-        raise
-    except Exception:
-        session.rollback()
-        raise
 
 
 @app.patch("/benchmarks/{benchmark_id}/concurrency")
@@ -1149,8 +1072,6 @@ async def retry_or_resume_benchmark(
                     benchmark_url=benchmark_url,
                 )
                 session.commit()
-            else:
-                session.rollback()
             return RetryOrResumeBenchmarkResponse(status="success")
 
         if secrets or concurrency is not None or benchmark_url is not None:
@@ -1179,7 +1100,6 @@ async def retry_or_resume_benchmark(
         )
         session.commit()
     except ReleaseControlError as exc:
-        session.rollback()
         status_code = (
             400
             if (phase_status and phase_status[0] == BenchmarkStatus.STOPPING)
@@ -1191,11 +1111,7 @@ async def retry_or_resume_benchmark(
             )
         )
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-    except Exception:
-        session.rollback()
-        raise
 
-    session.rollback()
     await _enqueue_executor_dispatch(
         executor_dispatch,
         session_factory=lambda: Session(bind=session.bind, expire_on_commit=False),
@@ -1360,17 +1276,8 @@ async def fetch_run_outputs(
     Returns:
         StreamingResponse
     """
-    session.rollback()
-    read_session = Session(bind=session.bind)
-    try:
-        transaction = TrackerTransaction.from_session(read_session)
+    with open_tracker_transaction(session.bind) as transaction:
         assert_org(transaction.benchmarks.get_for_org(benchmark_id, org.id), org)
-    except BaseException:
-        read_session.rollback()
-        read_session.close()
-        raise
-    read_session.rollback()
-    read_session.close()
 
     benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
 

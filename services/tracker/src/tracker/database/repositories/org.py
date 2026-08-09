@@ -14,6 +14,11 @@ class OrgRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
+    @property
+    def session(self) -> Session:
+        """Return the caller-owned session used by this repository."""
+        return self._session
+
     def get_by_id(self, org_id: UUID) -> Org | None:
         """Return an organization by primary key, if it exists."""
         return self._session.get(Org, org_id)
