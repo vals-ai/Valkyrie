@@ -80,7 +80,7 @@ from tracker.database.repositories import (
 from tracker.database.scoping import assert_org
 from tracker.executor.dispatch_control import admit_recovery_dispatch, admit_start_dispatch
 from tracker.database.session import check_database_connection, get_session
-from tracker.database.transaction import TrackerTransaction, open_tracker_transaction
+from tracker.database.transaction import TrackerTransaction
 from tracker.docent_analysis import (
     analyze_event_stream,
 )
@@ -569,7 +569,9 @@ async def fetch_benchmark(
     """
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
-    with open_tracker_transaction(session.bind) as transaction:
+    read_session = Session(bind=session.bind)
+    try:
+        transaction = TrackerTransaction.from_session(read_session)
         benchmark_row = assert_org(transaction.benchmarks.get_for_org_with_final_evaluation(benchmark_id, org.id), org)
         if connect:
             return StreamingResponse(
@@ -598,6 +600,8 @@ async def fetch_benchmark(
             executor_artifact_digest=benchmark_row.executor_artifact_digest,
             executor_protocol_version=benchmark_row.executor_protocol_version,
         )
+    finally:
+        read_session.close()
 
 
 @app.post("/analyze-benchmark/{benchmark_id}", response_model=None)
@@ -616,7 +620,9 @@ async def analyze_benchmark(
     Cache short-circuit: when the benchmark already has docent_reading_status=DONE and
     no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
     """
-    with open_tracker_transaction(session.bind) as transaction:
+    read_session = Session(bind=session.bind)
+    try:
+        transaction = TrackerTransaction.from_session(read_session)
         benchmark_row = assert_org(transaction.benchmarks.get_for_org(benchmark_id, org.id), org)
         benchmark_status = benchmark_row.status
         contract_name = benchmark_row.arguments.contract.name
@@ -652,6 +658,8 @@ async def analyze_benchmark(
             "s3_bucket": harness_config.s3_bucket,
             "contract": {"name": benchmark_row.arguments.contract.name},
         }
+    finally:
+        read_session.close()
 
     return StreamingResponse(
         analyze_event_stream(
@@ -693,7 +701,9 @@ async def retrieve_results(
     curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'
     """
     scored_results: dict[str, Any] = {}
-    with open_tracker_transaction(session.bind) as transaction:
+    read_session = Session(bind=session.bind)
+    try:
+        transaction = TrackerTransaction.from_session(read_session)
         benchmark_repository = transaction.benchmarks
         reporting_repository = transaction.reporting
         benchmark_row = benchmark_repository.get_for_org_with_final_evaluation(benchmark_id, org.id)
@@ -725,6 +735,8 @@ async def retrieve_results(
                 for task_id, result in reporting_repository.fetch_final_score_inputs(benchmark_row.id, org.id).items()
                 if task_id in task_ids_set
             }
+    finally:
+        read_session.close()
 
     if task_ids:
         task_ids_set = set(task_ids)
@@ -786,9 +798,13 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
-    with open_tracker_transaction(session.bind) as transaction:
+    read_session = Session(bind=session.bind)
+    try:
+        transaction = TrackerTransaction.from_session(read_session)
         benchmark_row = assert_org(transaction.benchmarks.get_for_org(benchmark_id, org.id), org)
         benchmark_name = benchmark_row.name
+    finally:
+        read_session.close()
 
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_name}.json"
     exists = await s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
@@ -1276,8 +1292,12 @@ async def fetch_run_outputs(
     Returns:
         StreamingResponse
     """
-    with open_tracker_transaction(session.bind) as transaction:
+    read_session = Session(bind=session.bind)
+    try:
+        transaction = TrackerTransaction.from_session(read_session)
         assert_org(transaction.benchmarks.get_for_org(benchmark_id, org.id), org)
+    finally:
+        read_session.close()
 
     benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
 
