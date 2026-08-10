@@ -298,12 +298,16 @@ class TestForceStop:
     ) -> None:
         """Verify force stop lets a live executor tear down its own sandboxes instead of racing it.
 
+        One task, so the only sandbox in play belongs to a task that has finished building. A task
+        still inside `create_sandbox` holds a shielded creation that cannot be released until it
+        completes, which is the case the drain window deliberately does not wait for.
+
         Test cases:
         - Force stop runs while the executor is still working and deletes no sandbox itself.
         - The run still reaches STOPPED with no task errors and no sandboxes left behind.
         """
-        example_benchmark_object.arguments.slice_str = ":2"
-        example_benchmark_object.arguments.concurrency = 2
+        example_benchmark_object.arguments.slice_str = ":1"
+        example_benchmark_object.arguments.concurrency = 1
         database_session.add(example_benchmark_object)
         database_session.commit()
 
