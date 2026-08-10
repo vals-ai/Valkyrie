@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator, Mapping
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType, SimpleNamespace
 from typing import cast
+from unittest.mock import Mock
 
 import pytest
 from benchmark_service import (
@@ -183,27 +184,48 @@ async def test_cleanup_reclassifies_refreshed_metadata_and_rejects_identity_chan
     )
 
 
-async def test_cleanup_treats_not_found_as_complete_and_continues_after_item_failures() -> None:
+async def test_cleanup_treats_not_found_as_complete_and_continues_after_item_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     gone = _sandbox("gone")
     refresh_failed = _sandbox("refresh-failed")
     delete_failed = _sandbox("delete-failed")
+    gone_before_delete = _sandbox("gone-before-delete")
     deleted_after_failures = _sandbox("deleted-after-failures")
     provider = FakeSandboxProvider(
-        [gone, refresh_failed, delete_failed, deleted_after_failures],
+        [gone, refresh_failed, delete_failed, gone_before_delete, deleted_after_failures],
         current={
             gone.id: SandboxNotFoundError("already absent"),
             refresh_failed.id: RuntimeError("refresh failed"),
             delete_failed.id: delete_failed,
+            gone_before_delete.id: gone_before_delete,
             deleted_after_failures.id: deleted_after_failures,
         },
-        delete_effects={delete_failed.id: RuntimeError("delete failed")},
+        delete_effects={
+            delete_failed.id: RuntimeError("delete failed"),
+            gone_before_delete.id: SandboxNotFoundError("already absent"),
+        },
     )
+    audit = Mock()
+    monkeypatch.setattr(cleanup_module, "audit_sandbox_delete", audit)
 
     outcomes = await cleanup_old_sandboxes(provider, now=NOW)
 
-    assert provider.get_calls == [gone.id, refresh_failed.id, delete_failed.id, deleted_after_failures.id]
-    assert provider.delete_calls == [delete_failed.id, deleted_after_failures.id]
-    assert outcomes == Counter({"already_absent": 1, "refresh_failed": 1, "delete_failed": 1, "deleted": 1})
+    assert provider.get_calls == [
+        gone.id,
+        refresh_failed.id,
+        delete_failed.id,
+        gone_before_delete.id,
+        deleted_after_failures.id,
+    ]
+    assert provider.delete_calls == [delete_failed.id, gone_before_delete.id, deleted_after_failures.id]
+    assert outcomes == Counter({"already_absent": 2, "refresh_failed": 1, "delete_failed": 1, "deleted": 1})
+    # Every delete the reaper attempts names itself, so an unexplained deletion can be traced back here.
+    assert [(call.args[0].id, call.args[1], call.kwargs["outcome"]) for call in audit.call_args_list] == [
+        (delete_failed.id, "orphan_cleanup", "failed"),
+        (gone_before_delete.id, "orphan_cleanup", "already_gone"),
+        (deleted_after_failures.id, "orphan_cleanup", "deleted"),
+    ]
 
 
 def test_lambda_handler_fails_for_each_unsuccessful_outcome(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -91,11 +91,11 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
     return bundle_path / contract_name
 
 
-SandboxDeleteInitiator = Literal["create_cancelled", "force_stop", "task_teardown"]
+SandboxDeleteInitiator = Literal["create_cancelled", "force_stop", "orphan_cleanup", "task_teardown"]
 SandboxDeleteOutcome = Literal["deleted", "already_gone", "cancelled", "failed"]
 
 
-def _audit_sandbox_delete(
+def audit_sandbox_delete(
     sandbox: Sandbox,
     initiated_by: SandboxDeleteInitiator,
     org_id: str | None,
@@ -132,20 +132,20 @@ async def delete_sandbox(
     try:
         await provider.delete_sandbox(sandbox.id)
     except SandboxNotFoundError:
-        _audit_sandbox_delete(sandbox, initiated_by, org_id, "already_gone")
+        audit_sandbox_delete(sandbox, initiated_by, org_id, "already_gone")
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
     except ProviderSandboxError as e:
-        _audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", f"{type(e).__name__}: {e}")
+        audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", f"{type(e).__name__}: {e}")
         raise
     except asyncio.CancelledError:
         # Caught only to audit: a cancelled delete may still have reached the provider.
-        _audit_sandbox_delete(sandbox, initiated_by, org_id, "cancelled")
+        audit_sandbox_delete(sandbox, initiated_by, org_id, "cancelled")
         raise
     except Exception as e:
-        _audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", f"{type(e).__name__}: {e}")
+        audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", f"{type(e).__name__}: {e}")
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
     else:
-        _audit_sandbox_delete(sandbox, initiated_by, org_id, "deleted")
+        audit_sandbox_delete(sandbox, initiated_by, org_id, "deleted")
 
 
 def _source_name(source: SandboxSource) -> str:

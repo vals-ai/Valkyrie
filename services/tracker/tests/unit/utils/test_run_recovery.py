@@ -48,6 +48,7 @@ from tracker.database.models import (
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.executor.release_control import ReleaseControlError, promote_release
 from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.utils import run_control as run_control_module
 from tracker.utils import (
     ResizableLimiter,
     TaskMonitor,
@@ -65,6 +66,7 @@ from tracker.utils import (
 from tracker.utils.task_execution import handle_early_exit
 
 UTC = ZoneInfo("UTC")
+_NEVER_RELEASED = 1_000_000
 _ORIGINAL_ATTEMPT_AT = datetime(2026, 7, 8)
 _RESUMED_ATTEMPT_AT = datetime(2026, 7, 9)
 client = TestClient(app)
@@ -122,6 +124,29 @@ class MockSubsetSandboxProvider:
         task_id = query.labels.get("Task")
         if task_id is not None and task_id in self.sandboxes_by_task:
             yield self.sandboxes_by_task[task_id]
+
+    async def delete_sandbox(self, sandbox_id: str) -> None:
+        self.deleted_sandbox_ids.append(sandbox_id)
+
+
+class MockReleasingSandboxProvider:
+    """Expose one benchmark sandbox until the executor's own teardown removes it."""
+
+    sandbox_id = "sandbox-task_0"
+
+    def __init__(self, release_after_polls: int) -> None:
+        self.list_calls = 0
+        self.deleted_sandbox_ids: list[str] = []
+        self._release_after_polls = release_after_polls
+
+    async def list_sandboxes(self, _query: SandboxQuery) -> AsyncGenerator[Mock, None]:
+        self.list_calls += 1
+        if self.list_calls > self._release_after_polls:
+            return
+        sandbox = Mock()
+        sandbox.id = self.sandbox_id
+        sandbox.name = "task_0"
+        yield sandbox
 
     async def delete_sandbox(self, sandbox_id: str) -> None:
         self.deleted_sandbox_ids.append(sandbox_id)
@@ -269,6 +294,8 @@ class TestRunRecovery:
             return provider
 
         monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", get_sandbox_provider)
+        # No executor is running here, so nothing will ever release the sandboxes on its own.
+        monkeypatch.setattr(run_control_module, "SANDBOX_DRAIN_TIMEOUT_SECONDS", 0.0)
 
         graceful_response = client.post(
             f"/stop-benchmark/{benchmark_row.id}?force=false",
@@ -2244,6 +2271,101 @@ class TestRunRecovery:
         assert benchmark_row.status == BenchmarkStatus.STOPPED
         assert dispatch is not None
         assert dispatch.status == ExecutorDispatchStatus.FAILED
+
+    def _arrange_force_stop_race(
+        self,
+        benchmark_row: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        release_after_polls: int,
+    ) -> MockReleasingSandboxProvider:
+        """Put one in-progress task and its sandbox in front of a force stop."""
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.add(
+            Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.IN_PROGRESS)
+        )
+        database_session.commit()
+
+        provider = MockReleasingSandboxProvider(release_after_polls)
+        monkeypatch.setattr(
+            run_control_module,
+            "fetch_sandbox_provider_config",
+            lambda *_args, **_kwargs: DaytonaProviderConfig(
+                DAYTONA_API_KEY="key", DAYTONA_API_URL="url", DAYTONA_TARGET="target"
+            ),
+        )
+        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", lambda *_args, **_kwargs: provider)
+        monkeypatch.setattr(run_control_module, "SANDBOX_DRAIN_POLL_SECONDS", 0.0)
+        return provider
+
+    @pytest.mark.parametrize(
+        ("executor_running", "expected_deletions", "expected_list_calls"),
+        [
+            pytest.param(True, [], 2, id="waits_for_executor_teardown"),
+            pytest.param(False, [MockReleasingSandboxProvider.sandbox_id], 1, id="nothing_left_to_race"),
+        ],
+    )
+    async def test_force_stop_lets_a_live_executor_release_its_own_sandboxes(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+        executor_authority: Any,
+        executor_running: bool,
+        expected_deletions: list[str],
+        expected_list_calls: int,
+    ) -> None:
+        """Force stop deletes a sandbox only once no executor can still be working inside it.
+
+        Test cases:
+        - A running dispatch gets its teardown window, so the sandbox it releases is never deleted here.
+        - With no dispatch left to race, the sandbox is deleted on the first pass.
+        """
+        benchmark_row = example_benchmark_object
+        provider = self._arrange_force_stop_race(benchmark_row, database_session, monkeypatch, release_after_polls=1)
+        if executor_running:
+            executor_authority(benchmark_row, session=database_session)
+
+        await force_stop_sandboxes(
+            benchmark_row,
+            database_session,
+            harness_config.sandbox_provider_secret_name,
+            harness_config.aws,
+            self._test_org,
+        )
+
+        assert provider.deleted_sandbox_ids == expected_deletions
+        assert provider.list_calls == expected_list_calls
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.STOPPED
+
+    async def test_force_stop_reaps_sandboxes_the_executor_never_releases(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+        executor_authority: Any,
+    ) -> None:
+        """A stalled executor cannot hold its sandboxes past the drain window."""
+        benchmark_row = example_benchmark_object
+        provider = self._arrange_force_stop_race(
+            benchmark_row, database_session, monkeypatch, release_after_polls=_NEVER_RELEASED
+        )
+        executor_authority(benchmark_row, session=database_session)
+        monkeypatch.setattr(run_control_module, "SANDBOX_DRAIN_TIMEOUT_SECONDS", 0.05)
+
+        await force_stop_sandboxes(
+            benchmark_row,
+            database_session,
+            harness_config.sandbox_provider_secret_name,
+            harness_config.aws,
+            self._test_org,
+        )
+
+        assert provider.deleted_sandbox_ids == [MockReleasingSandboxProvider.sandbox_id]
 
     async def test_stop_sandbox_audits_forced_stop_deletion(self, monkeypatch: MonkeyPatch) -> None:
         """Forced stop identifies itself and its org on every sandbox deletion."""
