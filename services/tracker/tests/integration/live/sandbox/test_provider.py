@@ -189,7 +189,10 @@ class TestProvider:
             create_timeout=360,
         )
 
-        with pytest.raises(SandboxError, match="failed to start"):
+        # Match the provider wrapper rather than the SDK's prose for the failure, which is
+        # reworded across Daytona releases; this still separates a hard error from the
+        # connection and not-found classifications, which have their own prefixes.
+        with pytest.raises(SandboxError, match="Daytona sandbox provider error"):
             await sandbox_provider.create_sandbox(request)
 
         sandbox = await sandbox_provider.get_sandbox(random_sandbox_name)
