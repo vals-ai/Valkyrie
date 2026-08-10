@@ -75,9 +75,9 @@ async def initiate_stop_benchmark(
         raise TrackerServiceError(f"Unexpected error stopping run {benchmark_row.id}: {str(e)}") from e
 
 
-async def stop_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> str | None:
+async def stop_sandbox(sandbox: Sandbox, provider: SandboxProvider, org: Org) -> str | None:
     try:
-        await delete_sandbox(sandbox, provider)
+        await delete_sandbox(sandbox, provider, initiated_by="force_stop", org_id=str(org.id))
         return None
     except SandboxNotFoundError:
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
@@ -148,7 +148,7 @@ async def force_stop_sandboxes(
     results: dict[str, str | None] = {}
     try:
         async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids):
-            result = await stop_sandbox(sandbox, provider)
+            result = await stop_sandbox(sandbox, provider, org)
             results[sandbox.name] = result
     finally:
         await benchmark_service.close()
