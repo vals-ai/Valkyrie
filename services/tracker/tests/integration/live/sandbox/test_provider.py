@@ -189,9 +189,6 @@ class TestProvider:
             create_timeout=360,
         )
 
-        # Match the provider wrapper rather than the SDK's prose for the failure, which is
-        # reworded across Daytona releases; this still separates a hard error from the
-        # connection and not-found classifications, which have their own prefixes.
         with pytest.raises(SandboxError, match="Daytona sandbox provider error"):
             await sandbox_provider.create_sandbox(request)
 
