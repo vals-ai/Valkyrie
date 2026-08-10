@@ -754,6 +754,8 @@ class TestTrackerAPI:
         async def _mock_health_check(*_args: Any, **_kwargs: Any) -> None:
             raise httpx.ConnectError("Name or service not known")
 
+        close_client = AsyncMock(side_effect=RuntimeError("close failed"))
+        monkeypatch.setattr(BenchmarkServiceClient, "close", close_client)
         monkeypatch.setattr(BenchmarkServiceClient, "health_check", _mock_health_check)
 
         no_raise_client = TestClient(app, raise_server_exceptions=False)
@@ -762,6 +764,7 @@ class TestTrackerAPI:
         assert response.status_code == 502
         expected_detail = "Benchmark service 'swebench' is not reachable"
         assert response.json().get("detail") == expected_detail
+        close_client.assert_awaited_once()
 
     async def test_start_benchmark_forwards_tracker_api_key_to_benchmark_service(
         self,
