@@ -59,6 +59,7 @@ from tracker.utils import (
     process_task,
     reset_to_in_progress_status,
     start_benchmark_request_to_benchmark,
+    stop_sandbox,
     update_benchmark_concurrency,
 )
 from tracker.utils.task_execution import handle_early_exit
@@ -2202,3 +2203,16 @@ class TestRunRecovery:
         assert benchmark_row.status == BenchmarkStatus.STOPPED
         assert dispatch is not None
         assert dispatch.status == ExecutorDispatchStatus.FAILED
+
+    async def test_stop_sandbox_audits_forced_stop_deletion(self, monkeypatch: MonkeyPatch) -> None:
+        """Forced stop identifies itself and its org on every sandbox deletion."""
+        delete_mock = AsyncMock()
+        monkeypatch.setattr("tracker.utils.run_control.delete_sandbox", delete_mock)
+
+        sandbox = Mock()
+        provider = Mock()
+
+        result = await stop_sandbox(sandbox, provider, self._test_org)
+
+        assert result is None
+        delete_mock.assert_awaited_once_with(sandbox, provider, initiated_by="force_stop", org_id=str(TEST_ORG_ID))
