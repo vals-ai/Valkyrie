@@ -70,7 +70,7 @@ class DescopeIdentity:
 
 
 @dataclass(frozen=True)
-class _CachedAccessKeyClaims:
+class CachedAccessKeyClaims:
     tenant_name: str
     access_key_id: str
     email: str | None
@@ -82,7 +82,7 @@ class _CachedAccessKeyClaims:
 _cached_default_org: Org | None = None
 _access_key_digest_secret = secrets.token_bytes(32)
 _access_key_cache_condition = Condition()
-_access_key_cache: TLRUCache[bytes, _CachedAccessKeyClaims, float] = TLRUCache(
+_access_key_cache: TLRUCache[bytes, CachedAccessKeyClaims, float] = TLRUCache(
     maxsize=_ACCESS_KEY_CACHE_MAX_SIZE,
     ttu=lambda _key, claims, _now: claims.cache_deadline_monotonic,
     timer=time.monotonic,
@@ -205,7 +205,7 @@ def _cache_deadline(jwt_expires_at: float, *, wall_now: float, monotonic_now: fl
     return monotonic_now + cache_seconds
 
 
-def _normalize_access_key_claims(jwt_response: Mapping[str, object]) -> _CachedAccessKeyClaims:
+def _normalize_access_key_claims(jwt_response: Mapping[str, object]) -> CachedAccessKeyClaims:
     tenants_value = jwt_response.get("tenants")
     tenant_mapping: Mapping[object, object] = (
         cast(Mapping[object, object], tenants_value) if isinstance(tenants_value, Mapping) else {}
@@ -238,7 +238,7 @@ def _normalize_access_key_claims(jwt_response: Mapping[str, object]) -> _CachedA
         wall_now=time.time(),
         monotonic_now=time.monotonic(),
     )
-    return _CachedAccessKeyClaims(
+    return CachedAccessKeyClaims(
         tenant_name=str(tenants[0]),
         access_key_id=access_key_id,
         email=_get_descope_string_claim(jwt_response, "email", lowercase=True),
@@ -249,7 +249,7 @@ def _normalize_access_key_claims(jwt_response: Mapping[str, object]) -> _CachedA
 
 
 @cached(cache=_access_key_cache, key=_access_key_digest, condition=_access_key_cache_condition)
-def _exchange_and_normalize_access_key(api_key: str) -> _CachedAccessKeyClaims:
+def _exchange_and_normalize_access_key(api_key: str) -> CachedAccessKeyClaims:
     if not _descope_client:
         raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
 
