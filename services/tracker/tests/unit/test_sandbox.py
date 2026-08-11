@@ -1281,6 +1281,162 @@ class TestSandboxLifecycle:
 
         delete_mock.assert_awaited_once_with(mock_sandbox, provider, initiated_by="task_teardown")
 
+    async def test_create_sandbox_preserves_success_when_task_teardown_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.labels = {"Benchmark": "swebench", "Id": "bench-1", "Task": "task_0"}
+
+        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> Mock:
+            return mock_sandbox
+
+        provider = Mock()
+        provider.delete_sandbox = AsyncMock(side_effect=ProviderSandboxError("cleanup failed"))
+        logger_mock = Mock()
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "distribution", Mock())
+        monkeypatch.setattr(sandbox_module, "set_sandbox_context", Mock())
+        monkeypatch.setattr(sandbox_module, "logger", logger_mock)
+
+        async with create_sandbox(
+            provider=provider,
+            sandbox_name="task-alias",
+            source=ImageSource(image="ghcr.io/vals/swebench:latest"),
+            resources=Resources(vcpu=2, memory=4, disk=5),
+            creation_semaphore=asyncio.Semaphore(1),
+        ):
+            pass
+
+        audit_call = logger_mock.info.call_args_list[-1]
+        assert audit_call.args == ("sandbox.delete",)
+        assert audit_call.kwargs["extra"] == {
+            "sandbox_id": "sandbox-123",
+            "sandbox_name": "task-alias",
+            "benchmark_id": "bench-1",
+            "benchmark_name": "swebench",
+            "task_id": "task_0",
+            "org_id": None,
+            "initiated_by": "task_teardown",
+            "outcome": "failed",
+            "error": "SandboxError: cleanup failed",
+        }
+
+    async def test_create_sandbox_preserves_body_failure_when_task_teardown_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.labels = None
+
+        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> Mock:
+            return mock_sandbox
+
+        provider = Mock()
+        provider.delete_sandbox = AsyncMock(side_effect=ProviderSandboxError("cleanup failed"))
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "distribution", Mock())
+        monkeypatch.setattr(sandbox_module, "set_sandbox_context", Mock())
+
+        primary_error = RuntimeError("primary failure")
+        with pytest.raises(RuntimeError) as exc_info:
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="task-alias",
+                source=ImageSource(image="ghcr.io/vals/swebench:latest"),
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                creation_semaphore=asyncio.Semaphore(1),
+            ):
+                raise primary_error
+
+        assert exc_info.value is primary_error
+
+    async def test_create_sandbox_propagates_provider_error_during_cancelled_creation_cleanup(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.labels = None
+        creation_started = asyncio.Event()
+        release_creation = asyncio.Event()
+
+        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> Mock:
+            creation_started.set()
+            await release_creation.wait()
+            return mock_sandbox
+
+        provider = Mock()
+        provider.delete_sandbox = AsyncMock(side_effect=ProviderSandboxError("cleanup failed"))
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
+
+        async def use_sandbox() -> None:
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="task-alias",
+                source=ImageSource(image="ghcr.io/vals/swebench:latest"),
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                creation_semaphore=asyncio.Semaphore(1),
+            ):
+                pass
+
+        context_task = asyncio.create_task(use_sandbox())
+        await creation_started.wait()
+        context_task.cancel()
+        release_creation.set()
+
+        with pytest.raises(ProviderSandboxError, match="cleanup failed"):
+            await context_task
+
+    async def test_create_sandbox_propagates_cancelled_task_teardown_and_audits(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.labels = {"Benchmark": "swebench", "Id": "bench-1", "Task": "task_0"}
+
+        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> Mock:
+            return mock_sandbox
+
+        provider = Mock()
+        provider.delete_sandbox = AsyncMock(side_effect=asyncio.CancelledError())
+        logger_mock = Mock()
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "distribution", Mock())
+        monkeypatch.setattr(sandbox_module, "set_sandbox_context", Mock())
+        monkeypatch.setattr(sandbox_module, "logger", logger_mock)
+
+        with pytest.raises(asyncio.CancelledError):
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="task-alias",
+                source=ImageSource(image="ghcr.io/vals/swebench:latest"),
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                creation_semaphore=asyncio.Semaphore(1),
+            ):
+                pass
+
+        audit_call = logger_mock.info.call_args_list[-1]
+        assert audit_call.args == ("sandbox.delete",)
+        assert audit_call.kwargs["extra"] == {
+            "sandbox_id": "sandbox-123",
+            "sandbox_name": "task-alias",
+            "benchmark_id": "bench-1",
+            "benchmark_name": "swebench",
+            "task_id": "task_0",
+            "org_id": None,
+            "initiated_by": "task_teardown",
+            "outcome": "cancelled",
+            "error": None,
+        }
+
 
 class TestDeleteSandboxAudit:
     """Structured `sandbox.delete` audit records."""
