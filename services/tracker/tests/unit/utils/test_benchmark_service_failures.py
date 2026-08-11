@@ -179,8 +179,10 @@ class TestBenchmarkServiceFailures:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
+        expected_error = "Output artifact error: Required output artifact missing: /tmp/valkyrie/artifacts/missing.json"
+        expected_log = f"[ERROR] {expected_error}"
         logged_messages: list[str] = []
-        log_written = asyncio.Event()
+        expected_log_written = asyncio.Event()
         event_loop = asyncio.get_running_loop()
 
         async def _mock_install_agent_dependencies(*_args: Any, **_kwargs: Any) -> None:
@@ -198,7 +200,8 @@ class TestBenchmarkServiceFailures:
 
         def _mock_write_benchmark_log_event(_stream_key: str, message: str, *_args: Any, **_kwargs: Any) -> None:
             logged_messages.append(message)
-            event_loop.call_soon_threadsafe(log_written.set)
+            if expected_log in message:
+                event_loop.call_soon_threadsafe(expected_log_written.set)
 
         monkeypatch.setattr(utils_module, "run_agent", sandbox_module.run_agent)
         monkeypatch.setattr(sandbox_module, "install_agent_dependencies", _mock_install_agent_dependencies)
@@ -211,16 +214,17 @@ class TestBenchmarkServiceFailures:
         monkeypatch.setattr(utils_module, "write_benchmark_log_event", _mock_write_benchmark_log_event)
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
-        await asyncio.wait_for(log_written.wait(), timeout=1)
+        # Log writes are dispatched to an executor and never awaited, so the flush carrying the
+        # error can land after run_process_task returns. Wait for that flush, not just the first.
+        await asyncio.wait_for(expected_log_written.wait(), timeout=10)
 
         assert result == {"task_0": None}
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
         error_message = self._latest_task_error(database_session, task_row)
-        expected_error = "Output artifact error: Required output artifact missing: /tmp/valkyrie/artifacts/missing.json"
         assert error_message == expected_error
-        assert any(f"[ERROR] {expected_error}" in message for message in logged_messages)
+        assert any(expected_log in message for message in logged_messages)
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_benchmark_service_error_produces_human_readable_message(
