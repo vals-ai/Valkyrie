@@ -321,7 +321,11 @@ async def create_sandbox(
         logger.error(f"Error during sandbox execution {sandbox.name}: {e}")
         raise
     finally:
-        await delete_sandbox(sandbox, provider, initiated_by="task_teardown")
+        try:
+            await delete_sandbox(sandbox, provider, initiated_by="task_teardown")
+        except ProviderSandboxError:
+            # The failed delete is audited by delete_sandbox and must not replace the task outcome.
+            pass
 
 
 @retry(
