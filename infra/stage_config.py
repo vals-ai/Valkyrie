@@ -35,8 +35,8 @@ class StageConfig:
 
 PROD_CONFIG = StageConfig(
     runtime_environment="production",
-    tracker=ServiceConfig(cpu=1024, memory_mib=2048, min_tasks=1, max_tasks=2),
-    worker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=2, max_tasks=4),
+    tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=1, max_tasks=2),
+    worker=ServiceConfig(cpu=8192, memory_mib=32768, min_tasks=4, max_tasks=8),
     database=DatabaseConfig(
         instance_class="t4g.small",
         allocated_storage_gb=20,
@@ -48,8 +48,8 @@ PROD_CONFIG = StageConfig(
 
 DEV_CONFIG = StageConfig(
     runtime_environment="dev",
-    tracker=ServiceConfig(cpu=1024, memory_mib=2048, min_tasks=1, max_tasks=1),
-    worker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=1, max_tasks=2),
+    tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=1, max_tasks=2),
+    worker=ServiceConfig(cpu=8192, memory_mib=32768, min_tasks=4, max_tasks=8),
     database=DatabaseConfig(
         instance_class="t4g.micro",
         allocated_storage_gb=20,
