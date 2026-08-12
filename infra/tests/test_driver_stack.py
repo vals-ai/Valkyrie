@@ -16,10 +16,10 @@ from stage import DEV, RELEASE_TEST, Stage
 TEST_ENV = cdk.Environment(account="123456789012", region="us-east-1")
 DRIVER_ENV = {
     "RELEASE_TEST_DRIVER_SECRET_ARN": (
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:valkyrie/release-test/package-r-driver-ABC123"
+        "arn:aws:secretsmanager:us-east-1:123456789012:secret:example/release-test/driver-ABC123"
     ),
     "RELEASE_TEST_SANDBOX_PROVIDER_SECRET_ARN": (
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:valkyrie/tenants/rsi/daytona-DEF456"
+        "arn:aws:secretsmanager:us-east-1:123456789012:secret:example/sandbox-provider-DEF456"
     ),
     "RELEASE_TEST_OPERATOR_PRINCIPAL_ARN": "arn:aws:iam::123456789012:role/ReleaseTestAdmin",
 }
@@ -143,8 +143,8 @@ class DriverStackTest(unittest.TestCase):
             )
             task_definition = next(iter(template.find_resources("AWS::ECS::TaskDefinition").values()))
             rendered_secrets = json.dumps(task_definition["Properties"]["ContainerDefinitions"][0]["Secrets"])
-            self.assertIn("package-r-driver-ABC123:tracker_api_key::", rendered_secrets)
-            self.assertIn("package-r-driver-ABC123:benchmark_authorization::", rendered_secrets)
+            self.assertIn("driver-ABC123:tracker_api_key::", rendered_secrets)
+            self.assertIn("driver-ABC123:benchmark_authorization::", rendered_secrets)
 
     def test_driver_publishes_stage_qualified_launch_contract(self) -> None:
         with driver_template() as template:
@@ -167,11 +167,11 @@ class DriverStackTest(unittest.TestCase):
                 statement
                 for statement in statements
                 if "secretsmanager:GetSecretValue" in statement["Action"]
-                and "daytona-DEF456" in json.dumps(statement["Resource"])
+                and "sandbox-provider-DEF456" in json.dumps(statement["Resource"])
             )
             self.assertEqual(
                 secret_read["Resource"],
-                "arn:aws:secretsmanager:us-east-1:123456789012:secret:valkyrie/tenants/rsi/daytona-DEF456",
+                "arn:aws:secretsmanager:us-east-1:123456789012:secret:example/sandbox-provider-DEF456",
             )
 
     def test_driver_task_can_read_only_the_campaign_artifacts_and_exact_agent_object(self) -> None:

@@ -61,6 +61,11 @@ DEV_TRACKER_CONTRACT_PARAMETERS = {
     DEV_TRACKER_ALB_DNS_PARAMETER,
 }
 EXECUTOR_CONTRACT_PARAMETERS = {executor_release_launch_parameter(DEV)}
+DESCOPE_MANAGEMENT_KEY_SECRET_NAME = "example-descope-management-key"
+DEV_AUTH_ENV = {
+    "DESCOPE_PROJECT_ID": "dev-project",
+    "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
+}
 
 
 def published_parameter_names(template: assertions.Template) -> set[str]:
@@ -140,7 +145,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
     def test_dev_buckets_are_owned_and_hardened_by_their_domains(self) -> None:
         _, shared = dev_shared_stack()
         shared_template = assertions.Template.from_stack(shared)
-        with mock.patch.dict(os.environ, {"DESCOPE_PROJECT_ID": "dev-project"}, clear=True):
+        with mock.patch.dict(os.environ, DEV_AUTH_ENV, clear=True):
             executor_template = dev_executor_template()
 
         shared_buckets = shared_template.find_resources("AWS::S3::Bucket")
@@ -204,7 +209,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         self.assertEqual(bucket["Properties"]["BucketName"], f"agentic-harness-release-test-{TEST_ACCOUNT}")
 
     def test_dev_tracker_owns_certificate_in_account_local_hosted_zone(self) -> None:
-        dev_auth = {"AUTH_REQUIRED": "false", "DESCOPE_PROJECT_ID": "dev-project"}
+        dev_auth = {**DEV_AUTH_ENV, "AUTH_REQUIRED": "false"}
         with mock.patch.dict(os.environ, dev_auth, clear=True):
             tracker_template = dev_tracker_template()
 
@@ -214,9 +219,9 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         iam_policies = tracker_template.find_resources("AWS::IAM::Policy")
         rendered_policies = json.dumps(iam_policies)
         self.assertNotIn("s3:DeleteObject", rendered_policies)
-        self.assertIn("devEvalInfraDescopeManagementKey", rendered)
+        self.assertIn(DESCOPE_MANAGEMENT_KEY_SECRET_NAME, rendered)
         self.assertNotIn("/vals/dev/descope/project-id", rendered)
-        self.assertNotIn("valkyrie/sentry-dsn", rendered)
+        self.assertNotIn("SENTRY_DSN", rendered)
         self.assertNotIn("/valkyrie/dev/dns/tracker/certificate-arn", rendered)
         certificates = tracker_template.find_resources("AWS::CertificateManager::Certificate")
         self.assertEqual(len(certificates), 1)
@@ -267,7 +272,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         )
 
     def test_dev_release_control_is_one_sealed_task_with_environment_bound_role(self) -> None:
-        with mock.patch.dict(os.environ, {"DESCOPE_PROJECT_ID": "dev-project"}, clear=True):
+        with mock.patch.dict(os.environ, DEV_AUTH_ENV, clear=True):
             template = dev_executor_template()
 
         template.has_resource_properties(
@@ -358,7 +363,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         shared_template = assertions.Template.from_stack(shared)
         self.assertEqual(published_parameter_names(shared_template), DEV_SHARED_CONTRACT_PARAMETERS)
 
-        with mock.patch.dict(os.environ, {"DESCOPE_PROJECT_ID": "dev-project"}, clear=True):
+        with mock.patch.dict(os.environ, DEV_AUTH_ENV, clear=True):
             tracker_template, executor_template = dev_service_templates()
         self.assertEqual(published_parameter_names(tracker_template), DEV_TRACKER_CONTRACT_PARAMETERS)
         self.assertEqual(published_parameter_names(executor_template), EXECUTOR_CONTRACT_PARAMETERS)

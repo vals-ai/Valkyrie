@@ -205,7 +205,9 @@ jobs:
           DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID: ${{ secrets.DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID }}
           AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
           BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
+          DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
         working-directory: infra
         run: >-
           make deploy
@@ -236,6 +238,7 @@ jobs:
       AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
       CDK_DEFAULT_ACCOUNT: ${{ vars.DEV_ACCOUNT_ID }}
       CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+      DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ vars.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
       DESCOPE_PROJECT_ID: ${{ vars.DESCOPE_PROJECT_ID }}
       DEV_ACCOUNT_ID: ${{ vars.DEV_ACCOUNT_ID }}
       OPERATION: ${{ github.event_name == 'push' && 'deploy' || inputs.operation }}
@@ -352,6 +355,7 @@ jobs:
       AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
       CDK_DEFAULT_ACCOUNT: ${{ vars.DEV_ACCOUNT_ID }}
       CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+      DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ vars.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
       DESCOPE_PROJECT_ID: ${{ vars.DESCOPE_PROJECT_ID }}
       DEV_ACCOUNT_ID: ${{ vars.DEV_ACCOUNT_ID }}
       EXECUTOR_RELEASE_LAUNCH_PARAMETER: /valkyrie/dev/executor-release/launch-config
@@ -680,7 +684,9 @@ jobs:
           DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID: ${{ secrets.DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID }}
           AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
           BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
+          DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
         working-directory: infra
         run: make deploy STAGE=prod SCOPE=core AWS_REGION="$AWS_REGION"
 

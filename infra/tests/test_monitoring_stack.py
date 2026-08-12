@@ -41,7 +41,15 @@ TEST_DEPLOYMENT_SLACK_ENV = {
     SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE",
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV: "CDEPLOYCHANNEL",
 }
-TEST_DEV_ENV = {"DESCOPE_PROJECT_ID": "dev-project"}
+TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME = "example-descope-management-key"
+TEST_DEV_ENV = {
+    "DESCOPE_PROJECT_ID": "dev-project",
+    "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
+}
+TEST_RELEASE_TEST_ENV = {
+    "DESCOPE_PROJECT_ID": "release-test",
+    "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
+}
 TEST_AWS_ACCOUNT = os.environ.get("CDK_DEFAULT_ACCOUNT", "123456789012")
 TEST_AWS_REGION = os.environ.get("CDK_DEFAULT_REGION", "us-east-1")
 SHARED_STACK_CONTEXT = {
@@ -222,7 +230,7 @@ class MonitoringStackTest(unittest.TestCase):
         for stage_name, environment in (
             (PROD, {}),
             (DEV, TEST_DEV_ENV),
-            (RELEASE_TEST, {"DESCOPE_PROJECT_ID": "release-test"}),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV),
         ):
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
                 tracker_templates[stage_name] = _service_templates(stage_name)[0]
@@ -297,7 +305,7 @@ class MonitoringStackTest(unittest.TestCase):
     def test_release_test_templates_use_external_benchmark_service_and_namespaced_outputs(self) -> None:
         with mock.patch.dict(
             os.environ,
-            {"DESCOPE_PROJECT_ID": "release-test"},
+            TEST_RELEASE_TEST_ENV,
             clear=False,
         ):
             tracker_template, executor_template, _ = _service_templates(RELEASE_TEST)

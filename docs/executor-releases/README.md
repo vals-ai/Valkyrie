@@ -326,7 +326,7 @@ internal.
 Before running the release-test driver, set:
 
 ```bash
-export RELEASE_TEST_DRIVER_SECRET_ARN=arn:aws:secretsmanager:us-east-1:613431292675:secret:valkyrie/release-test/package-r-driver-SUFFIX
+export RELEASE_TEST_DRIVER_SECRET_ARN=arn:aws:secretsmanager:us-east-1:613431292675:secret:YOUR_DRIVER_SECRET-SUFFIX
 export RELEASE_TEST_SANDBOX_PROVIDER_SECRET_ARN=arn:aws:secretsmanager:us-east-1:613431292675:secret:SANDBOX_PROVIDER_SECRET-SUFFIX
 export RELEASE_TEST_OPERATOR_PRINCIPAL_ARN=arn:aws:iam::613431292675:role/ROLE_NAME
 export RELEASE_TEST_IMAGE_TAG=package-r-RUN_ID

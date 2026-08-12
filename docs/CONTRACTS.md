@@ -33,7 +33,7 @@ egress_allowlist:
   - https://github.com
 
 secrets:
-  ANTHROPIC_API_KEY: devEvalInfraAnthropicKey
+  ANTHROPIC_API_KEY: YourAnthropicKeySecret
 
 # Documentation only — these placeholders are always available and
 # substituted at runtime, changes will not be parsed
@@ -212,7 +212,7 @@ Secrets required by the agent. Maps environment variable names to AWS Secrets Ma
 
 ```yaml
 secrets:
-  ANTHROPIC_API_KEY: devEvalInfraAnthropicKey
+  ANTHROPIC_API_KEY: YourAnthropicKeySecret
 ```
 
 Secrets can also be passed (or overridden) at runtime via the CLI:

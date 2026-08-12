@@ -252,7 +252,7 @@ def resolve_webhook_config(
     multiple=True,
     nargs=2,
     type=(str, str),
-    help="Secret as ENV_VAR aws_secret_name (e.g., -s ANTHROPIC_API_KEY devEvalInfraAnthropicKey)",
+    help="Secret as ENV_VAR aws_secret_name (e.g., -s ANTHROPIC_API_KEY YourAnthropicKeySecret)",
 )
 @click.option(
     "--header",

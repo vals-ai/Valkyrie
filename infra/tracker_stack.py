@@ -152,7 +152,7 @@ class TrackerStack(Stack):
             "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="password"),
         }
 
-        sentry_secret_name = "valkyrie/sentry-dsn" if stage.is_prod else os.environ.get("SENTRY_DSN_SECRET_NAME", "")
+        sentry_secret_name = os.environ.get("SENTRY_DSN_SECRET_NAME", "")
         sentry_secrets: dict[str, aws_ecs.Secret] = {}
         if sentry_secret_name:
             sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(
@@ -171,10 +171,13 @@ class TrackerStack(Stack):
 
         descope_secrets: dict[str, aws_ecs.Secret] = {}
         if auth_required.lower() == "true":
+            descope_management_key_secret_name = os.environ.get("DESCOPE_MANAGEMENT_KEY_SECRET_NAME", "")
+            if not descope_management_key_secret_name:
+                raise ValueError("Authenticated deployments require DESCOPE_MANAGEMENT_KEY_SECRET_NAME.")
             descope_management_key_secret = aws_secretsmanager.Secret.from_secret_name_v2(
                 self,
                 "DescopeManagementKeySecret",
-                "devEvalInfraDescopeManagementKey",
+                descope_management_key_secret_name,
             )
             descope_secrets["DESCOPE_MANAGEMENT_KEY"] = aws_ecs.Secret.from_secrets_manager(
                 descope_management_key_secret,
