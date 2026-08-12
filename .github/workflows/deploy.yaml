@@ -707,7 +707,7 @@ jobs:
           SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
           SANDBOX_CLEANUP_ENABLED: ${{ vars.SANDBOX_CLEANUP_ENABLED }}
           SANDBOX_CLEANUP_PROVIDER: ${{ vars.SANDBOX_CLEANUP_PROVIDER }}
-          SANDBOX_CLEANUP_SECRET_NAME: ${{ vars.SANDBOX_CLEANUP_SECRET_NAME }}
+          SANDBOX_CLEANUP_SECRET_NAME: ${{ secrets.SANDBOX_CLEANUP_SECRET_NAME }}
         working-directory: infra
         run: make deploy STAGE=prod SCOPE=executor AWS_REGION="$AWS_REGION"
 
