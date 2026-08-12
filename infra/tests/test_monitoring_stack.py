@@ -46,7 +46,6 @@ TEST_DEV_ENV = {
     "DESCOPE_PROJECT_ID": "dev-project",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
 }
-TEST_PROD_ENV = {"SENTRY_DSN_SECRET_NAME": "example/sentry-dsn"}
 TEST_RELEASE_TEST_ENV = {
     "DESCOPE_PROJECT_ID": "release-test",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
@@ -229,7 +228,7 @@ class MonitoringStackTest(unittest.TestCase):
     def test_tracker_transport_follows_stage_contract(self) -> None:
         tracker_templates: dict[str, assertions.Template] = {}
         for stage_name, environment in (
-            (PROD, TEST_PROD_ENV),
+            (PROD, {}),
             (DEV, TEST_DEV_ENV),
             (RELEASE_TEST, TEST_RELEASE_TEST_ENV),
         ):
@@ -287,7 +286,7 @@ class MonitoringStackTest(unittest.TestCase):
             (PROD, "ValkyrieExecutorRelease", "repo:vals-ai/Valkyrie:environment:prod"),
         ):
             with self.subTest(stage=stage):
-                env = TEST_DEV_ENV if stage == DEV else TEST_PROD_ENV
+                env = TEST_DEV_ENV if stage == DEV else {}
                 with mock.patch.dict(os.environ, env, clear=False):
                     _, executor_template, _ = _service_templates(stage)
                 roles = executor_template.find_resources("AWS::IAM::Role")
@@ -297,8 +296,7 @@ class MonitoringStackTest(unittest.TestCase):
                 self.assertNotIn("production-release", trust)
                 self.assertNotIn("refs/heads/prod", trust)
 
-        with mock.patch.dict(os.environ, TEST_PROD_ENV, clear=False):
-            synthesized = json.dumps(_service_templates(PROD)[1].to_json())
+        synthesized = json.dumps(_service_templates(PROD)[1].to_json())
         self.assertIn("tracker.executor.release_entrypoint", synthesized)
         self.assertIn("ecs:UpdateTaskProtection", synthesized)
         self.assertIn("ecs:StopTask", synthesized)
@@ -347,8 +345,7 @@ class MonitoringStackTest(unittest.TestCase):
         )
 
     def test_executor_stack_owns_the_host_and_release_control(self) -> None:
-        with mock.patch.dict(os.environ, TEST_PROD_ENV, clear=False):
-            _, executor_template, monitoring_template = _service_templates(PROD)
+        _, executor_template, monitoring_template = _service_templates(PROD)
         services = executor_template.find_resources("AWS::ECS::Service")
         task_definitions = executor_template.find_resources("AWS::ECS::TaskDefinition")
         scalable_targets = executor_template.find_resources("AWS::ApplicationAutoScaling::ScalableTarget")
@@ -535,7 +532,7 @@ class MonitoringStackTest(unittest.TestCase):
             (PROD, "production", "local"),
             (DEV, "dev", "local-dev"),
         ):
-            environment = TEST_DEV_ENV if stage_name == DEV else TEST_PROD_ENV
+            environment = TEST_DEV_ENV if stage_name == DEV else {}
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
                 tracker_template, worker_template, _ = _service_templates(stage_name)
 
@@ -579,7 +576,7 @@ class MonitoringStackTest(unittest.TestCase):
         worker_template.resource_count_is("AWS::SQS::Queue", 0)
 
     def test_prod_sandbox_cleanup_is_disabled_and_bounded_by_default(self) -> None:
-        with mock.patch.dict(os.environ, TEST_PROD_ENV, clear=True):
+        with mock.patch.dict(os.environ, {}, clear=True):
             _, worker_template, _ = _service_templates(PROD)
 
         worker_template.resource_count_is("AWS::Scheduler::Schedule", 1)
@@ -643,7 +640,6 @@ class MonitoringStackTest(unittest.TestCase):
                 mock.patch.dict(
                     os.environ,
                     {
-                        **TEST_PROD_ENV,
                         "SANDBOX_CLEANUP_ENABLED": enabled,
                         "SANDBOX_CLEANUP_PROVIDER": "daytona",
                         "SANDBOX_CLEANUP_SECRET_NAME": "custom/cleanup-credentials",
