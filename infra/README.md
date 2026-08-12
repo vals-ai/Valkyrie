@@ -37,7 +37,8 @@ enable Sentry in dev, also set the `SENTRY_DSN_SECRET_NAME` secret to the name
 of an account-local Secrets Manager secret containing the DSN. Production
 requires `SENTRY_DSN_SECRET_NAME`, and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`
 whenever `AUTH_REQUIRED` is `true`. Both Environments hold every deployment
-input other than the region as an Environment secret.
+input as an Environment secret except `AWS_REGION`, `SANDBOX_CLEANUP_ENABLED`,
+and `SANDBOX_CLEANUP_PROVIDER`, which stay variables.
 
 Before production executor activation, configure the protected `prod` GitHub
 Environment used by the production executor job. Both AWS accounts must already
