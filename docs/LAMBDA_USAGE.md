@@ -23,7 +23,7 @@ The tracker invokes your lambda with the full `BenchmarkArguments` plus the pers
     "run_cmd": "cat /tmp/problem_statement | claude -p ...",
     "final_output": "/logs",
     "secrets": {
-      "ANTHROPIC_API_KEY": "devEvalInfraAnthropicKey"
+      "ANTHROPIC_API_KEY": "YourAnthropicKeySecret"
     }
   },
   "concurrency": 5,

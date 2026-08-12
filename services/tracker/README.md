@@ -62,7 +62,7 @@ AWS_SESSION_TOKEN=              # Optional, required when using temporary creden
 # Test infrastructure
 TEST_AWS_S3_BUCKET=             # S3 bucket for agent artifacts (e.g. agentic-harness)
 TEST_LOG_GROUP=                 # CloudWatch log group (e.g. valkyrie-test-log-group)
-TEST_DAYTONA_SECRET_NAME=       # AWS Secrets Manager secret containing Daytona provider config (e.g. AgenticHarnessSecrets)
+TEST_DAYTONA_SECRET_NAME=       # AWS Secrets Manager secret containing Daytona provider config (e.g. YourSandboxProviderSecret)
 
 # Benchmark service
 BENCHMARK_SERVICE_BASE_URL=     # Use the domain of the benchmark service

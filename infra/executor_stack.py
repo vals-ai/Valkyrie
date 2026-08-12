@@ -235,7 +235,10 @@ class ExecutorStack(Stack):
     ) -> None:
         cleanup_enabled = os.environ.get("SANDBOX_CLEANUP_ENABLED") == "true"
         cleanup_provider = os.environ.get("SANDBOX_CLEANUP_PROVIDER") or "daytona"
-        cleanup_secret_name = os.environ.get("SANDBOX_CLEANUP_SECRET_NAME") or SANDBOX_CLEANUP_SECRET_NAME
+        configured_cleanup_secret_name = os.environ.get("SANDBOX_CLEANUP_SECRET_NAME") or ""
+        if cleanup_enabled and not configured_cleanup_secret_name:
+            raise ValueError("Sandbox cleanup requires SANDBOX_CLEANUP_SECRET_NAME.")
+        cleanup_secret_name = configured_cleanup_secret_name or SANDBOX_CLEANUP_SECRET_NAME
 
         cleanup_log_group = aws_logs.LogGroup(
             self,

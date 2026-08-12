@@ -138,7 +138,7 @@ valkyrie run start \
   --model anthropic/claude-sonnet-4-6 \
   --concurrency 10 \
   --dataset default \
-  -s ANTHROPIC_API_KEY devEvalInfraAnthropicKey \
+  -s ANTHROPIC_API_KEY YourAnthropicKeySecret \
   -k temperature 1 \
   --slice "0:10" \
   --label swebench_sweagent
