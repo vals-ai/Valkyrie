@@ -153,6 +153,7 @@ jobs:
       needs.classify-deployment.outputs.core_maintenance_required != 'true' &&
       needs.classify-deployment.outputs.database_maintenance_required != 'true'
     needs: classify-deployment
+    environment: prod
     concurrency:
       group: valkyrie-prod-deploy
       cancel-in-progress: false
