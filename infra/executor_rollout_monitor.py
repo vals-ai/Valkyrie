@@ -2,7 +2,7 @@
 
 The monitor deliberately does not wait for the ECS service to reach steady state:
 protected tasks from the previous deployment may still be draining when the new
-PRIMARY deployment can accept work.
+PRIMARY deployment has a running task.
 """
 
 from __future__ import annotations
@@ -19,16 +19,17 @@ from pathlib import Path
 from typing import Protocol, cast
 
 import boto3
+from botocore.exceptions import ClientError
 
 from constants import CLUSTER_NAME
 
 _SERVICE = "ExecutorHost"
 _IN_PROGRESS_ALERT_TEXT = (
-    "New ExecutorHost revision is running and available for new runs. "
-    "Rollout remains in progress; previous tasks may still be draining."
+    "New ExecutorHost revision has a running task. Rollout remains in progress; previous tasks may still be draining."
 )
-_COMPLETED_ALERT_TEXT = "New ExecutorHost revision is running and available for new runs. Rollout is complete."
+_COMPLETED_ALERT_TEXT = "New ExecutorHost revision has a running task. Rollout is complete."
 _ALERTABLE_ROLLOUT_STATES = frozenset({"IN_PROGRESS", "COMPLETED"})
+_EXPIRED_TOKEN_CODES = frozenset({"ExpiredToken", "ExpiredTokenException"})
 
 
 class EcsClient(Protocol):
@@ -239,8 +240,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         stop_file = Path(args.stop_file) if args.stop_file else None
         client = create_ecs_client(lookup_role_arn=args.lookup_role_arn)
+
+        def describe() -> Mapping[str, object]:
+            nonlocal client
+            try:
+                return describe_service(client, cluster=args.cluster, service=args.service)
+            except ClientError as error:
+                if error.response.get("Error", {}).get("Code") not in _EXPIRED_TOKEN_CODES:
+                    raise
+                client = create_ecs_client(lookup_role_arn=args.lookup_role_arn)
+                return describe_service(client, cluster=args.cluster, service=args.service)
+
         notified = monitor_rollout(
-            describe=lambda: describe_service(client, cluster=args.cluster, service=args.service),
+            describe=describe,
             baseline_task_definition=args.baseline_task_definition,
             notify=lambda deployment: post_slack(webhook_url, deployment=deployment, run_url=args.run_url),
             timeout_seconds=args.timeout_seconds,

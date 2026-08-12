@@ -717,8 +717,11 @@ jobs:
             monitor_pid=$!
           fi
 
-          make deploy STAGE=prod SCOPE=executor AWS_REGION="$AWS_REGION"
-          deploy_status=$?
+          if make deploy STAGE=prod SCOPE=executor AWS_REGION="$AWS_REGION"; then
+            deploy_status=0
+          else
+            deploy_status=$?
+          fi
 
           monitor_status=0
           if [[ -n "$monitor_pid" ]]; then

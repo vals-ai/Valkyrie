@@ -245,6 +245,10 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("--timeout-seconds 10800", deploy_step)
         self.assertLess(deploy_step.index("capture-baseline"), deploy_step.index("make deploy"))
         self.assertLess(deploy_step.index("monitor_pid=$!"), deploy_step.index("make deploy"))
+        self.assertIn(
+            'if make deploy STAGE=prod SCOPE=executor AWS_REGION="$AWS_REGION"; then',
+            deploy_step,
+        )
         self.assertNotIn('make deploy STAGE=prod SCOPE=executor AWS_REGION="$AWS_REGION" &', deploy_step)
         self.assertIn("deploy_status=$?", deploy_step)
         success_cleanup = deploy_step.split("if (( deploy_status == 0 )); then", maxsplit=1)[1].split(

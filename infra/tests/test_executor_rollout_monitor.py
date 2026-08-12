@@ -8,6 +8,8 @@ import unittest
 from collections.abc import Mapping
 from unittest import mock
 
+from botocore.exceptions import ClientError
+
 import executor_rollout_monitor  # pyright: ignore[reportMissingImports]
 from executor_rollout_monitor import PrimaryDeployment  # pyright: ignore[reportMissingImports]
 
@@ -29,6 +31,13 @@ def _deployment(
         "runningCount": running_count,
         "rolloutState": rollout_state,
     }
+
+
+def _client_error(code: str) -> ClientError:
+    return ClientError(
+        {"Error": {"Code": code, "Message": "test error"}},
+        "DescribeServices",
+    )
 
 
 def _response(
@@ -253,16 +262,118 @@ class ExecutorRolloutMonitorTest(unittest.TestCase):
         self.assertFalse(notified)
         self.assertEqual(notifications, [])
 
+    def test_monitor_refreshes_expired_credentials_and_notifies(self) -> None:
+        for code in ("ExpiredToken", "ExpiredTokenException"):
+            with self.subTest(code=code):
+                expired_client = mock.Mock()
+                expired_client.describe_services.side_effect = _client_error(code)
+                refreshed_client = mock.Mock()
+                refreshed_client.describe_services.return_value = _response()
+                with (
+                    mock.patch.dict(
+                        os.environ,
+                        {"SLACK_DEPLOY_WEBHOOK_URL": "https://hooks.slack.test"},
+                    ),
+                    mock.patch.object(
+                        executor_rollout_monitor,
+                        "create_ecs_client",
+                        side_effect=(expired_client, refreshed_client),
+                    ) as create_client,
+                    mock.patch.object(executor_rollout_monitor, "post_slack") as post_slack,
+                ):
+                    result = executor_rollout_monitor.main(
+                        [
+                            "monitor",
+                            "--baseline-task-definition",
+                            _BASELINE,
+                            "--lookup-role-arn",
+                            _LOOKUP_ROLE,
+                        ]
+                    )
+
+                self.assertEqual(result, 0)
+                create_client.assert_has_calls(
+                    (
+                        mock.call(lookup_role_arn=_LOOKUP_ROLE),
+                        mock.call(lookup_role_arn=_LOOKUP_ROLE),
+                    )
+                )
+                expired_client.describe_services.assert_called_once()
+                refreshed_client.describe_services.assert_called_once()
+                post_slack.assert_called_once()
+
+    def test_monitor_does_not_refresh_unrelated_client_error(self) -> None:
+        client = mock.Mock()
+        client.describe_services.side_effect = _client_error("AccessDeniedException")
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"SLACK_DEPLOY_WEBHOOK_URL": "https://hooks.slack.test"},
+            ),
+            mock.patch.object(executor_rollout_monitor, "create_ecs_client", return_value=client) as create_client,
+            mock.patch.object(executor_rollout_monitor, "post_slack") as post_slack,
+            mock.patch.object(executor_rollout_monitor, "_warn") as warn,
+        ):
+            result = executor_rollout_monitor.main(
+                [
+                    "monitor",
+                    "--baseline-task-definition",
+                    _BASELINE,
+                    "--lookup-role-arn",
+                    _LOOKUP_ROLE,
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        create_client.assert_called_once_with(lookup_role_arn=_LOOKUP_ROLE)
+        client.describe_services.assert_called_once()
+        post_slack.assert_not_called()
+        self.assertIn("AccessDeniedException", warn.call_args.args[0])
+
+    def test_monitor_retries_expired_credentials_only_once_per_observation(self) -> None:
+        expired_clients = (mock.Mock(), mock.Mock())
+        for client in expired_clients:
+            client.describe_services.side_effect = _client_error("ExpiredToken")
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"SLACK_DEPLOY_WEBHOOK_URL": "https://hooks.slack.test"},
+            ),
+            mock.patch.object(
+                executor_rollout_monitor,
+                "create_ecs_client",
+                side_effect=expired_clients,
+            ) as create_client,
+            mock.patch.object(executor_rollout_monitor, "post_slack") as post_slack,
+            mock.patch.object(executor_rollout_monitor, "_warn") as warn,
+        ):
+            result = executor_rollout_monitor.main(
+                [
+                    "monitor",
+                    "--baseline-task-definition",
+                    _BASELINE,
+                    "--lookup-role-arn",
+                    _LOOKUP_ROLE,
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(create_client.call_count, 2)
+        for client in expired_clients:
+            client.describe_services.assert_called_once()
+        post_slack.assert_not_called()
+        self.assertIn("ExpiredToken", warn.call_args.args[0])
+
     def test_slack_message_matches_rollout_state(self) -> None:
         cases = (
             (
                 "IN_PROGRESS",
-                "New ExecutorHost revision is running and available for new runs. "
+                "New ExecutorHost revision has a running task. "
                 "Rollout remains in progress; previous tasks may still be draining.",
             ),
             (
                 "COMPLETED",
-                "New ExecutorHost revision is running and available for new runs. Rollout is complete.",
+                "New ExecutorHost revision has a running task. Rollout is complete.",
             ),
         )
         for rollout_state, expected_text in cases:
@@ -277,7 +388,7 @@ class ExecutorRolloutMonitorTest(unittest.TestCase):
                 request = open_url.call_args.args[0]
                 payload = json.loads(request.data.decode("utf-8"))
                 self.assertEqual(payload["text"], expected_text)
-                self.assertIn("available for new runs", payload["text"])
+                self.assertNotIn("available", payload["text"])
                 self.assertEqual(
                     "previous tasks may still be draining" in payload["text"],
                     rollout_state == "IN_PROGRESS",

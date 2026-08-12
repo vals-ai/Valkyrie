@@ -485,15 +485,15 @@ class MonitoringStackTest(unittest.TestCase):
         )
         tracker_template.has_resource_properties(
             "AWS::ApplicationAutoScaling::ScalableTarget",
-            {"MinCapacity": 1, "MaxCapacity": 1},
+            {"MinCapacity": 1, "MaxCapacity": 2},
         )
         worker_template.has_resource_properties(
             "AWS::ECS::Service",
-            {"DesiredCount": 1},
+            {"DesiredCount": 4},
         )
         worker_template.has_resource_properties(
             "AWS::ApplicationAutoScaling::ScalableTarget",
-            {"MinCapacity": 1, "MaxCapacity": 2},
+            {"MinCapacity": 4, "MaxCapacity": 8},
         )
         worker_template.has_resource_properties(
             "AWS::Logs::LogGroup",
