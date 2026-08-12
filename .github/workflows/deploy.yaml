@@ -240,13 +240,13 @@ jobs:
       AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
       CDK_DEFAULT_ACCOUNT: ${{ vars.DEV_ACCOUNT_ID }}
       CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
-      DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
+      DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ vars.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
       DESCOPE_PROJECT_ID: ${{ vars.DESCOPE_PROJECT_ID }}
       DEV_ACCOUNT_ID: ${{ vars.DEV_ACCOUNT_ID }}
       OPERATION: ${{ github.event_name == 'push' && 'deploy' || inputs.operation }}
       PRODUCTION_ACCOUNT_ID: "613431292675"
       SCOPE: ${{ github.event_name == 'push' && 'core' || inputs.scope }}
-      SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
+      SENTRY_DSN_SECRET_NAME: ${{ vars.SENTRY_DSN_SECRET_NAME }}
 
     steps:
       - name: Validate dev configuration
@@ -361,11 +361,11 @@ jobs:
       AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
       CDK_DEFAULT_ACCOUNT: ${{ vars.DEV_ACCOUNT_ID }}
       CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
-      DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
+      DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ vars.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
       DESCOPE_PROJECT_ID: ${{ vars.DESCOPE_PROJECT_ID }}
       DEV_ACCOUNT_ID: ${{ vars.DEV_ACCOUNT_ID }}
       EXECUTOR_RELEASE_LAUNCH_PARAMETER: /valkyrie/dev/executor-release/launch-config
-      SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
+      SENTRY_DSN_SECRET_NAME: ${{ vars.SENTRY_DSN_SECRET_NAME }}
 
     steps:
       - name: Verify current dev executor revision
@@ -703,7 +703,7 @@ jobs:
         env:
           SANDBOX_CLEANUP_ENABLED: ${{ vars.SANDBOX_CLEANUP_ENABLED }}
           SANDBOX_CLEANUP_PROVIDER: ${{ vars.SANDBOX_CLEANUP_PROVIDER }}
-          SANDBOX_CLEANUP_SECRET_NAME: ${{ secrets.SANDBOX_CLEANUP_SECRET_NAME }}
+          SANDBOX_CLEANUP_SECRET_NAME: ${{ vars.SANDBOX_CLEANUP_SECRET_NAME }}
         working-directory: infra
         run: make deploy STAGE=prod SCOPE=executor AWS_REGION="$AWS_REGION"
 

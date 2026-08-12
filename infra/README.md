@@ -31,12 +31,12 @@ delegate `benchmark-tracker-dev.vals.ai` to the account-local child hosted zone
 so CDK DNS validation can complete. Configure the protected `dev` GitHub
 Environment with `DEV_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`,
 `AWS_REGION=us-east-1`, `DESCOPE_PROJECT_ID`, and
-the `DESCOPE_MANAGEMENT_KEY_SECRET_NAME` Environment secret (the name of an
-account-local Secrets Manager secret holding the Descope management key). To
-enable Sentry in dev, also set the `SENTRY_DSN_SECRET_NAME` Environment secret
-to the name of an account-local Secrets Manager secret containing the DSN.
-Production requires `SENTRY_DSN_SECRET_NAME`, and
-`DESCOPE_MANAGEMENT_KEY_SECRET_NAME` whenever `AUTH_REQUIRED` is `true`.
+`DESCOPE_MANAGEMENT_KEY_SECRET_NAME` (the name of an account-local Secrets
+Manager secret holding the Descope management key). To enable Sentry in dev,
+also set `SENTRY_DSN_SECRET_NAME` to the name of an account-local Secrets
+Manager secret containing the DSN. Production requires
+`SENTRY_DSN_SECRET_NAME`, and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME` whenever
+`AUTH_REQUIRED` is `true`.
 
 Before production executor activation, configure the protected `prod` GitHub
 Environment used by the production executor job. Both AWS accounts must already
