@@ -692,61 +692,8 @@ jobs:
           SANDBOX_CLEANUP_ENABLED: ${{ vars.SANDBOX_CLEANUP_ENABLED }}
           SANDBOX_CLEANUP_PROVIDER: ${{ vars.SANDBOX_CLEANUP_PROVIDER }}
           SANDBOX_CLEANUP_SECRET_NAME: ${{ vars.SANDBOX_CLEANUP_SECRET_NAME }}
-          SLACK_DEPLOY_WEBHOOK_URL: ${{ secrets.SLACK_DEPLOY_WEBHOOK_URL }}
         working-directory: infra
-        run: |
-          set -uo pipefail
-
-          lookup_role_arn="arn:aws:iam::$PRODUCTION_ACCOUNT_ID:role/cdk-hnb659fds-lookup-role-$PRODUCTION_ACCOUNT_ID-$AWS_REGION"
-          baseline_task_definition=""
-          if ! baseline_task_definition="$(uv run --frozen python executor_rollout_monitor.py capture-baseline \
-            --lookup-role-arn "$lookup_role_arn")"; then
-            echo "::warning::Could not capture the current ExecutorHost task definition; skipping the early availability alert."
-          fi
-
-          monitor_pid=""
-          monitor_stop_file=""
-          if [[ -n "$baseline_task_definition" ]]; then
-            monitor_stop_file="$(mktemp -d)/stop"
-            uv run --frozen python executor_rollout_monitor.py monitor \
-              --baseline-task-definition "$baseline_task_definition" \
-              --lookup-role-arn "$lookup_role_arn" \
-              --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-              --stop-file "$monitor_stop_file" \
-              --timeout-seconds 10800 &
-            monitor_pid=$!
-          fi
-
-          if make deploy STAGE=prod SCOPE=executor AWS_REGION="$AWS_REGION"; then
-            deploy_status=0
-          else
-            deploy_status=$?
-          fi
-
-          monitor_status=0
-          if [[ -n "$monitor_pid" ]]; then
-            if (( deploy_status == 0 )); then
-              touch "$monitor_stop_file"
-              for _ in {1..20}; do
-                if ! kill -0 "$monitor_pid" 2>/dev/null; then
-                  break
-                fi
-                sleep 1
-              done
-              if kill -0 "$monitor_pid" 2>/dev/null; then
-                echo "::warning::ExecutorHost availability monitor did not stop after its final observation; terminating it."
-                kill "$monitor_pid" 2>/dev/null || true
-              fi
-            elif kill -0 "$monitor_pid" 2>/dev/null; then
-              kill "$monitor_pid" 2>/dev/null || true
-            fi
-            wait "$monitor_pid" || monitor_status=$?
-          fi
-          if (( monitor_status != 0 )); then
-            echo "::warning::ExecutorHost availability monitor exited with status $monitor_status."
-          fi
-
-          exit "$deploy_status"
+        run: make deploy STAGE=prod SCOPE=executor AWS_REGION="$AWS_REGION"
 
       - name: Configure production release credentials
         if: >-
