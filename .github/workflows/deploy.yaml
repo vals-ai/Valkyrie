@@ -701,6 +701,10 @@ jobs:
           steps.freshness.outputs.current == 'true' &&
           needs.classify-deployment.outputs.executor_stack_deploy_required == 'true'
         env:
+          AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
+          DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
+          DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
           SANDBOX_CLEANUP_ENABLED: ${{ vars.SANDBOX_CLEANUP_ENABLED }}
           SANDBOX_CLEANUP_PROVIDER: ${{ vars.SANDBOX_CLEANUP_PROVIDER }}
           SANDBOX_CLEANUP_SECRET_NAME: ${{ vars.SANDBOX_CLEANUP_SECRET_NAME }}
