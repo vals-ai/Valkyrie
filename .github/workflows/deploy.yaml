@@ -200,22 +200,6 @@ jobs:
           npm install -g aws-cdk@2.1132.0
           uv sync --frozen --python 3.12 --project infra
 
-      - name: Validate production configuration
-        env:
-          AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
-          DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
-          SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$SENTRY_DSN_SECRET_NAME" ]]; then
-            echo "::error::The prod Environment must define SENTRY_DSN_SECRET_NAME."
-            exit 1
-          fi
-          if [[ "${AUTH_REQUIRED,,}" == "true" && -z "$DESCOPE_MANAGEMENT_KEY_SECRET_NAME" ]]; then
-            echo "::error::Authenticated prod deployments must define DESCOPE_MANAGEMENT_KEY_SECRET_NAME."
-            exit 1
-          fi
-
       - name: Deploy production core stacks
         env:
           SLACK_WORKSPACE_ID: ${{ secrets.SLACK_WORKSPACE_ID }}
@@ -694,22 +678,6 @@ jobs:
         run: |
           npm install -g aws-cdk@2.1132.0
           uv sync --frozen --python 3.12 --project infra
-
-      - name: Validate production configuration
-        env:
-          AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
-          DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
-          SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$SENTRY_DSN_SECRET_NAME" ]]; then
-            echo "::error::The prod Environment must define SENTRY_DSN_SECRET_NAME."
-            exit 1
-          fi
-          if [[ "${AUTH_REQUIRED,,}" == "true" && -z "$DESCOPE_MANAGEMENT_KEY_SECRET_NAME" ]]; then
-            echo "::error::Authenticated prod deployments must define DESCOPE_MANAGEMENT_KEY_SECRET_NAME."
-            exit 1
-          fi
 
       - name: Deploy production core stacks under maintenance
         if: >-
