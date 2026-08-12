@@ -363,9 +363,14 @@ repositories, build and push both ARM64 images with the same new immutable tag,
 then synthesize and deploy the dependent stacks with that tag. Dev and prod keep
 the existing CDK asset path.
 
-Review all stacks and the driver separately before deployment:
+Review all stacks and the driver separately before deployment. Release-test
+forces authentication on, so synthesis also needs the Descope project ID and
+the account-local management-key secret name:
 
 ```bash
+export DESCOPE_PROJECT_ID="release-test-descope-project-id"
+export DESCOPE_MANAGEMENT_KEY_SECRET_NAME="release-test-descope-management-key-secret"
+
 make plan STAGE=release-test SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID=613431292675 PROFILE=admin
 make plan STAGE=release-test SCOPE=driver AWS_REGION=us-east-1 \
