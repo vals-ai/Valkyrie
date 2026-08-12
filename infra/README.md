@@ -34,7 +34,9 @@ Environment with `DEV_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`,
 `DESCOPE_MANAGEMENT_KEY_SECRET_NAME` (the name of an account-local Secrets
 Manager secret holding the Descope management key). To enable Sentry in dev,
 also set `SENTRY_DSN_SECRET_NAME` to the name of an account-local Secrets
-Manager secret containing the DSN.
+Manager secret containing the DSN. Production requires
+`SENTRY_DSN_SECRET_NAME`, and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME` whenever
+`AUTH_REQUIRED` is `true`.
 
 Before production executor activation, configure the protected `prod` GitHub
 Environment used by the production executor job. Both AWS accounts must already
@@ -85,6 +87,7 @@ explicitly. The preflight rejects the wrong account, Region, or STS identity.
 ```bash
 export DEV_ACCOUNT_ID=123456789012
 export DESCOPE_PROJECT_ID="dev-project-id"
+export DESCOPE_MANAGEMENT_KEY_SECRET_NAME="dev-descope-management-key-secret"
 
 make plan STAGE=dev SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin

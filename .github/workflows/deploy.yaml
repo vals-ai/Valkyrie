@@ -109,6 +109,7 @@ jobs:
               CDK_DEFAULT_REGION=us-east-1 \
               AWS_REGION=us-east-1 \
               STAGE="$stage" \
+              SENTRY_DSN_SECRET_NAME=offline-synth \
               DESCOPE_MANAGEMENT_KEY_SECRET_NAME=offline-synth \
               DESCOPE_PROJECT_ID=offline-synth \
                 uv run --frozen cdk synth "$stack_id" -c stage="$stage" --output "$assembly"
@@ -257,6 +258,10 @@ jobs:
           fi
           if [[ "$OPERATION" != "credentials-only" && -z "$DESCOPE_PROJECT_ID" ]]; then
             echo "::error::The dev Environment must define DESCOPE_PROJECT_ID before planning or deploying."
+            exit 1
+          fi
+          if [[ "$OPERATION" != "credentials-only" && -z "$DESCOPE_MANAGEMENT_KEY_SECRET_NAME" ]]; then
+            echo "::error::The dev Environment must define DESCOPE_MANAGEMENT_KEY_SECRET_NAME before planning or deploying."
             exit 1
           fi
           if [[ ! "$DEV_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
