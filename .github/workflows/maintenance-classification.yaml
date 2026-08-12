@@ -84,6 +84,7 @@ jobs:
             CDK_DEFAULT_REGION=us-east-1 \
             AWS_REGION=us-east-1 \
             STAGE="$stage" \
+            DESCOPE_MANAGEMENT_KEY_SECRET_NAME=offline-synth \
             DESCOPE_PROJECT_ID=offline-synth \
               uv run --frozen cdk synth "$stack_id" -c stage="$stage" --output "$assembly"
           )
@@ -183,6 +184,7 @@ jobs:
             CDK_DEFAULT_REGION=us-east-1 \
             AWS_REGION=us-east-1 \
             STAGE="$stage" \
+            DESCOPE_MANAGEMENT_KEY_SECRET_NAME=offline-synth \
             DESCOPE_PROJECT_ID=offline-synth \
               uv run --frozen cdk synth "$stack_id" -c stage="$stage" --output "$assembly"
           )
