@@ -147,6 +147,271 @@ jobs:
               print(f"{key}={str(result[key]).lower()}")
           PY
 
+  deploy-prod-external-core:
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/prod' &&
+      needs.classify-deployment.outputs.core_maintenance_required != 'true' &&
+      needs.classify-deployment.outputs.database_maintenance_required != 'true'
+    needs: classify-deployment
+    concurrency:
+      group: valkyrie-prod-external-deploy
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: us-east-1
+      PRODUCTION_ACCOUNT_ID: "613431292675"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::613431292675:role/github-actions-valkyrie-deploy
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.PRODUCTION_ACCOUNT_ID }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: "infra/uv.lock"
+
+      - name: Install CDK and infrastructure dependencies
+        run: |
+          npm install -g aws-cdk@2.1132.0
+          uv sync --frozen --python 3.12 --project infra
+
+      - name: Deploy prod-external core stacks
+        env:
+          SLACK_WORKSPACE_ID: ${{ secrets.SLACK_WORKSPACE_ID }}
+          VALKYRIE_ALERTS_SLACK_CHANNEL_ID: ${{ secrets.VALKYRIE_ALERTS_SLACK_CHANNEL_ID }}
+          DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID: ${{ secrets.DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID }}
+          BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
+        working-directory: infra
+        run: >-
+          make deploy
+          STAGE=prod-external
+          SCOPE=core
+          AWS_REGION="$AWS_REGION"
+
+  executor-prod-external:
+    if: >-
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/prod' &&
+      needs.classify-deployment.result == 'success' &&
+      (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+       needs.classify-deployment.outputs.executor_release_required == 'true' ||
+       needs.classify-deployment.outputs.database_maintenance_required == 'true') &&
+      (needs.classify-deployment.outputs.core_maintenance_required == 'true' ||
+       needs.classify-deployment.outputs.database_maintenance_required == 'true' ||
+       needs.deploy-prod-external-core.result == 'success')
+    needs: [classify-deployment, deploy-prod-external-core]
+    concurrency:
+      group: valkyrie-prod-external-deploy
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04-arm
+    environment: prod-external
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: us-east-1
+      EXECUTOR_RELEASE_LAUNCH_PARAMETER: /valkyrie/prod-external/executor-release/launch-config
+      PRODUCTION_ACCOUNT_ID: "613431292675"
+
+    steps:
+      - name: Verify current prod-external executor revision
+        id: freshness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)"
+          if [[ "$current_sha" == "$GITHUB_SHA" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping stale executor revision $GITHUB_SHA; current $GITHUB_REF_NAME is $current_sha."
+          fi
+
+      - name: Checkout code
+        if: steps.freshness.outputs.current == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        if: steps.freshness.outputs.current == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        if: steps.freshness.outputs.current == 'true'
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            infra/executor_release/uv.lock
+            infra/uv.lock
+            services/executor_artifact/uv.lock
+
+      - name: Build immutable executor artifact
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_release_required == 'true'
+        run: |
+          PYTHONPATH=services/tracker/src python services/executor_artifact/build.py \
+            --output-directory "$GITHUB_WORKSPACE/executor-release" \
+            --source-revision "$GITHUB_SHA"
+
+      - name: Configure prod-external release preflight credentials
+        if: steps.freshness.outputs.current == 'true'
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::613431292675:role/ValkyrieExecutorRelease-prod-external
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.PRODUCTION_ACCOUNT_ID }}
+          role-session-name: valkyrie-prod-external-release-preflight-${{ github.run_id }}
+          unset-current-credentials: true
+
+      - name: Require deployed prod-external release control
+        if: steps.freshness.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          error_file="$(mktemp)"
+          if aws ssm get-parameter --name "$EXECUTOR_RELEASE_LAUNCH_PARAMETER" >/dev/null 2>"$error_file"; then
+            exit 0
+          fi
+          if grep -q "ParameterNotFound" "$error_file"; then
+            echo "::error::prod-external executor release control is not deployed. Complete the documented prod-external bootstrap (MonitoringStack, then the separately authorized ValkProdExternalWorkerStack deploy), then rerun this workflow."
+          else
+            cat "$error_file" >&2
+          fi
+          exit 1
+
+      - name: Begin prod-external maintenance
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        working-directory: infra
+        run: >-
+          PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py
+          --account-id "$PRODUCTION_ACCOUNT_ID"
+          --maintenance-operation begin
+          --region "$AWS_REGION"
+          --stage prod-external
+          --target-sha "$GITHUB_SHA"
+
+      - name: Restore prod-external deployment credentials
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::613431292675:role/github-actions-valkyrie-deploy
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.PRODUCTION_ACCOUNT_ID }}
+          role-session-name: valkyrie-prod-external-executor-deploy-${{ github.run_id }}
+          unset-current-credentials: true
+
+      - name: Setup Node.js
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Install CDK and infrastructure dependencies
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        run: |
+          npm install -g aws-cdk@2.1132.0
+          uv sync --frozen --python 3.12 --project infra
+
+      - name: Deploy prod-external core stacks under maintenance
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.core_maintenance_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        env:
+          SLACK_WORKSPACE_ID: ${{ secrets.SLACK_WORKSPACE_ID }}
+          VALKYRIE_ALERTS_SLACK_CHANNEL_ID: ${{ secrets.VALKYRIE_ALERTS_SLACK_CHANNEL_ID }}
+          DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID: ${{ secrets.DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID }}
+          BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
+        working-directory: infra
+        run: make deploy STAGE=prod-external SCOPE=core AWS_REGION="$AWS_REGION"
+
+      - name: Deploy prod-external executor stack
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_stack_deploy_required == 'true'
+        working-directory: infra
+        run: make deploy STAGE=prod-external SCOPE=executor AWS_REGION="$AWS_REGION"
+
+      - name: Configure prod-external release credentials
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_release_required == 'true' ||
+           needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::613431292675:role/ValkyrieExecutorRelease-prod-external
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.PRODUCTION_ACCOUNT_ID }}
+          role-session-name: valkyrie-prod-external-executor-release-${{ github.run_id }}
+          unset-current-credentials: true
+
+      - name: Publish and activate prod-external executor release
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_release_required == 'true'
+        working-directory: infra
+        run: >-
+          PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py
+          --account-id "$PRODUCTION_ACCOUNT_ID"
+          --artifact "$GITHUB_WORKSPACE/executor-release/executor.pex"
+          --manifest "$GITHUB_WORKSPACE/executor-release/manifest.json"
+          --region "$AWS_REGION"
+          --stage prod-external
+
+      - name: Finish prod-external maintenance
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        working-directory: infra
+        run: >-
+          PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py
+          --account-id "$PRODUCTION_ACCOUNT_ID"
+          --maintenance-operation finish
+          --region "$AWS_REGION"
+          --stage prod-external
+          --target-sha "$GITHUB_SHA"
+
   deploy-production-core:
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/prod' &&

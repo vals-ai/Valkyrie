@@ -221,7 +221,9 @@ class ExecutorStack(Stack):
             db_secret=db_credentials_secret,
         )
 
-        if stage.is_prod:
+        # Both production stages share one sandbox provider account, so a single
+        # cleanup schedule covers them.
+        if stage.is_primary_prod:
             self._add_sandbox_cleanup_schedule(
                 stage=stage,
                 log_retention=stage_config.service_log_retention,

@@ -17,11 +17,13 @@ from aws_cdk import (
 
 from constants import (
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV,
+    PROD_EXTERNAL_DESCOPE_PROJECT_ID,
     SANDBOX_CLEANUP_DLQ_NAME,
     SANDBOX_CLEANUP_FUNCTION_NAME,
     SANDBOX_CLEANUP_SCHEDULE_NAME,
     SANDBOX_CLEANUP_SECRET_NAME,
     SLACK_WORKSPACE_ID_ENV,
+    TRACKER_DOMAIN,
     TRACKER_LOG_GROUP_NAME,
     VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV,
     WORKER_LOG_GROUP_NAME,
@@ -30,7 +32,8 @@ from constants import (
 from monitoring_stack import MonitoringStack
 from shared import SharedStack
 from executor_stack import ExecutorStack
-from stage import DEV, DEV_STACK_PREFIX, PROD, RELEASE_TEST, Stage
+from stage import DEV, DEV_STACK_PREFIX, PROD, PROD_EXTERNAL, RELEASE_TEST, Stage
+from stage_config import DEV_CONFIG
 from tracker_stack import TrackerStack
 
 TEST_ALERTS_SLACK_ENV = {
@@ -210,6 +213,88 @@ class MonitoringStackTest(unittest.TestCase):
     def test_dev_stack_ids_are_valk_scoped(self) -> None:
         self.assertEqual(Stage(PROD).stack_id("TrackerStack"), "TrackerStack")
         self.assertEqual(Stage(DEV).stack_id("TrackerStack"), f"{DEV_STACK_PREFIX}TrackerStack")
+
+    def test_prod_external_names_never_collide_with_internal_prod(self) -> None:
+        stage = Stage(PROD_EXTERNAL)
+        self.assertEqual(stage.stack_id("WorkerStack"), "ValkProdExternalWorkerStack")
+        self.assertEqual(stage.phys("AgenticHarnessCluster"), "AgenticHarnessCluster-prod-external")
+        self.assertEqual(stage.domain(TRACKER_DOMAIN), "benchmark-tracker-external.vals.ai")
+        self.assertTrue(stage.is_production)
+        self.assertFalse(stage.is_primary_prod)
+
+    def test_prod_external_is_production_shaped_and_physically_isolated(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            prod_tracker, prod_executor, _ = _service_templates(PROD)
+            tracker_template, executor_template, monitoring_template = _service_templates(PROD_EXTERNAL)
+
+        def sizing(template: assertions.Template, resource_type: str) -> list[dict[str, object]]:
+            return [resource["Properties"] for resource in template.find_resources(resource_type).values()]
+
+        for resource_type in ("AWS::RDS::DBInstance", "AWS::ApplicationAutoScaling::ScalableTarget"):
+            for expected, actual in (
+                (sizing(prod_tracker, resource_type), sizing(tracker_template, resource_type)),
+                (sizing(prod_executor, resource_type), sizing(executor_template, resource_type)),
+            ):
+                for expected_properties, actual_properties in zip(expected, actual, strict=True):
+                    for key in ("DBInstanceClass", "BackupRetentionPeriod", "MinCapacity", "MaxCapacity"):
+                        self.assertEqual(expected_properties.get(key), actual_properties.get(key))
+
+        tracker_template.has_resource_properties(
+            "AWS::Logs::LogGroup",
+            {"LogGroupName": f"{TRACKER_LOG_GROUP_NAME}-prod-external", "RetentionInDays": 365},
+        )
+        tracker_template.has_resource_properties("AWS::RDS::DBInstance", {"PubliclyAccessible": True})
+        self.assertEqual(len(tracker_template.find_resources("AWS::CertificateManager::Certificate")), 1)
+        self.assertIn(
+            "benchmark-tracker-external.vals.ai",
+            json.dumps(tracker_template.find_resources("AWS::Route53::RecordSet")),
+        )
+        tracker_environment = [
+            variable
+            for task_definition in tracker_template.find_resources("AWS::ECS::TaskDefinition").values()
+            for container in task_definition["Properties"]["ContainerDefinitions"]
+            for variable in container.get("Environment", [])
+        ]
+        self.assertIn({"Name": "AUTH_REQUIRED", "Value": "true"}, tracker_environment)
+        self.assertIn(
+            {"Name": "DESCOPE_PROJECT_ID", "Value": PROD_EXTERNAL_DESCOPE_PROJECT_ID},
+            tracker_environment,
+        )
+
+        parameter_names = [
+            resource["Properties"]["Name"]
+            for resource in executor_template.find_resources("AWS::SSM::Parameter").values()
+        ]
+        self.assertIn("/valkyrie/prod-external/executor-release/launch-config", parameter_names)
+        self.assertTrue(all("/valkyrie/prod-external/" in name for name in parameter_names))
+        roles = executor_template.find_resources("AWS::IAM::Role")
+        release_role = next(
+            role
+            for role in roles.values()
+            if role["Properties"].get("RoleName") == "ValkyrieExecutorRelease-prod-external"
+        )
+        self.assertIn(
+            "repo:vals-ai/Valkyrie:environment:prod-external",
+            json.dumps(release_role["Properties"]["AssumeRolePolicyDocument"]),
+        )
+        executor_template.has_resource_properties(
+            "AWS::Logs::LogGroup",
+            {"LogGroupName": f"{WORKER_LOG_GROUP_NAME}-prod-external", "RetentionInDays": 365},
+        )
+        executor_template.resource_count_is("AWS::Scheduler::Schedule", 0)
+
+        for template in (tracker_template, executor_template, monitoring_template):
+            for resource_type, name_property in (
+                ("AWS::ECS::Service", "ServiceName"),
+                ("AWS::Logs::LogGroup", "LogGroupName"),
+                ("AWS::CloudWatch::Alarm", "AlarmName"),
+                ("AWS::SNS::Topic", "TopicName"),
+                ("AWS::IAM::Role", "RoleName"),
+            ):
+                for resource in template.find_resources(resource_type).values():
+                    name = resource["Properties"].get(name_property)
+                    if isinstance(name, str):
+                        self.assertTrue(name.endswith("-prod-external"), name)
 
     def test_release_test_names_are_namespaced(self) -> None:
         stage = Stage(RELEASE_TEST)
@@ -485,15 +570,15 @@ class MonitoringStackTest(unittest.TestCase):
         )
         tracker_template.has_resource_properties(
             "AWS::ApplicationAutoScaling::ScalableTarget",
-            {"MinCapacity": 1, "MaxCapacity": 1},
+            {"MinCapacity": DEV_CONFIG.tracker.min_tasks, "MaxCapacity": DEV_CONFIG.tracker.max_tasks},
         )
         worker_template.has_resource_properties(
             "AWS::ECS::Service",
-            {"DesiredCount": 1},
+            {"DesiredCount": DEV_CONFIG.worker.min_tasks},
         )
         worker_template.has_resource_properties(
             "AWS::ApplicationAutoScaling::ScalableTarget",
-            {"MinCapacity": 1, "MaxCapacity": 2},
+            {"MinCapacity": DEV_CONFIG.worker.min_tasks, "MaxCapacity": DEV_CONFIG.worker.max_tasks},
         )
         worker_template.has_resource_properties(
             "AWS::Logs::LogGroup",
@@ -522,6 +607,7 @@ class MonitoringStackTest(unittest.TestCase):
     def test_service_environment_labels_follow_stage(self) -> None:
         for stage_name, expected_environment, expected_namespace in (
             (PROD, "production", "local"),
+            (PROD_EXTERNAL, "prod-external", "local-prod-external"),
             (DEV, "dev", "local-dev"),
         ):
             environment = TEST_DEV_ENV if stage_name == DEV else {}

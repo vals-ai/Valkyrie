@@ -10,6 +10,8 @@ import pytest
 from valkyrie.cli.runtime_config import (
     DEV_CONFIG_PATH,
     DEV_TRACKER_URL,
+    EXTERNAL_CONFIG_PATH,
+    EXTERNAL_TRACKER_URL,
     PROD_CONFIG_PATH,
     PROD_ENVIRONMENT,
     PROD_TRACKER_URL,
@@ -40,6 +42,13 @@ def test_dev_environment_uses_dev_tracker_and_config(monkeypatch: pytest.MonkeyP
 
     assert tracker_service_url() == DEV_TRACKER_URL
     assert config_location() == DEV_CONFIG_PATH.expanduser()
+
+
+def test_external_environment_uses_external_tracker_and_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(VALKYRIE_ENV_ENV_VAR, "external")
+
+    assert tracker_service_url() == EXTERNAL_TRACKER_URL
+    assert config_location() == EXTERNAL_CONFIG_PATH.expanduser()
 
 
 def test_explicit_tracker_url_overrides_selected_environment(monkeypatch: pytest.MonkeyPatch) -> None:

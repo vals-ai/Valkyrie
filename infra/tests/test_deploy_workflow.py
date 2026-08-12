@@ -8,13 +8,29 @@ WORKFLOW = ROOT / ".github" / "workflows" / "deploy.yaml"
 EXECUTOR_BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "executor-build.yaml"
 
 
+_JOB_MARKERS = (
+    "\n  deploy-prod-external-core:",
+    "\n  executor-prod-external:",
+    "\n  deploy-production-core:",
+    "\n  run-dev-operation:",
+    "\n  executor-development:",
+    "\n  executor-production:",
+)
+
+
+def _job(workflow: str, job_id: str) -> str:
+    """Return the workflow text of one job, up to the next top-level job id."""
+    body = workflow.split(f"  {job_id}:", maxsplit=1)[1]
+    following = [body.index(marker) for marker in _JOB_MARKERS if marker in body]
+    return body[: min(following)] if following else body
+
+
 class DeployWorkflowTest(unittest.TestCase):
     def test_core_deployments_do_not_depend_on_executor_work(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        production_core = workflow.split("  deploy-production-core:", maxsplit=1)[1].split(
-            "  run-dev-operation:", maxsplit=1
-        )[0]
-        dev_core = workflow.split("  run-dev-operation:", maxsplit=1)[1].split("  executor-development:", maxsplit=1)[0]
+        production_core = _job(workflow, "deploy-production-core")
+        external_core = _job(workflow, "deploy-prod-external-core")
+        dev_core = _job(workflow, "run-dev-operation")
 
         self.assertIn("branches: [dev, prod]", workflow)
         self.assertIn("workflow_dispatch:", workflow)
@@ -28,6 +44,14 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertNotIn("services/executor_artifact/build.py", production_core)
         self.assertNotIn("executor_release/main.py", production_core)
         self.assertNotIn("maintenance-operation", production_core)
+        self.assertIn("needs: classify-deployment", external_core)
+        self.assertIn("group: valkyrie-prod-external-deploy", external_core)
+        self.assertIn("github.ref == 'refs/heads/prod'", external_core)
+        self.assertIn("STAGE=prod-external", external_core)
+        self.assertIn("SCOPE=core", external_core)
+        self.assertNotIn("services/executor_artifact/build.py", external_core)
+        self.assertNotIn("executor_release/main.py", external_core)
+        self.assertNotIn("DESCOPE_PROJECT_ID", external_core)
         self.assertIn("needs: classify-deployment", dev_core)
         self.assertIn("group: valkyrie-dev-${{ github.event_name == 'push' && 'deploy' || github.run_id }}", dev_core)
         self.assertIn("core_maintenance_required != 'true'", dev_core)
@@ -58,12 +82,15 @@ class DeployWorkflowTest(unittest.TestCase):
 
     def test_executor_jobs_own_build_deploy_activation_and_maintenance(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        dev_executor = workflow.split("  executor-development:", maxsplit=1)[1].split(
-            "  executor-production:", maxsplit=1
-        )[0]
-        prod_executor = workflow.split("  executor-production:", maxsplit=1)[1]
+        dev_executor = _job(workflow, "executor-development")
+        prod_executor = _job(workflow, "executor-production")
+        external_executor = _job(workflow, "executor-prod-external")
 
-        for executor_job, stage in ((dev_executor, "dev"), (prod_executor, "production")):
+        for executor_job, stage in (
+            (dev_executor, "dev"),
+            (prod_executor, "production"),
+            (external_executor, "prod-external"),
+        ):
             with self.subTest(stage=stage):
                 self.assertIn("executor_stack_deploy_required", executor_job)
                 self.assertIn("executor_host_redeploy_required", executor_job)
@@ -96,26 +123,29 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("needs: [classify-deployment, run-dev-operation]", dev_executor)
         self.assertIn("environment: dev", dev_executor)
         self.assertIn("needs: [classify-deployment, deploy-production-core]", prod_executor)
-        self.assertIn("environment: prod", prod_executor)
+        self.assertIn("environment: prod\n", prod_executor)
+        self.assertIn("needs: [classify-deployment, deploy-prod-external-core]", external_executor)
+        self.assertIn("environment: prod-external", external_executor)
+        self.assertEqual(external_executor.count("--stage prod-external"), 3)
+        self.assertNotIn("--stage prod\n", external_executor)
         self.assertNotIn("production-executor-approval", workflow)
         self.assertNotIn("production-release", workflow)
         self.assertEqual(
             workflow.count("PYTHONPATH=services/tracker/src python services/executor_artifact/build.py"),
-            2,
+            3,
         )
-        self.assertEqual(workflow.count("--maintenance-operation begin"), 2)
-        self.assertEqual(workflow.count("--maintenance-operation finish"), 2)
+        self.assertEqual(workflow.count("--maintenance-operation begin"), 3)
+        self.assertEqual(workflow.count("--maintenance-operation finish"), 3)
         self.assertNotIn("actions/upload-artifact", workflow)
         self.assertNotIn("actions/download-artifact", workflow)
 
     def test_maintenance_paths_bypass_the_skipped_core_job_and_preserve_failed_fences(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        dev_executor = workflow.split("  executor-development:", maxsplit=1)[1].split(
-            "  executor-production:", maxsplit=1
-        )[0]
-        prod_executor = workflow.split("  executor-production:", maxsplit=1)[1]
+        dev_executor = _job(workflow, "executor-development")
+        prod_executor = _job(workflow, "executor-production")
+        external_executor = _job(workflow, "executor-prod-external")
 
-        for executor_job in (dev_executor, prod_executor):
+        for executor_job in (dev_executor, prod_executor, external_executor):
             job_condition = executor_job.split("    needs:", maxsplit=1)[0]
             self.assertIn("always()", job_condition)
             self.assertIn("core_maintenance_required == 'true'", job_condition)
@@ -134,10 +164,9 @@ class DeployWorkflowTest(unittest.TestCase):
 
     def test_executor_bootstrap_fails_closed_until_release_control_exists(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        dev_executor = workflow.split("  executor-development:", maxsplit=1)[1].split(
-            "  executor-production:", maxsplit=1
-        )[0]
-        prod_executor = workflow.split("  executor-production:", maxsplit=1)[1]
+        dev_executor = _job(workflow, "executor-development")
+        prod_executor = _job(workflow, "executor-production")
+        external_executor = _job(workflow, "executor-prod-external")
 
         stages = (
             (
@@ -145,19 +174,28 @@ class DeployWorkflowTest(unittest.TestCase):
                 "dev",
                 "arn:aws:iam::${{ env.DEV_ACCOUNT_ID }}:role/ValkyrieExecutorRelease-dev",
                 "${{ env.AWS_DEPLOY_ROLE_ARN }}",
+                "physical WorkerStack bootstrap",
             ),
             (
                 prod_executor,
                 "production",
                 "arn:aws:iam::613431292675:role/ValkyrieExecutorRelease",
                 "arn:aws:iam::613431292675:role/github-actions-valkyrie-deploy",
+                "physical WorkerStack bootstrap",
+            ),
+            (
+                external_executor,
+                "prod-external",
+                "arn:aws:iam::613431292675:role/ValkyrieExecutorRelease-prod-external",
+                "arn:aws:iam::613431292675:role/github-actions-valkyrie-deploy",
+                "ValkProdExternalWorkerStack deploy",
             ),
         )
-        for executor_job, stage, release_role, deployment_role in stages:
+        for executor_job, stage, release_role, deployment_role, bootstrap_hint in stages:
             with self.subTest(stage=stage):
                 self.assertIn("aws ssm get-parameter", executor_job)
                 self.assertIn("ParameterNotFound", executor_job)
-                self.assertIn("physical WorkerStack bootstrap", executor_job)
+                self.assertIn(bootstrap_hint, executor_job)
                 self.assertNotIn("describe-stacks", executor_job)
                 self.assertNotIn("steps.executor-stack.outputs.exists", executor_job)
 
@@ -209,17 +247,21 @@ class DeployWorkflowTest(unittest.TestCase):
             "EXECUTOR_RELEASE_LAUNCH_PARAMETER: /valkyrie/prod/executor-release/launch-config",
             prod_executor,
         )
+        self.assertIn(
+            "EXECUTOR_RELEASE_LAUNCH_PARAMETER: /valkyrie/prod-external/executor-release/launch-config",
+            external_executor,
+        )
 
     def test_mutations_share_stage_mutex_and_stale_executor_jobs_do_nothing(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        dev_executor = workflow.split("  executor-development:", maxsplit=1)[1].split(
-            "  executor-production:", maxsplit=1
-        )[0]
-        prod_executor = workflow.split("  executor-production:", maxsplit=1)[1]
+        dev_executor = _job(workflow, "executor-development")
+        prod_executor = _job(workflow, "executor-production")
+        external_executor = _job(workflow, "executor-prod-external")
 
-        self.assertEqual(workflow.count("group: valkyrie-prod-deploy"), 2)
+        self.assertEqual(workflow.count("group: valkyrie-prod-deploy\n"), 2)
+        self.assertEqual(workflow.count("group: valkyrie-prod-external-deploy\n"), 2)
         self.assertIn("group: valkyrie-dev-deploy", dev_executor)
-        for executor_job in (dev_executor, prod_executor):
+        for executor_job in (dev_executor, prod_executor, external_executor):
             self.assertIn("gh api", executor_job)
             self.assertIn("id: freshness", executor_job)
             self.assertGreaterEqual(executor_job.count("steps.freshness.outputs.current == 'true'"), 14)
@@ -324,7 +366,7 @@ class DeployWorkflowTest(unittest.TestCase):
     def test_deployment_tools_are_pinned_and_release_dependencies_are_isolated(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
-        self.assertEqual(workflow.count("npm install -g aws-cdk@2.1132.0"), 5)
+        self.assertEqual(workflow.count("npm install -g aws-cdk@2.1132.0"), 7)
         self.assertIn("uv sync --frozen --python 3.12 --project infra", workflow)
         self.assertIn("infra/executor_release/uv.lock", workflow)
         self.assertIn("services/executor_artifact/uv.lock", workflow)

@@ -9,8 +9,8 @@ DEV_ACCOUNT_ID ?=
 PROFILE ?=
 SCOPE ?= all
 
-EXPECTED_ACCOUNT_ID = $(if $(filter dev release-test,$(STAGE)),$(DEV_ACCOUNT_ID),$(if $(filter prod,$(STAGE)),$(PRODUCTION_ACCOUNT_ID),))
-STACK_PREFIX = $(if $(filter dev,$(STAGE)),ValkDev,$(if $(filter release-test,$(STAGE)),ValkReleaseTest,))
+EXPECTED_ACCOUNT_ID = $(if $(filter dev release-test,$(STAGE)),$(DEV_ACCOUNT_ID),$(if $(filter prod prod-external,$(STAGE)),$(PRODUCTION_ACCOUNT_ID),))
+STACK_PREFIX = $(if $(filter dev,$(STAGE)),ValkDev,$(if $(filter release-test,$(STAGE)),ValkReleaseTest,$(if $(filter prod-external,$(STAGE)),ValkProdExternal,)))
 STACKS_shared = $(STACK_PREFIX)SharedStack
 STACKS_tracker = $(STACK_PREFIX)TrackerStack
 STACKS_driver = $(STACK_PREFIX)DriverStack
@@ -36,7 +36,7 @@ help:
 	@echo "Makefile for Valkyrie infrastructure"
 	@echo ""
 	@echo "  make install                                  - Install CDK dependencies"
-	@echo "  make plan STAGE=dev|release-test|prod AWS_REGION=us-east-1 - Show a CDK diff"
+	@echo "  make plan STAGE=dev|release-test|prod|prod-external AWS_REGION=us-east-1 - Show a CDK diff"
 	@echo "  make deploy STAGE=<stage> AWS_REGION=us-east-1 - Deploy a component"
 	@echo "  make test                                     - Run infrastructure tests"
 	@echo "  make lint                                     - Check infrastructure formatting and lint"

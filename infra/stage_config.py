@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from aws_cdk import aws_logs
-from stage import DEV, PROD, RELEASE_TEST, Stage
+from stage import DEV, PROD, PROD_EXTERNAL, RELEASE_TEST, Stage
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,16 @@ PROD_CONFIG = StageConfig(
     service_log_retention=aws_logs.RetentionDays.ONE_YEAR,
 )
 
+# prod-external runs the production shape; only its telemetry environment tag
+# distinguishes it from internal prod.
+PROD_EXTERNAL_CONFIG = StageConfig(
+    runtime_environment=PROD_EXTERNAL,
+    tracker=PROD_CONFIG.tracker,
+    worker=PROD_CONFIG.worker,
+    database=PROD_CONFIG.database,
+    service_log_retention=PROD_CONFIG.service_log_retention,
+)
+
 DEV_CONFIG = StageConfig(
     runtime_environment="dev",
     tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=1, max_tasks=2),
@@ -72,6 +82,7 @@ RELEASE_TEST_BENCHMARK_SERVICE_BASE_URL = "benchmarks.vals.ai"
 
 _STAGE_CONFIGS = {
     PROD: PROD_CONFIG,
+    PROD_EXTERNAL: PROD_EXTERNAL_CONFIG,
     DEV: DEV_CONFIG,
     RELEASE_TEST: RELEASE_TEST_CONFIG,
 }
@@ -81,7 +92,7 @@ def config_for(stage: Stage) -> StageConfig:
     try:
         return _STAGE_CONFIGS[stage.name]
     except KeyError:
-        raise ValueError(f"unknown stage {stage.name!r}; expected {PROD!r}, {DEV!r}, or 'release-test'") from None
+        raise ValueError(f"unknown stage {stage.name!r}; expected one of {sorted(_STAGE_CONFIGS)}") from None
 
 
 def benchmark_service_base_url(stage: Stage) -> str | None:

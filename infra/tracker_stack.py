@@ -36,6 +36,7 @@ from constants import (
     POSTGRES_DB,
     POSTGRES_PORT,
     POSTGRES_USER,
+    PROD_EXTERNAL_DESCOPE_PROJECT_ID,
     TRACKER_DOMAIN,
     TRACKER_LOG_GROUP_NAME,
     TRACKER_PORT,
@@ -44,7 +45,7 @@ from constants import (
     stage_parameter_name,
 )
 from constructs import Construct
-from stage import Stage
+from stage import PROD_EXTERNAL, Stage
 from stage_config import benchmark_service_base_url, config_for
 
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
@@ -135,7 +136,7 @@ class TrackerStack(Stack):
             credentials=aws_rds.Credentials.from_secret(db_credentials_secret),
             database_name=POSTGRES_DB,
             allocated_storage=stage_config.database.allocated_storage_gb,
-            publicly_accessible=stage.is_prod,
+            publicly_accessible=stage.is_production,
             deletion_protection=True,
             removal_policy=cdk.RemovalPolicy.RETAIN,
             backup_retention=Duration.days(stage_config.database.backup_retention_days),
@@ -152,7 +153,9 @@ class TrackerStack(Stack):
             "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="password"),
         }
 
-        sentry_secret_name = "valkyrie/sentry-dsn" if stage.is_prod else os.environ.get("SENTRY_DSN_SECRET_NAME", "")
+        sentry_secret_name = (
+            "valkyrie/sentry-dsn" if stage.is_production else os.environ.get("SENTRY_DSN_SECRET_NAME", "")
+        )
         sentry_secrets: dict[str, aws_ecs.Secret] = {}
         if sentry_secret_name:
             sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(
@@ -164,7 +167,12 @@ class TrackerStack(Stack):
 
         auth_required = os.environ.get("AUTH_REQUIRED", "false")
         descope_project_id = os.environ.get("DESCOPE_PROJECT_ID", "")
-        if not stage.is_prod:
+        if stage.name == PROD_EXTERNAL:
+            # The external deployment authenticates against its own Descope project,
+            # never the internal one configured for prod.
+            auth_required = "true"
+            descope_project_id = PROD_EXTERNAL_DESCOPE_PROJECT_ID
+        elif not stage.is_primary_prod:
             auth_required = "true"
             if not descope_project_id:
                 raise ValueError("Development deployments require DESCOPE_PROJECT_ID.")
@@ -230,10 +238,10 @@ class TrackerStack(Stack):
 
         tracker_domain: str | None = None
         tracker_hosted_zone: aws_route53.IHostedZone | None = None
-        if stage.is_prod:
+        if stage.is_production:
             if hosted_zone is None:
                 raise ValueError("Production requires the vals.ai hosted zone")
-            tracker_domain = TRACKER_DOMAIN
+            tracker_domain = stage.domain(TRACKER_DOMAIN)
             tracker_hosted_zone = hosted_zone
         elif not stage.is_release_test:
             tracker_domain = stage.domain(TRACKER_DOMAIN)
@@ -331,7 +339,7 @@ class TrackerStack(Stack):
             description="Allow VPC services to connect to RDS",
         )
 
-        if not stage.is_prod:
+        if not stage.is_production:
             aws_ssm.StringParameter(
                 self,
                 "TrackerSecurityGroupParameter",

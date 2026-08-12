@@ -17,6 +17,16 @@ Production imports the existing `vals.ai` hosted zone. Development imports only
 the account-local `benchmark-tracker-dev.vals.ai` child zone. Each production
 and development Tracker stack creates and owns its ACM certificate.
 
+The `prod` and `prod-external` stages are both production: same sizing, log
+retention, public ALB, TLS, and `vals.ai` hosted zone. `prod` owns the
+unsuffixed physical names and `benchmark-tracker.vals.ai`; `prod-external`
+prefixes its stack ids with `ValkProdExternal`, suffixes every physical name
+with `-prod-external`, serves `benchmark-tracker-external.vals.ai`, and always
+requires authentication against its own Descope project
+(`PROD_EXTERNAL_DESCOPE_PROJECT_ID` in `infra/constants.py`). The hourly sandbox
+cleanup schedule stays on `prod` only, because both stages share one sandbox
+provider account.
+
 ## Prerequisites
 
 - AWS CLI configured with appropriate credentials
@@ -58,8 +68,13 @@ make install
 ## Deployment
 
 Production and development deploy automatically when changes reach `prod` and
-`dev`. The manual **Deploy to AWS** workflow on `dev` supports only
-`credentials-only` and `plan`; deployments come from branch pushes.
+`dev`. A `prod` push deploys both production stages: `deploy-production-core` /
+`executor-production` for internal prod and `deploy-prod-external-core` /
+`executor-prod-external` for `prod-external`. The two lanes take separate
+deployment mutexes (`valkyrie-prod-deploy`, `valkyrie-prod-external-deploy`) and
+run concurrently; both act on the same classification of the pushed commit. The
+manual **Deploy to AWS** workflow on `dev` supports only `credentials-only` and
+`plan`; deployments come from branch pushes.
 
 Core and executor changes use separate jobs but one deployment mutex per stage.
 A core-only change never builds an executor artifact, enters executor maintenance,
@@ -105,6 +120,41 @@ make plan STAGE=release-test SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
 ```
 
+### Bootstrapping `prod-external`
+
+One-time, in the production account, before the automated lanes can succeed:
+
+1. Confirm the `vals.ai` hosted zone can validate
+   `benchmark-tracker-external.vals.ai`; the Tracker stack creates the record
+   and certificate itself.
+2. Create a protected `prod-external` GitHub Environment. The `prod-external`
+   executor release role trusts
+   `repo:vals-ai/Valkyrie:environment:prod-external`, so the environment must
+   exist before `executor-prod-external` runs.
+3. Deploy the core stacks, then the separately authorized executor stack:
+
+```bash
+cd infra
+make deploy STAGE=prod-external SCOPE=core AWS_REGION=us-east-1 PROFILE=vals-prod-admin
+make deploy STAGE=prod-external SCOPE=executor AWS_REGION=us-east-1 PROFILE=vals-prod-admin
+```
+
+4. Verify the sealed release control the automated executor lane requires:
+
+```bash
+aws ssm get-parameter --name /valkyrie/prod-external/executor-release/launch-config
+```
+
+The first executor release is then published by the next `prod` push, or
+manually with the same CLI the workflow uses:
+
+```bash
+cd infra
+PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py \
+  --account-id 613431292675 --region us-east-1 --stage prod-external \
+  --artifact <artifact>/executor.pex --manifest <artifact>/manifest.json
+```
+
 `SCOPE` accepts `shared`, `tracker`, `executor`, `monitoring`, `driver`
 (`release-test` only), `core`, or `all`. The `executor` scope targets the
 historical physical `WorkerStack` name. CDK follows the existing stack
@@ -123,7 +173,7 @@ export BENCHMARK_CATALOG_URL=https://<api-id>.execute-api.us-east-1.amazonaws.co
 
 ## Sandbox cleanup schedule
 
-Production includes an hourly EventBridge schedule for a singleton, 14-minute cleanup Lambda. The schedule is disabled
+Internal `prod` includes an hourly EventBridge schedule for a singleton, 14-minute cleanup Lambda. The schedule is disabled
 unless `SANDBOX_CLEANUP_ENABLED` is exactly `true`; Scheduler delivery and asynchronous Lambda failures go to an encrypted
 dead-letter queue.
 

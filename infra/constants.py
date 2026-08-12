@@ -21,6 +21,8 @@ NAMESPACE = "local"
 # Tracker Service
 TRACKER_LOG_GROUP_NAME = "/valkyrie/tracker"
 TRACKER_DOMAIN = "benchmark-tracker.vals.ai"
+# Public Descope project identifier for the external production deployment.
+PROD_EXTERNAL_DESCOPE_PROJECT_ID = "P2lXkZaPuDqCzGxoxGHseomQi7ac"
 TRACKER_SCALING_CPU_PERCENT = 70
 
 # Health Checks

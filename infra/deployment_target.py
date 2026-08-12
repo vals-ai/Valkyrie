@@ -35,8 +35,8 @@ class StsClient(Protocol):
 def target_from_environment(environment: Mapping[str, str]) -> DeploymentTarget:
     """Build and validate a deployment target without calling AWS."""
     stage = _required(environment, "STAGE")
-    if stage not in ("dev", "release-test", "prod"):
-        raise DeploymentTargetError("STAGE must be 'dev', 'release-test', or 'prod'.")
+    if stage not in ("dev", "release-test", "prod", "prod-external"):
+        raise DeploymentTargetError("STAGE must be 'dev', 'release-test', 'prod', or 'prod-external'.")
 
     region = _required(environment, "AWS_REGION")
     if region != DEPLOYMENT_REGION:

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 PROD_ENVIRONMENT = "prod"
+EXTERNAL_ENVIRONMENT = "external"
 DEV_ENVIRONMENT = "dev"
 
 VALKYRIE_ENV_ENV_VAR = "VALKYRIE_ENV"
@@ -11,17 +12,21 @@ TRACKER_SERVICE_URL_ENV_VAR = "TRACKER_SERVICE_URL"
 VALKYRIE_CONFIG_PATH_ENV_VAR = "VALKYRIE_CONFIG_PATH"
 
 PROD_TRACKER_URL = "https://benchmark-tracker.vals.ai"
+EXTERNAL_TRACKER_URL = "https://benchmark-tracker-external.vals.ai"
 DEV_TRACKER_URL = "https://benchmark-tracker-dev.vals.ai"
 
 PROD_CONFIG_PATH = Path("~/.config/valkyrie/valkyrie.yaml")
+EXTERNAL_CONFIG_PATH = Path("~/.config/valkyrie/external.yaml")
 DEV_CONFIG_PATH = Path("~/.config/valkyrie/dev.yaml")
 
 _TRACKER_URLS = {
     PROD_ENVIRONMENT: PROD_TRACKER_URL,
+    EXTERNAL_ENVIRONMENT: EXTERNAL_TRACKER_URL,
     DEV_ENVIRONMENT: DEV_TRACKER_URL,
 }
 _CONFIG_PATHS = {
     PROD_ENVIRONMENT: PROD_CONFIG_PATH,
+    EXTERNAL_ENVIRONMENT: EXTERNAL_CONFIG_PATH,
     DEV_ENVIRONMENT: DEV_CONFIG_PATH,
 }
 

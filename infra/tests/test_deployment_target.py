@@ -28,7 +28,11 @@ def environment_for(stage: str) -> dict[str, str]:
 
 class DeploymentTargetTest(unittest.TestCase):
     def test_accepts_exact_dev_and_prod_targets(self) -> None:
-        for stage, account_id in (("dev", DEV_ACCOUNT_ID), ("prod", PRODUCTION_ACCOUNT_ID)):
+        for stage, account_id in (
+            ("dev", DEV_ACCOUNT_ID),
+            ("prod", PRODUCTION_ACCOUNT_ID),
+            ("prod-external", PRODUCTION_ACCOUNT_ID),
+        ):
             with self.subTest(stage=stage):
                 self.assertEqual(
                     target_from_environment(environment_for(stage)),

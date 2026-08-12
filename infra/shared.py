@@ -102,7 +102,7 @@ class SharedStack(Stack):
         )
 
         self.hosted_zone: aws_route53.IHostedZone | None = None
-        if self.stage.is_prod:
+        if self.stage.is_production:
             self.hosted_zone = aws_route53.HostedZone.from_lookup(
                 self,
                 "HostedZone",
@@ -120,10 +120,10 @@ class SharedStack(Stack):
             bucket_name=bucket_name,
             removal_policy=cdk.RemovalPolicy.RETAIN,
             block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
-            encryption=None if self.stage.is_prod else aws_s3.BucketEncryption.S3_MANAGED,
-            enforce_ssl=None if self.stage.is_prod else True,
-            object_ownership=None if self.stage.is_prod else aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
-            versioned=None if self.stage.is_prod else True,
+            encryption=None if self.stage.is_primary_prod else aws_s3.BucketEncryption.S3_MANAGED,
+            enforce_ssl=None if self.stage.is_primary_prod else True,
+            object_ownership=None if self.stage.is_primary_prod else aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+            versioned=None if self.stage.is_primary_prod else True,
         )
 
         self.tracker_repository: aws_ecr.Repository | None = None
@@ -196,7 +196,7 @@ class SharedStack(Stack):
             ],
         )
 
-        if not self.stage.is_prod:
+        if not self.stage.is_production:
             self._publish_shared_contract()
 
     def _publish_shared_contract(self) -> None:
