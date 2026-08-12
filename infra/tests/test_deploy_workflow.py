@@ -224,6 +224,44 @@ class DeployWorkflowTest(unittest.TestCase):
             self.assertIn("id: freshness", executor_job)
             self.assertGreaterEqual(executor_job.count("steps.freshness.outputs.current == 'true'"), 14)
 
+    def test_prod_executor_alerts_when_new_primary_is_running_without_backgrounding_deploy(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        dev_executor = workflow.split("  executor-development:", maxsplit=1)[1].split(
+            "  executor-production:", maxsplit=1
+        )[0]
+        prod_executor = workflow.split("  executor-production:", maxsplit=1)[1]
+        deploy_step = prod_executor.split("      - name: Deploy production executor stack", maxsplit=1)[1].split(
+            "      - name: Configure production release credentials", maxsplit=1
+        )[0]
+
+        self.assertIn("needs.classify-deployment.outputs.executor_stack_deploy_required == 'true'", deploy_step)
+        self.assertIn("SLACK_DEPLOY_WEBHOOK_URL: ${{ secrets.SLACK_DEPLOY_WEBHOOK_URL }}", deploy_step)
+        self.assertIn("executor_rollout_monitor.py capture-baseline", deploy_step)
+        self.assertIn("executor_rollout_monitor.py monitor", deploy_step)
+        self.assertIn("--baseline-task-definition", deploy_step)
+        self.assertIn("cdk-hnb659fds-lookup-role-$PRODUCTION_ACCOUNT_ID-$AWS_REGION", deploy_step)
+        self.assertGreaterEqual(deploy_step.count('--lookup-role-arn "$lookup_role_arn"'), 2)
+        self.assertIn('--stop-file "$monitor_stop_file"', deploy_step)
+        self.assertIn("--timeout-seconds 10800", deploy_step)
+        self.assertLess(deploy_step.index("capture-baseline"), deploy_step.index("make deploy"))
+        self.assertLess(deploy_step.index("monitor_pid=$!"), deploy_step.index("make deploy"))
+        self.assertNotIn('make deploy STAGE=prod SCOPE=executor AWS_REGION="$AWS_REGION" &', deploy_step)
+        self.assertIn("deploy_status=$?", deploy_step)
+        success_cleanup = deploy_step.split("if (( deploy_status == 0 )); then", maxsplit=1)[1].split(
+            'elif kill -0 "$monitor_pid"', maxsplit=1
+        )[0]
+        self.assertIn('touch "$monitor_stop_file"', success_cleanup)
+        self.assertIn("for _ in {1..20}", success_cleanup)
+        self.assertIn('kill "$monitor_pid"', success_cleanup)
+        failed_cleanup = deploy_step.split('elif kill -0 "$monitor_pid"', maxsplit=1)[1].split("fi", maxsplit=1)[0]
+        self.assertIn('kill "$monitor_pid"', failed_cleanup)
+        self.assertNotIn('touch "$monitor_stop_file"', failed_cleanup)
+        self.assertIn('wait "$monitor_pid" || monitor_status=$?', deploy_step)
+        self.assertLess(deploy_step.index('touch "$monitor_stop_file"'), deploy_step.index('wait "$monitor_pid"'))
+        self.assertIn('exit "$deploy_status"', deploy_step)
+        self.assertNotIn("executor_rollout_monitor.py", dev_executor)
+        self.assertNotIn("SLACK_DEPLOY_WEBHOOK_URL", dev_executor)
+
     def test_deployment_reuses_the_pr_classifier(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         classification_workflow = (

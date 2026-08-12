@@ -9,7 +9,6 @@ from typing import cast
 _TASK_PATH_SUFFIX = "/ExecutorHostTaskDef/Resource"
 _SERVICE_PATH_SUFFIX = "/ExecutorHostService/Service"
 _TASK_TYPE = "AWS::ECS::TaskDefinition"
-_TASK_ROLLING_PROPERTIES = frozenset({"Cpu", "Memory"})
 _SERVICE_TYPE = "AWS::ECS::Service"
 _SERVICE_REDEPLOY_PROPERTIES = frozenset(
     {
@@ -197,12 +196,11 @@ def _resource_identity_changed(base: _HostResource, head: _HostResource) -> bool
 
 
 def _task_change_requires_maintenance(base: _HostResource, head: _HostResource) -> bool:
-    changed_properties = {
-        key
-        for key in base.properties.keys() | head.properties.keys()
-        if key != "Tags" and base.properties.get(key) != head.properties.get(key)
-    }
-    return bool(changed_properties - _TASK_ROLLING_PROPERTIES)
+    return _task_properties(base) != _task_properties(head)
+
+
+def _task_properties(resource: _HostResource) -> dict[str, object]:
+    return {key: value for key, value in resource.properties.items() if key != "Tags"}
 
 
 def _service_change_reasons(base: _HostResource, head: _HostResource) -> set[str]:

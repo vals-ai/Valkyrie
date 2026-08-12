@@ -97,7 +97,7 @@ class ExecutorTemplateClassifierTest(unittest.TestCase):
         self.assertFalse(effect.redeploy_required)
         self.assertEqual(effect.reasons, ())
 
-    def test_task_definition_cpu_and_memory_changes_do_not_require_maintenance(self) -> None:
+    def test_task_definition_cpu_and_memory_changes_require_maintenance(self) -> None:
         for changes in ({"Cpu": "8192"}, {"Memory": "32768"}, {"Cpu": "8192", "Memory": "32768"}):
             with self.subTest(changes=changes):
                 base = _template()
@@ -106,14 +106,13 @@ class ExecutorTemplateClassifierTest(unittest.TestCase):
 
                 effect = self._classify(base, head)
 
-                self.assertFalse(effect.redeploy_required)
-                self.assertEqual(effect.reasons, ())
+                self.assertTrue(effect.redeploy_required)
+                self.assertEqual(effect.reasons, ("executor-host-task-definition-changed",))
 
     def test_task_definition_other_property_change_requires_redeploy(self) -> None:
         base = _template()
         head = copy.deepcopy(base)
         task_properties = _properties(head, _TASK_ID)
-        task_properties["Cpu"] = "8192"
         task_properties["ContainerDefinitions"] = [{"Name": "ExecutorHost", "Image": "image:changed"}]
 
         effect = self._classify(base, head)
