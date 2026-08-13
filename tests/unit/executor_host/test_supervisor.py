@@ -7,6 +7,7 @@ from json import JSONDecodeError
 import logging
 import sys
 from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -116,6 +117,32 @@ class RecordingConnection:
 
     def cursor(self) -> RecordingCursor:
         return self.recording_cursor
+
+
+class MockRedis:
+    def __init__(
+        self,
+        *,
+        connection_pool: object,
+        commands: list[tuple[object, ...]],
+        eval_result: int | Exception,
+    ) -> None:
+        self.connection_pool = connection_pool
+        self.commands = commands
+        self.eval_result = eval_result
+
+    async def __aenter__(self) -> MockRedis:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: str) -> int:
+        self.commands.append(("eval", script, numkeys, *keys_and_args))
+        if isinstance(self.eval_result, Exception):
+            raise self.eval_result
+
+        return self.eval_result
 
 
 def _dispatch(*, digest: str) -> ArtifactDispatch:
@@ -561,29 +588,13 @@ async def test_broker_payload_dispatch_id_reaches_dispatch_owner(
     assert captured["executor_dispatch_id"] == "dispatch-1"
 
 
-@pytest.mark.asyncio
 async def test_stream_message_is_deleted_only_after_successful_ack(monkeypatch: pytest.MonkeyPatch) -> None:
     commands: list[tuple[object, ...]] = []
-
-    class FakeRedis:
-        def __init__(self, *, connection_pool: object) -> None:
-            assert connection_pool is broker.connection_pool
-
-        async def __aenter__(self) -> FakeRedis:
-            return self
-
-        async def __aexit__(self, *_args: object) -> None:
-            return None
-
-        async def xack(self, stream: str, group: str, message_id: str) -> int:
-            commands.append(("xack", stream, group, message_id))
-            return 1
-
-        async def xdel(self, stream: str, message_id: str) -> int:
-            commands.append(("xdel", stream, message_id))
-            return 1
-
-    monkeypatch.setattr(supervisor_module, "Redis", FakeRedis)
+    monkeypatch.setattr(
+        supervisor_module,
+        "Redis",
+        partial(MockRedis, commands=commands, eval_result=1),
+    )
     broker = DeleteAfterAckRedisStreamBroker(
         url="redis://localhost:6379",
         queue_name="default-stream",
@@ -597,42 +608,33 @@ async def test_stream_message_is_deleted_only_after_successful_ack(monkeypatch: 
 
     await acknowledge()
 
-    assert commands == [
-        ("xack", "selected-stream", "executor-group", "1700000000000-0"),
-        ("xdel", "selected-stream", "1700000000000-0"),
-    ]
+    assert len(commands) == 1
+
+    command = commands[0]
+    assert command[0] == "eval"
+    assert command[2:] == (1, "selected-stream", "executor-group", "1700000000000-0")
+
+    script = cast(str, command[1])
+    assert " ".join(script.split()) == (
+        'local acknowledged = redis.call("XACK", KEYS[1], ARGV[1], ARGV[2]) '
+        "if acknowledged == 1 then "
+        'redis.call("XDEL", KEYS[1], ARGV[2]) '
+        "end return acknowledged"
+    )
     await broker.shutdown()
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("ack_result", [0, RuntimeError("redis unavailable")], ids=["not-acked", "ack-error"])
 async def test_stream_message_is_not_deleted_when_ack_fails(
     monkeypatch: pytest.MonkeyPatch,
     ack_result: int | Exception,
 ) -> None:
     commands: list[tuple[object, ...]] = []
-
-    class FakeRedis:
-        def __init__(self, *, connection_pool: object) -> None:
-            assert connection_pool is broker.connection_pool
-
-        async def __aenter__(self) -> FakeRedis:
-            return self
-
-        async def __aexit__(self, *_args: object) -> None:
-            return None
-
-        async def xack(self, stream: str, group: str, message_id: str) -> int:
-            commands.append(("xack", stream, group, message_id))
-            if isinstance(ack_result, Exception):
-                raise ack_result
-            return ack_result
-
-        async def xdel(self, stream: str, message_id: str) -> int:
-            commands.append(("xdel", stream, message_id))
-            return 1
-
-    monkeypatch.setattr(supervisor_module, "Redis", FakeRedis)
+    monkeypatch.setattr(
+        supervisor_module,
+        "Redis",
+        partial(MockRedis, commands=commands, eval_result=ack_result),
+    )
     broker = DeleteAfterAckRedisStreamBroker(
         url="redis://localhost:6379",
         queue_name="default-stream",
@@ -646,9 +648,10 @@ async def test_stream_message_is_not_deleted_when_ack_fails(
         with pytest.raises(RuntimeError, match="redis unavailable"):
             await acknowledge()
     else:
-        await acknowledge()
+        assert await acknowledge() is None
 
-    assert commands == [("xack", "selected-stream", "executor-group", "1700000000000-0")]
+    assert len(commands) == 1
+    assert commands[0][0] == "eval"
     await broker.shutdown()
 
 

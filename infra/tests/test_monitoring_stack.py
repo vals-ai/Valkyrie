@@ -273,9 +273,9 @@ class MonitoringStackTest(unittest.TestCase):
 
     def test_redis_ingress_is_limited_to_tracker_and_executor_host(self) -> None:
         for stage_name, environment in (
-            (PROD, {}),
+            (PROD, TEST_PROD_ENV),
             (DEV, TEST_DEV_ENV),
-            (RELEASE_TEST, {"DESCOPE_PROJECT_ID": "release-test"}),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV),
         ):
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
                 shared_template = _shared_template(stage_name)

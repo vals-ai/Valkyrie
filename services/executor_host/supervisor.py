@@ -39,6 +39,13 @@ _PROTECTION_EXPIRY_MINUTES = 120
 _PROTECTION_REFRESH_SECONDS = 30 * 60
 _PROTECTION_RETRY_SECONDS = 30
 _AUTHORITY_LOSS_GRACE_SECONDS = 10
+_ACK_AND_DELETE_SCRIPT = """
+local acknowledged = redis.call("XACK", KEYS[1], ARGV[1], ARGV[2])
+if acknowledged == 1 then
+    redis.call("XDEL", KEYS[1], ARGV[2])
+end
+return acknowledged
+"""
 _active_execution_count = 0
 _protection_refresh_task: asyncio.Task[None] | None = None
 _execution_lock = asyncio.Lock()
@@ -605,9 +612,13 @@ class DeleteAfterAckRedisStreamBroker(RedisStreamBroker):
     def _ack_generator(self, id: str, queue_name: str) -> Callable[[], Awaitable[None]]:
         async def _ack() -> None:
             async with Redis(connection_pool=self.connection_pool) as redis_conn:
-                acknowledged = await redis_conn.xack(queue_name, self.consumer_group_name, id)
-                if acknowledged == 1:
-                    await redis_conn.xdel(queue_name, id)
+                await redis_conn.eval(
+                    _ACK_AND_DELETE_SCRIPT,
+                    1,
+                    queue_name,
+                    self.consumer_group_name,
+                    id,
+                )
 
         return _ack
 
