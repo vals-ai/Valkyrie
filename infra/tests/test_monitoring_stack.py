@@ -31,6 +31,7 @@ from monitoring_stack import MonitoringStack
 from shared import SharedStack
 from executor_stack import ExecutorStack
 from stage import DEV, DEV_STACK_PREFIX, PROD, RELEASE_TEST, Stage
+from stage_config import DEV_CONFIG
 from tracker_stack import TrackerStack
 
 TEST_ALERTS_SLACK_ENV = {
@@ -496,15 +497,15 @@ class MonitoringStackTest(unittest.TestCase):
         )
         tracker_template.has_resource_properties(
             "AWS::ApplicationAutoScaling::ScalableTarget",
-            {"MinCapacity": 1, "MaxCapacity": 1},
+            {"MinCapacity": DEV_CONFIG.tracker.min_tasks, "MaxCapacity": DEV_CONFIG.tracker.max_tasks},
         )
         worker_template.has_resource_properties(
             "AWS::ECS::Service",
-            {"DesiredCount": 1},
+            {"DesiredCount": DEV_CONFIG.worker.min_tasks},
         )
         worker_template.has_resource_properties(
             "AWS::ApplicationAutoScaling::ScalableTarget",
-            {"MinCapacity": 1, "MaxCapacity": 2},
+            {"MinCapacity": DEV_CONFIG.worker.min_tasks, "MaxCapacity": DEV_CONFIG.worker.max_tasks},
         )
         worker_template.has_resource_properties(
             "AWS::Logs::LogGroup",
