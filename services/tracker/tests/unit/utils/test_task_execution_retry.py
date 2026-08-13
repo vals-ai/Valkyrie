@@ -11,16 +11,16 @@ from uuid import UUID
 
 import pytest
 from benchmark_service import SandboxNotFoundError, SandboxRecoveryPolicy
-from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from benchmark_service.schemas import RetrieveTaskResponse, VolumeMount
-from sqlmodel import Session
+from sqlmodel import Session, desc, select
 
 from tests.unit.utils.task_execution_support import (
     create_task_environment,
     make_retrieve_task_response,
     run_process_task,
 )
-from tracker.database.models import AgentContractRequest, TaskStatus
+from tracker.database.models import AgentContractRequest, ErrorResult, TaskStatus
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
 from tracker.sandbox import DependencySetupMode
 from tracker.types import HarnessConfig
@@ -286,6 +286,47 @@ class TestTaskExecutionRetry:
         assert resume_count == 2
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.FINISHED
+
+    async def test_eval_resume_policy_lookup_failure_preserves_sandbox_loss(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        task_row.status = TaskStatus.EVALUATING
+        task_row.eval_resume_state = {"artifact_prefix": "s3://bucket/run"}
+        database_session.add(task_row)
+        database_session.commit()
+
+        async def _failed_policy_lookup(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            raise BenchmarkServiceError("policy lookup failed")
+
+        async def _lost_grading_sandbox(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise SandboxNotFoundError("grading sandbox was preempted")
+
+        monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock())
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _failed_policy_lookup)
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _lost_grading_sandbox, raising=False)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+
+        assert result == {"task_0": None}
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        error_message = database_session.exec(
+            select(ErrorResult.error_message)
+            .where(ErrorResult.task == task_row.id)
+            .order_by(desc(ErrorResult.created_at))
+        ).one()
+        assert error_message == "grading sandbox was preempted"
 
     async def test_process_task_spans_timed_status_transitions(
         self,

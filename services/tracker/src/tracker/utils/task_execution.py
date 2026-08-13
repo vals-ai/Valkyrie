@@ -612,7 +612,16 @@ async def _process_task_attempt(
                     task = fetch_task_row(task_row.id, task_session, org)
                     if task.status == TaskStatus.STOPPED:
                         return {task_id: None}
-                await recovery_attempt.retrieve_task()
+                try:
+                    await recovery_attempt.retrieve_task()
+                except Exception:
+                    # Recovery remains disabled when its benchmark policy cannot
+                    # be loaded, but that lookup failure must not hide the
+                    # provider-confirmed sandbox loss that interrupted grading.
+                    logger.warning(
+                        "Failed to load sandbox recovery policy after grading sandbox loss",
+                        exc_info=True,
+                    )
                 raise
             except Exception as e:
                 with Session(bind=engine) as task_session:
