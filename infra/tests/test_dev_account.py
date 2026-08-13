@@ -376,6 +376,68 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         template = assertions.Template.from_stack(shared)
         self.assertFalse(template.find_resources("AWS::SSM::Parameter"))
 
+    def test_prod_shared_stack_grants_live_tests_scoped_child_log_access(self) -> None:
+        app = cdk.App(context=PROD_CONTEXT)
+        stage = Stage(PROD)
+        shared = SharedStack(app, stage.stack_id("SharedStack"), stage=stage, env=TEST_ENV)
+        template = assertions.Template.from_stack(shared)
+
+        template.has_resource_properties(
+            "AWS::IAM::Policy",
+            {
+                "Roles": ["github-actions-valkyrie-tests"],
+                "PolicyDocument": {
+                    "Statement": assertions.Match.array_with(
+                        [
+                            assertions.Match.object_like(
+                                {
+                                    "Action": ["logs:CreateLogGroup", "logs:PutRetentionPolicy"],
+                                    "Effect": "Allow",
+                                    "Resource": {
+                                        "Fn::Join": [
+                                            "",
+                                            [
+                                                "arn:",
+                                                {"Ref": "AWS::Partition"},
+                                                (
+                                                    f":logs:{TEST_REGION}:{TEST_ACCOUNT}:log-group:"
+                                                    "valkyrie-test-log-group/*"
+                                                ),
+                                            ],
+                                        ]
+                                    },
+                                }
+                            ),
+                            assertions.Match.object_like(
+                                {
+                                    "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+                                    "Effect": "Allow",
+                                    "Resource": {
+                                        "Fn::Join": [
+                                            "",
+                                            [
+                                                "arn:",
+                                                {"Ref": "AWS::Partition"},
+                                                (
+                                                    f":logs:{TEST_REGION}:{TEST_ACCOUNT}:log-group:"
+                                                    "valkyrie-test-log-group/*:log-stream:*"
+                                                ),
+                                            ],
+                                        ]
+                                    },
+                                }
+                            ),
+                        ]
+                    )
+                },
+            },
+        )
+
+    def test_dev_shared_stack_does_not_attach_prod_live_test_role(self) -> None:
+        _, shared = dev_shared_stack()
+        policies = assertions.Template.from_stack(shared).find_resources("AWS::IAM::Policy")
+        self.assertNotIn("github-actions-valkyrie-tests", json.dumps(policies))
+
 
 if __name__ == "__main__":
     unittest.main()

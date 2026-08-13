@@ -12,6 +12,7 @@ from aws_cdk import (
     aws_elasticache,
     aws_events,
     aws_events_targets,
+    aws_iam,
     aws_route53,
     aws_s3,
     aws_servicediscovery,
@@ -53,6 +54,8 @@ DEPLOYMENT_FAILURE_STATUSES = (
     "ROLLBACK_COMPLETE",
     "DELETE_FAILED",
 )
+LIVE_INTEGRATION_TEST_ROLE_NAME = "github-actions-valkyrie-tests"
+LIVE_INTEGRATION_LOG_GROUP_PREFIX = "valkyrie-test-log-group"
 
 
 class SharedStack(Stack):
@@ -61,6 +64,9 @@ class SharedStack(Stack):
     def __init__(self, scope: Construct, id: str, stage: Stage, **kwargs: Any):
         super().__init__(scope, id, **kwargs)
         self.stage = stage
+
+        if self.stage.is_prod:
+            self._grant_live_integration_test_log_access()
 
         # shared VPC - public subnets only, no NAT gateway (cost savings)
         self.vpc = aws_ec2.Vpc(
@@ -190,6 +196,39 @@ class SharedStack(Stack):
 
         if not self.stage.is_prod:
             self._publish_shared_contract()
+
+    def _grant_live_integration_test_log_access(self) -> None:
+        """Allow production integration tests to write only their per-run logs."""
+        role = aws_iam.Role.from_role_name(
+            self,
+            "LiveIntegrationTestRole",
+            LIVE_INTEGRATION_TEST_ROLE_NAME,
+            mutable=True,
+        )
+        child_log_group_arn = self.format_arn(
+            service="logs",
+            resource="log-group",
+            resource_name=f"{LIVE_INTEGRATION_LOG_GROUP_PREFIX}/*",
+            arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
+        )
+        child_log_stream_arn = self.format_arn(
+            service="logs",
+            resource="log-group",
+            resource_name=f"{LIVE_INTEGRATION_LOG_GROUP_PREFIX}/*:log-stream:*",
+            arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
+        )
+        role.add_to_principal_policy(
+            aws_iam.PolicyStatement(
+                actions=["logs:CreateLogGroup", "logs:PutRetentionPolicy"],
+                resources=[child_log_group_arn],
+            )
+        )
+        role.add_to_principal_policy(
+            aws_iam.PolicyStatement(
+                actions=["logs:CreateLogStream", "logs:PutLogEvents"],
+                resources=[child_log_stream_arn],
+            )
+        )
 
     def _publish_shared_contract(self) -> None:
         """Publish the account-local resource contract consumed by benchmark-service stacks."""
