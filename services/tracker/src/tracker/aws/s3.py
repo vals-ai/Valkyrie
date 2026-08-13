@@ -80,7 +80,7 @@ def handle_s3_error(message: str) -> Callable[[Callable[_P, Awaitable[_R]]], Cal
 
 @logfire.instrument("upload_to_s3", extract_args=("s3_key", "s3_bucket"))
 @handle_s3_error(message="Failed to upload to S3")
-async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> None:
+async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> str:
     """
     Upload file content to S3.
 
@@ -94,7 +94,33 @@ async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", 
         S3Error: If upload fails due to AWS errors or network issues
     """
     async with s3_client(aws) as client:
-        await client.put_object(Bucket=s3_bucket, Key=s3_key, Body=file_content)
+        response = await client.put_object(Bucket=s3_bucket, Key=s3_key, Body=file_content)
+
+    etag = response.get("ETag")
+    if not isinstance(etag, str) or not etag:
+        raise S3Error("S3 upload response did not include an ETag")
+
+    return etag
+
+
+@logfire.instrument("verify_s3_object", extract_args=("s3_key", "s3_bucket"))
+@handle_s3_error(message="Failed to verify S3 object")
+async def verify_s3_object(
+    s3_key: str,
+    aws: "AWSCredentials",
+    s3_bucket: str,
+    *,
+    expected_size: int,
+    expected_etag: str,
+) -> None:
+    """Verify that an uploaded object is durably readable with the expected identity."""
+    async with s3_client(aws) as client:
+        response = await client.head_object(Bucket=s3_bucket, Key=s3_key)
+
+    content_length = response.get("ContentLength")
+    etag = response.get("ETag")
+    if content_length != expected_size or etag != expected_etag:
+        raise S3Error(f"S3 object verification failed for {s3_key}: expected size and ETag did not match")
 
 
 @logfire.instrument("upload_stream_to_s3", extract_args=("s3_key", "s3_bucket"))

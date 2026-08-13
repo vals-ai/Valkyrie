@@ -20,6 +20,7 @@ from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     create_benchmark_url,
     upload_to_s3,
+    verify_s3_object,
 )
 from tracker.database.models import (
     Benchmark,
@@ -559,11 +560,19 @@ async def upload_final_view(
 ) -> str:
     """Uploads the final view to the root of the benchmark folder and returns the s3 key"""
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/{benchmark_row.name}.json"
-    await upload_to_s3(
-        final_view.model_dump_json(indent=4, exclude_none=True).encode(),
+    content = final_view.model_dump_json(indent=4, exclude_none=True).encode()
+    etag = await upload_to_s3(
+        content,
         s3_key,
         harness_config.aws,
         harness_config.s3_bucket,
+    )
+    await verify_s3_object(
+        s3_key,
+        harness_config.aws,
+        harness_config.s3_bucket,
+        expected_size=len(content),
+        expected_etag=etag,
     )
 
     return s3_key

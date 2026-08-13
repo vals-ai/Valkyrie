@@ -52,6 +52,95 @@ from tracker.utils.task_execution import TaskMonitor
 class TestRunFinalization:
     """Run finalization and concurrent retry behavior."""
 
+    async def test_run_is_only_finished_after_canonical_result_upload(
+        self,
+        postgres_engine: Engine,
+        postgres_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        executor_authority_kwargs: Any,
+    ) -> None:
+        org = Org(id=uuid4(), name=f"durable-finalization-{uuid4()}")
+        contract = AgentContractRequest(name="durable-agent", install_cmd="true", run_cmd="true")
+        benchmark = make_benchmark(
+            name="durable-finalization",
+            org_id=org.id,
+            contract=contract,
+            status=BenchmarkStatus.IN_PROGRESS,
+        )
+        task = make_task(benchmark, "finished-task", status=TaskStatus.FINISHED)
+        postgres_session.add(org)
+        postgres_session.flush()
+        postgres_session.add(benchmark)
+        postgres_session.flush()
+        postgres_session.add(task)
+        postgres_session.flush()
+        postgres_session.add(
+            EvaluationResult(
+                org_id=org.id,
+                task=task.id,
+                instance_id=f"durable-{task.id}",
+                result={"score": 1.0},
+            )
+        )
+        postgres_session.commit()
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name=benchmark.name,
+            concurrency=1,
+            harness_config=harness_config,
+        )
+        statuses_during_upload: list[BenchmarkStatus] = []
+
+        async def record_upload(
+            _benchmark: Benchmark,
+            final_view: Any,
+            _harness_config: HarnessConfig,
+        ) -> None:
+            with Session(postgres_engine) as upload_session:
+                persisted_benchmark = upload_session.get_one(Benchmark, benchmark.id)
+                statuses_during_upload.append(persisted_benchmark.status)
+
+            assert final_view.status is BenchmarkStatus.FINISHED
+
+        async def final_score(*_args: Any, **_kwargs: Any) -> FinalScoreResponse:
+            return FinalScoreResponse(tasks_evaluated=[task.task_id], final_score=1.0, metadata={})
+
+        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+            return "test-log-group"
+
+        def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
+            return DaytonaProviderConfig(
+                DAYTONA_API_KEY="test-key",
+                DAYTONA_API_URL="https://example.com",
+                DAYTONA_TARGET="test-target",
+            )
+
+        monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
+        monkeypatch.setattr(run_orchestration_module, "create_benchmark_log_group", skip_log_group)
+        monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", provider_config)
+        monkeypatch.setattr(run_orchestration_module, "upload_final_view", record_upload)
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", final_score)
+
+        authority_kwargs = executor_authority_kwargs(benchmark, session=postgres_session)
+        assert benchmark.current_execution_release_id is not None
+        promote_release(postgres_session, benchmark.current_execution_release_id)
+        postgres_session.commit()
+
+        await process_benchmark(
+            start_benchmark_request_json=request.model_dump(),
+            benchmark_id_str=str(benchmark.id),
+            verified_task_ids=[],
+            **authority_kwargs,
+        )
+
+        with Session(postgres_engine) as assertion_session:
+            persisted_benchmark = assertion_session.get_one(Benchmark, benchmark.id)
+
+        assert statuses_during_upload == [BenchmarkStatus.IN_PROGRESS]
+        assert persisted_benchmark.status is BenchmarkStatus.FINISHED
+
     async def test_all_error_finalization_honors_concurrent_status_changes(
         self,
         postgres_engine: Engine,

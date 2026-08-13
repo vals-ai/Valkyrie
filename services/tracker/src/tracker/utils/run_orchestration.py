@@ -3,6 +3,7 @@
 import asyncio
 import traceback
 from asyncio import Semaphore, gather
+from datetime import UTC, datetime
 from typing import Any, Sequence, cast
 from uuid import UUID
 
@@ -449,15 +450,14 @@ async def process_benchmark(
                 session.flush()
 
             session.add(final_evaluation_row)
-            # Commit the final score and terminal status together while retry/resume is blocked.
-            set_benchmark_final_status(benchmark_row, session, org, authority=authority)
-
-            # Recheck dispatch authority after the status commit without holding the
-            # Retry admission lock across external operations.
-            lock_execution_authority(session, authority, require_in_progress=False)
-            session.commit()
-
-            final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
+            session.flush()
+            benchmark_row.final_evaluation = final_evaluation_row
+            final_view: FinalViewResponse = create_final_view(benchmark_row, session, org).model_copy(
+                update={
+                    "status": BenchmarkStatus.FINISHED,
+                    "finished_at": datetime.now(UTC),
+                }
+            )
             final_view_benchmark = benchmark_row
             lambda_function = benchmark_row.arguments.lambda_function
             lambda_payload: dict[str, Any] | None = None
@@ -465,6 +465,10 @@ async def process_benchmark(
                 lambda_payload = benchmark_row.arguments.model_dump()
                 lambda_payload["benchmark_id"] = str(benchmark_id)
                 lambda_payload["benchmark_name"] = benchmark_row.name
+
+            # Persist the score before the external upload, but keep the run non-terminal
+            # until its canonical result is durable.
+            session.commit()
 
         await upload_final_view_if_current(
             final_view_benchmark,
@@ -476,12 +480,11 @@ async def process_benchmark(
         # A Retry may win while the upload is in flight. Do not emit follow-on
         # callbacks for an execution that no longer owns the run.
         with Session(bind=engine) as authority_session:
-            lock_execution_authority(
-                authority_session,
-                authority,
-                require_in_progress=False,
-            )
-            authority_session.commit()
+            benchmark_row = fetch_benchmark_row(benchmark_id, authority_session, org, for_update=True)
+            if has_runnable_tasks(authority_session, benchmark_row, org):
+                finalization_deferred = True
+                return
+            set_benchmark_final_status(benchmark_row, authority_session, org, authority=authority)
 
         if lambda_function and lambda_payload is not None:
             invoke_lambda(lambda_client(harness_config.aws), lambda_function, lambda_payload)
