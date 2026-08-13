@@ -410,7 +410,26 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                             ),
                             assertions.Match.object_like(
                                 {
-                                    "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+                                    "Action": "logs:CreateLogStream",
+                                    "Effect": "Allow",
+                                    "Resource": {
+                                        "Fn::Join": [
+                                            "",
+                                            [
+                                                "arn:",
+                                                {"Ref": "AWS::Partition"},
+                                                (
+                                                    f":logs:{TEST_REGION}:{TEST_ACCOUNT}:log-group:"
+                                                    "valkyrie-test-log-group/*"
+                                                ),
+                                            ],
+                                        ]
+                                    },
+                                }
+                            ),
+                            assertions.Match.object_like(
+                                {
+                                    "Action": "logs:PutLogEvents",
                                     "Effect": "Allow",
                                     "Resource": {
                                         "Fn::Join": [
