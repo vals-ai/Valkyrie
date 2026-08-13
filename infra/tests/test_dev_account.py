@@ -97,6 +97,7 @@ def dev_service_templates() -> tuple[assertions.Template, assertions.Template]:
         hosted_zone=shared.hosted_zone,
         bucket_name=shared.bucket_name,
         redis_url=shared.redis_url,
+        redis_security_group=shared.redis_security_group,
         env=TEST_ENV,
     )
     executor = ExecutorStack(

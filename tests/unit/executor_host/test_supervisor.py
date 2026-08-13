@@ -17,6 +17,7 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     ArtifactDispatch,
     DispatchAuthority,
     DispatchAuthorityLostError,
+    DeleteAfterAckRedisStreamBroker,
     ExecutorSupervisor,
     PostgresExecutorDispatchStore,
     run_executor_dispatch,
@@ -558,6 +559,97 @@ async def test_broker_payload_dispatch_id_reaches_dispatch_owner(
     )
 
     assert captured["executor_dispatch_id"] == "dispatch-1"
+
+
+@pytest.mark.asyncio
+async def test_stream_message_is_deleted_only_after_successful_ack(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[tuple[object, ...]] = []
+
+    class FakeRedis:
+        def __init__(self, *, connection_pool: object) -> None:
+            assert connection_pool is broker.connection_pool
+
+        async def __aenter__(self) -> FakeRedis:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def xack(self, stream: str, group: str, message_id: str) -> int:
+            commands.append(("xack", stream, group, message_id))
+            return 1
+
+        async def xdel(self, stream: str, message_id: str) -> int:
+            commands.append(("xdel", stream, message_id))
+            return 1
+
+    monkeypatch.setattr(supervisor_module, "Redis", FakeRedis)
+    broker = DeleteAfterAckRedisStreamBroker(
+        url="redis://localhost:6379",
+        queue_name="default-stream",
+        consumer_group_name="executor-group",
+    )
+
+    acknowledge = broker._ack_generator(  # pyright: ignore[reportPrivateUsage]
+        id="1700000000000-0", queue_name="selected-stream"
+    )
+    assert commands == []
+
+    await acknowledge()
+
+    assert commands == [
+        ("xack", "selected-stream", "executor-group", "1700000000000-0"),
+        ("xdel", "selected-stream", "1700000000000-0"),
+    ]
+    await broker.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ack_result", [0, RuntimeError("redis unavailable")], ids=["not-acked", "ack-error"])
+async def test_stream_message_is_not_deleted_when_ack_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    ack_result: int | Exception,
+) -> None:
+    commands: list[tuple[object, ...]] = []
+
+    class FakeRedis:
+        def __init__(self, *, connection_pool: object) -> None:
+            assert connection_pool is broker.connection_pool
+
+        async def __aenter__(self) -> FakeRedis:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def xack(self, stream: str, group: str, message_id: str) -> int:
+            commands.append(("xack", stream, group, message_id))
+            if isinstance(ack_result, Exception):
+                raise ack_result
+            return ack_result
+
+        async def xdel(self, stream: str, message_id: str) -> int:
+            commands.append(("xdel", stream, message_id))
+            return 1
+
+    monkeypatch.setattr(supervisor_module, "Redis", FakeRedis)
+    broker = DeleteAfterAckRedisStreamBroker(
+        url="redis://localhost:6379",
+        queue_name="default-stream",
+        consumer_group_name="executor-group",
+    )
+    acknowledge = broker._ack_generator(  # pyright: ignore[reportPrivateUsage]
+        id="1700000000000-0", queue_name="selected-stream"
+    )
+
+    if isinstance(ack_result, Exception):
+        with pytest.raises(RuntimeError, match="redis unavailable"):
+            await acknowledge()
+    else:
+        await acknowledge()
+
+    assert commands == [("xack", "selected-stream", "executor-group", "1700000000000-0")]
+    await broker.shutdown()
 
 
 def test_executor_host_uses_one_taskiq_process() -> None:
