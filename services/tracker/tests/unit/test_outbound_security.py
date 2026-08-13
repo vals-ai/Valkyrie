@@ -134,6 +134,10 @@ class TestCustomServiceDestinationPolicy:
             "http://service.local:8001",
             "http://service.internal:8001",
             "http://127.0.0.1:8001",
+            "http://127。0。0。1:8001",
+            "http://127．0．0．1:8001",
+            "http://127｡0｡0｡1:8001",
+            "http://localhost。:8001",
             "http://127.1:8001",
             "http://2130706433:8001",
             "http://0x7f000001:8001",
@@ -158,6 +162,7 @@ class TestCustomServiceDestinationPolicy:
         "service_url",
         [
             "http://team.example",
+            "http://team。example",
             "https://evilvals.ai",
             "https://vals.ai.evil.com",
         ],

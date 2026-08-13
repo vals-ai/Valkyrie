@@ -275,15 +275,23 @@ class TestBenchmarkServicesHealth:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        requests: list[httpx.Request] = []
+
+        async def handle_request(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, request=request)
+
         monkeypatch.setattr(benchmark_services_api, "AUTH_REQUIRED", True)
+        _install_http_transport(monkeypatch, handle_request)
 
         response = _client.post(
             "/benchmark-services",
-            json={"services": [{"name": "swebench", "url": "http://localhost:8001"}]},
+            json={"services": [{"name": "swebench", "url": "http://127。0。0。1:8001"}]},
         )
 
         assert response.status_code == 403
         assert response.json() == {"detail": "Custom benchmark destination is not allowed"}
+        assert requests == []
 
     def test_benchmark_services_endpoint_allows_vals_catalog_destination(
         self,

@@ -34,6 +34,7 @@ _FORBIDDEN_HEADER_PREFIXES = ("forwarded", "proxy-", "sec-websocket-", "x-forwar
 _VALS_TENANT_ID = "vals.ai"
 _RESTRICTED_HOSTNAMES = {"internal", "local", "localhost"}
 _RESTRICTED_HOSTNAME_SUFFIXES = (".localhost", ".local", ".internal")
+_IDNA_SEPARATOR_TRANSLATION = str.maketrans({"。": ".", "．": ".", "｡": "."})
 _CUSTOM_DESTINATION_DENIED = "Custom benchmark destination is not allowed"
 
 
@@ -70,7 +71,7 @@ def validate_custom_service_destination(
 
     hostname = urlsplit(value).hostname
     assert hostname is not None
-    normalized_host = hostname.lower().rstrip(".")
+    normalized_host = hostname.translate(_IDNA_SEPARATOR_TRANSLATION).lower().rstrip(".")
     if (
         (restrict_vals_hosts and normalized_host == _VALS_TENANT_ID)
         or (restrict_vals_hosts and normalized_host.endswith(f".{_VALS_TENANT_ID}"))
