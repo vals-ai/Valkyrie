@@ -24,7 +24,9 @@ from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
+import main as main_module
 from main import app
+import tracker.utils as tracker_utils
 from tests.factories import make_benchmark, make_error_result, make_evaluation_result
 from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID, async_iterator
@@ -1098,6 +1100,27 @@ class TestRunRecovery:
         assert task_row.status == TaskStatus.STOPPED
         assert evaluations == []
 
+    async def test_retry_or_resume_blocks_external_persisted_internal_destination(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        benchmark_row.custom_benchmark_service = "https://benchmarks-dev.vals.ai"
+        database_session.add(benchmark_row)
+        database_session.commit()
+        monkeypatch.setattr(main_module, "AUTH_REQUIRED", True)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={"task_ids": [], "service_headers": {}},
+        )
+
+        assert response.status_code == 403
+        assert response.json() == {"detail": "Custom benchmark destination is not allowed"}
+
     async def test_retry_or_resume_forwards_tracker_api_key_to_benchmark_service(
         self,
         example_benchmark_object: Benchmark,
@@ -1303,6 +1326,14 @@ class TestRunRecovery:
         database_session.commit()
         verified_urls: list[str] = []
         verified_headers: list[dict[str, str]] = []
+        create_benchmark_service_client = tracker_utils.create_benchmark_service_client
+
+        def _create_benchmark_service_client(
+            url: str,
+            service_headers: dict[str, str] | None = None,
+        ) -> BenchmarkServiceClient:
+            verified_urls.append(url)
+            return create_benchmark_service_client(url, service_headers)
 
         async def _verify_task_ids(
             benchmark_service: BenchmarkServiceClient,
@@ -1311,11 +1342,11 @@ class TestRunRecovery:
             slice_str: str | None,
             dataset: str | None,
         ) -> VerifyTaskIdsResponse:
-            verified_urls.append(benchmark_service._url)
             verified_headers.append(dict(getattr(benchmark_service, "_headers")))
 
             return VerifyTaskIdsResponse(task_ids=task_ids)
 
+        monkeypatch.setattr(tracker_utils, "create_benchmark_service_client", _create_benchmark_service_client)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_task_ids)
 
         invalid_response = client.post(

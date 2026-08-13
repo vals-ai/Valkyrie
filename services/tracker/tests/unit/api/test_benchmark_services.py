@@ -271,6 +271,38 @@ class TestBenchmarkServicesHealth:
         }
         assert sensitive_detail not in response.text
 
+    def test_benchmark_services_endpoint_blocks_external_internal_destination(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(benchmark_services_api, "AUTH_REQUIRED", True)
+
+        response = _client.post(
+            "/benchmark-services",
+            json={"services": [{"name": "swebench", "url": "http://localhost:8001"}]},
+        )
+
+        assert response.status_code == 403
+        assert response.json() == {"detail": "Custom benchmark destination is not allowed"}
+
+    def test_benchmark_services_endpoint_allows_vals_catalog_destination(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def handle_request(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, request=request)
+
+        monkeypatch.setattr(benchmark_services_api, "AUTH_REQUIRED", True)
+        _install_http_transport(monkeypatch, handle_request)
+
+        response = _client.post(
+            "/benchmark-services",
+            json={"services": [{"name": "swebench", "url": "https://swebench.benchmarks.vals.ai"}]},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["services"][0]["healthy"]
+
     def test_benchmark_services_endpoint_returns_empty_services(self) -> None:
         """An empty health-check request must preserve the successful empty contract.
 
