@@ -300,25 +300,32 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        executor_authority_kwargs: Any,
     ) -> None:
-        start_benchmark_request, _task_row, benchmark_id, _authority = create_task_environment(
+        start_benchmark_request, _task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
         start_benchmark_request = start_benchmark_request.model_copy(
             update={"custom_benchmark_service": "http://service.internal:8001"}
         )
-        benchmark_row = fetch_benchmark_row(benchmark_id, database_session, TEST_ORG)
-        authority_kwargs = executor_authority_kwargs(benchmark_row)
         monkeypatch.setattr(run_orchestration_module, "AUTH_REQUIRED", True)
+        monkeypatch.setattr(
+            run_orchestration_module,
+            "fetch_sandbox_provider_config",
+            lambda *_args, **_kwargs: pytest.fail("sandbox config resolved before destination validation"),
+        )
 
-        with pytest.raises(ValueError, match="Custom benchmark destination is not allowed"):
-            await process_benchmark(
-                start_benchmark_request_json=start_benchmark_request.model_dump(),
-                benchmark_id_str=str(benchmark_id),
-                verified_task_ids=["task_0"],
-                **authority_kwargs,
-            )
+        await process_benchmark(
+            start_benchmark_request_json=start_benchmark_request.model_dump(),
+            benchmark_id_str=str(benchmark_id),
+            verified_task_ids=["task_0"],
+            executor_dispatch_id=str(authority.dispatch_id),
+        )
+
+        with Session(bind=database_session.bind) as session:
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, TEST_ORG)
+            assert benchmark_row.status == BenchmarkStatus.ERROR
+            assert benchmark_row.error_message is not None
+            assert "Custom benchmark destination is not allowed" in benchmark_row.error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_benchmark_service_error_in_process_benchmark(
