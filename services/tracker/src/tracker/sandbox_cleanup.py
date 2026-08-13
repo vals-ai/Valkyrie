@@ -17,6 +17,7 @@ from benchmark_service import (
 )
 
 from tracker.logging import configure_logging, get_logger
+from tracker.sandbox import audit_sandbox_delete
 from tracker.utils.resources import fetch_sandbox_provider_config
 
 logger = get_logger(__name__)
@@ -130,14 +131,17 @@ async def cleanup_old_sandboxes(
                 timeout=_OPERATION_TIMEOUT_SECONDS,
             )
         except SandboxNotFoundError:
+            audit_sandbox_delete(current, "orphan_cleanup", org_id=None, outcome="already_gone")
             outcomes["already_absent"] += 1
         except Exception as exc:
+            audit_sandbox_delete(current, "orphan_cleanup", org_id=None, outcome="failed", error=type(exc).__name__)
             outcomes["delete_failed"] += 1
             logger.error(
                 "Failed to delete sandbox",
                 extra={"sandbox_id": current.id, "error_type": type(exc).__name__},
             )
         else:
+            audit_sandbox_delete(current, "orphan_cleanup", org_id=None, outcome="deleted")
             outcomes["deleted"] += 1
 
     return outcomes

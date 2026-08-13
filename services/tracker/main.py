@@ -91,7 +91,7 @@ from tracker.executor.release_control import MaintenanceModeError, ReleaseContro
 from tracker.executor.release_retirement import AutomaticReleaseRetirement
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
-from tracker.outbound_security import validate_service_url_syntax
+from tracker.outbound_security import validate_custom_service_destination, validate_service_url_syntax
 from tracker.types import (
     AnalyzeBenchmarkRequest,
     FetchBenchmarkMetadataResponse,
@@ -353,6 +353,17 @@ async def _resolve_contract_from_s3(request: StartBenchmarkRequest) -> AgentCont
     return resolved
 
 
+def _authorize_custom_benchmark_destination(url: str, org: Org) -> None:
+    try:
+        validate_custom_service_destination(
+            url,
+            org_name=org.name,
+            auth_required=AUTH_REQUIRED,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
 @app.post("/start-benchmark")
 async def start_benchmark(
     http_request: Request,
@@ -376,6 +387,9 @@ async def start_benchmark(
     - 400 Bad Request if parameters are invalid
     - 500 Internal Server Error if benchmark fails to start
     """
+    if request.custom_benchmark_service is not None:
+        _authorize_custom_benchmark_destination(request.custom_benchmark_service, run_starter.org)
+
     # Prefer harness_config from X-Harness-* headers (web FE); fall back to request body (CLI).
     header_harness_config = try_fetch_harness_config(http_request)
     effective_harness_config = header_harness_config or request.harness_config
@@ -519,11 +533,14 @@ async def fetch_benchmark_tasks(
     http_request: Request,
     request: FetchBenchmarkTasksRequest,
     harness_config: HarnessConfig = Depends(fetch_harness_config),
-    _org: Org = Depends(get_current_org),
+    org: Org = Depends(get_current_org),
 ) -> VerifyTaskIdsResponse:
     """
     Fetch all task ids for a benchmark dataset.
     """
+    if request.custom_benchmark_service is not None:
+        _authorize_custom_benchmark_destination(request.custom_benchmark_service, org)
+
     try:
         benchmark_service = create_benchmark_service_client(
             url=request.custom_benchmark_service or create_benchmark_service_url(request.benchmark_name),
@@ -717,6 +734,9 @@ async def retrieve_results(
             for task_id, result in fetch_final_score_inputs(session, benchmark_row, org).items()
             if task_id in task_ids_set
         }
+
+        if benchmark_row.custom_benchmark_service is not None:
+            _authorize_custom_benchmark_destination(benchmark_row.custom_benchmark_service, org)
 
         effective_service_headers = forward_tracker_api_key(
             None,
@@ -955,6 +975,10 @@ async def retry_or_resume_benchmark(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    effective_benchmark_url = benchmark_url if benchmark_url is not None else benchmark_row.custom_benchmark_service
+    if effective_benchmark_url is not None:
+        _authorize_custom_benchmark_destination(effective_benchmark_url, org)
+
     if concurrency is not None and concurrency < 1:
         raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
 
@@ -980,6 +1004,8 @@ async def retry_or_resume_benchmark(
             lock_executor_admission(session)
         benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
         effective_benchmark_url = benchmark_url if benchmark_url is not None else benchmark_row.custom_benchmark_service
+        if effective_benchmark_url is not None:
+            _authorize_custom_benchmark_destination(effective_benchmark_url, org)
         effective_service_headers = forward_tracker_api_key(
             service_headers,
             http_request.headers.get("x-api-key"),

@@ -50,6 +50,7 @@ tracker = TrackerStack(
     hosted_zone=shared.hosted_zone,
     bucket_name=shared.bucket_name,
     redis_url=shared.redis_url,
+    redis_security_group=shared.redis_security_group,
     tracker_repository=tracker_repository,
     image_tag=release_test_image_tag,
     env=env,
@@ -91,6 +92,7 @@ if stage.is_release_test:
         db_port=tracker.database.db_instance_endpoint_port,
         db_credentials=cast(aws_secretsmanager.ISecret, tracker.db_credentials),
         redis_url=shared.redis_url,
+        redis_security_group=shared.redis_security_group,
         env=env,
     )
     driver.add_dependency(tracker)
