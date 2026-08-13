@@ -1,0 +1,19 @@
+---
+title: AWS permissions
+description: Scope the AWS credentials used by Valkyrie runs.
+---
+
+Valkyrie uses your AWS credentials for artifact storage, logs, sandbox-provider secrets, and optional post-run integrations.
+
+| Service | Permissions | Used for |
+| --- | --- | --- |
+| S3 | `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucket` | Benchmark results, agent artifacts, and run outputs |
+| CloudWatch Logs | `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents` | Task execution logs |
+| Secrets Manager | `secretsmanager:GetSecretValue` | Sandbox-provider credentials and webhook URLs |
+| Lambda (optional) | `lambda:InvokeFunction` | Post-run Lambda invocation |
+
+Scope permissions to the S3 bucket, CloudWatch log groups, Lambda functions, and Secrets Manager secrets that the installation uses.
+
+<Warning>
+  The SDK and CLI send AWS credentials to the configured tracker through `X-Harness-*` headers. Connect only to a trusted tracker and use HTTPS outside local development.
+</Warning>

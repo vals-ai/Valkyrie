@@ -1,0 +1,97 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Valkyrie",
+  "description": "Run scalable, reproducible evaluations for AI agents.",
+  "colors": {
+    "primary": "#0B7285",
+    "light": "#15AABF",
+    "dark": "#087F5B"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get started",
+        "pages": [
+          "introduction",
+          "get-started/quickstart",
+          "get-started/hosting",
+          "get-started/configuration",
+          "get-started/sandbox-providers"
+        ]
+      },
+      {
+        "group": "Agents",
+        "pages": [
+          "agents/manage-agents",
+          "agents/agent-contract"
+        ]
+      },
+      {
+        "group": "Runs",
+        "pages": [
+          "runs/start",
+          "runs/monitor",
+          "runs/manage",
+          "runs/results-and-outputs",
+          "runs/slack-notifications"
+        ]
+      },
+      {
+        "group": "Benchmarks",
+        "pages": [
+          "benchmarks/custom-services",
+          "benchmarks/authentication"
+        ]
+      },
+      {
+        "group": "Integrations",
+        "pages": [
+          "integrations/post-run-lambda",
+          "integrations/docent"
+        ]
+      },
+      {
+        "group": "Python SDK",
+        "pages": [
+          "sdk/quickstart",
+          "sdk/runs",
+          "sdk/resources",
+          "sdk/errors"
+        ]
+      },
+      {
+        "group": "CLI reference",
+        "pages": {
+          "$ref": "reference/cli/navigation.json"
+        }
+      },
+      {
+        "group": "Python SDK reference",
+        "pages": {
+          "$ref": "reference/sdk/navigation.json"
+        }
+      },
+      {
+        "group": "Self-hosting",
+        "pages": [
+          "self-hosting/infrastructure",
+          "self-hosting/aws-permissions"
+        ]
+      }
+    ]
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/vals-ai/Valkyrie"
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/vals-ai/Valkyrie"
+    }
+  }
+}

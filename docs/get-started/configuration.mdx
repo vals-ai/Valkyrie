@@ -1,0 +1,53 @@
+---
+title: Configure the CLI
+description: Manage Valkyrie credentials, endpoints, and sandbox providers.
+---
+
+The CLI stores configuration in `~/.config/valkyrie/valkyrie.yaml`.
+
+## Initialize configuration
+
+```bash
+valkyrie config init
+```
+
+Initialization selects a [hosting mode](/get-started/hosting) and collects its required AWS and tracker credentials.
+
+## Set or remove a value
+
+```bash
+valkyrie config set <KEY> <VALUE>
+```
+
+```bash
+valkyrie config remove <KEY>
+```
+
+Use `config set api_key` only for the Vals API key used by hosted tracker authentication. Benchmark-service credentials use the separate [authentication commands](/benchmarks/authentication).
+
+## Configure sandbox providers
+
+Map a provider name to an AWS Secrets Manager secret:
+
+```bash
+valkyrie config provider set daytona DaytonaSecrets
+```
+
+The first configured provider becomes the default. Change it explicitly with:
+
+```bash
+valkyrie config provider default daytona
+```
+
+List or remove provider mappings with:
+
+```bash
+valkyrie config provider list
+valkyrie config provider remove <name>
+```
+
+Select another configured provider for one run with `valkyrie run start --provider <name>`. See [Configure sandbox providers](/get-started/sandbox-providers) for the Daytona secret shape.
+
+## Configure benchmark services
+
+Custom benchmark endpoints and credentials use `config service` and `config auth`. See [Custom benchmark services](/benchmarks/custom-services) and [Benchmark authentication](/benchmarks/authentication).

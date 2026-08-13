@@ -1,0 +1,62 @@
+---
+title: Results and outputs
+description: Download scores, task artifacts, or a specific run path.
+---
+
+Valkyrie distinguishes evaluated results from the files produced by an agent.
+
+<Panel>
+<CodeGroup>
+
+```bash CLI
+valkyrie run results <run-id> --path ./results.json
+```
+
+```python Python SDK
+results = await client.runs.results(run_id)
+```
+
+</CodeGroup>
+</Panel>
+
+## Download results
+
+Without `--path`, the CLI writes `./results-<run-id>.json`.
+
+Recompute the score over a task subset:
+
+```bash
+valkyrie run results <run-id> --task-ids task_1,task_2
+valkyrie run results <run-id> --task-ids-file https://example.com/subset.txt
+```
+
+| Option | Purpose |
+| --- | --- |
+| `--path` | Local results path |
+| `--s3` | Upload results to S3 instead of downloading |
+| `--task-ids` | Recompute `final_score` for comma-separated task IDs |
+| `--task-ids-file` | Load task IDs from a local file or HTTP(S) URL |
+
+<Warning>
+  Combining `--s3` with a task subset overwrites the canonical S3 result key with that subset view. Run the command again without filters to restore the full result.
+</Warning>
+
+## Download all task outputs
+
+```bash
+valkyrie run outputs <run-id> --output-dir ./outputs
+```
+
+Select specific tasks with `--task-ids`:
+
+```bash
+valkyrie run outputs <run-id> --task-ids astropy__astropy-7606,django__django-10880
+```
+
+## Download one path
+
+```bash
+valkyrie run output <run-id> [subpath] --output-dir ./output-dir
+```
+
+`subpath` can identify a file or directory inside the run's benchmark prefix. The output directory defaults to `./<run-id>`.

@@ -1,0 +1,70 @@
+[
+  "reference/cli/index",
+  {
+    "group": "Run",
+    "pages": [
+      "reference/cli/run/analyze",
+      "reference/cli/run/errors",
+      "reference/cli/run/fetch",
+      "reference/cli/run/list",
+      "reference/cli/run/output",
+      "reference/cli/run/outputs",
+      "reference/cli/run/results",
+      "reference/cli/run/resume",
+      "reference/cli/run/retry",
+      "reference/cli/run/start",
+      "reference/cli/run/status",
+      "reference/cli/run/stop",
+      "reference/cli/run/update"
+    ]
+  },
+  {
+    "group": "Agent",
+    "pages": [
+      "reference/cli/agent/install",
+      "reference/cli/agent/push",
+      "reference/cli/agent/remove",
+      "reference/cli/agent/download",
+      "reference/cli/agent/list"
+    ]
+  },
+  {
+    "group": "Benchmark",
+    "pages": [
+      "reference/cli/benchmark/tasks"
+    ]
+  },
+  {
+    "group": "Config",
+    "pages": [
+      {
+        "group": "Auth",
+        "pages": [
+          "reference/cli/config/auth/set",
+          "reference/cli/config/auth/remove",
+          "reference/cli/config/auth/list"
+        ]
+      },
+      "reference/cli/config/init",
+      "reference/cli/config/set",
+      "reference/cli/config/remove",
+      {
+        "group": "Provider",
+        "pages": [
+          "reference/cli/config/provider/set",
+          "reference/cli/config/provider/default",
+          "reference/cli/config/provider/remove",
+          "reference/cli/config/provider/list"
+        ]
+      },
+      {
+        "group": "Service",
+        "pages": [
+          "reference/cli/config/service/set",
+          "reference/cli/config/service/remove",
+          "reference/cli/config/service/list"
+        ]
+      }
+    ]
+  }
+]

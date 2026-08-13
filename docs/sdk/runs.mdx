@@ -1,0 +1,88 @@
+---
+title: Manage runs with Python
+description: Start, inspect, stream, recover, and download Valkyrie runs.
+---
+
+## Start a run
+
+Use an uploaded agent name or an `AgentContractRequest`:
+
+```python
+run = await client.runs.start(
+    agent="sweagent",
+    benchmark="swebench",
+    model="anthropic/claude-sonnet-4-6",
+    concurrency=10,
+    dataset="default",
+    label="nightly-swebench",
+)
+```
+
+## Fetch or stream progress
+
+```python
+current = await client.runs.fetch(run.benchmark_id)
+
+async for update in client.runs.stream(run.benchmark_id):
+    print(update.details.status)
+```
+
+## List, score, and recover runs
+
+```python
+page = await client.runs.list()
+results = await client.runs.results(run.benchmark_id)
+await client.runs.stop(run.benchmark_id)
+await client.runs.resume(run.benchmark_id, concurrency=20)
+await client.runs.retry(
+    run.benchmark_id,
+    task_ids=["task-1"],
+    benchmark_url="https://new-benchmark.example",
+)
+```
+
+Use `benchmark_url` when a benchmark service does not have a stable URL.
+
+Fetch stored launch metadata or test whether canonical S3 results exist:
+
+```python
+metadata = await client.runs.metadata(run.benchmark_id)
+exists = await client.runs.results_exist(run.benchmark_id)
+```
+
+## Analyze a completed run
+
+Uncached analysis requires the analyzer Lambda name from the agent contract:
+
+```python
+async for event in client.runs.analyze(
+    run.benchmark_id,
+    lambda_function="my-agent-analyzer",
+):
+    print(event.event, event.data)
+```
+
+## Stream run outputs
+
+Stream the tar archive without loading it all into memory:
+
+```python
+from pathlib import Path
+
+with Path("run-outputs.tar").open("wb") as archive:
+    async for chunk in client.runs.stream_outputs(run.benchmark_id):
+        archive.write(chunk)
+```
+
+## Executor release provenance
+
+Run responses expose the initial and current executor-release identity:
+
+| Field | Meaning |
+| --- | --- |
+| `executor_release_id` | Immutable release selected at initial admission |
+| `current_execution_release_id` | Release that currently owns execution; a whole-run terminal retry or resume can change it |
+| `executor_artifact_digest` | Immutable digest of the initial release artifact |
+| `executor_protocol_version` | Immutable protocol version of the initial release |
+
+Pre-migration runs can return `null` for these fields. The metadata endpoint also exposes the initial `executor_artifact_uri`. A per-dispatch snapshot identifies the exact artifact used by each invocation.

@@ -1,0 +1,92 @@
+---
+title: Self-hosting infrastructure
+description: Review the AWS architecture and deployment boundaries for self-hosted Valkyrie.
+---
+
+Valkyrie includes an AWS CDK application under `infra/`. It provisions the tracker, executor, storage, networking, and monitoring resources used by the benchmark platform.
+
+## Architecture
+
+- **Shared stack**: VPC, ECS cluster, service discovery, benchmark storage, and Redis
+- **Tracker stack**: public API, load balancer, and PostgreSQL
+- **Executor stack**: stable ExecutorHost, executor release storage, release control, and retained worker logs
+- **Monitoring stack**: tracker, load balancer, database, and Redis alarms
+
+The Python construct is named `ExecutorStack`; its physical CloudFormation name remains `WorkerStack` so existing deployments update retained resources in place.
+
+## Prerequisites
+
+- AWS CLI credentials for the deployment account
+- Python 3.12
+- [uv](https://docs.astral.sh/uv/)
+- AWS CDK CLI
+- A bootstrapped CDK deployment account
+
+Install the CDK CLI and locked Python dependencies:
+
+```bash
+brew install cdk
+make install
+```
+
+## Review before deployment
+
+The checked-in CDK application contains Vals deployment defaults. A self-hoster must review and replace or override these values before synthesis:
+
+- Override the `PRODUCTION_ACCOUNT_ID` default in `infra/Makefile` with the target 12-digit AWS account ID.
+- Replace `TRACKER_DOMAIN` in `infra/constants.py` and the `vals.ai` hosted-zone lookup in `infra/shared.py` with a domain and Route 53 zone owned by the deployment account.
+- Replace the globally unique `S3_BUCKET_NAME` in `infra/constants.py`.
+- Create or replace the production Sentry secret named `valkyrie/sentry-dsn` in `infra/tracker_stack.py`.
+- Keep `AUTH_REQUIRED=false` for self-hosted mode. If authentication is enabled, replace the checked-in Descope management-secret name and supply `DESCOPE_PROJECT_ID`.
+
+The target guard currently accepts only `us-east-1`. Supporting another Region requires changing `DEPLOYMENT_REGION` in `infra/deployment_target.py` and reviewing Region-specific infrastructure.
+
+Run these credentialed templates from `infra/`. Replace the angle-bracket placeholders before running them. First inspect all stack changes:
+
+```bash
+make plan \
+  STAGE=prod \
+  SCOPE=all \
+  AWS_REGION=us-east-1 \
+  PRODUCTION_ACCOUNT_ID=<12-digit-aws-account-id> \
+  PROFILE=<aws-profile>
+```
+
+The supported scopes are `shared`, `tracker`, `executor`, `monitoring`, `core`, and `all`.
+
+Deploy one CDK scope only after reviewing the plan:
+
+```bash
+make deploy \
+  STAGE=prod \
+  SCOPE=shared \
+  AWS_REGION=us-east-1 \
+  PRODUCTION_ACCOUNT_ID=<12-digit-aws-account-id> \
+  PROFILE=<aws-profile>
+```
+
+<Warning>
+  `make deploy` mutates the selected AWS account. It performs a CDK deployment only; it does not build, upload, or activate an executor release.
+</Warning>
+
+## Benchmark catalog
+
+Set `BENCHMARK_CATALOG_URL` on tracker-service so `valkyrie config service list` can show benchmarks from a catalog API:
+
+```bash
+export BENCHMARK_CATALOG_URL=https://<catalog-api-host>
+```
+
+## Sandbox cleanup
+
+The production infrastructure includes an hourly cleanup Lambda. The schedule remains disabled unless `SANDBOX_CLEANUP_ENABLED` is exactly `true`.
+
+The cleanup provider must support creation-time-filtered inventory metadata. Daytona is currently supported and uses `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET` from the configured Secrets Manager secret.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SANDBOX_CLEANUP_ENABLED` | `false` | Enables the hourly schedule |
+| `SANDBOX_CLEANUP_PROVIDER` | `daytona` | Selects a cleanup-compatible provider |
+| `SANDBOX_CLEANUP_SECRET_NAME` | `AgenticHarnessSecrets` | Selects the provider-credentials secret |
+
+Sandboxes strictly older than 48 hours are deleted unless their exact `clean-up` label is `false` after trimming and case-folding. Scheduler delivery and asynchronous Lambda failures go to an encrypted dead-letter queue.

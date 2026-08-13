@@ -1,0 +1,81 @@
+---
+title: Start a run
+description: Run an agent against a benchmark dataset.
+---
+
+Start a benchmark with an installed agent.
+
+<Panel>
+<CodeGroup>
+
+```bash CLI
+valkyrie run start --agent sweagent --benchmark swebench
+```
+
+```python Python SDK
+run = await client.runs.start(
+    agent="sweagent",
+    benchmark="swebench",
+)
+```
+
+</CodeGroup>
+</Panel>
+
+## Configure the run
+
+```bash
+valkyrie run start \
+  --agent sweagent \
+  --benchmark swebench \
+  --model anthropic/claude-sonnet-4-6 \
+  --concurrency 10 \
+  --dataset default \
+  -s ANTHROPIC_API_KEY AnthropicApiKey \
+  -k temperature 1 \
+  --slice "0:10" \
+  --label swebench-sweagent
+```
+
+`-s` maps an environment variable to an AWS Secrets Manager secret name. It never accepts the raw secret value. CLI secret mappings override contract defaults for the same environment variable.
+
+| Option | Purpose |
+| --- | --- |
+| `--agent` | Installed agent name or local agent directory |
+| `--benchmark` | Benchmark-service name |
+| `--model` | Model key passed through the agent contract |
+| `--concurrency` | Concurrent sandbox tasks; defaults to 5 |
+| `-n`, `--count` | Independent runs to start; maximum 10 |
+| `-s`, `--secret` | Repeatable `ENV_VAR aws_secret_name` pair |
+| `-k`, `--kwarg` | Repeatable agent-contract parameter pair |
+| `--provider` | Configured sandbox-provider name for this run |
+| `--lambda` | Lambda function to invoke after completion |
+| `--task-ids` | Comma-separated task IDs |
+| `--task-ids-file` | Local path or HTTP(S) URL with one task ID per line |
+| `--slice` | Dataset slice in `start:stop:step` form |
+| `--dataset` | Dataset variant; defaults to `default` |
+| `-l`, `--label` | One run label |
+| `-H`, `--header` | Repeatable benchmark-service header pair |
+| `-i`, `--interval` | Repeatable Slack notification threshold |
+| `--ignore-custom-services`, `--ics` | Ignore configured custom benchmark services |
+| `--connect` | Stream updates after the run starts |
+
+## Stream immediately
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench --connect
+```
+
+## Start repeated runs
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench --count 3
+```
+
+Start requests are sent sequentially. Accepted runs execute independently and may overlap. `--connect` is rejected when `count` is greater than 1.
+
+<Warning>
+  Approximate simultaneous task pressure and cost can scale with `count × concurrency`.
+</Warning>
+
+Starts are fail-fast: after one request fails, the CLI does not attempt later requests. A transport failure can leave the latest request's outcome unknown; verify with `valkyrie run list`.

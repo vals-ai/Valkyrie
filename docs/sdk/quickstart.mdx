@@ -1,0 +1,51 @@
+---
+title: Python SDK quickstart
+description: Configure the async Valkyrie client and list runs from Python.
+---
+
+The `valkyrie-sdk` package provides an async Python client for run management and hosted resource inspection. It requires Python 3.12 or newer and does not install the CLI or tracker service.
+
+## Install
+
+```bash
+pip install valkyrie-sdk
+```
+
+## Configure
+
+The SDK reads the same configuration as the CLI. Run `valkyrie config init` first, or pass a tracker URL directly.
+
+```python
+import asyncio
+
+from valkyrie.sdk import ValkyrieClient
+
+
+async def main() -> None:
+    async with ValkyrieClient.from_config() as client:
+        runs = await client.runs.list()
+        print(runs)
+
+
+asyncio.run(main())
+```
+
+Pass `base_url` to `ValkyrieClient` for a self-hosted tracker. Otherwise, the SDK uses `TRACKER_SERVICE_URL` or the hosted tracker URL.
+
+<Warning>
+  The SDK sends AWS credentials through `X-Harness-*` headers. Connect only to a trusted tracker and use HTTPS outside local development.
+</Warning>
+
+## Examples
+
+The repository includes complete scripts for common workflows:
+
+- [`run_lifecycle.py`](https://github.com/vals-ai/Valkyrie/blob/prod/docs/sdk/examples/run_lifecycle.py) starts, streams, and retrieves a run.
+- [`manage_run.py`](https://github.com/vals-ai/Valkyrie/blob/prod/docs/sdk/examples/manage_run.py) stops, resumes, or retries a run.
+
+From a Valkyrie checkout:
+
+```bash
+python docs/sdk/examples/run_lifecycle.py --help
+python docs/sdk/examples/manage_run.py --help
+```

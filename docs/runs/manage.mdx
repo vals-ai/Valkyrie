@@ -1,0 +1,90 @@
+---
+title: Manage a run
+description: Update concurrency, stop work, and resume or retry tasks.
+---
+
+Resume pending work with an optional concurrency override.
+
+<Panel>
+<CodeGroup>
+
+```bash CLI
+valkyrie run resume <run-id> --concurrency 20
+```
+
+```python Python SDK
+await client.runs.resume(run_id, concurrency=20)
+```
+
+</CodeGroup>
+</Panel>
+
+## Update concurrency
+
+```bash
+valkyrie run update <run-id> --concurrency 20
+```
+
+The tracker applies the persisted limit when it next refreshes the run. Increasing it admits more tasks. Decreasing it does not cancel in-flight work and pauses new admissions until usage falls below the limit.
+
+The value must be positive. Completed, stopped, and failed runs cannot be updated. The limit is enforced independently by each `process_benchmark` executor, so overlapping executors can temporarily exceed the persisted value.
+
+## Stop work
+
+Stop a whole run:
+
+```bash
+valkyrie run stop <run-id>
+```
+
+Stop selected tasks:
+
+```bash
+valkyrie run stop <run-id> --task-ids task-a,task-b
+valkyrie run stop <run-id> --task-ids-file ./task-ids.txt
+```
+
+Force-stop in-flight work and remove its sandboxes:
+
+```bash
+valkyrie run stop <run-id> --force
+valkyrie run stop <run-id> --task-ids task-a,task-b --force
+```
+
+## Resume or retry
+
+The primary example above resumes pending tasks. Retry errored tasks with:
+
+```bash
+valkyrie run retry <run-id>
+```
+
+Common overrides:
+
+```bash
+valkyrie run retry <run-id> --benchmark-url https://new-benchmark.example
+valkyrie run resume <run-id> --connect
+valkyrie run retry <run-id> --connect
+valkyrie run resume <run-id> -s ANTHROPIC_API_KEY NewAnthropicApiKey
+```
+
+| Option | Purpose |
+| --- | --- |
+| `--concurrency` | Override the run concurrency |
+| `-s`, `--secret` | Merge a repeatable secret mapping into the stored contract |
+| `--task-ids` | Select comma-separated task IDs |
+| `--task-ids-file` | Select IDs from a local file or HTTP(S) URL |
+| `--update-agent`, `-u` | Refresh the frozen agent from its current S3 bundle |
+| `--from-scratch` | Clear stored evaluation resume state for retried tasks |
+| `--benchmark-url` | Replace the benchmark-service URL stored on the run |
+| `--connect` | Stream updates after the request |
+
+For a terminal run, a selected valid task ID without an existing row is created as new `PENDING` work. An in-progress retry rejects selected IDs that do not already exist in `ERROR` state.
+
+## Export benchmark task IDs
+
+```bash
+valkyrie benchmark tasks swebench --dataset default --output tasks.txt
+```
+
+The output path is optional.

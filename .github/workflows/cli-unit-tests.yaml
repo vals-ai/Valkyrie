@@ -25,6 +25,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
 
+      - name: Check generated documentation reference
+        run: make docs-reference-check
+
       - name: Run CLI tests with coverage
         run: make test
 

@@ -1,0 +1,53 @@
+---
+title: Quickstart
+description: Install Valkyrie, configure credentials, and start a benchmark run.
+---
+
+## Prerequisites
+
+- Python 3.12
+- An S3 bucket for benchmark artifacts and agents
+- AWS credentials with the [required permissions](/self-hosting/aws-permissions)
+- A configured [sandbox provider](/get-started/sandbox-providers)
+- A Vals API key when using hosted mode
+
+## Install the CLI
+
+```bash
+uv tool install git+https://github.com/vals-ai/Valkyrie@prod
+```
+
+Both `valkyrie` and `valk` invoke the same CLI.
+
+## Configure Valkyrie
+
+```bash
+valkyrie config init
+```
+
+Choose hosted or self-hosted mode when prompted. See [Choose a hosting mode](/get-started/hosting) for the credentials each mode requires.
+
+## Upload an agent
+
+Push a local agent directory that contains a valid `contract.yaml`:
+
+```bash
+valkyrie agent push ./agents/sweagent --name sweagent
+```
+
+See [Agent contract](/agents/agent-contract) to create a compatible agent.
+
+## Start a run
+
+```bash
+valkyrie run start \
+  --agent sweagent \
+  --benchmark swebench \
+  --model anthropic/claude-sonnet-4-6 \
+  --concurrency 10 \
+  --dataset default \
+  --slice "0:10" \
+  --connect
+```
+
+`--connect` streams progress after the tracker accepts the run. See [Start a run](/runs/start) for task selection, secrets, labels, and repeated runs.

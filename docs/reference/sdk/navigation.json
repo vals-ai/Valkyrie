@@ -1,0 +1,115 @@
+[
+  "reference/sdk/index",
+  "reference/sdk/client",
+  {
+    "group": "RunsResource",
+    "pages": [
+      "reference/sdk/runs/start",
+      "reference/sdk/runs/fetch",
+      "reference/sdk/runs/list",
+      "reference/sdk/runs/stream",
+      "reference/sdk/runs/results",
+      "reference/sdk/runs/metadata",
+      "reference/sdk/runs/results_exist",
+      "reference/sdk/runs/analyze",
+      "reference/sdk/runs/stream_outputs",
+      "reference/sdk/runs/stop",
+      "reference/sdk/runs/resume",
+      "reference/sdk/runs/retry"
+    ]
+  },
+  {
+    "group": "BenchmarksResource",
+    "pages": [
+      "reference/sdk/benchmarks/fetch",
+      "reference/sdk/benchmarks/statuses",
+      "reference/sdk/benchmarks/tasks",
+      "reference/sdk/benchmarks/task",
+      "reference/sdk/benchmarks/artifacts"
+    ]
+  },
+  {
+    "group": "AgentsResource",
+    "pages": [
+      "reference/sdk/agents/list",
+      "reference/sdk/agents/download_url"
+    ]
+  },
+  {
+    "group": "BenchmarkServicesResource",
+    "pages": [
+      "reference/sdk/services/catalog",
+      "reference/sdk/services/list",
+      "reference/sdk/services/task_ids"
+    ]
+  },
+  {
+    "group": "Types",
+    "pages": [
+      {
+        "group": "Models",
+        "pages": [
+          "reference/sdk/models/index",
+          {
+            "group": "Agents",
+            "pages": [
+              "reference/sdk/models/agents/agent-contract-request",
+              "reference/sdk/models/agents/agent-download-url-response",
+              "reference/sdk/models/agents/agent-entry",
+              "reference/sdk/models/agents/agents-response"
+            ]
+          },
+          {
+            "group": "Runs",
+            "pages": [
+              "reference/sdk/models/runs/analyze-event",
+              "reference/sdk/models/runs/benchmark-status",
+              "reference/sdk/models/runs/fetch-benchmark-response",
+              "reference/sdk/models/runs/fetch-benchmark-metadata-response",
+              "reference/sdk/models/runs/fetch-benchmarks-request",
+              "reference/sdk/models/runs/fetch-benchmarks-response",
+              "reference/sdk/models/runs/final-view-response",
+              "reference/sdk/models/runs/order",
+              "reference/sdk/models/runs/retry-mode",
+              "reference/sdk/models/runs/retry-or-resume-benchmark-response",
+              "reference/sdk/models/runs/results-exist-response",
+              "reference/sdk/models/runs/s3-upload-results-response",
+              "reference/sdk/models/runs/start-benchmark-response",
+              "reference/sdk/models/runs/stop-benchmark-response",
+              "reference/sdk/models/runs/task-status"
+            ]
+          },
+          {
+            "group": "Benchmarks",
+            "pages": [
+              "reference/sdk/models/benchmarks/benchmark-status-entry",
+              "reference/sdk/models/benchmarks/benchmark-status-response",
+              "reference/sdk/models/benchmarks/fetch-tasks-request",
+              "reference/sdk/models/benchmarks/single-benchmark-response",
+              "reference/sdk/models/benchmarks/single-task-response",
+              "reference/sdk/models/benchmarks/task-artifacts-response",
+              "reference/sdk/models/benchmarks/tasks-response",
+              "reference/sdk/models/benchmarks/task-summary"
+            ]
+          },
+          {
+            "group": "Services",
+            "pages": [
+              "reference/sdk/models/services/benchmark-service-catalog-response",
+              "reference/sdk/models/services/benchmark-service-entry",
+              "reference/sdk/models/services/benchmark-service-health",
+              "reference/sdk/models/services/benchmark-services-response"
+            ]
+          },
+          {
+            "group": "Config",
+            "pages": [
+              "reference/sdk/models/config/valkyrie-config"
+            ]
+          }
+        ]
+      },
+      "reference/sdk/errors"
+    ]
+  }
+]

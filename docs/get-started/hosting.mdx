@@ -1,0 +1,58 @@
+---
+title: Choose a hosting mode
+description: Compare hosted and self-hosted Valkyrie deployments.
+---
+
+Valkyrie supports hosted and self-hosted modes. Both modes use your AWS credentials and storage. Hosted mode adds Vals API key authentication for organization isolation.
+
+## Hosted mode
+
+Hosted mode uses Vals-managed compute infrastructure with your AWS storage.
+
+### Requirements
+
+- A Vals API key provided by Vals
+- AWS credentials with the [required permissions](/self-hosting/aws-permissions)
+- An existing S3 bucket for benchmark artifacts and agents
+- A [sandbox-provider secret](/get-started/sandbox-providers)
+
+Run configuration and choose **hosted**:
+
+```bash
+valkyrie config init
+```
+
+The CLI validates the Vals API key, configures the organization, and collects the AWS settings. It sends the Vals API key with tracker requests and sends AWS credentials through `X-Harness-*` headers.
+
+Set a Vals API key directly when needed:
+
+```bash
+valkyrie config set api_key <your-vals-api-key>
+```
+
+Contact `contact@vals.ai` for hosted access.
+
+## Self-hosted mode
+
+Self-hosted mode uses your tracker service and AWS infrastructure.
+
+### Requirements
+
+- A deployed tracker service
+- AWS credentials with the [required permissions](/self-hosting/aws-permissions)
+- An existing S3 bucket for benchmark artifacts and agents
+- A [sandbox-provider secret](/get-started/sandbox-providers)
+
+Point the CLI at your tracker before configuration:
+
+```bash
+export TRACKER_SERVICE_URL=https://your-tracker.example.com
+```
+
+Then run configuration and choose **self-hosted**:
+
+```bash
+valkyrie config init
+```
+
+Self-hosted mode does not use a Vals API key or Descope authentication. The tracker assigns data to its default organization. Review the [infrastructure guide](/self-hosting/infrastructure) before deploying the included AWS CDK application.

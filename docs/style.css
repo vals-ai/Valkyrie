@@ -1,0 +1,15 @@
+.panel pre,
+.panel pre code {
+  max-width: 100%;
+  overflow-wrap: anywhere !important;
+  white-space: pre-wrap !important;
+  word-break: break-word;
+}
+
+.panel [role="tablist"] {
+  flex-wrap: wrap;
+}
+
+.panel [class*="base-ui-disable-scrollbar"]:has([role="tablist"]) {
+  overflow-x: visible !important;
+}

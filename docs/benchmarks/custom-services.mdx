@@ -1,0 +1,32 @@
+---
+title: Custom benchmark services
+description: Connect Valkyrie to a benchmark service endpoint.
+---
+
+A benchmark service supplies tasks and evaluates run outputs. A custom service overrides a built-in service with the same name.
+
+## Register an endpoint
+
+```bash
+valkyrie config service set swebench https://my-tunnel.ngrok.io
+```
+
+The tracker must be able to reach the endpoint. Local services generally require a reverse tunnel; see the [benchmark-service reverse-tunnel guide](https://github.com/vals-ai/create-benchmark-service?tab=readme-ov-file#reverse-tunnel-setup).
+
+## List custom services
+
+```bash
+valkyrie config service list
+```
+
+The interactive list supports `[h]` for previous, `[l]` for next, and `[q]` to quit.
+
+## Remove a service
+
+```bash
+valkyrie config service remove swebench
+```
+
+## Build a service
+
+Use the public [create-benchmark-service](https://github.com/vals-ai/create-benchmark-service) utilities to implement a compatible service.
