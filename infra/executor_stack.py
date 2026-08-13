@@ -24,6 +24,7 @@ from aws_cdk import (
     aws_ssm,
 )
 from aws_cdk.aws_ecr_assets import Platform
+from benchmark_storage import grant_benchmark_result_access, runtime_s3_environment
 from constants import (
     DOCKER_ASSET_EXCLUDES,
     EXECUTOR_HOST_LOG_GROUP_NAME,
@@ -120,6 +121,7 @@ class ExecutorStack(Stack):
         shared_env = {
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket_name,
+            **runtime_s3_environment(),
             "ENVIRONMENT": stage_config.runtime_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
@@ -153,6 +155,7 @@ class ExecutorStack(Stack):
             memory_limit_mib=stage_config.worker.memory_mib,
             runtime_platform=_ARM64_PLATFORM,
         )
+        grant_benchmark_result_access(executor_task_def, bucket_name=bucket_name)
         executor_task_def.add_container(
             "ExecutorHostContainer",
             image=executor_host_image,

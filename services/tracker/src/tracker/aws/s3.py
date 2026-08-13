@@ -1,5 +1,6 @@
 """S3 upload utilities for the tracker service."""
 
+import os
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Iterable
 from contextlib import suppress
 from datetime import datetime
@@ -30,6 +31,9 @@ _CLIENT_CONFIG = Config(max_pool_connections=200, retries={"mode": "standard"})
 # S3 multipart uploads require every part except the last to be at least 5 MiB.
 _MULTIPART_PART_BYTES = 8 * 1024 * 1024
 
+_RUNTIME_S3_CREDENTIALS_ENV = "VALKYRIE_USE_RUNTIME_S3_CREDENTIALS"
+_RUNTIME_S3_BUCKET_ENV = "AWS_S3_BUCKET"
+
 
 @lru_cache(maxsize=32)
 def _s3_session(aws: "AWSCredentials") -> aioboto3.Session:
@@ -40,6 +44,38 @@ def _s3_session(aws: "AWSCredentials") -> aioboto3.Session:
         aws_session_token=aws.aws_session_token,
         region_name=aws.aws_default_region,
     )
+
+
+@lru_cache(maxsize=8)
+def _runtime_s3_session(region: str) -> aioboto3.Session:
+    """Session backed by the AWS default chain, including refreshable ECS credentials."""
+    return aioboto3.Session(region_name=region)
+
+
+def _uses_runtime_credentials(s3_bucket: str, s3_key: str) -> bool:
+    """Select the workload role only for this deployment's benchmark-result namespace.
+
+    Hosted Valkyrie can finish a task after the operator's temporary credentials
+    expire. The workload role is intentionally confined to the configured runtime
+    bucket and ``benchmarks/`` prefix; agents and external buckets retain the
+    caller-credential behavior.
+    """
+    return (
+        os.getenv(_RUNTIME_S3_CREDENTIALS_ENV, "").lower() == "true"
+        and bool(runtime_bucket := os.getenv(_RUNTIME_S3_BUCKET_ENV, ""))
+        and s3_bucket == runtime_bucket
+        and (s3_key == S3_BENCHMARKS_PREFIX or s3_key.startswith(f"{S3_BENCHMARKS_PREFIX}/"))
+    )
+
+
+def _s3_client_for_object(aws: "AWSCredentials", s3_bucket: str, s3_key: str) -> Any:
+    """Open an S3 client using the safe credential source for one object/prefix."""
+    session = (
+        _runtime_s3_session(aws.aws_default_region)
+        if _uses_runtime_credentials(s3_bucket, s3_key)
+        else _s3_session(aws)
+    )
+    return session.client("s3", config=_CLIENT_CONFIG)  # pyright: ignore[reportUnknownMemberType]
 
 
 def s3_client(aws: "AWSCredentials") -> Any:
@@ -93,7 +129,7 @@ async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", 
     Raises:
         S3Error: If upload fails due to AWS errors or network issues
     """
-    async with s3_client(aws) as client:
+    async with _s3_client_for_object(aws, s3_bucket, s3_key) as client:
         await client.put_object(Bucket=s3_bucket, Key=s3_key, Body=file_content)
 
 
@@ -123,7 +159,7 @@ async def upload_stream_to_s3(
         S3Error: If upload fails due to AWS errors or network issues
     """
     total_bytes = 0
-    async with s3_client(aws) as client:
+    async with _s3_client_for_object(aws, s3_bucket, s3_key) as client:
         multipart = await client.create_multipart_upload(Bucket=s3_bucket, Key=s3_key)
         upload_id = multipart["UploadId"]
         try:
@@ -178,7 +214,7 @@ async def download_from_s3(s3_key: str, aws: "AWSCredentials", s3_bucket: str) -
     Raises:
         S3Error: If download fails due to AWS errors, network issues, or file not found
     """
-    async with s3_client(aws) as client:
+    async with _s3_client_for_object(aws, s3_bucket, s3_key) as client:
         response = await client.get_object(Bucket=s3_bucket, Key=s3_key)
         async with response["Body"] as stream:
             return await stream.read()
@@ -194,6 +230,13 @@ async def _as_async_iter(keys: AsyncIterable[str] | Iterable[str]) -> AsyncItera
             yield key
 
 
+async def _prepend_async(first: str, remaining: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Yield one consumed value before the rest of an async iterator."""
+    yield first
+    async for key in remaining:
+        yield key
+
+
 async def download_many_from_s3(
     s3_keys: AsyncIterable[str] | Iterable[str], aws: "AWSCredentials", s3_bucket: str
 ) -> AsyncIterator[tuple[str, bytes]]:
@@ -205,8 +248,14 @@ async def download_many_from_s3(
     each object is read fully into memory one at a time, so peak memory is
     bounded by the largest single object rather than the whole set.
     """
-    async with s3_client(aws) as client:
-        async for s3_key in _as_async_iter(s3_keys):
+    key_iterator = _as_async_iter(s3_keys)
+    try:
+        first_key = await anext(key_iterator)
+    except StopAsyncIteration:
+        return
+
+    async with _s3_client_for_object(aws, s3_bucket, first_key) as client:
+        async for s3_key in _prepend_async(first_key, key_iterator):
             try:
                 response = await client.get_object(Bucket=s3_bucket, Key=s3_key)
                 async with response["Body"] as stream:
@@ -283,7 +332,7 @@ async def s3_object_exists(s3_key: str, aws: "AWSCredentials", s3_bucket: str) -
     Returns:
         True if the object exists, False otherwise
     """
-    async with s3_client(aws) as client:
+    async with _s3_client_for_object(aws, s3_bucket, s3_key) as client:
         try:
             await client.head_object(Bucket=s3_bucket, Key=s3_key)
             return True
@@ -310,7 +359,7 @@ async def list_s3_objects(prefix: str, aws: "AWSCredentials", s3_bucket: str) ->
         S3Error: If listing fails due to AWS errors or network issues
     """
     try:
-        async with s3_client(aws) as client:
+        async with _s3_client_for_object(aws, s3_bucket, prefix) as client:
             paginator = client.get_paginator("list_objects_v2")
             async for page in paginator.paginate(Bucket=s3_bucket, Prefix=prefix):
                 for s3_object in page.get("Contents", []):
@@ -337,7 +386,7 @@ async def create_presigned_url(s3_key: str, aws: "AWSCredentials", s3_bucket: st
     Raises:
         S3Error: If presigned URL creation fails
     """
-    async with s3_client(aws) as client:
+    async with _s3_client_for_object(aws, s3_bucket, s3_key) as client:
         presigned_url: str = await client.generate_presigned_url(
             "get_object",
             Params={"Bucket": s3_bucket, "Key": s3_key},

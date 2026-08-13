@@ -1,3 +1,5 @@
+# pyright: reportPrivateImportUsage=false, reportPrivateUsage=false
+
 """Unit tests for tracker S3 streaming uploads.
 
 Run: uv run pytest tests/unit/aws/test_s3.py
@@ -50,10 +52,10 @@ class FakeS3Client:
 def fake_client(monkeypatch: pytest.MonkeyPatch) -> FakeS3Client:
     client = FakeS3Client()
 
-    def fake_s3_client(_aws: AWSCredentials) -> FakeS3Client:
+    def fake_s3_client(_aws: AWSCredentials, _bucket: str, _key: str) -> FakeS3Client:
         return client
 
-    monkeypatch.setattr(s3_module, "s3_client", fake_s3_client)
+    monkeypatch.setattr(s3_module, "_s3_client_for_object", fake_s3_client)
     monkeypatch.setattr(s3_module, "_MULTIPART_PART_BYTES", 8)
     return client
 
@@ -107,10 +109,10 @@ class TestUploadStreamToS3:
         """
         client = FakeS3Client(fail_on_part=1)
 
-        def fake_s3_client(_aws: AWSCredentials) -> FakeS3Client:
+        def fake_s3_client(_aws: AWSCredentials, _bucket: str, _key: str) -> FakeS3Client:
             return client
 
-        monkeypatch.setattr(s3_module, "s3_client", fake_s3_client)
+        monkeypatch.setattr(s3_module, "_s3_client_for_object", fake_s3_client)
         monkeypatch.setattr(s3_module, "_MULTIPART_PART_BYTES", 8)
 
         async def chunks() -> AsyncIterator[bytes]:
@@ -144,3 +146,51 @@ class TestUploadStreamToS3:
         assert fake_client.parts == [(1, b"final")]
         assert fake_client.completed_parts is None
         assert fake_client.aborted
+
+
+class TestRuntimeCredentialSelection:
+    """Hosted result objects use refreshable workload credentials within a tight boundary."""
+
+    def test_uses_runtime_credentials_for_configured_benchmark_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VALKYRIE_USE_RUNTIME_S3_CREDENTIALS", "true")
+        monkeypatch.setenv("AWS_S3_BUCKET", "agentic-harness-dev")
+
+        assert s3_module._uses_runtime_credentials("agentic-harness-dev", "benchmarks/run-id/task-id/output.tar.gz")
+        assert s3_module._uses_runtime_credentials("agentic-harness-dev", "benchmarks")
+
+    @pytest.mark.parametrize(
+        ("bucket", "key"),
+        [
+            ("another-bucket", "benchmarks/run-id/output.json"),
+            ("agentic-harness-dev", "agents/terminus.zip"),
+            ("agentic-harness-dev", "benchmark-lookalike/run-id/output.json"),
+        ],
+    )
+    def test_keeps_caller_credentials_outside_runtime_boundary(
+        self, monkeypatch: pytest.MonkeyPatch, bucket: str, key: str
+    ) -> None:
+        monkeypatch.setenv("VALKYRIE_USE_RUNTIME_S3_CREDENTIALS", "true")
+        monkeypatch.setenv("AWS_S3_BUCKET", "agentic-harness-dev")
+
+        assert not s3_module._uses_runtime_credentials(bucket, key)
+
+    def test_runtime_mode_is_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("VALKYRIE_USE_RUNTIME_S3_CREDENTIALS", raising=False)
+        monkeypatch.setenv("AWS_S3_BUCKET", "agentic-harness-dev")
+
+        assert not s3_module._uses_runtime_credentials("agentic-harness-dev", "benchmarks/run-id/output.json")
+
+    def test_runtime_session_does_not_receive_static_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[dict[str, str]] = []
+
+        class Session:
+            def __init__(self, **kwargs: str) -> None:
+                calls.append(kwargs)
+
+        monkeypatch.setattr(s3_module.aioboto3, "Session", Session)
+        s3_module._runtime_s3_session.cache_clear()
+
+        s3_module._runtime_s3_session("us-east-1")
+
+        assert calls == [{"region_name": "us-east-1"}]
+        s3_module._runtime_s3_session.cache_clear()

@@ -143,6 +143,64 @@ def ssm_parameter_id(template: Mapping[str, object], parameter_name: str) -> str
 
 
 class DevAccountInfrastructureTest(unittest.TestCase):
+    def test_hosted_runtimes_use_scoped_refreshable_benchmark_storage(self) -> None:
+        with mock.patch.dict(os.environ, DEV_AUTH_ENV, clear=True):
+            templates = dev_service_templates()
+
+        for template in templates:
+            template.has_resource_properties(
+                "AWS::ECS::TaskDefinition",
+                {
+                    "ContainerDefinitions": assertions.Match.array_with(
+                        [
+                            assertions.Match.object_like(
+                                {
+                                    "Environment": assertions.Match.array_with(
+                                        [
+                                            {
+                                                "Name": "VALKYRIE_USE_RUNTIME_S3_CREDENTIALS",
+                                                "Value": "true",
+                                            }
+                                        ]
+                                    )
+                                }
+                            )
+                        ]
+                    )
+                },
+            )
+
+            statements = [
+                statement
+                for policy in template.find_resources("AWS::IAM::Policy").values()
+                for statement in policy["Properties"]["PolicyDocument"]["Statement"]
+            ]
+            object_statement = next(
+                statement
+                for statement in statements
+                if "benchmarks/*" in json.dumps(statement.get("Resource"))
+                and "s3:PutObject"
+                in ([statement["Action"]] if isinstance(statement["Action"], str) else statement["Action"])
+            )
+            self.assertEqual(
+                set(object_statement["Action"]),
+                {
+                    "s3:AbortMultipartUpload",
+                    "s3:GetObject",
+                    "s3:GetObjectVersion",
+                    "s3:PutObject",
+                },
+            )
+            self.assertNotIn("s3:DeleteObject", object_statement["Action"])
+
+            list_statement = next(
+                statement
+                for statement in statements
+                if statement.get("Action") == "s3:ListBucket"
+                and statement.get("Condition") == {"StringLike": {"s3:prefix": ["benchmarks/*"]}}
+            )
+            self.assertNotEqual(list_statement["Resource"], "*")
+
     def test_dev_buckets_are_owned_and_hardened_by_their_domains(self) -> None:
         _, shared = dev_shared_stack()
         shared_template = assertions.Template.from_stack(shared)
