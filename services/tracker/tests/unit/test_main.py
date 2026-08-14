@@ -1347,6 +1347,7 @@ class TestTrackerAPI:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
     ) -> None:
         example_benchmark_object.custom_benchmark_service = "http://service.internal:8001"
         database_session.add(example_benchmark_object)
@@ -1359,6 +1360,7 @@ class TestTrackerAPI:
                 ("benchmark_id", str(example_benchmark_object.id)),
                 ("task_ids", "task_0"),
             ],
+            headers=harness_headers,
         )
 
         assert response.status_code == 403
@@ -1369,6 +1371,7 @@ class TestTrackerAPI:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
+        harness_headers: dict[str, str],
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.name = "terminal_bench"
@@ -1404,7 +1407,7 @@ class TestTrackerAPI:
         response = client.get(
             "/retrieve-results",
             params=[("benchmark_id", str(benchmark_row.id)), ("task_ids", "task_1")],
-            headers={"X-Api-Key": "tracker-api-key"},
+            headers={**harness_headers, "X-Api-Key": "tracker-api-key"},
         )
 
         assert response.status_code == 200
