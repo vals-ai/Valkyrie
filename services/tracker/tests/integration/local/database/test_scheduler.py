@@ -147,6 +147,16 @@ def _context(
     )
 
 
+def test_queue_context_requires_managed_provider() -> None:
+    provider = Mock(admission_pool_id=None)
+
+    with pytest.raises(ValueError, match="does not support queued admission"):
+        admission.create_queue_context(
+            engine=cast(Engine, Mock()),
+            provider=cast(SandboxProvider, provider),
+        )
+
+
 async def _enter(
     stack: AsyncExitStack,
     context: admission.SandboxQueueContext,
