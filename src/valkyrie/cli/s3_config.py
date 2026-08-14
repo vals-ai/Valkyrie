@@ -17,6 +17,14 @@ def _bucket_name(config: dict[str, Any]) -> str:
     return str(bucket_name)
 
 
+def _region(config: dict[str, Any]) -> str:
+    region = config.get("AWS_DEFAULT_REGION")
+    if not region:
+        raise click.ClickException("AWS_DEFAULT_REGION key not found. Add it using 'valkyrie config set' first.")
+
+    return str(region)
+
+
 @lru_cache(maxsize=4)
 def _aws_runtime(
     access_key_id: str | None,
@@ -64,7 +72,7 @@ def aws_runtime() -> AWSRuntime:
         access_key_id=access_key_id,
         secret_access_key=secret_access_key,
         session_token=str(config.get("AWS_SESSION_TOKEN") or "") or None,
-        region=str(config["AWS_DEFAULT_REGION"]),
+        region=_region(config),
         s3_bucket=_bucket_name(config),
         log_group=str(config.get("LOG_GROUP") or ""),
         log_retention_days=int(config.get("LOG_RETENTION_POLICY") or 30),
