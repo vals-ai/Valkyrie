@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, col, select
 
 import tracker.utils as tracker_utils
+import tracker.utils.run_control as run_control
 from tests.utils import TEST_ORG_ID, random_task_id
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.logging import get_logger
@@ -283,6 +284,104 @@ class TestForceStop:
         _assert_no_task_errors(example_benchmark_object, database_session)
 
         await _wait_until_no_sandboxes(example_benchmark_object, provider)
+
+    async def test_force_stop_waits_for_the_executor_to_release_its_sandboxes(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        live_aws_credentials: AWSCredentials,
+        daytona_secret_name: str,
+        harness_config: HarnessConfig,
+        service_headers: dict[str, str],
+        executor_authority_kwargs: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify force stop lets a live executor tear down its own sandboxes instead of racing it.
+
+        One task, so the only sandbox in play belongs to a task that has finished building. A task
+        still inside `create_sandbox` holds a shielded creation that cannot be released until it
+        completes, which is the case the drain window deliberately does not wait for.
+
+        Test cases:
+        - Force stop runs while the executor is still working and deletes no sandbox itself.
+        - The run still reaches STOPPED with no task errors and no sandboxes left behind.
+        """
+        example_benchmark_object.arguments.slice_str = ":1"
+        example_benchmark_object.arguments.concurrency = 1
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        benchmark_service = example_benchmark_object.benchmark_service(service_headers=service_headers)
+        benchmark_task: Optional[asyncio.Task[None]] = None
+        provider: Optional[SandboxProvider] = None
+        reaped: list[str] = []
+        release_sandbox = run_control.stop_sandbox
+
+        async def record_reaped_sandbox(sandbox: Sandbox, sandbox_provider: SandboxProvider, org: Org) -> str | None:
+            reaped.append(sandbox.name)
+            return await release_sandbox(sandbox, sandbox_provider, org)
+
+        monkeypatch.setattr(run_control, "stop_sandbox", record_reaped_sandbox)
+
+        try:
+            verify_response = await benchmark_service.verify_task_ids(
+                task_ids=example_benchmark_object.arguments.task_ids,
+                slice_str=example_benchmark_object.arguments.slice_str,
+            )
+
+            authority_kwargs = executor_authority_kwargs(example_benchmark_object)
+            benchmark_task = asyncio.create_task(
+                process_benchmark(
+                    start_benchmark_request_json=example_benchmark_object.start_benchmark_request(
+                        harness_config, service_headers=service_headers
+                    ).model_dump(),
+                    benchmark_id_str=str(example_benchmark_object.id),
+                    verified_task_ids=verify_response.task_ids,
+                    **authority_kwargs,
+                )
+            )
+
+            provider_config = fetch_sandbox_provider_config(daytona_secret_name, live_aws_credentials, "daytona")
+            provider = benchmark_service.get_sandbox_provider(provider_config)
+            await _wait_for_running_benchmark(example_benchmark_object, database_session, provider)
+
+            await force_stop_sandboxes(
+                example_benchmark_object,
+                database_session,
+                daytona_secret_name,
+                live_aws_credentials,
+                Org(id=TEST_ORG_ID, name="default"),
+                sandbox_provider="daytona",
+            )
+
+            assert reaped == [], f"Force stop deleted sandboxes the executor still owned: {', '.join(reaped)}"
+
+            await benchmark_task
+            _assert_no_task_errors(example_benchmark_object, database_session)
+
+            database_session.refresh(example_benchmark_object)
+            assert example_benchmark_object.status == BenchmarkStatus.STOPPED
+
+            await _wait_until_no_sandboxes(example_benchmark_object, provider)
+        finally:
+            monkeypatch.setattr(run_control, "stop_sandbox", release_sandbox)
+            if benchmark_task is not None and not benchmark_task.done():
+                benchmark_task.cancel()
+                await asyncio.gather(benchmark_task, return_exceptions=True)
+
+            try:
+                if provider is not None and await _sandboxes_for_benchmark(example_benchmark_object, provider):
+                    await force_stop_sandboxes(
+                        example_benchmark_object,
+                        database_session,
+                        daytona_secret_name,
+                        live_aws_credentials,
+                        Org(id=TEST_ORG_ID, name="default"),
+                        sandbox_provider="daytona",
+                    )
+                    await _wait_until_no_sandboxes(example_benchmark_object, provider)
+            finally:
+                await benchmark_service.close()
 
     async def test_force_stop_end_to_end(
         self,

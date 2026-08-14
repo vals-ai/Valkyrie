@@ -8,6 +8,10 @@ Tracker is the FastAPI control plane. It records release-bound dispatches in Pos
 
 Local Docker Compose starts only Tracker, PostgreSQL, and Redis. It does not run ExecutorHost, create an active executor release, or execute benchmarks. Use a deployed release environment for benchmark execution.
 
+### Benchmark-service authentication
+
+Tracker automatically forwards its inbound Descope API key only when the effective benchmark-service origin exactly matches the hosted origin derived from the benchmark name and Tracker configuration. Custom benchmark-service origins do not receive the Tracker key. They can still use explicit service-owned headers or secret-backed service authentication.
+
 ## Sandbox scheduling
 
 `SANDBOX_QUEUE_ENABLED` is `false` by default. In that mode, runs create sandboxes directly and requests with an
@@ -80,7 +84,7 @@ AWS_SESSION_TOKEN=              # Optional, required when using temporary creden
 # Test infrastructure
 TEST_AWS_S3_BUCKET=             # S3 bucket for agent artifacts (e.g. agentic-harness)
 TEST_LOG_GROUP=                 # CloudWatch log group (e.g. valkyrie-test-log-group)
-TEST_DAYTONA_SECRET_NAME=       # AWS Secrets Manager secret containing Daytona provider config (e.g. AgenticHarnessSecrets)
+TEST_DAYTONA_SECRET_NAME=       # AWS Secrets Manager secret containing Daytona provider config (e.g. YourSandboxProviderSecret)
 
 # Benchmark service
 BENCHMARK_SERVICE_BASE_URL=     # Use the domain of the benchmark service

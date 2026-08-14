@@ -33,11 +33,9 @@ from constants import (
     DEV_SHARED_VPC_ID_PARAMETER,
     ELASTICACHE_NODE_TYPE,
     NAMESPACE,
-    REDIS_PORT,
     RELEASE_TEST_EXECUTOR_HOST_REPOSITORY_NAME,
     RELEASE_TEST_TRACKER_REPOSITORY_NAME,
     S3_BUCKET_NAME,
-    VPC_CIDR,
     stage_parameter_name,
     VPC_MAX_AZS,
     VPC_NAT_GATEWAYS,
@@ -154,18 +152,12 @@ class SharedStack(Stack):
         # Single-node Redis used as the Taskiq message broker, shared by
         # Tracker (producer) and ExecutorHost (consumer).
 
-        redis_sg = aws_ec2.SecurityGroup(
+        self.redis_security_group = aws_ec2.SecurityGroup(
             self,
             "RedisSG",
             vpc=self.vpc,
             description="Security group for ElastiCache Redis",
             allow_all_outbound=False,
-        )
-
-        redis_sg.add_ingress_rule(
-            peer=aws_ec2.Peer.ipv4(VPC_CIDR),
-            connection=aws_ec2.Port.tcp(REDIS_PORT),
-            description="Allow VPC services to connect to Redis",
         )
 
         redis_subnet_group = aws_elasticache.CfnSubnetGroup(
@@ -182,7 +174,7 @@ class SharedStack(Stack):
             engine="redis",
             engine_version="7.1",
             num_cache_nodes=1,
-            vpc_security_group_ids=[redis_sg.security_group_id],
+            vpc_security_group_ids=[self.redis_security_group.security_group_id],
             cache_subnet_group_name=redis_subnet_group.ref,
         )
 

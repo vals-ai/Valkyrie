@@ -60,6 +60,7 @@ from tracker.config import (
     ENVIRONMENT,
     SANDBOX_QUEUE_ENABLED,
     broker,
+    classify_benchmark_service_destination,
     create_benchmark_service_url,
 )
 from tracker.database.models import (
@@ -93,7 +94,7 @@ from tracker.executor.release_control import MaintenanceModeError, ReleaseContro
 from tracker.executor.release_retirement import AutomaticReleaseRetirement
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
-from tracker.outbound_security import validate_service_url_syntax
+from tracker.outbound_security import validate_custom_service_destination, validate_service_url_syntax
 from tracker.scheduler.store import queue_pool_id, try_task_evaluation_transaction_lock
 from tracker.types import (
     AnalyzeBenchmarkRequest,
@@ -358,6 +359,17 @@ async def _resolve_contract_from_s3(request: StartBenchmarkRequest) -> AgentCont
     return resolved
 
 
+def _authorize_custom_benchmark_destination(url: str, org: Org) -> None:
+    try:
+        validate_custom_service_destination(
+            url,
+            org_name=org.name,
+            auth_required=AUTH_REQUIRED,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
 @app.post("/start-benchmark")
 async def start_benchmark(
     http_request: Request,
@@ -381,6 +393,9 @@ async def start_benchmark(
     - 400 Bad Request if parameters are invalid
     - 500 Internal Server Error if benchmark fails to start
     """
+    if request.custom_benchmark_service is not None:
+        _authorize_custom_benchmark_destination(request.custom_benchmark_service, run_starter.org)
+
     # Prefer harness_config from X-Harness-* headers (web FE); fall back to request body (CLI).
     header_harness_config = try_fetch_harness_config(http_request)
     effective_harness_config = header_harness_config or request.harness_config
@@ -405,6 +420,10 @@ async def start_benchmark(
             "service_headers": forward_tracker_api_key(
                 service_headers,
                 http_request.headers.get("x-api-key"),
+                destination=classify_benchmark_service_destination(
+                    request.benchmark_name,
+                    request.custom_benchmark_service,
+                ),
             ),
         }
     )
@@ -456,23 +475,29 @@ async def start_benchmark(
     # Validate benchmark service is reachable + tasks resolve BEFORE creating the DB row,
     # so failed auth / unreachable services don't pollute the benchmark list.
     try:
-        await benchmark_service.health_check()
-    except httpx.ConnectError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Benchmark service '{request.benchmark_name}' is not reachable",
-        ) from exc
+        try:
+            _ = await benchmark_service.health_check()
+        except httpx.ConnectError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Benchmark service '{request.benchmark_name}' is not reachable",
+            ) from exc
 
-    try:
-        verify_response = await benchmark_service.verify_task_ids(
-            task_ids=request.task_ids, slice_str=request.slice_str, dataset=request.dataset
-        )
-    except BenchmarkServiceUnauthenticatedError as exc:
-        logger.warning("Benchmark service authentication failed for %s: %s", request.benchmark_name, exc)
-        raise HTTPException(status_code=502, detail="Benchmark service authentication failed") from exc
-    except Exception as exc:
-        logger.error("Failed to verify task ids for %s", request.benchmark_name, exc_info=True)
-        raise HTTPException(status_code=502, detail="Failed to verify task ids") from exc
+        try:
+            verify_response = await benchmark_service.verify_task_ids(
+                task_ids=request.task_ids, slice_str=request.slice_str, dataset=request.dataset
+            )
+        except BenchmarkServiceUnauthenticatedError as exc:
+            logger.warning("Benchmark service authentication failed for %s: %s", request.benchmark_name, exc)
+            raise HTTPException(status_code=502, detail="Benchmark service authentication failed") from exc
+        except Exception as exc:
+            logger.error("Failed to verify task ids for %s", request.benchmark_name, exc_info=True)
+            raise HTTPException(status_code=502, detail="Failed to verify task ids") from exc
+    finally:
+        try:
+            await benchmark_service.close()
+        except Exception:
+            logger.exception("Failed to close benchmark service client for %s", request.benchmark_name)
 
     benchmark_row = start_benchmark_request_to_benchmark(
         request,
@@ -554,15 +579,25 @@ async def fetch_benchmark_tasks(
     http_request: Request,
     request: FetchBenchmarkTasksRequest,
     harness_config: HarnessConfig = Depends(fetch_harness_config),
-    _org: Org = Depends(get_current_org),
+    org: Org = Depends(get_current_org),
 ) -> VerifyTaskIdsResponse:
     """
     Fetch all task ids for a benchmark dataset.
     """
+    if request.custom_benchmark_service is not None:
+        _authorize_custom_benchmark_destination(request.custom_benchmark_service, org)
+
     try:
         benchmark_service = create_benchmark_service_client(
             url=request.custom_benchmark_service or create_benchmark_service_url(request.benchmark_name),
-            service_headers=forward_tracker_api_key(request.service_headers, http_request.headers.get("x-api-key")),
+            service_headers=forward_tracker_api_key(
+                request.service_headers,
+                http_request.headers.get("x-api-key"),
+                destination=classify_benchmark_service_destination(
+                    request.benchmark_name,
+                    request.custom_benchmark_service,
+                ),
+            ),
         )
         try:
             return await benchmark_service.verify_task_ids(
@@ -746,7 +781,17 @@ async def retrieve_results(
             if task_id in task_ids_set
         }
 
-        effective_service_headers = forward_tracker_api_key(None, http_request.headers.get("x-api-key"))
+        if benchmark_row.custom_benchmark_service is not None:
+            _authorize_custom_benchmark_destination(benchmark_row.custom_benchmark_service, org)
+
+        effective_service_headers = forward_tracker_api_key(
+            None,
+            http_request.headers.get("x-api-key"),
+            destination=classify_benchmark_service_destination(
+                benchmark_row.name,
+                benchmark_row.custom_benchmark_service,
+            ),
+        )
         benchmark_service = benchmark_row.benchmark_service(service_headers=effective_service_headers)
         try:
             resp = await benchmark_service.final_score(
@@ -976,6 +1021,10 @@ async def retry_or_resume_benchmark(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    effective_benchmark_url = benchmark_url if benchmark_url is not None else benchmark_row.custom_benchmark_service
+    if effective_benchmark_url is not None:
+        _authorize_custom_benchmark_destination(effective_benchmark_url, org)
+
     queued_running_recovery = (
         benchmark_row.status == BenchmarkStatus.IN_PROGRESS
         and not retry
@@ -1018,17 +1067,23 @@ async def retry_or_resume_benchmark(
             session.commit()
         return RetryOrResumeBenchmarkResponse(status="success")
 
-    effective_service_headers = forward_tracker_api_key(
-        service_headers,
-        http_request.headers.get("x-api-key"),
-    )
-
     dispatch_id = uuid4()
     pre_action_status: BenchmarkStatus | None = None
     try:
         with session.no_autoflush:
             lock_executor_admission(session)
         benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        effective_benchmark_url = benchmark_url if benchmark_url is not None else benchmark_row.custom_benchmark_service
+        if effective_benchmark_url is not None:
+            _authorize_custom_benchmark_destination(effective_benchmark_url, org)
+        effective_service_headers = forward_tracker_api_key(
+            service_headers,
+            http_request.headers.get("x-api-key"),
+            destination=classify_benchmark_service_destination(
+                benchmark_row.name,
+                effective_benchmark_url,
+            ),
+        )
         if benchmark_row.status == BenchmarkStatus.STOPPING:
             raise HTTPException(
                 status_code=400,

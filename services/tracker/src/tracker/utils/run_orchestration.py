@@ -16,7 +16,7 @@ from sqlmodel import Session, col, desc, func, select
 
 from tracker._lambda import invoke_lambda, lambda_client
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group
-from tracker.config import broker
+from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -35,6 +35,7 @@ from tracker.executor.execution_authority import ExecutionAuthority, lock_execut
 from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
+from tracker.outbound_security import validate_custom_service_destination
 from tracker.scheduler.admission import SandboxQueueContext, create_queue_context, recover_queued_pool
 from tracker.types import (
     FinalViewResponse,
@@ -572,6 +573,13 @@ async def process_benchmark(
                 "Run was interrupted",
                 authority=authority,
             )
+
+    if start_benchmark_request.custom_benchmark_service is not None:
+        validate_custom_service_destination(
+            start_benchmark_request.custom_benchmark_service,
+            org_name=org.name,
+            auth_required=AUTH_REQUIRED,
+        )
 
     if not queued_run:
         sandbox_provider_config = fetch_sandbox_provider_config(
