@@ -150,8 +150,11 @@ class DevAccountInfrastructureTest(unittest.TestCase):
             executor_template = dev_executor_template()
 
         shared_buckets = shared_template.find_resources("AWS::S3::Bucket")
-        self.assertEqual(len(shared_buckets), 1)
-        bucket = next(iter(shared_buckets.values()))
+        bucket = next(
+            bucket
+            for bucket in shared_buckets.values()
+            if bucket["Properties"].get("BucketName") == "agentic-harness-dev"
+        )
         self.assertEqual(bucket["Properties"]["BucketName"], "agentic-harness-dev")
 
         executor_buckets = executor_template.find_resources("AWS::S3::Bucket")

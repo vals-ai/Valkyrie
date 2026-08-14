@@ -4,7 +4,8 @@ AWS CDK infrastructure for the Agentic Harness benchmark platform.
 
 ## Architecture
 
-- **Shared Stack**: VPC, ECS cluster, service discovery, benchmark storage, and Redis
+- **Shared Stack**: VPC, ECS cluster, service discovery, benchmark storage, Redis,
+  and the dev/prod reviewed-public-artifact S3 origin and CloudFront distribution
 - **Tracker Stack**: Public API, load balancer, and PostgreSQL
 - **Executor Stack**: Stable ExecutorHost, executor release storage, sealed release control, and retained Worker logs
 - **Monitoring Stack**: Tracker, load balancer, database, and Redis alarms
@@ -108,6 +109,7 @@ or certificate. Its benchmark-service base is
 `benchmarks.vals.ai`; no separate benchmark-service stack is created. Unlike
 `dev`, the target guard permits `release-test` to be explicitly deployed in the
 production account when coexistence validation requires it.
+It does not create the public-example bucket or CloudFront distribution.
 
 ```bash
 make plan STAGE=release-test SCOPE=all AWS_REGION=us-east-1 \

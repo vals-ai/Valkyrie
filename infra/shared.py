@@ -42,6 +42,7 @@ from constants import (
     get_slack_notification_config,
 )
 from constructs import Construct
+from public_examples import PublicExamples
 from stage import Stage
 
 DEPLOYMENT_STACK_NAMES = ("SharedStack", "TrackerStack", "DriverStack", "WorkerStack", "MonitoringStack")
@@ -123,6 +124,9 @@ class SharedStack(Stack):
             object_ownership=None if self.stage.is_prod else aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
             versioned=None if self.stage.is_prod else True,
         )
+        self.public_examples: PublicExamples | None = None
+        if not self.stage.is_release_test:
+            self.public_examples = PublicExamples(self, "PublicExamples", stage=stage)
 
         self.tracker_repository: aws_ecr.Repository | None = None
         self.executor_host_repository: aws_ecr.Repository | None = None

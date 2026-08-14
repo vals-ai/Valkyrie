@@ -65,6 +65,7 @@ ALB_IDLE_TIMEOUT_SECONDS = 60
 
 # S3
 S3_BUCKET_NAME = "agentic-harness"
+PUBLIC_EXAMPLES_BUCKET_NAME = "vals-public-benchmark-artifacts"
 EXECUTOR_RELEASE_BUCKET_NAME = "valkyrie-executor-releases"
 EXECUTOR_RELEASE_PREFIX = "releases"
 EXECUTOR_RELEASE_ROLE_NAME = "ValkyrieExecutorRelease"
