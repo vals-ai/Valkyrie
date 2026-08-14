@@ -63,6 +63,7 @@ class DriverStack(Stack):
         db_port: str,
         db_credentials: aws_secretsmanager.ISecret,
         redis_url: str,
+        redis_security_group: aws_ec2.ISecurityGroup,
         **kwargs: Any,
     ) -> None:
         super().__init__(scope, id, **kwargs)
@@ -103,6 +104,16 @@ class DriverStack(Stack):
             security_group_name=stage.phys("PackageRDriver"),
             description="No-ingress security group for the release-test Package R driver",
             allow_all_outbound=False,
+        )
+        aws_ec2.CfnSecurityGroupIngress(
+            self,
+            "DriverToRedisIngress",
+            group_id=redis_security_group.security_group_id,
+            source_security_group_id=self.security_group.security_group_id,
+            ip_protocol="tcp",
+            from_port=REDIS_PORT,
+            to_port=REDIS_PORT,
+            description="Allow release-test Driver to connect to Redis",
         )
         self.security_group.add_egress_rule(
             aws_ec2.Peer.ipv4(VPC_CIDR),

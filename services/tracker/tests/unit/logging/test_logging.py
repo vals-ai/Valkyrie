@@ -86,6 +86,27 @@ class TestContextFilter:
             benchmark_id_var.reset(benchmark_token)
             task_id_var.reset(task_token)
 
+    def test_context_filter_preserves_explicit_record_fields(self) -> None:
+        """Fields passed via `extra` survive ambient context, so audit records keep their own identity."""
+        context_filter = ContextFilter()
+        record = _log_record()
+        record.benchmark_id = "bench-from-extra"
+        record.task_id = "task-from-extra"
+
+        request_token = request_id_var.set("req-123")
+        benchmark_token = benchmark_id_var.set("bench-ambient")
+        task_token = task_id_var.set("task-ambient")
+        try:
+            context_filter.filter(record)
+
+            assert record.request_id == "req-123"
+            assert record.benchmark_id == "bench-from-extra"
+            assert record.task_id == "task-from-extra"
+        finally:
+            request_id_var.reset(request_token)
+            benchmark_id_var.reset(benchmark_token)
+            task_id_var.reset(task_token)
+
 
 class TestConfigureLogging:
     """Logging configuration across deployment environments."""

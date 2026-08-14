@@ -409,6 +409,62 @@ class TestTrackerAPI:
         assert response.status_code == 200
         assert response.json() == {"task_ids": ["task_1", "task_2"]}
 
+    async def test_fetch_benchmark_tasks_forwards_tracker_key_only_to_hosted_origin(
+        self,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        observed_headers: list[dict[str, str]] = []
+
+        async def _mock_verify_task_ids(
+            service_client: BenchmarkServiceClient,
+            *_args: Any,
+            **_kwargs: Any,
+        ) -> VerifyTaskIdsResponse:
+            observed_headers.append(dict(getattr(service_client, "_headers")))
+            return VerifyTaskIdsResponse(task_ids=["task_1"])
+
+        monkeypatch.setattr("tracker.config._BENCHMARK_SERVICE_BASE_URL", "benchmarks.vals.ai")
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        for service_url in (
+            "https://swebench.benchmarks.vals.ai:443/path",
+            "https://team.example",
+        ):
+            response = client.post(
+                "/fetch-benchmark-tasks",
+                json={
+                    "benchmark_name": "swebench",
+                    "custom_benchmark_service": service_url,
+                },
+                headers={"X-Api-Key": "tracker-api-key"},
+            )
+            assert response.status_code == 200
+
+        assert observed_headers[0]["X-Descope-Api-Key"] == "tracker-api-key"
+        assert "X-Descope-Api-Key" not in observed_headers[1]
+
+    async def test_fetch_benchmark_tasks_blocks_external_internal_custom_destination(
+        self,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(main_module, "AUTH_REQUIRED", True)
+
+        blocked = client.post(
+            "/fetch-benchmark-tasks",
+            json={
+                "benchmark_name": "swebench",
+                "custom_benchmark_service": "https://benchmarks-dev.vals.ai",
+            },
+        )
+        canonical = client.post(
+            "/fetch-benchmark-tasks",
+            json={"benchmark_name": "swebench"},
+        )
+
+        assert blocked.status_code == 403
+        assert blocked.json() == {"detail": "Custom benchmark destination is not allowed"}
+        assert canonical.status_code == 200
+
     async def test_start_benchmark(
         self,
         contract: AgentContractRequest,
@@ -754,6 +810,8 @@ class TestTrackerAPI:
         async def _mock_health_check(*_args: Any, **_kwargs: Any) -> None:
             raise httpx.ConnectError("Name or service not known")
 
+        close_client = AsyncMock(side_effect=RuntimeError("close failed"))
+        monkeypatch.setattr(BenchmarkServiceClient, "close", close_client)
         monkeypatch.setattr(BenchmarkServiceClient, "health_check", _mock_health_check)
 
         no_raise_client = TestClient(app, raise_server_exceptions=False)
@@ -762,9 +820,15 @@ class TestTrackerAPI:
         assert response.status_code == 502
         expected_detail = "Benchmark service 'swebench' is not reachable"
         assert response.json().get("detail") == expected_detail
+        close_client.assert_awaited_once()
 
+    @pytest.mark.parametrize(
+        "custom_benchmark_service",
+        [None, "https://swebench.benchmarks.vals.ai:443/path"],
+    )
     async def test_start_benchmark_forwards_tracker_api_key_to_benchmark_service(
         self,
+        custom_benchmark_service: str | None,
         contract: AgentContractRequest,
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
@@ -772,12 +836,14 @@ class TestTrackerAPI:
     ) -> None:
         observed_headers: dict[str, str] = {}
 
+        monkeypatch.setattr("tracker.config._BENCHMARK_SERVICE_BASE_URL", "benchmarks.vals.ai")
         request = StartBenchmarkRequest(
             contract=contract,
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,
             harness_config=harness_config,
+            custom_benchmark_service=custom_benchmark_service,
         )
 
         async def _mock_health_check(
@@ -806,6 +872,84 @@ class TestTrackerAPI:
 
         queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
         assert queued_request["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
+
+    async def test_start_benchmark_does_not_forward_tracker_key_to_custom_service(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+        mock_kicker: Any,
+    ) -> None:
+        observed_headers: dict[str, str] = {}
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            harness_config=harness_config,
+            custom_benchmark_service="https://team.example",
+        )
+
+        async def _mock_verify_task_ids(
+            service_client: BenchmarkServiceClient,
+            *_args: Any,
+            **_kwargs: Any,
+        ) -> VerifyTaskIdsResponse:
+            observed_headers.update(getattr(service_client, "_headers"))
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        response = client.post(
+            "/start-benchmark",
+            json=request.model_dump(),
+            headers={"X-Api-Key": "tracker-api-key"},
+        )
+
+        assert response.status_code == 200
+        assert "X-Descope-Api-Key" not in observed_headers
+        queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        assert "X-Descope-Api-Key" not in queued_request["service_headers"]
+
+    async def test_start_benchmark_preserves_custom_service_descope_key(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+        mock_kicker: Any,
+    ) -> None:
+        observed_headers: dict[str, str] = {}
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            harness_config=harness_config,
+            custom_benchmark_service="https://team.example",
+            service_auth_header_name="X-Descope-Api-Key",
+            service_auth_secret_name="TeamBenchmarkKey",
+        )
+
+        async def _mock_verify_task_ids(
+            service_client: BenchmarkServiceClient,
+            *_args: Any,
+            **_kwargs: Any,
+        ) -> VerifyTaskIdsResponse:
+            observed_headers.update(getattr(service_client, "_headers"))
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+            return {"X-Descope-Api-Key": "custom-service-key"}
+
+        monkeypatch.setattr(main_module, "resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        response = client.post(
+            "/start-benchmark",
+            json=request.model_dump(),
+            headers={"X-Api-Key": "tracker-api-key"},
+        )
+
+        assert response.status_code == 200
+        assert observed_headers["X-Descope-Api-Key"] == "custom-service-key"
+        queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        assert queued_request["service_headers"]["X-Descope-Api-Key"] == "custom-service-key"
 
     async def test_start_benchmark_keeps_selected_provider_secret_with_harness_headers(
         self,
@@ -1180,6 +1324,75 @@ class TestTrackerAPI:
         assert observed_results["task_11"] is None
         assert response.json()["final_evaluation"]["final_score"] == 2.0
 
+    async def test_retrieve_results_blocks_external_persisted_internal_destination(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        example_benchmark_object.custom_benchmark_service = "http://service.internal:8001"
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        monkeypatch.setattr(main_module, "AUTH_REQUIRED", True)
+
+        response = client.get(
+            "/retrieve-results",
+            params=[
+                ("benchmark_id", str(example_benchmark_object.id)),
+                ("task_ids", "task_0"),
+            ],
+        )
+
+        assert response.status_code == 403
+        assert response.json() == {"detail": "Custom benchmark destination is not allowed"}
+
+    async def test_retrieve_results_does_not_forward_tracker_key_to_legacy_named_custom_service(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.name = "terminal_bench"
+        benchmark_row.custom_benchmark_service = "https://team.example"
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_1",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        database_session.add_all(
+            [
+                benchmark_row,
+                task_row,
+                EvaluationResult(
+                    org_id=TEST_ORG_ID,
+                    task=task_row.id,
+                    instance_id=str(uuid4()),
+                    result={"finished": True},
+                ),
+            ]
+        )
+        database_session.commit()
+
+        observed_headers: dict[str, str] = {}
+
+        async def _mock_final_score(service_client: BenchmarkServiceClient, **kwargs: Any) -> FinalScoreResponse:
+            observed_headers.update(getattr(service_client, "_headers"))
+            task_ids = list(kwargs["evaluation_results"])
+            return FinalScoreResponse(tasks_evaluated=task_ids, final_score=len(task_ids), metadata={})
+
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
+        response = client.get(
+            "/retrieve-results",
+            params=[("benchmark_id", str(benchmark_row.id)), ("task_ids", "task_1")],
+            headers={"X-Api-Key": "tracker-api-key"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["final_evaluation"]["final_score"] == 1.0
+        assert "X-Descope-Api-Key" not in observed_headers
+
     async def test_benchmark_error_handling(
         self,
         contract: AgentContractRequest,
@@ -1362,6 +1575,27 @@ class TestTrackerAPI:
         response_json = response.json()
         assert response_json.get("total_count") == 1
         assert response_json["benchmarks"][0]["error_message"] == "Dominant task error"
+
+    async def test_start_benchmark_blocks_external_internal_custom_destination(
+        self,
+        contract: AgentContractRequest,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(main_module, "AUTH_REQUIRED", True)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=5,
+            task_ids=None,
+            harness_config=harness_config,
+            custom_benchmark_service="http://10.0.0.1:8001",
+        )
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 403
+        assert response.json() == {"detail": "Custom benchmark destination is not allowed"}
 
     async def test_start_benchmark_accepts_custom_service_from_request(
         self,

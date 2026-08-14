@@ -1,5 +1,7 @@
 """Operations that stop, resume, or retry a run and tear down its sandboxes."""
 
+import asyncio
+import time
 import traceback
 from collections.abc import AsyncGenerator
 from datetime import datetime
@@ -23,7 +25,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.executor.dispatch_control import terminalize_active_dispatches
+from tracker.executor.dispatch_control import active_dispatch_exists, terminalize_active_dispatches
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.sandbox import delete_sandbox
@@ -34,6 +36,10 @@ from tracker.types import (
 from tracker.utils.resources import fetch_benchmark_row, fetch_sandbox_provider_config
 
 logger = get_logger(__name__)
+
+# Bounded by the ALB idle timeout the stop request has to answer within.
+SANDBOX_DRAIN_TIMEOUT_SECONDS = 15.0
+SANDBOX_DRAIN_POLL_SECONDS = 3.0
 
 
 def apply_stop_benchmark(
@@ -75,9 +81,9 @@ async def initiate_stop_benchmark(
         raise TrackerServiceError(f"Unexpected error stopping run {benchmark_row.id}: {str(e)}") from e
 
 
-async def stop_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> str | None:
+async def stop_sandbox(sandbox: Sandbox, provider: SandboxProvider, org: Org) -> str | None:
     try:
-        await delete_sandbox(sandbox, provider)
+        await delete_sandbox(sandbox, provider, initiated_by="force_stop", org_id=str(org.id))
         return None
     except SandboxNotFoundError:
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
@@ -107,6 +113,26 @@ async def sandbox_generator(
                 continue
             seen_sandbox_ids.add(sandbox.id)
             yield sandbox
+
+
+async def drain_sandboxes(
+    benchmark_row: Benchmark,
+    provider: SandboxProvider,
+    task_ids: list[str] | None,
+    timeout_seconds: float,
+) -> list[Sandbox]:
+    """Wait for the executor to delete the sandboxes it owns and return the ones left behind.
+
+    The executor cancels stopped tasks within one monitor poll and then tears down each of
+    its sandboxes. Deleting underneath it instead fails whatever command is still in flight,
+    so give it a bounded window before reaping what remains.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        remaining = [sandbox async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids)]
+        if not remaining or time.monotonic() >= deadline:
+            return remaining
+        await asyncio.sleep(SANDBOX_DRAIN_POLL_SECONDS)
 
 
 async def force_stop_sandboxes(
@@ -142,13 +168,17 @@ async def force_stop_sandboxes(
 
     session.exec(task_update.values(status=TaskStatus.STOPPED))
 
+    # Only a live dispatch can still be working inside these sandboxes.
+    executor_active = active_dispatch_exists(session, benchmark_row.id)
+
     session.commit()
 
     # Iterate through each running sandbox and stop it, collecting error messages
     results: dict[str, str | None] = {}
     try:
-        async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids):
-            result = await stop_sandbox(sandbox, provider)
+        drain_seconds = SANDBOX_DRAIN_TIMEOUT_SECONDS if executor_active else 0.0
+        for sandbox in await drain_sandboxes(benchmark_row, provider, task_ids, drain_seconds):
+            result = await stop_sandbox(sandbox, provider, org)
             results[sandbox.name] = result
     finally:
         await benchmark_service.close()

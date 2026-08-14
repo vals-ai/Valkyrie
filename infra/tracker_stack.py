@@ -36,6 +36,7 @@ from constants import (
     POSTGRES_DB,
     POSTGRES_PORT,
     POSTGRES_USER,
+    REDIS_PORT,
     TRACKER_DOMAIN,
     TRACKER_LOG_GROUP_NAME,
     TRACKER_PORT,
@@ -71,6 +72,7 @@ class TrackerStack(Stack):
         hosted_zone: aws_route53.IHostedZone | None,
         bucket_name: str,
         redis_url: str,
+        redis_security_group: aws_ec2.ISecurityGroup,
         tracker_repository: aws_ecr.IRepository | None = None,
         image_tag: str | None = None,
         **kwargs: Any,
@@ -152,7 +154,10 @@ class TrackerStack(Stack):
             "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="password"),
         }
 
-        sentry_secret_name = "valkyrie/sentry-dsn" if stage.is_prod else os.environ.get("SENTRY_DSN_SECRET_NAME", "")
+        sentry_secret_name = os.environ.get("SENTRY_DSN_SECRET_NAME", "")
+        if stage.is_prod and not sentry_secret_name:
+            raise ValueError("Production deployments require SENTRY_DSN_SECRET_NAME.")
+
         sentry_secrets: dict[str, aws_ecs.Secret] = {}
         if sentry_secret_name:
             sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(
@@ -171,10 +176,13 @@ class TrackerStack(Stack):
 
         descope_secrets: dict[str, aws_ecs.Secret] = {}
         if auth_required.lower() == "true":
+            descope_management_key_secret_name = os.environ.get("DESCOPE_MANAGEMENT_KEY_SECRET_NAME", "")
+            if not descope_management_key_secret_name:
+                raise ValueError("Authenticated deployments require DESCOPE_MANAGEMENT_KEY_SECRET_NAME.")
             descope_management_key_secret = aws_secretsmanager.Secret.from_secret_name_v2(
                 self,
                 "DescopeManagementKeySecret",
-                "devEvalInfraDescopeManagementKey",
+                descope_management_key_secret_name,
             )
             descope_secrets["DESCOPE_MANAGEMENT_KEY"] = aws_ecs.Secret.from_secrets_manager(
                 descope_management_key_secret,
@@ -324,6 +332,18 @@ class TrackerStack(Stack):
 
         # ── Network access ───────────────────────────────────────────────
 
+        tracker_security_group = self.tracker_fargate_service.connections.security_groups[0]
+        aws_ec2.CfnSecurityGroupIngress(
+            self,
+            "TrackerToRedisIngress",
+            group_id=redis_security_group.security_group_id,
+            source_security_group_id=tracker_security_group.security_group_id,
+            ip_protocol="tcp",
+            from_port=REDIS_PORT,
+            to_port=REDIS_PORT,
+            description="Allow Tracker and ExecutorHost to connect to Redis",
+        )
+
         # Allow VPC services (tracker + worker) to reach RDS.
         db_security_group.add_ingress_rule(
             peer=aws_ec2.Peer.ipv4(VPC_CIDR),
@@ -336,7 +356,7 @@ class TrackerStack(Stack):
                 self,
                 "TrackerSecurityGroupParameter",
                 parameter_name=stage_parameter_name(DEV_TRACKER_SECURITY_GROUP_PARAMETER, stage.name),
-                string_value=self.service.service.connections.security_groups[0].security_group_id,
+                string_value=tracker_security_group.security_group_id,
             )
             aws_ssm.StringParameter(
                 self,
