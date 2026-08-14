@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, desc, select
 
+from tracker.api.dependencies import get_access_key_aws_runtime
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.runtime import AWSRuntime
@@ -21,8 +22,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import get_session
-from tracker.types import HarnessConfig, SingleTaskResponse, TaskArtifactsResponse
-from tracker.utils import fetch_harness_config
+from tracker.types import SingleTaskResponse, TaskArtifactsResponse
 
 router = APIRouter(prefix="/benchmarks")
 
@@ -113,12 +113,11 @@ async def get_task_artifacts(
     benchmark_id: UUID,
     task_id: str,
     org: Org = Depends(get_current_org),
-    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    aws_runtime: AWSRuntime = Depends(get_access_key_aws_runtime),
     session: Session = Depends(get_session),
 ) -> TaskArtifactsResponse:
     """CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page."""
     _, task = _load_task_or_404(benchmark_id, task_id, org, session)
-    aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
     cloudwatch_url: str | None = None
     if aws_runtime.resources.log_group and aws_runtime.resources.region:
