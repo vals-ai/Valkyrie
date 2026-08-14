@@ -572,12 +572,19 @@ class TestTrackerAPI:
         assert json_response["executor_protocol_version"] == SUPPORTED_PROTOCOL_VERSION
         assert json_response["concurrency"] == request.concurrency
 
+    @pytest.mark.parametrize(
+        ("protocol_version", "aws_managed"),
+        [("1", False), (SUPPORTED_PROTOCOL_VERSION, True)],
+        ids=["protocol-1-access-key", "protocol-2-managed"],
+    )
     async def test_start_benchmark_serializes_committed_dispatch_for_executor_host(
         self,
         contract: AgentContractRequest,
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
+        protocol_version: str,
+        aws_managed: bool,
     ) -> None:
         observed_at_enqueue: dict[str, Any] = {}
         taskiq_message: TaskiqMessage | None = None
@@ -589,7 +596,11 @@ class TestTrackerAPI:
             )
             kwargs = taskiq_message.kwargs
             with Session(database_session.get_bind()) as assertion_session:
-                benchmark_id = UUID(kwargs["benchmark_id_str"])
+                benchmark_id = UUID(
+                    kwargs["execution_context_json"]["benchmark_id"]
+                    if aws_managed
+                    else kwargs["benchmark_id_str"]
+                )
                 dispatch_id = UUID(kwargs["executor_dispatch_id"])
                 observed_at_enqueue["benchmark"] = assertion_session.get(Benchmark, benchmark_id)
                 observed_at_enqueue["dispatch"] = assertion_session.get(ExecutorDispatch, dispatch_id)
@@ -600,16 +611,34 @@ class TestTrackerAPI:
         active_release = database_session.get(ExecutorRelease, "test-release")
         assert active_release is not None
         active_release.artifact_digest = "a" * 64
+        active_release.protocol_version = protocol_version
         database_session.add(active_release)
         database_session.commit()
 
-        request = StartBenchmarkRequest(
-            contract=contract,
-            benchmark_name="swebench",
-            concurrency=1,
-            task_ids=["task_0"],
-            harness_config=harness_config,
-        )
+        if aws_managed:
+            monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+            monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_REGION", "deployment-region")
+            monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket")
+            monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group")
+            monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30")
+            monkeypatch.setattr("tracker.config.AWS_MANAGED_SUBMISSIONS_ENABLED", True)
+            monkeypatch.setattr(main_module, "s3_object_exists", AsyncMock(return_value=True))
+            request = StartBenchmarkRequest(
+                contract=contract,
+                benchmark_name="swebench",
+                concurrency=1,
+                task_ids=["task_0"],
+                sandbox_provider="daytona",
+                sandbox_provider_secret_name="provider-secret",
+            )
+        else:
+            request = StartBenchmarkRequest(
+                contract=contract,
+                benchmark_name="swebench",
+                concurrency=1,
+                task_ids=["task_0"],
+                harness_config=harness_config,
+            )
         task = main_module.process_benchmark
         monkeypatch.setattr(task, "kicker", lambda: type(task).kicker(task))
         monkeypatch.setattr(task.broker, "kick", capture_message)
@@ -631,10 +660,12 @@ class TestTrackerAPI:
         assert dispatch.executor_release_id == benchmark.current_execution_release_id
         assert [task.task_id for task in tasks] == ["task_0"]
         assert taskiq_message.args == []
-        assert set(taskiq_message.kwargs) == {
-            "start_benchmark_request_json",
-            "benchmark_id_str",
-            "verified_task_ids",
+        execution_kwargs = (
+            {"execution_context_json"}
+            if aws_managed
+            else {"start_benchmark_request_json", "benchmark_id_str", "verified_task_ids"}
+        )
+        assert set(taskiq_message.kwargs) == execution_kwargs | {
             "executor_dispatch_id",
             "executor_release_id",
             "executor_artifact_uri",
@@ -663,13 +694,22 @@ class TestTrackerAPI:
 
         assert taskiq_message.task_name == executor_host.launch_executor.task_name
         assert STABLE_QUEUE_NAME == executor_host.QUEUE_NAME
-        assert taskiq_message.kwargs["executor_protocol_version"] == SUPPORTED_PROTOCOL_VERSION
+        assert taskiq_message.kwargs["executor_protocol_version"] == protocol_version
         assert observed_host["executor_dispatch_id"] == str(dispatch.id)
         process_payload = observed_host["process_payload"]
         assert isinstance(process_payload, executor_host.ExecutorProcessPayload)
         assert process_payload.benchmark_id == str(benchmark.id)
         assert process_payload.verified_task_ids == ["task_0"]
-        assert process_payload.arguments["start_benchmark_request_json"] == request.model_dump()
+        if aws_managed:
+            assert process_payload.arguments == {
+                "execution_context_json": taskiq_message.kwargs["execution_context_json"]
+            }
+        else:
+            assert process_payload.arguments == {
+                "start_benchmark_request_json": request.model_dump(),
+                "benchmark_id_str": str(benchmark.id),
+                "verified_task_ids": ["task_0"],
+            }
         host_dispatch = observed_host["dispatch"]
         assert isinstance(host_dispatch, executor_host.ArtifactDispatch)
         assert host_dispatch.release_id == dispatch.executor_release_id

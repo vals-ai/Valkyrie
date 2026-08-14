@@ -13,7 +13,7 @@ from main import app
 from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tests.conftest import TEST_ORG_ID
 from tracker import config
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, ExecutorRelease
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, ExecutorRelease, Task, TaskStatus
 from tracker.executor.release_control import promote_release
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 
@@ -75,11 +75,12 @@ def _stop_benchmark(benchmark: Benchmark, session: Session) -> None:
 def _promote_test_release(
     session: Session,
     *,
+    release_id: str = "producer-test-release",
     protocol_version: str = SUPPORTED_PROTOCOL_VERSION,
 ) -> None:
     release = ExecutorRelease(
-        id="producer-test-release",
-        artifact_uri="s3://artifacts/producer-test-release.pex",
+        id=release_id,
+        artifact_uri=f"s3://artifacts/{release_id}.pex",
         artifact_digest="a" * 64,
         protocol_version=protocol_version,
         readiness_verified=True,
@@ -242,6 +243,58 @@ def test_managed_start_requires_a_compatible_executor_release(
     assert database_session.exec(select(Benchmark).where(Benchmark.name == "producer-contract-test")).all() == []
 
 
+def test_managed_resume_rolls_back_when_the_active_release_is_incompatible(
+    contract: AgentContractRequest,
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_managed_runtime(monkeypatch)
+    _promote_test_release(database_session)
+    payloads = _capture_task_payloads(monkeypatch)
+    monkeypatch.setattr(
+        BenchmarkServiceClient,
+        "verify_task_ids",
+        AsyncMock(return_value=VerifyTaskIdsResponse(task_ids=["task-1"])),
+    )
+    monkeypatch.setattr("main.s3_object_exists", AsyncMock(return_value=True))
+
+    response = client.post("/start-benchmark", json=_start_request(contract, None).model_dump(mode="json"))
+    assert response.status_code == 200
+    benchmark_id = UUID(response.json()["benchmark_id"])
+    benchmark = database_session.get(Benchmark, benchmark_id)
+    task = database_session.exec(select(Task).where(Task.benchmark == benchmark_id)).one()
+    assert benchmark is not None
+    benchmark.status = BenchmarkStatus.STOPPED
+    task.status = TaskStatus.ERROR
+    database_session.add(benchmark)
+    database_session.add(task)
+    database_session.commit()
+    _promote_test_release(database_session, release_id="legacy-release", protocol_version="1")
+    payloads.clear()
+
+    async def mutate_recovery_state(**_kwargs: Any) -> list[str]:
+        benchmark.status = BenchmarkStatus.IN_PROGRESS
+        task.status = TaskStatus.PENDING
+        database_session.add(benchmark)
+        database_session.add(task)
+        return [task.task_id]
+
+    monkeypatch.setattr("main.reset_to_in_progress_status", mutate_recovery_state)
+
+    response = client.post(f"/retry-or-resume-benchmark/{benchmark_id}")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Activate an executor release that supports managed runs"
+    database_session.expire_all()
+    persisted_benchmark = database_session.get(Benchmark, benchmark_id)
+    persisted_task = database_session.get(Task, task.id)
+    assert persisted_benchmark is not None
+    assert persisted_task is not None
+    assert persisted_benchmark.status == BenchmarkStatus.STOPPED
+    assert persisted_task.status == TaskStatus.ERROR
+    assert payloads == []
+
+
 def test_access_key_start_and_resume_keep_v1_task_kwargs(
     contract: AgentContractRequest,
     database_session: Session,
@@ -249,7 +302,7 @@ def test_access_key_start_and_resume_keep_v1_task_kwargs(
     harness_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _promote_test_release(database_session)
+    _promote_test_release(database_session, protocol_version="1")
     payloads = _capture_task_payloads(monkeypatch)
 
     async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
