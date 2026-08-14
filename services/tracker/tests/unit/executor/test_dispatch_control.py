@@ -221,9 +221,7 @@ def test_additive_retry_enqueue_failure_keeps_original_execution_active(
     database_session.refresh(original_task)
     database_session.refresh(stopped_task)
     database_session.refresh(newer_retry_task)
-    retry_failure = database_session.exec(
-        select(FailureRecord).where(FailureRecord.task == retry_task.id)
-    ).one()
+    retry_failure = database_session.exec(select(FailureRecord).where(FailureRecord.task == retry_task.id)).one()
 
     assert resolution == EnqueueFailureResolution.FAILED
     assert example_benchmark_object.status == BenchmarkStatus.IN_PROGRESS
@@ -345,9 +343,7 @@ def test_running_dispatch_failure_preserves_active_sibling(
     database_session.refresh(retry_task)
     database_session.refresh(retry_attempt)
     database_session.refresh(newer_retry_task)
-    retry_failure = database_session.exec(
-        select(FailureRecord).where(FailureRecord.task == retry_task.id)
-    ).one()
+    retry_failure = database_session.exec(select(FailureRecord).where(FailureRecord.task == retry_task.id)).one()
 
     assert example_benchmark_object.status == BenchmarkStatus.IN_PROGRESS
     assert failing_dispatch.status == ExecutorDispatchStatus.FAILED
