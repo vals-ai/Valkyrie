@@ -177,6 +177,43 @@ async def _enter(
     )
 
 
+async def test_recover_queued_pool_resets_abandoned_build(
+    postgres_engine: Engine,
+    postgres_session: Session,
+) -> None:
+    provider_pool_id = f"daytona:{uuid4()}"
+    context = _context(postgres_engine, provider_pool_id, [])
+    _, _, (task,) = _run(
+        postgres_session,
+        context.pool_id,
+        [("abandoned", TaskStatus.BUILDING, _ATTEMPT)],
+    )
+
+    await admission.recover_queued_pool(context)
+
+    assert _task(postgres_engine, task).status == TaskStatus.PENDING
+
+
+async def test_admission_ignores_task_that_is_no_longer_waiting(
+    postgres_engine: Engine,
+    postgres_session: Session,
+) -> None:
+    events: list[str] = []
+    provider_pool_id = f"daytona:{uuid4()}"
+    context = _context(postgres_engine, provider_pool_id, events)
+    _, _, (task,) = _run(
+        postgres_session,
+        context.pool_id,
+        [("stopped", TaskStatus.STOPPED, _ATTEMPT)],
+    )
+
+    async with AsyncExitStack() as stack:
+        sandbox = await _enter(stack, context, task, events)
+
+    assert sandbox is None
+    assert events == []
+
+
 async def test_pool_locks_are_isolated_and_reusable(postgres_engine: Engine) -> None:
     first_pool = store.queue_pool_id(f"daytona:{uuid4()}")
     second_pool = store.queue_pool_id(f"daytona:{uuid4()}")
