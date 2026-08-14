@@ -7,6 +7,7 @@ from json import JSONDecodeError
 import logging
 import sys
 from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -17,6 +18,7 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     ArtifactDispatch,
     DispatchAuthority,
     DispatchAuthorityLostError,
+    DeleteAfterAckRedisStreamBroker,
     ExecutorSupervisor,
     PostgresExecutorDispatchStore,
     run_executor_dispatch,
@@ -115,6 +117,32 @@ class RecordingConnection:
 
     def cursor(self) -> RecordingCursor:
         return self.recording_cursor
+
+
+class MockRedis:
+    def __init__(
+        self,
+        *,
+        connection_pool: object,
+        commands: list[tuple[object, ...]],
+        eval_result: int | Exception,
+    ) -> None:
+        self.connection_pool = connection_pool
+        self.commands = commands
+        self.eval_result = eval_result
+
+    async def __aenter__(self) -> MockRedis:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: str) -> int:
+        self.commands.append(("eval", script, numkeys, *keys_and_args))
+        if isinstance(self.eval_result, Exception):
+            raise self.eval_result
+
+        return self.eval_result
 
 
 def _dispatch(*, digest: str) -> ArtifactDispatch:
@@ -558,6 +586,73 @@ async def test_broker_payload_dispatch_id_reaches_dispatch_owner(
     )
 
     assert captured["executor_dispatch_id"] == "dispatch-1"
+
+
+async def test_stream_message_is_deleted_only_after_successful_ack(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        supervisor_module,
+        "Redis",
+        partial(MockRedis, commands=commands, eval_result=1),
+    )
+    broker = DeleteAfterAckRedisStreamBroker(
+        url="redis://localhost:6379",
+        queue_name="default-stream",
+        consumer_group_name="executor-group",
+    )
+
+    acknowledge = broker._ack_generator(  # pyright: ignore[reportPrivateUsage]
+        id="1700000000000-0", queue_name="selected-stream"
+    )
+    assert commands == []
+
+    await acknowledge()
+
+    assert len(commands) == 1
+
+    command = commands[0]
+    assert command[0] == "eval"
+    assert command[2:] == (1, "selected-stream", "executor-group", "1700000000000-0")
+
+    script = cast(str, command[1])
+    assert " ".join(script.split()) == (
+        'local acknowledged = redis.call("XACK", KEYS[1], ARGV[1], ARGV[2]) '
+        "if acknowledged == 1 then "
+        'redis.call("XDEL", KEYS[1], ARGV[2]) '
+        "end return acknowledged"
+    )
+    await broker.shutdown()
+
+
+@pytest.mark.parametrize("ack_result", [0, RuntimeError("redis unavailable")], ids=["not-acked", "ack-error"])
+async def test_stream_message_is_not_deleted_when_ack_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    ack_result: int | Exception,
+) -> None:
+    commands: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        supervisor_module,
+        "Redis",
+        partial(MockRedis, commands=commands, eval_result=ack_result),
+    )
+    broker = DeleteAfterAckRedisStreamBroker(
+        url="redis://localhost:6379",
+        queue_name="default-stream",
+        consumer_group_name="executor-group",
+    )
+    acknowledge = broker._ack_generator(  # pyright: ignore[reportPrivateUsage]
+        id="1700000000000-0", queue_name="selected-stream"
+    )
+
+    if isinstance(ack_result, Exception):
+        with pytest.raises(RuntimeError, match="redis unavailable"):
+            await acknowledge()
+    else:
+        assert await acknowledge() is None
+
+    assert len(commands) == 1
+    assert commands[0][0] == "eval"
+    await broker.shutdown()
 
 
 def test_executor_host_uses_one_taskiq_process() -> None:

@@ -8,7 +8,9 @@ here, which would change persisted/API values or defer failures until request ti
 from __future__ import annotations
 
 from collections.abc import Mapping
+from ipaddress import ip_address
 import re
+from socket import inet_aton
 from urllib.parse import urlsplit
 
 _BENCHMARK_NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
@@ -29,6 +31,11 @@ _FORBIDDEN_HEADER_NAMES = {
     "x-real-ip",
 }
 _FORBIDDEN_HEADER_PREFIXES = ("forwarded", "proxy-", "sec-websocket-", "x-forwarded-")
+_VALS_TENANT_ID = "vals.ai"
+_RESTRICTED_HOSTNAMES = {"internal", "local", "localhost"}
+_RESTRICTED_HOSTNAME_SUFFIXES = (".localhost", ".local", ".internal")
+_IDNA_SEPARATOR_TRANSLATION = str.maketrans({"。": ".", "．": ".", "｡": "."})
+_CUSTOM_DESTINATION_DENIED = "Custom benchmark destination is not allowed"
 
 
 def validate_benchmark_name(value: str) -> str:
@@ -49,6 +56,39 @@ def validate_service_headers(headers: Mapping[str, str]) -> None:
             or normalized.startswith(_FORBIDDEN_HEADER_PREFIXES)
         ):
             raise ValueError("Unsupported benchmark service header")
+
+
+def validate_custom_service_destination(
+    value: str,
+    *,
+    org_name: str,
+    auth_required: bool,
+    restrict_vals_hosts: bool = True,
+) -> None:
+    """Keep private and optionally Vals-owned custom destinations limited to trusted callers."""
+    if not auth_required or org_name == _VALS_TENANT_ID:
+        return
+
+    hostname = urlsplit(value).hostname
+    assert hostname is not None
+    normalized_host = hostname.translate(_IDNA_SEPARATOR_TRANSLATION).lower().rstrip(".")
+    if (
+        (restrict_vals_hosts and normalized_host == _VALS_TENANT_ID)
+        or (restrict_vals_hosts and normalized_host.endswith(f".{_VALS_TENANT_ID}"))
+        or normalized_host in _RESTRICTED_HOSTNAMES
+        or normalized_host.endswith(_RESTRICTED_HOSTNAME_SUFFIXES)
+    ):
+        raise ValueError(_CUSTOM_DESTINATION_DENIED)
+
+    try:
+        parsed_ip = ip_address(normalized_host)
+    except ValueError:
+        try:
+            parsed_ip = ip_address(inet_aton(normalized_host))
+        except OSError:
+            return
+    if not parsed_ip.is_global or parsed_ip.is_multicast:
+        raise ValueError(_CUSTOM_DESTINATION_DENIED)
 
 
 def validate_service_url_syntax(value: str) -> str:
