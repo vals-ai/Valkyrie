@@ -118,6 +118,7 @@ async def test_update_benchmark_agent_version_copies_configured_agent_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = AsyncMock()
+    client.copy_object.return_value = {}
     _configure_s3_clients(monkeypatch, [client, client])
 
     await storage.update_benchmark_agent_version("alpha", "benchmark-1")
