@@ -597,9 +597,7 @@ class TestTrackerAPI:
             kwargs = taskiq_message.kwargs
             with Session(database_session.get_bind()) as assertion_session:
                 benchmark_id = UUID(
-                    kwargs["execution_context_json"]["benchmark_id"]
-                    if aws_managed
-                    else kwargs["benchmark_id_str"]
+                    kwargs["execution_context_json"]["benchmark_id"] if aws_managed else kwargs["benchmark_id_str"]
                 )
                 dispatch_id = UUID(kwargs["executor_dispatch_id"])
                 observed_at_enqueue["benchmark"] = assertion_session.get(Benchmark, benchmark_id)
