@@ -171,9 +171,7 @@ async def test_terminalize_records_owned_and_legacy_task_failures(
     persisted_owned_attempt = postgres_session.get(TaskAttempt, owned_attempt.id)
     persisted_legacy_attempt = postgres_session.get(TaskAttempt, legacy_attempt.id)
     persisted_unbound_newer_attempt = postgres_session.get(TaskAttempt, unbound_newer_attempt.id)
-    failures = postgres_session.exec(
-        select(FailureRecord).where(FailureRecord.benchmark_id == benchmark.id)
-    ).all()
+    failures = postgres_session.exec(select(FailureRecord).where(FailureRecord.benchmark_id == benchmark.id)).all()
 
     assert persisted_benchmark is not None
     assert persisted_benchmark.status == BenchmarkStatus.ERROR
@@ -249,9 +247,7 @@ async def test_terminalize_preserves_newer_dispatch_work(
     persisted_newer_task = postgres_session.get(Task, newer_task.id)
     persisted_failed_attempt = postgres_session.get(TaskAttempt, failed_attempt.id)
     persisted_newer_attempt = postgres_session.get(TaskAttempt, newer_attempt.id)
-    failures = postgres_session.exec(
-        select(FailureRecord).where(FailureRecord.benchmark_id == benchmark.id)
-    ).all()
+    failures = postgres_session.exec(select(FailureRecord).where(FailureRecord.benchmark_id == benchmark.id)).all()
 
     assert persisted_benchmark is not None
     assert persisted_benchmark.status == BenchmarkStatus.IN_PROGRESS
@@ -298,9 +294,7 @@ async def test_finish_records_missing_finalization_and_owned_attempts(
     persisted_dispatch = postgres_session.get(ExecutorDispatch, dispatch.id)
     persisted_task = postgres_session.get(Task, task.id)
     persisted_attempt = postgres_session.get(TaskAttempt, attempt.id)
-    failures = postgres_session.exec(
-        select(FailureRecord).where(FailureRecord.benchmark_id == benchmark.id)
-    ).all()
+    failures = postgres_session.exec(select(FailureRecord).where(FailureRecord.benchmark_id == benchmark.id)).all()
 
     assert persisted_benchmark is not None
     assert persisted_benchmark.status == BenchmarkStatus.ERROR
@@ -378,9 +372,7 @@ async def test_finish_terminalizes_owned_work_with_newer_dispatch_active(
     persisted_newer_task = postgres_session.get(Task, newer_task.id)
     persisted_unfinished_attempt = postgres_session.get(TaskAttempt, unfinished_attempt.id)
     persisted_newer_attempt = postgres_session.get(TaskAttempt, newer_attempt.id)
-    failures = postgres_session.exec(
-        select(FailureRecord).where(FailureRecord.benchmark_id == benchmark.id)
-    ).all()
+    failures = postgres_session.exec(select(FailureRecord).where(FailureRecord.benchmark_id == benchmark.id)).all()
 
     assert persisted_benchmark is not None
     assert persisted_benchmark.status == BenchmarkStatus.IN_PROGRESS

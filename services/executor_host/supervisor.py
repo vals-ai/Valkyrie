@@ -434,9 +434,7 @@ class PostgresExecutorDispatchStore:
                 )
                 attempt_row = cursor.fetchone()
                 if attempt_row is None:
-                    raise RuntimeError(
-                        f"Active attempt {active_attempt_id} does not belong to task {task_id}"
-                    )
+                    raise RuntimeError(f"Active attempt {active_attempt_id} does not belong to task {task_id}")
                 attempt_dispatch_id, attempt_outcome = attempt_row
                 if attempt_outcome != "pending" or (
                     attempt_dispatch_id is not None and str(attempt_dispatch_id) != authority.dispatch_id

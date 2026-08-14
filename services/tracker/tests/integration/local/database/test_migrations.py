@@ -192,21 +192,23 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
 
         inspector = inspect(connection)
         task_attempt_columns = {column["name"] for column in inspector.get_columns("taskattempt")}
-        task_attempt_foreign_keys = {
-            foreign_key["name"] for foreign_key in inspector.get_foreign_keys("taskattempt")
-        }
+        task_attempt_foreign_keys = {foreign_key["name"] for foreign_key in inspector.get_foreign_keys("taskattempt")}
         task_attempt_indexes = {index["name"] for index in inspector.get_indexes("taskattempt")}
         task_indexes = {index["name"] for index in inspector.get_indexes("task")}
         evaluation_result_indexes = {index["name"] for index in inspector.get_indexes("evaluationresult")}
         failure_record_indexes = {index["name"] for index in inspector.get_indexes("failurerecord")}
-        failure_category_labels = connection.execute(
-            text(
-                "SELECT enumlabel FROM pg_enum "
-                "JOIN pg_type ON pg_type.oid = pg_enum.enumtypid "
-                "WHERE pg_type.typname = 'failurecategory' "
-                "ORDER BY enumsortorder"
+        failure_category_labels = (
+            connection.execute(
+                text(
+                    "SELECT enumlabel FROM pg_enum "
+                    "JOIN pg_type ON pg_type.oid = pg_enum.enumtypid "
+                    "WHERE pg_type.typname = 'failurecategory' "
+                    "ORDER BY enumsortorder"
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     assert len(migrated_failures) == len(legacy_failures)
     for migrated, (failure_id, created_at, message) in zip(migrated_failures, legacy_failures, strict=True):
