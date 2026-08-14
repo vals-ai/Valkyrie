@@ -13,8 +13,8 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
-    ErrorResult,
     EvaluationResult,
+    FailureRecord,
     Task,
     TaskStatus,
 )
@@ -136,7 +136,7 @@ def make_evaluation_result(
     )
 
 
-def make_error_result(task: Task, error_message: str, created_at: datetime) -> ErrorResult:
+def make_error_result(task: Task, error_message: str, created_at: datetime) -> FailureRecord:
     """Build an error attempt for a task.
 
     Arguments
@@ -147,8 +147,9 @@ def make_error_result(task: Task, error_message: str, created_at: datetime) -> E
     Returns
     - An error-result row ready to persist.
     """
-    return ErrorResult(
+    return FailureRecord(
         org_id=task.org_id,
+        benchmark_id=task.benchmark,
         task=task.id,
         error_message=error_message,
         created_at=created_at,

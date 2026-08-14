@@ -13,10 +13,13 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from main import app
-from tests.factories import make_error_result, make_task
+from tests.factories import make_task
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import (
     Benchmark,
+    BenchmarkStatus,
+    FailureCategory,
+    FailureRecord,
     FinalEvaluation,
     Org,
     TaskStatus,
@@ -39,6 +42,9 @@ def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
     benchmark = example_benchmark_object
     database_session.add(benchmark)
     database_session.flush()
+    benchmark.status = BenchmarkStatus.ERROR
+    benchmark.finished_at = benchmark.started_at
+    benchmark.error_message = "run failed"
     database_session.add_all(
         [
             make_task(
@@ -56,6 +62,15 @@ def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
             make_task(benchmark, "stopped", status=TaskStatus.STOPPED),
             make_task(benchmark, "pending"),
             FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark.id, final_score=0.75),
+            FailureRecord(
+                org_id=TEST_ORG_ID,
+                benchmark_id=benchmark.id,
+                category=FailureCategory.VALKYRIE,
+                producer="tracker",
+                operation="process_benchmark",
+                error_type="RuntimeError",
+                error_message="run failed",
+            ),
         ]
     )
     other_org = Org(id=uuid4(), name="other-org")
@@ -86,6 +101,9 @@ def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
         "STOPPED": 1,
     }
     assert response_body["final_score"] == 0.75
+    assert response_body["error_message"] == "run failed"
+    assert response_body["run_failure"]["message"] == "run failed"
+    assert response_body["run_failure"]["producer"] == "tracker"
     assert str(benchmark.id) in response_body["cloudwatch_url"]
     assert str(benchmark.id) in response_body["s3_bucket_url"]
     assert other_org_response.status_code == 404
@@ -131,9 +149,31 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
     database_session.flush()
     database_session.add_all(
         [
-            make_error_result(literal_task, "old failure", now - timedelta(minutes=1)),
-            make_error_result(literal_task, "latest failure", now),
-            make_error_result(other_error, "other failure", now),
+            FailureRecord(
+                org_id=TEST_ORG_ID,
+                benchmark_id=benchmark.id,
+                task=literal_task.id,
+                error_message="old failure",
+                created_at=now - timedelta(minutes=1),
+            ),
+            FailureRecord(
+                org_id=TEST_ORG_ID,
+                benchmark_id=benchmark.id,
+                task=literal_task.id,
+                category=FailureCategory.VALKYRIE,
+                producer="tracker",
+                operation="process_task",
+                error_type="RuntimeError",
+                error_message="latest failure",
+                created_at=now,
+            ),
+            FailureRecord(
+                org_id=TEST_ORG_ID,
+                benchmark_id=benchmark.id,
+                task=other_error.id,
+                error_message="other failure",
+                created_at=now,
+            ),
         ]
     )
     database_session.commit()
@@ -153,6 +193,8 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
     assert [task["status"] for task in sorted_body["tasks"]] == ["ERROR", "ERROR", "FINISHED"]
     literal_row = next(task for task in sorted_body["tasks"] if task["task_id"] == literal_task.task_id)
     assert literal_row["error_message"] == "latest failure"
+    assert literal_row["failure"]["message"] == "latest failure"
+    assert literal_row["failure"]["category"] == "valkyrie"
     assert literal_search_response.status_code == 200
     assert literal_search_response.json()["total_count"] == 1
     assert literal_search_response.json()["tasks"][0]["task_id"] == "literal_%_match"

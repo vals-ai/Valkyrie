@@ -707,9 +707,11 @@ class TestRunRecovery:
         )
         database_session.add_all([task_error, task_result])
         database_session.flush()
+        error_result = make_error_result(task_error, "retry failed before", _created_at(2))
+        error_result.benchmark_id = benchmark_row.id
         for result_row in (
             make_evaluation_result(task_error, "older-task-error-result", {"score": 0.25}, _created_at(1)),
-            make_error_result(task_error, "retry failed before", _created_at(2)),
+            error_result,
             make_evaluation_result(task_result, "previous-task-result", {"score": 0.5}, _created_at(1)),
         ):
             database_session.add(result_row)

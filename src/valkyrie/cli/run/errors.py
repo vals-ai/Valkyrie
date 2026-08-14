@@ -4,10 +4,11 @@ import json
 from collections import defaultdict
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from typing import Literal
 from uuid import UUID
 
 import click
-from tracker.types import FinalViewResponse
+from tracker.types import FailureSummary, FinalViewResponse
 
 from valkyrie.cli.display import terminal_safe
 from valkyrie.cli.exceptions import TrackerServiceError
@@ -53,15 +54,37 @@ def group_task_errors(task_errors: Mapping[str, str]) -> list[tuple[str, tuple[s
     return sorted(groups, key=lambda group: (-len(group[1]), group[1][0]))
 
 
+def _failure_payload(failure: FailureSummary) -> dict[str, object]:
+    """Project a failure onto the public schema-v2 CLI allowlist."""
+    return {
+        "id": str(failure.id),
+        "schema_version": failure.schema_version,
+        "category": failure.category.value,
+        "benchmark_id": str(failure.benchmark_id),
+        "task_id": str(failure.task_id) if failure.task_id is not None else None,
+        "task_attempt_id": str(failure.task_attempt_id) if failure.task_attempt_id is not None else None,
+        "retry_sequence": failure.retry_sequence,
+        "occurred_at": _utc_isoformat(failure.occurred_at),
+        "producer": failure.producer,
+        "operation": failure.operation,
+        "error_type": failure.error_type,
+        "message": failure.message,
+        "classification_state": failure.classification_state.value,
+        "cause_code": failure.cause_code,
+        "terminal_effect": failure.terminal_effect.value,
+    }
+
+
 def build_run_errors_payload(
     response: FinalViewResponse,
     *,
+    schema_version: Literal[1, 2] = 1,
     observed_at: datetime | None = None,
 ) -> dict[str, object]:
     """Build a versioned allowlist containing only run-error diagnostics."""
     task_errors = dict(sorted((response.task_errors or {}).items()))
-    return {
-        "schema_version": 1,
+    payload: dict[str, object] = {
+        "schema_version": schema_version,
         "kind": "run_errors",
         "observed_at": _utc_isoformat(observed_at or datetime.now(timezone.utc)),
         "run_id": str(response.benchmark_id),
@@ -71,21 +94,58 @@ def build_run_errors_payload(
         "task_error_count": len(task_errors),
         "task_errors": task_errors,
     }
+    if schema_version == 1:
+        return payload
+
+    task_failures = {
+        task_id: _failure_payload(failure) for task_id, failure in sorted((response.task_failures or {}).items())
+    }
+    return {
+        **payload,
+        "run_failure": _failure_payload(response.run_failure) if response.run_failure is not None else None,
+        "task_failures": task_failures,
+        "recovered_failure_count": response.recovered_failure_count,
+        "secondary_failure_count": response.secondary_failure_count,
+    }
 
 
-def format_run_errors_json(response: FinalViewResponse) -> str:
+def format_run_errors_json(
+    response: FinalViewResponse,
+    *,
+    schema_version: Literal[1, 2] = 1,
+) -> str:
     """Serialize one compact, machine-readable run-errors document."""
     return json.dumps(
-        build_run_errors_payload(response),
+        build_run_errors_payload(response, schema_version=schema_version),
         allow_nan=False,
         sort_keys=True,
         separators=(",", ":"),
     )
 
 
+def _failure_context(failure: FailureSummary) -> str:
+    parts = [
+        f"category={failure.category.value}",
+        f"classification={failure.classification_state.value}",
+        f"effect={failure.terminal_effect.value}",
+    ]
+    for name, value in (
+        ("producer", failure.producer),
+        ("operation", failure.operation),
+        ("type", failure.error_type),
+        ("cause", failure.cause_code),
+        ("attempt", failure.task_attempt_id),
+        ("retry", failure.retry_sequence),
+    ):
+        if value is not None:
+            parts.append(f"{name}={terminal_safe(str(value), preserve_newlines=False)}")
+    return " | ".join(parts)
+
+
 def format_run_errors_text(response: FinalViewResponse) -> None:
     """Render stored run and current task errors for a human reader."""
     task_errors = response.task_errors or {}
+    task_failures = response.task_failures or {}
     groups = group_task_errors(task_errors)
 
     click.echo(click.style("Run Errors", bold=True))
@@ -97,6 +157,8 @@ def format_run_errors_text(response: FinalViewResponse) -> None:
         click.echo()
         click.echo(click.style("Stored run error", bold=True))
         click.echo(_indent_message(_display_error_message(response.error_message)))
+        if response.run_failure is not None:
+            click.echo(_indent_message(_failure_context(response.run_failure)))
 
     if groups:
         click.echo()
@@ -112,7 +174,22 @@ def format_run_errors_text(response: FinalViewResponse) -> None:
             click.echo()
             click.echo(f"[{_count_label(len(task_ids), 'task')}] {_format_task_id_preview(task_ids)}")
             click.echo(_indent_message(_display_error_message(message)))
-    elif response.error_message is None:
+
+    if task_failures:
+        click.echo()
+        click.echo(click.style("Task failure provenance", bold=True))
+        for task_id, failure in sorted(task_failures.items()):
+            safe_task_id = terminal_safe(task_id, preserve_newlines=False)
+            click.echo(f"{safe_task_id}:")
+            click.echo(_indent_message(_failure_context(failure)))
+
+    if response.recovered_failure_count or response.secondary_failure_count:
+        click.echo()
+        click.echo(click.style("Historical non-terminal failures", bold=True))
+        click.echo(f"  Recovered: {response.recovered_failure_count}")
+        click.echo(f"  Secondary: {response.secondary_failure_count}")
+
+    if not groups and response.error_message is None:
         click.echo()
         click.echo("No current error messages recorded.")
 
@@ -133,8 +210,18 @@ def format_run_errors_text(response: FinalViewResponse) -> None:
     show_default=True,
     help="Output format.",
 )
-def errors(run_id: UUID, output_format: str) -> None:
+@click.option(
+    "--schema-version",
+    type=click.IntRange(min=1, max=2),
+    default=1,
+    show_default=True,
+    help="JSON output schema version.",
+)
+def errors(run_id: UUID, output_format: str, schema_version: Literal[1, 2]) -> None:
     """Show stored run and current task error messages."""
+    if output_format != "json" and schema_version != 1:
+        raise click.UsageError("--schema-version 2 requires --format json")
+
     try:
         with TrackerService() as tracker:
             response = tracker.retrieve_results(run_id, s3=False)
@@ -145,6 +232,6 @@ def errors(run_id: UUID, output_format: str) -> None:
         raise click.ClickException(safe_error) from error
 
     if output_format == "json":
-        click.echo(format_run_errors_json(response))
+        click.echo(format_run_errors_json(response, schema_version=schema_version))
     else:
         format_run_errors_text(response)

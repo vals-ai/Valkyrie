@@ -59,6 +59,67 @@ class Order(str, Enum):
     DESC = "desc"
 
 
+class FailureCategory(str, Enum):
+    """Producer-assigned category for one failure event."""
+
+    VALKYRIE = "valkyrie"
+    DAYTONA = "daytona"
+    HARNESS = "harness"
+    MODEL = "model"
+    MODEL_GATEWAY = "model_gateway"
+    UNKNOWN = "unknown"
+
+
+class FailureClassificationState(str, Enum):
+    """Evidence state for a failure classification."""
+
+    CLASSIFIED = "classified"
+    UNCLASSIFIED = "unclassified"
+    DETAILS_UNAVAILABLE = "details_unavailable"
+    LEGACY_UNCLASSIFIED = "legacy_unclassified"
+
+
+class FailureTerminalEffect(str, Enum):
+    """Effect that the historical failure had on its execution."""
+
+    RECOVERED = "recovered"
+    SECONDARY = "secondary"
+    TERMINAL = "terminal"
+
+
+class FailureSummary(ResponseModel):
+    """Versioned public provenance for one failure event."""
+
+    id: UUID
+    schema_version: int
+    category: FailureCategory
+    benchmark_id: UUID
+    task_id: UUID | None
+    task_attempt_id: UUID | None
+    retry_sequence: int | None
+    occurred_at: datetime
+    producer: str | None
+    operation: str | None
+    error_type: str | None
+    message: str
+    classification_state: FailureClassificationState
+    cause_code: str | None
+    terminal_effect: FailureTerminalEffect
+
+    @field_serializer("occurred_at")
+    def serialize_occurred_at(self, value: datetime) -> str:
+        """Serialize occurrence time with an explicit offset."""
+        serialized = serialize_utc(value)
+        assert serialized is not None
+        return serialized
+
+
+class FailureDetail(FailureSummary):
+    """Authenticated task-detail failure including allowlisted scalar details."""
+
+    safe_details: dict[str, str | int | float | bool | None] | None = None
+
+
 class StartBenchmarkRequest(BaseModel):
     """Wire payload used to start a benchmark run."""
 
@@ -152,6 +213,7 @@ class FetchBenchmarkResponse(ResponseModel):
     label: str | None = None
     final_score: float | None = None
     error_message: str | None = None
+    run_failure: FailureSummary | None = None
     executor_release_id: str | None = None
     current_execution_release_id: str | None = None
     executor_artifact_digest: str | None = None
@@ -180,6 +242,7 @@ class BenchmarkTableRow(ResponseModel):
     task_state_counts: dict[str, int] = Field(default_factory=dict)
     final_score: float | None = None
     error_message: str | None = None
+    run_failure: FailureSummary | None = None
 
     @field_serializer("started_at")
     def serialize_started_at(self, value: datetime) -> str:
@@ -263,6 +326,10 @@ class FinalViewResponse(ResponseModel):
     average_task_breakdown: AverageTaskBreakdown | None
     evaluation_results: dict[str, dict[str, Any]] | None
     task_errors: dict[str, str] | None
+    run_failure: FailureSummary | None = None
+    task_failures: dict[str, FailureSummary] | None = None
+    recovered_failure_count: int = 0
+    secondary_failure_count: int = 0
 
 
 class S3UploadResultsResponse(ResponseModel):

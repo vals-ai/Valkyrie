@@ -12,6 +12,8 @@ from tracker.database.models import (
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
+    FailureCategory,
+    FailureClassificationState,
     Task,
     TaskStatus,
 )
@@ -24,6 +26,7 @@ from tracker.executor.dispatch_control import (
     terminalize_active_dispatches,
 )
 from tracker.exceptions import ExecutionAuthorityRevoked
+from tracker.failure_provenance import FailureEvidence
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.executor.release_control import (
     create_executor_dispatch,
@@ -288,7 +291,14 @@ def test_running_dispatch_failure_preserves_active_sibling(
         benchmark=example_benchmark_object,
         dispatch_id=failing_dispatch.id,
         task_ids=[retry_task.task_id, newer_retry_task.task_id],
-        error_message="retry failed",
+        evidence=FailureEvidence(
+            category=FailureCategory.VALKYRIE,
+            producer="executor_dispatch",
+            operation="dispatch",
+            error_type="DispatchFailure",
+            error_message="retry failed",
+            classification_state=FailureClassificationState.UNCLASSIFIED,
+        ),
     )
     database_session.commit()
     database_session.refresh(example_benchmark_object)

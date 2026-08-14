@@ -16,11 +16,15 @@ from sqlmodel import Session
 
 import tracker.api.single_task as single_task_module
 from main import app
-from tests.factories import make_error_result, make_evaluation_result, make_task
+from tests.factories import make_evaluation_result, make_task
 from tracker.database.models import (
     AgentCausedExitReason,
     Benchmark,
+    FailureCategory,
+    FailureRecord,
     Org,
+    TaskAttempt,
+    TaskAttemptOutcome,
     TaskStatus,
 )
 
@@ -58,6 +62,31 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     pending_task = make_task(benchmark, "pending-task")
     database_session.add_all([finished_task, error_task, pending_task])
     database_session.flush()
+
+    previous_attempt = TaskAttempt(
+        org_id=error_task.org_id,
+        task=error_task.id,
+        started_at=now - timedelta(minutes=2),
+        finished_at=now - timedelta(minutes=1),
+        outcome=TaskAttemptOutcome.ERROR,
+    )
+    database_session.add(previous_attempt)
+    database_session.flush()
+    active_attempt = TaskAttempt(
+        org_id=error_task.org_id,
+        task=error_task.id,
+        previous_attempt_id=previous_attempt.id,
+        started_at=now - timedelta(minutes=1),
+        finished_at=now,
+        outcome=TaskAttemptOutcome.ERROR,
+    )
+    database_session.add(active_attempt)
+    database_session.flush()
+    previous_attempt.superseded_by_attempt_id = active_attempt.id
+    database_session.add(previous_attempt)
+    error_task.active_attempt_id = active_attempt.id
+    database_session.add(error_task)
+
     database_session.add_all(
         [
             make_evaluation_result(
@@ -73,8 +102,27 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
                 now,
                 exit_reason=AgentCausedExitReason.TIMEOUT,
             ),
-            make_error_result(error_task, "old failure", now - timedelta(minutes=1)),
-            make_error_result(error_task, "latest failure", now),
+            FailureRecord(
+                org_id=error_task.org_id,
+                benchmark_id=benchmark.id,
+                task=error_task.id,
+                task_attempt_id=active_attempt.id,
+                category=FailureCategory.VALKYRIE,
+                producer="tracker",
+                operation="process_task",
+                error_type="RuntimeError",
+                error_message="active attempt failure",
+                safe_details={"status_code": 500},
+                created_at=now - timedelta(minutes=1),
+            ),
+            FailureRecord(
+                org_id=error_task.org_id,
+                benchmark_id=benchmark.id,
+                task=error_task.id,
+                task_attempt_id=previous_attempt.id,
+                error_message="newer stale failure",
+                created_at=now,
+            ),
         ]
     )
 
@@ -88,7 +136,10 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     database_session.commit()
 
     finished_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}")
-    error_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{error_task.task_id}")
+    error_response = _client.get(
+        f"/benchmarks/{benchmark.id}/tasks/{error_task.task_id}",
+        params={"failure_history_limit": 1},
+    )
     pending_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{pending_task.task_id}")
     other_org_response = _client.get(f"/benchmarks/{other_benchmark.id}/tasks/unknown")
 
@@ -97,8 +148,16 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     assert finished_response.json()["agent_caused_exit_reason"] == "TIMEOUT"
     assert finished_response.json()["error_message"] is None
     assert error_response.status_code == 200
-    assert error_response.json()["error_message"] == "latest failure"
-    assert error_response.json()["evaluation_result"] is None
+    error_body = error_response.json()
+    assert error_body["error_message"] == "active attempt failure"
+    assert error_body["evaluation_result"] is None
+    assert error_body["failure"]["category"] == "valkyrie"
+    assert error_body["failure"]["task_id"] == str(error_task.id)
+    assert error_body["failure"]["task_attempt_id"] == str(active_attempt.id)
+    assert error_body["failure"]["message"] == "active attempt failure"
+    assert error_body["failure"]["safe_details"] == {"status_code": 500}
+    assert [failure["message"] for failure in error_body["failure_history"]] == ["newer stale failure"]
+    assert error_body["failure_history_truncated"] is True
     assert pending_response.status_code == 200
     assert pending_response.json()["error_message"] is None
     assert pending_response.json()["evaluation_result"] is None

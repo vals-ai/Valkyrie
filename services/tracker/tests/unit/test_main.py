@@ -45,8 +45,10 @@ from tracker.database.models import (
     ExecutorRelease,
     ExecutorReleaseStatus,
     DocentReadingStatus,
-    ErrorResult,
     EvaluationResult,
+    FailureCategory,
+    FailureRecord,
+    FailureTerminalEffect,
     FinalEvaluation,
     Org,
     Task,
@@ -1059,6 +1061,7 @@ class TestTrackerAPI:
         assert details.get("total_tasks") == 10
         assert details.get("finished_tasks") == 0
         assert response.json().get("error_message") is None
+        assert response.json().get("run_failure") is None
         assert response.json()["executor_release_id"] == "initial-release"
         assert response.json()["current_execution_release_id"] == "current-release"
         assert response.json()["executor_artifact_digest"] == "a" * 64
@@ -1085,8 +1088,9 @@ class TestTrackerAPI:
             else:
                 task_row.status = TaskStatus.ERROR
                 database_session.add(
-                    ErrorResult(
+                    FailureRecord(
                         org_id=TEST_ORG_ID,
+                        benchmark_id=benchmark_row.id,
                         task=task_row.id,
                         error_message="Error occurred during task execution or evaluation",
                     )
@@ -1124,14 +1128,29 @@ class TestTrackerAPI:
 
         benchmark_row.status = BenchmarkStatus.ERROR
         benchmark_row.error_message = "Dominant task error affecting 10/10 tasks"
-        database_session.add(benchmark_row)
+        run_failure = FailureRecord(
+            org_id=TEST_ORG_ID,
+            benchmark_id=benchmark_row.id,
+            category=FailureCategory.VALKYRIE,
+            producer="tracker",
+            operation="process_benchmark",
+            error_type="TrackerServiceError",
+            error_message=benchmark_row.error_message,
+        )
+        database_session.add_all([benchmark_row, run_failure])
         database_session.commit()
 
         response = client.get("/fetch-benchmark", params=query_params)
 
-        # Test case 7. Terminal errors return the stored run-level message
+        # Test case 7. Terminal errors return the legacy message and structured failure
         assert response.status_code == 200
-        assert response.json().get("error_message") == "Dominant task error affecting 10/10 tasks"
+        response_json = response.json()
+        assert response_json["error_message"] == "Dominant task error affecting 10/10 tasks"
+        assert response_json["run_failure"]["id"] == str(run_failure.id)
+        assert response_json["run_failure"]["category"] == FailureCategory.VALKYRIE
+        assert response_json["run_failure"]["producer"] == "tracker"
+        assert response_json["run_failure"]["operation"] == "process_benchmark"
+        assert response_json["run_failure"]["message"] == benchmark_row.error_message
 
     async def test_retrieve_results(
         self, monkeypatch: MonkeyPatch, database_session: Session, example_benchmark_object: Benchmark
@@ -1247,7 +1266,7 @@ class TestTrackerAPI:
         assert len(response_json.get("evaluation_results")) == 10
 
         # Test case 8. Task errors field is populated when we encounter an error
-        # Add some new tasks with the status error (one with ErrorResult and one without)
+        # Add error tasks with terminal failures plus one without a recorded message.
         error_message = "Error occurred during task execution or evaluation"
         task_rows = [
             Task(
@@ -1256,16 +1275,39 @@ class TestTrackerAPI:
                 benchmark=benchmark_row.id,
                 status=TaskStatus.ERROR,
             )
-            for i in range(22, 24)
+            for i in range(22, 25)
         ]
         database_session.add_all(task_rows)
         database_session.flush()
-        database_session.add(
-            ErrorResult(
-                org_id=TEST_ORG_ID,
-                task=task_rows[0].id,
-                error_message=error_message,
-            )
+        database_session.add_all(
+            [
+                FailureRecord(
+                    org_id=TEST_ORG_ID,
+                    benchmark_id=benchmark_row.id,
+                    task=task_rows[2].id,
+                    error_message="Another terminal task failure",
+                ),
+                FailureRecord(
+                    org_id=TEST_ORG_ID,
+                    benchmark_id=benchmark_row.id,
+                    task=task_rows[0].id,
+                    error_message=error_message,
+                ),
+                FailureRecord(
+                    org_id=TEST_ORG_ID,
+                    benchmark_id=benchmark_row.id,
+                    task=task_rows[0].id,
+                    error_message="Recovered sandbox setup failure",
+                    terminal_effect=FailureTerminalEffect.RECOVERED,
+                ),
+                FailureRecord(
+                    org_id=TEST_ORG_ID,
+                    benchmark_id=benchmark_row.id,
+                    task=task_rows[0].id,
+                    error_message="Secondary cleanup failure",
+                    terminal_effect=FailureTerminalEffect.SECONDARY,
+                ),
+            ]
         )
         database_session.commit()
 
@@ -1280,10 +1322,15 @@ class TestTrackerAPI:
 
         # Check for tasks with error
         assert response_json.get("task_errors")
-        assert len(response_json.get("task_errors")) == 2
+        assert len(response_json.get("task_errors")) == 3
+        assert list(response_json["task_errors"]) == ["task_22", "task_23", "task_24"]
+        assert list(response_json["task_failures"]) == ["task_22", "task_24"]
 
         # Error message we saved was returned in the response
         assert response_json.get("task_errors").get("task_22") == error_message
+        assert response_json["task_failures"]["task_22"]["message"] == error_message
+        assert response_json["recovered_failure_count"] == 1
+        assert response_json["secondary_failure_count"] == 1
 
         # If we did not get an error message, we return a default message
         assert response_json.get("task_errors").get("task_23") == "No error message was provided"

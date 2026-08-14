@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, desc, select
 
 from tracker.auth import get_current_org
@@ -13,13 +13,18 @@ from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, create_presigned_url, s3_object_exists
 from tracker.database.models import (
     Benchmark,
-    ErrorResult,
     EvaluationResult,
+    FailureRecord,
     Org,
     Task,
     TaskStatus,
 )
 from tracker.database.session import get_session
+from tracker.failure_views import (
+    current_task_failure_record,
+    detail_failure,
+    task_failure_history,
+)
 from tracker.types import HarnessConfig, SingleTaskResponse, TaskArtifactsResponse
 from tracker.utils import fetch_harness_config
 
@@ -50,29 +55,25 @@ def _task_prefix(benchmark_id: UUID, task_id: str) -> str:
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/"
 
 
-def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[EvaluationResult | None, str | None]:
-    """Fetches a task's evaluation result or error message depending on its status."""
-    if task.status not in (TaskStatus.FINISHED, TaskStatus.ERROR):
-        return None, None
-
-    result_model = EvaluationResult if task.status == TaskStatus.FINISHED else ErrorResult
-    result_filters = (
-        result_model.task == task.id,
-        result_model.org_id == org.id,
-    )
-    result_order = desc(result_model.created_at)
-
+def _fetch_result_objects(
+    session: Session,
+    task: Task,
+    org: Org,
+) -> tuple[EvaluationResult | None, FailureRecord | None]:
+    """Fetch the current evaluation or terminal failure for a task."""
     if task.status == TaskStatus.FINISHED:
-        result_select = select(EvaluationResult)
-    else:
-        result_select = select(ErrorResult.error_message)
-
-    result = session.exec(result_select.where(*result_filters).order_by(result_order)).first()
-
-    if task.status == TaskStatus.FINISHED:
+        result = session.exec(
+            select(EvaluationResult)
+            .where(EvaluationResult.task == task.id)
+            .where(EvaluationResult.org_id == org.id)
+            .order_by(desc(EvaluationResult.created_at))
+        ).first()
         return cast(EvaluationResult | None, result), None
 
-    return None, cast(str | None, result)
+    if task.status == TaskStatus.ERROR:
+        return None, current_task_failure_record(session, task)
+
+    return None, None
 
 
 @router.get(
@@ -82,13 +83,19 @@ def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[Evalu
 def get_single_task(
     benchmark_id: UUID,
     task_id: str,
+    failure_history_limit: int = Query(default=50, ge=1, le=500),
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> SingleTaskResponse:
     """Fetch a single task's status + evaluation result for the SingleTask page."""
     _, task = _load_task_or_404(benchmark_id, task_id, org, session)
 
-    eval_row, error_message = _fetch_result_objects(session, task, org)
+    eval_row, failure_record = _fetch_result_objects(session, task, org)
+    failure_history, failure_history_truncated = task_failure_history(
+        session,
+        task,
+        limit=failure_history_limit,
+    )
 
     return SingleTaskResponse(
         id=task.id,
@@ -96,11 +103,14 @@ def get_single_task(
         status=task.status,
         started_at=task.started_at,
         finished_at=task.finished_at,
-        error_message=error_message,
+        error_message=failure_record.error_message if failure_record else None,
         evaluation_result=eval_row.result if eval_row else None,
         agent_caused_exit_reason=(
             eval_row.agent_caused_exit_reason.value if eval_row and eval_row.agent_caused_exit_reason else None
         ),
+        failure=detail_failure(failure_record) if failure_record else None,
+        failure_history=failure_history,
+        failure_history_truncated=failure_history_truncated,
     )
 
 

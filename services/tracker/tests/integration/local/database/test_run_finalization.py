@@ -25,11 +25,11 @@ from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkStatus,
-    ErrorResult,
     EvaluationResult,
     ExecutorDispatch,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
+    FailureRecord,
     FinalEvaluation,
     Org,
     RetryMode,
@@ -87,7 +87,14 @@ class TestRunFinalization:
             task = make_task(benchmark, task_id, status=TaskStatus.ERROR)
             postgres_session.add(task)
             postgres_session.flush()
-            postgres_session.add(ErrorResult(org_id=org.id, task=task.id, error_message="Agent failed"))
+            postgres_session.add(
+                FailureRecord(
+                    org_id=org.id,
+                    benchmark_id=benchmark.id,
+                    task=task.id,
+                    error_message="Agent failed",
+                )
+            )
             benchmarks.append(benchmark)
         postgres_session.commit()
 
@@ -507,7 +514,14 @@ class TestRunFinalization:
                 task = make_task(benchmark, f"task-{task_index}", status=TaskStatus.ERROR)
                 postgres_session.add(task)
                 postgres_session.flush()
-                postgres_session.add(ErrorResult(org_id=org.id, task=task.id, error_message=error_message))
+                postgres_session.add(
+                    FailureRecord(
+                        org_id=org.id,
+                        benchmark_id=benchmark.id,
+                        task=task.id,
+                        error_message=error_message,
+                    )
+                )
             benchmarks.append((benchmark, expected_summary))
         postgres_session.commit()
 

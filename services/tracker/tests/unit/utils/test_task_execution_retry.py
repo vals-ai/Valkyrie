@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse, VolumeMount
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 from tenacity import wait_none
 
 from tests.unit.utils.task_execution_support import (
@@ -19,7 +19,16 @@ from tests.unit.utils.task_execution_support import (
     make_retrieve_task_response,
     run_process_task,
 )
-from tracker.database.models import AgentContractRequest, TaskStatus
+from tracker.database.models import (
+    AgentContractRequest,
+    ExecutorDispatch,
+    ExecutorDispatchStatus,
+    FailureRecord,
+    FailureTerminalEffect,
+    TaskAttempt,
+    TaskAttemptOutcome,
+    TaskStatus,
+)
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
 from tracker.sandbox import DependencySetupMode
 from tracker.types import HarnessConfig
@@ -160,6 +169,73 @@ class TestTaskExecutionRetry:
 
         database_session.refresh(task_row)
         assert task_row.status == expected_status
+        assert task_row.active_attempt_id is not None
+
+        failures = database_session.exec(
+            select(FailureRecord)
+            .where(col(FailureRecord.task) == task_row.id)
+            .where(col(FailureRecord.task_attempt_id) == task_row.active_attempt_id)
+        ).all()
+        recovered = [failure for failure in failures if failure.terminal_effect is FailureTerminalEffect.RECOVERED]
+        terminal = [failure for failure in failures if failure.terminal_effect is FailureTerminalEffect.TERMINAL]
+        assert len(recovered) == 1
+        assert recovered[0].retry_sequence == 1
+        assert recovered[0].error_type == type(error).__name__
+        assert recovered[0].dispatch_id == authority.dispatch_id
+        assert len(terminal) == (1 if expected_status is TaskStatus.ERROR else 0)
+        if terminal:
+            assert terminal[0].retry_sequence is None
+            assert terminal[0].error_type == type(second_error).__name__
+
+        attempt = database_session.get(TaskAttempt, task_row.active_attempt_id)
+        assert attempt is not None
+        assert attempt.outcome is (
+            TaskAttemptOutcome.ERROR if expected_status is TaskStatus.ERROR else TaskAttemptOutcome.FINISHED
+        )
+
+    async def test_revoked_dispatch_does_not_begin_the_second_automatic_attempt(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        retryable_process_task = getattr(task_execution_module, "_process_task_attempt")
+        monkeypatch.setattr(retryable_process_task.retry, "wait", wait_none())
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+
+        sandbox_entry_count = 0
+
+        @asynccontextmanager
+        async def _revoke_authority_then_fail(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+            nonlocal sandbox_entry_count
+            sandbox_entry_count += 1
+            with Session(bind=database_session.bind) as session:
+                dispatch = session.get(ExecutorDispatch, authority.dispatch_id)
+                assert dispatch is not None
+                dispatch.status = ExecutorDispatchStatus.FAILED
+                session.add(dispatch)
+                session.commit()
+            raise SandboxSetupError("sandbox setup failed")
+            yield AsyncMock()
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return make_retrieve_task_response(problem_path="/tmp/problem.txt")
+
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _revoke_authority_then_fail)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+
+        assert result == {"task_0": None}
+        assert sandbox_entry_count == 1
+        assert database_session.exec(select(FailureRecord).where(col(FailureRecord.task) == task_row.id)).all() == []
 
     async def test_process_task_spans_timed_status_transitions(
         self,

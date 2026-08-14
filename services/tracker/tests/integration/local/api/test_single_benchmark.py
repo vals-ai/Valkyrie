@@ -14,8 +14,8 @@ from tests.factories import make_benchmark, make_task
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
-    ErrorResult,
     ExecutorRelease,
+    FailureRecord,
     FinalEvaluation,
     TaskStatus,
 )
@@ -263,8 +263,22 @@ class TestBenchmarkTaskListing:
         error_task = make_task(benchmark, "err", status=TaskStatus.ERROR)
         database_session.add_all([finished_task, error_task])
         database_session.flush()
-        database_session.add(ErrorResult(org_id=benchmark.org_id, task=finished_task.id, error_message="old boom"))
-        database_session.add(ErrorResult(org_id=benchmark.org_id, task=error_task.id, error_message="boom"))
+        database_session.add(
+            FailureRecord(
+                org_id=benchmark.org_id,
+                benchmark_id=benchmark.id,
+                task=finished_task.id,
+                error_message="old boom",
+            )
+        )
+        database_session.add(
+            FailureRecord(
+                org_id=benchmark.org_id,
+                benchmark_id=benchmark.id,
+                task=error_task.id,
+                error_message="boom",
+            )
+        )
         database_session.commit()
 
         error_response = client.get(

@@ -24,14 +24,22 @@ from tracker.aws.s3 import (
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
-    ErrorResult,
     EvaluationResult,
+    FailureRecord,
+    FailureTerminalEffect,
     Org,
     Task,
     TaskBreakdown,
     TaskStatus,
 )
 from tracker.database.scoping import scoped_select
+from tracker.failure_views import (
+    current_run_failure_record,
+    current_run_failure_records,
+    current_task_failure_records_for_benchmark,
+    failure_effect_counts,
+    summarize_failure,
+)
 from tracker.logging import get_logger
 from tracker.types import (
     AverageTaskBreakdown,
@@ -158,9 +166,10 @@ def _fetch_result_histories(
 
     # Fetch all of the error results from the provided task_rows (A task can have a error message and a evaluation result depending on if its been reran)
     error_rows = session.exec(
-        select(ErrorResult.task, ErrorResult.created_at, ErrorResult.error_message)
-        .where(col(ErrorResult.task).in_(task_row_ids))
-        .where(col(ErrorResult.org_id) == org_id)
+        select(FailureRecord.task, FailureRecord.created_at, FailureRecord.error_message)
+        .where(col(FailureRecord.task).in_(task_row_ids))
+        .where(col(FailureRecord.org_id) == org_id)
+        .where(FailureRecord.terminal_effect == FailureTerminalEffect.TERMINAL)
     ).all()
 
     # Create a mapping of the task row, time stamp of when the result for the row was created, and the resulting row
@@ -169,7 +178,8 @@ def _fetch_result_histories(
     for _result_id, task_row_id, created_at, result in evaluation_rows:
         histories.setdefault(task_row_id, []).append(_history_result(created_at, result))
     for task_row_id, created_at, error_message in error_rows:
-        histories.setdefault(task_row_id, []).append(_history_error(created_at, error_message))
+        task_row_uuid = cast(UUID, task_row_id)
+        histories.setdefault(task_row_uuid, []).append(_history_error(created_at, error_message))
 
     return {
         task_row_id: sorted(entries, key=lambda entry: entry["created_at"], reverse=True)
@@ -284,6 +294,7 @@ async def stream_benchmark_results(
                 fresh_session.refresh(fresh_benchmark)
                 benchmark_context = BenchmarkContext(fresh_benchmark, fresh_session, org)
 
+                run_failure = current_run_failure_record(fresh_session, fresh_benchmark)
                 response_data = FetchBenchmarkResponse(
                     benchmark_name=fresh_benchmark.name,
                     benchmark_id=fresh_benchmark.id,
@@ -302,6 +313,7 @@ async def stream_benchmark_results(
                     error_message=fresh_benchmark.error_message
                     if fresh_benchmark.status == BenchmarkStatus.ERROR
                     else None,
+                    run_failure=summarize_failure(run_failure) if run_failure else None,
                 )
 
                 yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
@@ -466,6 +478,7 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
     for bench_id, status, count in count_rows:
         counts_by_bench.setdefault(bench_id, {})[TaskStatus(status)] = count
 
+    run_failures = current_run_failure_records(session, benchmarks)
     rows: list[BenchmarkTableRow] = []
     for b in benchmarks:
         counts = counts_by_bench.get(b.id, {})
@@ -482,6 +495,7 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
                 executor_artifact_digest=b.executor_artifact_digest,
                 executor_protocol_version=b.executor_protocol_version,
                 error_message=b.error_message if b.status == BenchmarkStatus.ERROR else None,
+                run_failure=(summarize_failure(run_failures[b.id]) if b.id in run_failures else None),
                 started_by_email=b.started_by_email,
                 started_at=b.started_at,
                 finished_at=b.finished_at,
@@ -536,6 +550,18 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
         .where(col(Task.status) == TaskStatus.STOPPED)
     ).one()
 
+    run_failure = current_run_failure_record(session, benchmark_row)
+    task_failure_records = current_task_failure_records_for_benchmark(
+        session,
+        benchmark_row.id,
+        org.id,
+    )
+    effect_counts = failure_effect_counts(
+        session,
+        benchmark_id=benchmark_row.id,
+        org_id=org.id,
+    )
+
     final_view: FinalViewResponse = FinalViewResponse(
         benchmark_name=benchmark_row.name,
         status=benchmark_row.status,
@@ -548,6 +574,12 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
         final_evaluation=benchmark_row.final_evaluation,
         evaluation_results=benchmark_row.fetch_evaluation_results(session),
         task_errors=benchmark_row.fetch_tasks_with_errors(session),
+        run_failure=summarize_failure(run_failure) if run_failure else None,
+        task_failures=(
+            {task_id: summarize_failure(failure) for task_id, failure in task_failure_records.items()} or None
+        ),
+        recovered_failure_count=effect_counts.get(FailureTerminalEffect.RECOVERED, 0),
+        secondary_failure_count=effect_counts.get(FailureTerminalEffect.SECONDARY, 0),
         average_task_breakdown=fetch_average_task_breakdown(benchmark_row.id, session, org.id),
     )
 

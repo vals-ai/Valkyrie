@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Generator
+from datetime import UTC, datetime
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic, sleep
@@ -31,6 +32,7 @@ _EXECUTOR_RELEASE_OWNERSHIP_PREDECESSOR = "6f3c2d9a8b10"
 _CURRENT_OWNERSHIP_REVISION = "e9f0a1b2c3d4"
 _PREVIOUS_REVISION = "d8e9f0a1b2c3"
 _MAINTENANCE_REVISION = "f0a1b2c3d4e5"
+_TASK_ATTEMPT_FAILURE_HISTORY_REVISION = "a3f4b5c6d7e8"
 _MIGRATION_ADVISORY_LOCK_ID = 0x56414C4B59524945
 
 
@@ -81,6 +83,189 @@ def test_executor_release_ownership_downgrade_restores_predecessor_schema(
         ).scalar_one()
     assert revision == _EXECUTOR_RELEASE_OWNERSHIP_PREDECESSOR
     assert release_status_enum_exists is False
+    engine.dispose()
+
+
+def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing_attempts(
+    migration_database_url: str,
+) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", _MAINTENANCE_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    engine = create_engine(migration_database_url)
+    org_id = uuid4()
+    benchmark_id = uuid4()
+    task_id = uuid4()
+    legacy_failures = [
+        (uuid4(), datetime(2026, 8, 10, 12, 0, tzinfo=UTC), "first legacy failure"),
+        (uuid4(), datetime(2026, 8, 11, 12, 0, tzinfo=UTC), "second legacy failure"),
+    ]
+    benchmark_finished_at = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO org (id, name) VALUES (:id, :name)"),
+            {"id": org_id, "name": "legacy-failure-migration-org"},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO benchmark "
+                "(id, org_id, name, started_at, finished_at, status, error_message) "
+                "VALUES (:id, :org_id, :name, :started_at, :finished_at, :status, :error_message)"
+            ),
+            {
+                "id": benchmark_id,
+                "org_id": org_id,
+                "name": "legacy-failure-migration-benchmark",
+                "started_at": benchmark_finished_at,
+                "finished_at": benchmark_finished_at,
+                "status": "ERROR",
+                "error_message": "benchmark-level failure",
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO task "
+                "(id, org_id, task_id, status, started_at, finished_at, benchmark) "
+                "VALUES (:id, :org_id, :task_id, :status, :started_at, :finished_at, :benchmark)"
+            ),
+            {
+                "id": task_id,
+                "org_id": org_id,
+                "task_id": "legacy-task",
+                "status": "ERROR",
+                "started_at": legacy_failures[0][1],
+                "finished_at": legacy_failures[1][1],
+                "benchmark": benchmark_id,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO errorresult (id, org_id, task, created_at, error_message) VALUES "
+                "(:id, :org_id, :task, :created_at, :error_message)"
+            ),
+            [
+                {
+                    "id": failure_id,
+                    "org_id": org_id,
+                    "task": task_id,
+                    "created_at": created_at,
+                    "error_message": message,
+                }
+                for failure_id, created_at, message in legacy_failures
+            ],
+        )
+
+    upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_ATTEMPT_FAILURE_HISTORY_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    task_attempt_columns = {column["name"] for column in inspect(engine).get_columns("taskattempt")}
+    task_attempt_foreign_keys = {
+        foreign_key["name"]: foreign_key for foreign_key in inspect(engine).get_foreign_keys("taskattempt")
+    }
+    assert "superseded_by_attempt_id" in task_attempt_columns
+    replacement_foreign_key = task_attempt_foreign_keys["fk_taskattempt_superseded_by_attempt_id_taskattempt"]
+    assert replacement_foreign_key["constrained_columns"] == ["superseded_by_attempt_id"]
+    assert replacement_foreign_key["referred_table"] == "taskattempt"
+
+    with engine.connect() as connection:
+        migrated_failures = (
+            connection.execute(
+                text(
+                    "SELECT id, schema_version, org_id, benchmark_id, task, task_attempt_id, dispatch_id, "
+                    "retry_sequence, created_at, category, producer, operation, error_type, error_message, "
+                    "classification_state, cause_code, terminal_effect, safe_details "
+                    "FROM failurerecord WHERE task = :task ORDER BY created_at"
+                ),
+                {"task": task_id},
+            )
+            .mappings()
+            .all()
+        )
+        benchmark_failures = (
+            connection.execute(
+                text(
+                    "SELECT id, schema_version, org_id, benchmark_id, task, task_attempt_id, dispatch_id, "
+                    "retry_sequence, created_at, category, producer, operation, error_type, error_message, "
+                    "classification_state, cause_code, terminal_effect, safe_details "
+                    "FROM failurerecord WHERE task IS NULL AND benchmark_id = :benchmark_id"
+                ),
+                {"benchmark_id": benchmark_id},
+            )
+            .mappings()
+            .all()
+        )
+        attempt_count = connection.execute(text("SELECT count(*) FROM taskattempt")).scalar_one()
+        active_attempt_id = connection.execute(
+            text("SELECT active_attempt_id FROM task WHERE id = :task_id"), {"task_id": task_id}
+        ).scalar_one()
+
+    assert len(migrated_failures) == len(legacy_failures)
+    for migrated, (failure_id, created_at, message) in zip(migrated_failures, legacy_failures, strict=True):
+        assert migrated["id"] == failure_id
+        assert migrated["schema_version"] == 1
+        assert migrated["org_id"] == org_id
+        assert migrated["benchmark_id"] == benchmark_id
+        assert migrated["task"] == task_id
+        assert migrated["created_at"] == created_at
+        assert migrated["error_message"] == message
+        assert migrated["category"] == "unknown"
+        assert migrated["classification_state"] == "legacy_unclassified"
+        assert migrated["terminal_effect"] == "terminal"
+        assert all(
+            migrated[field] is None
+            for field in (
+                "task_attempt_id",
+                "dispatch_id",
+                "retry_sequence",
+                "producer",
+                "operation",
+                "error_type",
+                "cause_code",
+                "safe_details",
+            )
+        )
+
+    assert len(benchmark_failures) == 1
+    benchmark_failure = benchmark_failures[0]
+    assert benchmark_failure["schema_version"] == 1
+    assert benchmark_failure["org_id"] == org_id
+    assert benchmark_failure["benchmark_id"] == benchmark_id
+    assert benchmark_failure["created_at"] == benchmark_finished_at
+    assert benchmark_failure["error_message"] == "benchmark-level failure"
+    assert benchmark_failure["category"] == "unknown"
+    assert benchmark_failure["classification_state"] == "legacy_unclassified"
+    assert benchmark_failure["terminal_effect"] == "terminal"
+    assert all(
+        benchmark_failure[field] is None
+        for field in (
+            "task",
+            "task_attempt_id",
+            "dispatch_id",
+            "retry_sequence",
+            "producer",
+            "operation",
+            "error_type",
+            "cause_code",
+            "safe_details",
+        )
+    )
+    assert attempt_count == 0
+    assert active_attempt_id is None
+    engine.dispose()
+
+
+def test_task_attempt_failure_history_head_is_roll_forward_only(migration_database_url: str) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", "head")
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    downgrade = _run_alembic(migration_database_url, "downgrade", _MAINTENANCE_REVISION)
+
+    assert downgrade.returncode != 0
+    assert "cannot be reconstructed" in downgrade.stderr
+    engine = create_engine(migration_database_url)
+    with engine.connect() as connection:
+        revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+    assert revision == _TASK_ATTEMPT_FAILURE_HISTORY_REVISION
     engine.dispose()
 
 

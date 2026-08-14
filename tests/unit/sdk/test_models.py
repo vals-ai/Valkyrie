@@ -14,11 +14,17 @@ from pydantic import ValidationError
 from valkyrie.sdk.models import (
     AWSCredentials,
     AgentContractRequest,
+    FailureCategory,
+    FailureClassificationState,
+    FailureDetail,
+    FailureSummary,
+    FailureTerminalEffect,
     FetchBenchmarkResponse,
     FetchBenchmarksResponse,
     FinalViewResponse,
     HarnessConfig,
     OutputArtifact,
+    SingleTaskResponse,
     StartBenchmarkRequest,
 )
 
@@ -157,3 +163,77 @@ def test_non_empty_list_and_final_results_parse() -> None:
     assert len(list_response.benchmarks) == 1
     assert result.final_evaluation is not None
     assert result.benchmark_arguments.contract.output_artifacts
+    assert result.run_failure is None
+    assert result.task_failures is None
+    assert result.recovered_failure_count == 0
+    assert result.secondary_failure_count == 0
+
+
+def test_structured_failure_models_parse_versioned_provenance() -> None:
+    payload = {
+        "id": "10000000-0000-0000-0000-000000000001",
+        "schema_version": 1,
+        "category": "harness",
+        "benchmark_id": "20000000-0000-0000-0000-000000000001",
+        "task_id": "30000000-0000-0000-0000-000000000001",
+        "task_attempt_id": "40000000-0000-0000-0000-000000000001",
+        "retry_sequence": 2,
+        "occurred_at": "2026-07-08T12:00:00Z",
+        "producer": "benchmark_service",
+        "operation": "evaluate",
+        "error_type": "ConnectionClosedError",
+        "message": "benchmark service connection closed",
+        "classification_state": "classified",
+        "cause_code": "websocket_closed",
+        "terminal_effect": "recovered",
+    }
+
+    summary = FailureSummary.model_validate(payload)
+    detail = FailureDetail.model_validate({**payload, "safe_details": {"websocket_close_code": 1011}})
+
+    assert summary.category is FailureCategory.HARNESS
+    assert summary.classification_state is FailureClassificationState.CLASSIFIED
+    assert summary.terminal_effect is FailureTerminalEffect.RECOVERED
+    assert summary.model_dump(mode="json")["occurred_at"] == "2026-07-08T12:00:00+00:00"
+    assert detail.safe_details == {"websocket_close_code": 1011}
+
+
+def test_single_task_parses_bounded_failure_detail_history() -> None:
+    failure = {
+        "id": "10000000-0000-0000-0000-000000000001",
+        "schema_version": 1,
+        "category": "valkyrie",
+        "benchmark_id": "20000000-0000-0000-0000-000000000001",
+        "task_id": "30000000-0000-0000-0000-000000000001",
+        "task_attempt_id": "40000000-0000-0000-0000-000000000001",
+        "retry_sequence": None,
+        "occurred_at": "2026-07-08T12:05:00Z",
+        "producer": "tracker",
+        "operation": "process_task",
+        "error_type": "RuntimeError",
+        "message": "task failed",
+        "classification_state": "unclassified",
+        "cause_code": None,
+        "terminal_effect": "terminal",
+        "safe_details": None,
+    }
+    response = SingleTaskResponse.model_validate(
+        {
+            "id": "30000000-0000-0000-0000-000000000001",
+            "task_id": "repo__issue-1",
+            "status": "ERROR",
+            "started_at": "2026-07-08T12:00:00Z",
+            "finished_at": "2026-07-08T12:05:00Z",
+            "error_message": "task failed",
+            "evaluation_result": None,
+            "agent_caused_exit_reason": None,
+            "failure": failure,
+            "failure_history": [failure],
+            "failure_history_truncated": True,
+        }
+    )
+
+    assert response.failure is not None
+    assert response.failure.safe_details is None
+    assert response.failure_history[0].terminal_effect is FailureTerminalEffect.TERMINAL
+    assert response.failure_history_truncated is True

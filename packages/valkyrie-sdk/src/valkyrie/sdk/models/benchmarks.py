@@ -9,7 +9,13 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
-from valkyrie.sdk.models.runs import BenchmarkStatus, Order, TaskStatus
+from valkyrie.sdk.models.runs import (
+    BenchmarkStatus,
+    FailureDetail,
+    FailureSummary,
+    Order,
+    TaskStatus,
+)
 
 
 class FetchTasksRequest(BaseModel):
@@ -69,6 +75,7 @@ class SingleBenchmarkResponse(ResponseModel):
     started_by_email: str | None = None
     final_score: float | None = None
     error_message: str | None = None
+    run_failure: FailureSummary | None = None
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
 
@@ -94,6 +101,7 @@ class TaskSummary(ResponseModel):
     started_at: datetime
     finished_at: datetime | None
     error_message: str | None = None
+    failure: FailureSummary | None = None
 
     @field_serializer("started_at")
     def serialize_started_at(self, value: datetime) -> str:
@@ -126,6 +134,9 @@ class SingleTaskResponse(ResponseModel):
     error_message: str | None
     evaluation_result: dict[str, Any] | None
     agent_caused_exit_reason: str | None
+    failure: FailureDetail | None = None
+    failure_history: list[FailureDetail] = Field(default_factory=list)
+    failure_history_truncated: bool = False
 
     @field_serializer("started_at")
     def serialize_started_at(self, value: datetime) -> str:

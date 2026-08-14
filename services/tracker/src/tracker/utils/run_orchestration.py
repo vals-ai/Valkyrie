@@ -20,15 +20,21 @@ from tracker.database.models import (
     BenchmarkStatus,
     DocentReadingStatus,
     EvaluationResult,
+    FailureCategory,
+    FailureClassificationState,
+    FailureTerminalEffect,
     FinalEvaluation,
     Org,
     Task,
+    TaskAttempt,
+    TaskAttemptAdmissionReason,
     TaskStatus,
 )
 from tracker.database.session import engine
 from tracker.executor.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
 from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
+from tracker.failure_provenance import FailureEvidence, record_failure
 from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
@@ -130,6 +136,18 @@ def create_task_rows(
 
     for task_id in task_ids_to_create:
         task_row = Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id)
+        session.add(task_row)
+        session.flush()
+        attempt = TaskAttempt(
+            org_id=org.id,
+            task=task_row.id,
+            dispatch_id=authority.dispatch_id,
+            admission_reason=TaskAttemptAdmissionReason.INITIAL,
+            started_at=task_row.started_at,
+        )
+        session.add(attempt)
+        session.flush()
+        task_row.active_attempt_id = attempt.id
         session.add(task_row)
 
     session.commit()
@@ -251,7 +269,19 @@ async def finalize_all_error_run(
             return False
 
         # Mark the run as errored so future fetches return the discovered task errors.
-        commit_benchmark_error(benchmark_row, session, error_message, authority=authority)
+        commit_benchmark_error(
+            benchmark_row,
+            session,
+            FailureEvidence(
+                category=FailureCategory.VALKYRIE,
+                producer="tracker",
+                operation="summarize_task_errors",
+                error_type="AllTasksFailed",
+                error_message=error_message,
+                classification_state=FailureClassificationState.UNCLASSIFIED,
+            ),
+            authority=authority,
+        )
         return False
 
 
@@ -497,7 +527,15 @@ async def process_benchmark(
             commit_benchmark_error(
                 benchmark_row,
                 session,
-                error_message,
+                FailureEvidence(
+                    category=FailureCategory.HARNESS,
+                    producer="benchmark_service",
+                    operation="authenticate",
+                    error_type=type(e).__name__,
+                    error_message=error_message,
+                    classification_state=FailureClassificationState.CLASSIFIED,
+                    cause_code="authentication_failed",
+                ),
                 authority=authority,
                 task_ids=verified_task_ids,
             )
@@ -508,7 +546,14 @@ async def process_benchmark(
             commit_benchmark_error(
                 benchmark_row,
                 session,
-                error_message,
+                FailureEvidence(
+                    category=FailureCategory.HARNESS,
+                    producer="benchmark_service",
+                    operation="process_benchmark",
+                    error_type=type(e).__name__,
+                    error_message=error_message,
+                    classification_state=FailureClassificationState.UNCLASSIFIED,
+                ),
                 authority=authority,
                 task_ids=verified_task_ids,
             )
@@ -521,7 +566,14 @@ async def process_benchmark(
             commit_benchmark_error(
                 benchmark_row,
                 session,
-                error_message,
+                FailureEvidence(
+                    category=FailureCategory.VALKYRIE,
+                    producer="tracker",
+                    operation="process_benchmark",
+                    error_type=type(e).__name__,
+                    error_message=error_message,
+                    classification_state=FailureClassificationState.UNCLASSIFIED,
+                ),
                 authority=authority,
                 task_ids=verified_task_ids,
             )
@@ -561,6 +613,32 @@ async def process_benchmark(
                 pass
             except Exception as notification_error:
                 logger.warning(f"Failed to send terminal notification: {notification_error}")
+                with Session(bind=engine) as session:
+                    try:
+                        benchmark_row = lock_execution_authority(
+                            session,
+                            authority,
+                            require_in_progress=False,
+                        )
+                    except ExecutionAuthorityRevoked:
+                        session.rollback()
+                    else:
+                        record_failure(
+                            session,
+                            org_id=benchmark_row.org_id,
+                            benchmark_id=benchmark_row.id,
+                            evidence=FailureEvidence(
+                                category=FailureCategory.VALKYRIE,
+                                producer="slack_notifier",
+                                operation="send_terminal_notification",
+                                error_type=type(notification_error).__name__,
+                                error_message=str(notification_error),
+                                classification_state=FailureClassificationState.UNCLASSIFIED,
+                            ),
+                            terminal_effect=FailureTerminalEffect.SECONDARY,
+                            dispatch_id=authority.dispatch_id,
+                        )
+                        session.commit()
 
         await benchmark_service.close()
 
@@ -568,7 +646,7 @@ async def process_benchmark(
 def commit_benchmark_error(
     benchmark_row: Benchmark,
     session: Session,
-    error_message: str,
+    evidence: FailureEvidence,
     *,
     authority: ExecutionAuthority,
     task_ids: list[str] | None = None,
@@ -583,7 +661,7 @@ def commit_benchmark_error(
         benchmark=benchmark_row,
         dispatch_id=authority.dispatch_id,
         task_ids=task_ids or [],
-        error_message=error_message,
+        evidence=evidence,
     )
     session.commit()
     return committed
@@ -645,7 +723,14 @@ def catch_errors_during_cleanup(
         benchmark=benchmark_row,
         dispatch_id=authority.dispatch_id,
         task_ids=[task.task_id for task in undetected_exit_tasks],
-        error_message=error_message,
+        evidence=FailureEvidence(
+            category=FailureCategory.VALKYRIE,
+            producer="tracker",
+            operation="cleanup",
+            error_type="UndetectedExecutorExit",
+            error_message=error_message,
+            classification_state=FailureClassificationState.UNCLASSIFIED,
+        ),
     )
     session.commit()
     return committed
