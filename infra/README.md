@@ -29,13 +29,21 @@ Account setup owns the GitHub OIDC provider and deploy role and the child hosted
 zone. Before deploying the development Tracker, the production root zone must
 delegate `benchmark-tracker-dev.vals.ai` to the account-local child hosted zone
 so CDK DNS validation can complete. Configure the protected `dev` GitHub
-Environment with `DEV_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`,
-`AWS_REGION=us-east-1`, and `DESCOPE_PROJECT_ID`. To enable Sentry in dev, also
-set `SENTRY_DSN_SECRET_NAME` to the name of an account-local Secrets Manager
-secret containing the DSN.
+Environment with the `AWS_REGION=us-east-1` variable and the `DEV_ACCOUNT_ID`,
+`AWS_DEPLOY_ROLE_ARN`, `DESCOPE_PROJECT_ID`, and
+`DESCOPE_MANAGEMENT_KEY_SECRET_NAME` secrets (the last one names an
+account-local Secrets Manager secret holding the Descope management key). To
+enable Sentry in dev, also set the `SENTRY_DSN_SECRET_NAME` secret to the name
+of an account-local Secrets Manager secret containing the DSN. Production
+requires `SENTRY_DSN_SECRET_NAME`, and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`
+whenever `AUTH_REQUIRED` is `true`. The dev Environment holds every dev
+deployment input as an Environment secret except `AWS_REGION`, which stays a
+variable. The production jobs read repository-level secrets; the
+`SANDBOX_CLEANUP_ENABLED` and `SANDBOX_CLEANUP_PROVIDER` toggles stay
+variables.
 
 Before production executor activation, configure the protected `prod` GitHub
-Environment used by the production executor job. Both AWS accounts must already
+Environment used by both production deploy jobs. Both AWS accounts must already
 have the account-owned `token.actions.githubusercontent.com` OIDC provider with
 the `sts.amazonaws.com` audience. The stacks import that provider and create
 separate environment-bound executor release roles; they do not create a fallback
@@ -44,7 +52,7 @@ provider.
 The application imports these account-local values:
 
 - `/valkyrie/dev/dns/tracker/hosted-zone-id`
-- Secrets Manager secret `devEvalInfraDescopeManagementKey`
+- the Secrets Manager secret named by `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`
 
 ## Setup
 
@@ -83,6 +91,7 @@ explicitly. The preflight rejects the wrong account, Region, or STS identity.
 ```bash
 export DEV_ACCOUNT_ID=123456789012
 export DESCOPE_PROJECT_ID="dev-project-id"
+export DESCOPE_MANAGEMENT_KEY_SECRET_NAME="dev-descope-management-key-secret"
 
 make plan STAGE=dev SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
@@ -137,4 +146,4 @@ currently Daytona is the only compatible provider and uses `DAYTONA_API_KEY`, `D
 | --- | --- | --- |
 | `SANDBOX_CLEANUP_ENABLED` | `false` | Enables the hourly production schedule |
 | `SANDBOX_CLEANUP_PROVIDER` | `daytona` | Selects a cleanup-compatible CBS sandbox provider |
-| `SANDBOX_CLEANUP_SECRET_NAME` | `AgenticHarnessSecrets` | Selects the provider credentials secret |
+| `SANDBOX_CLEANUP_SECRET_NAME` | `YourSandboxProviderSecret` | Selects the provider credentials secret |

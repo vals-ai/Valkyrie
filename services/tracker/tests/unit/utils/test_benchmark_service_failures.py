@@ -19,6 +19,7 @@ from websockets.frames import Close
 from websockets.http11 import Response
 
 import tracker.sandbox as sandbox_module
+import tracker.utils.run_orchestration as run_orchestration_module
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
 from tracker.aws.runtime import AWSRuntime
@@ -185,8 +186,10 @@ class TestBenchmarkServiceFailures:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
+        expected_error = "Output artifact error: Required output artifact missing: /tmp/valkyrie/artifacts/missing.json"
+        expected_log = f"[ERROR] {expected_error}"
         logged_messages: list[str] = []
-        log_written = asyncio.Event()
+        expected_log_written = asyncio.Event()
         event_loop = asyncio.get_running_loop()
 
         async def _mock_install_agent_dependencies(*_args: Any, **_kwargs: Any) -> None:
@@ -204,7 +207,8 @@ class TestBenchmarkServiceFailures:
 
         def _mock_write_benchmark_log_event(_stream_key: str, message: str, *_args: Any, **_kwargs: Any) -> None:
             logged_messages.append(message)
-            event_loop.call_soon_threadsafe(log_written.set)
+            if expected_log in message:
+                event_loop.call_soon_threadsafe(expected_log_written.set)
 
         monkeypatch.setattr(utils_module, "run_agent", sandbox_module.run_agent)
         monkeypatch.setattr(sandbox_module, "install_agent_dependencies", _mock_install_agent_dependencies)
@@ -217,16 +221,17 @@ class TestBenchmarkServiceFailures:
         monkeypatch.setattr(utils_module, "write_benchmark_log_event", _mock_write_benchmark_log_event)
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
-        await asyncio.wait_for(log_written.wait(), timeout=1)
+        # Log writes are dispatched to an executor and never awaited, so the flush carrying the
+        # error can land after run_process_task returns. Wait for that flush, not just the first.
+        await asyncio.wait_for(expected_log_written.wait(), timeout=10)
 
         assert result == {"task_0": None}
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
         error_message = self._latest_task_error(database_session, task_row)
-        expected_error = "Output artifact error: Required output artifact missing: /tmp/valkyrie/artifacts/missing.json"
         assert error_message == expected_error
-        assert any(f"[ERROR] {expected_error}" in message for message in logged_messages)
+        assert any(expected_log in message for message in logged_messages)
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_benchmark_service_error_produces_human_readable_message(
@@ -295,6 +300,40 @@ class TestBenchmarkServiceFailures:
         assert task_row.status == TaskStatus.ERROR
         assert self._latest_task_error(database_session, task_row) == "ConnectTimeout"
         assert any("[ERROR] ConnectTimeout" in message for message in logged_messages)
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_process_benchmark_blocks_external_internal_custom_destination(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        start_benchmark_request, _task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        start_benchmark_request = start_benchmark_request.model_copy(
+            update={"custom_benchmark_service": "http://service.internal:8001"}
+        )
+        monkeypatch.setattr(run_orchestration_module, "AUTH_REQUIRED", True)
+        monkeypatch.setattr(
+            run_orchestration_module,
+            "fetch_sandbox_provider_config",
+            lambda *_args, **_kwargs: pytest.fail("sandbox config resolved before destination validation"),
+        )
+
+        await process_benchmark(
+            start_benchmark_request_json=start_benchmark_request.model_dump(),
+            benchmark_id_str=str(benchmark_id),
+            verified_task_ids=["task_0"],
+            executor_dispatch_id=str(authority.dispatch_id),
+        )
+
+        with Session(bind=database_session.bind) as session:
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, TEST_ORG)
+            assert benchmark_row.status == BenchmarkStatus.ERROR
+            assert benchmark_row.error_message is not None
+            assert "Custom benchmark destination is not allowed" in benchmark_row.error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_benchmark_service_error_in_process_benchmark(

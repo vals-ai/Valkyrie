@@ -1,7 +1,9 @@
 """Configuration for the tracker service."""
 
+from enum import Enum
 import os
 from typing import Any
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 from executor_protocol import DEFAULT_STABLE_QUEUE_NAME
@@ -24,6 +26,13 @@ _BENCHMARK_SERVICE_BASE_URL: str | None = os.environ.get("BENCHMARK_SERVICE_BASE
 BENCHMARK_CATALOG_URL = os.environ.get("BENCHMARK_CATALOG_URL", "").rstrip("/")
 
 
+class BenchmarkServiceDestination(Enum):
+    """Trust classification for benchmark-service credential forwarding."""
+
+    HOSTED = "hosted"
+    CUSTOM = "custom"
+
+
 def create_benchmark_service_url(benchmark_name: str) -> str:
     """
     Derive the benchmark service URL from the benchmark name.
@@ -37,6 +46,32 @@ def create_benchmark_service_url(benchmark_name: str) -> str:
         return f"https://{benchmark_name}.{_BENCHMARK_SERVICE_BASE_URL}"
 
     return f"http://{benchmark_name}.{_BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE}:{_CLOUDMAP_PORT}"
+
+
+def _normalized_origin(url: str) -> tuple[str, str, int]:
+    parsed = urlsplit(url)
+    assert parsed.hostname is not None
+    default_port = 443 if parsed.scheme == "https" else 80
+    port = parsed.port if parsed.port is not None else default_port
+    return parsed.scheme, parsed.hostname.lower(), port
+
+
+def classify_benchmark_service_destination(
+    benchmark_name: str,
+    service_url: str | None,
+) -> BenchmarkServiceDestination:
+    """Trust only the exact origin derived for a hosted benchmark service."""
+    try:
+        hosted_url = create_benchmark_service_url(benchmark_name)
+    except ValueError:
+        # Persisted custom-service runs can predate benchmark-name validation.
+        if service_url is not None:
+            return BenchmarkServiceDestination.CUSTOM
+        raise
+    effective_url = service_url or hosted_url
+    if _normalized_origin(effective_url) == _normalized_origin(hosted_url):
+        return BenchmarkServiceDestination.HOSTED
+    return BenchmarkServiceDestination.CUSTOM
 
 
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")

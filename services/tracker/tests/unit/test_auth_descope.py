@@ -1,9 +1,14 @@
+# pyright: reportPrivateUsage=false
+
 """Tests for Tracker Descope authentication boundaries.
 
 Run: uv run pytest tests/unit/test_auth_descope.py
 """
 
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Event
+import time
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -34,6 +39,14 @@ def test_org(empty_database_session: Session) -> Org:
     return org
 
 
+@pytest.fixture(autouse=True)
+def reset_access_key_state() -> Generator[None, None, None]:
+    """Keep process-local auth state isolated between tests."""
+    auth_module._exchange_and_normalize_access_key.cache_clear()
+    yield
+    auth_module._exchange_and_normalize_access_key.cache_clear()
+
+
 @pytest.fixture
 def mock_descope() -> Generator[MagicMock, None, None]:
     mock_client = MagicMock()
@@ -48,10 +61,12 @@ def descope_access_key_response(
     email: str | None = None,
     name: str | None = None,
     user_id: str | None = None,
+    expires_at: int | float | None = None,
 ) -> dict[str, object]:
     session_token: dict[str, object] = {
         "sub": key_id,
         "tenants": {tenant: {}},
+        "exp": time.time() + 60 if expires_at is None else expires_at,
     }
     if email is not None:
         session_token["email"] = email
@@ -228,14 +243,92 @@ class TestDescopeIdentityResolution:
             "HTTPSConnectionPool(host='api.descope.com', port=443): Read timed out. (read timeout=60)"
         )
 
-        with patch("tracker.auth.logger.exception") as log_exception:
+        with patch("tracker.auth.logger.warning") as log_warning:
             with pytest.raises(HTTPException) as exc_info:
                 resolve_descope_identity("some-key")
 
         assert exc_info.value.status_code == 503
         assert exc_info.value.detail == "Auth service unavailable"
-        log_exception.assert_called_once_with("Descope API key validation failed")
+        log_warning.assert_called_once_with("Descope API key validation failed because the provider is unavailable")
         assert mock_descope.exchange_access_key.call_count == 3
+
+
+class TestAccessKeyCache:
+    def setup_method(self) -> None:
+        auth_module._exchange_and_normalize_access_key.cache_clear()
+
+    def teardown_method(self) -> None:
+        auth_module._exchange_and_normalize_access_key.cache_clear()
+
+    def test_cache_deadline_uses_monotonic_clock_ttl_and_expiry_skew(self) -> None:
+        assert auth_module._cache_deadline(200.0, wall_now=100.0, monotonic_now=500.0) == 510.0
+        assert auth_module._cache_deadline(105.0, wall_now=100.0, monotonic_now=500.0) == 504.0
+        assert auth_module._cache_deadline(101.0, wall_now=100.0, monotonic_now=500.0) == 500.0
+
+    @pytest.mark.parametrize(
+        "expires_at", [None, float("nan"), float("inf"), 0.0, pytest.param(10**400, id="overflowing-int")]
+    )
+    def test_unsafe_expiry_is_not_cached(self, mock_descope: MagicMock, expires_at: int | float | None) -> None:
+        response = descope_access_key_response(expires_at=expires_at)
+        if expires_at is None:
+            del response["sessionToken"]["exp"]  # type: ignore[index]
+        mock_descope.exchange_access_key.return_value = response
+        resolve_descope_identity("uncached-key")
+        resolve_descope_identity("uncached-key")
+        assert mock_descope.exchange_access_key.call_count == 2
+
+    def test_warm_key_uses_one_exchange(self, mock_descope: MagicMock) -> None:
+        mock_descope.exchange_access_key.return_value = descope_access_key_response()
+        assert resolve_descope_identity("warm-key") == resolve_descope_identity("warm-key")
+        assert mock_descope.exchange_access_key.call_count == 1
+
+    def test_concurrent_same_key_uses_one_exchange(self, mock_descope: MagicMock) -> None:
+        started, release = Event(), Event()
+
+        def exchange(_api_key: str) -> dict[str, object]:
+            started.set()
+            assert release.wait(timeout=2)
+            return descope_access_key_response()
+
+        mock_descope.exchange_access_key.side_effect = exchange
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = [pool.submit(resolve_descope_identity, "shared-key") for _ in range(8)]
+            assert started.wait(timeout=2)
+            release.set()
+            identities = [result.result(timeout=2) for result in results]
+        assert {identity.access_key_id for identity in identities} == {"K2abc"}
+        assert mock_descope.exchange_access_key.call_count == 1
+
+    def test_different_keys_exchange_concurrently(self, mock_descope: MagicMock) -> None:
+        entered = Barrier(2, timeout=2)
+
+        def exchange(api_key: str) -> dict[str, object]:
+            entered.wait()
+            return descope_access_key_response(key_id=f"id-{api_key}")
+
+        mock_descope.exchange_access_key.side_effect = exchange
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(resolve_descope_identity, key) for key in ("a", "b")]
+            identities = [future.result(timeout=2) for future in futures]
+        assert {identity.access_key_id for identity in identities} == {"id-a", "id-b"}
+
+    def test_failures_are_not_cached(self, mock_descope: MagicMock) -> None:
+        mock_descope.exchange_access_key.side_effect = [
+            AuthException(status_code=401, error_message="invalid"),
+            descope_access_key_response(),
+        ]
+        with pytest.raises(HTTPException) as exc_info:
+            resolve_descope_identity("retry-key")
+        assert exc_info.value.status_code == 401
+        assert resolve_descope_identity("retry-key").access_key_id == "K2abc"
+        assert mock_descope.exchange_access_key.call_count == 2
+
+    def test_cache_keys_do_not_retain_raw_credentials(self, mock_descope: MagicMock) -> None:
+        raw_key = "raw-access-key-secret"
+        mock_descope.exchange_access_key.return_value = descope_access_key_response()
+        resolve_descope_identity(raw_key)
+        assert raw_key not in repr(auth_module._access_key_cache)
+        assert auth_module._access_key_digest(raw_key) != raw_key.encode()
 
 
 class TestCurrentStarterResolution:

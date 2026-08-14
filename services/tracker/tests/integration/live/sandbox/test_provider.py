@@ -189,7 +189,7 @@ class TestProvider:
             create_timeout=360,
         )
 
-        with pytest.raises(SandboxError, match="failed to start"):
+        with pytest.raises(SandboxError, match="Daytona sandbox provider error"):
             await sandbox_provider.create_sandbox(request)
 
         sandbox = await sandbox_provider.get_sandbox(random_sandbox_name)

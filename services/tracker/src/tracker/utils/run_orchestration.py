@@ -20,7 +20,7 @@ from tracker.aws.cloudwatch_logs import create_benchmark_log_group
 from tracker.aws.resolver import deployment_aws_runtime
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.secrets import fetch_aws_secret, resolve_secrets
-from tracker.config import broker
+from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -38,6 +38,7 @@ from tracker.executor.execution_authority import ExecutionAuthority, lock_execut
 from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
+from tracker.outbound_security import validate_custom_service_destination
 from tracker.types import (
     FinalViewResponse,
     HarnessConfig,
@@ -429,6 +430,13 @@ async def process_benchmark(
             stored_mode = "managed" if benchmark_row.aws_managed else "access-key"
             raise TrackerServiceError(
                 f"Queued {queued_mode} execution does not match the stored {stored_mode} run mode"
+            )
+
+        if start_benchmark_request.custom_benchmark_service is not None:
+            validate_custom_service_destination(
+                start_benchmark_request.custom_benchmark_service,
+                org_name=org.name,
+                auth_required=AUTH_REQUIRED,
             )
 
         if execution.aws_managed:

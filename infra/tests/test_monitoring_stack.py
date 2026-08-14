@@ -31,6 +31,7 @@ from monitoring_stack import MonitoringStack
 from shared import SharedStack
 from executor_stack import ExecutorStack
 from stage import DEV, DEV_STACK_PREFIX, PROD, RELEASE_TEST, Stage
+from stage_config import DEV_CONFIG
 from tracker_stack import TrackerStack
 
 TEST_ALERTS_SLACK_ENV = {
@@ -41,7 +42,16 @@ TEST_DEPLOYMENT_SLACK_ENV = {
     SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE",
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV: "CDEPLOYCHANNEL",
 }
-TEST_DEV_ENV = {"DESCOPE_PROJECT_ID": "dev-project"}
+TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME = "example-descope-management-key"
+TEST_DEV_ENV = {
+    "DESCOPE_PROJECT_ID": "dev-project",
+    "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
+}
+TEST_PROD_ENV = {"SENTRY_DSN_SECRET_NAME": "example/sentry-dsn"}
+TEST_RELEASE_TEST_ENV = {
+    "DESCOPE_PROJECT_ID": "release-test",
+    "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
+}
 TEST_AWS_ACCOUNT = os.environ.get("CDK_DEFAULT_ACCOUNT", "123456789012")
 TEST_AWS_REGION = os.environ.get("CDK_DEFAULT_REGION", "us-east-1")
 SHARED_STACK_CONTEXT = {
@@ -164,6 +174,7 @@ def _service_templates(
         hosted_zone=shared.hosted_zone,
         bucket_name=shared.bucket_name,
         redis_url=shared.redis_url,
+        redis_security_group=shared.redis_security_group,
         tracker_repository=tracker_repository,
         image_tag=image_tag,
         env=env,
@@ -220,9 +231,9 @@ class MonitoringStackTest(unittest.TestCase):
     def test_tracker_transport_follows_stage_contract(self) -> None:
         tracker_templates: dict[str, assertions.Template] = {}
         for stage_name, environment in (
-            (PROD, {}),
+            (PROD, TEST_PROD_ENV),
             (DEV, TEST_DEV_ENV),
-            (RELEASE_TEST, {"DESCOPE_PROJECT_ID": "release-test"}),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV),
         ):
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
                 tracker_templates[stage_name] = _service_templates(stage_name)[0]
@@ -260,6 +271,113 @@ class MonitoringStackTest(unittest.TestCase):
             1,
         )
 
+    def test_redis_ingress_is_limited_to_tracker_and_executor_host(self) -> None:
+        for stage_name, environment in (
+            (PROD, TEST_PROD_ENV),
+            (DEV, TEST_DEV_ENV),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV),
+        ):
+            with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
+                shared_template = _shared_template(stage_name)
+                shared_security_groups = shared_template.find_resources("AWS::EC2::SecurityGroup")
+                redis_security_group = next(
+                    resource
+                    for resource in shared_security_groups.values()
+                    if resource["Properties"]["GroupDescription"] == "Security group for ElastiCache Redis"
+                )
+                self.assertNotIn("SecurityGroupIngress", redis_security_group["Properties"])
+                self.assertFalse(shared_template.find_resources("AWS::EC2::SecurityGroupIngress"))
+
+                tracker_template, executor_template, _ = _service_templates(stage_name)
+                tracker_security_groups = tracker_template.find_resources("AWS::EC2::SecurityGroup")
+                tracker_security_group_id = next(
+                    logical_id
+                    for logical_id, resource in tracker_security_groups.items()
+                    if resource["Properties"]["GroupDescription"].endswith("TrackerService/Service/SecurityGroup")
+                )
+                redis_ingress = [
+                    resource["Properties"]
+                    for resource in tracker_template.find_resources("AWS::EC2::SecurityGroupIngress").values()
+                    if resource["Properties"].get("FromPort") == 6379 or resource["Properties"].get("ToPort") == 6379
+                ]
+                self.assertEqual(len(redis_ingress), 1)
+                ingress = redis_ingress[0]
+                self.assertEqual(
+                    {key: ingress[key] for key in ("Description", "FromPort", "IpProtocol", "ToPort")},
+                    {
+                        "Description": "Allow Tracker and ExecutorHost to connect to Redis",
+                        "FromPort": 6379,
+                        "IpProtocol": "tcp",
+                        "ToPort": 6379,
+                    },
+                )
+                self.assertNotIn("CidrIp", ingress)
+                self.assertIn("RedisSG", ingress["GroupId"]["Fn::ImportValue"])
+                self.assertEqual(
+                    ingress["SourceSecurityGroupId"],
+                    {"Fn::GetAtt": [tracker_security_group_id, "GroupId"]},
+                )
+
+                executor_service = next(iter(executor_template.find_resources("AWS::ECS::Service").values()))
+                executor_security_groups = executor_service["Properties"]["NetworkConfiguration"][
+                    "AwsvpcConfiguration"
+                ]["SecurityGroups"]
+                self.assertEqual(len(executor_security_groups), 1)
+                self.assertIn(tracker_security_group_id, json.dumps(executor_security_groups))
+
+                executor_security_groups_by_id = executor_template.find_resources("AWS::EC2::SecurityGroup")
+                control_security_group_id, control_security_group = next(
+                    (logical_id, resource)
+                    for logical_id, resource in executor_security_groups_by_id.items()
+                    if resource["Properties"]["GroupDescription"]
+                    == "No-ingress security group for executor-release control tasks"
+                )
+                self.assertNotEqual(control_security_group_id, tracker_security_group_id)
+                self.assertNotIn("SecurityGroupIngress", control_security_group["Properties"])
+                self.assertEqual(
+                    control_security_group["Properties"]["SecurityGroupEgress"],
+                    [
+                        {
+                            "CidrIp": "10.0.0.0/16",
+                            "Description": "Tracker PostgreSQL",
+                            "FromPort": 5432,
+                            "IpProtocol": "tcp",
+                            "ToPort": 5432,
+                        },
+                        {
+                            "CidrIp": "10.0.0.0/16",
+                            "Description": "VPC DNS UDP",
+                            "FromPort": 53,
+                            "IpProtocol": "udp",
+                            "ToPort": 53,
+                        },
+                        {
+                            "CidrIp": "10.0.0.0/16",
+                            "Description": "VPC DNS TCP",
+                            "FromPort": 53,
+                            "IpProtocol": "tcp",
+                            "ToPort": 53,
+                        },
+                        {
+                            "CidrIp": "0.0.0.0/0",
+                            "Description": "AWS API endpoints",
+                            "FromPort": 443,
+                            "IpProtocol": "tcp",
+                            "ToPort": 443,
+                        },
+                    ],
+                )
+                self.assertNotIn("6379", json.dumps(control_security_group["Properties"]))
+
+                launch_parameter = next(
+                    resource
+                    for resource in executor_template.find_resources("AWS::SSM::Parameter").values()
+                    if resource["Properties"]["Name"].endswith("/executor-release/launch-config")
+                )
+                launch_config = json.dumps(launch_parameter["Properties"]["Value"])
+                self.assertIn(control_security_group_id, launch_config)
+                self.assertNotIn(tracker_security_group_id, launch_config)
+
     def test_release_test_owns_immutable_service_image_repositories(self) -> None:
         release_template = _shared_template(RELEASE_TEST)
         repositories = release_template.find_resources("AWS::ECR::Repository")
@@ -278,7 +396,7 @@ class MonitoringStackTest(unittest.TestCase):
             (PROD, "ValkyrieExecutorRelease", "repo:vals-ai/Valkyrie:environment:prod"),
         ):
             with self.subTest(stage=stage):
-                env = TEST_DEV_ENV if stage == DEV else {}
+                env = TEST_DEV_ENV if stage == DEV else TEST_PROD_ENV
                 with mock.patch.dict(os.environ, env, clear=False):
                     _, executor_template, _ = _service_templates(stage)
                 roles = executor_template.find_resources("AWS::IAM::Role")
@@ -288,7 +406,8 @@ class MonitoringStackTest(unittest.TestCase):
                 self.assertNotIn("production-release", trust)
                 self.assertNotIn("refs/heads/prod", trust)
 
-        synthesized = json.dumps(_service_templates(PROD)[1].to_json())
+        with mock.patch.dict(os.environ, TEST_PROD_ENV, clear=False):
+            synthesized = json.dumps(_service_templates(PROD)[1].to_json())
         self.assertIn("tracker.executor.release_entrypoint", synthesized)
         self.assertIn("ecs:UpdateTaskProtection", synthesized)
         self.assertIn("ecs:StopTask", synthesized)
@@ -297,7 +416,7 @@ class MonitoringStackTest(unittest.TestCase):
     def test_release_test_templates_use_external_benchmark_service_and_namespaced_outputs(self) -> None:
         with mock.patch.dict(
             os.environ,
-            {"DESCOPE_PROJECT_ID": "release-test"},
+            TEST_RELEASE_TEST_ENV,
             clear=False,
         ):
             tracker_template, executor_template, _ = _service_templates(RELEASE_TEST)
@@ -337,7 +456,8 @@ class MonitoringStackTest(unittest.TestCase):
         )
 
     def test_executor_stack_owns_the_host_and_release_control(self) -> None:
-        _, executor_template, monitoring_template = _service_templates(PROD)
+        with mock.patch.dict(os.environ, TEST_PROD_ENV, clear=False):
+            _, executor_template, monitoring_template = _service_templates(PROD)
         services = executor_template.find_resources("AWS::ECS::Service")
         task_definitions = executor_template.find_resources("AWS::ECS::TaskDefinition")
         scalable_targets = executor_template.find_resources("AWS::ApplicationAutoScaling::ScalableTarget")
@@ -485,15 +605,15 @@ class MonitoringStackTest(unittest.TestCase):
         )
         tracker_template.has_resource_properties(
             "AWS::ApplicationAutoScaling::ScalableTarget",
-            {"MinCapacity": 1, "MaxCapacity": 1},
+            {"MinCapacity": DEV_CONFIG.tracker.min_tasks, "MaxCapacity": DEV_CONFIG.tracker.max_tasks},
         )
         worker_template.has_resource_properties(
             "AWS::ECS::Service",
-            {"DesiredCount": 1},
+            {"DesiredCount": DEV_CONFIG.worker.min_tasks},
         )
         worker_template.has_resource_properties(
             "AWS::ApplicationAutoScaling::ScalableTarget",
-            {"MinCapacity": 1, "MaxCapacity": 2},
+            {"MinCapacity": DEV_CONFIG.worker.min_tasks, "MaxCapacity": DEV_CONFIG.worker.max_tasks},
         )
         worker_template.has_resource_properties(
             "AWS::Logs::LogGroup",
@@ -524,7 +644,7 @@ class MonitoringStackTest(unittest.TestCase):
             (PROD, "production", "local"),
             (DEV, "dev", "local-dev"),
         ):
-            environment = TEST_DEV_ENV if stage_name == DEV else {}
+            environment = TEST_DEV_ENV if stage_name == DEV else TEST_PROD_ENV
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
                 tracker_template, worker_template, _ = _service_templates(stage_name)
 
@@ -568,7 +688,7 @@ class MonitoringStackTest(unittest.TestCase):
         worker_template.resource_count_is("AWS::SQS::Queue", 0)
 
     def test_prod_sandbox_cleanup_is_disabled_and_bounded_by_default(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True):
+        with mock.patch.dict(os.environ, TEST_PROD_ENV, clear=True):
             _, worker_template, _ = _service_templates(PROD)
 
         worker_template.resource_count_is("AWS::Scheduler::Schedule", 1)
@@ -632,6 +752,7 @@ class MonitoringStackTest(unittest.TestCase):
                 mock.patch.dict(
                     os.environ,
                     {
+                        **TEST_PROD_ENV,
                         "SANDBOX_CLEANUP_ENABLED": enabled,
                         "SANDBOX_CLEANUP_PROVIDER": "daytona",
                         "SANDBOX_CLEANUP_SECRET_NAME": "custom/cleanup-credentials",

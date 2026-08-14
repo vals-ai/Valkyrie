@@ -18,9 +18,14 @@ def get_context_tags() -> dict[str, str]:
 
 
 class ContextFilter(logging.Filter):
-    """Injects context variables into every log record for structured logging."""
+    """Backfills context variables onto log records.
+
+    A truthy value already on the record (e.g. set via `extra`) takes precedence;
+    missing or falsy fields are filled from ambient context, which may be empty.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
         for key, value in get_context_tags().items():
-            setattr(record, key, value)
+            if not getattr(record, key, None):
+                setattr(record, key, value)
         return True
