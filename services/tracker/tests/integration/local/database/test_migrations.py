@@ -206,7 +206,7 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
         assert migrated["org_id"] == org_id
         assert migrated["benchmark_id"] == benchmark_id
         assert migrated["task"] == task_id
-        assert migrated["created_at"] == created_at
+        assert migrated["created_at"] == created_at.replace(tzinfo=None)
         assert migrated["error_message"] == message
         assert migrated["category"] == "unknown"
         assert migrated["classification_state"] == "legacy_unclassified"
@@ -230,7 +230,7 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
     assert benchmark_failure["schema_version"] == 1
     assert benchmark_failure["org_id"] == org_id
     assert benchmark_failure["benchmark_id"] == benchmark_id
-    assert benchmark_failure["created_at"] == benchmark_finished_at
+    assert benchmark_failure["created_at"] == benchmark_finished_at.replace(tzinfo=None)
     assert benchmark_failure["error_message"] == "benchmark-level failure"
     assert benchmark_failure["category"] == "unknown"
     assert benchmark_failure["classification_state"] == "legacy_unclassified"

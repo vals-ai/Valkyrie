@@ -35,7 +35,7 @@ def test_task_attempt_failure_history_schema_matches_metadata(postgres_engine: E
     for table_name in expected_tables:
         metadata_table = SQLModel.metadata.tables[table_name]
         actual_columns = {column["name"]: column for column in inspector.get_columns(table_name)}
-        assert set(actual_columns) == set(metadata_table.columns)
+        assert set(actual_columns) == {column.name for column in metadata_table.columns}
         assert {column_name: column.nullable for column_name, column in metadata_table.columns.items()} == {
             column_name: column["nullable"] for column_name, column in actual_columns.items()
         }
