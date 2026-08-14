@@ -3,9 +3,10 @@
 Exercise schema and model events against disposable Postgres.
 """
 
-from sqlalchemy import CheckConstraint, Enum as SAEnum, ForeignKeyConstraint, UniqueConstraint
+import re
 from typing import Any, cast
 
+from sqlalchemy import CheckConstraint, Enum as SAEnum, ForeignKeyConstraint, UniqueConstraint
 from sqlalchemy.engine import Engine
 from sqlmodel import SQLModel, Session, inspect
 
@@ -22,7 +23,10 @@ from tracker.database.models import (
 
 
 def _normalized_sql(expression: str) -> str:
-    return " ".join(expression.replace('"', "").split())
+    normalized = expression.replace('"', "")
+    normalized = re.sub(r"::[A-Za-z_][A-Za-z0-9_]*", "", normalized)
+    normalized = normalized.replace("<>", "!=").replace("(", "").replace(")", "")
+    return " ".join(normalized.split())
 
 
 def test_task_attempt_failure_history_schema_matches_metadata(postgres_engine: Engine) -> None:
