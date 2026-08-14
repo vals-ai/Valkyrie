@@ -107,34 +107,39 @@ def test_enqueue_failure_makes_start_retryable(
 ) -> None:
     register_release(database_session, _release("active"))
     promote_release(database_session, "active")
-    task = Task(
-        org_id=example_benchmark_object.org_id,
-        benchmark=example_benchmark_object.id,
-        task_id="task-1",
-        status=TaskStatus.PENDING,
-    )
     dispatch = admit_start_dispatch(
         database_session,
         benchmark=example_benchmark_object,
         dispatch_id=uuid4(),
     )
-    database_session.add(task)
+    tasks = [
+        Task(
+            org_id=example_benchmark_object.org_id,
+            benchmark=example_benchmark_object.id,
+            task_id=f"task-{status.value.lower()}",
+            status=status,
+            started_at=dispatch.created_at - timedelta(seconds=1),
+        )
+        for status in (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
+    ]
+    database_session.add_all(tasks)
     database_session.commit()
 
     resolution = resolve_enqueue_failure(
         database_session,
         benchmark_id=example_benchmark_object.id,
         dispatch_id=dispatch.id,
-        task_ids=[task.task_id],
+        task_ids=[task.task_id for task in tasks],
     )
     database_session.refresh(example_benchmark_object)
     database_session.refresh(dispatch)
-    database_session.refresh(task)
+    for task in tasks:
+        database_session.refresh(task)
 
     assert resolution == EnqueueFailureResolution.FAILED
     assert example_benchmark_object.status == BenchmarkStatus.ERROR
     assert dispatch.status == ExecutorDispatchStatus.FAILED
-    assert task.status == TaskStatus.ERROR
+    assert {task.status for task in tasks} == {TaskStatus.ERROR}
 
 
 def test_additive_retry_enqueue_failure_keeps_original_execution_active(
@@ -145,24 +150,6 @@ def test_additive_retry_enqueue_failure_keeps_original_execution_active(
     register_release(database_session, release)
     promote_release(database_session, release.id)
     pin_benchmark_to_release(example_benchmark_object, release)
-    retry_task = Task(
-        org_id=example_benchmark_object.org_id,
-        benchmark=example_benchmark_object.id,
-        task_id="retry-task",
-        status=TaskStatus.PENDING,
-    )
-    original_task = Task(
-        org_id=example_benchmark_object.org_id,
-        benchmark=example_benchmark_object.id,
-        task_id="original-task",
-        status=TaskStatus.IN_PROGRESS,
-    )
-    stopped_task = Task(
-        org_id=example_benchmark_object.org_id,
-        benchmark=example_benchmark_object.id,
-        task_id="stopped-task",
-        status=TaskStatus.STOPPED,
-    )
     original_dispatch = create_executor_dispatch(
         example_benchmark_object.id,
         release,
@@ -177,6 +164,36 @@ def test_additive_retry_enqueue_failure_keeps_original_execution_active(
         ExecutorDispatchKind.RETRY,
         dispatch_id=uuid4(),
     )
+    shared_tasks = [
+        Task(
+            org_id=example_benchmark_object.org_id,
+            benchmark=example_benchmark_object.id,
+            task_id=f"shared-{status.value.lower()}",
+            status=status,
+            started_at=dispatch.created_at - timedelta(seconds=1),
+        )
+        for status in (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS)
+    ]
+    owned_evaluation = Task(
+        org_id=example_benchmark_object.org_id,
+        benchmark=example_benchmark_object.id,
+        task_id="owned-evaluation",
+        status=TaskStatus.EVALUATING,
+        started_at=dispatch.created_at,
+    )
+    sibling_evaluation = Task(
+        org_id=example_benchmark_object.org_id,
+        benchmark=example_benchmark_object.id,
+        task_id="sibling-evaluation",
+        status=TaskStatus.EVALUATING,
+        started_at=dispatch.created_at - timedelta(seconds=1),
+    )
+    stopped_task = Task(
+        org_id=example_benchmark_object.org_id,
+        benchmark=example_benchmark_object.id,
+        task_id="stopped-task",
+        status=TaskStatus.STOPPED,
+    )
     newer_retry_task = Task(
         org_id=example_benchmark_object.org_id,
         benchmark=example_benchmark_object.id,
@@ -185,30 +202,44 @@ def test_additive_retry_enqueue_failure_keeps_original_execution_active(
         started_at=dispatch.created_at + timedelta(seconds=1),
     )
     database_session.add(example_benchmark_object)
-    database_session.add(retry_task)
-    database_session.add(original_task)
-    database_session.add(stopped_task)
-    database_session.add(newer_retry_task)
-    database_session.add(original_dispatch)
-    database_session.add(dispatch)
+    database_session.add_all(
+        [
+            *shared_tasks,
+            owned_evaluation,
+            sibling_evaluation,
+            stopped_task,
+            newer_retry_task,
+            original_dispatch,
+            dispatch,
+        ]
+    )
     database_session.commit()
 
     resolution = resolve_enqueue_failure(
         database_session,
         benchmark_id=example_benchmark_object.id,
         dispatch_id=dispatch.id,
-        task_ids=[retry_task.task_id, stopped_task.task_id, newer_retry_task.task_id],
+        task_ids=[
+            *(task.task_id for task in shared_tasks),
+            owned_evaluation.task_id,
+            sibling_evaluation.task_id,
+            stopped_task.task_id,
+            newer_retry_task.task_id,
+        ],
     )
     database_session.refresh(example_benchmark_object)
-    database_session.refresh(retry_task)
-    database_session.refresh(original_task)
-    database_session.refresh(stopped_task)
-    database_session.refresh(newer_retry_task)
+    for task in [*shared_tasks, owned_evaluation, sibling_evaluation, stopped_task, newer_retry_task]:
+        database_session.refresh(task)
 
     assert resolution == EnqueueFailureResolution.FAILED
     assert example_benchmark_object.status == BenchmarkStatus.IN_PROGRESS
-    assert retry_task.status == TaskStatus.ERROR
-    assert original_task.status == TaskStatus.IN_PROGRESS
+    assert [task.status for task in shared_tasks] == [
+        TaskStatus.PENDING,
+        TaskStatus.BUILDING,
+        TaskStatus.IN_PROGRESS,
+    ]
+    assert owned_evaluation.status == TaskStatus.ERROR
+    assert sibling_evaluation.status == TaskStatus.EVALUATING
     assert stopped_task.status == TaskStatus.STOPPED
     assert newer_retry_task.status == TaskStatus.PENDING
 
@@ -264,13 +295,16 @@ def test_running_dispatch_failure_preserves_active_sibling(
         dispatch.status = ExecutorDispatchStatus.RUNNING
         dispatch.started_at = datetime.now(UTC)
         database_session.add(dispatch)
-    retry_task = Task(
-        org_id=example_benchmark_object.org_id,
-        benchmark=example_benchmark_object.id,
-        task_id="retry-task",
-        status=TaskStatus.IN_PROGRESS,
-        started_at=failing_dispatch.created_at - timedelta(seconds=1),
-    )
+    shared_tasks = [
+        Task(
+            org_id=example_benchmark_object.org_id,
+            benchmark=example_benchmark_object.id,
+            task_id=f"shared-{status.value.lower()}",
+            status=status,
+            started_at=failing_dispatch.created_at - timedelta(seconds=1),
+        )
+        for status in (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS)
+    ]
     newer_retry_task = Task(
         org_id=example_benchmark_object.org_id,
         benchmark=example_benchmark_object.id,
@@ -285,15 +319,15 @@ def test_running_dispatch_failure_preserves_active_sibling(
         status=TaskStatus.EVALUATING,
         started_at=failing_dispatch.created_at,
     )
-    stale_evaluation = Task(
+    sibling_evaluation = Task(
         org_id=example_benchmark_object.org_id,
         benchmark=example_benchmark_object.id,
-        task_id="stale-evaluation",
+        task_id="sibling-evaluation",
         status=TaskStatus.EVALUATING,
         started_at=failing_dispatch.created_at - timedelta(seconds=1),
     )
     database_session.add(example_benchmark_object)
-    database_session.add_all([retry_task, newer_retry_task, owned_evaluation, stale_evaluation])
+    database_session.add_all([*shared_tasks, newer_retry_task, owned_evaluation, sibling_evaluation])
     database_session.commit()
 
     assert record_dispatch_failure(
@@ -301,10 +335,10 @@ def test_running_dispatch_failure_preserves_active_sibling(
         benchmark=example_benchmark_object,
         dispatch_id=failing_dispatch.id,
         task_ids=[
-            retry_task.task_id,
+            *(task.task_id for task in shared_tasks),
             newer_retry_task.task_id,
             owned_evaluation.task_id,
-            stale_evaluation.task_id,
+            sibling_evaluation.task_id,
         ],
         error_message="retry failed",
     )
@@ -312,18 +346,20 @@ def test_running_dispatch_failure_preserves_active_sibling(
     database_session.refresh(example_benchmark_object)
     database_session.refresh(failing_dispatch)
     database_session.refresh(sibling_dispatch)
-    database_session.refresh(retry_task)
-    database_session.refresh(newer_retry_task)
-    database_session.refresh(owned_evaluation)
-    database_session.refresh(stale_evaluation)
+    for task in [*shared_tasks, newer_retry_task, owned_evaluation, sibling_evaluation]:
+        database_session.refresh(task)
 
     assert example_benchmark_object.status == BenchmarkStatus.IN_PROGRESS
     assert failing_dispatch.status == ExecutorDispatchStatus.FAILED
     assert sibling_dispatch.status == ExecutorDispatchStatus.RUNNING
-    assert retry_task.status == TaskStatus.ERROR
+    assert [task.status for task in shared_tasks] == [
+        TaskStatus.PENDING,
+        TaskStatus.BUILDING,
+        TaskStatus.IN_PROGRESS,
+    ]
     assert newer_retry_task.status == TaskStatus.PENDING
     assert owned_evaluation.status == TaskStatus.ERROR
-    assert stale_evaluation.status == TaskStatus.EVALUATING
+    assert sibling_evaluation.status == TaskStatus.EVALUATING
 
 
 def test_terminal_recovery_terminalizes_active_dispatches(

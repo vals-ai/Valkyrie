@@ -2269,7 +2269,7 @@ class TestRunRecovery:
             select(ExecutorDispatch).where(ExecutorDispatch.benchmark_id == benchmark_row.id)
         ).all()
         assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
-        assert retry_task.status == TaskStatus.ERROR
+        assert retry_task.status == TaskStatus.PENDING
         assert original_task.status == TaskStatus.PENDING
         assert {dispatch.status for dispatch in dispatches} == {
             ExecutorDispatchStatus.FAILED,

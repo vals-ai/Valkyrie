@@ -51,10 +51,16 @@ run = await client.runs.start(
     benchmark="swebench",
     model="anthropic/claude-sonnet-4-6",
     concurrency=10,
+    priority=3,
     dataset="default",
     label="nightly-swebench",
 )
 ```
+
+`priority` is optional and ranges from `0` (P0, highest) to `4` (P4, lowest). Runs admitted to a shared
+sandbox pool default to P3 when priority is omitted. Priority applies only when Tracker's sandbox queue is enabled
+and the selected provider is configured for admission. Otherwise runs use direct execution, and Tracker rejects an
+explicit priority instead of implying queueing.
 
 Fetch or stream run updates:
 

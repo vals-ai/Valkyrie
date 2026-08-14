@@ -8,6 +8,28 @@ Tracker is the FastAPI control plane. It records release-bound dispatches in Pos
 
 Local Docker Compose starts only Tracker, PostgreSQL, and Redis. It does not run ExecutorHost, create an active executor release, or execute benchmarks. Use a deployed release environment for benchmark execution.
 
+## Sandbox scheduling
+
+`SANDBOX_QUEUE_ENABLED` is `false` by default. In that mode, runs create sandboxes directly and requests with an
+explicit priority are rejected. When the flag is `true`, Tracker queues runs only when the selected sandbox provider
+has a managed admission pool. Unmanaged providers continue to use direct execution and also reject explicit priority.
+
+Managed shared pools order waiting tasks by run priority, enqueue time, and task ID. Priority ranges from P0 (highest)
+to P4 (lowest), and admitted runs default to P3 when no priority is supplied. Per-run `concurrency` still limits how
+many tasks from that run may be active.
+
+Authenticated clients can inspect their organization's scheduler state with:
+
+```text
+GET /scheduler/overview?waiting_limit=100&active_limit=100
+```
+
+The endpoint uses the request's resolved organization and never returns rows from another organization. Its summary
+contains total waiting, building, in-progress, and evaluating counts. It also returns per-pool waiting counts plus
+bounded waiting and active entries. Each entry limit defaults to 100, accepts 1–200, and has a corresponding
+`waiting_capped` or `active_capped` flag when more rows exist. Active entries use `BUILDING`, `IN_PROGRESS`, or
+`EVALUATING` status.
+
 ## Running
 
 ```bash

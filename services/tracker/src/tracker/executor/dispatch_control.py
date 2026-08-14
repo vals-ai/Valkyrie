@@ -142,10 +142,10 @@ def record_dispatch_failure(
     task_ids: list[str],
     error_message: str,
 ) -> bool:
-    """Record a dispatch failure without overwriting attempts admitted by a newer dispatch.
+    """Record a dispatch failure without overwriting work owned by another active dispatch.
 
-    Resumable evaluations carry the dispatch creation time as their exact ownership token.
-    Other admitted attempts retain the dispatch creation time as their durable upper bound.
+    Resumable evaluations carry the dispatch creation time as their exact ownership token. Queued and running
+    attempts remain shared while a sibling dispatch is active, so only terminalize them when no sibling can proceed.
     """
     dispatch = session.exec(
         select(ExecutorDispatch)
@@ -160,22 +160,23 @@ def record_dispatch_failure(
     now = datetime.now(ZoneInfo("UTC"))
     sibling_active = active_dispatch_exists(session, benchmark.id, except_dispatch_id=dispatch_id)
 
+    failed_task_attempts = and_(
+        col(Task.status) == TaskStatus.EVALUATING,
+        col(Task.started_at) == dispatch.created_at,
+    )
+    if not sibling_active:
+        failed_task_attempts = or_(
+            failed_task_attempts,
+            and_(
+                col(Task.status).in_((TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS)),
+                col(Task.started_at) <= dispatch.created_at,
+            ),
+        )
     tasks = session.exec(
         select(Task)
         .where(col(Task.benchmark) == benchmark.id)
         .where(col(Task.task_id).in_(task_ids))
-        .where(
-            or_(
-                and_(
-                    col(Task.status) == TaskStatus.EVALUATING,
-                    col(Task.started_at) == dispatch.created_at,
-                ),
-                and_(
-                    col(Task.status).in_((TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS)),
-                    col(Task.started_at) <= dispatch.created_at,
-                ),
-            )
-        )
+        .where(failed_task_attempts)
     ).all()
     for task in tasks:
         session.add(ErrorResult(org_id=task.org_id, task=task.id, error_message=error_message))
@@ -231,22 +232,30 @@ def resolve_enqueue_failure(
     session.add(dispatch)
     session.flush()
 
-    if benchmark.status == BenchmarkStatus.IN_PROGRESS and not active_dispatch_exists(session, benchmark_id):
+    sibling_active = active_dispatch_exists(session, benchmark_id)
+    if benchmark.status == BenchmarkStatus.IN_PROGRESS and not sibling_active:
         benchmark.status = BenchmarkStatus.ERROR
         benchmark.finished_at = now
         benchmark.error_message = "Executor dispatch enqueue failed"
         session.add(benchmark)
 
+    if sibling_active:
+        failed_task_attempts = and_(
+            col(Task.status) == TaskStatus.EVALUATING,
+            col(Task.started_at) == dispatch.created_at,
+        )
+    else:
+        failed_task_attempts = and_(
+            col(Task.started_at) <= dispatch.created_at,
+            col(Task.status).in_(
+                (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
+            ),
+        )
     tasks = session.exec(
         select(Task)
         .where(col(Task.benchmark) == benchmark_id)
         .where(col(Task.task_id).in_(task_ids))
-        .where(col(Task.started_at) <= dispatch.created_at)
-        .where(
-            col(Task.status).in_(
-                (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
-            )
-        )
+        .where(failed_task_attempts)
     ).all()
     for task in tasks:
         task.status = TaskStatus.ERROR
