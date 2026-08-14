@@ -1240,7 +1240,6 @@ async def fetch_run_outputs(
     Returns:
         StreamingResponse
     """
-    benchmark_row = run_context.benchmark
     aws_runtime = run_context.aws_runtime
 
     benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
