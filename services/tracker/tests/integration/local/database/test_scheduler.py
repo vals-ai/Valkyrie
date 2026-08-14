@@ -231,18 +231,20 @@ async def test_recover_queued_pool_resets_abandoned_build(
 async def test_admission_ignores_task_that_is_no_longer_waiting(
     postgres_engine: Engine,
     postgres_session: Session,
+    executor_authority: Any,
 ) -> None:
     events: list[str] = []
     provider_pool_id = f"daytona:{uuid4()}"
     context = _context(postgres_engine, provider_pool_id, events)
-    _, _, (task,) = _run(
+    _, benchmark, (task,) = _run(
         postgres_session,
         context.pool_id,
         [("stopped", TaskStatus.STOPPED, _ATTEMPT)],
     )
+    authority = executor_authority(benchmark, session=postgres_session)
 
     async with AsyncExitStack() as stack:
-        sandbox = await _enter(stack, context, task, events)
+        sandbox = await _enter(stack, context, task, events, authority)
 
     assert sandbox is None
     assert events == []
