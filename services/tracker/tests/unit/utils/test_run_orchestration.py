@@ -367,9 +367,12 @@ async def test_direct_provider_setup_failure_closes_client(
     )
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
 
-    with pytest.raises(RuntimeError, match="provider setup failed"):
-        await process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"], **authority_kwargs)
+    await process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"], **authority_kwargs)
 
+    database_session.refresh(benchmark)
+    assert benchmark.status == BenchmarkStatus.ERROR
+    assert benchmark.error_message is not None
+    assert "provider setup failed" in benchmark.error_message
     benchmark_service.close.assert_awaited_once_with()
 
 
