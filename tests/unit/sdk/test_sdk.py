@@ -309,7 +309,6 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
                     "s3_url": "s3://runs-bucket/results.json",
                     "presigned_url": "https://download.test/results.json",
                     "console_url": "https://console.aws.test/results.json",
-                    "expires_in": 86400,
                 },
             )
         raise AssertionError(f"Unexpected request: {request.url}")

@@ -124,6 +124,7 @@ class TestResultsCommand:
         result = cli_runner.invoke(results, [str(_RUN_ID), "--s3"])
 
         assert result.exit_code == 0, result.output
+        assert "Download (expires in 1 day):" in result.output
         assert "https://download.example/results" in result.output
         assert "https://console.aws.amazon.com/s3/object/results" in result.output
         assert tracker.retrieve_calls == [(_RUN_ID, True, None)]
