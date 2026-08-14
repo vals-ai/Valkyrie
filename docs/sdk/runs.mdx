@@ -3,6 +3,8 @@ title: Manage runs with Python
 description: Start, inspect, stream, recover, and download Valkyrie runs.
 ---
 
+Each method's parameters, defaults, and return types are in the [`client.runs` reference](/reference/sdk/runs#start).
+
 ## Start a run
 
 Use an uploaded agent name or an `AgentContractRequest`:
@@ -41,7 +43,7 @@ await client.runs.retry(
 )
 ```
 
-Use `benchmark_url` when a benchmark service does not have a stable URL.
+Use `benchmark_url` when a benchmark service does not have a stable URL. `resume` admits work that never ran; `retry` re-runs tasks that ended in `ERROR`. See [Manage a run](/runs/manage) for the lifecycle rules that apply to both.
 
 Fetch stored launch metadata or test whether canonical S3 results exist:
 

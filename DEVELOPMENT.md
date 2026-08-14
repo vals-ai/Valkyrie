@@ -114,6 +114,8 @@ Binary versions are released when commits are tagged:
 - **Dev**: Must manually tag a commit to trigger a release
 - **Prod**: Automatically tagged and released on push
 
+`valkyrie-sdk` is versioned and published separately. See [Releasing the Valkyrie SDK](scripts/sdk/RELEASING.md).
+
 ## Documentation
 
 The public documentation source is in `docs/`. Local preview requires Node.js 20.17 or newer. It does not require Mintlify credentials.
@@ -124,6 +126,8 @@ npx mint dev
 ```
 
 Run `npx mint login` only to test account-backed features such as search and the assistant.
+
+`docs/reference/` is generated from the CLI and SDK source. Run `make docs-reference` after changing a public CLI or SDK surface; CI runs `make docs-reference-check` and fails on stale output.
 
 Contributor and operator references remain beside their code:
 

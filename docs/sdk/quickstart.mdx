@@ -30,7 +30,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Pass `base_url` to `ValkyrieClient` for a self-hosted tracker. Otherwise, the SDK uses `TRACKER_SERVICE_URL` or the hosted tracker URL.
+Pass `base_url` to `ValkyrieClient` for a self-hosted tracker. Otherwise, the SDK uses `TRACKER_SERVICE_URL` or the hosted tracker URL. The [`ValkyrieClient` reference](/reference/sdk/client) lists every constructor parameter and default.
 
 <Warning>
   The SDK sends AWS credentials through `X-Harness-*` headers. Connect only to a trusted tracker and use HTTPS outside local development.
@@ -49,3 +49,9 @@ From a Valkyrie checkout:
 python docs/sdk/examples/run_lifecycle.py --help
 python docs/sdk/examples/manage_run.py --help
 ```
+
+## Next steps
+
+- [Manage runs with Python](/sdk/runs) for the run lifecycle
+- [Inspect resources with Python](/sdk/resources) for tasks, agents, and services
+- [Python SDK reference](/reference/sdk) for every method, model, and field

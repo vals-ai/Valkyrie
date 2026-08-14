@@ -19,44 +19,35 @@ results = await client.runs.results(run_id)
 </CodeGroup>
 </Panel>
 
+Full syntax is in the [`run results`](/reference/cli/run#results), [`run outputs`](/reference/cli/run#outputs), and [`run output`](/reference/cli/run#output) reference, and in [`client.runs.results`](/reference/sdk/runs#results) for Python.
+
 ## Download results
 
-Without `--path`, the CLI writes `./results-<run-id>.json`.
+Results hold the scores and evaluation. Without `--path`, the CLI writes `./results-<run-id>.json`.
 
-Recompute the score over a task subset:
+Pass a task subset to recompute `final_score` over just those tasks. The stored full result is unchanged:
 
 ```bash
 valkyrie run results <run-id> --task-ids task_1,task_2
-valkyrie run results <run-id> --task-ids-file https://example.com/subset.txt
 ```
-
-| Option | Purpose |
-| --- | --- |
-| `--path` | Local results path |
-| `--s3` | Upload results to S3 instead of downloading |
-| `--task-ids` | Recompute `final_score` for comma-separated task IDs |
-| `--task-ids-file` | Load task IDs from a local file or HTTP(S) URL |
 
 <Warning>
   Combining `--s3` with a task subset overwrites the canonical S3 result key with that subset view. Run the command again without filters to restore the full result.
 </Warning>
 
-## Download all task outputs
+## Download outputs
+
+Outputs are the files the agent produced. Fetch all of them, or only the tasks you care about:
 
 ```bash
 valkyrie run outputs <run-id> --output-dir ./outputs
-```
-
-Select specific tasks with `--task-ids`:
-
-```bash
 valkyrie run outputs <run-id> --task-ids astropy__astropy-7606,django__django-10880
 ```
 
-## Download one path
+To pull one file or directory instead of the whole run, name a path inside the run's benchmark prefix:
 
 ```bash
-valkyrie run output <run-id> [subpath] --output-dir ./output-dir
+valkyrie run output <run-id> <subpath> --output-dir ./output-dir
 ```
 
-`subpath` can identify a file or directory inside the run's benchmark prefix. The output directory defaults to `./<run-id>`.
+The output directory defaults to `./<run-id>`.

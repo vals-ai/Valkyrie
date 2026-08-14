@@ -7,9 +7,9 @@ An agent contract defines how Valkyrie installs and runs an agent in a sandbox. 
 
 If your agent does not expose a command-line interface, see [Create a CLI](#creating-a-cli).
 
-## Complete Contract Template
+## Complete contract template
 
-Copy the template we created below to make integrating your own version easier.
+Copy this template as a starting point for your own agent.
 
 ```yaml
 name: my_agent
@@ -78,7 +78,7 @@ valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swe
 valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench -k temperature 1.0
 ```
 
-## Contract Definition
+## Contract definition
 
 Create a `contract.yaml` file in your agent directory:
 
@@ -91,7 +91,7 @@ secrets:
   API_KEY: myAwsSecretName
 ```
 
-## Required Fields
+## Required fields
 
 ### `name: str`
 
@@ -122,7 +122,7 @@ Shell command to run the agent on a task. Must contain the `{problem_statement_p
 run_cmd: "my_agent --task {problem_statement_path} --id {task_id}"
 ```
 
-## Optional Fields
+## Optional fields
 
 ### `final_output: path`
 
@@ -168,11 +168,11 @@ output_artifacts:
     required: false
 ```
 
-`artifacts/model.patch` is reserved for an optional validated text diff produced
-by repository-editing agents. Its ATIF trajectory may reference it through
+`artifacts/model.patch` is reserved for an optional validated text diff produced by
+repository-editing agents. A trajectory artifact may reference it through
 `extra.vals.model_patch`; Valkyrie still collects it as a separate artifact.
 
-Valkyrie does not require a specific destination prefix. For Vals benchmark result ingestion, use the project convention `vals_format/config.json` and `vals_format/result.json`.
+Valkyrie does not require a specific destination prefix. Vals-hosted result ingestion expects `vals_format/config.json` and `vals_format/result.json`.
 
 Guardrails:
 
@@ -267,7 +267,7 @@ valkyrie run start --agent agents/my_agent --benchmark swebench -k model gpt-4o
 valkyrie run start --agent agents/my_agent --benchmark swebench -k model gpt-4o -k temperature 1.0
 ```
 
-## Using Model Selection
+## Model selection
 
 The model is passed separately from kwargs via `--model` on the CLI:
 
@@ -275,7 +275,7 @@ The model is passed separately from kwargs via `--model` on the CLI:
 valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
 ```
 
-## Installation Scripts
+## Installation scripts
 
 The `install_cmd` runs inside the sandbox with the working directory set to `/bundle/<agent_name>/`. Use it to install dependencies and set up your agent.
 
@@ -295,7 +295,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 cd submodule/my_agent && uv sync
 ```
 
-## Creating Wrapper Scripts
+## Wrapper scripts
 
 If your agent requires a virtual environment or specific setup before running, create a wrapper script in `/usr/local/bin/` during installation:
 
@@ -347,4 +347,4 @@ The entire agent directory is bundled to `/bundle/<agent_name>/` in the sandbox 
 
 ## Integrations
 
-- **Docent ingestion** — set `ingest_lambda` in `contract.yaml` to declare which AWS Lambda converts this agent's output into a Docent `AgentRun`. Triggered post-run via `valk run analyze <run_id>`. See [Analyze runs with Docent](/integrations/docent).
+- **Docent ingestion** — set `ingest_lambda` in `contract.yaml` to declare which AWS Lambda converts this agent's output into Docent records. Run it after a run finishes with `valkyrie run analyze <run-id>`. See [Analyze runs with Docent](/integrations/docent).

@@ -20,6 +20,8 @@ async for update in client.runs.stream(run_id):
 </CodeGroup>
 </Panel>
 
+Full syntax for each command below is in the [`run fetch`](/reference/cli/run#fetch), [`run status`](/reference/cli/run#status), [`run errors`](/reference/cli/run#errors), and [`run list`](/reference/cli/run#list) reference, and in [`client.runs.stream`](/reference/sdk/runs#stream) for Python.
+
 ## Fetch one run
 
 Use a one-time text or machine-readable snapshot when streaming is not needed:
@@ -50,35 +52,19 @@ Batch status preserves requested order, ignores duplicate IDs, and requests at m
 
 ```bash
 valkyrie run errors <run-id>
-valkyrie run errors <run-id> --format json
 ```
 
-These commands show stored run and current task error messages.
+The command shows stored run and current task error messages. Add `--format json` to consume them from a script.
 
 ## List runs
 
+Filter the history to find a run:
+
 ```bash
-valkyrie run list \
-  --agent-name claude_code \
-  --benchmark-name swebench \
-  --status IN_PROGRESS \
-  --order-by DESC \
-  --started-by user@example.com \
-  --label nightly
+valkyrie run list --benchmark-name swebench --status IN_PROGRESS
 ```
 
-| Option | Purpose |
-| --- | --- |
-| `--agent-name` | Filter by agent name |
-| `--benchmark-name` | Filter by benchmark name |
-| `--model` | Filter by model |
-| `--dataset` | Filter by dataset |
-| `-l`, `--label` | Filter by label |
-| `--status` | Filter by `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, or `ERROR` |
-| `--order-by` | Sort `desc` or `asc` |
-| `--started-by` | Comma-separated starter emails |
-
-The interactive list supports `[h]` for previous, `[l]` for next, and `[q]` to quit. Emit all matching runs as one document with:
+Filters combine, and the interactive list supports `[h]` for previous, `[l]` for next, and `[q]` to quit. Emit all matching runs as one document with:
 
 ```bash
 valkyrie run list --format json --all --status IN_PROGRESS

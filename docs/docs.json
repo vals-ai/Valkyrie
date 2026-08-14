@@ -81,6 +81,9 @@
       }
     ]
   },
+  "redirects": {
+    "$ref": "reference/redirects.json"
+  },
   "navbar": {
     "links": [
       {

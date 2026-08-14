@@ -22,49 +22,35 @@ run = await client.runs.start(
 </CodeGroup>
 </Panel>
 
-## Configure the run
+The tracker accepts the run and returns its id. Every option, alias, default, and constraint is in the [`valkyrie run start`](/reference/cli/run#start) and [`client.runs.start`](/reference/sdk/runs#start) reference.
+
+## Decide the run scope
+
+A run covers the whole dataset unless you narrow it. Narrow by task id when you know which tasks matter, or by slice for a cheap smoke run:
 
 ```bash
-valkyrie run start \
-  --agent sweagent \
-  --benchmark swebench \
-  --model anthropic/claude-sonnet-4-6 \
-  --concurrency 10 \
-  --dataset default \
-  -s ANTHROPIC_API_KEY AnthropicApiKey \
-  -k temperature 1 \
-  --slice "0:10" \
-  --label swebench-sweagent
+valkyrie run start --agent sweagent --benchmark swebench --slice "0:10"
 ```
 
-`-s` maps an environment variable to an AWS Secrets Manager secret name. It never accepts the raw secret value. CLI secret mappings override contract defaults for the same environment variable.
+To select ids explicitly, export the dataset's task ids first with [`valkyrie benchmark tasks`](/reference/cli/benchmark#tasks), then pass them with `--task-ids` or `--task-ids-file`.
 
-| Option | Purpose |
-| --- | --- |
-| `--agent` | Installed agent name or local agent directory |
-| `--benchmark` | Benchmark-service name |
-| `--model` | Model key passed through the agent contract |
-| `--concurrency` | Concurrent sandbox tasks; defaults to 5 |
-| `-n`, `--count` | Independent runs to start; maximum 10 |
-| `-s`, `--secret` | Repeatable `ENV_VAR aws_secret_name` pair |
-| `-k`, `--kwarg` | Repeatable agent-contract parameter pair |
-| `--provider` | Configured sandbox-provider name for this run |
-| `--lambda` | Lambda function to invoke after completion |
-| `--task-ids` | Comma-separated task IDs |
-| `--task-ids-file` | Local path or HTTP(S) URL with one task ID per line |
-| `--slice` | Dataset slice in `start:stop:step` form |
-| `--dataset` | Dataset variant; defaults to `default` |
-| `-l`, `--label` | One run label |
-| `-H`, `--header` | Repeatable benchmark-service header pair |
-| `-i`, `--interval` | Repeatable Slack notification threshold |
-| `--ignore-custom-services`, `--ics` | Ignore configured custom benchmark services |
-| `--connect` | Stream updates after the run starts |
+`--concurrency` sets how many sandboxes run at once. Raising it shortens wall-clock time and raises simultaneous provider and model cost.
 
-## Stream immediately
+## Map secrets instead of passing values
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench -s ANTHROPIC_API_KEY AnthropicApiKey
+```
+
+`-s` maps an environment variable to an AWS Secrets Manager secret name. It never accepts the raw secret value. A CLI mapping overrides the agent contract's mapping for the same environment variable.
+
+## Stream progress as the run starts
 
 ```bash
 valkyrie run start --agent sweagent --benchmark swebench --connect
 ```
+
+Without `--connect`, attach later with [`valkyrie run fetch`](/reference/cli/run#fetch). See [Monitor runs](/runs/monitor) for reading the stream.
 
 ## Start repeated runs
 

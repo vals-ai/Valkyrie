@@ -23,7 +23,7 @@ valkyrie config remove webhook
 valkyrie run start --agent sweagent --benchmark swebench -i 25 -i 75
 ```
 
-`-i` and `--interval` are repeatable. Each value must be divisible by 5 and between 5 and 100. A run accepts at most three thresholds.
+A run accepts at most three thresholds. The [`run start` reference](/reference/cli/run#start) states the accepted values for `-i`.
 
 When a webhook secret is configured without intervals, Valkyrie defaults to 100 and notifies only on completion. When intervals are provided without a webhook secret, the CLI ignores them with a warning.
 

@@ -27,6 +27,8 @@ _FORMAT_VERSION = 1
 _MAX_DIFF_LINES = 80
 _CLI_INDEX_PATH = Path("reference/cli/index.mdx")
 _CLI_NAVIGATION_PATH = Path("reference/cli/navigation.json")
+_REDIRECTS_PATH = Path("reference/redirects.json")
+_RETIRED_GENERATED_PATHS = (Path("reference/cli/redirects.json"),)
 _SDK_INDEX_PATH = Path("reference/sdk/index.mdx")
 _SDK_CLIENT_PATH = Path("reference/sdk/client.mdx")
 _SDK_TYPES_INDEX_PATH = Path("reference/sdk/models/index.mdx")
@@ -46,46 +48,33 @@ _GUIDE_LINKS: dict[str, str] = {
     "benchmark": "/benchmarks/custom-services",
     "config": "/get-started/configuration",
 }
-_CLI_HTTP_PATHS = frozenset(
-    {
-        ("run", "analyze"),
-        ("run", "errors"),
-        ("run", "fetch"),
-        ("run", "list"),
-        ("run", "outputs"),
-        ("run", "results"),
-        ("run", "resume"),
-        ("run", "retry"),
-        ("run", "start"),
-        ("run", "status"),
-        ("run", "stop"),
-        ("run", "update"),
-        ("benchmark", "tasks"),
-        ("config", "init"),
-        ("config", "service", "list"),
-    }
-)
-_CLI_LOCAL_PATHS = frozenset(
-    {
-        ("run", "output"),
-        ("agent", "install"),
-        ("agent", "push"),
-        ("agent", "remove"),
-        ("agent", "download"),
-        ("agent", "list"),
-        ("config", "auth", "set"),
-        ("config", "auth", "remove"),
-        ("config", "auth", "list"),
-        ("config", "set"),
-        ("config", "remove"),
-        ("config", "provider", "set"),
-        ("config", "provider", "default"),
-        ("config", "provider", "remove"),
-        ("config", "provider", "list"),
-        ("config", "service", "set"),
-        ("config", "service", "remove"),
-    }
-)
+# Card icon and purpose per top-level command group. Counts stay computed from the Click tree, so
+# only the icon and the phrase completing "N commands for ..." are curated here. A new group fails
+# generation until it is listed.
+_CLI_GROUP_CARDS: dict[str, tuple[str, str]] = {
+    "run": ("play", "starting, monitoring, managing, and retrieving runs"),
+    "agent": ("robot", "installing, uploading, listing, downloading, and removing agent bundles"),
+    "benchmark": ("flask", "exporting the task IDs in a benchmark dataset"),
+    "config": ("gear", "credentials, sandbox providers, and benchmark services"),
+}
+_SDK_RESOURCE_CARDS: dict[str, tuple[str, str, str]] = {
+    "RunsResource": ("Runs", "play", "starting, inspecting, streaming, controlling, and retrying runs"),
+    "BenchmarksResource": ("Benchmarks", "flask", "retrieving benchmark status, tasks, and artifacts"),
+    "AgentsResource": ("Agents", "robot", "listing agents and retrieving bundle download URLs"),
+    "BenchmarkServicesResource": (
+        "Benchmark services",
+        "server",
+        "discovering service catalogs, deployments, and task IDs",
+    ),
+}
+_SDK_TYPE_FAMILIES = ("Agents", "Runs", "Benchmarks", "Services", "Config")
+_SDK_TYPE_FAMILY_CARDS: dict[str, tuple[str, str]] = {
+    "Agents": ("robot", "uploaded agent bundles and download URLs"),
+    "Runs": ("play", "run requests, responses, and lifecycle enums"),
+    "Benchmarks": ("flask", "benchmark, task, artifact, and status responses"),
+    "Services": ("server", "benchmark service catalog and health responses"),
+    "Config": ("gear", "validated SDK configuration and field aliases"),
+}
 _CLI_MUTATING_PATHS = frozenset(
     {
         ("run", "analyze"),
@@ -237,28 +226,6 @@ class SDKReference:
     enums: tuple[SDKEnumReference, ...]
     exceptions: tuple[SDKExceptionReference, ...]
     client_methods: tuple[SDKMethodReference, ...]
-
-
-@dataclass(frozen=True)
-class HTTPRequest:
-    """One verified tracker request rendered as a labeled cURL block."""
-
-    label: str
-    method: str
-    path: str
-    query: tuple[tuple[str, str], ...] = ()
-    body: str | None = None
-    mutating: bool = False
-    harness_headers: bool = True
-    note: str = ""
-
-
-@dataclass(frozen=True)
-class HTTPExample:
-    """Legacy single-request metadata retained while building curated matrices."""
-
-    curl: str
-    note: str = ""
 
 
 def _clean_docstring(value: object) -> str:
@@ -440,6 +407,9 @@ def collect_cli_commands() -> tuple[CLICommandReference, ...]:
     commands: list[CLICommandReference] = []
 
     def visit(command: click.Command, path: tuple[str, ...]) -> None:
+        # Hidden commands and options are not part of the public surface, so they stay unpublished.
+        if command.hidden:
+            return
         if isinstance(command, click.Group):
             for name, child in command.commands.items():
                 visit(child, (*path, name))
@@ -450,7 +420,11 @@ def collect_cli_commands() -> tuple[CLICommandReference, ...]:
                 path=path,
                 summary=summary,
                 example=example,
-                parameters=tuple(_collect_click_parameter(parameter) for parameter in command.params),
+                parameters=tuple(
+                    _collect_click_parameter(parameter)
+                    for parameter in command.params
+                    if not (isinstance(parameter, click.Option) and parameter.hidden)
+                ),
             )
         )
 
@@ -585,6 +559,31 @@ def _type_slug(name: str) -> str:
     return slug
 
 
+def _sdk_type_family_page_path(family: str) -> Path:
+    """Return the single generated page that documents one SDK type family."""
+    return Path("reference/sdk/models", family.lower()).with_suffix(".mdx")
+
+
+def _sdk_type_path(entry: SDKModelReference | SDKEnumReference) -> Path:
+    """Return the family page where one public SDK type is documented."""
+    return _sdk_type_family_page_path(entry.family)
+
+
+def _sdk_type_anchor(entry: SDKModelReference | SDKEnumReference) -> str:
+    """Return the stable explicit heading id for one public SDK type inside its family page."""
+    return entry.slug
+
+
+def _sdk_type_route(entry: SDKModelReference | SDKEnumReference) -> str:
+    """Return the public family-page anchor where one public SDK type is documented."""
+    return f"/{_route(_sdk_type_path(entry))}#{_sdk_type_anchor(entry)}"
+
+
+def _legacy_type_route(entry: SDKModelReference | SDKEnumReference) -> str:
+    """Return the retired per-type route that must keep resolving through a redirect."""
+    return "/" + Path("reference/sdk/models", entry.family.lower(), entry.slug).as_posix()
+
+
 def _collect_model(model: type[BaseModel]) -> SDKModelReference:
     fields = tuple(
         SDKFieldReference(
@@ -620,17 +619,17 @@ def _collect_enum(enum_class: type[Enum]) -> SDKEnumReference:
 
 
 def _validate_type_paths(entries: Sequence[SDKModelReference | SDKEnumReference]) -> None:
-    """Reject duplicate names, duplicate slugs, and unsafe generated paths."""
+    """Reject duplicate names, duplicate anchors within a family, and unsafe slugs."""
     names: set[str] = set()
-    paths: set[Path] = set()
+    anchors: set[tuple[str, str]] = set()
     for entry in entries:
         if entry.name in names:
             raise ValueError(f"Duplicate public type name: {entry.name}")
         names.add(entry.name)
-        path = _sdk_type_path(entry)
-        if path in paths:
-            raise ValueError(f"Duplicate public type path: {path}")
-        paths.add(path)
+        key = (entry.family, _sdk_type_anchor(entry))
+        if key in anchors:
+            raise ValueError(f"Duplicate public type path: {_sdk_type_path(entry)}#{_sdk_type_anchor(entry)}")
+        anchors.add(key)
 
 
 def _collect_exception(exception_class: type[Exception]) -> SDKExceptionReference:
@@ -703,11 +702,11 @@ def collect_sdk_reference() -> SDKReference:
         if inspect.isclass(value) and issubclass(value, Enum):
             enums.append(_collect_enum(value))
             kind = "enum"
-            target = f"/{_route(_sdk_type_path(enums[-1]))}"
+            target = _sdk_type_route(enums[-1])
         elif inspect.isclass(value) and issubclass(value, BaseModel):
             models.append(_collect_model(value))
             kind = "model"
-            target = f"/{_route(_sdk_type_path(models[-1]))}"
+            target = _sdk_type_route(models[-1])
         elif inspect.isclass(value) and issubclass(value, Exception):
             exceptions.append(_collect_exception(value))
             kind = "exception"
@@ -737,13 +736,14 @@ def collect_sdk_reference() -> SDKReference:
     )
 
 
+def _escape_braces(value: str) -> str:
+    """Escape braces so MDX renders them as text instead of a JSX expression."""
+    return value.replace("{", "&#123;").replace("}", "&#125;")
+
+
 def _escape_cell(value: str) -> str:
     escaped = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("|", "\\|")
-    return escaped.replace("\n", "<br />")
-
-
-def _code(value: str | None) -> str:
-    return "—" if value is None else f"`{_escape_cell(value)}`"
+    return _escape_braces(escaped).replace("\n", "<br />")
 
 
 def _frontmatter(title: str, description: str) -> list[str]:
@@ -758,20 +758,122 @@ def _frontmatter(title: str, description: str) -> list[str]:
     ]
 
 
+def _page_summary(summary: str, fallback: str) -> tuple[str, tuple[str, ...]]:
+    """Split a summary into a frontmatter description and any remaining body paragraphs.
+
+    Mintlify renders the frontmatter description under the page title, so repeating it in the
+    body only duplicates it. The first paragraph becomes the description; later paragraphs are
+    genuinely additional text and are kept in the body.
+    """
+    paragraphs = [" ".join(block.split()) for block in summary.strip().split("\n\n")]
+    paragraphs = [block for block in paragraphs if block]
+    if not paragraphs:
+        return fallback, ()
+    return paragraphs[0], tuple(paragraphs[1:])
+
+
+def _page_header(title: str, summary: str, fallback: str) -> list[str]:
+    """Render frontmatter plus any body text the frontmatter description does not already show."""
+    description, body = _page_summary(summary, fallback)
+    lines = _frontmatter(title, description)
+    for paragraph in body:
+        lines.extend((paragraph, ""))
+    return lines
+
+
 def _route(path: Path) -> str:
     return path.with_suffix("").as_posix()
 
 
-def _cli_command_path(command: CLICommandReference) -> Path:
-    return Path("reference/cli", *command.path).with_suffix(".mdx")
+def _cli_group_page_path(group: str) -> Path:
+    """Return the single generated page that documents one top-level command group."""
+    return Path("reference/cli", group).with_suffix(".mdx")
 
 
-def _sdk_method_path(resource_page: str, method: SDKMethodReference) -> Path:
-    return Path("reference/sdk", resource_page, method.name).with_suffix(".mdx")
+def _cli_command_anchor(command: CLICommandReference) -> str:
+    """Return the stable explicit heading id for one leaf command inside its group page."""
+    return "-".join(command.path[1:])
 
 
-def _sdk_type_path(entry: SDKModelReference | SDKEnumReference) -> Path:
-    return Path("reference/sdk/models", entry.family.lower(), entry.slug).with_suffix(".mdx")
+def _cli_command_route(command: CLICommandReference) -> str:
+    """Return the public route and anchor a leaf command is documented at."""
+    return f"/{_route(_cli_group_page_path(command.path[0]))}#{_cli_command_anchor(command)}"
+
+
+def _cli_legacy_command_route(command: CLICommandReference) -> str:
+    """Return the retired per-command route that must keep resolving through a redirect."""
+    return "/" + Path("reference/cli", *command.path).as_posix()
+
+
+def _cli_groups(commands: Sequence[CLICommandReference]) -> OrderedDict[str, list[CLICommandReference]]:
+    """Group leaf commands by top-level group, preserving Click registration order."""
+    groups: OrderedDict[str, list[CLICommandReference]] = OrderedDict()
+    for command in commands:
+        groups.setdefault(command.path[0], []).append(command)
+    return groups
+
+
+def cli_redirects(commands: Sequence[CLICommandReference] | None = None) -> list[dict[str, str]]:
+    """Map every retired per-command route to its group page anchor.
+
+    Mintlify's redirect schema takes a free-form ``destination`` string and its redirect
+    validator strips ``#``/``?`` selectors before resolving, so anchor destinations are supported.
+    """
+    resolved = collect_cli_commands() if commands is None else commands
+    return [
+        {"source": _cli_legacy_command_route(command), "destination": _cli_command_route(command)}
+        for command in resolved
+    ]
+
+
+def _sdk_resource_page_path(resource_page: str) -> Path:
+    """Return the single generated page that documents one SDK resource namespace."""
+    return Path("reference/sdk", resource_page).with_suffix(".mdx")
+
+
+def _sdk_method_anchor(method: SDKMethodReference) -> str:
+    """Return the stable explicit heading id for one SDK method inside its resource page."""
+    return method.name.replace("_", "-")
+
+
+def _sdk_method_route(resource_page: str, method: SDKMethodReference) -> str:
+    """Return the public route and anchor where one SDK method is documented."""
+    return f"/{_route(_sdk_resource_page_path(resource_page))}#{_sdk_method_anchor(method)}"
+
+
+def _sdk_legacy_method_route(resource_page: str, method: SDKMethodReference) -> str:
+    """Return the retired per-method route that must keep resolving through a redirect."""
+    return "/" + Path("reference/sdk", resource_page, method.name).as_posix()
+
+
+def sdk_redirects(reference: SDKReference | None = None) -> list[dict[str, str]]:
+    """Map every retired SDK method route to its resource page anchor."""
+    resolved = collect_sdk_reference() if reference is None else reference
+    return [
+        {
+            "source": _sdk_legacy_method_route(_RESOURCE_PAGES[resource.name], method),
+            "destination": _sdk_method_route(_RESOURCE_PAGES[resource.name], method),
+        }
+        for resource in resolved.resources
+        for method in resource.methods
+    ]
+
+
+def sdk_type_redirects(reference: SDKReference | None = None) -> list[dict[str, str]]:
+    """Map every retired per-type route to its family page anchor."""
+    resolved = collect_sdk_reference() if reference is None else reference
+    return [
+        {"source": _legacy_type_route(entry), "destination": _sdk_type_route(entry)}
+        for entry in _ordered_type_entries(resolved)
+    ]
+
+
+def redirects(
+    commands: Sequence[CLICommandReference] | None = None,
+    reference: SDKReference | None = None,
+) -> list[dict[str, str]]:
+    """Return all retired public reference routes in deterministic registration order."""
+    return [*cli_redirects(commands), *sdk_redirects(reference), *sdk_type_redirects(reference)]
 
 
 def _parameter_metavar(parameter: CLIParameterReference) -> str:
@@ -810,437 +912,6 @@ def _command_usage(command: CLICommandReference) -> str:
     return " \\\n  ".join(fragments)
 
 
-def _curl(
-    method: str,
-    path: str,
-    *,
-    query: Sequence[tuple[str, str]] = (),
-    body: str | None = None,
-    mutating: bool = False,
-    api_key_header: str = "X-Api-Key",
-    harness_headers: bool = True,
-) -> str:
-    """Render a shell-valid cURL example without long URL or JSON lines."""
-    lines: list[str] = []
-    if mutating:
-        lines.append("# Example only — review before running")
-    if method == "GET" and query:
-        lines.append(f'curl --get "$VALKYRIE_BASE_URL{path}" \\')
-    else:
-        lines.append(f'curl --request {method} "$VALKYRIE_BASE_URL{path}" \\')
-    lines.append(f'  --header "{api_key_header}: $VALS_API_KEY"')
-    if harness_headers:
-        headers = (
-            ("X-Harness-Aws-Access-Key-Id", "$AWS_ACCESS_KEY_ID"),
-            ("X-Harness-Aws-Secret-Access-Key", "$AWS_SECRET_ACCESS_KEY"),
-            ("X-Harness-Aws-Default-Region", "$AWS_DEFAULT_REGION"),
-            ("X-Harness-S3-Bucket", "$S3_BUCKET"),
-            ("X-Harness-Log-Group", "$LOG_GROUP"),
-            ("X-Harness-Log-Retention-Policy", "$LOG_RETENTION_POLICY"),
-        )
-        for name, value in headers:
-            lines[-1] += " \\"
-            lines.append(f'  --header "{name}: {value}"')
-    for name, value in query:
-        lines[-1] += " \\"
-        option = "--data-urlencode" if method == "GET" else "--url-query"
-        lines.append(f'  {option} "{name}={value}"')
-    if body is not None:
-        pretty_body = json.dumps(json.loads(body), indent=2, ensure_ascii=False)
-        lines[-1] += " \\"
-        lines.append('  --header "Content-Type: application/json" \\')
-        lines.append("  --data @- <<'JSON'")
-        lines.extend(pretty_body.splitlines())
-        lines.append("JSON")
-    if harness_headers:
-        lines.extend(
-            (
-                "# For temporary credentials, add:",
-                '#   --header "X-Harness-Aws-Session-Token: $AWS_SESSION_TOKEN"',
-            )
-        )
-    return "\n".join(lines)
-
-
-def _render_http_request(request: HTTPRequest) -> tuple[str, str, str]:
-    return (
-        "bash",
-        request.label,
-        _curl(
-            request.method,
-            request.path,
-            query=request.query,
-            body=request.body,
-            mutating=request.mutating,
-            harness_headers=request.harness_headers,
-        ),
-    )
-
-
-def _validate_cli_http_classification(commands: Sequence[CLICommandReference]) -> None:
-    paths = {command.path for command in commands}
-    classified: set[tuple[str, ...]] = set(_CLI_HTTP_PATHS | _CLI_LOCAL_PATHS)
-    overlap: set[tuple[str, ...]] = set(_CLI_HTTP_PATHS & _CLI_LOCAL_PATHS)
-    if paths != classified or overlap:
-        missing = sorted(" ".join(path) for path in paths - classified)
-        unexpected = sorted(" ".join(path) for path in classified - paths)
-        raise ValueError(f"Invalid CLI HTTP classification; missing={missing}, unexpected={unexpected}")
-
-
-def _cli_http_requests(path: tuple[str, ...]) -> tuple[HTTPRequest, ...]:
-    service_body = '{"services":[{"name":"benchmark-name","url":"https://benchmark.example.com","auth_header_name":null,"auth_secret_name":null}]}'
-    requests: dict[tuple[str, ...], tuple[HTTPRequest, ...]] = {
-        ("run", "analyze"): (
-            HTTPRequest("HTTP prerequisite", "GET", "/fetch-benchmark-metadata/$RUN_ID"),
-            HTTPRequest(
-                "HTTP primary",
-                "POST",
-                "/analyze-benchmark/$RUN_ID",
-                body='{"no_cache":false,"lambda_function":null}',
-                mutating=True,
-            ),
-        ),
-        ("run", "errors"): (
-            HTTPRequest(
-                "HTTP primary", "GET", "/retrieve-results", query=(("benchmark_id", "$RUN_ID"), ("s3", "false"))
-            ),
-        ),
-        ("run", "fetch"): (
-            HTTPRequest("HTTP primary", "GET", "/fetch-benchmark", query=(("benchmark_id", "$RUN_ID"),)),
-            HTTPRequest(
-                "HTTP stream",
-                "GET",
-                "/fetch-benchmark",
-                query=(("benchmark_id", "$RUN_ID"), ("connect", "true")),
-            ),
-            HTTPRequest("HTTP JSON metadata", "GET", "/fetch-benchmark-metadata/$RUN_ID"),
-        ),
-        ("run", "list"): (
-            HTTPRequest(
-                "HTTP primary",
-                "GET",
-                "/fetch-benchmarks",
-                query=(("agent_name", "agent-name"), ("order_by", "desc"), ("limit", "5"), ("offset", "0")),
-            ),
-        ),
-        ("run", "outputs"): (
-            HTTPRequest("HTTP prerequisite", "GET", "/fetch-benchmark-metadata/$RUN_ID"),
-            HTTPRequest("HTTP primary", "GET", "/fetch-run-outputs/$RUN_ID", query=(("task_ids", "task-id"),)),
-        ),
-        ("run", "results"): (
-            HTTPRequest(
-                "HTTP primary",
-                "GET",
-                "/retrieve-results",
-                query=(("benchmark_id", "$RUN_ID"), ("s3", "false"), ("task_ids", "task-id")),
-            ),
-            HTTPRequest(
-                "HTTP S3 prerequisite",
-                "GET",
-                "/check-results-exist",
-                query=(("benchmark_id", "$RUN_ID"),),
-                mutating=True,
-                note="Only `--s3` performs this overwrite check; local result-file writes are not HTTP operations.",
-            ),
-            HTTPRequest(
-                "HTTP S3 conditional",
-                "GET",
-                "/retrieve-results",
-                query=(("benchmark_id", "$RUN_ID"), ("s3", "true"), ("task_ids", "task-id")),
-                mutating=True,
-            ),
-        ),
-        ("run", "resume"): (
-            HTTPRequest("HTTP prerequisite", "GET", "/fetch-benchmark", query=(("benchmark_id", "$RUN_ID"),)),
-            HTTPRequest(
-                "HTTP update-agent metadata",
-                "GET",
-                "/fetch-benchmark-metadata/$RUN_ID",
-                mutating=True,
-                note="`--update-agent` then refreshes the agent through direct S3 helpers; that local/S3 step is not tracker HTTP.",
-            ),
-            HTTPRequest(
-                "HTTP primary",
-                "POST",
-                "/retry-or-resume-benchmark/$RUN_ID",
-                query=(("retry", "false"), ("retry_mode", "auto"), ("concurrency", "5")),
-                body='{"task_ids":[],"service_headers":{},"secrets":{}}',
-                mutating=True,
-            ),
-            HTTPRequest(
-                "HTTP connect initial status",
-                "GET",
-                "/fetch-benchmark",
-                query=(("benchmark_id", "$RUN_ID"),),
-            ),
-            HTTPRequest(
-                "HTTP connect stream",
-                "GET",
-                "/fetch-benchmark",
-                query=(("benchmark_id", "$RUN_ID"), ("connect", "true")),
-            ),
-        ),
-        ("run", "retry"): (
-            HTTPRequest("HTTP prerequisite", "GET", "/fetch-benchmark", query=(("benchmark_id", "$RUN_ID"),)),
-            HTTPRequest(
-                "HTTP update-agent metadata",
-                "GET",
-                "/fetch-benchmark-metadata/$RUN_ID",
-                mutating=True,
-                note="`--update-agent` then refreshes the agent through direct S3 helpers; that local/S3 step is not tracker HTTP.",
-            ),
-            HTTPRequest(
-                "HTTP primary",
-                "POST",
-                "/retry-or-resume-benchmark/$RUN_ID",
-                query=(("retry", "true"), ("retry_mode", "auto"), ("concurrency", "5")),
-                body='{"task_ids":[],"service_headers":{},"secrets":{}}',
-                mutating=True,
-            ),
-            HTTPRequest(
-                "HTTP connect initial status",
-                "GET",
-                "/fetch-benchmark",
-                query=(("benchmark_id", "$RUN_ID"),),
-            ),
-            HTTPRequest(
-                "HTTP connect stream",
-                "GET",
-                "/fetch-benchmark",
-                query=(("benchmark_id", "$RUN_ID"), ("connect", "true")),
-            ),
-        ),
-        ("run", "start"): (
-            HTTPRequest(
-                "HTTP primary",
-                "POST",
-                "/start-benchmark",
-                body='{"contract":{"name":"agent-name","model":"model-name","install_cmd":"","run_cmd":"","final_output":null,"output_artifacts":[],"egress_allowlist":[],"secrets":{},"kwargs":{}},"benchmark_name":"benchmark-name","concurrency":5,"label":null,"task_ids":null,"slice_str":null,"lambda_function":null,"dataset":"default","harness_config":{"aws":{"aws_access_key_id":"literal-placeholder","aws_secret_access_key":"literal-placeholder","aws_default_region":"literal-placeholder","aws_session_token":null},"s3_bucket":"bucket-name","log_group":"log-group","log_retention_policy":30,"sandbox_provider_secret_name":"provider-secret-name"},"custom_benchmark_service":null,"service_headers":{},"sandbox_provider":"daytona","sandbox_provider_secret_name":null,"service_auth_header_name":null,"service_auth_secret_name":null,"webhook_secret_name":null,"webhook_intervals":null}',
-                mutating=True,
-                note="JSON values are literal templates. `--count` repeats this request.",
-            ),
-            HTTPRequest(
-                "HTTP connect initial status",
-                "GET",
-                "/fetch-benchmark",
-                query=(("benchmark_id", "$RUN_ID"),),
-            ),
-            HTTPRequest(
-                "HTTP connect stream",
-                "GET",
-                "/fetch-benchmark",
-                query=(("benchmark_id", "$RUN_ID"), ("connect", "true")),
-            ),
-        ),
-        ("run", "status"): (HTTPRequest("HTTP primary", "GET", "/benchmarks/status", query=(("ids", "$RUN_ID"),)),),
-        ("run", "stop"): (
-            HTTPRequest(
-                "HTTP primary",
-                "POST",
-                "/stop-benchmark/$RUN_ID",
-                query=(("force", "false"),),
-                body='{"task_ids":null}',
-                mutating=True,
-            ),
-        ),
-        ("run", "update"): (
-            HTTPRequest(
-                "HTTP primary", "PATCH", "/benchmarks/$RUN_ID/concurrency", body='{"concurrency":5}', mutating=True
-            ),
-        ),
-        ("benchmark", "tasks"): (
-            HTTPRequest(
-                "HTTP primary",
-                "POST",
-                "/fetch-benchmark-tasks",
-                body='{"benchmark_name":"benchmark-name","dataset":"default","custom_benchmark_service":null,"service_headers":{}}',
-            ),
-        ),
-        ("config", "init"): (
-            HTTPRequest(
-                "HTTP hosted mode",
-                "POST",
-                "/init",
-                mutating=True,
-                harness_headers=False,
-                note="Hosted setup validates the API key with this request. Self-hosted setup does not call Tracker.",
-            ),
-        ),
-        ("config", "service", "list"): (
-            HTTPRequest("HTTP catalog", "GET", "/benchmark-services"),
-            HTTPRequest(
-                "HTTP health check",
-                "POST",
-                "/benchmark-services",
-                body=service_body,
-                note="The CLI sends this request only when the merged hosted/custom catalog contains services.",
-            ),
-        ),
-    }
-    return requests.get(path, ())
-
-
-def _sdk_http_requests(resource: str, method: str) -> tuple[HTTPRequest, ...]:
-    start_body = '{"contract":{"name":"agent-name","model":null,"install_cmd":"","run_cmd":"","final_output":null,"output_artifacts":[],"egress_allowlist":[],"secrets":{},"kwargs":{}},"benchmark_name":"benchmark-name","concurrency":5,"label":null,"task_ids":null,"slice_str":null,"lambda_function":null,"dataset":"default","harness_config":{"aws":{"aws_access_key_id":"literal-placeholder","aws_secret_access_key":"literal-placeholder","aws_default_region":"literal-placeholder","aws_session_token":null},"s3_bucket":"bucket-name","log_group":"log-group","log_retention_policy":30,"sandbox_provider_secret_name":"provider-secret-name"},"custom_benchmark_service":null,"service_headers":{},"sandbox_provider":"daytona","sandbox_provider_secret_name":null,"service_auth_header_name":null,"service_auth_secret_name":null,"webhook_secret_name":null,"webhook_intervals":null}'
-    service_body = '{"services":[{"name":"benchmark-name","url":"https://benchmark.example.com","auth_header_name":null,"auth_secret_name":null}]}'
-    requests: dict[tuple[str, str], tuple[HTTPRequest, ...]] = {
-        ("RunsResource", "start"): (
-            HTTPRequest(
-                "HTTP",
-                "POST",
-                "/start-benchmark",
-                body=start_body,
-                mutating=True,
-                note="JSON values are literal templates; single-quoted JSON does not expand shell variables.",
-            ),
-        ),
-        ("RunsResource", "fetch"): (
-            HTTPRequest("HTTP", "GET", "/fetch-benchmark", query=(("benchmark_id", "$RUN_ID"),)),
-        ),
-        ("RunsResource", "list"): (
-            HTTPRequest(
-                "HTTP",
-                "GET",
-                "/fetch-benchmarks",
-                query=(("order_by", "desc"), ("limit", "50"), ("offset", "0")),
-            ),
-        ),
-        ("RunsResource", "stream"): (
-            HTTPRequest("HTTP", "GET", "/fetch-benchmark", query=(("benchmark_id", "$RUN_ID"), ("connect", "true"))),
-        ),
-        ("RunsResource", "results"): (
-            HTTPRequest(
-                "HTTP",
-                "GET",
-                "/retrieve-results",
-                query=(("benchmark_id", "$RUN_ID"), ("s3", "false"), ("task_ids", "task-id")),
-            ),
-        ),
-        ("RunsResource", "metadata"): (HTTPRequest("HTTP", "GET", "/fetch-benchmark-metadata/$RUN_ID"),),
-        ("RunsResource", "results_exist"): (
-            HTTPRequest("HTTP", "GET", "/check-results-exist", query=(("benchmark_id", "$RUN_ID"),)),
-        ),
-        ("RunsResource", "analyze"): (
-            HTTPRequest(
-                "HTTP",
-                "POST",
-                "/analyze-benchmark/$RUN_ID",
-                body='{"no_cache":false,"lambda_function":null}',
-                mutating=True,
-            ),
-        ),
-        ("RunsResource", "stream_outputs"): (
-            HTTPRequest("HTTP", "GET", "/fetch-run-outputs/$RUN_ID", query=(("task_ids", "task-id"),)),
-        ),
-        ("RunsResource", "stop"): (
-            HTTPRequest(
-                "HTTP no task selection", "POST", "/stop-benchmark/$RUN_ID", query=(("force", "false"),), mutating=True
-            ),
-            HTTPRequest(
-                "HTTP selected tasks",
-                "POST",
-                "/stop-benchmark/$RUN_ID",
-                query=(("force", "false"),),
-                body='{"task_ids":["task-id"]}',
-                mutating=True,
-            ),
-        ),
-        ("RunsResource", "resume"): (
-            HTTPRequest("HTTP prerequisite", "GET", "/fetch-benchmark", query=(("benchmark_id", "$RUN_ID"),)),
-            HTTPRequest(
-                "HTTP primary",
-                "POST",
-                "/retry-or-resume-benchmark/$RUN_ID",
-                query=(("retry", "false"), ("retry_mode", "auto")),
-                body='{"task_ids":[],"service_headers":{},"secrets":{}}',
-                mutating=True,
-            ),
-        ),
-        ("RunsResource", "retry"): (
-            HTTPRequest("HTTP prerequisite", "GET", "/fetch-benchmark", query=(("benchmark_id", "$RUN_ID"),)),
-            HTTPRequest(
-                "HTTP primary",
-                "POST",
-                "/retry-or-resume-benchmark/$RUN_ID",
-                query=(("retry", "true"), ("retry_mode", "auto")),
-                body='{"task_ids":[],"service_headers":{},"secrets":{}}',
-                mutating=True,
-            ),
-        ),
-        ("BenchmarksResource", "fetch"): (HTTPRequest("HTTP", "GET", "/benchmarks/$RUN_ID"),),
-        ("BenchmarksResource", "statuses"): (
-            HTTPRequest("HTTP", "GET", "/benchmarks/status", query=(("ids", "$RUN_ID"),)),
-        ),
-        ("BenchmarksResource", "tasks"): (
-            HTTPRequest(
-                "HTTP",
-                "GET",
-                "/benchmarks/$RUN_ID/tasks",
-                query=(("status", "ERROR,FINISHED"), ("limit", "25"), ("offset", "0")),
-            ),
-        ),
-        ("BenchmarksResource", "task"): (
-            HTTPRequest(
-                "HTTP",
-                "GET",
-                "/benchmarks/$RUN_ID/tasks/task%20one",
-                note="Raw cURL callers must URL-encode the task-id path segment; the SDK does this automatically.",
-            ),
-        ),
-        ("BenchmarksResource", "artifacts"): (
-            HTTPRequest(
-                "HTTP",
-                "GET",
-                "/benchmarks/$RUN_ID/tasks/task%20one/artifacts",
-                note="Raw cURL callers must URL-encode the task-id path segment; the SDK does this automatically.",
-            ),
-        ),
-        ("AgentsResource", "list"): (HTTPRequest("HTTP", "GET", "/agents"),),
-        ("AgentsResource", "download_url"): (
-            HTTPRequest(
-                "HTTP",
-                "GET",
-                "/agents/agent%20one/download-url",
-                note="Raw cURL callers must URL-encode the agent-name path segment; the SDK does this automatically.",
-            ),
-        ),
-        ("BenchmarkServicesResource", "catalog"): (HTTPRequest("HTTP", "GET", "/benchmark-services"),),
-        ("BenchmarkServicesResource", "list"): (
-            HTTPRequest("HTTP catalog prerequisite", "GET", "/benchmark-services"),
-            HTTPRequest(
-                "HTTP primary",
-                "POST",
-                "/benchmark-services",
-                body=service_body,
-                note="The SDK omits the POST when the catalog is empty.",
-            ),
-        ),
-        ("BenchmarkServicesResource", "task_ids"): (
-            HTTPRequest(
-                "HTTP",
-                "POST",
-                "/fetch-benchmark-tasks",
-                body='{"benchmark_name":"benchmark-name","dataset":"default","custom_benchmark_service":null,"service_headers":{}}',
-            ),
-        ),
-    }
-    return requests[(resource, method)]
-
-
-def _render_http_metadata(requests: Sequence[HTTPRequest]) -> tuple[list[tuple[str, str, str]], list[str]]:
-    blocks = [_render_http_request(request) for request in requests]
-    notes = [
-        f"**{request.label}:** "
-        + request.note.replace(
-            "single-quoted JSON does not expand shell variables",
-            "a quoted JSON heredoc does not expand shell variables",
-        )
-        for request in requests
-        if request.note
-    ]
-    return blocks, notes
-
-
 def _render_panel(blocks: Sequence[tuple[str, str, str]]) -> list[str]:
     lines = ["<Panel>"]
     if len(blocks) > 1:
@@ -1253,8 +924,18 @@ def _render_panel(blocks: Sequence[tuple[str, str, str]]) -> list[str]:
     return lines
 
 
+def _jsx_text(value: str) -> str:
+    """Render literal text through a JSX string so MDX cannot transform it.
+
+    MDX applies smart typography to JSX text nodes, which turns ``--connect`` into an em dash
+    and straight quotes into curly quotes. A string expression keeps parameter names, defaults,
+    and constraints exactly as the source declares them.
+    """
+    return "{" + json.dumps(value, ensure_ascii=False) + "}"
+
+
 def _escape_html(value: str) -> str:
-    return html.escape(value, quote=False).replace("\n", "<br />")
+    return _escape_braces(html.escape(value, quote=False)).replace("\n", "<br />")
 
 
 def _render_parameter_row(
@@ -1268,34 +949,41 @@ def _render_parameter_row(
     type_markup: bool = False,
     alias: str | None = None,
 ) -> list[str]:
-    rendered_type = type_name if type_markup else f"<code>{_escape_html(type_name)}</code>"
+    rendered_type = type_name if type_markup else f"<code>{_jsx_text(type_name)}</code>"
     metadata = ["required" if required else "optional", rendered_type]
     if alias is not None:
-        metadata.append(f"alias: <code>{_escape_html(alias)}</code>")
+        metadata.append(f"alias: <code>{_jsx_text(alias)}</code>")
     if default is not None:
-        metadata.append(f"default: <code>{_escape_html(default)}</code>")
+        metadata.append(f"default: <code>{_jsx_text(default)}</code>")
     if constraints:
-        metadata.append("constraints: " + _escape_html("; ".join(constraints)))
+        metadata.append("constraints: " + _jsx_text("; ".join(constraints)))
 
     lines = [
         '<div className="border-b border-gray-200 py-3 dark:border-gray-800">',
         '  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">'
-        f'<span className="break-all font-mono text-sm">{_escape_html(name)}</span>'
+        f'<span className="break-all font-mono text-sm">{_jsx_text(name)}</span>'
         f'<span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">'
         f"{' · '.join(metadata)}</span></div>",
     ]
     if description:
-        lines.append(f'  <p className="mb-0 mt-1">{_escape_html(description)}</p>')
+        lines.append(f'  <p className="mb-0 mt-1">{_jsx_text(description)}</p>')
     lines.extend(("</div>", ""))
     return lines
 
 
-def _render_cli_parameter_table(parameters: Sequence[CLIParameterReference], kind: str) -> list[str]:
+def _render_cli_parameter_table(
+    parameters: Sequence[CLIParameterReference], kind: str, *, label_only: bool = False
+) -> list[str]:
+    """Render compact parameter rows under a section label.
+
+    ``label_only`` emits a bold label instead of a heading so that grouped command pages keep
+    the native table of contents limited to command headings.
+    """
     selected = [parameter for parameter in parameters if parameter.kind == kind]
     if not selected:
         return []
     title = "Arguments" if kind == "argument" else "Options"
-    lines = [f"## {title}", ""]
+    lines = [f"**{title}**" if label_only else f"## {title}", ""]
     for parameter in selected:
         lines.extend(
             _render_parameter_row(
@@ -1344,36 +1032,68 @@ def _format_cli_example(command: CLICommandReference, example: str) -> str:
     return "\n".join(lines)
 
 
-def _render_cli_page(command: CLICommandReference) -> str:
+def _cli_example(command: CLICommandReference) -> str | None:
+    """Return the runnable-looking example for one command, with destructive cases neutralized."""
+    if command.example is None:
+        return None
+    example = command.example
+    if command.path == ("run", "stop"):
+        example = "valkyrie run stop $RUN_ID"
+    elif command.path == ("config", "auth", "set"):
+        example = "valkyrie config auth set benchmark-name $BENCHMARK_CREDENTIAL"
+    if command.path in _CLI_MUTATING_PATHS:
+        example = "# Example only — review before running\n" + example
+    return _format_cli_example(command, example)
+
+
+def _render_cli_command_section(command: CLICommandReference) -> list[str]:
+    """Render one leaf command as a level-2 section with an explicit stable anchor.
+
+    Code blocks stay inline rather than inside a Panel or CodeGroup, because Mintlify replaces
+    the native right table of contents on pages that use a Panel.
+    """
     command_name = "valkyrie " + " ".join(command.path)
-    description = command.summary or f"Reference for {command_name}."
-    lines = _frontmatter(command_name, description)
-    lines.extend((description, ""))
-    panel_blocks = [("bash", "Syntax", _command_usage(command))]
-    if command.example is not None:
-        example = command.example
-        if command.path == ("run", "stop"):
-            example = "valkyrie run stop $RUN_ID"
-        elif command.path == ("config", "auth", "set"):
-            example = "valkyrie config auth set benchmark-name $BENCHMARK_CREDENTIAL"
-        if command.path in _CLI_MUTATING_PATHS:
-            example = "# Example only — review before running\n" + example
-        panel_blocks.append(("bash", "Example", _format_cli_example(command, example)))
-    http_blocks, http_notes = _render_http_metadata(_cli_http_requests(command.path))
-    panel_blocks.extend(http_blocks)
-    lines.extend(_render_panel(panel_blocks))
-    for note in http_notes:
-        lines.extend((note, ""))
+    summary, extra_paragraphs = _page_summary(command.summary, f"Reference for {command_name}.")
+    lines = [f"## `{command_name}` {{#{_cli_command_anchor(command)}}}", "", summary, ""]
+    for paragraph in extra_paragraphs:
+        lines.extend((paragraph, ""))
+
+    blocks = [("bash", "Syntax", _command_usage(command))]
+    example = _cli_example(command)
+    if example is not None:
+        blocks.append(("bash", "Example", example))
+    for language, title, content in blocks:
+        lines.extend((f"```{language} {title}", content, "```", ""))
+
     if command.path == ("run", "retry"):
         lines.extend(
             (
-                "`retry` is a separate command alias for the retry mode of `run resume`; it retains the shared options.",
+                "`retry` is a command alias for the retry mode of `run resume` and shares its options. "
+                "It always retries tasks in `ERROR` status; use `run resume` to admit pending tasks instead.",
                 "",
             )
         )
-    lines.extend(_render_cli_parameter_table(command.parameters, "argument"))
-    lines.extend(_render_cli_parameter_table(command.parameters, "option"))
-    lines.extend((f"For task guidance, see [{command.path[0].title()} guides]({_GUIDE_LINKS[command.path[0]]}).", ""))
+    lines.extend(_render_cli_parameter_table(command.parameters, "argument", label_only=True))
+    lines.extend(_render_cli_parameter_table(command.parameters, "option", label_only=True))
+    guide = _GUIDE_LINKS[command.path[0]]
+    lines.extend((f"Task guidance: [{command.path[0].title()} guides]({guide}).", ""))
+    return lines
+
+
+def _render_cli_group_page(group: str, commands: Sequence[CLICommandReference]) -> str:
+    """Render every command in one top-level group as a single page."""
+    lines = _frontmatter(f"valkyrie {group}", f"Complete generated reference for every `valkyrie {group}` command.")
+    lines.extend(
+        (
+            f"This page documents all {len(commands)} commands in the `{group}` group in registration order. "
+            "Use the table of contents to jump to a command.",
+            "",
+        )
+    )
+    for position, command in enumerate(commands):
+        if position:
+            lines.extend(("---", ""))
+        lines.extend(_render_cli_command_section(command))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -1381,53 +1101,38 @@ def _render_cli_index(commands: Sequence[CLICommandReference]) -> str:
     lines = _frontmatter("CLI reference", "Complete generated reference for every Valkyrie CLI command.")
     lines.extend(
         (
-            "This reference is generated from the registered Click command tree. Use the task guides for complete workflows and examples.",
+            "This reference is generated from the CLI itself. Use the task guides for complete workflows.",
             "",
             "## Command groups",
             "",
-            "| Group | Commands | Reference |",
-            "| --- | ---: | --- |",
+            "<CardGroup cols={2}>",
         )
     )
-    groups: OrderedDict[str, list[CLICommandReference]] = OrderedDict()
-    for command in commands:
-        groups.setdefault(command.path[0], []).append(command)
-    for group, group_commands in groups.items():
-        first_route = _route(_cli_command_path(group_commands[0]))
-        lines.append(f"| `{group}` | {len(group_commands)} | [Open](/{first_route}) |")
-    lines.extend(("", "## Complete command tree", "", "```text", "valkyrie"))
-    for group, group_commands in groups.items():
-        lines.append(f"  {group}")
-        for command in group_commands:
-            lines.append("    " + " ".join(command.path[1:]))
-    lines.extend(("```", "", f"Format version: `{_FORMAT_VERSION}`", ""))
+    for group, group_commands in _cli_groups(commands).items():
+        icon, purpose = _CLI_GROUP_CARDS[group]
+        route = _route(_cli_group_page_path(group))
+        count = len(group_commands)
+        noun = "command" if count == 1 else "commands"
+        lines.extend(
+            (
+                f'  <Card title="{group.title()} commands" icon="{icon}" href="/{route}">',
+                f"    {count} {noun} for {purpose}.",
+                "  </Card>",
+            )
+        )
+    lines.extend(("</CardGroup>", ""))
     return "\n".join(lines)
 
 
 def _cli_navigation(commands: Sequence[CLICommandReference]) -> list[object]:
+    """Return one navigation entry for the index plus one per top-level command group."""
     navigation: list[object] = [_route(_CLI_INDEX_PATH)]
-    groups: OrderedDict[str, list[CLICommandReference]] = OrderedDict()
-    for command in commands:
-        groups.setdefault(command.path[0], []).append(command)
-    for group, group_commands in groups.items():
-        pages: list[object] = []
-        nested: OrderedDict[str, list[str]] = OrderedDict()
-        for command in group_commands:
-            route = _route(_cli_command_path(command))
-            if len(command.path) == 2:
-                pages.append(route)
-                continue
-            subgroup = command.path[1]
-            if subgroup not in nested:
-                nested[subgroup] = []
-                pages.append({"group": subgroup.title(), "pages": nested[subgroup]})
-            nested[subgroup].append(route)
-        navigation.append({"group": group.title(), "pages": pages})
+    navigation.extend(_route(_cli_group_page_path(group)) for group in _cli_groups(commands))
     return navigation
 
 
 def _public_type_routes(reference: SDKReference) -> dict[str, str]:
-    return {entry.name: f"/{_route(_sdk_type_path(entry))}" for entry in (*reference.models, *reference.enums)}
+    return {entry.name: _sdk_type_route(entry) for entry in (*reference.models, *reference.enums)}
 
 
 def _link_public_types(value: str, type_routes: dict[str, str]) -> str:
@@ -1445,12 +1150,13 @@ def _link_public_types(value: str, type_routes: dict[str, str]) -> str:
 def _render_sdk_parameter_table(
     parameters: Sequence[SDKParameterReference],
     *,
-    heading_level: int = 2,
+    heading_level: int | None = 2,
     type_routes: dict[str, str] | None = None,
 ) -> list[str]:
     if not parameters:
         return []
-    lines = [f"{'#' * heading_level} Parameters", ""]
+    heading = "**Parameters**" if heading_level is None else f"{'#' * heading_level} Parameters"
+    lines = [heading, ""]
     for parameter in parameters:
         lines.extend(
             _render_parameter_row(
@@ -1467,10 +1173,11 @@ def _render_sdk_parameter_table(
 def _render_returns(
     method: SDKMethodReference,
     *,
-    heading_level: int = 2,
+    heading_level: int | None = 2,
     type_routes: dict[str, str] | None = None,
 ) -> list[str]:
-    lines = [f"{'#' * heading_level} Returns", ""]
+    heading = "**Returns**" if heading_level is None else f"{'#' * heading_level} Returns"
+    lines = [heading, ""]
     if len(method.return_types) == 1:
         lines.extend((_link_public_types(method.return_types[0], type_routes or {}), ""))
         return lines
@@ -1482,30 +1189,42 @@ def _render_returns(
     return [*lines, ""]
 
 
-def _render_sdk_method_page(
+def _render_sdk_method_section(
     reference: SDKReference,
     resource: SDKResourceReference,
     page: str,
     method: SDKMethodReference,
-) -> str:
+) -> list[str]:
+    """Render one SDK method as a level-2 section with an explicit stable anchor."""
     title = f"{resource.client_attribute}.{method.name}"
-    description = method.description or f"Reference for {title}."
-    lines = _frontmatter(title, description)
-    lines.extend((description, ""))
-    signature_blocks = [
-        ("python", "Signature" if len(method.signatures) == 1 else f"Overload {index}", signature)
-        for index, signature in enumerate(method.signatures, start=1)
-    ]
-    http_blocks, http_notes = _render_http_metadata(_sdk_http_requests(resource.name, method.name))
-    signature_blocks.extend(http_blocks)
-    lines.extend(_render_panel(signature_blocks))
-    for note in http_notes:
-        lines.extend((note, ""))
+    summary, extra_paragraphs = _page_summary(method.description, f"Reference for {title}.")
+    lines = [f"## `{title}` {{#{_sdk_method_anchor(method)}}}", "", summary, ""]
+    for paragraph in extra_paragraphs:
+        lines.extend((paragraph, ""))
+
+    for index, signature in enumerate(method.signatures, start=1):
+        label = "Signature" if len(method.signatures) == 1 else f"Overload {index}"
+        lines.extend((f"```python {label}", signature, "```", ""))
+
     type_routes = _public_type_routes(reference)
-    lines.extend(_render_sdk_parameter_table(method.parameters, type_routes=type_routes))
-    lines.extend(_render_returns(method, type_routes=type_routes))
+    lines.extend(_render_sdk_parameter_table(method.parameters, heading_level=None, type_routes=type_routes))
+    lines.extend(_render_returns(method, heading_level=None, type_routes=type_routes))
     guide = "/sdk/runs" if page == "runs" else "/sdk/resources"
     lines.extend((f"For examples, see the [Python SDK guide]({guide}).", ""))
+    return lines
+
+
+def _render_sdk_resource_page(
+    reference: SDKReference,
+    resource: SDKResourceReference,
+    page: str,
+) -> str:
+    """Render one resource page with every public method in source order."""
+    title, _, _ = _SDK_RESOURCE_CARDS[resource.name]
+    lines = _page_header(f"{title} resource", resource.description, f"Reference for {resource.client_attribute}.")
+    lines.extend((f"Access these methods through `{resource.client_attribute}`.", ""))
+    for method in resource.methods:
+        lines.extend(_render_sdk_method_section(reference, resource, page, method))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -1513,7 +1232,7 @@ def _render_sdk_index(reference: SDKReference) -> str:
     lines = _frontmatter("Python SDK reference", "Complete generated reference for the public Valkyrie Python SDK.")
     lines.extend(
         (
-            "This reference follows the tested `valkyrie.sdk` public contract. Internal wire models and transport helpers are excluded.",
+            "This reference follows the tested `valkyrie.sdk` public contract. Internal models and helpers are excluded.",
             "",
             "## Client",
             "",
@@ -1521,19 +1240,31 @@ def _render_sdk_index(reference: SDKReference) -> str:
             "",
             "## Resource namespaces",
             "",
-            "| Attribute | Resource | Reference |",
-            "| --- | --- | --- |",
+            "<CardGroup cols={2}>",
         )
     )
     for resource in reference.resources:
         page = _RESOURCE_PAGES[resource.name]
-        first_method = resource.methods[0]
-        route = _route(_sdk_method_path(page, first_method))
-        lines.append(f"| `{resource.client_attribute}` | `{resource.name}` | [Open](/{route}) |")
-    lines.extend(("", "## Public exports", "", "| Name | Kind | Reference |", "| --- | --- | --- |"))
-    for export in reference.exports:
-        lines.append(f"| `{export.name}` | {export.kind} | [Open]({export.target}) |")
-    lines.extend(("", f"Format version: `{_FORMAT_VERSION}`", ""))
+        title, icon, purpose = _SDK_RESOURCE_CARDS[resource.name]
+        count = len(resource.methods)
+        method_label = "method" if count == 1 else "methods"
+        lines.extend(
+            (
+                f'  <Card title="{title}" icon="{icon}" href="/{_route(_sdk_resource_page_path(page))}">',
+                f"    {count} {method_label} for {purpose}.",
+                "  </Card>",
+            )
+        )
+    lines.extend(
+        (
+            "</CardGroup>",
+            "",
+            "## Types and errors",
+            "",
+            "Browse [public models and enums](/reference/sdk/models) or the [SDK error hierarchy](/reference/sdk/errors).",
+            "",
+        )
+    )
     return "\n".join(lines)
 
 
@@ -1569,29 +1300,15 @@ def _render_sdk_client(reference: SDKReference) -> str:
 
 
 def _sdk_navigation(reference: SDKReference) -> list[object]:
+    """Return the SDK reference navigation with flat grouped Types pages."""
     navigation: list[object] = [_route(_SDK_INDEX_PATH), _route(_SDK_CLIENT_PATH)]
-    for resource in reference.resources:
-        page = _RESOURCE_PAGES[resource.name]
-        navigation.append(
-            {
-                "group": resource.name,
-                "pages": [_route(_sdk_method_path(page, method)) for method in resource.methods],
-            }
-        )
-    type_entries = _ordered_type_entries(reference)
-    type_groups: list[object] = [_route(_SDK_TYPES_INDEX_PATH)]
-    for family in ("Agents", "Runs", "Benchmarks", "Services", "Config"):
-        pages = [_route(_sdk_type_path(entry)) for entry in type_entries if entry.family == family]
-        type_groups.append({"group": family, "pages": pages})
-    navigation.append(
-        {
-            "group": "Types",
-            "pages": [
-                {"group": "Models", "pages": type_groups},
-                _route(_SDK_ERRORS_PATH),
-            ],
-        }
+    navigation.extend(
+        _route(_sdk_resource_page_path(_RESOURCE_PAGES[resource.name])) for resource in reference.resources
     )
+    type_pages: list[object] = [_route(_SDK_TYPES_INDEX_PATH)]
+    type_pages.extend(_route(_sdk_type_family_page_path(family)) for family in _SDK_TYPE_FAMILIES)
+    type_pages.append(_route(_SDK_ERRORS_PATH))
+    navigation.append({"group": "Types", "pages": type_pages})
     return navigation
 
 
@@ -1601,53 +1318,104 @@ def _ordered_type_entries(reference: SDKReference) -> tuple[SDKModelReference | 
 
 
 def _render_types_index(reference: SDKReference) -> str:
+    """Render the Types landing as a compact two-column card grid."""
     lines = _frontmatter("Python SDK types", "Public models and enums exported by the Valkyrie Python SDK.")
-    lines.extend(("Only types exported from `valkyrie.sdk` appear here.", ""))
+    lines.extend(
+        (
+            "Only public models and enums exported from `valkyrie.sdk` appear here.",
+            "",
+            "## Type families",
+            "",
+            "<CardGroup cols={2}>",
+        )
+    )
     entries = _ordered_type_entries(reference)
-    for family in ("Agents", "Runs", "Benchmarks", "Services", "Config"):
+    for family in _SDK_TYPE_FAMILIES:
         family_entries = [entry for entry in entries if entry.family == family]
-        lines.extend((f"## {family}", ""))
-        for entry in family_entries:
-            lines.extend((f"- [`{entry.name}`](/{_route(_sdk_type_path(entry))}) — {entry.description}",))
-        lines.append("")
+        page = _sdk_type_family_page_path(family)
+        icon, purpose = _SDK_TYPE_FAMILY_CARDS[family]
+        count = len(family_entries)
+        noun = "type" if count == 1 else "types"
+        lines.extend(
+            (
+                f'  <Card title="{family}" icon="{icon}" href="/{_route(page)}">',
+                f"    {count} {noun} for {purpose}.",
+                "  </Card>",
+            )
+        )
+    lines.extend(("</CardGroup>", ""))
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _render_type_page(reference: SDKReference, entry: SDKModelReference | SDKEnumReference) -> str:
+def _render_enum_member_row(name: str, value: str) -> list[str]:
+    """Render one enum member as a compact source-order row."""
+    return [
+        '<div className="border-b border-gray-200 py-3 dark:border-gray-800">',
+        '  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">'
+        f'<span className="break-all font-mono text-sm">{_jsx_text(name)}</span>'
+        f'<span className="text-sm text-gray-500 dark:text-gray-400">'
+        f"<code>{_jsx_text(value)}</code></span></div>",
+        "</div>",
+        "",
+    ]
+
+
+def _render_type_section(reference: SDKReference, entry: SDKModelReference | SDKEnumReference) -> list[str]:
+    """Render one public SDK type as a level-2 section with an explicit stable anchor."""
+    lines = [f"## `{entry.name}` {{#{_sdk_type_anchor(entry)}}}", ""]
+    if entry.description:
+        lines.extend((entry.description, ""))
     kind = "enum" if isinstance(entry, SDKEnumReference) else "model"
-    lines = _frontmatter(entry.name, entry.description or f"Public SDK {kind} {entry.name}.")
-    lines.extend((entry.description, ""))
-    if isinstance(entry, SDKEnumReference):
-        lines.extend(("## Members", ""))
+    items = entry.members if isinstance(entry, SDKEnumReference) else entry.fields
+    count = len(items)
+    noun = "member" if kind == "enum" else "field"
+    if count != 1:
+        noun += "s"
+    lines.append(f"{entry.family} {kind} · {count} {noun}")
+    lines.append("")
+    label = "Members" if kind == "enum" else "Fields"
+    lines.append(f"**{label}**")
+    lines.append("")
+    if kind == "enum":
         for name, value in entry.members:
+            lines.extend(_render_enum_member_row(name, value))
+    else:
+        type_routes = _public_type_routes(reference)
+        for field in entry.fields:
             lines.extend(
-                (
-                    '<div className="border-b border-gray-200 py-3 dark:border-gray-800">',
-                    '  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">'
-                    f'<span className="break-all font-mono text-sm">{_escape_html(name)}</span>'
-                    f'<span className="text-sm text-gray-500 dark:text-gray-400">'
-                    f"<code>{_escape_html(value)}</code></span></div>",
-                    "</div>",
-                    "",
+                _render_parameter_row(
+                    field.name,
+                    _link_public_types(field.type_name, type_routes),
+                    required=field.required,
+                    default=field.default,
+                    alias=field.alias,
+                    constraints=field.constraints,
+                    description=field.description,
+                    type_markup=True,
                 )
             )
-        return "\n".join(lines).rstrip() + "\n"
+    return lines
 
-    type_routes = _public_type_routes(reference)
-    lines.extend(("## Fields", ""))
-    for field in entry.fields:
-        lines.extend(
-            _render_parameter_row(
-                field.name,
-                _link_public_types(field.type_name, type_routes),
-                required=field.required,
-                default=field.default,
-                alias=field.alias,
-                constraints=field.constraints,
-                description=field.description,
-                type_markup=True,
-            )
+
+def _render_type_family_page(
+    reference: SDKReference, family: str, entries: Sequence[SDKModelReference | SDKEnumReference]
+) -> str:
+    """Render every public model and enum in one SDK type family on a single page."""
+    lines = _frontmatter(
+        f"{family} types",
+        f"Public {family.lower()} models and enums exported by the Valkyrie Python SDK.",
+    )
+    lines.extend(
+        (
+            f"This page documents all {len(entries)} public types in the `{family}` family in source order. "
+            "Use the table of contents to jump to a type.",
+            "",
         )
+    )
+    for position, entry in enumerate(entries):
+        if position:
+            lines.extend(("---", ""))
+        lines.extend(_render_type_section(reference, entry))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -1657,14 +1425,12 @@ def _render_errors(reference: SDKReference) -> str:
         (
             "Catch `ValkyrieSDKError` to handle every SDK-defined failure, or catch a specific subclass.",
             "",
-            "| Exception | Parent | Constructor | Description |",
-            "| --- | --- | --- | --- |",
+            "| Exception | Parent |",
+            "| --- | --- |",
         )
     )
     for error in reference.exceptions:
-        lines.append(
-            f"| `{error.name}` | `{error.parent}` | {_code(error.signature)} | {_escape_cell(error.description)} |"
-        )
+        lines.append(f"| [`{error.name}`](#{error.name.lower()}) | `{error.parent}` |")
     lines.append("")
     for error in reference.exceptions:
         lines.extend((f"## `{error.name}`", "", error.description, "", "```python", error.signature, "```", ""))
@@ -1678,24 +1444,25 @@ def _render_json(value: object) -> str:
 def render_reference() -> OrderedDict[Path, str]:
     """Render the code-derived generated manifest in deterministic order."""
     commands = collect_cli_commands()
-    _validate_cli_http_classification(commands)
     sdk_reference = collect_sdk_reference()
     rendered: OrderedDict[Path, str] = OrderedDict()
     rendered[_CLI_INDEX_PATH] = _render_cli_index(commands).rstrip() + "\n"
     rendered[_CLI_NAVIGATION_PATH] = _render_json(_cli_navigation(commands))
-    for command in commands:
-        rendered[_cli_command_path(command)] = _render_cli_page(command)
+    for group, group_commands in _cli_groups(commands).items():
+        rendered[_cli_group_page_path(group)] = _render_cli_group_page(group, group_commands)
 
     rendered[_SDK_INDEX_PATH] = _render_sdk_index(sdk_reference).rstrip() + "\n"
     rendered[_SDK_CLIENT_PATH] = _render_sdk_client(sdk_reference)
     rendered[_SDK_NAVIGATION_PATH] = _render_json(_sdk_navigation(sdk_reference))
     for resource in sdk_reference.resources:
         page = _RESOURCE_PAGES[resource.name]
-        for method in resource.methods:
-            rendered[_sdk_method_path(page, method)] = _render_sdk_method_page(sdk_reference, resource, page, method)
+        rendered[_sdk_resource_page_path(page)] = _render_sdk_resource_page(sdk_reference, resource, page)
+    rendered[_REDIRECTS_PATH] = _render_json(redirects(commands, sdk_reference))
     rendered[_SDK_TYPES_INDEX_PATH] = _render_types_index(sdk_reference)
-    for entry in _ordered_type_entries(sdk_reference):
-        rendered[_sdk_type_path(entry)] = _render_type_page(sdk_reference, entry)
+    type_entries = _ordered_type_entries(sdk_reference)
+    for family in _SDK_TYPE_FAMILIES:
+        family_entries = [entry for entry in type_entries if entry.family == family]
+        rendered[_sdk_type_family_page_path(family)] = _render_type_family_page(sdk_reference, family, family_entries)
     rendered[_SDK_ERRORS_PATH] = _render_errors(sdk_reference).rstrip() + "\n"
     return rendered
 
@@ -1711,7 +1478,20 @@ def _obsolete_generated_files(docs_root: Path, expected: set[Path]) -> tuple[Pat
             continue
         if _GENERATED_MARKER in path.read_text(encoding="utf-8"):
             obsolete.append(relative_path)
+    for relative_path in _RETIRED_GENERATED_PATHS:
+        if relative_path not in expected and (docs_root / relative_path).is_file():
+            obsolete.append(relative_path)
     return tuple(sorted(obsolete))
+
+
+def _prune_empty_reference_directories(docs_root: Path) -> None:
+    """Remove directories left empty after retired generated pages are deleted."""
+    reference_root = docs_root / "reference"
+    if not reference_root.exists():
+        return
+    for path in sorted(reference_root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        if path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
 
 
 def write_reference(docs_root: Path = _DOCS_ROOT) -> tuple[Path, ...]:
@@ -1727,6 +1507,7 @@ def write_reference(docs_root: Path = _DOCS_ROOT) -> tuple[Path, ...]:
     obsolete = _obsolete_generated_files(docs_root, set(rendered))
     for relative_path in obsolete:
         (docs_root / relative_path).unlink()
+    _prune_empty_reference_directories(docs_root)
 
     for relative_path, content in rendered.items():
         output_path = docs_root / relative_path
@@ -1769,7 +1550,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     if arguments.check:
-        diagnostics = check_reference()
+        diagnostics = check_reference(_DOCS_ROOT)
         if diagnostics:
             print("Generated documentation reference is stale:")
             for diagnostic in diagnostics:
@@ -1779,7 +1560,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("Generated documentation reference is current.")
         return 0
 
-    obsolete = write_reference()
+    obsolete = write_reference(_DOCS_ROOT)
     print(f"Generated {len(render_reference())} documentation reference files.")
     if obsolete:
         print(f"Removed {len(obsolete)} obsolete generated files.")

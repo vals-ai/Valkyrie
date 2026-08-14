@@ -19,6 +19,8 @@ await client.runs.resume(run_id, concurrency=20)
 </CodeGroup>
 </Panel>
 
+Full syntax for each command below is in the [`run update`](/reference/cli/run#update), [`run stop`](/reference/cli/run#stop), [`run resume`](/reference/cli/run#resume), and [`run retry`](/reference/cli/run#retry) reference, and in [`client.runs.resume`](/reference/sdk/runs#resume) and [`client.runs.retry`](/reference/sdk/runs#retry) for Python.
+
 ## Update concurrency
 
 ```bash
@@ -31,53 +33,39 @@ The value must be positive. Completed, stopped, and failed runs cannot be update
 
 ## Stop work
 
-Stop a whole run:
+Stop a whole run, or name the tasks to stop:
 
 ```bash
 valkyrie run stop <run-id>
-```
-
-Stop selected tasks:
-
-```bash
 valkyrie run stop <run-id> --task-ids task-a,task-b
-valkyrie run stop <run-id> --task-ids-file ./task-ids.txt
 ```
 
-Force-stop in-flight work and remove its sandboxes:
+A plain stop does not interrupt work that already started. `--force` also deletes the sandboxes of in-progress and evaluating tasks and marks those tasks stopped:
 
 ```bash
 valkyrie run stop <run-id> --force
-valkyrie run stop <run-id> --task-ids task-a,task-b --force
 ```
 
-## Resume or retry
+<Warning>
+  Force-stopping deletes running sandboxes and cannot be undone. The CLI asks for confirmation first.
+</Warning>
 
-The primary example above resumes pending tasks. Retry errored tasks with:
+## Choose resume or retry
+
+`resume` admits work that never ran. `retry` re-runs tasks that ended in `ERROR`:
 
 ```bash
+valkyrie run resume <run-id>
 valkyrie run retry <run-id>
 ```
 
-Common overrides:
+Either accepts a task subset, a concurrency override, and `--connect` to stream afterwards. Three overrides change what the retried work uses:
 
-```bash
-valkyrie run retry <run-id> --benchmark-url https://new-benchmark.example
-valkyrie run resume <run-id> --connect
-valkyrie run retry <run-id> --connect
-valkyrie run resume <run-id> -s ANTHROPIC_API_KEY NewAnthropicApiKey
-```
+- `--update-agent` refreshes the frozen agent from its current S3 bundle, so a re-pushed agent takes effect.
+- `--from-scratch` clears stored evaluation resume state, so a task is graded again from the beginning.
+- `--benchmark-url` replaces the benchmark-service URL stored on the run, which a tunnelled service needs after its URL changes.
 
-| Option | Purpose |
-| --- | --- |
-| `--concurrency` | Override the run concurrency |
-| `-s`, `--secret` | Merge a repeatable secret mapping into the stored contract |
-| `--task-ids` | Select comma-separated task IDs |
-| `--task-ids-file` | Select IDs from a local file or HTTP(S) URL |
-| `--update-agent`, `-u` | Refresh the frozen agent from its current S3 bundle |
-| `--from-scratch` | Clear stored evaluation resume state for retried tasks |
-| `--benchmark-url` | Replace the benchmark-service URL stored on the run |
-| `--connect` | Stream updates after the request |
+`-s` merges a secret mapping into the stored contract, which is how a rotated credential reaches resumed tasks.
 
 For a terminal run, a selected valid task ID without an existing row is created as new `PENDING` work. An in-progress retry rejects selected IDs that do not already exist in `ERROR` state.
 
@@ -87,4 +75,4 @@ For a terminal run, a selected valid task ID without an existing row is created 
 valkyrie benchmark tasks swebench --dataset default --output tasks.txt
 ```
 
-The output path is optional.
+The output path is optional. Pass the file to `--task-ids-file` on start, stop, resume, or retry.

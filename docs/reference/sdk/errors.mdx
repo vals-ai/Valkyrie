@@ -7,14 +7,14 @@ description: "Generated exception hierarchy for the public Valkyrie SDK."
 
 Catch `ValkyrieSDKError` to handle every SDK-defined failure, or catch a specific subclass.
 
-| Exception | Parent | Constructor | Description |
-| --- | --- | --- | --- |
-| `ValkyrieAPIError` | `ValkyrieSDKError` | `ValkyrieAPIError(status_code: int, detail: Any)` | The Valkyrie API returned a non-success response. |
-| `ValkyrieConfigError` | `ValkyrieSDKError` | `ValkyrieConfigError(*args: object)` | The supplied Valkyrie configuration is missing or invalid. |
-| `ValkyrieRunError` | `ValkyrieSDKError` | `ValkyrieRunError(*args: object)` | A run operation received invalid client-side input. |
-| `ValkyrieSDKError` | `Exception` | `ValkyrieSDKError(*args: object)` | Base class for all SDK errors. |
-| `ValkyrieStreamError` | `ValkyrieSDKError` | `ValkyrieStreamError(*args: object)` | A run update stream returned an error or invalid event. |
-| `ValkyrieTransportError` | `ValkyrieSDKError` | `ValkyrieTransportError(*args: object)` | A request could not reach the Valkyrie service. |
+| Exception | Parent |
+| --- | --- |
+| [`ValkyrieAPIError`](#valkyrieapierror) | `ValkyrieSDKError` |
+| [`ValkyrieConfigError`](#valkyrieconfigerror) | `ValkyrieSDKError` |
+| [`ValkyrieRunError`](#valkyrierunerror) | `ValkyrieSDKError` |
+| [`ValkyrieSDKError`](#valkyriesdkerror) | `Exception` |
+| [`ValkyrieStreamError`](#valkyriestreamerror) | `ValkyrieSDKError` |
+| [`ValkyrieTransportError`](#valkyrietransporterror) | `ValkyrieSDKError` |
 
 ## `ValkyrieAPIError`
 

@@ -6,6 +6,7 @@ description: Install Valkyrie, configure credentials, and start a benchmark run.
 ## Prerequisites
 
 - Python 3.12
+- [uv](https://docs.astral.sh/uv/) and Git, used by the install command below
 - An S3 bucket for benchmark artifacts and agents
 - AWS credentials with the [required permissions](/self-hosting/aws-permissions)
 - A configured [sandbox provider](/get-started/sandbox-providers)
@@ -37,17 +38,17 @@ valkyrie agent push ./agents/sweagent --name sweagent
 
 See [Agent contract](/agents/agent-contract) to create a compatible agent.
 
-## Start a run
+## Start your first run
 
 ```bash
-valkyrie run start \
-  --agent sweagent \
-  --benchmark swebench \
-  --model anthropic/claude-sonnet-4-6 \
-  --concurrency 10 \
-  --dataset default \
-  --slice "0:10" \
-  --connect
+valkyrie run start --agent sweagent --benchmark swebench --connect
 ```
 
-`--connect` streams progress after the tracker accepts the run. See [Start a run](/runs/start) for task selection, secrets, labels, and repeated runs.
+`--connect` streams progress until the run finishes, so you can watch the first run end to end. The command prints the run id; use it with any other `run` command. Add `--model` when the agent contract requires one.
+
+## Next steps
+
+- [Start a run](/runs/start) for run scope, secrets, and repeated runs
+- [Monitor runs](/runs/monitor) for streaming, status, and history
+- [Results and outputs](/runs/results-and-outputs) for scores and agent files
+- [`valkyrie run start` reference](/reference/cli/run#start) for every option and default

@@ -1,15 +1,39 @@
-.panel pre,
-.panel pre code {
-  max-width: 100%;
-  overflow-wrap: anywhere !important;
+/* Wrap long code lines instead of clipping them at the content edge. A page that contains a
+   Panel narrows the main column, so an unwrapped block hides its tail behind the copy button.
+
+   Shiki emits one span.line per source line. Making the code element a grid puts each line on
+   its own row and drops the newline text nodes between lines, so the padding and negative
+   indent below hang wrapped continuations without shifting the block's left edge.
+
+   The width clamps are required because the theme lets the code element size to its longest
+   line; without them the block still grows past the column and wrapping never happens.
+   !important is required where the theme sets the same property through a higher-specificity
+   selector, such as html:not(.dark) .codeblock-light pre.shiki code { display: block }. */
+pre {
+  max-width: 100% !important;
+}
+
+pre code {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
   white-space: pre-wrap !important;
-  word-break: break-word;
+  overflow-wrap: break-word !important;
 }
 
-.panel [role="tablist"] {
-  flex-wrap: wrap;
+pre code .line {
+  padding-left: 2ch;
+  text-indent: -2ch;
 }
 
-.panel [class*="base-ui-disable-scrollbar"]:has([role="tablist"]) {
-  overflow-x: visible !important;
+/* Keep the native right table of contents usable when a page lists many commands, such as the
+   13-command run and config CLI group pages. Targets Mintlify's documented TOC ids rather than
+   generated class names. The theme's own sticky positioning and active-item scrolling continue
+   to work; this only bounds the height and gives the list its own scroll region. */
+#table-of-contents {
+  max-height: calc(100vh - 8rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
