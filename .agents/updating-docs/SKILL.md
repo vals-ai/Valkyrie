@@ -1,6 +1,6 @@
 ---
 name: updating-docs
-description: Use when adding or changing Valkyrie public documentation, Mintlify guides, generated CLI or Python SDK references, docs navigation, redirects, styling, or code that makes docs stale. Enforces the public/internal boundary, task-guide and reference separation, grouped reference architecture, deterministic generation, Devin visual review, and desktop/mobile validation.
+description: Use when adding or changing Valkyrie public documentation, Mintlify guides, generated CLI or Python SDK references, docs navigation, redirects, styling, or code that makes docs stale. Enforces the public/internal boundary, task-guide and reference separation, grouped reference architecture, deterministic generation, and browser validation.
 ---
 
 # Updating Valkyrie documentation
@@ -22,9 +22,8 @@ Read this skill before editing `docs/`, `scripts/generate_reference.py`, documen
 | Generic self-hosting | `docs/self-hosting/` |
 | Vals-specific infrastructure operation | `infra/README.md` |
 | SDK release procedure | `scripts/sdk/RELEASING.md` |
-| Internal agent instructions | `.agents/` |
 
-Never publish contributor procedures, Vals-specific operations, release activation, protected-environment instructions, incident procedures, break-glass access, or internal agent material in Mintlify.
+Never publish contributor procedures, Vals-specific operations, release activation, protected-environment instructions, incident procedures, break-glass access, or internal automation instructions in Mintlify.
 
 Never reference a private repository, issue, URL, hostname, credential, or internal item from public documentation.
 
@@ -63,51 +62,11 @@ Do not remove unique lifecycle, safety, cost, consequence, or recovery guidance 
 
 Always change `scripts/generate_reference.py` and its tests first. Never hand-edit generated files under `docs/reference/`.
 
-The current source produces:
+Group the current public surface by top-level CLI command, SDK resource, and SDK type family. Derive groups, pages, anchors, and redirects from source through the generator; do not copy current counts or route inventories into instructions.
 
-- 32 Click leaf commands in four top-level groups.
-- 22 public SDK methods in four resources.
-- 28 public SDK models and four enums in five families.
-- 86 unique redirects from retired per-item routes to exact grouped-page anchors.
+Do not create one page per command, method, model, or enum.
 
-These counts describe the current source. They are not permanent limits. Derive future surfaces from inspected code, then update generator coverage and expected routes.
-
-### CLI routes
-
-- `/reference/cli`
-- `/reference/cli/run`
-- `/reference/cli/agent`
-- `/reference/cli/benchmark`
-- `/reference/cli/config`
-
-### SDK resource routes
-
-- `/reference/sdk`
-- `/reference/sdk/client`
-- `/reference/sdk/runs`
-- `/reference/sdk/benchmarks`
-- `/reference/sdk/agents`
-- `/reference/sdk/services`
-- `/reference/sdk/errors`
-
-### SDK type routes
-
-- `/reference/sdk/models`
-- `/reference/sdk/models/agents`
-- `/reference/sdk/models/runs`
-- `/reference/sdk/models/benchmarks`
-- `/reference/sdk/models/services`
-- `/reference/sdk/models/config`
-
-Do not restore one page per command, method, model, or enum.
-
-Render each command, method, model, or enum once as a stable explicit H2 section:
-
-```mdx
-## `valkyrie run start` {#start}
-## `client.runs.start` {#start}
-## `FetchBenchmarksRequest` {#fetch-benchmarks-request}
-```
+Render each command, method, model, or enum once as a stable explicit H2 section whose anchor comes from the public name.
 
 Use Mintlify's native right-side table of contents as the section index. Keep Arguments, Options, Fields, Members, and Returns below H2 level so they do not crowd the right TOC.
 
@@ -135,7 +94,7 @@ Prefer native Mintlify components. Do not add custom JavaScript. Add CSS only wh
 
 ## Generator invariants
 
-`render_reference()` is the single manifest for pages, navigation, and redirects.
+Use one rendered manifest for pages, navigation, and redirects.
 
 The generator must:
 
@@ -148,19 +107,13 @@ The generator must:
 - Emit navigation and redirects from the same manifest as the pages.
 - Write deterministic UTF-8 files with LF newlines.
 
-`check_reference()` must report missing, stale, and unexpected generated files without modifying the worktree.
+The check path must report missing, stale, and unexpected generated files without modifying the worktree.
 
 Use JSX-safe generated text for literal names. Do not put Markdown backticks inside JSX strings. Escape literal braces so `{}` defaults do not become JSX. Confirm names contain no smart dashes, quotes, ellipses, or other typographic substitutions.
 
 ## Redirect contract
 
-Generate every retired public route as a redirect to an exact stable anchor:
-
-```text
-/reference/cli/run/start -> /reference/cli/run#start
-/reference/sdk/runs/start -> /reference/sdk/runs#start
-/reference/sdk/models/runs/fetch-benchmarks-request -> /reference/sdk/models/runs#fetch-benchmarks-request
-```
+Generate every retired public route as a redirect to its exact stable replacement anchor.
 
 When regrouping or renaming:
 
@@ -170,33 +123,21 @@ When regrouping or renaming:
 4. Validate redirects and anchors through Mintlify.
 5. Browser-check representative old URLs and verify the matching element ID exists.
 
-## Devin workflow
+## Visual review
 
-Use Devin for an independent browser audit when a change affects navigation, cards, grouped references, MDX components, CSS, typography, desktop/mobile behavior, or more than one public page.
+Use an independent browser audit when a change affects navigation, cards, grouped references, MDX components, CSS, typography, responsive behavior, or several public pages.
 
-Run Devin only in a disposable detached worktree. Disable GitHub tokens and SSH writes. Prohibit staging, commits, pushes, GitHub mutation, deployment, and credential access.
+Inspect the rendered pages, diff, screenshots, browser measurements, console output, and validation results. Do not accept a prose report that conflicts with direct evidence.
 
-A useful pass has three phases:
-
-1. Audit current rendered pages at desktop and mobile sizes.
-2. Implement or recommend one bounded design change.
-3. Report exact routes, measurements, console errors, validation, and residual risks.
-
-Save prompts, reports, browser measurements, and recovery patches under the primary worktree's `.scratch/` directory. Temporary directories and disposable worktrees can disappear.
-
-Verify a temporary worktree exists before every follow-up command. Before applying a patch, compare detached and primary worktrees by status, content hash, and file mode. Exclude `.scratch/` and `.pi-subagents/`.
-
-Do not trust Devin's prose report alone. Inspect the diff, generated output, screenshots, and browser measurements. Use one fresh independent review after implementation. Do not repeat review unless the patch changes or a finding remains unresolved.
-
-Discard a failed visual direction before starting the next iteration. Do not stack speculative fixes.
+Test one bounded design direction at a time. Discard a failed direction before starting the next iteration rather than stacking speculative fixes.
 
 ## Browser checks and Mintlify traps
 
-Check at least 1440×900 and 390×844. Check light and dark mode when CSS or color changes.
+Check representative desktop and mobile viewports. Check light and dark mode when CSS or color changes.
 
 Verify:
 
-- HTTP 200 on representative index, grouped reference, guide, and retired-route pages.
+- Successful responses on representative index, grouped reference, guide, and retired-route pages.
 - No document-level horizontal overflow.
 - No console errors.
 - Native right TOC entries match intended content H2 sections.
@@ -213,55 +154,29 @@ Measure `document.documentElement.scrollWidth` and `clientWidth`. Ignore intenti
 
 For retired URLs, verify final pathname and hash, then resolve `document.getElementById(location.hash.slice(1))`. Do not rely only on `document.querySelector(':target')`; client-router timing can make it unreliable.
 
-Restart `mint dev` after deleting or consolidating generated routes. Hot reload can retain stale routes and return HTTP 500 even when generated files are correct.
+Restart the preview server after deleting or consolidating generated routes. Hot reload can retain stale routes and return server errors even when generated files are correct.
 
 ## Validation
 
-Run the smallest applicable checks during development. Run the complete documentation set before committing:
+Read the current `Makefile`, `DEVELOPMENT.md`, and documentation CI workflow before choosing commands. Do not copy tool versions or test counts into this skill.
 
-```bash
-make docs-reference
-make docs-reference-check
-uv run pytest tests/unit/docs -q
-make typecheck
-make format-check
-uv run ruff check .
-(cd docs && npx --yes mint@4.2.801 validate)
-(cd docs && npx --yes mint@4.2.801 broken-links --check-anchors --check-redirects)
-git diff --check
-```
+Before committing, run the current checks for:
 
-## Test and suite routing
+- Reference generation and freshness.
+- Documentation unit tests.
+- Type checking, formatting, and linting.
+- Mintlify build validation.
+- Links, anchors, and redirects.
+- Whitespace errors.
 
-A documentation-only change does not justify unrelated product tests. Existing `tests/unit/docs` coverage is sufficient when only generated output changes.
+A documentation-only change does not justify unrelated product tests. When documentation accompanies product code, run the smallest suites that own the changed behavior. Cross-layer changes need the union of their owning suites; live tests require explicit approval.
 
-When documentation accompanies product code, run the smallest owning suites:
+Use the local preview command and runtime requirement currently documented in `DEVELOPMENT.md`. Basic preview needs no Mintlify credentials. Login is optional for account-backed features.
 
-| Changed surface | Required proof |
-| --- | --- |
-| Root CLI or tracker client | `make test` |
-| Python SDK or tracker SDK contract | `uv run pytest tests/unit/sdk tests/contract -q` |
-| SDK package, build, version, or release tooling | Mirror the executable checks in `.github/workflows/sdk-package.yml`; final-head CI must pass |
-| Tracker API, worker, or database | `(cd services/tracker && make test)` |
-| Infrastructure or CDK | `(cd infra && make lint && make test && make typecheck)` |
-| AWS, benchmark service, sandbox, or another external boundary | Run local proof first; live tests or smokes require explicit approval |
-
-A cross-layer change owns the union of its rows. Reuse existing behavioral coverage instead of adding duplicate tests.
-
-For local preview, use Node.js 20.17 or newer:
-
-```bash
-cd docs
-npx mint dev
-```
-
-Basic preview needs no Mintlify credentials. Login is optional for search and assistant features.
-
-`.github/workflows/cli-unit-tests.yaml` pins Mintlify validation and broken-link checks. Any workflow edit is a CI/CD change and requires explicit human attention.
+Any CI workflow edit requires explicit human attention.
 
 ## Before delivery
 
 - Read the full diff and remove duplicate prose, debug artifacts, and stale generated files.
-- Keep `.scratch/` and `.pi-subagents/` unstaged.
-- Report changed routes, redirect counts, commands run, validation output, and residual risks.
+- Report changed routes, commands run, validation output, and residual risks.
 - For a pull request, include the local preview command and truthful test/checklist state.
