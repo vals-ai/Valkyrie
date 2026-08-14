@@ -882,6 +882,37 @@ class TestTrackerAPI:
         assert dispatch.status == ExecutorDispatchStatus.QUEUED
         delete_agent_copy.assert_not_awaited()
 
+    async def test_start_rollback_failure_retains_copy(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        rollback = MagicMock(side_effect=RuntimeError("database connection lost"))
+        verify_absent = MagicMock(side_effect=AssertionError("must not read after an uncertain rollback"))
+        delete_agent_copy = AsyncMock()
+        monkeypatch.setattr(database_session, "rollback", rollback)
+        monkeypatch.setattr(main_module, "_start_admission_is_absent", verify_absent)
+        monkeypatch.setattr(main_module, "delete_from_s3", delete_agent_copy)
+
+        await main_module._rollback_failed_start_admission(
+            database_session,
+            benchmark_id=uuid4(),
+            dispatch_id=uuid4(),
+            created_copy=S3ObjectCopy(version_id="copy-version"),
+            request=StartBenchmarkRequest(
+                contract=contract,
+                benchmark_name="swebench",
+                harness_config=harness_config,
+            ),
+            aws_runtime=AWSRuntime.from_harness_config(harness_config),
+        )
+
+        rollback.assert_called_once_with()
+        verify_absent.assert_not_called()
+        delete_agent_copy.assert_not_awaited()
+
     async def test_start_benchmark_returns_502_when_benchmark_service_is_unreachable(
         self,
         contract: AgentContractRequest,

@@ -340,6 +340,7 @@ async def _rollback_failed_start_admission(
             "Failed to roll back benchmark admission",
             extra={"benchmark_id": str(benchmark_id), "executor_dispatch_id": str(dispatch_id)},
         )
+        return
     if not _start_admission_is_absent(
         session,
         benchmark_id=benchmark_id,
