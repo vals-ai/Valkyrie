@@ -9,6 +9,7 @@ from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.auth import forward_tracker_api_key
+from tracker.config import BenchmarkServiceDestination
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 
 
@@ -38,13 +39,42 @@ class TestGetDefaultOrg:
 class TestForwardTrackerApiKey:
     """Tracker API key forwarding and header validation."""
 
-    def test_forward_tracker_api_key_preserves_explicit_override_case_insensitive(self) -> None:
+    def test_forward_tracker_api_key_injects_key_for_hosted_service(self) -> None:
+        headers = forward_tracker_api_key(
+            {},
+            "tracker-api-key",
+            destination=BenchmarkServiceDestination.HOSTED,
+        )
+
+        assert headers == {"X-Descope-Api-Key": "tracker-api-key"}
+
+    @pytest.mark.parametrize(
+        "destination",
+        [BenchmarkServiceDestination.HOSTED, BenchmarkServiceDestination.CUSTOM],
+    )
+    def test_forward_tracker_api_key_preserves_explicit_override_case_insensitive(
+        self,
+        destination: BenchmarkServiceDestination,
+    ) -> None:
         original_headers = {"x-descope-api-key": "override-key"}
 
-        headers = forward_tracker_api_key(original_headers, "tracker-api-key")
+        headers = forward_tracker_api_key(
+            original_headers,
+            "tracker-api-key",
+            destination=destination,
+        )
 
         assert headers == original_headers
         assert headers is not original_headers
+
+    def test_forward_tracker_api_key_does_not_inject_key_for_custom_service(self) -> None:
+        headers = forward_tracker_api_key(
+            {"Authorization": "Bearer service-key"},
+            "tracker-api-key",
+            destination=BenchmarkServiceDestination.CUSTOM,
+        )
+
+        assert headers == {"Authorization": "Bearer service-key"}
 
     @pytest.mark.parametrize(
         "header_name",
@@ -62,7 +92,11 @@ class TestForwardTrackerApiKey:
     def test_forward_tracker_api_key_rejects_protocol_and_routing_headers(self, header_name: str) -> None:
         """Reject caller headers that can alter HTTP routing or protocol handling."""
         with pytest.raises(HTTPException) as exc_info:
-            forward_tracker_api_key({header_name: "attacker-controlled"}, "tracker-api-key")
+            forward_tracker_api_key(
+                {header_name: "attacker-controlled"},
+                "tracker-api-key",
+                destination=BenchmarkServiceDestination.HOSTED,
+            )
 
         assert exc_info.value.status_code == 422
         assert exc_info.value.detail == "Unsupported benchmark service header"
@@ -80,7 +114,11 @@ class TestForwardTrackerApiKey:
     def test_forward_tracker_api_key_rejects_malformed_headers(self, header_name: str, header_value: str) -> None:
         """Reject headers that the outbound HTTP transport cannot encode or send."""
         with pytest.raises(HTTPException) as exc_info:
-            forward_tracker_api_key({header_name: header_value}, "tracker-api-key")
+            forward_tracker_api_key(
+                {header_name: header_value},
+                "tracker-api-key",
+                destination=BenchmarkServiceDestination.HOSTED,
+            )
 
         assert exc_info.value.status_code == 422
         assert exc_info.value.detail == "Unsupported benchmark service header"

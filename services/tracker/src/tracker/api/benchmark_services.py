@@ -10,8 +10,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 import httpx
 
 from tracker.auth import get_current_org
-from tracker.config import BENCHMARK_CATALOG_URL
+from tracker.config import AUTH_REQUIRED, BENCHMARK_CATALOG_URL
 from tracker.database.models import Org
+from tracker.outbound_security import validate_custom_service_destination
 from tracker.types import (
     BenchmarkServiceCatalogResponse,
     BenchmarkServiceHealth,
@@ -90,11 +91,22 @@ async def catalog_benchmark_services(
 @router.post("", response_model=BenchmarkServicesResponse)
 async def list_benchmark_services(
     request: BenchmarkServicesRequest,
-    _org: Org = Depends(get_current_org),
+    org: Org = Depends(get_current_org),
 ) -> BenchmarkServicesResponse:
     """Health-check the caller-provided benchmark services with concurrent pings."""
     if not request.services:
         return BenchmarkServicesResponse(services=[])
+
+    try:
+        for service in request.services:
+            validate_custom_service_destination(
+                service.url,
+                org_name=org.name,
+                auth_required=AUTH_REQUIRED,
+                restrict_vals_hosts=False,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT_SECONDS) as client:
         health_entries = await asyncio.gather(

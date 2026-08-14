@@ -50,7 +50,7 @@ SANDBOX_CLEANUP_FUNCTION_NAME = "valkyrie-sandbox-cleanup"
 SANDBOX_CLEANUP_LOG_GROUP_NAME = "/valkyrie/sandbox-cleanup"
 SANDBOX_CLEANUP_SCHEDULE_NAME = "valkyrie-sandbox-cleanup"
 SANDBOX_CLEANUP_DLQ_NAME = "valkyrie-sandbox-cleanup-dlq"
-SANDBOX_CLEANUP_SECRET_NAME = "AgenticHarnessSecrets"
+SANDBOX_CLEANUP_SECRET_NAME = "YourSandboxProviderSecret"
 
 # PostgreSQL
 POSTGRES_HEALTH_INTERVAL_SECONDS = 60

@@ -6,8 +6,13 @@ Run: uv run pytest tests/unit/test_outbound_security.py
 import pytest
 from pydantic import ValidationError
 
-from tracker.config import create_benchmark_service_url
+from tracker.config import (
+    BenchmarkServiceDestination,
+    classify_benchmark_service_destination,
+    create_benchmark_service_url,
+)
 from tracker.database.models import AgentContractRequest
+from tracker.outbound_security import validate_custom_service_destination
 from tracker.types import (
     BenchmarkServiceEntry,
     FetchBenchmarkTasksRequest,
@@ -77,6 +82,112 @@ class TestBenchmarkServiceNameValidation:
         assert create_benchmark_service_url("swebench") == "http://swebench.local:8001"
         assert FetchBenchmarkTasksRequest(benchmark_name="swebench").benchmark_name == "swebench"
         assert _start_benchmark_request(harness_config).benchmark_name == "swebench"
+
+
+class TestBenchmarkServiceDestination:
+    """Credential forwarding trust derives from the exact hosted-service origin."""
+
+    @pytest.mark.parametrize(
+        ("service_url", "expected"),
+        [
+            (None, BenchmarkServiceDestination.HOSTED),
+            ("https://swebench.benchmarks.vals.ai", BenchmarkServiceDestination.HOSTED),
+            ("https://swebench.benchmarks.vals.ai:443/path", BenchmarkServiceDestination.HOSTED),
+            ("http://swebench.benchmarks.vals.ai", BenchmarkServiceDestination.CUSTOM),
+            ("https://other.benchmarks.vals.ai", BenchmarkServiceDestination.CUSTOM),
+            ("https://swebench.benchmarks.vals.ai:8443", BenchmarkServiceDestination.CUSTOM),
+            ("https://swebench.benchmarks.vals.ai:0", BenchmarkServiceDestination.CUSTOM),
+        ],
+    )
+    def test_classifies_only_exact_hosted_origin(
+        self,
+        service_url: str | None,
+        expected: BenchmarkServiceDestination,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr("tracker.config._BENCHMARK_SERVICE_BASE_URL", "benchmarks.vals.ai")
+
+        assert classify_benchmark_service_destination("swebench", service_url) is expected
+
+    def test_normalizes_default_http_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("tracker.config._BENCHMARK_SERVICE_BASE_URL", None)
+        monkeypatch.setattr("tracker.config._BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "local")
+        monkeypatch.setattr("tracker.config._CLOUDMAP_PORT", 80)
+
+        assert (
+            classify_benchmark_service_destination("swebench", "http://swebench.local")
+            is BenchmarkServiceDestination.HOSTED
+        )
+
+
+class TestCustomServiceDestinationPolicy:
+    """Tenant-aware authorization for caller-supplied benchmark destinations."""
+
+    @pytest.mark.parametrize(
+        "service_url",
+        [
+            "https://vals.ai",
+            "https://benchmarks-dev.vals.ai",
+            "http://localhost:8001",
+            "http://local:8001",
+            "http://internal:8001",
+            "http://service.local:8001",
+            "http://service.internal:8001",
+            "http://127.0.0.1:8001",
+            "http://127。0。0。1:8001",
+            "http://127．0．0．1:8001",
+            "http://127｡0｡0｡1:8001",
+            "http://localhost。:8001",
+            "http://127.1:8001",
+            "http://2130706433:8001",
+            "http://0x7f000001:8001",
+            "http://0177.0.0.1:8001",
+            "http://10.0.0.1:8001",
+            "http://100.64.0.1:8001",
+            "http://169.254.1.1:8001",
+            "http://224.0.0.1:8001",
+            "http://0.0.0.0:8001",
+            "http://[::1]:8001",
+        ],
+    )
+    def test_external_tenant_rejects_internal_destination(self, service_url: str) -> None:
+        with pytest.raises(ValueError, match="Custom benchmark destination is not allowed"):
+            validate_custom_service_destination(
+                service_url,
+                org_name="external-tenant",
+                auth_required=True,
+            )
+
+    @pytest.mark.parametrize(
+        "service_url",
+        [
+            "http://team.example",
+            "http://team。example",
+            "https://evilvals.ai",
+            "https://vals.ai.evil.com",
+        ],
+    )
+    def test_external_tenant_allows_public_destination(self, service_url: str) -> None:
+        validate_custom_service_destination(
+            service_url,
+            org_name="external-tenant",
+            auth_required=True,
+        )
+
+    @pytest.mark.parametrize(
+        ("org_name", "auth_required"),
+        [("vals.ai", True), ("default", False)],
+    )
+    def test_trusted_caller_keeps_internal_destination_access(
+        self,
+        org_name: str,
+        auth_required: bool,
+    ) -> None:
+        validate_custom_service_destination(
+            "http://service.internal:8001",
+            org_name=org_name,
+            auth_required=auth_required,
+        )
 
 
 class TestCustomServiceUrlValidation:

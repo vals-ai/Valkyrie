@@ -9,6 +9,7 @@ from typing import cast
 _TASK_PATH_SUFFIX = "/ExecutorHostTaskDef/Resource"
 _SERVICE_PATH_SUFFIX = "/ExecutorHostService/Service"
 _TASK_TYPE = "AWS::ECS::TaskDefinition"
+_TASK_ROLLING_PROPERTIES = frozenset({"Cpu", "Memory"})
 _SERVICE_TYPE = "AWS::ECS::Service"
 _SERVICE_REDEPLOY_PROPERTIES = frozenset(
     {
@@ -101,7 +102,7 @@ def classify_executor_host_template_change(
     reasons: set[str] = set()
     if _resource_identity_changed(base.task_definition, head.task_definition):
         reasons.add("executor-host-task-definition-replaced")
-    elif _task_properties(base.task_definition) != _task_properties(head.task_definition):
+    elif _task_change_requires_maintenance(base.task_definition, head.task_definition):
         reasons.add("executor-host-task-definition-changed")
 
     if _resource_identity_changed(base.service, head.service):
@@ -195,8 +196,13 @@ def _resource_identity_changed(base: _HostResource, head: _HostResource) -> bool
     return base.logical_id != head.logical_id or base.resource_type != head.resource_type
 
 
-def _task_properties(resource: _HostResource) -> dict[str, object]:
-    return {key: value for key, value in resource.properties.items() if key != "Tags"}
+def _task_change_requires_maintenance(base: _HostResource, head: _HostResource) -> bool:
+    changed_properties = {
+        key
+        for key in base.properties.keys() | head.properties.keys()
+        if key != "Tags" and base.properties.get(key) != head.properties.get(key)
+    }
+    return bool(changed_properties - _TASK_ROLLING_PROPERTIES)
 
 
 def _service_change_reasons(base: _HostResource, head: _HostResource) -> set[str]:
