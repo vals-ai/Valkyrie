@@ -13,7 +13,15 @@ from main import app
 from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tests.conftest import TEST_ORG_ID
 from tracker import config
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, ExecutorRelease, Task, TaskStatus
+from tracker.database.models import (
+    AgentContractRequest,
+    Benchmark,
+    BenchmarkStatus,
+    ExecutorDispatch,
+    ExecutorRelease,
+    Task,
+    TaskStatus,
+)
 from tracker.executor.release_control import promote_release
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 
@@ -292,6 +300,74 @@ def test_managed_resume_rolls_back_when_the_active_release_is_incompatible(
     assert persisted_task is not None
     assert persisted_benchmark.status == BenchmarkStatus.STOPPED
     assert persisted_task.status == TaskStatus.ERROR
+    assert payloads == []
+
+
+def test_managed_resume_payload_failure_rolls_back_recovery_state(
+    contract: AgentContractRequest,
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_managed_runtime(monkeypatch)
+    _promote_test_release(database_session)
+    payloads = _capture_task_payloads(monkeypatch)
+    monkeypatch.setattr(
+        BenchmarkServiceClient,
+        "verify_task_ids",
+        AsyncMock(return_value=VerifyTaskIdsResponse(task_ids=["task-1"])),
+    )
+    monkeypatch.setattr("main.s3_object_exists", AsyncMock(return_value=True))
+    monkeypatch.setattr("main.copy_agent_to_benchmark", AsyncMock(return_value=True))
+
+    response = client.post("/start-benchmark", json=_start_request(contract, None).model_dump(mode="json"))
+
+    assert response.status_code == 200
+    benchmark_id = UUID(response.json()["benchmark_id"])
+    benchmark = database_session.get(Benchmark, benchmark_id)
+    task = database_session.exec(select(Task).where(Task.benchmark == benchmark_id)).one()
+    assert benchmark is not None
+    benchmark.status = BenchmarkStatus.STOPPED
+    task.status = TaskStatus.ERROR
+    database_session.add(benchmark)
+    database_session.add(task)
+    database_session.commit()
+    original_dispatch_ids = {
+        dispatch.id
+        for dispatch in database_session.exec(
+            select(ExecutorDispatch).where(ExecutorDispatch.benchmark_id == benchmark_id)
+        ).all()
+    }
+    payloads.clear()
+
+    async def mutate_recovery_state(**_kwargs: Any) -> list[str]:
+        benchmark.status = BenchmarkStatus.IN_PROGRESS
+        task.status = TaskStatus.PENDING
+        database_session.add(benchmark)
+        database_session.add(task)
+        return [task.task_id]
+
+    def fail_payload_build(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("payload validation failed")
+
+    monkeypatch.setattr("main.reset_to_in_progress_status", mutate_recovery_state)
+    monkeypatch.setattr("main._process_benchmark_kwargs", fail_payload_build)
+
+    response = TestClient(app, raise_server_exceptions=False).post(f"/retry-or-resume-benchmark/{benchmark_id}")
+
+    assert response.status_code == 500
+    database_session.expire_all()
+    persisted_benchmark = database_session.get(Benchmark, benchmark_id)
+    persisted_task = database_session.get(Task, task.id)
+    assert persisted_benchmark is not None
+    assert persisted_task is not None
+    assert persisted_benchmark.status == BenchmarkStatus.STOPPED
+    assert persisted_task.status == TaskStatus.ERROR
+    assert {
+        dispatch.id
+        for dispatch in database_session.exec(
+            select(ExecutorDispatch).where(ExecutorDispatch.benchmark_id == benchmark_id)
+        ).all()
+    } == original_dispatch_ids
     assert payloads == []
 
 

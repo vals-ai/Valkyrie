@@ -798,7 +798,7 @@ class TestTrackerAPI:
         else:
             delete_agent_copy.assert_not_awaited()
 
-    async def test_start_admission_failure_rolls_back_and_deletes_created_copy(
+    async def test_start_payload_failure_rolls_back_and_deletes_created_copy(
         self,
         contract: AgentContractRequest,
         database_session: Session,
@@ -807,15 +807,13 @@ class TestTrackerAPI:
     ) -> None:
         copy_agent = AsyncMock(return_value=S3ObjectCopy(version_id="copy-version"))
         delete_agent_copy = AsyncMock()
-        admit_start_dispatch = main_module.admit_start_dispatch
 
-        def fail_after_admission(*args: Any, **kwargs: Any) -> None:
-            admit_start_dispatch(*args, **kwargs)
-            raise RuntimeError("commit preparation failed")
+        def fail_payload_build(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("payload validation failed")
 
         monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent)
         monkeypatch.setattr(main_module, "delete_from_s3", delete_agent_copy)
-        monkeypatch.setattr(main_module, "admit_start_dispatch", fail_after_admission)
+        monkeypatch.setattr(main_module, "_process_benchmark_kwargs", fail_payload_build)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
         request = StartBenchmarkRequest(
             contract=contract,

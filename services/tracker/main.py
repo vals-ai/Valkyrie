@@ -610,6 +610,7 @@ async def start_benchmark(
             benchmark=benchmark_row,
             dispatch_id=dispatch_id,
         )
+        executor_payload = _process_benchmark_kwargs(benchmark_row, request, verify_response.task_ids)
         session.commit()
     except Exception as exc:
         await _rollback_failed_start_admission(
@@ -635,7 +636,7 @@ async def start_benchmark(
     await _enqueue_executor_dispatch(
         executor_dispatch,
         session=session,
-        payload=_process_benchmark_kwargs(benchmark_row, request, verify_response.task_ids),
+        payload=executor_payload,
         verified_task_ids=verify_response.task_ids,
     )
 
@@ -1264,6 +1265,7 @@ async def retry_or_resume_benchmark(
             dispatch_id=dispatch_id,
             kind=dispatch_kind,
         )
+        executor_payload = _process_benchmark_kwargs(benchmark_row, resume_request, verified_task_ids)
         session.commit()
     except ReleaseControlError as exc:
         session.rollback()
@@ -1280,7 +1282,7 @@ async def retry_or_resume_benchmark(
     await _enqueue_executor_dispatch(
         executor_dispatch,
         session=session,
-        payload=_process_benchmark_kwargs(benchmark_row, resume_request, verified_task_ids),
+        payload=executor_payload,
         verified_task_ids=verified_task_ids,
     )
     return RetryOrResumeBenchmarkResponse(status="success")
