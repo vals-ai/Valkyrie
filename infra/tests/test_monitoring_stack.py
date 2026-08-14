@@ -675,7 +675,11 @@ class MonitoringStackTest(unittest.TestCase):
                 )
 
     def test_tracker_receives_sandbox_queue_flag_from_deployment_environment(self) -> None:
-        with mock.patch.dict(os.environ, {"SANDBOX_QUEUE_ENABLED": "true"}, clear=True):
+        with mock.patch.dict(
+            os.environ,
+            {**TEST_PROD_ENV, "SANDBOX_QUEUE_ENABLED": "true"},
+            clear=True,
+        ):
             tracker_template, _executor_template, _monitoring_template = _service_templates(PROD)
 
         expected_env = assertions.Match.array_with([{"Name": "SANDBOX_QUEUE_ENABLED", "Value": "true"}])

@@ -574,28 +574,28 @@ async def process_benchmark(
                 authority=authority,
             )
 
-    if start_benchmark_request.custom_benchmark_service is not None:
-        validate_custom_service_destination(
-            start_benchmark_request.custom_benchmark_service,
-            org_name=org.name,
-            auth_required=AUTH_REQUIRED,
-        )
-
-    if not queued_run:
-        sandbox_provider_config = fetch_sandbox_provider_config(
-            harness_config.sandbox_provider_secret_name,
-            harness_config.aws,
-            start_benchmark_request.sandbox_provider,
-        )
-        benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
-        try:
-            sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
-        except BaseException:
-            await benchmark_service.close()
-            benchmark_service = None
-            raise
-
     try:
+        if start_benchmark_request.custom_benchmark_service is not None:
+            validate_custom_service_destination(
+                start_benchmark_request.custom_benchmark_service,
+                org_name=org.name,
+                auth_required=AUTH_REQUIRED,
+            )
+
+        if not queued_run:
+            sandbox_provider_config = fetch_sandbox_provider_config(
+                harness_config.sandbox_provider_secret_name,
+                harness_config.aws,
+                start_benchmark_request.sandbox_provider,
+            )
+            benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
+            try:
+                sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
+            except BaseException:
+                await benchmark_service.close()
+                benchmark_service = None
+                raise
+
         if queued_run:
             with Session(bind=engine) as session:
                 benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
