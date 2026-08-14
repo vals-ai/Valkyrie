@@ -19,6 +19,7 @@ from websockets.frames import Close
 from websockets.http11 import Response
 
 import tracker.sandbox as sandbox_module
+import tracker.utils.run_orchestration as run_orchestration_module
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, Task, TaskStatus
@@ -291,6 +292,40 @@ class TestBenchmarkServiceFailures:
         assert task_row.status == TaskStatus.ERROR
         assert self._latest_task_error(database_session, task_row) == "ConnectTimeout"
         assert any("[ERROR] ConnectTimeout" in message for message in logged_messages)
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_process_benchmark_blocks_external_internal_custom_destination(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        start_benchmark_request, _task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        start_benchmark_request = start_benchmark_request.model_copy(
+            update={"custom_benchmark_service": "http://service.internal:8001"}
+        )
+        monkeypatch.setattr(run_orchestration_module, "AUTH_REQUIRED", True)
+        monkeypatch.setattr(
+            run_orchestration_module,
+            "fetch_sandbox_provider_config",
+            lambda *_args, **_kwargs: pytest.fail("sandbox config resolved before destination validation"),
+        )
+
+        await process_benchmark(
+            start_benchmark_request_json=start_benchmark_request.model_dump(),
+            benchmark_id_str=str(benchmark_id),
+            verified_task_ids=["task_0"],
+            executor_dispatch_id=str(authority.dispatch_id),
+        )
+
+        with Session(bind=database_session.bind) as session:
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, TEST_ORG)
+            assert benchmark_row.status == BenchmarkStatus.ERROR
+            assert benchmark_row.error_message is not None
+            assert "Custom benchmark destination is not allowed" in benchmark_row.error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_benchmark_service_error_in_process_benchmark(

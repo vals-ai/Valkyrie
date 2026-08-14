@@ -36,6 +36,7 @@ from constants import (
     POSTGRES_DB,
     POSTGRES_PORT,
     POSTGRES_USER,
+    REDIS_PORT,
     TRACKER_DOMAIN,
     TRACKER_LOG_GROUP_NAME,
     TRACKER_PORT,
@@ -71,6 +72,7 @@ class TrackerStack(Stack):
         hosted_zone: aws_route53.IHostedZone | None,
         bucket_name: str,
         redis_url: str,
+        redis_security_group: aws_ec2.ISecurityGroup,
         tracker_repository: aws_ecr.IRepository | None = None,
         image_tag: str | None = None,
         **kwargs: Any,
@@ -330,6 +332,18 @@ class TrackerStack(Stack):
 
         # ── Network access ───────────────────────────────────────────────
 
+        tracker_security_group = self.tracker_fargate_service.connections.security_groups[0]
+        aws_ec2.CfnSecurityGroupIngress(
+            self,
+            "TrackerToRedisIngress",
+            group_id=redis_security_group.security_group_id,
+            source_security_group_id=tracker_security_group.security_group_id,
+            ip_protocol="tcp",
+            from_port=REDIS_PORT,
+            to_port=REDIS_PORT,
+            description="Allow Tracker and ExecutorHost to connect to Redis",
+        )
+
         # Allow VPC services (tracker + worker) to reach RDS.
         db_security_group.add_ingress_rule(
             peer=aws_ec2.Peer.ipv4(VPC_CIDR),
@@ -342,7 +356,7 @@ class TrackerStack(Stack):
                 self,
                 "TrackerSecurityGroupParameter",
                 parameter_name=stage_parameter_name(DEV_TRACKER_SECURITY_GROUP_PARAMETER, stage.name),
-                string_value=self.service.service.connections.security_groups[0].security_group_id,
+                string_value=tracker_security_group.security_group_id,
             )
             aws_ssm.StringParameter(
                 self,

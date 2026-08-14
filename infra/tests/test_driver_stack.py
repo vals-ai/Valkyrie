@@ -41,6 +41,7 @@ def driver_template() -> Iterator[assertions.Template]:
         bucket = aws_s3.Bucket(dependencies, "Bucket")
         tracker_repository = aws_ecr.Repository(dependencies, "TrackerRepository")
         db_credentials = aws_secretsmanager.Secret(dependencies, "DbCredentials")
+        redis_security_group = aws_ec2.SecurityGroup(dependencies, "RedisSecurityGroup", vpc=vpc)
         stage = Stage(RELEASE_TEST)
         stack = DriverStack(
             app,
@@ -55,6 +56,7 @@ def driver_template() -> Iterator[assertions.Template]:
             db_port="5432",
             db_credentials=cast(aws_secretsmanager.ISecret, db_credentials),
             redis_url="redis://redis.internal:6379",
+            redis_security_group=redis_security_group,
             env=TEST_ENV,
         )
         yield assertions.Template.from_stack(stack)
@@ -79,6 +81,7 @@ class DriverStackTest(unittest.TestCase):
             bucket = aws_s3.Bucket(dependencies, "Bucket")
             tracker_repository = aws_ecr.Repository(dependencies, "TrackerRepository")
             db_credentials = aws_secretsmanager.Secret(dependencies, "DbCredentials")
+            redis_security_group = aws_ec2.SecurityGroup(dependencies, "RedisSecurityGroup", vpc=vpc)
 
             with self.assertRaisesRegex(ValueError, "release-test"):
                 DriverStack(
@@ -94,15 +97,43 @@ class DriverStackTest(unittest.TestCase):
                     db_port="5432",
                     db_credentials=cast(aws_secretsmanager.ISecret, db_credentials),
                     redis_url="redis://redis.internal:6379",
+                    redis_security_group=redis_security_group,
                     env=TEST_ENV,
                 )
 
-    def test_driver_is_one_task_definition_with_no_service_or_ingress(self) -> None:
+    def test_driver_is_one_task_definition_with_source_sg_redis_ingress(self) -> None:
         with driver_template() as template:
             template.resource_count_is("AWS::ECS::TaskDefinition", 1)
             template.resource_count_is("AWS::ECS::Service", 0)
             template.resource_count_is("AWS::EC2::SecurityGroup", 1)
-            template.resource_count_is("AWS::EC2::SecurityGroupIngress", 0)
+            driver_security_group_id = next(
+                logical_id
+                for logical_id, resource in template.find_resources("AWS::EC2::SecurityGroup").items()
+                if resource["Properties"]["GroupDescription"]
+                == "No-ingress security group for the release-test Package R driver"
+            )
+            redis_ingress = [
+                resource["Properties"]
+                for resource in template.find_resources("AWS::EC2::SecurityGroupIngress").values()
+                if resource["Properties"].get("FromPort") == 6379 or resource["Properties"].get("ToPort") == 6379
+            ]
+            self.assertEqual(len(redis_ingress), 1)
+            ingress = redis_ingress[0]
+            self.assertEqual(
+                {key: ingress[key] for key in ("Description", "FromPort", "IpProtocol", "ToPort")},
+                {
+                    "Description": "Allow release-test Driver to connect to Redis",
+                    "FromPort": 6379,
+                    "IpProtocol": "tcp",
+                    "ToPort": 6379,
+                },
+            )
+            self.assertNotIn("CidrIp", ingress)
+            self.assertIn("RedisSecurityGroup", ingress["GroupId"]["Fn::ImportValue"])
+            self.assertEqual(
+                ingress["SourceSecurityGroupId"],
+                {"Fn::GetAtt": [driver_security_group_id, "GroupId"]},
+            )
             template.has_resource_properties(
                 "AWS::ECS::TaskDefinition",
                 {

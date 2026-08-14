@@ -31,6 +31,7 @@ from constants import (
     EXECUTOR_RELEASE_PREFIX,
     EXECUTOR_RELEASE_ROLE_NAME,
     POSTGRES_DB,
+    POSTGRES_PORT,
     SANDBOX_CLEANUP_DLQ_NAME,
     SANDBOX_CLEANUP_FUNCTION_NAME,
     SANDBOX_CLEANUP_LOG_GROUP_NAME,
@@ -39,6 +40,7 @@ from constants import (
     WORKER_LOG_GROUP_NAME,
     WORKER_SCALING_CPU_PERCENT,
     WORKER_STOP_TIMEOUT_SECONDS,
+    VPC_CIDR,
     executor_release_launch_parameter,
 )
 from constructs import Construct
@@ -319,6 +321,34 @@ class ExecutorStack(Stack):
         database: aws_rds.DatabaseInstance,
         db_secret: aws_secretsmanager.ISecret,
     ) -> None:
+        control_security_group = aws_ec2.SecurityGroup(
+            self,
+            "ExecutorReleaseSecurityGroup",
+            vpc=vpc,
+            description="No-ingress security group for executor-release control tasks",
+            allow_all_outbound=False,
+        )
+        control_security_group.add_egress_rule(
+            aws_ec2.Peer.ipv4(VPC_CIDR),
+            aws_ec2.Port.tcp(POSTGRES_PORT),
+            "Tracker PostgreSQL",
+        )
+        control_security_group.add_egress_rule(
+            aws_ec2.Peer.ipv4(VPC_CIDR),
+            aws_ec2.Port.udp(53),
+            "VPC DNS UDP",
+        )
+        control_security_group.add_egress_rule(
+            aws_ec2.Peer.ipv4(VPC_CIDR),
+            aws_ec2.Port.tcp(53),
+            "VPC DNS TCP",
+        )
+        control_security_group.add_egress_rule(
+            aws_ec2.Peer.any_ipv4(),
+            aws_ec2.Port.tcp(443),
+            "AWS API endpoints",
+        )
+
         task_role = aws_iam.Role(
             self,
             "ExecutorReleaseTaskRole",
@@ -415,7 +445,6 @@ class ExecutorStack(Stack):
             ),
         )
 
-        tracker_security_group = tracker_service.connections.security_groups[0]
         launch_parameter = aws_ssm.StringParameter(
             self,
             "ExecutorReleaseLaunchConfig",
@@ -426,7 +455,7 @@ class ExecutorStack(Stack):
                     "cluster": cluster.cluster_arn,
                     "container": container_name,
                     "prefix": EXECUTOR_RELEASE_PREFIX,
-                    "security_group": tracker_security_group.security_group_id,
+                    "security_group": control_security_group.security_group_id,
                     "subnets": vpc.select_subnets(subnet_type=aws_ec2.SubnetType.PUBLIC).subnet_ids,
                     "task_definition": task_definition.task_definition_arn,
                 }

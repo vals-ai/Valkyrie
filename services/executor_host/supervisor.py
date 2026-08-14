@@ -19,6 +19,7 @@ from typing import Mapping, Protocol, Unpack, cast
 import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
 from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
+from redis.asyncio import Redis
 from taskiq_redis import RedisStreamBroker
 from executor_protocol import (
     DEFAULT_EXECUTOR_RELEASE_PREFIX,
@@ -38,6 +39,13 @@ _PROTECTION_EXPIRY_MINUTES = 120
 _PROTECTION_REFRESH_SECONDS = 30 * 60
 _PROTECTION_RETRY_SECONDS = 30
 _AUTHORITY_LOSS_GRACE_SECONDS = 10
+_ACK_AND_DELETE_SCRIPT = """
+local acknowledged = redis.call("XACK", KEYS[1], ARGV[1], ARGV[2])
+if acknowledged == 1 then
+    redis.call("XDEL", KEYS[1], ARGV[2])
+end
+return acknowledged
+"""
 _active_execution_count = 0
 _protection_refresh_task: asyncio.Task[None] | None = None
 _execution_lock = asyncio.Lock()
@@ -598,11 +606,28 @@ async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
         await process.wait()
 
 
+class DeleteAfterAckRedisStreamBroker(RedisStreamBroker):
+    """Delete stream entries after Taskiq acknowledges their processing."""
+
+    def _ack_generator(self, id: str, queue_name: str) -> Callable[[], Awaitable[None]]:
+        async def _ack() -> None:
+            async with Redis(connection_pool=self.connection_pool) as redis_conn:
+                await redis_conn.eval(
+                    _ACK_AND_DELETE_SCRIPT,
+                    1,
+                    queue_name,
+                    self.consumer_group_name,
+                    id,
+                )
+
+        return _ack
+
+
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 QUEUE_NAME = os.environ.get("STABLE_QUEUE_NAME", DEFAULT_STABLE_QUEUE_NAME)
 CACHE_DIR = Path(os.environ.get("EXECUTOR_CACHE_DIR", DEFAULT_CACHE_DIR))
 
-broker = RedisStreamBroker(
+broker = DeleteAfterAckRedisStreamBroker(
     url=REDIS_URL,
     queue_name=QUEUE_NAME,
     consumer_group_name=QUEUE_NAME,

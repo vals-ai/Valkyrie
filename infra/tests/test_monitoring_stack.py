@@ -174,6 +174,7 @@ def _service_templates(
         hosted_zone=shared.hosted_zone,
         bucket_name=shared.bucket_name,
         redis_url=shared.redis_url,
+        redis_security_group=shared.redis_security_group,
         tracker_repository=tracker_repository,
         image_tag=image_tag,
         env=env,
@@ -269,6 +270,113 @@ class MonitoringStackTest(unittest.TestCase):
             len(release_test_template.find_resources("AWS::ElasticLoadBalancingV2::Listener")),
             1,
         )
+
+    def test_redis_ingress_is_limited_to_tracker_and_executor_host(self) -> None:
+        for stage_name, environment in (
+            (PROD, TEST_PROD_ENV),
+            (DEV, TEST_DEV_ENV),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV),
+        ):
+            with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
+                shared_template = _shared_template(stage_name)
+                shared_security_groups = shared_template.find_resources("AWS::EC2::SecurityGroup")
+                redis_security_group = next(
+                    resource
+                    for resource in shared_security_groups.values()
+                    if resource["Properties"]["GroupDescription"] == "Security group for ElastiCache Redis"
+                )
+                self.assertNotIn("SecurityGroupIngress", redis_security_group["Properties"])
+                self.assertFalse(shared_template.find_resources("AWS::EC2::SecurityGroupIngress"))
+
+                tracker_template, executor_template, _ = _service_templates(stage_name)
+                tracker_security_groups = tracker_template.find_resources("AWS::EC2::SecurityGroup")
+                tracker_security_group_id = next(
+                    logical_id
+                    for logical_id, resource in tracker_security_groups.items()
+                    if resource["Properties"]["GroupDescription"].endswith("TrackerService/Service/SecurityGroup")
+                )
+                redis_ingress = [
+                    resource["Properties"]
+                    for resource in tracker_template.find_resources("AWS::EC2::SecurityGroupIngress").values()
+                    if resource["Properties"].get("FromPort") == 6379 or resource["Properties"].get("ToPort") == 6379
+                ]
+                self.assertEqual(len(redis_ingress), 1)
+                ingress = redis_ingress[0]
+                self.assertEqual(
+                    {key: ingress[key] for key in ("Description", "FromPort", "IpProtocol", "ToPort")},
+                    {
+                        "Description": "Allow Tracker and ExecutorHost to connect to Redis",
+                        "FromPort": 6379,
+                        "IpProtocol": "tcp",
+                        "ToPort": 6379,
+                    },
+                )
+                self.assertNotIn("CidrIp", ingress)
+                self.assertIn("RedisSG", ingress["GroupId"]["Fn::ImportValue"])
+                self.assertEqual(
+                    ingress["SourceSecurityGroupId"],
+                    {"Fn::GetAtt": [tracker_security_group_id, "GroupId"]},
+                )
+
+                executor_service = next(iter(executor_template.find_resources("AWS::ECS::Service").values()))
+                executor_security_groups = executor_service["Properties"]["NetworkConfiguration"][
+                    "AwsvpcConfiguration"
+                ]["SecurityGroups"]
+                self.assertEqual(len(executor_security_groups), 1)
+                self.assertIn(tracker_security_group_id, json.dumps(executor_security_groups))
+
+                executor_security_groups_by_id = executor_template.find_resources("AWS::EC2::SecurityGroup")
+                control_security_group_id, control_security_group = next(
+                    (logical_id, resource)
+                    for logical_id, resource in executor_security_groups_by_id.items()
+                    if resource["Properties"]["GroupDescription"]
+                    == "No-ingress security group for executor-release control tasks"
+                )
+                self.assertNotEqual(control_security_group_id, tracker_security_group_id)
+                self.assertNotIn("SecurityGroupIngress", control_security_group["Properties"])
+                self.assertEqual(
+                    control_security_group["Properties"]["SecurityGroupEgress"],
+                    [
+                        {
+                            "CidrIp": "10.0.0.0/16",
+                            "Description": "Tracker PostgreSQL",
+                            "FromPort": 5432,
+                            "IpProtocol": "tcp",
+                            "ToPort": 5432,
+                        },
+                        {
+                            "CidrIp": "10.0.0.0/16",
+                            "Description": "VPC DNS UDP",
+                            "FromPort": 53,
+                            "IpProtocol": "udp",
+                            "ToPort": 53,
+                        },
+                        {
+                            "CidrIp": "10.0.0.0/16",
+                            "Description": "VPC DNS TCP",
+                            "FromPort": 53,
+                            "IpProtocol": "tcp",
+                            "ToPort": 53,
+                        },
+                        {
+                            "CidrIp": "0.0.0.0/0",
+                            "Description": "AWS API endpoints",
+                            "FromPort": 443,
+                            "IpProtocol": "tcp",
+                            "ToPort": 443,
+                        },
+                    ],
+                )
+                self.assertNotIn("6379", json.dumps(control_security_group["Properties"]))
+
+                launch_parameter = next(
+                    resource
+                    for resource in executor_template.find_resources("AWS::SSM::Parameter").values()
+                    if resource["Properties"]["Name"].endswith("/executor-release/launch-config")
+                )
+                launch_config = json.dumps(launch_parameter["Properties"]["Value"])
+                self.assertIn(control_security_group_id, launch_config)
+                self.assertNotIn(tracker_security_group_id, launch_config)
 
     def test_release_test_owns_immutable_service_image_repositories(self) -> None:
         release_template = _shared_template(RELEASE_TEST)

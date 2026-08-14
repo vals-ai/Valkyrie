@@ -443,6 +443,28 @@ class TestTrackerAPI:
         assert observed_headers[0]["X-Descope-Api-Key"] == "tracker-api-key"
         assert "X-Descope-Api-Key" not in observed_headers[1]
 
+    async def test_fetch_benchmark_tasks_blocks_external_internal_custom_destination(
+        self,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(main_module, "AUTH_REQUIRED", True)
+
+        blocked = client.post(
+            "/fetch-benchmark-tasks",
+            json={
+                "benchmark_name": "swebench",
+                "custom_benchmark_service": "https://benchmarks-dev.vals.ai",
+            },
+        )
+        canonical = client.post(
+            "/fetch-benchmark-tasks",
+            json={"benchmark_name": "swebench"},
+        )
+
+        assert blocked.status_code == 403
+        assert blocked.json() == {"detail": "Custom benchmark destination is not allowed"}
+        assert canonical.status_code == 200
+
     async def test_start_benchmark(
         self,
         contract: AgentContractRequest,
@@ -1302,6 +1324,28 @@ class TestTrackerAPI:
         assert observed_results["task_11"] is None
         assert response.json()["final_evaluation"]["final_score"] == 2.0
 
+    async def test_retrieve_results_blocks_external_persisted_internal_destination(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        example_benchmark_object.custom_benchmark_service = "http://service.internal:8001"
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        monkeypatch.setattr(main_module, "AUTH_REQUIRED", True)
+
+        response = client.get(
+            "/retrieve-results",
+            params=[
+                ("benchmark_id", str(example_benchmark_object.id)),
+                ("task_ids", "task_0"),
+            ],
+        )
+
+        assert response.status_code == 403
+        assert response.json() == {"detail": "Custom benchmark destination is not allowed"}
+
     async def test_retrieve_results_does_not_forward_tracker_key_to_legacy_named_custom_service(
         self,
         monkeypatch: MonkeyPatch,
@@ -1531,6 +1575,27 @@ class TestTrackerAPI:
         response_json = response.json()
         assert response_json.get("total_count") == 1
         assert response_json["benchmarks"][0]["error_message"] == "Dominant task error"
+
+    async def test_start_benchmark_blocks_external_internal_custom_destination(
+        self,
+        contract: AgentContractRequest,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(main_module, "AUTH_REQUIRED", True)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=5,
+            task_ids=None,
+            harness_config=harness_config,
+            custom_benchmark_service="http://10.0.0.1:8001",
+        )
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 403
+        assert response.json() == {"detail": "Custom benchmark destination is not allowed"}
 
     async def test_start_benchmark_accepts_custom_service_from_request(
         self,

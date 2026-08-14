@@ -14,7 +14,7 @@ from sqlmodel import Session, col, desc, func, select
 
 from tracker._lambda import invoke_lambda, lambda_client
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group
-from tracker.config import broker
+from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -32,6 +32,7 @@ from tracker.executor.execution_authority import ExecutionAuthority, lock_execut
 from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
+from tracker.outbound_security import validate_custom_service_destination
 from tracker.types import (
     FinalViewResponse,
     HarnessConfig,
@@ -288,12 +289,6 @@ async def process_benchmark(
     start_benchmark_request: StartBenchmarkRequest = StartBenchmarkRequest(**start_benchmark_request_json)
     benchmark_id = authority.benchmark_id
     harness_config: HarnessConfig = start_benchmark_request.harness_config
-    sandbox_provider_config = fetch_sandbox_provider_config(
-        harness_config.sandbox_provider_secret_name,
-        harness_config.aws,
-        start_benchmark_request.sandbox_provider,
-    )
-    benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
 
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
@@ -323,8 +318,23 @@ async def process_benchmark(
             raise TrackerServiceError(f"Run with id {benchmark_id} not found")
         org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
 
+    benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
+
     finalization_deferred = False
     try:
+        if start_benchmark_request.custom_benchmark_service is not None:
+            validate_custom_service_destination(
+                start_benchmark_request.custom_benchmark_service,
+                org_name=org.name,
+                auth_required=AUTH_REQUIRED,
+            )
+
+        sandbox_provider_config = fetch_sandbox_provider_config(
+            harness_config.sandbox_provider_secret_name,
+            harness_config.aws,
+            start_benchmark_request.sandbox_provider,
+        )
+
         # Create benchmark cloudwatch log group
         create_benchmark_log_group(
             str(benchmark_id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy
