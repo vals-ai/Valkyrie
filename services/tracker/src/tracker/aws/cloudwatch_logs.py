@@ -31,12 +31,9 @@ def _sanitize_log_stream_name(task_id: str) -> str:
 
 @lru_cache(maxsize=32)
 def _cloudwatch_client(aws: "AWSCredentials") -> Any:
-    """Cloudwatch client cached to share instances."""
+    """Use the tracker task role and the configured AWS region."""
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "logs",
-        aws_access_key_id=aws.aws_access_key_id,
-        aws_secret_access_key=aws.aws_secret_access_key,
-        aws_session_token=aws.aws_session_token,
         region_name=aws.aws_default_region,
         config=Config(max_pool_connections=200),
     )

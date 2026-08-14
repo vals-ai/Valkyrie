@@ -12,10 +12,12 @@ from aws_cdk import (
     aws_ecr,
     aws_ecs,
     aws_ecs_patterns,
+    aws_iam,
     aws_elasticloadbalancingv2,
     aws_logs,
     aws_rds,
     aws_route53,
+    aws_s3,
     aws_secretsmanager,
     aws_servicediscovery,
     aws_ssm,
@@ -25,6 +27,7 @@ from constants import (
     ALB_HEALTH_INTERVAL_SECONDS,
     ALB_IDLE_TIMEOUT_SECONDS,
     ALLOWED_IPS,
+    BENCHMARK_LOG_GROUP_NAME,
     CONTAINER_HEALTH_INTERVAL_SECONDS,
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
@@ -69,7 +72,7 @@ class TrackerStack(Stack):
         cluster: aws_ecs.ICluster,
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
         hosted_zone: aws_route53.IHostedZone | None,
-        bucket_name: str,
+        bucket: aws_s3.IBucket,
         redis_url: str,
         tracker_repository: aws_ecr.IRepository | None = None,
         image_tag: str | None = None,
@@ -98,7 +101,7 @@ class TrackerStack(Stack):
         benchmark_service_url = benchmark_service_base_url(stage)
         shared_env = {
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
-            "AWS_S3_BUCKET": bucket_name,
+            "AWS_S3_BUCKET": bucket.bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
@@ -232,6 +235,46 @@ class TrackerStack(Stack):
                 start_period=Duration.seconds(CONTAINER_HEALTH_START_PERIOD_SECONDS),
                 timeout=Duration.seconds(CONTAINER_HEALTH_TIMEOUT_SECONDS),
             ),
+        )
+
+        tracker_task_role = cast(aws_iam.Role, tracker_task_def.task_role)
+        bucket.grant_read(tracker_task_role, "agents/*")
+        tracker_task_role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=[
+                    "s3:GetObject",
+                    "s3:GetObjectVersion",
+                    "s3:PutObject",
+                    "s3:AbortMultipartUpload",
+                    "s3:ListMultipartUploadParts",
+                ],
+                resources=[bucket.arn_for_objects("benchmarks/*")],
+            )
+        )
+        tracker_task_role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads"],
+                resources=[bucket.bucket_arn],
+                conditions={"StringLike": {"s3:prefix": ["agents/*", "benchmarks/*"]}},
+            )
+        )
+
+        benchmark_log_group_arn = self.format_arn(
+            service="logs",
+            resource="log-group",
+            resource_name=f"{BENCHMARK_LOG_GROUP_NAME}/*",
+            arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
+        )
+        tracker_task_role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=[
+                    "logs:CreateLogGroup",
+                    "logs:PutRetentionPolicy",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                ],
+                resources=[benchmark_log_group_arn, f"{benchmark_log_group_arn}:log-stream:*"],
+            )
         )
 
         tracker_domain: str | None = None

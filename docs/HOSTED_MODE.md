@@ -1,16 +1,16 @@
 # Hosted vs Self-Hosted Mode
 
-Valkyrie supports two operational modes. Both require your own AWS credentials — hosted mode adds Vals AI API key authentication for multi-tenant data isolation.
+Valkyrie supports two operational modes. Hosted mode adds Vals AI API key authentication for multi-tenant data isolation.
 
 ## Hosted mode
 
-Use Vals-hosted compute infrastructure with your own AWS storage. Data is isolated per organization via Vals AI API key authentication.
+Use Vals-hosted compute infrastructure with the hosted tracker storage. Data is isolated per organization via Vals AI API key authentication.
 
 ### Prerequisites
 
 - Vals AI API key (provided by Vals)
-- AWS account with the [required permissions](#required-aws-permissions)
-- S3 bucket for storing benchmark artifacts and agents. This will need to be unique for the region and created before defining it inside of the config.
+- AWS credentials for client-side agent upload commands
+- S3 bucket name used by the hosted tracker
 - API key for sandbox provider (Daytona). [Setup docs](PROVIDER.md)
 
 ### Setup
@@ -21,7 +21,7 @@ valkyrie config init
 
 Choose **hosted** when prompted. You'll be asked for:
 1. Your Vals AI API key — validates against the tracker and creates your organization
-2. AWS credentials — same as self-hosted (you supply your own S3, CloudWatch, Daytona)
+2. S3 bucket and region used by the hosted tracker
 
 ```
 $ valkyrie config init
@@ -34,7 +34,9 @@ AWS_SECRET_ACCESS_KEY: ...
 ...
 ```
 
-Your API key is sent with every request to authenticate and scope data to your organization. AWS credentials are sent via `X-Harness-*` headers.
+Your API key is sent with every request to authenticate and scope data to your organization.
+The hosted tracker uses its own IAM task role for S3 and CloudWatch uploads.
+The legacy harness credentials remain available for user-owned Secrets Manager and Lambda integrations.
 
 You can also set the API key manually:
 
@@ -73,16 +75,18 @@ AWS_SECRET_ACCESS_KEY: ...
 
 No API key or Descope authentication is used. All data belongs to a single default organization.
 
-## Required AWS permissions
+## Hosted tracker AWS permissions
 
-Your AWS credentials must have the following permissions:
+The hosted tracker task role has the following S3 and CloudWatch permissions:
 
 | Service | Permissions | Used for |
 |---------|------------|----------|
-| **S3** | `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucket` | Storing benchmark results, agent artifacts, and run outputs |
+| **S3** | `s3:GetObject`, `s3:PutObject`, multipart upload actions, and scoped list access | Storing benchmark results, agent artifacts, and run outputs |
 | **S3** | `s3:GetObject` (for presigned URLs) | Generating download links for results |
 | **CloudWatch Logs** | `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents` | Streaming task execution logs |
-| **Secrets Manager** | `secretsmanager:GetSecretValue` | Retrieving sandbox provider credentials (Daytona) and webhook URLs |
-| **Lambda** (optional) | `lambda:InvokeFunction` | Post-benchmark Lambda invocation (only if using `--lambda` flag) |
 
-These permissions should be scoped to the S3 bucket, CloudWatch log group, and Secrets Manager secrets you configure during `valkyrie config init`.
+These permissions are scoped to the configured S3 bucket and benchmark CloudWatch log group.
+Secrets Manager and Lambda integrations continue to use the credentials in the harness configuration.
+Local tracker development still uses the ambient AWS environment from Docker Compose.
+
+Self-hosted deployments use the credentials supplied to their own tracker.

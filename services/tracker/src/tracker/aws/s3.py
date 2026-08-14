@@ -33,13 +33,8 @@ _MULTIPART_PART_BYTES = 8 * 1024 * 1024
 
 @lru_cache(maxsize=32)
 def _s3_session(aws: "AWSCredentials") -> aioboto3.Session:
-    """aioboto3 session cached per credential set."""
-    return aioboto3.Session(
-        aws_access_key_id=aws.aws_access_key_id,
-        aws_secret_access_key=aws.aws_secret_access_key,
-        aws_session_token=aws.aws_session_token,
-        region_name=aws.aws_default_region,
-    )
+    """Use the tracker task role and the configured AWS region."""
+    return aioboto3.Session(region_name=aws.aws_default_region)
 
 
 def s3_client(aws: "AWSCredentials") -> Any:

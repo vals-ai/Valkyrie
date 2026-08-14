@@ -14,11 +14,11 @@ Valkyrie supports **hosted** and **self-hosted** modes.
 - **Self-hosted Mode** requires you to create AWS infrastructure using the IaC provided.
 - **Hosted Mode** allows you to use Vals-hosted infrastructure. Reach out to the Vals team for access (contact@vals.ai)
 
-Both modes require you to provide certain credentials and configuration:  
-- AWS API Key: Authentication for an AWS account with S3, CloudWatch, and Secrets Manager access (to store benchmarking logs and results)
-- S3 Bucket Name: The S3 bucket to be used for storing benchmark artifacts and agents
+Both modes require you to provide certain credentials and configuration:
+- AWS credentials for tracker integrations and client-side artifact commands
+- S3 Bucket Name: The S3 bucket used by the tracker for benchmark artifacts and results
 - Sandbox provider config: named AWS Secrets Manager entries for sandbox providers. [Setup docs](docs/PROVIDER.md)
-- **Hosted mode only:** Vals API Key
+- **Hosted mode only:** Vals API Key; the hosted tracker owns S3 and CloudWatch access through its IAM role
 
 See [Hosted vs Self-Hosted Mode](docs/HOSTED_MODE.md) for more details.
 

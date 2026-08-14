@@ -172,7 +172,7 @@ def _service_templates(
         cluster=shared.cluster,
         namespace=shared.namespace,
         hosted_zone=shared.hosted_zone,
-        bucket_name=shared.bucket_name,
+        bucket=shared.bucket,
         redis_url=shared.redis_url,
         tracker_repository=tracker_repository,
         image_tag=image_tag,

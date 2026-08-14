@@ -20,6 +20,7 @@ NAMESPACE = "local"
 
 # Tracker Service
 TRACKER_LOG_GROUP_NAME = "/valkyrie/tracker"
+BENCHMARK_LOG_GROUP_NAME = "benchmarks"
 TRACKER_DOMAIN = "benchmark-tracker.vals.ai"
 TRACKER_SCALING_CPU_PERCENT = 70
 

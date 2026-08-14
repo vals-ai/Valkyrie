@@ -9,6 +9,7 @@ import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
 from tracker.aws import cloudwatch_logs
+from tracker.aws import s3 as s3_module
 from tracker.aws.cloudwatch_logs import (
     get_benchmark_log_url,
     handle_cloudwatch_error,
@@ -61,6 +62,19 @@ class TestS3ClientRetry:
         async with s3_client(aws_credentials) as client:
             assert client.meta.config.retries["mode"] == "standard"
 
+    def test_uses_ambient_credentials(self, monkeypatch: pytest.MonkeyPatch, aws_credentials: AWSCredentials) -> None:
+        calls: list[dict[str, object]] = []
+
+        class Session:
+            def __init__(self, **kwargs: object) -> None:
+                calls.append(kwargs)
+
+        monkeypatch.setattr(s3_module.aioboto3, "Session", Session)
+        s3_module._s3_session.cache_clear()
+        s3_module._s3_session(aws_credentials)
+
+        assert calls == [{"region_name": "us-east-1"}]
+
 
 class TestCloudWatchClient:
     """CloudWatch exception translation at the client boundary."""
@@ -92,6 +106,23 @@ class TestCloudWatchClient:
 
         assert "Failed to connect to CloudWatch" in str(exc_info.value)
         assert exc_info.value.__cause__ == botocore_error
+
+    def test_uses_ambient_credentials(self, monkeypatch: pytest.MonkeyPatch, aws_credentials: AWSCredentials) -> None:
+        calls: list[dict[str, object]] = []
+
+        def client(*args: object, **kwargs: object) -> object:
+            calls.append({"args": args, **kwargs})
+            return object()
+
+        monkeypatch.setattr(cloudwatch_logs.boto3, "client", client)
+        cloudwatch_logs._cloudwatch_client.cache_clear()
+        cloudwatch_logs._cloudwatch_client(aws_credentials)
+
+        assert calls[0]["args"] == ("logs",)
+        assert calls[0]["region_name"] == "us-east-1"
+        assert "aws_access_key_id" not in calls[0]
+        assert "aws_secret_access_key" not in calls[0]
+        assert "aws_session_token" not in calls[0]
 
 
 class TestSanitizeLogStreamName:

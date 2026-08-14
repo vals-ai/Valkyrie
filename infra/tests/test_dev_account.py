@@ -95,7 +95,7 @@ def dev_service_templates() -> tuple[assertions.Template, assertions.Template]:
         cluster=shared.cluster,
         namespace=shared.namespace,
         hosted_zone=shared.hosted_zone,
-        bucket_name=shared.bucket_name,
+        bucket=shared.bucket,
         redis_url=shared.redis_url,
         env=TEST_ENV,
     )
@@ -220,6 +220,9 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         rendered_policies = json.dumps(iam_policies)
         self.assertNotIn("s3:DeleteObject", rendered_policies)
         self.assertIn(DESCOPE_MANAGEMENT_KEY_SECRET_NAME, rendered)
+        self.assertIn("s3:PutObject", rendered_policies)
+        self.assertIn("logs:PutLogEvents", rendered_policies)
+        self.assertIn("benchmarks/*", rendered_policies)
         self.assertNotIn("/vals/dev/descope/project-id", rendered)
         self.assertNotIn("SENTRY_DSN", rendered)
         self.assertNotIn("/valkyrie/dev/dns/tracker/certificate-arn", rendered)
