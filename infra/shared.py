@@ -168,6 +168,14 @@ class SharedStack(Stack):
             description="Allow VPC services to connect to Redis",
         )
 
+        # Keep the old export while TrackerStack moves away from this direct
+        # security-group reference. CloudFormation cannot remove an export
+        # while the deployed TrackerStack still imports it.
+        self.export_value(
+            redis_sg.security_group_id,
+            name=f"{self.stage.stack_id('SharedStack')}:ExportsOutputFnGetAttRedisSGEA80AC17GroupId469A0D12",
+        )
+
         redis_subnet_group = aws_elasticache.CfnSubnetGroup(
             self,
             "RedisSubnetGroup",
