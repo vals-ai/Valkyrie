@@ -41,7 +41,9 @@ class FakeDispatchStore:
         self.claimed: list[tuple[str, str, ArtifactDispatch]] = []
         self.authority_checks: list[DispatchAuthority] = []
         self.terminalized: list[DispatchAuthority] = []
+        self.terminalized_task_ids: list[list[str]] = []
         self.finished: list[DispatchAuthority] = []
+        self.finished_task_ids: list[list[str]] = []
         self.authority: DispatchAuthority | None = None
 
     async def claim(
@@ -66,12 +68,13 @@ class FakeDispatchStore:
         return self.authority_results.pop(0)
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
-        _ = task_ids
         self.terminalized.append(authority)
+        self.terminalized_task_ids.append(task_ids)
         return True
 
-    async def finish(self, authority: DispatchAuthority) -> bool:
+    async def finish(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
         self.finished.append(authority)
+        self.finished_task_ids.append(task_ids)
         return self.finish_result
 
 
@@ -86,8 +89,14 @@ class FakeS3Client:
 
 
 class RecordingCursor:
-    def __init__(self, row: tuple[object, ...] | None | list[tuple[object, ...] | None]) -> None:
+    def __init__(
+        self,
+        row: tuple[object, ...] | None | list[tuple[object, ...] | None],
+        *,
+        all_rows: list[list[tuple[object, ...]]] | None = None,
+    ) -> None:
         self.rows = row if isinstance(row, list) else [row]
+        self.all_rows = all_rows or []
         self.statements: list[tuple[str, tuple[object, ...]]] = []
 
     def __enter__(self) -> RecordingCursor:
@@ -103,6 +112,11 @@ class RecordingCursor:
         if len(self.rows) == 1:
             return self.rows[0]
         return self.rows.pop(0)
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        if not self.all_rows:
+            return []
+        return self.all_rows.pop(0)
 
 
 class RecordingConnection:
@@ -289,7 +303,7 @@ async def test_postgres_authority_and_completion_are_fenced(
     )
 
     assert await store.is_current(authority)
-    assert await store.finish(authority)
+    assert await store.finish(authority, [])
 
     authority_statement, authority_parameters = cursor.statements[0]
     finish_lock_statement, finish_lock_parameters = cursor.statements[1]
@@ -307,7 +321,7 @@ async def test_postgres_authority_and_completion_are_fenced(
 async def test_postgres_finish_errors_orphaned_in_progress_benchmark(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cursor = RecordingCursor([("IN_PROGRESS",), ("dispatch-1",), (False,)])
+    cursor = RecordingCursor([("IN_PROGRESS", "org-1"), ("dispatch-1",), (False,)])
     store = PostgresExecutorDispatchStore(
         host="db",
         port="5432",
@@ -318,19 +332,43 @@ async def test_postgres_finish_errors_orphaned_in_progress_benchmark(
     monkeypatch.setattr(store, "_connect", lambda: RecordingConnection(cursor))
     authority = DispatchAuthority(dispatch_id="dispatch-1", benchmark_id="benchmark-1")
 
-    assert await store.finish(authority)
+    assert await store.finish(authority, [])
 
-    assert "FOR UPDATE" in cursor.statements[0][0]
-    assert "SET status = 'FINISHED'" in cursor.statements[1][0]
-    assert "SELECT EXISTS" in cursor.statements[2][0]
-    assert "SET status = 'ERROR'" in cursor.statements[3][0]
+    statements = [statement for statement, _ in cursor.statements]
+    assert "FOR UPDATE" in statements[0]
+    assert "SET status = 'FINISHED'" in statements[1]
+    assert "FROM task" in statements[2]
+    assert cursor.statements[2][1] == (
+        "benchmark-1",
+        [],
+        "dispatch-1",
+        "dispatch-1",
+    )
+    assert "SELECT EXISTS" in statements[3]
+    assert any("UPDATE benchmark SET status = 'ERROR'" in statement for statement in statements)
+    failure_statement, failure_parameters = next(
+        (statement, parameters)
+        for statement, parameters in cursor.statements
+        if "INSERT INTO failurerecord" in statement
+    )
+    assert "'executor_host'" in failure_statement
+    assert failure_parameters[6:] == (
+        "finish_dispatch",
+        "ExecutorExitedWithoutFinalization",
+        "Executor exited without finalizing benchmark",
+        "classified",
+        "executor_exited_without_finalization",
+    )
 
 
 @pytest.mark.asyncio
 async def test_postgres_terminalize_marks_current_run_and_runnable_tasks_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cursor = RecordingCursor([("IN_PROGRESS",), ("dispatch-1",), (False,)])
+    cursor = RecordingCursor(
+        [("IN_PROGRESS", "org-1"), ("dispatch-1",), ("dispatch-1", "pending"), (False,)],
+        all_rows=[[("task-row-1", "org-1", "attempt-1")]],
+    )
     store = PostgresExecutorDispatchStore(
         host="db",
         port="5432",
@@ -346,24 +384,42 @@ async def test_postgres_terminalize_marks_current_run_and_runnable_tasks_error(
 
     assert await store.terminalize(authority, ["task-1"])
 
-    lock_statement = cursor.statements[0][0]
-    dispatch_statement = cursor.statements[1][0]
-    task_statement, task_parameters = cursor.statements[2]
-    benchmark_statement = cursor.statements[4][0]
-    assert "FOR UPDATE" in lock_statement
-    assert "SET status = 'FAILED'" in dispatch_statement
-    assert "task_id = ANY(%s)" in task_statement
-    assert "started_at <= ( SELECT created_at FROM executordispatch" in task_statement
-    assert "status IN ('PENDING', 'BUILDING', 'IN_PROGRESS', 'EVALUATING')" in task_statement
-    assert task_parameters == ("benchmark-1", ["task-1"], "dispatch-1")
-    assert "SET status = 'ERROR'" in benchmark_statement
+    statements = [statement for statement, _ in cursor.statements]
+    task_select, task_parameters = cursor.statements[2]
+    assert "FOR UPDATE" in statements[0]
+    assert "SET status = 'FAILED'" in statements[1]
+    assert "task_id = ANY(%s)" in task_select
+    assert "started_at <= ( SELECT created_at FROM executordispatch" in task_select
+    assert "OR EXISTS ( SELECT 1 FROM taskattempt" in task_select
+    assert "taskattempt.dispatch_id = %s::uuid" in task_select
+    assert "status IN ('PENDING', 'BUILDING', 'IN_PROGRESS', 'EVALUATING')" in task_select
+    assert task_parameters == ("benchmark-1", ["task-1"], "dispatch-1", "dispatch-1")
+    assert any("FROM taskattempt" in statement and "FOR UPDATE" in statement for statement in statements)
+    assert any("UPDATE taskattempt SET outcome = 'error'" in statement for statement in statements)
+    assert any("UPDATE task SET status = 'ERROR'" in statement for statement in statements)
+    failure_parameters = [
+        parameters for statement, parameters in cursor.statements if "INSERT INTO failurerecord" in statement
+    ]
+    assert len(failure_parameters) == 2
+    assert failure_parameters[0][3:6] == ("task-row-1", "attempt-1", "dispatch-1")
+    assert failure_parameters[0][6:] == (
+        "run_executor_dispatch",
+        "ExecutorHostFailure",
+        "Executor host failed",
+        "unclassified",
+        None,
+    )
+    assert failure_parameters[1][3:6] == (None, None, "dispatch-1")
 
 
 @pytest.mark.asyncio
 async def test_postgres_terminalize_keeps_benchmark_active_for_coexisting_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cursor = RecordingCursor([("IN_PROGRESS",), ("dispatch-1",), (True,)])
+    cursor = RecordingCursor(
+        [("IN_PROGRESS", "org-1"), ("dispatch-1",), ("dispatch-1", "pending"), (True,)],
+        all_rows=[[("task-row-1", "org-1", "attempt-1")]],
+    )
     store = PostgresExecutorDispatchStore(
         host="db",
         port="5432",
@@ -379,9 +435,18 @@ async def test_postgres_terminalize_keeps_benchmark_active_for_coexisting_dispat
 
     assert await store.terminalize(authority, ["retry-task"])
 
-    assert len(cursor.statements) == 4
-    assert cursor.statements[2][1] == ("benchmark-1", ["retry-task"], "dispatch-1")
-    assert "SELECT EXISTS" in cursor.statements[3][0]
+    statements = [statement for statement, _ in cursor.statements]
+    assert cursor.statements[2][1] == (
+        "benchmark-1",
+        ["retry-task"],
+        "dispatch-1",
+        "dispatch-1",
+    )
+    assert any("SELECT EXISTS" in statement for statement in statements)
+    assert not any("UPDATE benchmark SET status = 'ERROR'" in statement for statement in statements)
+    failures = [parameters for statement, parameters in cursor.statements if "INSERT INTO failurerecord" in statement]
+    assert len(failures) == 1
+    assert failures[0][3:6] == ("task-row-1", "attempt-1", "dispatch-1")
 
 
 @pytest.mark.asyncio
@@ -417,6 +482,7 @@ async def test_run_forwards_dispatch_authority_to_executor(
     assert payload["executor_dispatch_id"] == "dispatch-1"
     assert store.authority_checks
     assert store.finished == [store.authority]
+    assert store.finished_task_ids == [["task-1"]]
     assert (
         f"Launching benchmark benchmark-1 dispatch_id=dispatch-1 release=release-v2 digest={digest} protocol=1"
     ) in caplog.messages
@@ -493,11 +559,12 @@ async def test_artifact_failure_terminalizes_current_dispatch(tmp_path: Path) ->
             dispatch=_dispatch(digest="0" * 64),
             start_benchmark_request_json={},
             benchmark_id_str="benchmark-1",
-            verified_task_ids=[],
+            verified_task_ids=["task-1", "task-2"],
         )
 
     assert len(store.claimed) == 1
     assert store.terminalized == [store.authority]
+    assert store.terminalized_task_ids == [["task-1", "task-2"]]
     assert store.finished == []
 
 

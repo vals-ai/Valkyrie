@@ -61,7 +61,7 @@ def _failure_payload(failure: FailureSummary) -> dict[str, object]:
         "schema_version": failure.schema_version,
         "category": failure.category.value,
         "benchmark_id": str(failure.benchmark_id),
-        "task_id": str(failure.task_id) if failure.task_id is not None else None,
+        "task_row_id": str(failure.task_row_id) if failure.task_row_id is not None else None,
         "task_attempt_id": str(failure.task_attempt_id) if failure.task_attempt_id is not None else None,
         "retry_sequence": failure.retry_sequence,
         "occurred_at": _utc_isoformat(failure.occurred_at),

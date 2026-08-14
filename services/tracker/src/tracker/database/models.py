@@ -101,10 +101,7 @@ def _enum_values(enum_class: type[Enum]) -> list[str]:
 
 class FailureCategory(str, Enum):
     VALKYRIE = "valkyrie"
-    DAYTONA = "daytona"
     HARNESS = "harness"
-    MODEL = "model"
-    MODEL_GATEWAY = "model_gateway"
     UNKNOWN = "unknown"
 
 
@@ -463,7 +460,6 @@ class Benchmark(SQLModel, table=True):
         Returns:
             BenchmarkTableRow
         """
-        from tracker.failure_views import current_run_failure_record, summarize_failure
         from tracker.types import BenchmarkTableRow
 
         task_state_counts = self.fetch_task_state_counts(session)
@@ -493,11 +489,6 @@ class Benchmark(SQLModel, table=True):
             task_state_counts={k.value: v for k, v in task_state_counts.items()},
             final_score=(self.final_evaluation.final_score if self.final_evaluation else None),
             label=self.label,
-            run_failure=(
-                summarize_failure(failure)
-                if (failure := current_run_failure_record(session, self)) is not None
-                else None
-            ),
         )
 
     def fetch_task_state_counts(self, session: Session) -> dict[TaskStatus, int]:
@@ -567,7 +558,6 @@ class Task(SQLModel, table=True):
         sa_column=Column(
             ForeignKey("taskattempt.id", name="fk_task_active_attempt_id_taskattempt", use_alter=True),
             nullable=True,
-            index=True,
         ),
     )
 
@@ -591,11 +581,6 @@ def set_finished_at_when_task_finished(_mapper: Mapper[Task], _connection: Conne
 
 
 class TaskAttempt(SQLModel, table=True):
-    __table_args__ = (
-        Index("ix_taskattempt_org_task_started_at", "org_id", "task", "started_at"),
-        Index("ix_taskattempt_dispatch_id", "dispatch_id"),
-    )
-
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     org_id: UUID = Field(foreign_key="org.id")
     task: UUID = Field(foreign_key="task.id")
@@ -610,17 +595,6 @@ class TaskAttempt(SQLModel, table=True):
                 name="taskattemptadmissionreason",
             ),
             nullable=False,
-        ),
-    )
-    reason_failure_id: UUID | None = Field(
-        default=None,
-        sa_column=Column(
-            ForeignKey(
-                "failurerecord.id",
-                name="fk_taskattempt_reason_failure_id_failurerecord",
-                use_alter=True,
-            ),
-            nullable=True,
         ),
     )
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
@@ -651,7 +625,7 @@ class ResultBase(SQLModel):
 
 class EvaluationResult(ResultBase, table=True):
     instance_id: str | None = Field(default=None, unique=True)
-    task_attempt_id: UUID | None = Field(default=None, foreign_key="taskattempt.id", index=True)
+    task_attempt_id: UUID | None = Field(default=None, foreign_key="taskattempt.id")
     agent_caused_exit_reason: AgentCausedExitReason | None = Field(default=None)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
 

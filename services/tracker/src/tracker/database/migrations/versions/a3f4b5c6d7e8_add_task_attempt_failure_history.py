@@ -21,10 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 failure_category = postgresql.ENUM(
     "valkyrie",
-    "daytona",
     "harness",
-    "model",
-    "model_gateway",
     "unknown",
     name="failurecategory",
     create_type=False,
@@ -182,7 +179,6 @@ def upgrade() -> None:
         sa.Column("dispatch_id", sa.Uuid(), nullable=True),
         sa.Column("previous_attempt_id", sa.Uuid(), nullable=True),
         sa.Column("admission_reason", task_attempt_admission_reason, nullable=False),
-        sa.Column("reason_failure_id", sa.Uuid(), nullable=True),
         sa.Column("started_at", sa.DateTime(), nullable=False),
         sa.Column("finished_at", sa.DateTime(), nullable=True),
         sa.Column("outcome", task_attempt_outcome, nullable=False),
@@ -196,9 +192,6 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_taskattempt_org_task_started_at", "taskattempt", ["org_id", "task", "started_at"])
-    op.create_index("ix_taskattempt_dispatch_id", "taskattempt", ["dispatch_id"])
-
     op.create_foreign_key(
         "fk_failurerecord_task_attempt_id_taskattempt",
         "failurerecord",
@@ -213,14 +206,6 @@ def upgrade() -> None:
         ["dispatch_id"],
         ["id"],
     )
-    op.create_foreign_key(
-        "fk_taskattempt_reason_failure_id_failurerecord",
-        "taskattempt",
-        "failurerecord",
-        ["reason_failure_id"],
-        ["id"],
-    )
-
     op.add_column("task", sa.Column("active_attempt_id", sa.Uuid(), nullable=True))
     op.create_foreign_key(
         "fk_task_active_attempt_id_taskattempt",
@@ -229,8 +214,6 @@ def upgrade() -> None:
         ["active_attempt_id"],
         ["id"],
     )
-    op.create_index("ix_task_active_attempt_id", "task", ["active_attempt_id"])
-
     op.add_column("evaluationresult", sa.Column("task_attempt_id", sa.Uuid(), nullable=True))
     op.create_foreign_key(
         "fk_evaluationresult_task_attempt_id_taskattempt",
@@ -239,8 +222,6 @@ def upgrade() -> None:
         ["task_attempt_id"],
         ["id"],
     )
-    op.create_index("ix_evaluationresult_task_attempt_id", "evaluationresult", ["task_attempt_id"])
-
     benchmark_error_rows = (
         bind.execute(
             sa.text("SELECT id, org_id, finished_at, error_message FROM benchmark WHERE error_message IS NOT NULL")

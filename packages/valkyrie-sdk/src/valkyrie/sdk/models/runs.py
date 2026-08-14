@@ -63,10 +63,7 @@ class FailureCategory(str, Enum):
     """Producer-assigned category for one failure event."""
 
     VALKYRIE = "valkyrie"
-    DAYTONA = "daytona"
     HARNESS = "harness"
-    MODEL = "model"
-    MODEL_GATEWAY = "model_gateway"
     UNKNOWN = "unknown"
 
 
@@ -94,7 +91,7 @@ class FailureSummary(ResponseModel):
     schema_version: int
     category: FailureCategory
     benchmark_id: UUID
-    task_id: UUID | None
+    task_row_id: UUID | None
     task_attempt_id: UUID | None
     retry_sequence: int | None
     occurred_at: datetime

@@ -22,7 +22,7 @@ def summarize_failure(record: FailureRecord) -> FailureSummary:
         schema_version=record.schema_version,
         category=record.category,
         benchmark_id=record.benchmark_id,
-        task_id=record.task,
+        task_row_id=record.task,
         task_attempt_id=record.task_attempt_id,
         retry_sequence=record.retry_sequence,
         occurred_at=record.created_at,

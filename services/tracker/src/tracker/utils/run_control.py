@@ -15,13 +15,11 @@ from benchmark_service import (
     SandboxQuery,
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
-from sqlmodel import Session, asc, col, desc, func, or_, select, update
+from sqlmodel import Session, asc, col, func, or_, select, update
 
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
-    FailureRecord,
-    FailureTerminalEffect,
     Org,
     RetryMode,
     Task,
@@ -297,16 +295,6 @@ async def reset_to_in_progress_status(
         admission_reason = TaskAttemptAdmissionReason.MANUAL_RETRY if retry else TaskAttemptAdmissionReason.RESUME
         for task in existing_rows:
             previous_attempt_id = task.active_attempt_id
-            reason_failure_id = None
-            if retry:
-                reason_failure_id = session.exec(
-                    select(FailureRecord.id)
-                    .where(col(FailureRecord.org_id) == org.id)
-                    .where(col(FailureRecord.task) == task.id)
-                    .where(col(FailureRecord.terminal_effect) == FailureTerminalEffect.TERMINAL)
-                    .order_by(desc(FailureRecord.created_at))
-                    .limit(1)
-                ).first()
             started_at = datetime.now(ZoneInfo("UTC"))
             task.status = (
                 TaskStatus.EVALUATING
@@ -322,7 +310,6 @@ async def reset_to_in_progress_status(
                 task=task.id,
                 previous_attempt_id=previous_attempt_id,
                 admission_reason=admission_reason,
-                reason_failure_id=reason_failure_id,
                 started_at=started_at,
             )
             session.add(attempt)

@@ -142,7 +142,7 @@ class FailureSummary(BaseModel):
     schema_version: int
     category: FailureCategory
     benchmark_id: UUID
-    task_id: UUID | None
+    task_row_id: UUID | None
     task_attempt_id: UUID | None
     retry_sequence: int | None
     occurred_at: datetime

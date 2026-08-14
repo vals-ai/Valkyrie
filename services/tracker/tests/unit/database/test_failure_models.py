@@ -20,10 +20,7 @@ from tracker.database.models import (
 def test_failure_enums_use_lowercase_values_and_model_defaults() -> None:
     assert [member.value for member in FailureCategory] == [
         "valkyrie",
-        "daytona",
         "harness",
-        "model",
-        "model_gateway",
         "unknown",
     ]
     assert [member.value for member in FailureClassificationState] == [
@@ -60,7 +57,6 @@ def test_failure_enums_use_lowercase_values_and_model_defaults() -> None:
     assert attempt.outcome is TaskAttemptOutcome.PENDING
     assert attempt.dispatch_id is None
     assert attempt.previous_attempt_id is None
-    assert attempt.reason_failure_id is None
 
 
 def test_evaluation_result_attempt_is_nullable() -> None:

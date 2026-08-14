@@ -105,7 +105,6 @@ def test_task_attempt_failure_history_schema_matches_metadata(postgres_engine: E
     ):
         columns = {column["name"]: column for column in inspector.get_columns(table_name)}
         assert columns[column_name]["nullable"] is True
-        assert any(tuple(index["column_names"]) == (column_name,) for index in inspector.get_indexes(table_name))
         assert any(
             tuple(foreign_key["constrained_columns"]) == (column_name,)
             and foreign_key["referred_table"] == "taskattempt"

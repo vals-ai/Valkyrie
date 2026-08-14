@@ -147,10 +147,11 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     assert finished_response.json()["error_message"] is None
     assert error_response.status_code == 200
     error_body = error_response.json()
+    assert error_body["task_id"] == error_task.task_id
     assert error_body["error_message"] == "active attempt failure"
     assert error_body["evaluation_result"] is None
     assert error_body["failure"]["category"] == "valkyrie"
-    assert error_body["failure"]["task_id"] == str(error_task.id)
+    assert error_body["failure"]["task_row_id"] == str(error_task.id)
     assert error_body["failure"]["task_attempt_id"] == str(active_attempt.id)
     assert error_body["failure"]["message"] == "active attempt failure"
     assert error_body["failure"]["safe_details"] == {"http_status": 500}

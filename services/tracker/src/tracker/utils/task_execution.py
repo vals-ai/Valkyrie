@@ -763,6 +763,19 @@ async def _process_task_attempt(
             task_session.rollback()
             return is_current
 
+    def commit_terminal_error(evidence: FailureEvidence) -> dict[str, dict[str, Any] | None]:
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(
+                task,
+                task_session,
+                evidence,
+                expected_started_at=attempt_started_at,
+                expected_attempt_id=active_attempt_id,
+                authority=authority,
+            )
+        return {task_id: None}
+
     try:
         if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
             try:
@@ -1047,18 +1060,9 @@ async def _process_task_attempt(
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task,
-                task_session,
-                _failure_evidence(e, error_message, producer="output_artifact", operation="upload_output_artifacts"),
-                expected_started_at=attempt_started_at,
-                expected_attempt_id=active_attempt_id,
-                authority=authority,
-            )
-
-        return {task_id: None}
+        return commit_terminal_error(
+            _failure_evidence(e, error_message, producer="output_artifact", operation="upload_output_artifacts")
+        )
     except ConnectionClosedError as e:
         if not execution_is_current():
             return {task_id: None}
@@ -1069,27 +1073,18 @@ async def _process_task_attempt(
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task,
-                task_session,
-                _failure_evidence(
-                    e,
-                    error_message,
-                    category=FailureCategory.HARNESS,
-                    producer="benchmark_service",
-                    operation="websocket",
-                    cause_code="websocket_connection_closed",
-                    classification_state=FailureClassificationState.CLASSIFIED,
-                    safe_details={"last_message_age_seconds": seconds},
-                ),
-                expected_started_at=attempt_started_at,
-                expected_attempt_id=active_attempt_id,
-                authority=authority,
+        return commit_terminal_error(
+            _failure_evidence(
+                e,
+                error_message,
+                category=FailureCategory.HARNESS,
+                producer="benchmark_service",
+                operation="websocket",
+                cause_code="websocket_connection_closed",
+                classification_state=FailureClassificationState.CLASSIFIED,
+                safe_details={"last_message_age_seconds": seconds},
             )
-
-        return {task_id: None}
+        )
     except ValidationError as e:
         if not execution_is_current():
             return {task_id: None}
@@ -1099,77 +1094,50 @@ async def _process_task_attempt(
         )
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task,
-                task_session,
-                _failure_evidence(
-                    e,
-                    error_message,
-                    category=FailureCategory.HARNESS,
-                    producer="benchmark_service",
-                    operation="decode_task_response",
-                    cause_code="incompatible_response",
-                    classification_state=FailureClassificationState.CLASSIFIED,
-                ),
-                expected_started_at=attempt_started_at,
-                expected_attempt_id=active_attempt_id,
-                authority=authority,
+        return commit_terminal_error(
+            _failure_evidence(
+                e,
+                error_message,
+                category=FailureCategory.HARNESS,
+                producer="benchmark_service",
+                operation="decode_task_response",
+                cause_code="incompatible_response",
+                classification_state=FailureClassificationState.CLASSIFIED,
             )
-
-        return {task_id: None}
+        )
     except InvalidStatus as e:
         if not execution_is_current():
             return {task_id: None}
         error_message = f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code})"
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task,
-                task_session,
-                _failure_evidence(
-                    e,
-                    error_message,
-                    category=FailureCategory.HARNESS,
-                    producer="benchmark_service",
-                    operation="websocket_connect",
-                    cause_code="websocket_http_rejected",
-                    classification_state=FailureClassificationState.CLASSIFIED,
-                    safe_details={"http_status": e.response.status_code},
-                ),
-                expected_started_at=attempt_started_at,
-                expected_attempt_id=active_attempt_id,
-                authority=authority,
+        return commit_terminal_error(
+            _failure_evidence(
+                e,
+                error_message,
+                category=FailureCategory.HARNESS,
+                producer="benchmark_service",
+                operation="websocket_connect",
+                cause_code="websocket_http_rejected",
+                classification_state=FailureClassificationState.CLASSIFIED,
+                safe_details={"http_status": e.response.status_code},
             )
-
-        return {task_id: None}
+        )
     except BenchmarkServiceError as e:
         if not execution_is_current():
             return {task_id: None}
         error_message = _exception_message(e)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task,
-                task_session,
-                _failure_evidence(
-                    e,
-                    error_message,
-                    category=FailureCategory.HARNESS,
-                    producer="benchmark_service",
-                    operation="request",
-                ),
-                expected_started_at=attempt_started_at,
-                expected_attempt_id=active_attempt_id,
-                authority=authority,
+        return commit_terminal_error(
+            _failure_evidence(
+                e,
+                error_message,
+                category=FailureCategory.HARNESS,
+                producer="benchmark_service",
+                operation="request",
             )
-
-        return {task_id: None}
+        )
     except Exception as e:
         if not execution_is_current():
             return {task_id: None}
@@ -1182,18 +1150,7 @@ async def _process_task_attempt(
         # include the error message
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task,
-                task_session,
-                _failure_evidence(e, error_message),
-                expected_started_at=attempt_started_at,
-                expected_attempt_id=active_attempt_id,
-                authority=authority,
-            )
-
-        return {task_id: None}
+        return commit_terminal_error(_failure_evidence(e, error_message))
     finally:
         flush_task.cancel()
         with suppress(asyncio.CancelledError):

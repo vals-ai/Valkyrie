@@ -14,6 +14,7 @@ from services.tracker.main import app
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
+    FailureCategory,
     FinalEvaluation,
     OutputArtifact,
 )
@@ -71,6 +72,7 @@ from valkyrie.sdk.models import (
     BenchmarkStatusEntry as SDKBenchmarkStatusEntry,
     BenchmarkStatusResponse as SDKBenchmarkStatusResponse,
     BenchmarkTableRow as SDKBenchmarkTableRow,
+    FailureCategory as SDKFailureCategory,
     FailureDetail as SDKFailureDetail,
     FailureSummary as SDKFailureSummary,
     FetchBenchmarkResponse as SDKFetchBenchmarkResponse,
@@ -251,6 +253,10 @@ def test_sdk_and_tracker_wire_models_have_the_same_fields(
         tracker_default = tracker_field.get_default(call_default_factory=True)
         sdk_default = sdk_field.get_default(call_default_factory=True)
         assert _normalized_default(tracker_default) == _normalized_default(sdk_default)
+
+
+def test_sdk_and_tracker_failure_categories_match() -> None:
+    assert [member.value for member in FailureCategory] == [member.value for member in SDKFailureCategory]
 
 
 def _normalized_wire_schema(value: Any) -> Any:

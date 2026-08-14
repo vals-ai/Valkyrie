@@ -175,7 +175,7 @@ def test_structured_failure_models_parse_versioned_provenance() -> None:
         "schema_version": 1,
         "category": "harness",
         "benchmark_id": "20000000-0000-0000-0000-000000000001",
-        "task_id": "30000000-0000-0000-0000-000000000001",
+        "task_row_id": "30000000-0000-0000-0000-000000000001",
         "task_attempt_id": "40000000-0000-0000-0000-000000000001",
         "retry_sequence": 2,
         "occurred_at": "2026-07-08T12:00:00Z",
@@ -204,7 +204,7 @@ def test_single_task_parses_bounded_failure_detail_history() -> None:
         "schema_version": 1,
         "category": "valkyrie",
         "benchmark_id": "20000000-0000-0000-0000-000000000001",
-        "task_id": "30000000-0000-0000-0000-000000000001",
+        "task_row_id": "30000000-0000-0000-0000-000000000001",
         "task_attempt_id": "40000000-0000-0000-0000-000000000001",
         "retry_sequence": None,
         "occurred_at": "2026-07-08T12:05:00Z",
@@ -233,7 +233,9 @@ def test_single_task_parses_bounded_failure_detail_history() -> None:
         }
     )
 
+    assert response.task_id == "repo__issue-1"
     assert response.failure is not None
+    assert str(response.failure.task_row_id) == "30000000-0000-0000-0000-000000000001"
     assert response.failure.safe_details is None
     assert response.failure_history[0].terminal_effect is FailureTerminalEffect.TERMINAL
     assert response.failure_history_truncated is True

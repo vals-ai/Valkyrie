@@ -190,6 +190,24 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
             text("SELECT active_attempt_id FROM task WHERE id = :task_id"), {"task_id": task_id}
         ).scalar_one()
 
+        inspector = inspect(connection)
+        task_attempt_columns = {column["name"] for column in inspector.get_columns("taskattempt")}
+        task_attempt_foreign_keys = {
+            foreign_key["name"] for foreign_key in inspector.get_foreign_keys("taskattempt")
+        }
+        task_attempt_indexes = {index["name"] for index in inspector.get_indexes("taskattempt")}
+        task_indexes = {index["name"] for index in inspector.get_indexes("task")}
+        evaluation_result_indexes = {index["name"] for index in inspector.get_indexes("evaluationresult")}
+        failure_record_indexes = {index["name"] for index in inspector.get_indexes("failurerecord")}
+        failure_category_labels = connection.execute(
+            text(
+                "SELECT enumlabel FROM pg_enum "
+                "JOIN pg_type ON pg_type.oid = pg_enum.enumtypid "
+                "WHERE pg_type.typname = 'failurecategory' "
+                "ORDER BY enumsortorder"
+            )
+        ).scalars().all()
+
     assert len(migrated_failures) == len(legacy_failures)
     for migrated, (failure_id, created_at, message) in zip(migrated_failures, legacy_failures, strict=True):
         assert migrated["id"] == failure_id
@@ -242,6 +260,18 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
     )
     assert attempt_count == 0
     assert active_attempt_id is None
+
+    assert "reason_failure_id" not in task_attempt_columns
+    assert "fk_taskattempt_reason_failure_id_failurerecord" not in task_attempt_foreign_keys
+    assert "ix_taskattempt_org_task_started_at" not in task_attempt_indexes
+    assert "ix_taskattempt_dispatch_id" not in task_attempt_indexes
+    assert "ix_task_active_attempt_id" not in task_indexes
+    assert "ix_evaluationresult_task_attempt_id" not in evaluation_result_indexes
+    assert failure_record_indexes == {
+        "ix_failurerecord_org_benchmark_created_at",
+        "ix_failurerecord_org_task_created_at",
+    }
+    assert failure_category_labels == ["valkyrie", "harness", "unknown"]
     engine.dispose()
 
 

@@ -182,8 +182,8 @@ def record_dispatch_failure(
 ) -> bool:
     """Record a dispatch failure without overwriting attempts admitted by a newer dispatch.
 
-    Admission timestamps selected tasks before creating the dispatch, so its creation time
-    is the durable upper bound for task attempts owned by that dispatch.
+    An explicit attempt dispatch ID owns the work. For a null-dispatch attempt or a task
+    without an attempt, the task must predate this dispatch.
     """
     dispatch = session.exec(
         select(ExecutorDispatch)
