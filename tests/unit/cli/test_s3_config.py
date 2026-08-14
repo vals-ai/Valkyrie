@@ -53,6 +53,13 @@ def test_aws_runtime_uses_sdk_credential_chain_without_configured_keys(
     assert runtime.clients.region == "us-east-1"
 
 
+def test_aws_runtime_names_missing_region_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(s3_config, "load_config", lambda: {"S3_BUCKET": "bucket"})
+
+    with pytest.raises(click.ClickException, match="AWS_DEFAULT_REGION key not found"):
+        s3_config.aws_runtime()
+
+
 @pytest.mark.parametrize(
     "config",
     [
