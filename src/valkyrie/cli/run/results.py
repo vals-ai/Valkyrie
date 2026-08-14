@@ -9,6 +9,16 @@ from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.tracker_client import TrackerService
 
 
+def _format_expiration(seconds: int) -> str:
+    for unit_seconds, unit_name in ((86400, "day"), (3600, "hour"), (60, "minute")):
+        if seconds >= unit_seconds and seconds % unit_seconds == 0:
+            amount = seconds // unit_seconds
+            suffix = "" if amount == 1 else "s"
+            return f"{amount} {unit_name}{suffix}"
+    suffix = "" if seconds == 1 else "s"
+    return f"{seconds} second{suffix}"
+
+
 @click.command(
     name="results",
     help=(
@@ -88,7 +98,7 @@ def results(
             else:
                 click.echo(
                     click.style(
-                        f"Download (expires in {results_response.expires_in} seconds):",
+                        f"Download (expires in {_format_expiration(results_response.expires_in)}):",
                         fg="cyan",
                         bold=True,
                     )

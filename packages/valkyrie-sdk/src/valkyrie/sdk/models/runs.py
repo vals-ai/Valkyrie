@@ -271,7 +271,7 @@ class S3UploadResultsResponse(ResponseModel):
     s3_url: str
     presigned_url: str
     console_url: str
-    expires_in: int
+    expires_in: int = 86400
 
 
 class ResultsExistResponse(ResponseModel):
