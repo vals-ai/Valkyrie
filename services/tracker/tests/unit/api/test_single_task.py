@@ -82,8 +82,6 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     )
     database_session.add(active_attempt)
     database_session.flush()
-    previous_attempt.superseded_by_attempt_id = active_attempt.id
-    database_session.add(previous_attempt)
     error_task.active_attempt_id = active_attempt.id
     database_session.add(error_task)
 
@@ -112,7 +110,7 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
                 operation="process_task",
                 error_type="RuntimeError",
                 error_message="active attempt failure",
-                safe_details={"status_code": 500},
+                safe_details={"http_status": 500},
                 created_at=now - timedelta(minutes=1),
             ),
             FailureRecord(
@@ -155,7 +153,7 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     assert error_body["failure"]["task_id"] == str(error_task.id)
     assert error_body["failure"]["task_attempt_id"] == str(active_attempt.id)
     assert error_body["failure"]["message"] == "active attempt failure"
-    assert error_body["failure"]["safe_details"] == {"status_code": 500}
+    assert error_body["failure"]["safe_details"] == {"http_status": 500}
     assert [failure["message"] for failure in error_body["failure_history"]] == ["newer stale failure"]
     assert error_body["failure_history_truncated"] is True
     assert pending_response.status_code == 200

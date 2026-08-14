@@ -310,11 +310,8 @@ class TestRunState:
             assert previous_attempt_id is not None
             assert task_row.active_attempt_id is not None
             current_attempt = database_session.get(TaskAttempt, task_row.active_attempt_id)
-            previous_attempt = database_session.get(TaskAttempt, previous_attempt_id)
             assert current_attempt is not None
-            assert previous_attempt is not None
-            assert current_attempt.previous_attempt_id == previous_attempt.id
-            assert previous_attempt.superseded_by_attempt_id == current_attempt.id
+            assert current_attempt.previous_attempt_id == previous_attempt_id
 
     def test_resume_benchmark_edge_cases(
         self,

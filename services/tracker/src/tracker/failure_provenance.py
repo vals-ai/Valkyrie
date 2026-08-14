@@ -18,7 +18,7 @@ _SAFE_DETAIL_KEYS = frozenset({"http_status", "last_message_age_seconds"})
 
 
 class FailureEvidence(BaseModel):
-    """Validated direct evidence for one terminal failure."""
+    """Validated direct evidence for one failure event."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

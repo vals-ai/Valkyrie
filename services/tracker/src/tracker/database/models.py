@@ -125,7 +125,6 @@ class TaskAttemptAdmissionReason(str, Enum):
     INITIAL = "initial"
     MANUAL_RETRY = "manual_retry"
     RESUME = "resume"
-    AUTOMATIC_RETRY = "automatic_retry"
     ROLLOUT_CLAIM = "rollout_claim"
 
 
@@ -134,7 +133,6 @@ class TaskAttemptOutcome(str, Enum):
     FINISHED = "finished"
     ERROR = "error"
     STOPPED = "stopped"
-    SUPERSEDED = "superseded"
 
 
 MAX_OUTPUT_ARTIFACT_BYTES = 100 * 1024 * 1024
@@ -603,7 +601,6 @@ class TaskAttempt(SQLModel, table=True):
     task: UUID = Field(foreign_key="task.id")
     dispatch_id: UUID | None = Field(default=None, foreign_key="executordispatch.id")
     previous_attempt_id: UUID | None = Field(default=None, foreign_key="taskattempt.id")
-    superseded_by_attempt_id: UUID | None = Field(default=None, foreign_key="taskattempt.id")
     admission_reason: TaskAttemptAdmissionReason = Field(
         default=TaskAttemptAdmissionReason.INITIAL,
         sa_column=Column(

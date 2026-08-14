@@ -48,7 +48,6 @@ task_attempt_admission_reason = postgresql.ENUM(
     "initial",
     "manual_retry",
     "resume",
-    "automatic_retry",
     "rollout_claim",
     name="taskattemptadmissionreason",
     create_type=False,
@@ -58,7 +57,6 @@ task_attempt_outcome = postgresql.ENUM(
     "finished",
     "error",
     "stopped",
-    "superseded",
     name="taskattemptoutcome",
     create_type=False,
 )
@@ -183,7 +181,6 @@ def upgrade() -> None:
         sa.Column("task", sa.Uuid(), nullable=False),
         sa.Column("dispatch_id", sa.Uuid(), nullable=True),
         sa.Column("previous_attempt_id", sa.Uuid(), nullable=True),
-        sa.Column("superseded_by_attempt_id", sa.Uuid(), nullable=True),
         sa.Column("admission_reason", task_attempt_admission_reason, nullable=False),
         sa.Column("reason_failure_id", sa.Uuid(), nullable=True),
         sa.Column("started_at", sa.DateTime(), nullable=False),
@@ -196,11 +193,6 @@ def upgrade() -> None:
         ),
         sa.ForeignKeyConstraint(
             ["previous_attempt_id"], ["taskattempt.id"], name="fk_taskattempt_previous_attempt_id_taskattempt"
-        ),
-        sa.ForeignKeyConstraint(
-            ["superseded_by_attempt_id"],
-            ["taskattempt.id"],
-            name="fk_taskattempt_superseded_by_attempt_id_taskattempt",
         ),
         sa.PrimaryKeyConstraint("id"),
     )

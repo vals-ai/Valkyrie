@@ -763,9 +763,6 @@ async def _process_task_attempt(
             task_session.rollback()
             return is_current
 
-    def task_is_stopped() -> bool:
-        return not execution_is_current()
-
     try:
         if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
             try:
@@ -1039,12 +1036,12 @@ async def _process_task_attempt(
                 raise
 
     except SandboxSetupError as e:
-        if task_is_stopped():
+        if not execution_is_current():
             return {task_id: None}
         log_output(f"\n[ERROR] {_exception_message(e)}")
         raise
     except OutputArtifactError as e:
-        if task_is_stopped():
+        if not execution_is_current():
             return {task_id: None}
         error_message = _exception_message(e)
         logger.warning(error_message)
@@ -1063,7 +1060,7 @@ async def _process_task_attempt(
 
         return {task_id: None}
     except ConnectionClosedError as e:
-        if task_is_stopped():
+        if not execution_is_current():
             return {task_id: None}
         seconds = int(time.monotonic() - last_log_time)
         error_message = (
@@ -1094,7 +1091,7 @@ async def _process_task_attempt(
 
         return {task_id: None}
     except ValidationError as e:
-        if task_is_stopped():
+        if not execution_is_current():
             return {task_id: None}
         field_names = ", ".join(".".join(str(loc) for loc in err["loc"]) for err in e.errors())
         error_message = (
@@ -1123,7 +1120,7 @@ async def _process_task_attempt(
 
         return {task_id: None}
     except InvalidStatus as e:
-        if task_is_stopped():
+        if not execution_is_current():
             return {task_id: None}
         error_message = f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code})"
         log_output(f"\n[ERROR] {error_message}")
@@ -1150,7 +1147,7 @@ async def _process_task_attempt(
 
         return {task_id: None}
     except BenchmarkServiceError as e:
-        if task_is_stopped():
+        if not execution_is_current():
             return {task_id: None}
         error_message = _exception_message(e)
         log_output(f"\n[ERROR] {error_message}")
@@ -1174,7 +1171,7 @@ async def _process_task_attempt(
 
         return {task_id: None}
     except Exception as e:
-        if task_is_stopped():
+        if not execution_is_current():
             return {task_id: None}
         logfire.exception("process_task failed")
         error_message = _exception_message(e)

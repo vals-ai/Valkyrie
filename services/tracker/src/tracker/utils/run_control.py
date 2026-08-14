@@ -297,11 +297,6 @@ async def reset_to_in_progress_status(
         admission_reason = TaskAttemptAdmissionReason.MANUAL_RETRY if retry else TaskAttemptAdmissionReason.RESUME
         for task in existing_rows:
             previous_attempt_id = task.active_attempt_id
-            previous_attempt = (
-                session.exec(select(TaskAttempt).where(TaskAttempt.id == previous_attempt_id)).one()
-                if previous_attempt_id is not None
-                else None
-            )
             reason_failure_id = None
             if retry:
                 reason_failure_id = session.exec(
@@ -331,9 +326,6 @@ async def reset_to_in_progress_status(
                 started_at=started_at,
             )
             session.add(attempt)
-            if previous_attempt is not None:
-                previous_attempt.superseded_by_attempt_id = attempt.id
-                session.add(previous_attempt)
             session.flush()
             task.active_attempt_id = attempt.id
             session.add(task)

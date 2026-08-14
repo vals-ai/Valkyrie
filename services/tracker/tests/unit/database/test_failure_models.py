@@ -37,7 +37,6 @@ def test_failure_enums_use_lowercase_values_and_model_defaults() -> None:
         "initial",
         "manual_retry",
         "resume",
-        "automatic_retry",
         "rollout_claim",
     ]
     assert [member.value for member in TaskAttemptOutcome] == [
@@ -45,7 +44,6 @@ def test_failure_enums_use_lowercase_values_and_model_defaults() -> None:
         "finished",
         "error",
         "stopped",
-        "superseded",
     ]
 
     failure = FailureRecord(org_id=uuid4(), benchmark_id=uuid4(), error_message="failure")
@@ -62,7 +60,6 @@ def test_failure_enums_use_lowercase_values_and_model_defaults() -> None:
     assert attempt.outcome is TaskAttemptOutcome.PENDING
     assert attempt.dispatch_id is None
     assert attempt.previous_attempt_id is None
-    assert attempt.superseded_by_attempt_id is None
     assert attempt.reason_failure_id is None
 
 

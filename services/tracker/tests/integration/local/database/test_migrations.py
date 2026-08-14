@@ -158,15 +158,6 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
     upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_ATTEMPT_FAILURE_HISTORY_REVISION)
     assert upgrade.returncode == 0, upgrade.stderr
 
-    task_attempt_columns = {column["name"] for column in inspect(engine).get_columns("taskattempt")}
-    task_attempt_foreign_keys = {
-        foreign_key["name"]: foreign_key for foreign_key in inspect(engine).get_foreign_keys("taskattempt")
-    }
-    assert "superseded_by_attempt_id" in task_attempt_columns
-    replacement_foreign_key = task_attempt_foreign_keys["fk_taskattempt_superseded_by_attempt_id_taskattempt"]
-    assert replacement_foreign_key["constrained_columns"] == ["superseded_by_attempt_id"]
-    assert replacement_foreign_key["referred_table"] == "taskattempt"
-
     with engine.connect() as connection:
         migrated_failures = (
             connection.execute(

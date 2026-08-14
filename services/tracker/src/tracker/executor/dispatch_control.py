@@ -42,6 +42,34 @@ def _normalized_time(value: datetime) -> datetime:
     return value.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
 
 
+def _terminalize_failed_task(
+    session: Session,
+    *,
+    task: Task,
+    attempt: TaskAttempt | None,
+    benchmark_id: UUID,
+    dispatch_id: UUID,
+    evidence: FailureEvidence,
+    finished_at: datetime,
+) -> None:
+    record_terminal_failure(
+        session,
+        org_id=task.org_id,
+        benchmark_id=benchmark_id,
+        evidence=evidence,
+        task_id=task.id,
+        task_attempt_id=attempt.id if attempt is not None else None,
+        dispatch_id=dispatch_id,
+    )
+    task.status = TaskStatus.ERROR
+    task.finished_at = finished_at
+    session.add(task)
+    if attempt is not None:
+        attempt.outcome = TaskAttemptOutcome.ERROR
+        attempt.finished_at = finished_at
+        session.add(attempt)
+
+
 class EnqueueFailureResolution(str, Enum):
     FAILED = "FAILED"
     DELIVERED = "DELIVERED"
@@ -200,22 +228,15 @@ def record_dispatch_failure(
                 continue
         elif _normalized_time(task.started_at) > _normalized_time(dispatch.created_at):
             continue
-        record_terminal_failure(
+        _terminalize_failed_task(
             session,
-            org_id=task.org_id,
+            task=task,
+            attempt=attempt,
             benchmark_id=benchmark.id,
-            evidence=evidence,
-            task_id=task.id,
-            task_attempt_id=attempt.id if attempt is not None else None,
             dispatch_id=dispatch_id,
+            evidence=evidence,
+            finished_at=now,
         )
-        task.status = TaskStatus.ERROR
-        task.finished_at = now
-        session.add(task)
-        if attempt is not None:
-            attempt.outcome = TaskAttemptOutcome.ERROR
-            attempt.finished_at = now
-            session.add(attempt)
     if sibling_active:
         dispatch.status = ExecutorDispatchStatus.FAILED
         dispatch.finished_at = now
@@ -320,21 +341,14 @@ def resolve_enqueue_failure(
                 dispatch.created_at
             ):
                 continue
-        record_terminal_failure(
+        _terminalize_failed_task(
             session,
-            org_id=task.org_id,
+            task=task,
+            attempt=attempt,
             benchmark_id=benchmark_id,
-            evidence=evidence,
-            task_id=task.id,
-            task_attempt_id=attempt.id if attempt is not None else None,
             dispatch_id=dispatch_id,
+            evidence=evidence,
+            finished_at=now,
         )
-        task.status = TaskStatus.ERROR
-        task.finished_at = now
-        session.add(task)
-        if attempt is not None:
-            attempt.outcome = TaskAttemptOutcome.ERROR
-            attempt.finished_at = now
-            session.add(attempt)
     session.commit()
     return EnqueueFailureResolution.FAILED
