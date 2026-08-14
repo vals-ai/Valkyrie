@@ -2425,7 +2425,7 @@ class TestRunRecovery:
             benchmark_row,
             database_session,
             harness_config.sandbox_provider_secret_name,
-            harness_config.aws,
+            AWSRuntime.from_harness_config(harness_config),
             self._test_org,
         )
 
@@ -2454,7 +2454,7 @@ class TestRunRecovery:
             benchmark_row,
             database_session,
             harness_config.sandbox_provider_secret_name,
-            harness_config.aws,
+            AWSRuntime.from_harness_config(harness_config),
             self._test_org,
         )
 
