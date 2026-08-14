@@ -292,7 +292,6 @@ class TestForceStop:
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
-        live_aws_credentials: AWSCredentials,
         daytona_secret_name: str,
         harness_config: HarnessConfig,
         service_headers: dict[str, str],
@@ -313,6 +312,7 @@ class TestForceStop:
         example_benchmark_object.arguments.concurrency = 1
         database_session.add(example_benchmark_object)
         database_session.commit()
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
         benchmark_service = example_benchmark_object.benchmark_service(service_headers=service_headers)
         benchmark_task: Optional[asyncio.Task[None]] = None
@@ -344,7 +344,7 @@ class TestForceStop:
                 )
             )
 
-            provider_config = fetch_sandbox_provider_config(daytona_secret_name, live_aws_credentials, "daytona")
+            provider_config = fetch_sandbox_provider_config(daytona_secret_name, aws_runtime.clients, "daytona")
             provider = benchmark_service.get_sandbox_provider(provider_config)
             await _wait_for_running_benchmark(example_benchmark_object, database_session, provider)
 
@@ -352,7 +352,7 @@ class TestForceStop:
                 example_benchmark_object,
                 database_session,
                 daytona_secret_name,
-                live_aws_credentials,
+                aws_runtime,
                 Org(id=TEST_ORG_ID, name="default"),
                 sandbox_provider="daytona",
             )
@@ -378,7 +378,7 @@ class TestForceStop:
                         example_benchmark_object,
                         database_session,
                         daytona_secret_name,
-                        live_aws_credentials,
+                        aws_runtime,
                         Org(id=TEST_ORG_ID, name="default"),
                         sandbox_provider="daytona",
                     )

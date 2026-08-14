@@ -26,6 +26,7 @@ from sqlmodel import Session, select
 
 import main as main_module
 from main import app
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 import tracker.utils as tracker_utils
 from tests.factories import make_benchmark, make_error_result, make_evaluation_result
 from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
@@ -83,7 +84,7 @@ def example_benchmark_object(contract: AgentContractRequest, database_session: S
         id="test-release",
         artifact_uri="s3://artifacts/test-release.pex",
         artifact_digest="digest-test-release",
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
         readiness_verified=True,
     )
     database_session.add(release)
@@ -1140,6 +1141,7 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
@@ -1151,6 +1153,7 @@ class TestRunRecovery:
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}",
             json={"task_ids": [], "service_headers": {}},
+            headers=harness_headers,
         )
 
         assert response.status_code == 403
@@ -1205,6 +1208,7 @@ class TestRunRecovery:
         database_session: Session,
         monkeypatch: MonkeyPatch,
         mock_kicker: Any,
+        harness_headers: dict[str, str],
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
@@ -1227,7 +1231,7 @@ class TestRunRecovery:
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}",
             json={"task_ids": [], "service_headers": {}},
-            headers={"X-Api-Key": "tracker-api-key"},
+            headers={**harness_headers, "X-Api-Key": "tracker-api-key"},
         )
 
         assert response.status_code == 200
@@ -2514,7 +2518,7 @@ class TestRunRecovery:
             benchmark_row,
             database_session,
             harness_config.sandbox_provider_secret_name,
-            harness_config.aws,
+            AWSRuntime.from_harness_config(harness_config),
             self._test_org,
         )
 
@@ -2543,7 +2547,7 @@ class TestRunRecovery:
             benchmark_row,
             database_session,
             harness_config.sandbox_provider_secret_name,
-            harness_config.aws,
+            AWSRuntime.from_harness_config(harness_config),
             self._test_org,
         )
 

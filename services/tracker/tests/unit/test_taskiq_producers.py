@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
 from main import app
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tests.conftest import TEST_ORG_ID
 from tracker import config
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, ExecutorRelease
@@ -71,12 +72,16 @@ def _stop_benchmark(benchmark: Benchmark, session: Session) -> None:
     session.commit()
 
 
-def _promote_test_release(session: Session) -> None:
+def _promote_test_release(
+    session: Session,
+    *,
+    protocol_version: str = SUPPORTED_PROTOCOL_VERSION,
+) -> None:
     release = ExecutorRelease(
         id="producer-test-release",
         artifact_uri="s3://artifacts/producer-test-release.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version=protocol_version,
         readiness_verified=True,
     )
     session.add(release)
@@ -208,6 +213,7 @@ def test_managed_start_rejects_aws_authority_from_resolved_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_managed_runtime(monkeypatch)
+    _promote_test_release(database_session)
     payloads = _capture_task_payloads(monkeypatch)
     request = _start_request(contract.model_copy(update={"install_cmd": "", "run_cmd": ""}), None)
     resolved_contract = contract.model_copy(update={"secrets": {"aws_profile": "credential"}})
@@ -219,6 +225,21 @@ def test_managed_start_rejects_aws_authority_from_resolved_contract(
     assert response.json()["detail"] == "Managed execution cannot include AWS credentials"
     assert database_session.exec(select(Benchmark).where(Benchmark.name == "producer-contract-test")).all() == []
     assert payloads == []
+
+
+def test_managed_start_requires_a_compatible_executor_release(
+    contract: AgentContractRequest,
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_managed_runtime(monkeypatch)
+    _promote_test_release(database_session, protocol_version="1")
+
+    response = client.post("/start-benchmark", json=_start_request(contract, None).model_dump(mode="json"))
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Activate an executor release that supports managed runs"
+    assert database_session.exec(select(Benchmark).where(Benchmark.name == "producer-contract-test")).all() == []
 
 
 def test_access_key_start_and_resume_keep_v1_task_kwargs(

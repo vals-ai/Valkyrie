@@ -88,6 +88,7 @@ from tracker.executor.dispatch_control import (
     admit_recovery_dispatch,
     admit_start_dispatch,
     resolve_enqueue_failure,
+    validate_managed_execution_release,
 )
 from tracker.database.session import check_database_connection, get_session
 from tracker.docent_analysis import (
@@ -493,6 +494,14 @@ async def start_benchmark(
                 status_code=400,
                 detail="Managed runs require a sandbox provider and sandbox provider secret name.",
             )
+        try:
+            validate_managed_execution_request(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            validate_managed_execution_release(session)
+        except ReleaseControlError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
     else:
         effective_harness_config = cast(HarnessConfig, effective_harness_config)
         body_provider_secret_name = (

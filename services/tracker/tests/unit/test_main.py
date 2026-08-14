@@ -30,6 +30,7 @@ from taskiq.message import BrokerMessage, TaskiqMessage
 
 import main as main_module
 import services.executor_host.supervisor as executor_host  # pyright: ignore[reportMissingImports]
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from main import app, tracker_service_error_handler
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
@@ -75,7 +76,7 @@ def active_executor_release(database_session: Session) -> None:
         id="test-release",
         artifact_uri="s3://artifacts/test-release.pex",
         artifact_digest="digest-test-release",
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
         status=ExecutorReleaseStatus.ACTIVE,
         readiness_verified=True,
     )
@@ -545,7 +546,7 @@ class TestTrackerAPI:
         assert benchmark_row.current_execution_release_id == "test-release"
         assert benchmark_row.executor_artifact_uri == "s3://artifacts/test-release.pex"
         assert benchmark_row.executor_artifact_digest == "digest-test-release"
-        assert benchmark_row.executor_protocol_version == "1"
+        assert benchmark_row.executor_protocol_version == SUPPORTED_PROTOCOL_VERSION
         queued_call = mock_kicker.queued_calls[0]
         dispatch_id = UUID(queued_call["executor_dispatch_id"])
         dispatch = database_session.get(ExecutorDispatch, dispatch_id)
@@ -556,7 +557,7 @@ class TestTrackerAPI:
         assert dispatch.executor_release_id == "test-release"
         assert dispatch.executor_artifact_uri == "s3://artifacts/test-release.pex"
         assert dispatch.executor_artifact_digest == "digest-test-release"
-        assert dispatch.executor_protocol_version == "1"
+        assert dispatch.executor_protocol_version == SUPPORTED_PROTOCOL_VERSION
         assert queued_call["verified_task_ids"] == [f"task_{i}" for i in range(500)]
         task_rows = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
         assert len(task_rows) == 500
@@ -568,7 +569,7 @@ class TestTrackerAPI:
         assert json_response["executor_release_id"] == "test-release"
         assert json_response["current_execution_release_id"] == "test-release"
         assert json_response["executor_artifact_digest"] == "digest-test-release"
-        assert json_response["executor_protocol_version"] == "1"
+        assert json_response["executor_protocol_version"] == SUPPORTED_PROTOCOL_VERSION
         assert json_response["concurrency"] == request.concurrency
 
     async def test_start_benchmark_serializes_committed_dispatch_for_executor_host(
@@ -649,17 +650,12 @@ class TestTrackerAPI:
             *,
             executor_dispatch_id: str,
             dispatch: executor_host.ArtifactDispatch,
-            start_benchmark_request_json: dict[str, object] | None,
-            benchmark_id_str: str,
-            verified_task_ids: list[str],
-            execution_context_json: dict[str, object] | None = None,
+            process_payload: executor_host.ExecutorProcessPayload,
         ) -> None:
             observed_host.update(
                 executor_dispatch_id=executor_dispatch_id,
                 dispatch=dispatch,
-                start_benchmark_request_json=start_benchmark_request_json,
-                benchmark_id_str=benchmark_id_str,
-                verified_task_ids=verified_task_ids,
+                process_payload=process_payload,
             )
 
         monkeypatch.setattr(executor_host, "run_executor_dispatch", capture_dispatch)
@@ -667,11 +663,13 @@ class TestTrackerAPI:
 
         assert taskiq_message.task_name == executor_host.launch_executor.task_name
         assert STABLE_QUEUE_NAME == executor_host.QUEUE_NAME
-        assert taskiq_message.kwargs["executor_protocol_version"] == executor_host.SUPPORTED_PROTOCOL_VERSION
+        assert taskiq_message.kwargs["executor_protocol_version"] == SUPPORTED_PROTOCOL_VERSION
         assert observed_host["executor_dispatch_id"] == str(dispatch.id)
-        assert observed_host["benchmark_id_str"] == str(benchmark.id)
-        assert observed_host["verified_task_ids"] == ["task_0"]
-        assert observed_host["start_benchmark_request_json"] == request.model_dump()
+        process_payload = observed_host["process_payload"]
+        assert isinstance(process_payload, executor_host.ExecutorProcessPayload)
+        assert process_payload.benchmark_id == str(benchmark.id)
+        assert process_payload.verified_task_ids == ["task_0"]
+        assert process_payload.arguments["start_benchmark_request_json"] == request.model_dump()
         host_dispatch = observed_host["dispatch"]
         assert isinstance(host_dispatch, executor_host.ArtifactDispatch)
         assert host_dispatch.release_id == dispatch.executor_release_id
@@ -1391,6 +1389,7 @@ class TestTrackerAPI:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
     ) -> None:
         example_benchmark_object.custom_benchmark_service = "http://service.internal:8001"
         database_session.add(example_benchmark_object)
@@ -1403,6 +1402,7 @@ class TestTrackerAPI:
                 ("benchmark_id", str(example_benchmark_object.id)),
                 ("task_ids", "task_0"),
             ],
+            headers=harness_headers,
         )
 
         assert response.status_code == 403
@@ -1413,6 +1413,7 @@ class TestTrackerAPI:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
+        harness_headers: dict[str, str],
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.name = "terminal_bench"
@@ -1448,7 +1449,7 @@ class TestTrackerAPI:
         response = client.get(
             "/retrieve-results",
             params=[("benchmark_id", str(benchmark_row.id)), ("task_ids", "task_1")],
-            headers={"X-Api-Key": "tracker-api-key"},
+            headers={**harness_headers, "X-Api-Key": "tracker-api-key"},
         )
 
         assert response.status_code == 200
