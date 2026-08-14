@@ -286,6 +286,12 @@ def test_running_dispatch_failure_preserves_active_sibling(
     database_session.add(newer_retry_task)
     database_session.commit()
 
+    # Persisted dispatch timestamps are naive while newly assigned task timestamps can still be UTC-aware.
+    failing_dispatch.created_at = failing_dispatch.created_at.replace(tzinfo=None)
+    retry_task.started_at = retry_task.started_at.replace(tzinfo=UTC)
+    newer_retry_task.started_at = newer_retry_task.started_at.replace(tzinfo=UTC)
+    database_session.add_all([failing_dispatch, retry_task, newer_retry_task])
+
     assert record_dispatch_failure(
         database_session,
         benchmark=example_benchmark_object,

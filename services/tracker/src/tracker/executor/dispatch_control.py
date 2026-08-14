@@ -198,7 +198,7 @@ def record_dispatch_failure(
                 dispatch.created_at
             ):
                 continue
-        elif task.started_at > dispatch.created_at:
+        elif _normalized_time(task.started_at) > _normalized_time(dispatch.created_at):
             continue
         record_terminal_failure(
             session,

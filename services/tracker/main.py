@@ -729,6 +729,7 @@ async def retrieve_results(
 
         final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
         final_view.task_errors = _filter_task_map(final_view.task_errors)
+        final_view.task_failures = _filter_task_map(final_view.task_failures)
 
         # Include every requested task with its result or None, so tasks without a result
         # (e.g. stopped/errored) still count toward the denominator instead of being dropped.

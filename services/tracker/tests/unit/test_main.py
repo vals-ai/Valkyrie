@@ -1355,6 +1355,9 @@ class TestTrackerAPI:
         assert response.status_code == 200
         body = response.json()
         assert set(body["evaluation_results"]) == {"task_1", "task_3"}
+        assert body["task_failures"] is None
+        assert body["recovered_failure_count"] == 1
+        assert body["secondary_failure_count"] == 1
         assert body["final_evaluation"]["final_score"] == 2.0
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
 
