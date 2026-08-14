@@ -52,7 +52,7 @@ build-backend = "hatchling.build"
 prerelease = "allow"
 
 [tool.uv.sources]
-create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "d0095a1384a091da08f32dab9bdf611e3ce31b6e" }
+create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "4e6badafcff2504171a5716029567f982b9e3cab" }
 
 [tool.hatch.metadata]
 allow-direct-references = true
