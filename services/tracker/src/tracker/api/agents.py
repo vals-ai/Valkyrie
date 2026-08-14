@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 
-from tracker.auth import get_current_org
-from tracker.aws.resolver import resolve_agent_library_aws_runtime
+from tracker.api.dependencies import get_agent_library_aws_runtime
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import create_presigned_url, list_agents, s3_object_exists
-from tracker.database.models import Org
 from tracker.types import AgentDownloadURLResponse, AgentEntry, AgentsResponse
 
 PRESIGNED_URL_EXPIRES_SECONDS = 300
@@ -17,11 +16,9 @@ router = APIRouter(prefix="/agents")
 
 @router.get("", response_model=AgentsResponse)
 async def list_agents_endpoint(
-    request: Request,
-    org: Org = Depends(get_current_org),
+    aws_runtime: AWSRuntime = Depends(get_agent_library_aws_runtime),
 ) -> AgentsResponse:
     """List agent zips under the org's S3 bucket."""
-    aws_runtime = resolve_agent_library_aws_runtime(request, org.id)
     agents = await list_agents(aws_runtime)
     return AgentsResponse(
         agents=[
@@ -34,11 +31,9 @@ async def list_agents_endpoint(
 @router.get("/{name}/download-url", response_model=AgentDownloadURLResponse)
 async def get_agent_download_url(
     name: str,
-    request: Request,
-    org: Org = Depends(get_current_org),
+    aws_runtime: AWSRuntime = Depends(get_agent_library_aws_runtime),
 ) -> AgentDownloadURLResponse:
     """Return a 5-minute presigned URL to download agents/<name>.zip."""
-    aws_runtime = resolve_agent_library_aws_runtime(request, org.id)
     key = f"agents/{name}.zip"
     if not await s3_object_exists(key, aws_runtime):
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")
