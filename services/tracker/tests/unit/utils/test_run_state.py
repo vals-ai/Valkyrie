@@ -339,6 +339,15 @@ class TestRunState:
         response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false")
         assert response.status_code == 200
 
+        # That resume reopened the run, so put it back in a terminal state for the cases below
+        database_session.expire_all()
+        benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session, self._test_org)
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.commit()
+
         # Ensure that we can recreate the environment the benchmark was started in
         original_start_benchmark_request = StartBenchmarkRequest(
             contract=contract,

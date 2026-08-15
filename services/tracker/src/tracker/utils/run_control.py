@@ -251,6 +251,8 @@ async def reset_to_in_progress_status(
 
         # Allow re-running the end of the benchmark without running any tasks
         if not existing_rows and not new_task_ids:
+            _open_new_execution(benchmark_row, session)
+
             return []
 
         # Verify the task ids are still valid before priming to resume
@@ -260,16 +262,7 @@ async def reset_to_in_progress_status(
             task_ids=all_requested_task_ids, slice_str=None, dataset=benchmark_row.arguments.dataset
         )
 
-        old_evaluation = benchmark_row.final_evaluation
-        if old_evaluation is not None:
-            benchmark_row.final_evaluation = None
-            session.delete(old_evaluation)
-
-        # Retry/resume always starts a new active execution.
-        if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
-            benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-        benchmark_row.finished_at = None
-        session.add(benchmark_row)
+        _open_new_execution(benchmark_row, session)
 
         for task in existing_rows:
             task.status = (
@@ -291,6 +284,18 @@ async def reset_to_in_progress_status(
         raise
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error resuming run {benchmark_row.id}: {str(e)}") from e
+
+
+def _open_new_execution(benchmark_row: Benchmark, session: Session) -> None:
+    """Drop the previous execution's terminal state so retry/resume runs as a new execution."""
+    old_evaluation = benchmark_row.final_evaluation
+    if old_evaluation is not None:
+        benchmark_row.final_evaluation = None
+        session.delete(old_evaluation)
+
+    benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+    benchmark_row.finished_at = None
+    session.add(benchmark_row)
 
 
 def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: list[str], org: Org) -> list[Any]:

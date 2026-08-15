@@ -1471,6 +1471,39 @@ class TestRunRecovery:
         assert persisted.arguments.concurrency == 9
         assert persisted.arguments.contract.secrets == {"ANTHROPIC_API_KEY": "new-secret"}
 
+    async def test_no_task_resume_reopens_errored_run(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        mock_kicker: Any,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.ERROR
+        benchmark_row.finished_at = _ORIGINAL_ATTEMPT_AT
+        database_session.add(benchmark_row)
+        database_session.add(
+            Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.FINISHED)
+        )
+        database_session.commit()
+        database_session.add(FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark_row.id, final_score=0.0))
+        database_session.commit()
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={"task_ids": [], "service_headers": {}},
+        )
+
+        assert response.status_code == 200
+        assert mock_kicker.queued_calls[0]["verified_task_ids"] == []
+
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, benchmark_row.id)
+
+        assert persisted is not None
+        assert persisted.status == BenchmarkStatus.IN_PROGRESS
+        assert persisted.finished_at is None
+        assert persisted.final_evaluation is None
+
     async def test_running_retry_noops_without_error_tasks(
         self,
         example_benchmark_object: Benchmark,
