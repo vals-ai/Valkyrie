@@ -6,6 +6,7 @@ Run: uv run pytest tests/unit/test_main.py
 import io
 import logging
 import tarfile
+import zipfile
 from collections.abc import AsyncIterator
 from datetime import timezone
 from typing import Any
@@ -63,7 +64,16 @@ from tracker.types import (
 )
 from tracker.utils import fetch_harness_config, update_benchmark_concurrency
 
+_REAL_RESOLVE_CONTRACT_FROM_FROZEN_AGENT = main_module._resolve_contract_from_frozen_agent
+
 client = TestClient(app)
+
+
+def _agent_zip(agent_name: str, contract_yaml: str) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(f"{agent_name}/contract.yaml", contract_yaml)
+    return buffer.getvalue()
 
 
 @pytest.fixture(autouse=True)
@@ -558,6 +568,132 @@ class TestTrackerAPI:
         assert json_response["executor_artifact_digest"] == "digest-test-release"
         assert json_response["executor_protocol_version"] == "1"
         assert json_response["concurrency"] == request.concurrency
+
+    async def test_start_benchmark_uses_contract_from_exact_frozen_archive(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        mock_kicker: Any,
+    ) -> None:
+        """An alias flip cannot mix the CLI's old contract with the copied zip."""
+        request_contract = AgentContractRequest(
+            name="flip-agent",
+            model="provider/model",
+            install_cmd="echo stale-install",
+            run_cmd="echo stale-run",
+            secrets={"OVERRIDE": "request-secret"},
+        )
+        request = StartBenchmarkRequest(
+            contract=request_contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
+        replacement_zip = _agent_zip(
+            "flip-agent",
+            """
+name: flip-agent
+install_cmd: echo frozen-install
+run_cmd: echo frozen-run {problem_statement_path} {task_id}
+secrets:
+  ARCHIVE_ONLY: archive-secret
+  OVERRIDE: archive-default
+""".strip(),
+        )
+        frozen_objects: dict[str, bytes] = {}
+
+        async def copy_after_alias_flip(
+            benchmark_id: str,
+            contract_name: str,
+            *_args: Any,
+            **_kwargs: Any,
+        ) -> bool:
+            # The CLI already parsed the stale request contract. Simulate the
+            # shared alias changing before the tracker freezes it for this run.
+            key = f"benchmarks/{benchmark_id}/{contract_name}.zip"
+            frozen_objects[key] = replacement_zip
+            return True
+
+        async def download_frozen(key: str, *_args: Any, **_kwargs: Any) -> bytes:
+            return frozen_objects[key]
+
+        monkeypatch.setattr(
+            main_module,
+            "_resolve_contract_from_frozen_agent",
+            _REAL_RESOLVE_CONTRACT_FROM_FROZEN_AGENT,
+        )
+        monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_after_alias_flip)
+        monkeypatch.setattr(main_module, "download_from_s3", download_frozen)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 200
+        benchmark_id = UUID(response.json()["benchmark_id"])
+        benchmark = database_session.get(Benchmark, benchmark_id)
+        assert benchmark is not None
+        frozen_contract = benchmark.arguments.contract
+        assert frozen_contract.name == "flip-agent"
+        assert frozen_contract.model == "provider/model"
+        assert frozen_contract.install_cmd == "echo frozen-install"
+        assert frozen_contract.run_cmd == "echo frozen-run {problem_statement_path} {task_id}"
+        assert frozen_contract.secrets == {
+            "ARCHIVE_ONLY": "archive-secret",
+            "OVERRIDE": "request-secret",
+        }
+        assert "stale" not in frozen_contract.install_cmd
+        assert "stale" not in frozen_contract.run_cmd
+
+        queued_contract = mock_kicker.queued_calls[0]["start_benchmark_request_json"]["contract"]
+        assert queued_contract == frozen_contract.model_dump()
+        assert list(frozen_objects) == [f"benchmarks/{benchmark_id}/flip-agent.zip"]
+
+    async def test_start_benchmark_fails_closed_when_frozen_archive_is_unreadable(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ) -> None:
+        copy_agent = AsyncMock(return_value=True)
+        delete_agent_copy = AsyncMock()
+
+        async def unreadable_frozen_archive(*_args: Any, **_kwargs: Any) -> bytes:
+            return b"not-a-zip"
+
+        monkeypatch.setattr(
+            main_module,
+            "_resolve_contract_from_frozen_agent",
+            _REAL_RESOLVE_CONTRACT_FROM_FROZEN_AGENT,
+        )
+        monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent)
+        monkeypatch.setattr(main_module, "download_from_s3", unreadable_frozen_archive)
+        monkeypatch.setattr(main_module, "delete_from_s3", delete_agent_copy)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
+
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/start-benchmark",
+            json=request.model_dump(),
+        )
+
+        assert response.status_code == 500
+        assert database_session.exec(select(Benchmark)).all() == []
+        copy_agent.assert_awaited_once()
+        copied_benchmark_id = copy_agent.await_args.args[0]
+        delete_agent_copy.assert_awaited_once_with(
+            f"benchmarks/{copied_benchmark_id}/{contract.name}.zip",
+            harness_config.aws,
+            harness_config.s3_bucket,
+        )
 
     async def test_start_benchmark_serializes_committed_dispatch_for_executor_host(
         self,

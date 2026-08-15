@@ -49,7 +49,6 @@ from tracker.aws.s3 import (
     download_from_s3,
     download_many_from_s3,
     get_benchmark_contract_s3_key,
-    get_contract_s3_key,
     list_s3_objects,
     s3_object_exists,
 )
@@ -339,15 +338,30 @@ def init_org(
     return {"org_name": org.name, "created": created, "email_claim_missing": identity.email is None}
 
 
-async def _resolve_contract_from_s3(request: StartBenchmarkRequest) -> AgentContractRequest:
-    """Resolve install_cmd/run_cmd/etc by parsing the agent's contract file inside its S3 zip."""
+async def _resolve_contract_from_frozen_agent(
+    request: StartBenchmarkRequest,
+    benchmark_id: UUID,
+) -> AgentContractRequest:
+    """Resolve executable contract fields from this run's frozen agent archive.
+
+    Clients may have read ``agents/<name>.zip`` before submitting the start
+    request.  That alias can move before the tracker admits the run, so the
+    client-supplied install/run commands are not an immutable identity.  The
+    tracker first copies the alias to the run-scoped key and then parses this
+    exact copy.  Model/kwarg choices and explicit secret overrides remain
+    request inputs; every executable field comes from the frozen archive.
+    """
     zip_bytes = await download_from_s3(
-        get_contract_s3_key(request.contract.name),
+        get_benchmark_contract_s3_key(str(benchmark_id), request.contract.name),
         request.harness_config.aws,
         request.harness_config.s3_bucket,
     )
     agent_config = AgentConfig(model=request.contract.model, kwargs=dict(request.contract.kwargs))
     resolved = get_contract_from_zip_bytes(request.contract.name, zip_bytes, agent_config)
+    if resolved.name != request.contract.name:
+        raise ValueError(
+            f"Frozen agent contract name {resolved.name!r} does not match requested agent {request.contract.name!r}"
+        )
     if request.contract.secrets:
         resolved.secrets = {**resolved.secrets, **request.contract.secrets}
     return resolved
@@ -422,9 +436,6 @@ async def start_benchmark(
         }
     )
 
-    if not request.contract.install_cmd and not request.contract.run_cmd:
-        request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request)})
-
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
     benchmark_service = request.benchmark_service
@@ -456,18 +467,23 @@ async def start_benchmark(
         except Exception:
             logger.exception("Failed to close benchmark service client for %s", request.benchmark_name)
 
-    benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
+    benchmark_id = uuid4()
     dispatch_id = uuid4()
     agent_copy_created = False
     try:
         agent_copy_created = bool(
             await copy_agent_to_benchmark(
-                str(benchmark_row.id),
+                str(benchmark_id),
                 request.contract.name,
                 request.harness_config.aws,
                 request.harness_config.s3_bucket,
             )
         )
+        request = request.model_copy(
+            update={"contract": await _resolve_contract_from_frozen_agent(request, benchmark_id)}
+        )
+        benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
+        benchmark_row.id = benchmark_id
         for task_id in verify_response.task_ids:
             session.add(Task(org_id=benchmark_row.org_id, benchmark=benchmark_row.id, task_id=task_id))
         executor_dispatch = admit_start_dispatch(
@@ -480,7 +496,7 @@ async def start_benchmark(
         session.rollback()
         await _delete_uncommitted_agent_copy(
             created=agent_copy_created,
-            benchmark_id=benchmark_row.id,
+            benchmark_id=benchmark_id,
             request=request,
         )
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -488,7 +504,7 @@ async def start_benchmark(
         session.rollback()
         await _delete_uncommitted_agent_copy(
             created=agent_copy_created,
-            benchmark_id=benchmark_row.id,
+            benchmark_id=benchmark_id,
             request=request,
         )
         raise TrackerServiceError("Failed to admit benchmark execution") from exc

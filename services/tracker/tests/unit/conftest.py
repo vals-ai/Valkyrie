@@ -75,10 +75,14 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_copy_agent_to_benchmark(*_args: Any, **_kwargs: Any) -> bool:
         return False
 
+    async def _mock_resolve_contract_from_frozen_agent(request: Any, *_args: Any, **_kwargs: Any) -> Any:
+        return request.contract
+
     monkeypatch.setattr("tracker.aws.s3.download_from_s3", _mock_download_from_s3)
     monkeypatch.setattr("tracker.aws.s3.get_contract_s3_key", _mock_get_contract_s3_key)
     monkeypatch.setattr("tracker.utils.reporting.upload_to_s3", _mock_upload_to_s3)
     monkeypatch.setattr("main.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
+    monkeypatch.setattr("main._resolve_contract_from_frozen_agent", _mock_resolve_contract_from_frozen_agent)
 
 
 @pytest.fixture(autouse=True)
