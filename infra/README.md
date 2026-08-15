@@ -65,6 +65,14 @@ the matching account's `CoordinatedAgentPublisherRoleArn` stack output. Do not
 put the new role ARN in the legacy repository variables
 `AGENT_PUBLISH_ROLE_ARN` or `DEV_AGENT_PUBLISH_ROLE_ARN`.
 
+This repository deploys `SCOPE=core` automatically after a push to `dev`, and
+`core` includes `ValkDevSharedStack`. Merging the role change into `dev` will
+therefore normally create the development role immediately through that
+reviewed workflow. It does not create the production role: production requires
+a separate reviewed promotion to `prod`, whose core deployment updates the
+production Shared stack. Configure and prove each stage only after its matching
+stack deployment succeeds.
+
 This change intentionally does not deny the existing publisher roles. Roll out
 and prove the new roles and workflow first, republish the immutable aliases, and
 only then add the separately reviewed bucket-policy deny that prevents every
