@@ -5,7 +5,14 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, SerializerFunctionWrapHandler, field_serializer, field_validator, model_serializer
+from pydantic import (
+    BaseModel,
+    Field as PydanticField,
+    SerializerFunctionWrapHandler,
+    field_serializer,
+    field_validator,
+    model_serializer,
+)
 from sqlalchemy import Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -152,6 +159,10 @@ class AgentContractRequest(BaseModel):
     egress_allowlist: list[str] = []
     secrets: dict[str, str] = {}
     kwargs: dict[str, str] = {}
+    # Tracker-owned identity for the exact run-scoped archive. Old contracts
+    # omit both fields and retain the legacy benchmarks/<run>/<agent>.zip path.
+    frozen_archive_s3_key: str | None = PydanticField(default=None, exclude_if=lambda value: value is None)
+    frozen_archive_sha256: str | None = PydanticField(default=None, exclude_if=lambda value: value is None)
 
     @field_validator("output_artifacts")
     @classmethod

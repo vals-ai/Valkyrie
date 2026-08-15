@@ -57,6 +57,11 @@ def get_benchmark_contract_s3_key(benchmark_id: str, contract_name: str) -> str:
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{contract_name}.zip"
 
 
+def get_benchmark_contract_revision_s3_key(benchmark_id: str, contract_name: str, revision_id: str) -> str:
+    """Get an append-only key for a refreshed agent revision within a run."""
+    return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/agent-revisions/{revision_id}/{contract_name}.zip"
+
+
 def get_agent_result_s3_key(benchmark_id: str, task_id: str, output_name: str) -> str:
     """Get the S3 key for a run output archive."""
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/{output_name}"

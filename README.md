@@ -326,7 +326,7 @@ valkyrie benchmark tasks swebench --dataset default --output tasks.txt
 | `-s` / `--secret` | Secret pair as `ENV_VAR aws_secret_name`. Repeatable. Merged into the stored run contract before resumed/retried tasks are enqueued (CLI wins on conflict) |
 | `--task-ids` | Comma-separated task IDs to resume/retry. Any id without an existing row is created as fresh `PENDING` if valid in the current dataset — lets you grow scope without starting a new run. |
 | `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
-| `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
+| `--update-agent, -u` | Freeze the current agent alias as a new immutable run revision, derive its contract from that exact archive, and resume atomically |
 | `--from-scratch` | Clear stored eval resume state and rerun generation for retried tasks |
 | `--benchmark-url` | Replace the benchmark service URL stored on the run |
 | `--connect` | Stream run updates after resume/retry |

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import logging
 import tarfile
@@ -41,6 +42,7 @@ from tracker.aws.secrets import resolve_secrets
 from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
+    copy_s3_object,
     copy_agent_to_benchmark,
     create_benchmark_url,
     delete_from_s3,
@@ -48,7 +50,9 @@ from tracker.aws.s3 import (
     create_presigned_url,
     download_from_s3,
     download_many_from_s3,
+    get_benchmark_contract_revision_s3_key,
     get_benchmark_contract_s3_key,
+    get_contract_s3_key,
     list_s3_objects,
     s3_object_exists,
 )
@@ -338,6 +342,43 @@ def init_org(
     return {"org_name": org.name, "created": created, "email_claim_missing": identity.email is None}
 
 
+def _resolve_contract_from_agent_archive_bytes(
+    contract: AgentContractRequest,
+    zip_bytes: bytes,
+    archive_s3_key: str,
+) -> AgentContractRequest:
+    """Resolve executable fields and identity from one exact archive payload."""
+    agent_config = AgentConfig(model=contract.model, kwargs=dict(contract.kwargs))
+    resolved = get_contract_from_zip_bytes(contract.name, zip_bytes, agent_config)
+    if resolved.name != contract.name:
+        raise ValueError(
+            f"Frozen agent contract name {resolved.name!r} does not match requested agent {contract.name!r}"
+        )
+    if contract.secrets:
+        resolved.secrets = {**resolved.secrets, **contract.secrets}
+    return resolved.model_copy(
+        update={
+            "kwargs": dict(contract.kwargs),
+            "frozen_archive_s3_key": archive_s3_key,
+            "frozen_archive_sha256": hashlib.sha256(zip_bytes).hexdigest(),
+        }
+    )
+
+
+async def _resolve_contract_from_agent_archive(
+    contract: AgentContractRequest,
+    archive_s3_key: str,
+    harness_config: HarnessConfig,
+) -> AgentContractRequest:
+    """Download and resolve a contract from the exact run-scoped S3 key."""
+    zip_bytes = await download_from_s3(
+        archive_s3_key,
+        harness_config.aws,
+        harness_config.s3_bucket,
+    )
+    return _resolve_contract_from_agent_archive_bytes(contract, zip_bytes, archive_s3_key)
+
+
 async def _resolve_contract_from_frozen_agent(
     request: StartBenchmarkRequest,
     benchmark_id: UUID,
@@ -351,20 +392,64 @@ async def _resolve_contract_from_frozen_agent(
     exact copy.  Model/kwarg choices and explicit secret overrides remain
     request inputs; every executable field comes from the frozen archive.
     """
-    zip_bytes = await download_from_s3(
+    return await _resolve_contract_from_agent_archive(
+        request.contract,
         get_benchmark_contract_s3_key(str(benchmark_id), request.contract.name),
-        request.harness_config.aws,
-        request.harness_config.s3_bucket,
+        request.harness_config,
     )
-    agent_config = AgentConfig(model=request.contract.model, kwargs=dict(request.contract.kwargs))
-    resolved = get_contract_from_zip_bytes(request.contract.name, zip_bytes, agent_config)
-    if resolved.name != request.contract.name:
-        raise ValueError(
-            f"Frozen agent contract name {resolved.name!r} does not match requested agent {request.contract.name!r}"
+
+
+async def _stage_agent_revision(
+    benchmark_id: UUID,
+    contract: AgentContractRequest,
+    harness_config: HarnessConfig,
+) -> tuple[str, bytes]:
+    """Copy the moving alias to a unique key and validate that exact payload."""
+    revision_key = get_benchmark_contract_revision_s3_key(
+        str(benchmark_id),
+        contract.name,
+        str(uuid4()),
+    )
+    try:
+        await copy_s3_object(
+            get_contract_s3_key(contract.name),
+            revision_key,
+            harness_config.aws,
+            harness_config.s3_bucket,
         )
-    if request.contract.secrets:
-        resolved.secrets = {**resolved.secrets, **request.contract.secrets}
-    return resolved
+        zip_bytes = await download_from_s3(
+            revision_key,
+            harness_config.aws,
+            harness_config.s3_bucket,
+        )
+        _resolve_contract_from_agent_archive_bytes(contract, zip_bytes, revision_key)
+        return revision_key, zip_bytes
+    except Exception:
+        try:
+            await delete_from_s3(revision_key, harness_config.aws, harness_config.s3_bucket)
+        except Exception:
+            logger.exception(
+                "Failed to delete rejected agent revision",
+                extra={"benchmark_id": str(benchmark_id), "agent_revision_key": revision_key},
+            )
+        raise
+
+
+async def _delete_uncommitted_agent_revision(
+    revision_key: str | None,
+    benchmark_id: UUID,
+    harness_config: HarnessConfig,
+) -> None:
+    """Best-effort cleanup for an append-only revision not referenced by the DB."""
+    if revision_key is None:
+        return
+    try:
+        await delete_from_s3(revision_key, harness_config.aws, harness_config.s3_bucket)
+    except Exception:
+        logger.exception(
+            "Failed to delete uncommitted agent revision",
+            extra={"benchmark_id": str(benchmark_id), "agent_revision_key": revision_key},
+        )
 
 
 def _authorize_custom_benchmark_destination(url: str, org: Org) -> None:
@@ -951,6 +1036,7 @@ async def retry_or_resume_benchmark(
     retry: bool = Query(default=False),
     retry_mode: RetryMode = Query(default=RetryMode.AUTO),
     concurrency: int | None = Query(default=None),
+    update_agent: bool = Query(default=False),
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
     secrets: dict[str, str] = Body(default={}),
@@ -970,6 +1056,7 @@ async def retry_or_resume_benchmark(
         benchmark_id: The benchmark ID to retry/resume
         retry: If true, retry failed tasks. If false, resume from where it left off
         concurrency: Optional new concurrency level (overrides original value)
+        update_agent: Freeze and bind the current shared agent alias before dispatch
         task_ids: Optional list of specific task IDs to run. If a task id is not yet
             registered but is valid in the current dataset, a fresh PENDING row is created.
         benchmark_url: Optional replacement benchmark service URL stored on the run.
@@ -983,6 +1070,12 @@ async def retry_or_resume_benchmark(
         raise HTTPException(
             status_code=400,
             detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
+        )
+
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and update_agent:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot update an agent while its run is in progress. Stop the run before updating it.",
         )
 
     if benchmark_url is not None:
@@ -1015,7 +1108,17 @@ async def retry_or_resume_benchmark(
 
     dispatch_id = uuid4()
     pre_action_status: BenchmarkStatus | None = None
+    staged_agent_key: str | None = None
+    staged_agent_bytes: bytes | None = None
+    agent_revision_committed = False
     try:
+        if update_agent:
+            staged_agent_key, staged_agent_bytes = await _stage_agent_revision(
+                benchmark_id,
+                benchmark_row.arguments.contract,
+                harness_config,
+            )
+
         with session.no_autoflush:
             lock_executor_admission(session)
         benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
@@ -1035,7 +1138,31 @@ async def retry_or_resume_benchmark(
                 status_code=400,
                 detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
             )
+        if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and update_agent:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot update an agent while its run is in progress. Stop the run before updating it.",
+            )
         pre_action_status = benchmark_row.status
+
+        if update_agent:
+            if staged_agent_key is None or staged_agent_bytes is None:
+                raise RuntimeError("Updated agent revision was not staged")
+            runtime_contract = benchmark_row.arguments.contract.model_copy(
+                update={
+                    "secrets": {
+                        **benchmark_row.arguments.contract.secrets,
+                        **secrets,
+                    }
+                }
+            )
+            updated_contract = _resolve_contract_from_agent_archive_bytes(
+                runtime_contract,
+                staged_agent_bytes,
+                staged_agent_key,
+            )
+            benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"contract": updated_contract})
+            session.add(benchmark_row)
 
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
@@ -1088,6 +1215,7 @@ async def retry_or_resume_benchmark(
             kind=dispatch_kind,
         )
         session.commit()
+        agent_revision_committed = update_agent
     except ReleaseControlError as exc:
         session.rollback()
         status_code = (
@@ -1099,6 +1227,9 @@ async def retry_or_resume_benchmark(
     except Exception:
         session.rollback()
         raise
+    finally:
+        if not agent_revision_committed:
+            await _delete_uncommitted_agent_revision(staged_agent_key, benchmark_id, harness_config)
 
     await _enqueue_executor_dispatch(
         executor_dispatch,

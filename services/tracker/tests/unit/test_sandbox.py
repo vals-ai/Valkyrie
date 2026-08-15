@@ -1533,6 +1533,118 @@ class TestDeleteSandboxAudit:
 class TestUploadAgentArtifacts:
     """Agent artifact upload failure classification."""
 
+    async def test_legacy_contract_uses_fixed_run_archive_without_digest(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_credentials: AWSCredentials,
+    ) -> None:
+        """Pre-v2 persisted contracts remain runnable from their original fixed key."""
+        execute = AsyncMock(return_value=ExecResult(exit_code=0, output=""))
+        create_url = AsyncMock(return_value="https://example.com/presigned")
+        mock_sandbox = AsyncMock()
+        mock_sandbox.name = "test-sandbox"
+        monkeypatch.setattr(sandbox_module, "_exec", execute)
+        monkeypatch.setattr(sandbox_module, "create_presigned_url", create_url)
+
+        await upload_agent_artifacts(
+            mock_sandbox,
+            contract,
+            "bench-123",
+            aws_credentials,
+            "test-bucket",
+        )
+
+        create_url.assert_awaited_once_with(
+            "benchmarks/bench-123/dummy.zip",
+            aws_credentials,
+            "test-bucket",
+            expiration=sandbox_module.CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS,
+        )
+        assert "sha256sum" not in execute.await_args.args[1]
+
+    async def test_uses_bound_revision_key_and_verifies_digest(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_credentials: AWSCredentials,
+    ) -> None:
+        """The executor downloads and verifies the tracker-bound archive revision."""
+        archive_key = "benchmarks/bench-123/agent-revisions/revision-1/dummy.zip"
+        archive_sha256 = "a" * 64
+        bound_contract = contract.model_copy(
+            update={
+                "frozen_archive_s3_key": archive_key,
+                "frozen_archive_sha256": archive_sha256,
+            }
+        )
+        execute = AsyncMock(return_value=ExecResult(exit_code=0, output=""))
+        create_url = AsyncMock(return_value="https://example.com/presigned")
+        mock_sandbox = AsyncMock()
+        mock_sandbox.name = "test-sandbox"
+        monkeypatch.setattr(sandbox_module, "_exec", execute)
+        monkeypatch.setattr(sandbox_module, "create_presigned_url", create_url)
+
+        await upload_agent_artifacts(
+            mock_sandbox,
+            bound_contract,
+            "bench-123",
+            aws_credentials,
+            "test-bucket",
+        )
+
+        create_url.assert_awaited_once_with(
+            archive_key,
+            aws_credentials,
+            "test-bucket",
+            expiration=sandbox_module.CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS,
+        )
+        script = execute.await_args.args[1]
+        assert f"printf '%s  %s\\n' {archive_sha256} /tmp/dummy.zip | sha256sum -c -" in script
+
+    @pytest.mark.parametrize(
+        ("identity", "message"),
+        [
+            ({"frozen_archive_s3_key": "benchmarks/bench-123/revision.zip"}, "Incomplete"),
+            ({"frozen_archive_sha256": "a" * 64}, "Incomplete"),
+            (
+                {
+                    "frozen_archive_s3_key": "benchmarks/another-run/revision.zip",
+                    "frozen_archive_sha256": "a" * 64,
+                },
+                "outside benchmark",
+            ),
+            (
+                {
+                    "frozen_archive_s3_key": "benchmarks/bench-123/revision.zip",
+                    "frozen_archive_sha256": "not-a-digest",
+                },
+                "Invalid frozen archive digest",
+            ),
+        ],
+    )
+    async def test_malformed_bound_archive_identity_fails_closed(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_credentials: AWSCredentials,
+        identity: dict[str, str],
+        message: str,
+    ) -> None:
+        create_url = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "create_presigned_url", create_url)
+
+        with pytest.raises(SandboxError, match=message):
+            await upload_agent_artifacts(
+                AsyncMock(name="test-sandbox"),
+                contract.model_copy(update=identity),
+                "bench-123",
+                aws_credentials,
+                "test-bucket",
+            )
+
+        create_url.assert_not_awaited()
+
     @pytest.mark.parametrize(
         "exit_code,retryable",
         [

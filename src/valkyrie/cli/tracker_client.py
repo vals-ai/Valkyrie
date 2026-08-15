@@ -678,6 +678,7 @@ class TrackerService:
         service_headers: dict[str, str] | None = None,
         secrets: dict[str, str] | None = None,
         benchmark_url: str | None = None,
+        update_agent: bool = False,
     ) -> RetryOrResumeBenchmarkResponse:
         """
         Run a benchmark that has already been created by its benchmark id.
@@ -691,6 +692,7 @@ class TrackerService:
             service_headers: Optional headers for benchmark service authentication
             secrets: Optional agent secret mappings to merge into the stored contract
             benchmark_url: Optional replacement benchmark service URL
+            update_agent: Freeze and bind the current agent alias before dispatch
 
         Returns:
             RetryOrResumeBenchmarkResponse with status and message
@@ -700,6 +702,8 @@ class TrackerService:
 
             if concurrency is not None:
                 params["concurrency"] = concurrency
+            if update_agent:
+                params["update_agent"] = True
 
             body: dict[str, Any] = {"task_ids": task_ids, "service_headers": service_headers or {}}
             if secrets:

@@ -6,6 +6,9 @@ Covers task state transitions, sandbox cleanup, and run-control API behavior.
 """
 
 import asyncio
+import hashlib
+import io
+import zipfile
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import datetime
@@ -24,6 +27,7 @@ from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 import main as main_module
 from main import app
 import tracker.utils as tracker_utils
@@ -31,6 +35,7 @@ from tests.factories import make_benchmark, make_error_result, make_evaluation_r
 from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity
+from tracker.aws.s3 import get_benchmark_contract_s3_key
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -74,6 +79,13 @@ _RESUMED_ATTEMPT_AT = datetime(2026, 7, 9)
 client = TestClient(app)
 
 
+def _agent_zip(agent_name: str, contract_yaml: str) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(f"{agent_name}/contract.yaml", contract_yaml)
+    return buffer.getvalue()
+
+
 @pytest.fixture
 def example_benchmark_object(contract: AgentContractRequest, database_session: Session) -> Benchmark:
     """Build recovery benchmarks with a persisted executor release identity."""
@@ -81,7 +93,7 @@ def example_benchmark_object(contract: AgentContractRequest, database_session: S
         id="test-release",
         artifact_uri="s3://artifacts/test-release.pex",
         artifact_digest="digest-test-release",
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
         readiness_verified=True,
     )
     database_session.add(release)
@@ -387,7 +399,7 @@ class TestRunRecovery:
                 id="test-release",
                 artifact_uri="s3://artifacts/test-release.pex",
                 artifact_digest="digest-test-release",
-                protocol_version="1",
+                protocol_version=SUPPORTED_PROTOCOL_VERSION,
                 readiness_verified=True,
             )
         )
@@ -1163,6 +1175,310 @@ class TestRunRecovery:
         database_session.refresh(benchmark_row)
         assert benchmark_row.arguments.concurrency == 20
 
+    async def test_update_agent_binds_contract_to_exact_staged_revision(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+    ) -> None:
+        """An alias flip cannot mix a stored contract with the refreshed archive."""
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        old_zip = _agent_zip(
+            "dummy",
+            """
+name: dummy
+install_cmd: echo old-install
+run_cmd: echo old-run
+""".strip(),
+        )
+        old_key = get_benchmark_contract_s3_key(str(benchmark_row.id), "dummy")
+        old_contract = benchmark_row.arguments.contract.model_copy(
+            update={
+                "model": "provider/model",
+                "kwargs": {"temperature": "1"},
+                "install_cmd": "echo old-install",
+                "run_cmd": "echo old-run",
+                "final_output": "stale-output.txt",
+                "output_artifacts": ["stale-artifact.txt"],
+                "egress_allowlist": ["stale.example"],
+                "secrets": {"OVERRIDE": "stored-secret"},
+                "frozen_archive_s3_key": old_key,
+                "frozen_archive_sha256": hashlib.sha256(old_zip).hexdigest(),
+            }
+        )
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"contract": old_contract})
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        replacement_zip = _agent_zip(
+            "dummy",
+            """
+name: dummy
+install_cmd: echo replacement-install
+run_cmd: echo replacement-run {problem_statement_path} {task_id}
+final_output: replacement-output.txt
+output_artifacts:
+  - replacement-artifact.txt
+egress_allowlist:
+  - api.replacement.example
+secrets:
+  ARCHIVE_ONLY: archive-secret
+  OVERRIDE: archive-default
+""".strip(),
+        )
+        objects = {
+            old_key: old_zip,
+            "agents/dummy.zip": replacement_zip,
+        }
+        copies: list[tuple[str, str]] = []
+
+        async def copy_object(source_key: str, dest_key: str, *_args: Any) -> None:
+            copies.append((source_key, dest_key))
+            objects[dest_key] = objects[source_key]
+
+        async def download_object(key: str, *_args: Any) -> bytes:
+            return objects[key]
+
+        async def reset_tasks(*_args: Any, **_kwargs: Any) -> list[str]:
+            return ["task_0"]
+
+        monkeypatch.setattr(main_module, "copy_s3_object", copy_object)
+        monkeypatch.setattr(main_module, "download_from_s3", download_object)
+        monkeypatch.setattr(main_module, "reset_to_in_progress_status", reset_tasks)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            params={"update_agent": "true"},
+            json={
+                "task_ids": [],
+                "service_headers": {},
+                "secrets": {"RESUME_ONLY": "resume-secret"},
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, benchmark_row.id)
+        assert persisted is not None
+        updated_contract = persisted.arguments.contract
+        assert updated_contract.install_cmd == "echo replacement-install"
+        assert updated_contract.run_cmd == "echo replacement-run {problem_statement_path} {task_id}"
+        assert updated_contract.final_output == "replacement-output.txt"
+        assert updated_contract.output_artifacts == ["replacement-artifact.txt"]
+        assert updated_contract.egress_allowlist == ["api.replacement.example"]
+        assert updated_contract.model == "provider/model"
+        assert updated_contract.kwargs == {"temperature": "1"}
+        assert updated_contract.secrets == {
+            "ARCHIVE_ONLY": "archive-secret",
+            "OVERRIDE": "stored-secret",
+            "RESUME_ONLY": "resume-secret",
+        }
+        revision_key = updated_contract.frozen_archive_s3_key
+        assert revision_key is not None
+        assert revision_key.startswith(f"benchmarks/{benchmark_row.id}/agent-revisions/")
+        assert revision_key.endswith("/dummy.zip")
+        assert updated_contract.frozen_archive_sha256 == hashlib.sha256(replacement_zip).hexdigest()
+        assert copies == [("agents/dummy.zip", revision_key)]
+        assert objects[old_key] == old_zip
+        assert objects[revision_key] == replacement_zip
+        queued_contract = mock_kicker.queued_calls[0]["start_benchmark_request_json"]["contract"]
+        assert queued_contract == updated_contract.model_dump()
+
+    async def test_update_agent_unreadable_revision_leaves_prior_bundle_and_contract(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+    ) -> None:
+        """An unreadable staged alias is deleted without changing the active run revision."""
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        old_zip = b"prior-valid-agent-archive"
+        old_key = get_benchmark_contract_s3_key(str(benchmark_row.id), "dummy")
+        old_contract = benchmark_row.arguments.contract.model_copy(
+            update={
+                "frozen_archive_s3_key": old_key,
+                "frozen_archive_sha256": hashlib.sha256(old_zip).hexdigest(),
+            }
+        )
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"contract": old_contract})
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        objects = {old_key: old_zip, "agents/dummy.zip": b"not-a-zip"}
+        deleted: list[str] = []
+
+        async def copy_object(source_key: str, dest_key: str, *_args: Any) -> None:
+            objects[dest_key] = objects[source_key]
+
+        async def download_object(key: str, *_args: Any) -> bytes:
+            return objects[key]
+
+        async def delete_object(key: str, *_args: Any) -> None:
+            deleted.append(key)
+            objects.pop(key, None)
+
+        monkeypatch.setattr(main_module, "copy_s3_object", copy_object)
+        monkeypatch.setattr(main_module, "download_from_s3", download_object)
+        monkeypatch.setattr(main_module, "delete_from_s3", delete_object)
+
+        response = TestClient(app, raise_server_exceptions=False).post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            params={"update_agent": "true"},
+            json={"task_ids": [], "service_headers": {}},
+        )
+
+        assert response.status_code == 500
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, benchmark_row.id)
+        assert persisted is not None
+        assert persisted.status == BenchmarkStatus.STOPPED
+        assert persisted.arguments.contract == old_contract
+        assert objects[old_key] == old_zip
+        assert len(deleted) == 1
+        assert deleted[0].startswith(f"benchmarks/{benchmark_row.id}/agent-revisions/")
+        assert deleted[0] not in objects
+        assert mock_kicker.queued_calls == []
+
+    async def test_update_agent_copy_failure_leaves_prior_bundle_and_contract(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+    ) -> None:
+        """A failed alias copy cannot overwrite or activate a partial agent revision."""
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        old_zip = b"prior-agent-archive"
+        old_key = get_benchmark_contract_s3_key(str(benchmark_row.id), "dummy")
+        old_contract = benchmark_row.arguments.contract.model_copy(
+            update={
+                "frozen_archive_s3_key": old_key,
+                "frozen_archive_sha256": hashlib.sha256(old_zip).hexdigest(),
+            }
+        )
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"contract": old_contract})
+        database_session.add(benchmark_row)
+        database_session.commit()
+        objects = {old_key: old_zip}
+        deleted: list[str] = []
+
+        async def fail_copy(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("copy failed")
+
+        async def unexpected_download(*_args: Any, **_kwargs: Any) -> bytes:
+            raise AssertionError("a failed copy must not be downloaded")
+
+        async def delete_object(key: str, *_args: Any) -> None:
+            deleted.append(key)
+            objects.pop(key, None)
+
+        monkeypatch.setattr(main_module, "copy_s3_object", fail_copy)
+        monkeypatch.setattr(main_module, "download_from_s3", unexpected_download)
+        monkeypatch.setattr(main_module, "delete_from_s3", delete_object)
+
+        response = TestClient(app, raise_server_exceptions=False).post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            params={"update_agent": "true"},
+            json={"task_ids": [], "service_headers": {}},
+        )
+
+        assert response.status_code == 500
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, benchmark_row.id)
+        assert persisted is not None
+        assert persisted.status == BenchmarkStatus.STOPPED
+        assert persisted.arguments.contract == old_contract
+        assert objects == {old_key: old_zip}
+        assert len(deleted) == 1
+        assert deleted[0].startswith(f"benchmarks/{benchmark_row.id}/agent-revisions/")
+        assert mock_kicker.queued_calls == []
+
+    async def test_update_agent_admission_failure_rolls_back_contract_pointer(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+    ) -> None:
+        """A DB admission failure keeps the prior contract and deletes the unreferenced revision."""
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        old_contract = benchmark_row.arguments.contract
+        database_session.add(benchmark_row)
+        database_session.commit()
+        candidate_zip = _agent_zip(
+            "dummy",
+            """
+name: dummy
+install_cmd: echo candidate-install
+run_cmd: echo candidate-run {problem_statement_path}
+""".strip(),
+        )
+        candidate_key = f"benchmarks/{benchmark_row.id}/agent-revisions/revision-1/dummy.zip"
+        delete_revision = AsyncMock()
+
+        async def reset_tasks(*_args: Any, **_kwargs: Any) -> list[str]:
+            return ["task_0"]
+
+        def fail_admission(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("admission failed")
+
+        monkeypatch.setattr(
+            main_module,
+            "_stage_agent_revision",
+            AsyncMock(return_value=(candidate_key, candidate_zip)),
+        )
+        monkeypatch.setattr(main_module, "_delete_uncommitted_agent_revision", delete_revision)
+        monkeypatch.setattr(main_module, "reset_to_in_progress_status", reset_tasks)
+        monkeypatch.setattr(main_module, "admit_recovery_dispatch", fail_admission)
+
+        response = TestClient(app, raise_server_exceptions=False).post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            params={"update_agent": "true"},
+            json={"task_ids": [], "service_headers": {}},
+        )
+
+        assert response.status_code == 500
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, benchmark_row.id)
+        assert persisted is not None
+        assert persisted.status == BenchmarkStatus.STOPPED
+        assert persisted.arguments.contract == old_contract
+        delete_revision.assert_awaited_once_with(candidate_key, benchmark_row.id, harness_config)
+        assert mock_kicker.queued_calls == []
+
+    async def test_update_agent_rejects_running_run_without_staging(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """A live run cannot change the agent identity underneath active tasks."""
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.commit()
+        stage_revision = AsyncMock()
+        monkeypatch.setattr(main_module, "_stage_agent_revision", stage_revision)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            params={"update_agent": "true"},
+            json={"task_ids": [], "service_headers": {}},
+        )
+
+        assert response.status_code == 409
+        assert "Stop the run" in response.json()["detail"]
+        stage_revision.assert_not_awaited()
+
     async def test_retry_or_resume_does_not_forward_tracker_key_to_custom_service(
         self,
         example_benchmark_object: Benchmark,
@@ -1571,14 +1887,14 @@ class TestRunRecovery:
                     id="new-release",
                     artifact_uri="s3://artifacts/new-release.pex",
                     artifact_digest="digest-new-release",
-                    protocol_version="1",
+                    protocol_version=SUPPORTED_PROTOCOL_VERSION,
                     readiness_verified=True,
                 ),
                 ExecutorRelease(
                     id="latest-release",
                     artifact_uri="s3://artifacts/latest-release.pex",
                     artifact_digest="digest-latest-release",
-                    protocol_version="1",
+                    protocol_version=SUPPORTED_PROTOCOL_VERSION,
                     readiness_verified=True,
                 ),
             ]
@@ -1813,7 +2129,7 @@ class TestRunRecovery:
             id="recovery-release",
             artifact_uri="s3://artifacts/recovery-release.pex",
             artifact_digest="digest-recovery-release",
-            protocol_version="1",
+            protocol_version=SUPPORTED_PROTOCOL_VERSION,
             readiness_verified=True,
         )
         database_session.add(release)
@@ -1842,7 +2158,7 @@ class TestRunRecovery:
             id="latest-release",
             artifact_uri="s3://artifacts/latest-release.pex",
             artifact_digest="digest-latest-release",
-            protocol_version="1",
+            protocol_version=SUPPORTED_PROTOCOL_VERSION,
             readiness_verified=True,
         )
         database_session.add(latest_release)
@@ -1908,7 +2224,7 @@ class TestRunRecovery:
                 id="new-release",
                 artifact_uri="s3://artifacts/new-release.pex",
                 artifact_digest="digest-new-release",
-                protocol_version="1",
+                protocol_version=SUPPORTED_PROTOCOL_VERSION,
                 readiness_verified=True,
             )
         )
@@ -1960,7 +2276,7 @@ class TestRunRecovery:
                 id="new-release",
                 artifact_uri="s3://artifacts/new-release.pex",
                 artifact_digest="digest-new-release",
-                protocol_version="1",
+                protocol_version=SUPPORTED_PROTOCOL_VERSION,
                 readiness_verified=True,
             )
         )

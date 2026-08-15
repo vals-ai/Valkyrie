@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from pytest import MonkeyPatch
 from sqlmodel import Session
 
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tracker.executor import release_entrypoint
 from tracker.database import session as tracker_session
 from tracker.database.models import ExecutorAdmission, ExecutorRelease, ExecutorReleaseStatus
@@ -96,7 +97,7 @@ def _release_arguments(monkeypatch: MonkeyPatch, *, artifact_digest: str = "a" *
             "git-abc123-def456",
             "s3://releases/releases/git-abc123-def456/executor.pex",
             artifact_digest,
-            "1",
+            SUPPORTED_PROTOCOL_VERSION,
         ],
     )
 
@@ -249,7 +250,7 @@ def test_release_entrypoint_rejects_invalid_release_id_before_reading_secret(mon
     ("argument_index", "invalid_value", "error"),
     [
         (14, "s3://other/releases/git-abc123-def456/executor.pex", "configured S3 bucket"),
-        (16, "2", "Unsupported executor protocol"),
+        (16, "unsupported", "Unsupported executor protocol"),
     ],
 )
 def test_release_entrypoint_rejects_invalid_artifact_identity_before_reading_secret(

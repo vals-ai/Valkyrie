@@ -1,6 +1,7 @@
 """Sandbox management utilities for the tracker service."""
 
 import asyncio
+import re
 import shlex
 import time
 import uuid
@@ -358,7 +359,16 @@ async def upload_agent_artifacts(
     """
     logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
-    contract_s3_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
+    legacy_contract_s3_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
+    contract_s3_key = contract.frozen_archive_s3_key or legacy_contract_s3_key
+    archive_sha256 = contract.frozen_archive_sha256
+    if (contract.frozen_archive_s3_key is None) != (archive_sha256 is None):
+        raise SandboxError(f"Incomplete frozen archive identity for contract {contract.name}")
+    expected_run_prefix = legacy_contract_s3_key.rsplit("/", 1)[0] + "/"
+    if not contract_s3_key.startswith(expected_run_prefix):
+        raise SandboxError(f"Frozen archive for contract {contract.name} is outside benchmark {benchmark_id}")
+    if archive_sha256 is not None and re.fullmatch(r"[0-9a-f]{64}", archive_sha256) is None:
+        raise SandboxError(f"Invalid frozen archive digest for contract {contract.name}")
     presigned_url = await create_presigned_url(
         contract_s3_key, aws, s3_bucket, expiration=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS
     )
@@ -388,11 +398,17 @@ async def upload_agent_artifacts(
     steps = [
         install_deps,
         f"curl -sfL -o {zip_path} {quoted_url}",
-        f"mkdir -p {bundle_dir}",
-        f"unzip -o -d {bundle_dir} {zip_path}",
-        f"rm -f {zip_path}",
-        f"mkdir -p {contract_dir}",
     ]
+    if archive_sha256 is not None:
+        steps.append(f"printf '%s  %s\\n' {shlex.quote(archive_sha256)} {zip_path} | sha256sum -c -")
+    steps.extend(
+        [
+            f"mkdir -p {bundle_dir}",
+            f"unzip -o -d {bundle_dir} {zip_path}",
+            f"rm -f {zip_path}",
+            f"mkdir -p {contract_dir}",
+        ]
+    )
 
     script = " && ".join(steps)
 

@@ -8,6 +8,7 @@ from pytest import MonkeyPatch
 from sqlmodel import Session
 
 import main as main_module
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tracker.executor import release_retirement
 from tracker.database.models import ExecutorRelease, ExecutorReleaseStatus
 from tracker.executor.release_control import promote_release, register_release
@@ -23,7 +24,7 @@ def test_retirement_loop_retires_a_blocker_free_release(
             id="old",
             artifact_uri="s3://artifacts/old.pex",
             artifact_digest="a" * 64,
-            protocol_version="1",
+            protocol_version=SUPPORTED_PROTOCOL_VERSION,
             readiness_verified=True,
         ),
     )
@@ -33,7 +34,7 @@ def test_retirement_loop_retires_a_blocker_free_release(
             id="active",
             artifact_uri="s3://artifacts/active.pex",
             artifact_digest="b" * 64,
-            protocol_version="1",
+            protocol_version=SUPPORTED_PROTOCOL_VERSION,
             readiness_verified=True,
         ),
     )

@@ -11,10 +11,8 @@ import click
 import yaml
 from tracker import handle_s3_error
 from tracker.aws.s3 import (
-    copy_s3_object,
     delete_from_s3,
     download_from_s3,
-    get_benchmark_contract_s3_key,
     get_contract_s3_key,
     s3_object_exists,
 )
@@ -190,19 +188,6 @@ async def push_agent(agent_name: str, agent_path: Path):
                     UploadId=upload_id,
                 )
                 raise
-
-
-async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> None:
-    """Overwrite the frozen benchmark agent copy from agents/<name>.zip in S3."""
-    aws = aws_credentials()
-    bucket_name = fetch_bucket_name()
-    source_key = get_contract_s3_key(agent_name)
-    dest_key = get_benchmark_contract_s3_key(benchmark_id, agent_name)
-
-    if not await s3_object_exists(source_key, aws, bucket_name):
-        raise S3Error(f"Agent '{agent_name}.zip' not found in S3.")
-
-    await copy_s3_object(source_key, dest_key, aws, bucket_name)
 
 
 async def _download_agent_zip(agent_name: str) -> bytes:

@@ -15,6 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -59,7 +60,7 @@ def _release(release_id: str) -> ExecutorRelease:
         id=release_id,
         artifact_uri=f"s3://artifacts/{release_id}.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
         readiness_verified=True,
     )
 
@@ -69,7 +70,7 @@ def _activation_candidate() -> ExecutorRelease:
         id="concurrent-activation",
         artifact_uri="s3://artifacts/releases/concurrent-activation/executor.pex",
         artifact_digest=_EXECUTOR_ARTIFACT_DIGEST,
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
     )
 
 

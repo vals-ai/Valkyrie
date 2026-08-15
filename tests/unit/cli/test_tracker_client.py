@@ -691,10 +691,16 @@ def test_retry_or_resume_sends_retry_mode(
         task_ids=["task-1"],
         secrets={"ANTHROPIC_API_KEY": "new-secret"},
         benchmark_url="https://new.example",
+        update_agent=True,
     )
 
     assert result.status == "success"
-    assert mock_client.params == {"retry": True, "retry_mode": "from_scratch", "concurrency": 3}
+    assert mock_client.params == {
+        "retry": True,
+        "retry_mode": "from_scratch",
+        "concurrency": 3,
+        "update_agent": True,
+    }
     assert mock_client.json == {
         "task_ids": ["task-1"],
         "service_headers": {},
@@ -901,6 +907,27 @@ def test_run_retry_benchmark_url_reaches_tracker(
 
     assert result.exit_code == 0, result.output
     assert mock_tracker_service.retry_or_resume_calls[0]["kwargs"]["benchmark_url"] == "https://new.example"
+
+
+def test_run_resume_update_agent_reaches_tracker(
+    connect_stream_testbed: tuple[UUID, list[str], type[MockTrackerService]],
+) -> None:
+    """Agent refresh is performed transactionally by the tracker.
+
+    Test cases:
+    - The CLI forwards ``--update-agent`` with the resume request.
+    - The CLI no longer mutates the run-scoped S3 archive directly.
+    """
+    _started_run_id, _streamed_run_ids, mock_tracker_service = connect_stream_testbed
+    run_id = uuid4()
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        ["run", "resume", str(run_id), "--update-agent"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert mock_tracker_service.retry_or_resume_calls[0]["kwargs"]["update_agent"] is True
 
 
 def test_run_start_provider_option_reaches_tracker(

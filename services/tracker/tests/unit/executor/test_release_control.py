@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -36,7 +37,7 @@ def _release(release_id: str) -> ExecutorRelease:
         id=release_id,
         artifact_uri=f"s3://artifacts/{release_id}.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
         readiness_verified=True,
         created_at=datetime.now(UTC),
     )
@@ -72,7 +73,7 @@ def test_activate_release_registers_verifies_and_promotes_in_one_session(databas
         id="git-abc123-def456",
         artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
     )
 
     activated = activate_release(
@@ -96,7 +97,7 @@ def test_activate_release_is_idempotent_for_exact_active_release(database_sessio
         id="git-abc123-def456",
         artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
     )
     client = FakeS3Client(content, key="releases/git-abc123-def456/executor.pex")
     first = activate_release(
@@ -133,13 +134,13 @@ def test_activate_release_rejects_draining_release(database_session: Session) ->
         id="git-previous",
         artifact_uri="s3://artifacts/releases/git-previous/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
     )
     current = ExecutorRelease(
         id="git-current",
         artifact_uri="s3://artifacts/releases/git-current/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
     )
     activate_release(
         database_session,
@@ -177,7 +178,7 @@ def test_activate_release_rejects_retired_release(database_session: Session) -> 
         id="git-retired",
         artifact_uri="s3://artifacts/releases/git-retired/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
     )
     register_release(database_session, release)
     release.status = ExecutorReleaseStatus.RETIRED
@@ -204,7 +205,7 @@ def test_activate_release_rejects_release_id_reuse_with_different_content(databa
         id="git-abc123-def456",
         artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
     )
     register_release(database_session, existing)
 
@@ -228,7 +229,7 @@ def test_activate_release_digest_failure_rolls_back_new_candidate(database_sessi
         id="git-abc123-def456",
         artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
     )
 
     with pytest.raises(ReleaseControlError, match="digest mismatch"):
@@ -284,7 +285,7 @@ def test_verify_release_artifact_rejects_digest_mismatch(database_session: Sessi
 
 def test_register_release_rejects_unsupported_protocol(database_session: Session) -> None:
     release = _release("unsupported")
-    release.protocol_version = "2"
+    release.protocol_version = "unsupported"
 
     with pytest.raises(ReleaseControlError, match="Unsupported executor protocol version"):
         register_release(database_session, release)
@@ -381,6 +382,21 @@ def test_promote_release_rejects_draining_release(database_session: Session) -> 
 
 
 def test_select_active_release_requires_an_admission_target(database_session: Session) -> None:
+    with pytest.raises(ReleaseControlError, match="No active executor release"):
+        select_active_release(database_session)
+
+
+def test_select_active_release_rejects_legacy_protocol_during_rollout(database_session: Session) -> None:
+    """New work waits for the matching executor instead of dispatching to a v1 artifact."""
+    legacy = _release("legacy-v1")
+    legacy.protocol_version = "1"
+    legacy.status = ExecutorReleaseStatus.ACTIVE
+    admission = database_session.get(ExecutorAdmission, 1)
+    assert admission is not None
+    admission.release_id = legacy.id
+    database_session.add_all([legacy, admission])
+    database_session.commit()
+
     with pytest.raises(ReleaseControlError, match="No active executor release"):
         select_active_release(database_session)
 

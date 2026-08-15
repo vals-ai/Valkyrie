@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlmodel import Session, select
 
-from executor_protocol import ExecutorDispatchStatus
+from executor_protocol import ExecutorDispatchStatus, SUPPORTED_PROTOCOL_VERSION
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -29,7 +29,7 @@ def _release(release_id: str = "maintenance-release") -> ExecutorRelease:
         id=release_id,
         artifact_uri=f"s3://artifacts/{release_id}.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
         status=ExecutorReleaseStatus.ACTIVE,
         readiness_verified=True,
     )

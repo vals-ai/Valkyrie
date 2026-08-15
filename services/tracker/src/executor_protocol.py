@@ -5,7 +5,14 @@ from typing import Any, TypedDict, Unpack
 from urllib.parse import urlparse
 
 EXECUTOR_TASK_NAME = "tracker.utils:process_benchmark"
-SUPPORTED_PROTOCOL_VERSION = "1"
+# Version 2 adds a tracker-owned, digest-verified agent archive identity to the
+# nested StartBenchmarkRequest contract. Version 1 executors ignore those
+# fields and therefore cannot safely execute refreshed run revisions.
+SUPPORTED_PROTOCOL_VERSION = "2"
+# Stable hosts may drain dispatches already pinned to the preceding immutable
+# artifact. Tracker admission still requires ``SUPPORTED_PROTOCOL_VERSION`` for
+# all new work; this set is only the host-side compatibility window.
+EXECUTOR_HOST_COMPATIBLE_PROTOCOL_VERSIONS = frozenset({"1", SUPPORTED_PROTOCOL_VERSION})
 DEFAULT_STABLE_QUEUE_NAME = "valkyrie-stable"
 DEFAULT_EXECUTOR_RELEASE_PREFIX = "releases"
 

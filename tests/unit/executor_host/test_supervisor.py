@@ -24,7 +24,11 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     run_executor_dispatch,
     verify_file_digest,
 )
-from executor_protocol import validate_executor_artifact_uri
+from executor_protocol import (
+    EXECUTOR_HOST_COMPATIBLE_PROTOCOL_VERSIONS,
+    SUPPORTED_PROTOCOL_VERSION,
+    validate_executor_artifact_uri,
+)
 
 
 class FakeDispatchStore:
@@ -145,13 +149,13 @@ class MockRedis:
         return self.eval_result
 
 
-def _dispatch(*, digest: str) -> ArtifactDispatch:
+def _dispatch(*, digest: str, protocol_version: str = SUPPORTED_PROTOCOL_VERSION) -> ArtifactDispatch:
     return ArtifactDispatch.from_payload(
         {
             "executor_release_id": "release-v2",
             "executor_artifact_uri": "s3://artifacts/executors/v2.pex",
             "executor_artifact_digest": digest,
-            "executor_protocol_version": "1",
+            "executor_protocol_version": protocol_version,
         }
     )
 
@@ -184,6 +188,17 @@ def test_dispatch_rejects_missing_or_invalid_identity() -> None:
 
     with pytest.raises(ValueError, match="64-character"):
         _dispatch(digest="not-a-digest")
+
+
+def test_dispatch_accepts_drain_compatible_protocols_but_rejects_unknown() -> None:
+    digest = "0" * 64
+    assert {
+        _dispatch(digest=digest, protocol_version=version).protocol_version
+        for version in EXECUTOR_HOST_COMPATIBLE_PROTOCOL_VERSIONS
+    } == EXECUTOR_HOST_COMPATIBLE_PROTOCOL_VERSIONS
+
+    with pytest.raises(ValueError, match="Unsupported executor protocol version"):
+        _dispatch(digest=digest, protocol_version="unknown")
 
 
 def test_verify_file_digest_rejects_mismatch(tmp_path: Path) -> None:
@@ -418,7 +433,8 @@ async def test_run_forwards_dispatch_authority_to_executor(
     assert store.authority_checks
     assert store.finished == [store.authority]
     assert (
-        f"Launching benchmark benchmark-1 dispatch_id=dispatch-1 release=release-v2 digest={digest} protocol=1"
+        f"Launching benchmark benchmark-1 dispatch_id=dispatch-1 release=release-v2 "
+        f"digest={digest} protocol={SUPPORTED_PROTOCOL_VERSION}"
     ) in caplog.messages
 
 
@@ -555,7 +571,7 @@ async def test_launch_executor_rejects_invalid_dispatch_id_without_side_effects(
             executor_release_id="release-v2",
             executor_artifact_uri="s3://artifacts/executors/v2.pex",
             executor_artifact_digest=digest,
-            executor_protocol_version="1",
+            executor_protocol_version=SUPPORTED_PROTOCOL_VERSION,
         )
 
     assert store.claimed == []
@@ -582,7 +598,7 @@ async def test_broker_payload_dispatch_id_reaches_dispatch_owner(
         executor_release_id="release-v2",
         executor_artifact_uri="s3://artifacts/executors/v2.pex",
         executor_artifact_digest="0" * 64,
-        executor_protocol_version="1",
+        executor_protocol_version=SUPPORTED_PROTOCOL_VERSION,
     )
 
     assert captured["executor_dispatch_id"] == "dispatch-1"

@@ -17,6 +17,7 @@ from httpx._models import Response
 from sqlmodel import Session, col, func, select, update
 from starlette.requests import Request
 
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 import tracker.utils.harness_config as harness_config_module
 from main import app
 from tests.factories import make_benchmark
@@ -61,7 +62,7 @@ def example_benchmark_object(contract: AgentContractRequest, database_session: S
         id="test-release",
         artifact_uri="s3://artifacts/test-release.pex",
         artifact_digest="digest-test-release",
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
         readiness_verified=True,
     )
     database_session.add(release)

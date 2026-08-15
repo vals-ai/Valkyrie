@@ -3,6 +3,7 @@
 Run: uv run pytest tests/unit/test_main.py
 """
 
+import hashlib
 import io
 import logging
 import tarfile
@@ -31,6 +32,7 @@ from taskiq.message import BrokerMessage, TaskiqMessage
 
 import main as main_module
 import services.executor_host.supervisor as executor_host  # pyright: ignore[reportMissingImports]
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from main import app, tracker_service_error_handler
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
@@ -83,7 +85,7 @@ def active_executor_release(database_session: Session) -> None:
         id="test-release",
         artifact_uri="s3://artifacts/test-release.pex",
         artifact_digest="digest-test-release",
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
         status=ExecutorReleaseStatus.ACTIVE,
         readiness_verified=True,
     )
@@ -543,7 +545,7 @@ class TestTrackerAPI:
         assert benchmark_row.current_execution_release_id == "test-release"
         assert benchmark_row.executor_artifact_uri == "s3://artifacts/test-release.pex"
         assert benchmark_row.executor_artifact_digest == "digest-test-release"
-        assert benchmark_row.executor_protocol_version == "1"
+        assert benchmark_row.executor_protocol_version == SUPPORTED_PROTOCOL_VERSION
         queued_call = mock_kicker.queued_calls[0]
         dispatch_id = UUID(queued_call["executor_dispatch_id"])
         dispatch = database_session.get(ExecutorDispatch, dispatch_id)
@@ -554,7 +556,7 @@ class TestTrackerAPI:
         assert dispatch.executor_release_id == "test-release"
         assert dispatch.executor_artifact_uri == "s3://artifacts/test-release.pex"
         assert dispatch.executor_artifact_digest == "digest-test-release"
-        assert dispatch.executor_protocol_version == "1"
+        assert dispatch.executor_protocol_version == SUPPORTED_PROTOCOL_VERSION
         assert queued_call["verified_task_ids"] == [f"task_{i}" for i in range(500)]
         task_rows = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
         assert len(task_rows) == 500
@@ -566,7 +568,7 @@ class TestTrackerAPI:
         assert json_response["executor_release_id"] == "test-release"
         assert json_response["current_execution_release_id"] == "test-release"
         assert json_response["executor_artifact_digest"] == "digest-test-release"
-        assert json_response["executor_protocol_version"] == "1"
+        assert json_response["executor_protocol_version"] == SUPPORTED_PROTOCOL_VERSION
         assert json_response["concurrency"] == request.concurrency
 
     async def test_start_benchmark_uses_contract_from_exact_frozen_archive(
@@ -643,6 +645,8 @@ secrets:
             "ARCHIVE_ONLY": "archive-secret",
             "OVERRIDE": "request-secret",
         }
+        assert frozen_contract.frozen_archive_s3_key == f"benchmarks/{benchmark_id}/flip-agent.zip"
+        assert frozen_contract.frozen_archive_sha256 == hashlib.sha256(replacement_zip).hexdigest()
         assert "stale" not in frozen_contract.install_cmd
         assert "stale" not in frozen_contract.run_cmd
 
@@ -790,7 +794,7 @@ secrets:
 
         assert taskiq_message.task_name == executor_host.launch_executor.task_name
         assert STABLE_QUEUE_NAME == executor_host.QUEUE_NAME
-        assert taskiq_message.kwargs["executor_protocol_version"] == executor_host.SUPPORTED_PROTOCOL_VERSION
+        assert taskiq_message.kwargs["executor_protocol_version"] == SUPPORTED_PROTOCOL_VERSION
         assert observed_host["executor_dispatch_id"] == str(dispatch.id)
         assert observed_host["benchmark_id_str"] == str(benchmark.id)
         assert observed_host["verified_task_ids"] == ["task_0"]

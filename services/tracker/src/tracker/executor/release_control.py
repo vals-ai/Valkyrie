@@ -267,7 +267,12 @@ def select_active_release(session: Session, *, for_update: bool = False) -> Exec
         raise ReleaseControlError("No active executor release is configured")
 
     release = session.get(ExecutorRelease, admission.release_id)
-    if release is None or release.status != ExecutorReleaseStatus.ACTIVE or not release.readiness_verified:
+    if (
+        release is None
+        or release.status != ExecutorReleaseStatus.ACTIVE
+        or not release.readiness_verified
+        or release.protocol_version != SUPPORTED_PROTOCOL_VERSION
+    ):
         raise ReleaseControlError("No active executor release is configured")
     return release
 

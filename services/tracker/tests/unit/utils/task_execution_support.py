@@ -9,6 +9,7 @@ from benchmark_service import ImageSource, Resources
 from benchmark_service.schemas import RetrieveTaskResponse
 from sqlmodel import Session
 
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import (
@@ -89,7 +90,7 @@ def create_task_environment(
         id="task-execution-test-release",
         artifact_uri="s3://artifacts/task-execution-test.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
         readiness_verified=True,
     )
     database_session.add(release)

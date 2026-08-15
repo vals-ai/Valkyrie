@@ -24,8 +24,8 @@ from taskiq_redis import RedisStreamBroker
 from executor_protocol import (
     DEFAULT_EXECUTOR_RELEASE_PREFIX,
     DEFAULT_STABLE_QUEUE_NAME,
+    EXECUTOR_HOST_COMPATIBLE_PROTOCOL_VERSIONS,
     EXECUTOR_TASK_NAME,
-    SUPPORTED_PROTOCOL_VERSION,
     ExecutorPayload,
     validate_executor_artifact_uri,
     validate_executor_digest,
@@ -147,7 +147,7 @@ class ArtifactDispatch:
     def from_payload(cls, payload: Mapping[str, object]) -> ArtifactDispatch:
         digest = validate_executor_digest(_required_string(payload, "executor_artifact_digest"))
         protocol_version = _required_string(payload, "executor_protocol_version")
-        if protocol_version != SUPPORTED_PROTOCOL_VERSION:
+        if protocol_version not in EXECUTOR_HOST_COMPATIBLE_PROTOCOL_VERSIONS:
             raise ValueError(f"Unsupported executor protocol version: {protocol_version}")
         return cls(
             release_id=_required_string(payload, "executor_release_id"),

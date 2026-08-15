@@ -10,6 +10,7 @@ from sqlalchemy import event
 from sqlalchemy.pool import ConnectionPoolEntry
 from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import (
@@ -86,7 +87,7 @@ def executor_authority_kwargs(
                     id=release_id,
                     artifact_uri="s3://artifacts/authority-test-release.pex",
                     artifact_digest="a" * 64,
-                    protocol_version="1",
+                    protocol_version=SUPPORTED_PROTOCOL_VERSION,
                     readiness_verified=True,
                 )
                 authority_session.add(release)
