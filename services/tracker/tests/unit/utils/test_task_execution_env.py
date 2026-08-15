@@ -59,6 +59,7 @@ class TestProcessTaskEnvironment:
         contract = contract.model_copy(
             update={
                 "model": "provider/model",
+                "kwargs": {"variant": "xhigh"},
                 "secrets": {"UNRELATED_SECRET": "secret-name"},
             }
         )
@@ -87,6 +88,7 @@ class TestProcessTaskEnvironment:
                 "RUN_ID": "secret-run-id",
                 "TASK_ID": "secret-task-id",
                 "VALKYRIE_AGENT_MODEL": "secret-model",
+                "VALKYRIE_AGENT_VARIANT": "secret-variant",
                 "IDENTITY": '{"source":"secret"}',
                 "UNRELATED_SECRET": "secret-value",
                 "MODEL_GATEWAY_URL": "https://gateway.example.test",
@@ -109,6 +111,7 @@ class TestProcessTaskEnvironment:
         assert "QUESTION_ID" not in env_vars
         assert env_vars["TASK_ID"] == "task_0"
         assert env_vars["VALKYRIE_AGENT_MODEL"] == "provider/model"
+        assert env_vars["VALKYRIE_AGENT_VARIANT"] == "xhigh"
         assert json.loads(env_vars["IDENTITY"]) == {
             "benchmark_name": "swebench",
             "agent_name": contract.name,
@@ -150,6 +153,7 @@ class TestProcessTaskEnvironment:
         assert len(captured_env_vars) == 1
         env_vars = captured_env_vars[0]
         assert env_vars["VALKYRIE_AGENT_MODEL"] == ""
+        assert env_vars["VALKYRIE_AGENT_VARIANT"] == ""
         assert json.loads(env_vars["IDENTITY"]) == {
             "benchmark_name": "swebench",
             "agent_name": contract.name,
