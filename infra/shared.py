@@ -1,6 +1,6 @@
 """Shared infrastructure: VPC, ECS Cluster, Service Discovery namespace, S3, ElastiCache."""
 
-from typing import Any
+from typing import Any, cast
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -12,6 +12,7 @@ from aws_cdk import (
     aws_elasticache,
     aws_events,
     aws_events_targets,
+    aws_iam,
     aws_route53,
     aws_s3,
     aws_servicediscovery,
@@ -19,7 +20,11 @@ from aws_cdk import (
     aws_ssm,
 )
 from constants import (
+    AGENT_REGISTRY_REPOSITORY,
+    AGENT_REGISTRY_REPOSITORY_ID,
     CLUSTER_NAME,
+    COORDINATED_AGENT_ALIAS_KEY,
+    COORDINATED_AGENT_PUBLISH_WORKFLOW_REF,
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV,
     DEV_SHARED_ARTIFACT_BUCKET_PARAMETER,
     DEV_SHARED_AVAILABILITY_ZONES_PARAMETER,
@@ -36,6 +41,9 @@ from constants import (
     RELEASE_TEST_EXECUTOR_HOST_REPOSITORY_NAME,
     RELEASE_TEST_TRACKER_REPOSITORY_NAME,
     S3_BUCKET_NAME,
+    VALS_AI_ORGANIZATION_ID,
+    coordinated_agent_publisher_role_name,
+    coordinated_agent_release_environment,
     stage_parameter_name,
     VPC_MAX_AZS,
     VPC_NAT_GATEWAYS,
@@ -124,6 +132,10 @@ class SharedStack(Stack):
             versioned=None if self.stage.is_prod else True,
         )
 
+        self.coordinated_agent_publisher_role: aws_iam.Role | None = None
+        if not self.stage.is_release_test:
+            self.coordinated_agent_publisher_role = self._create_coordinated_agent_publisher_role()
+
         self.tracker_repository: aws_ecr.Repository | None = None
         self.executor_host_repository: aws_ecr.Repository | None = None
         if self.stage.is_release_test:
@@ -190,6 +202,57 @@ class SharedStack(Stack):
 
         if not self.stage.is_prod:
             self._publish_shared_contract()
+
+    def _create_coordinated_agent_publisher_role(self) -> aws_iam.Role:
+        """Create the only role intended to write the coordinated KSP agent alias."""
+        github_environment = coordinated_agent_release_environment(self.stage.name)
+        oidc_provider = aws_iam.OpenIdConnectProvider.from_open_id_connect_provider_arn(
+            self,
+            "AgentPublisherGitHubOidcProvider",
+            f"arn:{self.partition}:iam::{self.account}:oidc-provider/token.actions.githubusercontent.com",
+        )
+        role = aws_iam.Role(
+            self,
+            "CoordinatedAgentPublisherRole",
+            role_name=coordinated_agent_publisher_role_name(self.stage.name),
+            assumed_by=cast(
+                aws_iam.IPrincipal,
+                aws_iam.WebIdentityPrincipal(
+                    oidc_provider.open_id_connect_provider_arn,
+                    conditions={
+                        "StringEquals": {
+                            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+                            "token.actions.githubusercontent.com:environment": github_environment,
+                            "token.actions.githubusercontent.com:job_workflow_ref": (
+                                COORDINATED_AGENT_PUBLISH_WORKFLOW_REF
+                            ),
+                            "token.actions.githubusercontent.com:ref": "refs/heads/main",
+                            "token.actions.githubusercontent.com:repository": AGENT_REGISTRY_REPOSITORY,
+                            "token.actions.githubusercontent.com:repository_id": AGENT_REGISTRY_REPOSITORY_ID,
+                            "token.actions.githubusercontent.com:repository_owner_id": VALS_AI_ORGANIZATION_ID,
+                            "token.actions.githubusercontent.com:sub": (
+                                f"repo:{AGENT_REGISTRY_REPOSITORY}:environment:{github_environment}"
+                            ),
+                        }
+                    },
+                ),
+            ),
+        )
+        role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["s3:AbortMultipartUpload", "s3:PutObject"],
+                resources=[self.bucket.arn_for_objects(COORDINATED_AGENT_ALIAS_KEY)],
+            )
+        )
+        cdk.CfnOutput(
+            self,
+            "CoordinatedAgentPublisherRoleArn",
+            value=role.role_arn,
+            description=(
+                "Role ARN for the agent-registry coordinated publisher; configure it only on the matching GitHub Environment"
+            ),
+        )
+        return role
 
     def _publish_shared_contract(self) -> None:
         """Publish the account-local resource contract consumed by benchmark-service stacks."""

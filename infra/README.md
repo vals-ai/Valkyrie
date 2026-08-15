@@ -49,6 +49,22 @@ the `sts.amazonaws.com` audience. The stacks import that provider and create
 separate environment-bound executor release roles; they do not create a fallback
 provider.
 
+The production and development Shared stacks also create separate coordinated
+agent-publisher roles for `agent-registry`. Each role can write only
+`agents/opencode_thinking.zip` in its own artifact bucket, including the abort
+permission required by the CLI's multipart uploader. Its OIDC trust requires the
+immutable `agent-registry` repository and organization IDs, `main`, the matching
+`coordinated-agent-release-prod` or `coordinated-agent-release-dev` GitHub
+Environment, and the reusable publisher workflow from `main`. Configure that
+Environment to allow only `main`, retain required reviewers, and set its
+stage-specific role variable from the `CoordinatedAgentPublisherRoleArn` stack
+output.
+
+This change intentionally does not deny the existing publisher roles. Roll out
+and prove the new roles and workflow first, republish the immutable aliases, and
+only then add the separately reviewed bucket-policy deny that prevents every
+other principal from writing the coordinated alias key.
+
 The application imports these account-local values:
 
 - `/valkyrie/dev/dns/tracker/hosted-zone-id`

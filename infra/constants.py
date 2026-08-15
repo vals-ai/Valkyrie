@@ -65,6 +65,14 @@ ALB_IDLE_TIMEOUT_SECONDS = 60
 
 # S3
 S3_BUCKET_NAME = "agentic-harness"
+COORDINATED_AGENT_ALIAS_KEY = "agents/opencode_thinking.zip"
+COORDINATED_AGENT_PUBLISHER_ROLE_PREFIX = "github-actions-agent-registry-coordinated"
+COORDINATED_AGENT_PUBLISH_WORKFLOW_REF = (
+    "vals-ai/agent-registry/.github/workflows/publish-coordinated-agent.yaml@refs/heads/main"
+)
+AGENT_REGISTRY_REPOSITORY = "vals-ai/agent-registry"
+AGENT_REGISTRY_REPOSITORY_ID = "1181332178"
+VALS_AI_ORGANIZATION_ID = "129814943"
 EXECUTOR_RELEASE_BUCKET_NAME = "valkyrie-executor-releases"
 EXECUTOR_RELEASE_PREFIX = "releases"
 EXECUTOR_RELEASE_ROLE_NAME = "ValkyrieExecutorRelease"
@@ -85,6 +93,14 @@ DOCKER_ASSET_EXCLUDES = (
 
 def executor_release_launch_parameter(stage_name: str) -> str:
     return f"/valkyrie/{stage_name}/executor-release/launch-config"
+
+
+def coordinated_agent_publisher_role_name(stage_name: str) -> str:
+    return f"{COORDINATED_AGENT_PUBLISHER_ROLE_PREFIX}-{stage_name}-publish"
+
+
+def coordinated_agent_release_environment(stage_name: str) -> str:
+    return f"coordinated-agent-release-{stage_name}"
 
 
 # Release-test service images. Dedicated repositories keep deployment writes
