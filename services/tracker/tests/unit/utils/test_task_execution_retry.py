@@ -5,6 +5,8 @@ Run: uv run pytest tests/unit/utils/test_task_execution_retry.py
 
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
+import base64
+import hashlib
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
@@ -21,10 +23,38 @@ from tests.unit.utils.task_execution_support import (
     run_process_task,
 )
 from tracker.database.models import AgentContractRequest, ErrorResult, TaskStatus
+from tracker.evaluation_artifacts import (
+    REQUIRED_TRUSTED_EVALUATION_ARTIFACTS,
+    TRUSTED_EVALUATION_BUNDLE_SCHEMA,
+    TRUSTED_EVALUATION_BUNDLE_UPLOADED_SCHEMA,
+)
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
 from tracker.sandbox import DependencySetupMode
 from tracker.types import HarnessConfig
 from tracker.utils import task_execution as task_execution_module
+
+
+def _trusted_bundle(result: dict[str, Any], accounting: bytes) -> dict[str, Any]:
+    contents = {
+        "gateway-run-accounting.json": accounting,
+        "run-report.json": b'{"finality":{"complete":true}}',
+        "vals_format/run_config.json": b'{"schema_version":"vals_run_config.v1"}',
+        "vals_format/turns.jsonl": b'{"type":"assistant"}\n',
+    }
+    return {
+        "schema_version": TRUSTED_EVALUATION_BUNDLE_SCHEMA,
+        "result": result,
+        "artifacts": [
+            {
+                "path": path,
+                "media_type": media_type,
+                "bytes": len(contents[path]),
+                "sha256": hashlib.sha256(contents[path]).hexdigest(),
+                "content_base64": base64.b64encode(contents[path]).decode("ascii"),
+            }
+            for path, media_type in REQUIRED_TRUSTED_EVALUATION_ARTIFACTS.items()
+        ],
+    }
 
 
 class TestTaskExecutionRetry:
@@ -327,6 +357,170 @@ class TestTaskExecutionRetry:
             .order_by(desc(ErrorResult.created_at))
         ).one()
         assert error_message == "grading sandbox was preempted"
+
+    async def test_trusted_evaluation_bundle_resumes_locally_without_public_replay(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        artifact = b'{"final":true,"finalized":true,"attempts":[],"cache_read_tokens":12}'
+        terminal_result = {"task": "full_ladder", "resolved": True, "score": 1.0}
+        task_row.status = TaskStatus.EVALUATING
+        task_row.eval_resume_state = _trusted_bundle(terminal_result, artifact)
+        database_session.add(task_row)
+        database_session.commit()
+        uploads: list[tuple[bytes, str]] = []
+
+        async def _public_replay_must_not_run(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("reserved trusted bundles must resume inside Tracker")
+
+        async def _upload(content: bytes, key: str, *_args: Any, **_kwargs: Any) -> None:
+            uploads.append((content, key))
+
+        monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock())
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _public_replay_must_not_run, raising=False)
+        monkeypatch.setattr("tracker.evaluation_artifacts.upload_to_s3", _upload)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+
+        assert result == {"task_0": terminal_result}
+        assert uploads[0] == (artifact, f"benchmarks/{benchmark_id}/task_0/gateway-run-accounting.json")
+        assert len(uploads) == 4
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.FINISHED
+        assert task_row.eval_resume_state is not None
+        assert task_row.eval_resume_state["schema_version"] == TRUSTED_EVALUATION_BUNDLE_UPLOADED_SCHEMA
+        assert "content_base64" not in task_row.eval_resume_state["artifacts"][0]
+
+        # An explicit automatic retry reuses the compact Tracker-owned state;
+        # it neither calls the public benchmark replay endpoint nor rewrites
+        # the already committed artifact.
+        task_row.status = TaskStatus.EVALUATING
+        database_session.add(task_row)
+        database_session.commit()
+        retried = await run_process_task(
+            start_benchmark_request,
+            task_row,
+            benchmark_id,
+            harness_config,
+            authority,
+        )
+        assert retried == {"task_0": terminal_result}
+        assert len(uploads) == 4
+
+    async def test_evaluation_stream_bundle_uploads_before_finishing_task(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        artifact = b'{"final":true,"finalized":true,"attempts":[],"provider_billed_cost":{"total_ticks":123}}'
+        terminal_result = {"task": "full_ladder", "resolved": False, "score": 0.5}
+        uploads: list[tuple[bytes, str]] = []
+
+        @asynccontextmanager
+        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+            sandbox = AsyncMock()
+            sandbox.id = "mock-sandbox-id"
+            sandbox.name = "mock-sandbox"
+            yield sandbox
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return make_retrieve_task_response(problem_path="/tmp/problem.txt")
+
+        async def _mock_evaluate_instance(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+            kwargs["on_eval_resume_state"](_trusted_bundle(terminal_result, artifact))
+            return terminal_result
+
+        async def _upload(content: bytes, key: str, *_args: Any, **_kwargs: Any) -> None:
+            uploads.append((content, key))
+
+        monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock())
+        monkeypatch.setattr(task_execution_module, "create_sandbox", _mock_create_sandbox)
+        monkeypatch.setattr(task_execution_module, "upload_agent_artifacts", AsyncMock())
+        monkeypatch.setattr(task_execution_module, "run_agent", AsyncMock(return_value=(None, 0.0)))
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+        monkeypatch.setattr(BenchmarkServiceClient, "setup_task", AsyncMock(return_value={"status": "ok"}))
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+        monkeypatch.setattr("tracker.evaluation_artifacts.upload_to_s3", _upload)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+
+        assert result == {"task_0": terminal_result}
+        assert uploads[0] == (artifact, f"benchmarks/{benchmark_id}/task_0/gateway-run-accounting.json")
+        assert len(uploads) == 4
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.FINISHED
+        assert task_row.eval_resume_state is not None
+        assert task_row.eval_resume_state["schema_version"] == TRUSTED_EVALUATION_BUNDLE_UPLOADED_SCHEMA
+
+    async def test_trusted_bundle_checkpoint_failure_aborts_before_result_commit(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        terminal_result = {"task": "full_ladder", "resolved": False, "score": 0.5}
+
+        @asynccontextmanager
+        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+            sandbox = AsyncMock()
+            sandbox.id = "mock-sandbox-id"
+            sandbox.name = "mock-sandbox"
+            yield sandbox
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return make_retrieve_task_response(problem_path="/tmp/problem.txt")
+
+        async def _mock_evaluate_instance(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+            kwargs["on_eval_resume_state"](
+                _trusted_bundle(
+                    terminal_result,
+                    b'{"final":true,"finalized":true,"attempts":[]}',
+                )
+            )
+            raise AssertionError("terminal result must not be reached when the checkpoint is rejected")
+
+        monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock())
+        monkeypatch.setattr(task_execution_module, "create_sandbox", _mock_create_sandbox)
+        monkeypatch.setattr(task_execution_module, "upload_agent_artifacts", AsyncMock())
+        monkeypatch.setattr(task_execution_module, "run_agent", AsyncMock(return_value=(None, 0.0)))
+        monkeypatch.setattr(task_execution_module, "save_eval_resume_state", Mock(return_value=False))
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+        monkeypatch.setattr(BenchmarkServiceClient, "setup_task", AsyncMock(return_value={"status": "ok"}))
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+
+        assert result == {"task_0": None}
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        assert task_row.eval_resume_state is None
 
     async def test_process_task_spans_timed_status_transitions(
         self,

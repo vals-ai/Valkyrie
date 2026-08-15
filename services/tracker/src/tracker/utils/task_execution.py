@@ -5,7 +5,7 @@ import json
 import time
 import traceback
 from asyncio import Semaphore
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
@@ -52,6 +52,14 @@ from tracker.exceptions import (
     TrackerServiceError,
 )
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
+from tracker.evaluation_artifacts import (
+    UploadedEvaluationBundle,
+    is_pending_evaluation_bundle,
+    is_uploaded_evaluation_bundle,
+    prepare_evaluation_bundle,
+    upload_evaluation_bundle,
+    uploaded_evaluation_result,
+)
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms
@@ -363,6 +371,38 @@ def save_eval_resume_state(
         return result.rowcount > 0
 
 
+def _lock_current_task_attempt(
+    session: Session,
+    task_row_id: UUID,
+    org: Org,
+    *,
+    authority: ExecutionAuthority,
+    expected_started_at: datetime,
+) -> Task:
+    """Hold the run/task fence across canonical post-evaluation uploads.
+
+    The S3 keys are shared by retries. A check immediately before an upload is
+    insufficient: a superseded execution could pass the check, lose authority,
+    and then overwrite the newer attempt. Holding the same benchmark lock used
+    by stop/retry admission until the uploads and database commit finish makes
+    that transition serial.
+    """
+
+    lock_execution_authority(session, authority)
+    task = session.exec(
+        select(Task)
+        .where(col(Task.id) == task_row_id)
+        .where(col(Task.org_id) == org.id)
+        .where(col(Task.status) == TaskStatus.EVALUATING)
+        .where(col(Task.started_at) == expected_started_at)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if task is None:
+        raise ExecutionAuthorityRevoked("Trusted evaluation artifact task authority was revoked")
+    return task
+
+
 def _commit_task_status(
     task: Task,
     session: Session,
@@ -548,7 +588,15 @@ async def _process_task_attempt(
     flush_task = asyncio.create_task(auto_flush_logs())
 
     def on_eval_resume_state(state: dict[str, Any]) -> None:
-        save_eval_resume_state(task_row.id, org, state, expected_started_at=attempt_started_at, authority=authority)
+        saved = save_eval_resume_state(
+            task_row.id,
+            org,
+            state,
+            expected_started_at=attempt_started_at,
+            authority=authority,
+        )
+        if is_pending_evaluation_bundle(state) and not saved:
+            raise ExecutionAuthorityRevoked("Trusted evaluation artifact checkpoint authority was revoked")
 
     def execution_is_current() -> bool:
         with Session(bind=engine) as task_session:
@@ -565,37 +613,85 @@ async def _process_task_attempt(
     def task_is_stopped() -> bool:
         return not execution_is_current()
 
+    async def upload_pending_evaluation_bundle(
+        state: object,
+        terminal_result: object,
+        *,
+        execution_guard: Callable[[], bool] = execution_is_current,
+    ) -> UploadedEvaluationBundle | None:
+        prepared = prepare_evaluation_bundle(state, terminal_result=terminal_result)
+        if prepared is None:
+            return None
+        return await upload_evaluation_bundle(
+            prepared,
+            benchmark_id=str(benchmark_id),
+            task_id=task_id,
+            aws=harness_config.aws,
+            s3_bucket=harness_config.s3_bucket,
+            execution_is_current=execution_guard,
+        )
+
     try:
         if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
             try:
-                log_output("Resuming evaluation from durable benchmark state\n")
                 resume_eval_start_time = time.perf_counter()
-                # Reset timer to keep the last received message from the benchmarks service accurate
-                last_log_time = time.monotonic()
-                evaluation_result = await benchmark_service.resume_evaluation(
-                    task_row.task_id,
-                    eval_resume_state=task_row.eval_resume_state,
-                    on_message=log_output,
-                    on_eval_resume_state=on_eval_resume_state,
-                    dataset=start_benchmark_request.dataset,
-                    sandbox_provider=sandbox_provider_config,
-                )
-                resume_eval_duration = time.perf_counter() - resume_eval_start_time
-                evaluation_result_row = EvaluationResult(
-                    org_id=org.id,
-                    task=task_row.id,
-                    instance_id=None,
-                    result=cast(dict[str, Any], evaluation_result),
-                    agent_caused_exit_reason=None,
-                )
-
+                if is_pending_evaluation_bundle(task_row.eval_resume_state) or is_uploaded_evaluation_bundle(
+                    task_row.eval_resume_state
+                ):
+                    # This state was written only from the authenticated
+                    # benchmark-service stream after grading had completed. It
+                    # is deliberately resumed inside Tracker: exposing a
+                    # benchmark endpoint that accepts a caller-supplied score
+                    # bundle would turn the crash-recovery format into a score
+                    # forgery surface.
+                    log_output("Resuming trusted post-evaluation artifact upload\n")
+                    uploaded_result = uploaded_evaluation_result(task_row.eval_resume_state)
+                    stored_result = task_row.eval_resume_state.get("result")
+                    evaluation_result = (
+                        uploaded_result if uploaded_result is not None else cast(dict[str, Any], stored_result)
+                    )
+                else:
+                    log_output("Resuming evaluation from durable benchmark state\n")
+                    # Reset timer to keep the last received message from the benchmarks service accurate
+                    last_log_time = time.monotonic()
+                    evaluation_result = await benchmark_service.resume_evaluation(
+                        task_row.task_id,
+                        eval_resume_state=task_row.eval_resume_state,
+                        on_message=log_output,
+                        on_eval_resume_state=on_eval_resume_state,
+                        dataset=start_benchmark_request.dataset,
+                        sandbox_provider=sandbox_provider_config,
+                    )
                 with Session(bind=engine) as task_session:
+                    task_in_session = _lock_current_task_attempt(
+                        task_session,
+                        task_row.id,
+                        org,
+                        authority=authority,
+                        expected_started_at=attempt_started_at,
+                    )
+                    uploaded_bundle = await upload_pending_evaluation_bundle(
+                        task_in_session.eval_resume_state,
+                        evaluation_result,
+                        execution_guard=lambda: True,
+                    )
+                    resume_eval_duration = time.perf_counter() - resume_eval_start_time
+                    evaluation_result_row = EvaluationResult(
+                        org_id=org.id,
+                        task=task_row.id,
+                        instance_id=None,
+                        result=cast(dict[str, Any], evaluation_result),
+                        agent_caused_exit_reason=None,
+                    )
                     task_session.add(evaluation_result_row)
-                    task_in_session = fetch_task_row(task_row.id, task_session, org)
                     if task_in_session.task_breakdown:
                         existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
                         assert existing_breakdown is not None
                         existing_breakdown.evaluation_run_duration = resume_eval_duration
+                    if uploaded_bundle is not None:
+                        task_in_session.eval_resume_state = uploaded_bundle.model_dump(mode="json")
+                        task_session.add(task_in_session)
+                        task_session.flush()
                     if not commit_task_status_transition(
                         task_row.id,
                         task_session,
@@ -816,31 +912,50 @@ async def _process_task_attempt(
                     dataset=start_benchmark_request.dataset,
                     sandbox_provider=sandbox_provider_config,
                 )
-                task_breakdown.evaluation_run_duration = time.perf_counter() - evaluation_start_time
-
-                task_breakdown.sandbox_run_duration = time.perf_counter() - start_sandbox_run_time
-
-                # Force flush the logs, maybe redundant since we have the one in finally:
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
-
-                # Save the evaluation result to the database with the task row
-                # Record the termination reason if the agent did not exit cleanly (timeout / OS kill)
-                evaluation_result_row = EvaluationResult(
-                    org_id=org.id,
-                    task=task_row.id,
-                    instance_id=sandbox.id,
-                    result=cast(dict[str, Any], evaluation_result),
-                    agent_caused_exit_reason=exit_reason,
-                )
-
                 with Session(bind=engine) as task_session:
+                    task_in_session = _lock_current_task_attempt(
+                        task_session,
+                        task_row.id,
+                        org,
+                        authority=authority,
+                        expected_started_at=attempt_started_at,
+                    )
+                    uploaded_bundle = await upload_pending_evaluation_bundle(
+                        task_in_session.eval_resume_state,
+                        evaluation_result,
+                        execution_guard=lambda: True,
+                    )
+                    task_breakdown.evaluation_run_duration = time.perf_counter() - evaluation_start_time
+                    task_breakdown.sandbox_run_duration = time.perf_counter() - start_sandbox_run_time
+
+                    # Force flush the logs, maybe redundant since we have the one in finally:
+                    buffer_logs(
+                        log_queue,
+                        stream_key,
+                        harness_config.aws,
+                        harness_config.log_group,
+                        force_flush=True,
+                    )
+
+                    # Save the evaluation result to the database with the task row.
+                    # Record the termination reason if the agent did not exit cleanly (timeout / OS kill).
+                    evaluation_result_row = EvaluationResult(
+                        org_id=org.id,
+                        task=task_row.id,
+                        instance_id=sandbox.id,
+                        result=cast(dict[str, Any], evaluation_result),
+                        agent_caused_exit_reason=exit_reason,
+                    )
                     task_session.add(evaluation_result_row)
-                    task_in_session = fetch_task_row(task_row.id, task_session, org)
                     existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
                     if existing_breakdown is None:
                         raise TrackerServiceError(f"Missing task breakdown for task {task_row.id}")
                     existing_breakdown.evaluation_run_duration = task_breakdown.evaluation_run_duration
                     existing_breakdown.sandbox_run_duration = task_breakdown.sandbox_run_duration
+                    if uploaded_bundle is not None:
+                        task_in_session.eval_resume_state = uploaded_bundle.model_dump(mode="json")
+                        task_session.add(task_in_session)
+                        task_session.flush()
                     if not commit_task_status_transition(
                         task_row.id,
                         task_session,

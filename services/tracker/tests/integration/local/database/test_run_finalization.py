@@ -46,7 +46,7 @@ from tracker.utils.reporting import create_final_view
 from tracker.utils.resources import fetch_benchmark_row
 from tracker.utils.run_orchestration import upload_final_view_if_current
 from tracker.utils.task_error_summary import summarize_task_errors
-from tracker.utils.task_execution import TaskMonitor
+from tracker.utils.task_execution import TaskMonitor, _lock_current_task_attempt
 
 
 class TestRunFinalization:
@@ -340,6 +340,99 @@ class TestRunFinalization:
         assert retry_dispatch is not None
         assert retry_dispatch.status == ExecutorDispatchStatus.QUEUED
         assert final_evaluation is None
+
+    def test_trusted_artifact_commit_fence_blocks_concurrent_retry(
+        self,
+        postgres_session: Session,
+        postgres_engine: Engine,
+        executor_authority_kwargs: Any,
+    ) -> None:
+        """Canonical artifact writes hold the same run lock as retry admission."""
+
+        org = Org(id=uuid4(), name=f"trusted-artifact-race-{uuid4()}")
+        contract = AgentContractRequest(name="artifact-race-agent", install_cmd="true", run_cmd="true")
+        benchmark = make_benchmark(
+            name="trusted-artifact-race",
+            org_id=org.id,
+            contract=contract,
+            status=BenchmarkStatus.IN_PROGRESS,
+        )
+        task = make_task(benchmark, "full_ladder", status=TaskStatus.EVALUATING)
+        # These factories populate foreign-key identifiers but do not attach ORM
+        # relationships, so flush the parent rows explicitly before their
+        # dependants. PostgreSQL correctly rejects an unordered bulk INSERT.
+        postgres_session.add(org)
+        postgres_session.flush()
+        postgres_session.add(benchmark)
+        postgres_session.flush()
+        postgres_session.add(task)
+        postgres_session.commit()
+        authority_kwargs = executor_authority_kwargs(benchmark, session=postgres_session)
+        authority = ExecutionAuthority(
+            benchmark_id=benchmark.id,
+            dispatch_id=UUID(str(authority_kwargs["executor_dispatch_id"])),
+        )
+
+        locked_task = _lock_current_task_attempt(
+            postgres_session,
+            task.id,
+            org,
+            authority=authority,
+            expected_started_at=task.started_at,
+        )
+        assert locked_task.id == task.id
+
+        retry_ready = Event()
+        retry_finished = Event()
+        retry_errors: list[BaseException] = []
+        retry_backend_pids: list[int] = []
+
+        def admit_retry() -> None:
+            try:
+                with Session(postgres_engine) as retry_session:
+                    backend_pid = retry_session.connection().exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
+                    retry_backend_pids.append(int(backend_pid))
+                    retry_ready.set()
+                    retry_benchmark = fetch_benchmark_row(
+                        benchmark.id,
+                        retry_session,
+                        org,
+                        for_update=True,
+                    )
+                    retry_task = retry_session.get(Task, task.id)
+                    assert retry_task is not None
+                    retry_task.started_at = datetime.now(UTC)
+                    retry_session.add_all([retry_benchmark, retry_task])
+                    retry_session.commit()
+                    retry_finished.set()
+            except BaseException as exc:
+                retry_errors.append(exc)
+
+        retry_thread = Thread(target=admit_retry)
+        retry_thread.start()
+        assert retry_ready.wait(timeout=2)
+
+        try:
+            deadline = monotonic() + 2
+            blocking_pids: list[int] = []
+            while monotonic() < deadline:
+                blocking_pid_row = postgres_session.connection().exec_driver_sql(
+                    "SELECT pg_blocking_pids(%s)",
+                    (retry_backend_pids[0],),
+                )
+                blocking_pids = list(blocking_pid_row.scalar_one())
+                if blocking_pids:
+                    break
+                assert retry_thread.is_alive(), "retry completed while the trusted artifact fence was held"
+                sleep(0.01)
+            assert blocking_pids
+            assert not retry_finished.is_set()
+        finally:
+            postgres_session.rollback()
+            retry_thread.join(5)
+        assert not retry_thread.is_alive()
+        assert retry_errors == []
+        assert retry_finished.is_set()
 
     async def test_only_one_additive_dispatch_calls_final_score(
         self,
