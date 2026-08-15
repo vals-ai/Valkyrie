@@ -57,8 +57,10 @@ immutable `agent-registry` repository and organization IDs, `main`, the matching
 `coordinated-agent-release-prod` or `coordinated-agent-release-dev` GitHub
 Environment, and the reusable publisher workflow from `main`. Configure that
 Environment to allow only `main`, retain required reviewers, and set its
-stage-specific role variable from the `CoordinatedAgentPublisherRoleArn` stack
-output.
+environment-scoped `COORDINATED_AGENT_PUBLISH_ROLE_ARN` variable from the
+`CoordinatedAgentPublisherRoleArn` stack output. Do not put the new role ARN in
+the legacy repository variables `AGENT_PUBLISH_ROLE_ARN` or
+`DEV_AGENT_PUBLISH_ROLE_ARN`.
 
 This change intentionally does not deny the existing publisher roles. Roll out
 and prove the new roles and workflow first, republish the immutable aliases, and
