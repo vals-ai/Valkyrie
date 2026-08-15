@@ -226,7 +226,7 @@ class SharedStack(Stack):
         role.add_to_principal_policy(
             aws_iam.PolicyStatement(
                 actions=["logs:CreateLogStream"],
-                resources=[child_log_group_arn],
+                resources=[child_log_stream_arn],
             )
         )
         role.add_to_principal_policy(

@@ -420,7 +420,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                                                 {"Ref": "AWS::Partition"},
                                                 (
                                                     f":logs:{TEST_REGION}:{TEST_ACCOUNT}:log-group:"
-                                                    "valkyrie-test-log-group/*"
+                                                    "valkyrie-test-log-group/*:log-stream:*"
                                                 ),
                                             ],
                                         ]
