@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from tracker.aws.clients import AWSClientProvider, ExplicitCredentialsAWSClientProvider
-from tracker.types import HarnessConfig
+
+if TYPE_CHECKING:
+    from tracker.types import HarnessConfig
 
 
 @dataclass(frozen=True)
