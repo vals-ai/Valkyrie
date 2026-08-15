@@ -66,6 +66,10 @@ class AgentContractRequest(BaseModel):
     egress_allowlist: list[str] = Field(default_factory=list)
     secrets: dict[str, str] = Field(default_factory=dict)
     kwargs: dict[str, str] = Field(default_factory=dict)
+    # Tracker-owned identity for an exact run-scoped archive. These are omitted
+    # from ordinary SDK start requests and populated by the service.
+    frozen_archive_s3_key: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    frozen_archive_sha256: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @field_validator("output_artifacts")
     @classmethod

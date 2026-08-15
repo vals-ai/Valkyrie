@@ -77,11 +77,11 @@ EXPECTED_SIGNATURES = {
     RunsResource.stop: "self, run_id, *, force=False, task_ids=None",
     RunsResource.resume: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False, "
-        "benchmark_url=None"
+        "benchmark_url=None, update_agent=False"
     ),
     RunsResource.retry: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False, "
-        "benchmark_url=None"
+        "benchmark_url=None, update_agent=False"
     ),
     BenchmarksResource.fetch: "self, run_id",
     BenchmarksResource.statuses: "self, run_ids",

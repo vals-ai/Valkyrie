@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy.engine import Engine
 from sqlmodel import Session
 
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from services.executor_host.supervisor import (  # pyright: ignore[reportMissingImports]
     ArtifactDispatch,
     PostgresExecutorDispatchStore,
@@ -40,7 +41,7 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
         id="executor-host-store-release",
         artifact_uri="s3://artifacts/executor-host-store.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
         readiness_verified=True,
         created_at=datetime.now(UTC),
     )

@@ -69,6 +69,7 @@ class DeployWorkflowTest(unittest.TestCase):
                 self.assertIn("executor_host_redeploy_required", executor_job)
                 self.assertIn("executor_release_required", executor_job)
                 self.assertIn("core_maintenance_required", executor_job)
+                self.assertIn("atomic_protocol_transition_required", executor_job)
                 self.assertIn("database_maintenance_required", executor_job)
                 self.assertIn(
                     "PYTHONPATH=services/tracker/src python services/executor_artifact/build.py",
@@ -86,8 +87,12 @@ class DeployWorkflowTest(unittest.TestCase):
                 )[0]
                 finish = executor_job.split(f"      - name: Finish {stage} maintenance", maxsplit=1)[1]
                 self.assertIn("executor_host_redeploy_required == 'true'", begin)
+                self.assertIn("atomic_protocol_transition_required == 'true'", begin)
+                self.assertNotIn("core_maintenance_required == 'true'", begin)
                 self.assertNotIn("executor_stack_deploy_required == 'true'", begin)
                 self.assertIn("executor_host_redeploy_required == 'true'", finish)
+                self.assertIn("atomic_protocol_transition_required == 'true'", finish)
+                self.assertNotIn("core_maintenance_required == 'true'", finish)
                 self.assertNotIn("executor_stack_deploy_required == 'true'", finish)
                 self.assertLess(executor_job.index("Begin"), executor_job.index("SCOPE=executor"))
                 self.assertLess(executor_job.index("SCOPE=executor"), executor_job.index("Publish and activate"))
@@ -107,6 +112,37 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertEqual(workflow.count("--maintenance-operation finish"), 2)
         self.assertNotIn("actions/upload-artifact", workflow)
         self.assertNotIn("actions/download-artifact", workflow)
+
+    def test_protocol_transition_fences_core_host_and_v2_activation_as_one_sequence(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        classifier = (ROOT / "infra" / "classify_repository_change.py").read_text(encoding="utf-8")
+        dev_executor = workflow.split("  executor-development:", maxsplit=1)[1].split(
+            "  executor-production:", maxsplit=1
+        )[0]
+        prod_executor = workflow.split("  executor-production:", maxsplit=1)[1]
+
+        self.assertIn(
+            '_ATOMIC_EXECUTOR_PROTOCOL_FILES = {"services/tracker/src/executor_protocol.py"}',
+            classifier,
+        )
+        self.assertIn('reasons.add("executor-protocol-transition")', classifier)
+
+        for executor_job, stage in ((dev_executor, "dev"), (prod_executor, "production")):
+            with self.subTest(stage=stage):
+                begin = executor_job.index(f"Begin {stage} maintenance")
+                core = executor_job.index(f"Deploy {stage} core stacks under maintenance")
+                host = executor_job.index(f"Deploy {stage} executor stack")
+                activation = executor_job.index(f"Publish and activate {stage} executor release")
+                finish = executor_job.index(f"Finish {stage} maintenance")
+
+                self.assertLess(begin, core)
+                self.assertLess(core, host)
+                self.assertLess(host, activation)
+                self.assertLess(activation, finish)
+                begin_step = executor_job[begin:core]
+                finish_step = executor_job[finish:]
+                self.assertIn("atomic_protocol_transition_required == 'true'", begin_step)
+                self.assertIn("atomic_protocol_transition_required == 'true'", finish_step)
 
     def test_maintenance_paths_bypass_the_skipped_core_job_and_preserve_failed_fences(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -238,6 +274,7 @@ class DeployWorkflowTest(unittest.TestCase):
             "executor_host_redeploy_required",
             "executor_release_required",
             "core_maintenance_required",
+            "atomic_protocol_transition_required",
             "database_maintenance_required",
         ):
             self.assertIn(output, workflow)

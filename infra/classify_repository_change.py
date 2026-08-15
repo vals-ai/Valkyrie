@@ -73,6 +73,10 @@ _EXECUTOR_RELEASE_DIRECTORIES = (
     "services/tracker/src/tracker/observability/",
     "services/tracker/src/tracker/utils/",
 )
+# Wire-protocol transitions change both the tracker producer and immutable
+# executor consumer. They must deploy as one maintenance-fenced sequence:
+# begin fence -> core -> stable host -> artifact activation -> finish fence.
+_ATOMIC_EXECUTOR_PROTOCOL_FILES = {"services/tracker/src/executor_protocol.py"}
 
 
 @dataclass(frozen=True)
@@ -91,6 +95,7 @@ class Classification:
     executor_host_redeploy_required: bool
     executor_release_required: bool
     core_maintenance_required: bool
+    atomic_protocol_transition_required: bool
     database_maintenance_required: bool
     changed_migrations: list[str]
     reasons: list[str]
@@ -248,6 +253,7 @@ def classify_repository_change(
     executor_release_required = False
     core_maintenance_required = False
     database_maintenance_required = False
+    atomic_protocol_transition_required = False
 
     for status, paths in _changed_entries(repository, base_sha, head_sha):
         if any(_is_executor_stack_path(path) for path in paths):
@@ -255,6 +261,10 @@ def classify_repository_change(
             reasons.add("executor-core-change")
         if any(path in _EXECUTOR_SHARED_FILES for path in paths):
             core_maintenance_required = True
+        if any(path in _ATOMIC_EXECUTOR_PROTOCOL_FILES for path in paths):
+            atomic_protocol_transition_required = True
+            core_maintenance_required = True
+            reasons.add("executor-protocol-transition")
         if any(_is_executor_release_path(path) for path in paths):
             executor_release_required = True
             reasons.add("executor-release-change")
@@ -275,7 +285,9 @@ def classify_repository_change(
     if executor_effect.redeploy_required:
         executor_stack_deploy_required = True
         reasons.update(executor_effect.reasons)
-    maintenance_required = executor_effect.redeploy_required or database_maintenance_required
+    maintenance_required = (
+        executor_effect.redeploy_required or database_maintenance_required or atomic_protocol_transition_required
+    )
     classification = "maintenance-required" if maintenance_required else "safe"
     return Classification(
         classification=classification,
@@ -285,6 +297,7 @@ def classify_repository_change(
         executor_host_redeploy_required=executor_effect.redeploy_required,
         executor_release_required=executor_release_required,
         core_maintenance_required=core_maintenance_required,
+        atomic_protocol_transition_required=atomic_protocol_transition_required,
         database_maintenance_required=database_maintenance_required,
         changed_migrations=sorted(changed_migrations),
         reasons=sorted(reasons),

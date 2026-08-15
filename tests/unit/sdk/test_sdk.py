@@ -361,6 +361,7 @@ async def test_resume_and_retry_resolve_run_service_auth(
             service_headers={"Authorization": "override"},
             from_scratch=True,
             benchmark_url="https://new.example",
+            update_agent=True,
         )
 
     assert response.status == "success"
@@ -368,6 +369,7 @@ async def test_resume_and_retry_resolve_run_service_auth(
     assert request.url.params["retry"] == retry
     assert request.url.params["retry_mode"] == "from_scratch"
     assert request.url.params["concurrency"] == "4"
+    assert request.url.params["update_agent"] == "true"
     assert json.loads(request.content) == {
         "benchmark_url": "https://new.example",
         "task_ids": ["task-1"],
@@ -392,6 +394,7 @@ async def test_resume_without_optional_overrides_uses_empty_payload(make_client,
 
     request = requests[1]
     assert "concurrency" not in request.url.params
+    assert "update_agent" not in request.url.params
     assert json.loads(request.content) == {"task_ids": [], "service_headers": {}, "secrets": {}}
 
 

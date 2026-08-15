@@ -102,7 +102,11 @@ ROUTES = (
     ),
     ("/retrieve-results", "get", "benchmark_id s3 task_ids"),
     ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id force"),
-    ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id retry retry_mode concurrency"),
+    (
+        "/retry-or-resume-benchmark/{benchmark_id}",
+        "post",
+        "benchmark_id retry retry_mode concurrency update_agent",
+    ),
     ("/benchmarks/status", "get", "ids"),
     ("/benchmarks/{benchmark_id}", "get", "benchmark_id"),
     (
@@ -320,6 +324,7 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
     retry_parameters = {parameter["name"]: parameter for parameter in retry["parameters"]}
     assert retry_parameters["retry"]["schema"]["default"] == retry_fixture["query"]["retry"]
     assert retry_parameters["retry_mode"]["schema"]["default"] == retry_fixture["query"]["retry_mode"]
+    assert retry_parameters["update_agent"]["schema"]["default"] == retry_fixture["query"]["update_agent"]
     assert {option.get("type") for option in retry_parameters["concurrency"]["schema"]["anyOf"]} == {
         "integer",
         "null",

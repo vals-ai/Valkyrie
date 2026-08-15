@@ -41,6 +41,7 @@ jobs:
       executor_host_redeploy_required: ${{ steps.result.outputs.executor_host_redeploy_required }}
       executor_release_required: ${{ steps.result.outputs.executor_release_required }}
       core_maintenance_required: ${{ steps.result.outputs.core_maintenance_required }}
+      atomic_protocol_transition_required: ${{ steps.result.outputs.atomic_protocol_transition_required }}
       database_maintenance_required: ${{ steps.result.outputs.database_maintenance_required }}
 
     steps:
@@ -144,6 +145,7 @@ jobs:
               "executor_host_redeploy_required",
               "executor_release_required",
               "core_maintenance_required",
+              "atomic_protocol_transition_required",
               "database_maintenance_required",
           ):
               print(f"{key}={str(result[key]).lower()}")
@@ -443,6 +445,7 @@ jobs:
         if: >-
           steps.freshness.outputs.current == 'true' &&
           (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+           needs.classify-deployment.outputs.atomic_protocol_transition_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
         working-directory: infra
         run: >-
@@ -530,6 +533,7 @@ jobs:
         if: >-
           steps.freshness.outputs.current == 'true' &&
           (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+           needs.classify-deployment.outputs.atomic_protocol_transition_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
         working-directory: infra
         run: >-
@@ -639,6 +643,7 @@ jobs:
         if: >-
           steps.freshness.outputs.current == 'true' &&
           (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+           needs.classify-deployment.outputs.atomic_protocol_transition_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
         working-directory: infra
         run: >-
@@ -743,6 +748,7 @@ jobs:
         if: >-
           steps.freshness.outputs.current == 'true' &&
           (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+           needs.classify-deployment.outputs.atomic_protocol_transition_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
         working-directory: infra
         run: >-

@@ -930,6 +930,24 @@ def test_run_resume_update_agent_reaches_tracker(
     assert mock_tracker_service.retry_or_resume_calls[0]["kwargs"]["update_agent"] is True
 
 
+def test_run_resume_update_agent_surfaces_tracker_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed atomic refresh is rendered as a normal CLI error."""
+
+    class FailingTrackerService(MockTrackerService):
+        def retry_or_resume_benchmark(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+            raise TrackerServiceError("agent refresh rejected")
+
+    monkeypatch.setattr(run_resume, "TrackerService", FailingTrackerService)
+
+    result = CliRunner().invoke(
+        cli_main.cli,
+        ["run", "resume", str(uuid4()), "--update-agent"],
+    )
+
+    assert result.exit_code == 1
+    assert "Error: agent refresh rejected" in result.output
+
+
 def test_run_start_provider_option_reaches_tracker(
     connect_stream_testbed: tuple[UUID, list[str], type[MockTrackerService]],
 ) -> None:

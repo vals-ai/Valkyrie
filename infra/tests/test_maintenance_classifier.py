@@ -389,6 +389,7 @@ def upgrade() -> None:
         self.assertFalse(result.executor_host_redeploy_required)
         self.assertFalse(result.executor_release_required)
         self.assertTrue(result.core_maintenance_required)
+        self.assertFalse(result.atomic_protocol_transition_required)
         self.assertFalse(result.database_maintenance_required)
 
     def test_tracker_stack_change_does_not_require_executor_work(self) -> None:
@@ -478,6 +479,30 @@ def upgrade() -> None:
         self.assertTrue(result.executor_release_required)
         self.assertFalse(result.database_maintenance_required)
         self.assertEqual(result.reasons, ["executor-release-change"])
+
+    def test_executor_protocol_transition_requires_atomic_core_maintenance(self) -> None:
+        head_sha = self._commit_file(
+            "services/tracker/src/executor_protocol.py",
+            'SUPPORTED_PROTOCOL_VERSION = "next"\n',
+        )
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertFalse(result.executor_host_redeploy_required)
+        self.assertTrue(result.executor_release_required)
+        self.assertTrue(result.core_maintenance_required)
+        self.assertTrue(result.atomic_protocol_transition_required)
+        self.assertFalse(result.database_maintenance_required)
+        self.assertEqual(
+            result.reasons,
+            [
+                "executor-core-change",
+                "executor-protocol-transition",
+                "executor-release-change",
+            ],
+        )
 
     def test_existing_migration_history_cannot_be_changed(self) -> None:
         path = f"{_MIGRATION_DIRECTORY}/existing.py"

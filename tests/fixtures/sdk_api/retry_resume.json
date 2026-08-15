@@ -9,7 +9,8 @@
   "query": {
     "retry": false,
     "retry_mode": "auto",
-    "concurrency": 2
+    "concurrency": 2,
+    "update_agent": false
   },
   "response": {
     "status": "success"

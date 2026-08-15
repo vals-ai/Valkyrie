@@ -300,6 +300,7 @@ class RunsResource:
         service_headers: Mapping[str, str] | None = None,
         from_scratch: bool = False,
         benchmark_url: str | None = None,
+        update_agent: bool = False,
     ) -> RetryOrResumeBenchmarkResponse:
         """Resume unfinished work for a run."""
         return await self._retry_or_resume(
@@ -311,6 +312,7 @@ class RunsResource:
             service_headers=service_headers,
             from_scratch=from_scratch,
             benchmark_url=benchmark_url,
+            update_agent=update_agent,
         )
 
     async def retry(
@@ -323,6 +325,7 @@ class RunsResource:
         service_headers: Mapping[str, str] | None = None,
         from_scratch: bool = False,
         benchmark_url: str | None = None,
+        update_agent: bool = False,
     ) -> RetryOrResumeBenchmarkResponse:
         """Retry failed or selected work for a run."""
         return await self._retry_or_resume(
@@ -334,6 +337,7 @@ class RunsResource:
             service_headers=service_headers,
             from_scratch=from_scratch,
             benchmark_url=benchmark_url,
+            update_agent=update_agent,
         )
 
     async def _retry_or_resume(
@@ -347,6 +351,7 @@ class RunsResource:
         service_headers: Mapping[str, str] | None,
         from_scratch: bool,
         benchmark_url: str | None,
+        update_agent: bool,
     ) -> RetryOrResumeBenchmarkResponse:
         """Send a retry or resume request."""
         if concurrency is not None and concurrency < 1:
@@ -360,6 +365,8 @@ class RunsResource:
         }
         if concurrency is not None:
             params["concurrency"] = concurrency
+        if update_agent:
+            params["update_agent"] = True
 
         body: dict[str, Any] = {
             "task_ids": list(task_ids or []),
