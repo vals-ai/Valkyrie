@@ -1,15 +1,18 @@
 """AWS client providers for tracker runtimes."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import aioboto3
 import boto3
 from botocore.config import Config
 
-from tracker.types import AWSCredentials
+if TYPE_CHECKING:
+    from tracker.types import AWSCredentials
 
 _HIGH_CONCURRENCY_CLIENT_CONFIG = Config(max_pool_connections=200)
 _S3_CLIENT_CONFIG = Config(max_pool_connections=200, retries={"mode": "standard"})
