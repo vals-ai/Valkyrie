@@ -56,7 +56,12 @@ class TestProcessTaskEnvironment:
         harness_config: HarnessConfig,
         aws_runtime: AWSRuntime,
     ) -> None:
-        contract = contract.model_copy(update={"secrets": {"UNRELATED_SECRET": "secret-name"}})
+        contract = contract.model_copy(
+            update={
+                "model": "provider/model",
+                "secrets": {"UNRELATED_SECRET": "secret-name"},
+            }
+        )
         run_starter = RequestIdentity(
             org=TEST_ORG,
             access_key_id="access-key-id",
@@ -81,6 +86,7 @@ class TestProcessTaskEnvironment:
             return {
                 "RUN_ID": "secret-run-id",
                 "TASK_ID": "secret-task-id",
+                "VALKYRIE_AGENT_MODEL": "secret-model",
                 "IDENTITY": '{"source":"secret"}',
                 "UNRELATED_SECRET": "secret-value",
                 "MODEL_GATEWAY_URL": "https://gateway.example.test",
@@ -102,6 +108,7 @@ class TestProcessTaskEnvironment:
         assert env_vars["RUN_ID"] == str(benchmark_id)
         assert "QUESTION_ID" not in env_vars
         assert env_vars["TASK_ID"] == "task_0"
+        assert env_vars["VALKYRIE_AGENT_MODEL"] == "provider/model"
         assert json.loads(env_vars["IDENTITY"]) == {
             "benchmark_name": "swebench",
             "agent_name": contract.name,
@@ -142,6 +149,7 @@ class TestProcessTaskEnvironment:
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert len(captured_env_vars) == 1
         env_vars = captured_env_vars[0]
+        assert env_vars["VALKYRIE_AGENT_MODEL"] == ""
         assert json.loads(env_vars["IDENTITY"]) == {
             "benchmark_name": "swebench",
             "agent_name": contract.name,
