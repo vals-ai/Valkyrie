@@ -55,12 +55,15 @@ agent-publisher roles for `agent-registry`. Each role can write only
 permission required by the CLI's multipart uploader. Its OIDC trust requires the
 immutable `agent-registry` repository and organization IDs, `main`, the matching
 `coordinated-agent-release-prod` or `coordinated-agent-release-dev` GitHub
-Environment, and the reusable publisher workflow from `main`. Configure that
-Environment to allow only `main`, retain required reviewers, and set its
-environment-scoped `COORDINATED_AGENT_PUBLISH_ROLE_ARN` variable from the
-`CoordinatedAgentPublisherRoleArn` stack output. Do not put the new role ARN in
-the legacy repository variables `AGENT_PUBLISH_ROLE_ARN` or
-`DEV_AGENT_PUBLISH_ROLE_ARN`.
+Environment, and
+`vals-ai/agent-registry/.github/workflows/publish-coordinated-agent.yaml@refs/heads/main`.
+Operators start the separate manual `release-coordinated-agent.yaml` caller,
+which selects exactly one environment and invokes that reusable publisher.
+Configure each Environment to allow only `main`, retain required reviewers, and
+set its environment-scoped `COORDINATED_AGENT_PUBLISH_ROLE_ARN` variable from
+the matching account's `CoordinatedAgentPublisherRoleArn` stack output. Do not
+put the new role ARN in the legacy repository variables
+`AGENT_PUBLISH_ROLE_ARN` or `DEV_AGENT_PUBLISH_ROLE_ARN`.
 
 This change intentionally does not deny the existing publisher roles. Roll out
 and prove the new roles and workflow first, republish the immutable aliases, and
