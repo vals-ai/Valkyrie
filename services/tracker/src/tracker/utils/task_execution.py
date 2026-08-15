@@ -667,6 +667,11 @@ async def _process_task_attempt(
             **resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
+            # Benchmark setup runs before the agent command and may need the
+            # selected model to provision a run-scoped provider capability.
+            # This is non-secret contract metadata; keeping it separate from
+            # the rendered command avoids asking services to parse shell text.
+            "VALKYRIE_AGENT_MODEL": start_benchmark_request.contract.model or "",
             "IDENTITY": json.dumps(identity),
             # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
             # are filterable per benchmark run and separable from other environments sharing the
