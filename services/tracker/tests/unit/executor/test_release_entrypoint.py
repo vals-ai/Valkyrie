@@ -4,6 +4,7 @@ import builtins
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from io import BytesIO
 
@@ -16,6 +17,45 @@ from sqlmodel import Session
 from tracker.executor import release_entrypoint
 from tracker.database import session as tracker_session
 from tracker.database.models import ExecutorAdmission, ExecutorRelease, ExecutorReleaseStatus
+
+
+def test_release_entrypoint_loads_database_config_after_sealed_environment() -> None:
+    environment = os.environ.copy()
+    for name in ("DATABASE_URL", "DB_USERNAME", "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_NAME"):
+        environment.pop(name, None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import os
+
+import tracker.executor.release_entrypoint
+
+os.environ.update(
+    DB_USERNAME="sealed-user",
+    DB_PASSWORD="sealed-password",
+    DB_HOST="database.internal",
+    DB_PORT="5433",
+    DB_NAME="sealed-database",
+)
+from tracker.database.session import engine
+
+assert engine.url.username == "sealed-user"
+assert engine.url.password == "sealed-password"
+assert engine.url.host == "database.internal"
+assert engine.url.port == 5433
+assert engine.url.database == "sealed-database"
+""",
+        ],
+        check=False,
+        capture_output=True,
+        env=environment,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 class FakeSecretsManager:
