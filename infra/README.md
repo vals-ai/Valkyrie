@@ -68,7 +68,8 @@ put the new role ARN in the legacy repository variables
 This change intentionally does not deny the existing publisher roles. Roll out
 and prove the new roles and workflow first, republish the immutable aliases, and
 only then add the separately reviewed bucket-policy deny that prevents every
-other principal from writing the coordinated alias key.
+other principal from mutating the coordinated alias key, including multipart
+writes/aborts and object/version deletion.
 
 The application imports these account-local values:
 
