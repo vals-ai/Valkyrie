@@ -10,13 +10,7 @@ from valkyrie.cli.tracker_client import TrackerService
 
 
 def _format_expiration(seconds: int) -> str:
-    for unit_seconds, unit_name in ((86400, "day"), (3600, "hour"), (60, "minute")):
-        if seconds >= unit_seconds and seconds % unit_seconds == 0:
-            amount = seconds // unit_seconds
-            suffix = "" if amount == 1 else "s"
-            return f"{amount} {unit_name}{suffix}"
-    suffix = "" if seconds == 1 else "s"
-    return f"{seconds} second{suffix}"
+    return {3600: "1 hour", 86400: "1 day"}.get(seconds, f"{seconds} seconds")
 
 
 @click.command(
