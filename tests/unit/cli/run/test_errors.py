@@ -450,18 +450,10 @@ def test_errors_text_renders_structured_provenance_and_counts(monkeypatch: pytes
     assert "Historical non-terminal failures" in result.stdout
     assert "Harness / Benchmark Service / WebSocket" in result.stdout
     assert "Cause: websocket_connection_closed" in result.stdout
-    assert (
-        "task-platform:\n"
-        "  Platform / Executor Host / Run executor dispatch\n"
-        "task-unknown:"
-    ) in result.stdout
+    assert ("task-platform:\n  Platform / Executor Host / Run executor dispatch\ntask-unknown:") in result.stdout
     assert "Unknown / Sandbox Provider / Setup" in result.stdout
     assert "Details unavailable" in result.stdout
-    assert (
-        "task-legacy:\n"
-        "  Unknown / Unknown component / Unknown operation\n"
-        "task-platform:"
-    ) in result.stdout
+    assert ("task-legacy:\n  Unknown / Unknown component / Unknown operation\ntask-platform:") in result.stdout
     for message in (
         "Benchmark service disconnected",
         "Executor host failed",
