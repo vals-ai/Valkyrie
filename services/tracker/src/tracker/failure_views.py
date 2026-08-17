@@ -93,11 +93,11 @@ def current_task_failure_record(session: Session, task: Task) -> FailureRecord |
     return current_task_failure_records(session, [task]).get(task.id)
 
 
-def current_task_failure_records_for_benchmark(
+def benchmark_task_failure_views(
     session: Session,
     benchmark_id: UUID,
     org_id: UUID,
-) -> dict[str, FailureRecord]:
+) -> tuple[dict[str, str] | None, dict[str, FailureRecord]]:
     tasks = session.exec(
         select(Task)
         .where(Task.benchmark == benchmark_id)
@@ -106,7 +106,18 @@ def current_task_failure_records_for_benchmark(
         .order_by(Task.task_id)
     ).all()
     records = current_task_failure_records(session, tasks)
-    return {task.task_id: records[task.id] for task in tasks if task.id in records}
+    task_errors = (
+        {
+            task.task_id: (
+                records[task.id].error_message if task.id in records else "No error message was provided"
+            )
+            for task in tasks
+        }
+        if tasks
+        else None
+    )
+    task_failures = {task.task_id: records[task.id] for task in tasks if task.id in records}
+    return task_errors, task_failures
 
 
 def current_run_failure_records(

@@ -372,23 +372,10 @@ class Benchmark(SQLModel, table=True):
         return fetch_evaluation_results(self.id, session, self.org_id)
 
     def fetch_tasks_with_errors(self, session: Session) -> dict[str, str] | None:
-        from tracker.failure_views import current_task_failure_records
+        from tracker.failure_views import benchmark_task_failure_views
 
-        tasks = session.exec(
-            select(Task)
-            .where(Task.benchmark == self.id)
-            .where(Task.org_id == self.org_id)
-            .where(Task.status == TaskStatus.ERROR)
-            .order_by(Task.task_id)
-        ).all()
-        if not tasks:
-            return None
-
-        failures = current_task_failure_records(session, tasks)
-        return {
-            task.task_id: (failures[task.id].error_message if task.id in failures else "No error message was provided")
-            for task in tasks
-        }
+        task_errors, _ = benchmark_task_failure_views(session, self.id, self.org_id)
+        return task_errors
 
     def start_benchmark_request(
         self, harness_config: "HarnessConfig", service_headers: dict[str, str] | None = None

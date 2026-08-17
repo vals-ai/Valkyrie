@@ -34,9 +34,9 @@ from tracker.database.models import (
 )
 from tracker.database.scoping import scoped_select
 from tracker.failure_views import (
+    benchmark_task_failure_views,
     current_run_failure_record,
     current_run_failure_records,
-    current_task_failure_records_for_benchmark,
     failure_effect_counts,
     summarize_failure,
 )
@@ -551,7 +551,7 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
     ).one()
 
     run_failure = current_run_failure_record(session, benchmark_row)
-    task_failure_records = current_task_failure_records_for_benchmark(
+    task_errors, task_failure_records = benchmark_task_failure_views(
         session,
         benchmark_row.id,
         org.id,
@@ -573,7 +573,7 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
         tasks_stopped=tasks_stopped or None,  # NOTE: Only include if we stopped the benchmark
         final_evaluation=benchmark_row.final_evaluation,
         evaluation_results=benchmark_row.fetch_evaluation_results(session),
-        task_errors=benchmark_row.fetch_tasks_with_errors(session),
+        task_errors=task_errors,
         run_failure=summarize_failure(run_failure) if run_failure else None,
         task_failures=(
             {task_id: summarize_failure(failure) for task_id, failure in task_failure_records.items()} or None

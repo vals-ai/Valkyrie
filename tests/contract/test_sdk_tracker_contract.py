@@ -15,6 +15,8 @@ from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
     FailureCategory,
+    FailureClassificationState,
+    FailureTerminalEffect,
     FinalEvaluation,
     OutputArtifact,
 )
@@ -73,7 +75,9 @@ from valkyrie.sdk.models import (
     BenchmarkStatusResponse as SDKBenchmarkStatusResponse,
     BenchmarkTableRow as SDKBenchmarkTableRow,
     FailureCategory as SDKFailureCategory,
+    FailureClassificationState as SDKFailureClassificationState,
     FailureDetail as SDKFailureDetail,
+    FailureTerminalEffect as SDKFailureTerminalEffect,
     FailureSummary as SDKFailureSummary,
     FetchBenchmarkResponse as SDKFetchBenchmarkResponse,
     FetchBenchmarkMetadataResponse as SDKFetchBenchmarkMetadataResponse,
@@ -255,8 +259,18 @@ def test_sdk_and_tracker_wire_models_have_the_same_fields(
         assert _normalized_default(tracker_default) == _normalized_default(sdk_default)
 
 
-def test_sdk_and_tracker_failure_categories_match() -> None:
-    assert [member.value for member in FailureCategory] == [member.value for member in SDKFailureCategory]
+@pytest.mark.parametrize(
+    ("tracker_enum", "sdk_enum"),
+    [
+        (FailureCategory, SDKFailureCategory),
+        (FailureClassificationState, SDKFailureClassificationState),
+        (FailureTerminalEffect, SDKFailureTerminalEffect),
+    ],
+)
+def test_sdk_and_tracker_failure_enums_match(
+    tracker_enum: type[Enum], sdk_enum: type[Enum]
+) -> None:
+    assert [member.value for member in tracker_enum] == [member.value for member in sdk_enum]
 
 
 def _normalized_wire_schema(value: Any) -> Any:
