@@ -1,8 +1,6 @@
 """Operations that stop, resume, or retry a run and tear down its sandboxes."""
 
 import asyncio
-import time
-import traceback
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any
@@ -10,7 +8,6 @@ from zoneinfo import ZoneInfo
 
 from benchmark_service import (
     Sandbox,
-    SandboxNotFoundError,
     SandboxProvider,
     SandboxQuery,
 )
@@ -25,7 +22,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.executor.dispatch_control import active_dispatch_exists, terminalize_active_dispatches
+from tracker.executor.dispatch_control import terminalize_active_dispatches
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.sandbox import delete_sandbox
@@ -35,10 +32,6 @@ from tracker.utils.resources import fetch_benchmark_row, fetch_sandbox_provider_
 
 logger = get_logger(__name__)
 
-# Bounded by the ALB idle timeout the stop request has to answer within.
-SANDBOX_DRAIN_TIMEOUT_SECONDS = 15.0
-SANDBOX_DRAIN_POLL_SECONDS = 3.0
-
 
 def apply_stop_benchmark(
     benchmark_row: Benchmark,
@@ -46,36 +39,41 @@ def apply_stop_benchmark(
     force: bool,
     org: Org,
     task_ids: list[str] | None = None,
-) -> bool:
-    """Apply the Stop state transition without committing the transaction.
+) -> None:
+    """Apply the Stop state transition without committing the transaction."""
+    stoppable_statuses = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]
+    if force:
+        stoppable_statuses.append(TaskStatus.IN_PROGRESS)
 
-    Returns whether any task that can own a sandbox was transitioned to STOPPED.
-    """
     task_update = (
         update(Task)
         .where(col(Task.benchmark) == benchmark_row.id)
         .where(col(Task.org_id) == org.id)
-        .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]))
+        .where(col(Task.status).in_(stoppable_statuses))
     )
     if task_ids:
         task_update = task_update.where(col(Task.task_id).in_(task_ids))
 
-    active_task_count = select(func.count(col(Task.id))).where(
-        col(Task.benchmark) == benchmark_row.id,
-        col(Task.org_id) == org.id,
-        col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.EVALUATING]),
-    )
-    if task_ids:
-        active_task_count = active_task_count.where(col(Task.task_id).in_(task_ids))
-
-    tasks_were_active = session.exec(active_task_count).one() > 0
     result = session.exec(task_update.values(status=TaskStatus.STOPPED))
 
-    if task_ids is None and (result.rowcount > 0 or force):
+    if force:
+        active_tasks = session.exec(
+            select(func.count(col(Task.id)))
+            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.org_id) == org.id)
+            .where(
+                col(Task.status).in_(
+                    [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+                )
+            )
+        ).one()
+        if active_tasks == 0:
+            benchmark_row.status = BenchmarkStatus.STOPPED
+            terminalize_active_dispatches(session, benchmark_row.id)
+            session.add(benchmark_row)
+    elif task_ids is None and result.rowcount > 0:
         benchmark_row.status = BenchmarkStatus.STOPPING
         session.add(benchmark_row)
-
-    return tasks_were_active
 
 
 async def initiate_stop_benchmark(
@@ -84,28 +82,20 @@ async def initiate_stop_benchmark(
     force: bool,
     org: Org,
     task_ids: list[str] | None = None,
-) -> bool:
-    """Initiate Stop without interrupting work that already started unless forced.
-
-    Returns whether sandbox-owning tasks were active before this transition.
-    """
+) -> None:
+    """Initiate Stop without interrupting work that already started unless forced."""
     try:
-        tasks_were_stopped = apply_stop_benchmark(benchmark_row, session, force, org, task_ids)
+        apply_stop_benchmark(benchmark_row, session, force, org, task_ids)
         session.commit()
-        return tasks_were_stopped
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error stopping run {benchmark_row.id}: {str(e)}") from e
 
 
-async def stop_sandbox(sandbox: Sandbox, provider: SandboxProvider, org: Org) -> str | None:
+async def stop_sandbox(sandbox: Sandbox, provider: SandboxProvider, org: Org) -> None:
     try:
         await delete_sandbox(sandbox, provider, initiated_by="force_stop", org_id=str(org.id))
-        return None
-    except SandboxNotFoundError:
-        logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
-        return None
-    except Exception as e:
-        return f"{str(e)}: {traceback.format_exc()}"
+    except Exception:
+        logger.exception("Failed to send force-stop signal for sandbox %s", sandbox.name)
 
 
 async def sandbox_generator(
@@ -131,141 +121,29 @@ async def sandbox_generator(
             yield sandbox
 
 
-async def drain_sandboxes(
-    benchmark_row: Benchmark,
-    provider: SandboxProvider,
-    task_ids: list[str] | None,
-    timeout_seconds: float,
-) -> list[Sandbox]:
-    """Wait for the executor to delete the sandboxes it owns and return the ones left behind.
-
-    The executor cancels stopped tasks within one monitor poll and then tears down each of
-    its sandboxes. The caller must not delete the returned sandboxes if their owner is still
-    active: deleting underneath it instead fails whatever command is still in flight.
-    """
-    deadline = time.monotonic() + timeout_seconds
-    while True:
-        remaining = [sandbox async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids)]
-        if not remaining or time.monotonic() >= deadline:
-            return remaining
-        await asyncio.sleep(SANDBOX_DRAIN_POLL_SECONDS)
-
-
 async def force_stop_sandboxes(
     benchmark_row: Benchmark,
-    session: Session,
     sandbox_provider_secret_name: str,
     aws_runtime: AWSRuntime,
     org: Org,
     sandbox_provider: str = "daytona",
     task_ids: list[str] | None = None,
-    tasks_were_active_before_stop: bool | None = None,
 ) -> None:
-    """
-    Stops active work and deletes sandboxes only when no owner can still be active.
-    Sandboxes that may still be owned by stopped work are left for executor/orphan cleanup.
-    A deferred cleanup leaves the benchmark in STOPPING so this operation can be retried.
-    NOTE: If task is not in progress but sandbox exists, we kill it and leave the task status as is.
-
-    Raises:
-        TrackerServiceError: If there are any errors stopping the sandboxes
-    """
+    """Send provider kill signals without coupling provider teardown to DB state."""
     benchmark_service = benchmark_row.benchmark_service()
-    provider = benchmark_service.get_sandbox_provider(
-        fetch_sandbox_provider_config(sandbox_provider_secret_name, aws_runtime.clients, sandbox_provider)
-    )
-
-    # Update all tasks being processed to stopped
-    task_update = (
-        update(Task)
-        .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.org_id) == org.id)
-        .where(col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]))
-    )
-    if task_ids:
-        task_update = task_update.where(col(Task.task_id).in_(task_ids))
-
-    active_task_count = select(func.count(col(Task.id))).where(
-        col(Task.benchmark) == benchmark_row.id,
-        col(Task.org_id) == org.id,
-        col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]),
-    )
-    if task_ids:
-        active_task_count = active_task_count.where(col(Task.task_id).in_(task_ids))
-
-    tasks_were_active = session.exec(active_task_count).one() > 0
-    if tasks_were_active_before_stop:
-        tasks_were_active = True
-    session.exec(task_update.values(status=TaskStatus.STOPPED))
-
-    # A live dispatch is the durable ownership signal for the managed executor. Keep the
-    # pre-stop value so we know whether the dispatch/task could still be cleaning up after
-    # the task rows are marked STOPPED.
-    executor_active = active_dispatch_exists(session, benchmark_row.id)
-
-    session.commit()
-
-    # Iterate through each running sandbox and stop it, collecting error messages
-    results: dict[str, str | None] = {}
-    deletion_deferred = False
     try:
-        # A retry after a deferred cleanup gets the same grace period even if the
-        # first attempt already revoked the dispatch.
-        retrying_deferred_cleanup = benchmark_row.status == BenchmarkStatus.STOPPING and not executor_active
-        drain_seconds = SANDBOX_DRAIN_TIMEOUT_SECONDS if executor_active or retrying_deferred_cleanup else 0.0
-        remaining_sandboxes = await drain_sandboxes(benchmark_row, provider, task_ids, drain_seconds)
-
-        # Never reap a sandbox while its owner may still be alive. A dispatch can finish
-        # during the drain, in which case its cleanup is complete and direct deletion is safe.
-        # Without a dispatch, an active task is an older/unmanaged execution path for which
-        # Tracker has no reliable process-liveness signal, so defer cleanup conservatively.
-        owner_still_active = (
-            active_dispatch_exists(session, benchmark_row.id) if executor_active else tasks_were_active
+        provider = benchmark_service.get_sandbox_provider(
+            fetch_sandbox_provider_config(sandbox_provider_secret_name, aws_runtime.clients, sandbox_provider)
         )
-        if remaining_sandboxes and owner_still_active:
-            sandbox_names = ", ".join(sandbox.name for sandbox in remaining_sandboxes)
-            logger.warning(
-                f"Deferring force-stop deletion for sandboxes that may still be owned by active work: {sandbox_names}"
-            )
-            deletion_deferred = True
-            remaining_sandboxes = []
-
-        for sandbox in remaining_sandboxes:
-            result = await stop_sandbox(sandbox, provider, org)
-            results[sandbox.name] = result
+        sandboxes = [sandbox async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids)]
+        await asyncio.gather(*(stop_sandbox(sandbox, provider, org) for sandbox in sandboxes))
+    except Exception:
+        logger.exception("Unable to send force-stop signals for benchmark %s", benchmark_row.id)
     finally:
-        await benchmark_service.close()
-
-    error_message: str = "\n".join(
-        f"{task_alias}: {error_message}" for task_alias, error_message in results.items() if error_message
-    )
-
-    # Sandbox teardown releases the request's original benchmark lock. Reacquire
-    # it so Retry admission cannot land between the runnable check and revocation.
-    benchmark_row = fetch_benchmark_row(benchmark_row.id, session, org, for_update=True)
-    finished_statuses: list[TaskStatus] = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
-    tasks_still_running: int = session.exec(
-        select(func.count(col(Task.id)))
-        .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.org_id) == org.id)
-        .where(col(Task.status).notin_(finished_statuses))
-    ).one()
-
-    if deletion_deferred:
-        # Keep the run retryable while ownership is ambiguous. A later force stop can
-        # re-list these sandboxes after the owner exits and complete the cleanup.
-        if not tasks_still_running:
-            benchmark_row.status = BenchmarkStatus.STOPPING
-            terminalize_active_dispatches(session, benchmark_row.id)
-            session.add(benchmark_row)
-    elif not tasks_still_running:
-        benchmark_row.status = BenchmarkStatus.STOPPED
-        terminalize_active_dispatches(session, benchmark_row.id)
-        session.add(benchmark_row)
-    session.commit()
-
-    if error_message:
-        raise TrackerServiceError(f"Unexpected errors stopping sandboxes:\n{error_message}")
+        try:
+            await benchmark_service.close()
+        except Exception:
+            logger.exception("Unable to close provider client for benchmark %s", benchmark_row.id)
 
 
 async def reset_to_in_progress_status(
