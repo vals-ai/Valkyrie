@@ -15,6 +15,11 @@ from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.tracker_client import TrackerService
 
 _TASK_ID_PREVIEW_LIMIT = 5
+_FAILURE_CATEGORY_LABELS = {
+    "valkyrie": "Platform",
+    "harness": "Harness",
+    "unknown": "Unknown",
+}
 
 
 def _utc_isoformat(value: datetime) -> str:
@@ -123,23 +128,31 @@ def format_run_errors_json(
     )
 
 
+def _failure_label(value: str | None, fallback: str, *, capitalize_words: bool) -> str:
+    if value is None:
+        return fallback
+
+    safe_value = terminal_safe(value, preserve_newlines=False).replace("_", " ")
+    if capitalize_words:
+        return " ".join(word[:1].upper() + word[1:] for word in safe_value.split(" "))
+
+    label = safe_value[:1].upper() + safe_value[1:]
+    return label.replace("Websocket", "WebSocket")
+
+
 def _failure_context(failure: FailureSummary) -> str:
-    parts = [
-        f"category={failure.category.value}",
-        f"classification={failure.classification_state.value}",
-        f"effect={failure.terminal_effect.value}",
-    ]
-    for name, value in (
-        ("producer", failure.producer),
-        ("operation", failure.operation),
-        ("type", failure.error_type),
-        ("cause", failure.cause_code),
-        ("attempt", failure.task_attempt_id),
-        ("retry", failure.retry_sequence),
-    ):
-        if value is not None:
-            parts.append(f"{name}={terminal_safe(str(value), preserve_newlines=False)}")
-    return " | ".join(parts)
+    category = _FAILURE_CATEGORY_LABELS[failure.category.value]
+    component = _failure_label(failure.producer, "Unknown component", capitalize_words=True)
+    operation = _failure_label(failure.operation, "Unknown operation", capitalize_words=False)
+    lines = [f"{category} / {component} / {operation}"]
+
+    if failure.cause_code is not None:
+        safe_cause = terminal_safe(failure.cause_code, preserve_newlines=False)
+        lines.append(f"Cause: {safe_cause}")
+    elif failure.classification_state.value == "details_unavailable":
+        lines.append("Details unavailable")
+
+    return "\n".join(lines)
 
 
 def format_run_errors_text(response: FinalViewResponse) -> None:

@@ -34,8 +34,8 @@ def make_failure_summary(
     task_row_id: UUID | None = None,
     attempt_id: UUID | None = None,
     category: FailureCategory = FailureCategory.VALKYRIE,
-    producer: str = "tracker",
-    operation: str = "process_run",
+    producer: str | None = "tracker",
+    operation: str | None = "process_run",
     classification_state: FailureClassificationState = FailureClassificationState.UNCLASSIFIED,
     cause_code: str | None = None,
     terminal_effect: FailureTerminalEffect = FailureTerminalEffect.TERMINAL,
@@ -162,19 +162,29 @@ def test_errors_text_preserves_empty_messages(monkeypatch: pytest.MonkeyPatch) -
 def test_errors_text_sanitizes_terminal_controls(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
     unsafe_message = "\x1b]8;;https://example.invalid\x07click\x1b]8;;\x07\rrewritten\nnext\tline\u202e"
-    tracker = StubErrorsTracker(
-        make_final_view(
-            run_id,
-            error_message=unsafe_message,
-            task_errors={"task\x1b[31m": "boom\b"},
-        )
+    run_failure = make_failure_summary(
+        run_id,
+        message=unsafe_message,
+        category=FailureCategory.HARNESS,
+        producer="benchmark_service\x1b[31m",
+        operation="websocket\x07",
+        classification_state=FailureClassificationState.CLASSIFIED,
+        cause_code="cause\r",
     )
+    response = make_final_view(
+        run_id,
+        error_message=unsafe_message,
+        task_errors={"task\x1b[31m": "boom\b"},
+    ).model_copy(update={"run_failure": run_failure})
+    tracker = StubErrorsTracker(response)
 
     result = invoke_with_tracker(monkeypatch, tracker, run_id)
 
     assert result.exit_code == 0, result.output
     for control in ("\x1b", "\x07", "\r", "\b", "\t", "\u202e"):
         assert control not in result.stdout
+    assert "Harness / Benchmark Service\\x1b[31m / WebSocket\\x07" in result.stdout
+    assert "Cause: cause\\r" in result.stdout
     assert "\\x1b" in result.stdout
     assert "\\x07" in result.stdout
     assert "\\r" in result.stdout
@@ -380,28 +390,53 @@ def test_errors_text_renders_structured_provenance_and_counts(monkeypatch: pytes
     run_id = uuid4()
     run_failure = make_failure_summary(
         run_id,
-        message="Run failed.",
+        message="Benchmark service disconnected",
         category=FailureCategory.HARNESS,
-        producer="benchmark_service\x1b[31m",
-        operation="stream",
+        producer="benchmark_service",
+        operation="websocket",
         classification_state=FailureClassificationState.CLASSIFIED,
-        cause_code="websocket_closed",
+        cause_code="websocket_connection_closed",
     )
-    task_failure = make_failure_summary(
+    platform_failure = make_failure_summary(
         run_id,
-        message="Task failed.",
+        message="Executor host failed",
         task_row_id=uuid4(),
         attempt_id=uuid4(),
+        producer="executor_host",
+        operation="run_executor_dispatch",
         retry_sequence=2,
     )
+    unknown_failure = make_failure_summary(
+        run_id,
+        message="Sandbox setup failed",
+        task_row_id=uuid4(),
+        category=FailureCategory.UNKNOWN,
+        producer="sandbox_provider",
+        operation="setup",
+        classification_state=FailureClassificationState.DETAILS_UNAVAILABLE,
+    )
+    legacy_failure = make_failure_summary(
+        run_id,
+        message="Legacy failure",
+        task_row_id=uuid4(),
+        category=FailureCategory.UNKNOWN,
+        producer=None,
+        operation=None,
+        classification_state=FailureClassificationState.LEGACY_UNCLASSIFIED,
+    )
+    task_failures = {
+        "task-legacy": legacy_failure,
+        "task-platform": platform_failure,
+        "task-unknown": unknown_failure,
+    }
     response = make_final_view(
         run_id,
         error_message=run_failure.message,
-        task_errors={"task-b": task_failure.message},
+        task_errors={task_id: failure.message for task_id, failure in task_failures.items()},
     ).model_copy(
         update={
             "run_failure": run_failure,
-            "task_failures": {"task-b": task_failure},
+            "task_failures": task_failures,
             "recovered_failure_count": 3,
             "secondary_failure_count": 1,
         }
@@ -413,16 +448,40 @@ def test_errors_text_renders_structured_provenance_and_counts(monkeypatch: pytes
     assert result.exit_code == 0, result.output
     assert "Task failure provenance" in result.stdout
     assert "Historical non-terminal failures" in result.stdout
-    assert "category=harness" in result.stdout
-    assert "producer=benchmark_service\\x1b[31m" in result.stdout
-    assert "operation=stream" in result.stdout
-    assert "classification=classified" in result.stdout
-    assert "cause=websocket_closed" in result.stdout
-    assert f"attempt={task_failure.task_attempt_id}" in result.stdout
-    assert "effect=terminal" in result.stdout
+    assert "Harness / Benchmark Service / WebSocket" in result.stdout
+    assert "Cause: websocket_connection_closed" in result.stdout
+    assert (
+        "task-platform:\n"
+        "  Platform / Executor Host / Run executor dispatch\n"
+        "task-unknown:"
+    ) in result.stdout
+    assert "Unknown / Sandbox Provider / Setup" in result.stdout
+    assert "Details unavailable" in result.stdout
+    assert (
+        "task-legacy:\n"
+        "  Unknown / Unknown component / Unknown operation\n"
+        "task-platform:"
+    ) in result.stdout
+    for message in (
+        "Benchmark service disconnected",
+        "Executor host failed",
+        "Sandbox setup failed",
+        "Legacy failure",
+    ):
+        assert message in result.stdout
+    for technical_field in (
+        "category=",
+        "classification=",
+        "effect=",
+        "producer=",
+        "operation=",
+        "type=",
+        "attempt=",
+        "retry=",
+    ):
+        assert technical_field not in result.stdout
     assert "Recovered: 3" in result.stdout
     assert "Secondary: 1" in result.stdout
-    assert "\x1b" not in result.stdout
 
 
 def test_errors_schema_v2_requires_json_without_tracker_access(monkeypatch: pytest.MonkeyPatch) -> None:
