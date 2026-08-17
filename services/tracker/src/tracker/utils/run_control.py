@@ -122,8 +122,8 @@ async def drain_sandboxes(
     """Wait for the executor to delete the sandboxes it owns and return the ones left behind.
 
     The executor cancels stopped tasks within one monitor poll and then tears down each of
-    its sandboxes. Deleting underneath it instead fails whatever command is still in flight,
-    so give it a bounded window before reaping what remains.
+    its sandboxes. The caller must not delete the returned sandboxes if their owner is still
+    active: deleting underneath it instead fails whatever command is still in flight.
     """
     deadline = time.monotonic() + timeout_seconds
     while True:
@@ -143,7 +143,8 @@ async def force_stop_sandboxes(
     task_ids: list[str] | None = None,
 ) -> None:
     """
-    Stops and deletes all sandboxes which are in progress or evaluating.
+    Stops active work and deletes sandboxes only when no owner can still be active.
+    Sandboxes that may still be owned by stopped work are left for executor/orphan cleanup.
     NOTE: If task is not in progress but sandbox exists, we kill it and leave the task status as is.
 
     Raises:
@@ -164,9 +165,20 @@ async def force_stop_sandboxes(
     if task_ids:
         task_update = task_update.where(col(Task.task_id).in_(task_ids))
 
+    active_task_count = select(func.count(col(Task.id))).where(
+        col(Task.benchmark) == benchmark_row.id,
+        col(Task.org_id) == org.id,
+        col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]),
+    )
+    if task_ids:
+        active_task_count = active_task_count.where(col(Task.task_id).in_(task_ids))
+
+    tasks_were_active = session.exec(active_task_count).one() > 0
     session.exec(task_update.values(status=TaskStatus.STOPPED))
 
-    # Only a live dispatch can still be working inside these sandboxes.
+    # A live dispatch is the durable ownership signal for the managed executor. Keep the
+    # pre-stop value so we know whether the dispatch/task could still be cleaning up after
+    # the task rows are marked STOPPED.
     executor_active = active_dispatch_exists(session, benchmark_row.id)
 
     session.commit()
@@ -175,7 +187,23 @@ async def force_stop_sandboxes(
     results: dict[str, str | None] = {}
     try:
         drain_seconds = SANDBOX_DRAIN_TIMEOUT_SECONDS if executor_active else 0.0
-        for sandbox in await drain_sandboxes(benchmark_row, provider, task_ids, drain_seconds):
+        remaining_sandboxes = await drain_sandboxes(benchmark_row, provider, task_ids, drain_seconds)
+
+        # Never reap a sandbox while its owner may still be alive. A dispatch can finish
+        # during the drain, in which case its cleanup is complete and direct deletion is safe.
+        # Without a dispatch, an active task is an older/unmanaged execution path for which
+        # Tracker has no reliable process-liveness signal, so defer cleanup conservatively.
+        owner_still_active = (
+            active_dispatch_exists(session, benchmark_row.id) if executor_active else tasks_were_active
+        )
+        if remaining_sandboxes and owner_still_active:
+            sandbox_names = ", ".join(sandbox.name for sandbox in remaining_sandboxes)
+            logger.warning(
+                f"Deferring force-stop deletion for sandboxes that may still be owned by active work: {sandbox_names}"
+            )
+            remaining_sandboxes = []
+
+        for sandbox in remaining_sandboxes:
             result = await stop_sandbox(sandbox, provider, org)
             results[sandbox.name] = result
     finally:

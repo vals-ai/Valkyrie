@@ -237,7 +237,7 @@ class TestRunRecovery:
 
         Test cases:
         - Graceful stop changes only the selected tasks.
-        - Force stop deletes only the selected task sandbox.
+        - Force stop leaves the selected task sandbox for its active executor to release.
         - Empty and out-of-run selections are rejected.
         - Unselected work and benchmark status remain unchanged.
         """
@@ -342,7 +342,7 @@ class TestRunRecovery:
             "task_force_selected": TaskStatus.STOPPED,
             "task_unselected": TaskStatus.IN_PROGRESS,
         }
-        assert provider.deleted_sandbox_ids == ["sandbox-task_force_selected"]
+        assert provider.deleted_sandbox_ids == []
 
         database_session.refresh(foreign_task)
         assert foreign_task.status == TaskStatus.PENDING
@@ -2393,10 +2393,16 @@ class TestRunRecovery:
         return provider
 
     @pytest.mark.parametrize(
-        ("executor_running", "expected_deletions", "expected_list_calls"),
+        ("executor_running", "task_status", "expected_deletions", "expected_list_calls"),
         [
-            pytest.param(True, [], 2, id="waits_for_executor_teardown"),
-            pytest.param(False, [MockReleasingSandboxProvider.sandbox_id], 1, id="nothing_left_to_race"),
+            pytest.param(True, TaskStatus.IN_PROGRESS, [], 2, id="waits_for_executor_teardown"),
+            pytest.param(
+                False,
+                TaskStatus.FINISHED,
+                [MockReleasingSandboxProvider.sandbox_id],
+                1,
+                id="nothing_left_to_race",
+            ),
         ],
     )
     async def test_force_stop_lets_a_live_executor_release_its_own_sandboxes(
@@ -2407,6 +2413,7 @@ class TestRunRecovery:
         harness_config: HarnessConfig,
         executor_authority: Any,
         executor_running: bool,
+        task_status: TaskStatus,
         expected_deletions: list[str],
         expected_list_calls: int,
     ) -> None:
@@ -2418,6 +2425,9 @@ class TestRunRecovery:
         """
         benchmark_row = example_benchmark_object
         provider = self._arrange_force_stop_race(benchmark_row, database_session, monkeypatch, release_after_polls=1)
+        task = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).one()
+        task.status = task_status
+        database_session.commit()
         if executor_running:
             executor_authority(benchmark_row, session=database_session)
 
@@ -2434,7 +2444,7 @@ class TestRunRecovery:
         database_session.refresh(benchmark_row)
         assert benchmark_row.status == BenchmarkStatus.STOPPED
 
-    async def test_force_stop_reaps_sandboxes_the_executor_never_releases(
+    async def test_force_stop_defers_sandboxes_the_executor_never_releases(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
@@ -2442,7 +2452,7 @@ class TestRunRecovery:
         harness_config: HarnessConfig,
         executor_authority: Any,
     ) -> None:
-        """A stalled executor cannot hold its sandboxes past the drain window."""
+        """A stalled executor's sandboxes are deferred instead of being deleted mid-command."""
         benchmark_row = example_benchmark_object
         provider = self._arrange_force_stop_race(
             benchmark_row, database_session, monkeypatch, release_after_polls=_NEVER_RELEASED
@@ -2458,7 +2468,31 @@ class TestRunRecovery:
             self._test_org,
         )
 
-        assert provider.deleted_sandbox_ids == [MockReleasingSandboxProvider.sandbox_id]
+        assert provider.deleted_sandbox_ids == []
+
+    async def test_force_stop_defers_sandboxes_for_active_tasks_without_dispatch(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        """An active task without a dispatch has no safe liveness signal for direct deletion."""
+        benchmark_row = example_benchmark_object
+        provider = self._arrange_force_stop_race(
+            benchmark_row, database_session, monkeypatch, release_after_polls=_NEVER_RELEASED
+        )
+        monkeypatch.setattr(run_control_module, "SANDBOX_DRAIN_TIMEOUT_SECONDS", 0.0)
+
+        await force_stop_sandboxes(
+            benchmark_row,
+            database_session,
+            harness_config.sandbox_provider_secret_name,
+            AWSRuntime.from_harness_config(harness_config),
+            self._test_org,
+        )
+
+        assert provider.deleted_sandbox_ids == []
 
     async def test_stop_sandbox_audits_forced_stop_deletion(self, monkeypatch: MonkeyPatch) -> None:
         """Forced stop identifies itself and its org on every sandbox deletion."""
