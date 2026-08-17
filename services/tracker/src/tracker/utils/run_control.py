@@ -46,8 +46,11 @@ def apply_stop_benchmark(
     force: bool,
     org: Org,
     task_ids: list[str] | None = None,
-) -> None:
-    """Apply the Stop state transition without committing the transaction."""
+) -> bool:
+    """Apply the Stop state transition without committing the transaction.
+
+    Returns whether any task that can own a sandbox was transitioned to STOPPED.
+    """
     task_update = (
         update(Task)
         .where(col(Task.benchmark) == benchmark_row.id)
@@ -57,11 +60,22 @@ def apply_stop_benchmark(
     if task_ids:
         task_update = task_update.where(col(Task.task_id).in_(task_ids))
 
+    active_task_count = select(func.count(col(Task.id))).where(
+        col(Task.benchmark) == benchmark_row.id,
+        col(Task.org_id) == org.id,
+        col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.EVALUATING]),
+    )
+    if task_ids:
+        active_task_count = active_task_count.where(col(Task.task_id).in_(task_ids))
+
+    tasks_were_active = session.exec(active_task_count).one() > 0
     result = session.exec(task_update.values(status=TaskStatus.STOPPED))
 
     if task_ids is None and (result.rowcount > 0 or force):
         benchmark_row.status = BenchmarkStatus.STOPPING
         session.add(benchmark_row)
+
+    return tasks_were_active
 
 
 async def initiate_stop_benchmark(
@@ -70,11 +84,15 @@ async def initiate_stop_benchmark(
     force: bool,
     org: Org,
     task_ids: list[str] | None = None,
-) -> None:
-    """Initiate Stop without interrupting work that already started unless forced."""
+) -> bool:
+    """Initiate Stop without interrupting work that already started unless forced.
+
+    Returns whether sandbox-owning tasks were active before this transition.
+    """
     try:
-        apply_stop_benchmark(benchmark_row, session, force, org, task_ids)
+        tasks_were_stopped = apply_stop_benchmark(benchmark_row, session, force, org, task_ids)
         session.commit()
+        return tasks_were_stopped
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error stopping run {benchmark_row.id}: {str(e)}") from e
 
@@ -141,10 +159,12 @@ async def force_stop_sandboxes(
     org: Org,
     sandbox_provider: str = "daytona",
     task_ids: list[str] | None = None,
+    tasks_were_active_before_stop: bool | None = None,
 ) -> None:
     """
     Stops active work and deletes sandboxes only when no owner can still be active.
     Sandboxes that may still be owned by stopped work are left for executor/orphan cleanup.
+    A deferred cleanup leaves the benchmark in STOPPING so this operation can be retried.
     NOTE: If task is not in progress but sandbox exists, we kill it and leave the task status as is.
 
     Raises:
@@ -174,6 +194,8 @@ async def force_stop_sandboxes(
         active_task_count = active_task_count.where(col(Task.task_id).in_(task_ids))
 
     tasks_were_active = session.exec(active_task_count).one() > 0
+    if tasks_were_active_before_stop:
+        tasks_were_active = True
     session.exec(task_update.values(status=TaskStatus.STOPPED))
 
     # A live dispatch is the durable ownership signal for the managed executor. Keep the
@@ -185,8 +207,12 @@ async def force_stop_sandboxes(
 
     # Iterate through each running sandbox and stop it, collecting error messages
     results: dict[str, str | None] = {}
+    deletion_deferred = False
     try:
-        drain_seconds = SANDBOX_DRAIN_TIMEOUT_SECONDS if executor_active else 0.0
+        # A retry after a deferred cleanup gets the same grace period even if the
+        # first attempt already revoked the dispatch.
+        retrying_deferred_cleanup = benchmark_row.status == BenchmarkStatus.STOPPING and not executor_active
+        drain_seconds = SANDBOX_DRAIN_TIMEOUT_SECONDS if executor_active or retrying_deferred_cleanup else 0.0
         remaining_sandboxes = await drain_sandboxes(benchmark_row, provider, task_ids, drain_seconds)
 
         # Never reap a sandbox while its owner may still be alive. A dispatch can finish
@@ -201,6 +227,7 @@ async def force_stop_sandboxes(
             logger.warning(
                 f"Deferring force-stop deletion for sandboxes that may still be owned by active work: {sandbox_names}"
             )
+            deletion_deferred = True
             remaining_sandboxes = []
 
         for sandbox in remaining_sandboxes:
@@ -224,7 +251,14 @@ async def force_stop_sandboxes(
         .where(col(Task.status).notin_(finished_statuses))
     ).one()
 
-    if not tasks_still_running:
+    if deletion_deferred:
+        # Keep the run retryable while ownership is ambiguous. A later force stop can
+        # re-list these sandboxes after the owner exits and complete the cleanup.
+        if not tasks_still_running:
+            benchmark_row.status = BenchmarkStatus.STOPPING
+            terminalize_active_dispatches(session, benchmark_row.id)
+            session.add(benchmark_row)
+    elif not tasks_still_running:
         benchmark_row.status = BenchmarkStatus.STOPPED
         terminalize_active_dispatches(session, benchmark_row.id)
         session.add(benchmark_row)

@@ -1232,7 +1232,17 @@ class TestRunRecovery:
         benchmark_row.arguments = benchmark_row.arguments.model_copy(
             update={"sandbox_provider": "modal", "sandbox_provider_secret_name": "ModalSecrets"}
         )
-        database_session.add(benchmark_row)
+        database_session.add_all(
+            [
+                benchmark_row,
+                Task(
+                    org_id=TEST_ORG_ID,
+                    task_id="evaluating-task",
+                    benchmark=benchmark_row.id,
+                    status=TaskStatus.EVALUATING,
+                ),
+            ]
+        )
         database_session.commit()
 
         captured: dict[str, object] = {}
@@ -1246,10 +1256,12 @@ class TestRunRecovery:
             *,
             sandbox_provider: str,
             task_ids: list[str] | None = None,
+            tasks_were_active_before_stop: bool | None = None,
         ) -> None:
             captured["sandbox_provider_secret_name"] = sandbox_provider_secret_name
             captured["sandbox_provider"] = sandbox_provider
             captured["task_ids"] = task_ids
+            captured["tasks_were_active_before_stop"] = tasks_were_active_before_stop
 
         monkeypatch.setattr("main.force_stop_sandboxes", _mock_force_stop_sandboxes)
 
@@ -1263,6 +1275,7 @@ class TestRunRecovery:
             "sandbox_provider_secret_name": "ModalSecrets",
             "sandbox_provider": "modal",
             "task_ids": None,
+            "tasks_were_active_before_stop": True,
         }
 
     async def test_force_stop_missing_provider_secret_does_not_mutate_run(
@@ -2457,7 +2470,7 @@ class TestRunRecovery:
         provider = self._arrange_force_stop_race(
             benchmark_row, database_session, monkeypatch, release_after_polls=_NEVER_RELEASED
         )
-        executor_authority(benchmark_row, session=database_session)
+        authority = executor_authority(benchmark_row, session=database_session)
         monkeypatch.setattr(run_control_module, "SANDBOX_DRAIN_TIMEOUT_SECONDS", 0.05)
 
         await force_stop_sandboxes(
@@ -2469,6 +2482,25 @@ class TestRunRecovery:
         )
 
         assert provider.deleted_sandbox_ids == []
+        database_session.refresh(benchmark_row)
+        dispatch = database_session.get(ExecutorDispatch, authority.dispatch_id)
+        assert benchmark_row.status == BenchmarkStatus.STOPPING
+        assert dispatch is not None
+        assert dispatch.status == ExecutorDispatchStatus.FAILED
+
+        # The dispatch is revoked without deleting its sandboxes; a retry gets a drain
+        # window before the now-ownerless leftovers are reaped.
+        await force_stop_sandboxes(
+            benchmark_row,
+            database_session,
+            harness_config.sandbox_provider_secret_name,
+            AWSRuntime.from_harness_config(harness_config),
+            self._test_org,
+        )
+
+        assert provider.deleted_sandbox_ids == [MockReleasingSandboxProvider.sandbox_id]
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.STOPPED
 
     async def test_force_stop_defers_sandboxes_for_active_tasks_without_dispatch(
         self,
@@ -2493,6 +2525,59 @@ class TestRunRecovery:
         )
 
         assert provider.deleted_sandbox_ids == []
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.STOPPING
+
+        # The retained STOPPING state makes a later force stop an actionable cleanup retry.
+        await force_stop_sandboxes(
+            benchmark_row,
+            database_session,
+            harness_config.sandbox_provider_secret_name,
+            AWSRuntime.from_harness_config(harness_config),
+            self._test_org,
+        )
+
+        assert provider.deleted_sandbox_ids == [MockReleasingSandboxProvider.sandbox_id]
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.STOPPED
+
+    async def test_force_stop_uses_task_ownership_captured_before_graceful_stop(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        """Preserve BUILDING/EVALUATING ownership across the graceful stop phase."""
+        benchmark_row = example_benchmark_object
+        provider = self._arrange_force_stop_race(
+            benchmark_row, database_session, monkeypatch, release_after_polls=_NEVER_RELEASED
+        )
+        task = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).one()
+        task.status = TaskStatus.EVALUATING
+        database_session.commit()
+
+        tasks_were_active = await initiate_stop_benchmark(
+            benchmark_row,
+            database_session,
+            force=True,
+            org=self._test_org,
+        )
+        monkeypatch.setattr(run_control_module, "SANDBOX_DRAIN_TIMEOUT_SECONDS", 0.0)
+
+        await force_stop_sandboxes(
+            benchmark_row,
+            database_session,
+            harness_config.sandbox_provider_secret_name,
+            AWSRuntime.from_harness_config(harness_config),
+            self._test_org,
+            tasks_were_active_before_stop=tasks_were_active,
+        )
+
+        assert tasks_were_active is True
+        assert provider.deleted_sandbox_ids == []
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.STOPPING
 
     async def test_stop_sandbox_audits_forced_stop_deletion(self, monkeypatch: MonkeyPatch) -> None:
         """Forced stop identifies itself and its org on every sandbox deletion."""
