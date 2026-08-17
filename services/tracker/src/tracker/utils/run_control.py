@@ -43,12 +43,7 @@ def apply_stop_benchmark(
     """Apply the Stop state transition without committing the transaction."""
     # Stop and recovery both update the benchmark and its tasks. Lock the benchmark
     # first so every lifecycle transition uses the same lock order.
-    session.exec(
-        select(col(Benchmark.id))
-        .where(col(Benchmark.id) == benchmark_row.id)
-        .where(col(Benchmark.org_id) == org.id)
-        .with_for_update()
-    ).one()
+    fetch_benchmark_row(benchmark_row.id, session, org, for_update=True)
 
     stoppable_statuses = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]
     if force:
