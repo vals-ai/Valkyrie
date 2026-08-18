@@ -608,10 +608,10 @@ async def _process_task_attempt(
         with Session(bind=engine) as task_session:
             task_session.add(evaluation_result_row)
             task_in_session = fetch_task_row(task_row.id, task_session, org)
-            if task_in_session.task_breakdown:
-                existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
-                if existing_breakdown is not None:
-                    existing_breakdown.evaluation_run_duration = resume_eval_duration
+            assert task_in_session.task_breakdown is not None
+            existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
+            assert existing_breakdown is not None
+            existing_breakdown.evaluation_run_duration = resume_eval_duration
             if not commit_task_status_transition(
                 task_row.id,
                 task_session,
