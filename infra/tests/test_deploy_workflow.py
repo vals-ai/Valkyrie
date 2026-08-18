@@ -301,6 +301,28 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertNotIn("checks: write", classification_workflow)
         self.assertNotIn("actions/github-script", classification_workflow)
 
+    def test_maintenance_classification_waits_for_environment_approval(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "maintenance-classification.yaml").read_text(encoding="utf-8")
+        classifier = workflow.split("  classify:", maxsplit=1)[1].split("  approve-maintenance:", maxsplit=1)[0]
+        approval = workflow.split("  approve-maintenance:", maxsplit=1)[1].split("  maintenance-gate:", maxsplit=1)[0]
+        gate = workflow.split("  maintenance-gate:", maxsplit=1)[1]
+
+        self.assertIn("classification: ${{ steps.classification.outputs.classification }}", classifier)
+        self.assertIn("target_branch: ${{ steps.template.outputs.target_branch }}", classifier)
+        self.assertIn('classification not in {"safe", "maintenance-required"}', classifier)
+        self.assertIn('payload.get("base_sha") != os.environ["BASE_SHA"]', classifier)
+        self.assertIn('payload.get("head_sha") != os.environ["HEAD_SHA"]', classifier)
+        self.assertIn("if: needs.classify.outputs.classification == 'maintenance-required'", approval)
+        self.assertIn("name: maintenance-${{ needs.classify.outputs.target_branch }}", approval)
+        self.assertIn("permissions: {}", approval)
+        self.assertIn("name: maintenance-classification", gate)
+        self.assertIn("needs: [classify, approve-maintenance]", gate)
+        self.assertIn("if: always()", gate)
+        self.assertIn('if [[ "$CLASSIFY_RESULT" != "success" ]]', gate)
+        self.assertIn("maintenance-required)", gate)
+        self.assertIn('if [[ "$APPROVAL_RESULT" != "success" ]]', gate)
+        self.assertNotIn("force merge", workflow.lower())
+
     def test_executor_build_check_covers_real_arm_images_and_pex(self) -> None:
         workflow = EXECUTOR_BUILD_WORKFLOW.read_text(encoding="utf-8")
 
