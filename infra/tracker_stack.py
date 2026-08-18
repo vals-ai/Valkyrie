@@ -129,12 +129,24 @@ class TrackerStack(Stack):
         )
         db_credentials_secret = cast(aws_secretsmanager.ISecret, self.db_credentials)
 
+        db_engine = aws_rds.DatabaseInstanceEngine.postgres(
+            version=aws_rds.PostgresEngineVersion.VER_16,
+        )
+        db_parameter_group = aws_rds.ParameterGroup(
+            self,
+            "TrackerDbParameters",
+            engine=db_engine,
+            description="Tracker Postgres parameters",
+            parameters={
+                "log_min_duration_statement": str(stage_config.database.slow_query_log_threshold_ms),
+            },
+        )
+
         self.database = aws_rds.DatabaseInstance(
             self,
             "TrackerDatabase",
-            engine=aws_rds.DatabaseInstanceEngine.postgres(
-                version=aws_rds.PostgresEngineVersion.VER_16,
-            ),
+            engine=db_engine,
+            parameter_group=db_parameter_group,
             instance_type=aws_ec2.InstanceType(stage_config.database.instance_class),
             vpc=vpc,
             vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PUBLIC),
@@ -146,6 +158,9 @@ class TrackerStack(Stack):
             deletion_protection=True,
             removal_policy=cdk.RemovalPolicy.RETAIN,
             backup_retention=Duration.days(stage_config.database.backup_retention_days),
+            enable_performance_insights=stage_config.database.performance_insights,
+            cloudwatch_logs_exports=["postgresql"],
+            cloudwatch_logs_retention=stage_config.service_log_retention,
         )
 
         db_env = {

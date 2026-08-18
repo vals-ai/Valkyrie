@@ -29,6 +29,8 @@ class DatabaseConfig:
     allocated_storage_gb: int
     backup_retention_days: int
     connection_alarm_threshold: int
+    performance_insights: bool = False
+    slow_query_log_threshold_ms: int = 1000
 
 
 @dataclass(frozen=True)
@@ -88,10 +90,11 @@ PROD_CONFIG = StageConfig(
     tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=1, max_tasks=2),
     worker=ServiceConfig(cpu=8192, memory_mib=32768, min_tasks=4, max_tasks=8),
     database=DatabaseConfig(
-        instance_class="t4g.small",
+        instance_class="m7g.large",
         allocated_storage_gb=20,
         backup_retention_days=7,
         connection_alarm_threshold=135,
+        performance_insights=True,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_YEAR,
     managed_aws=ManagedAWSRuntimeConfig(
