@@ -1222,6 +1222,10 @@ async def retry_or_resume_benchmark(
             org=org,
         )
 
+        if pre_action_status == BenchmarkStatus.FINISHED and retry and not verified_task_ids:
+            session.rollback()
+            return RetryOrResumeBenchmarkResponse(status="success")
+
         if pre_action_status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
             if secrets or concurrency is not None or benchmark_url is not None:
                 update_benchmark_resume_arguments(

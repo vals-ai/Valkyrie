@@ -1619,6 +1619,58 @@ class TestRunRecovery:
         assert persisted.arguments.concurrency == 7
         assert persisted.arguments.contract.secrets == {"MODEL_API_KEY": "rotated-secret"}
 
+    async def test_finished_managed_retry_noops_without_error_tasks(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
+        mock_kicker: MockKicker,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.FINISHED
+        benchmark_row.finished_at = _RESUMED_ATTEMPT_AT
+        benchmark_row.aws_managed = True
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(
+            update={"sandbox_provider_secret_name": "DaytonaSecrets"}
+        )
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_finished",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+            finished_at=_RESUMED_ATTEMPT_AT,
+        )
+        database_session.add_all([benchmark_row, task_row])
+        database_session.commit()
+        original_finished_at = benchmark_row.finished_at
+        assert original_finished_at is not None
+        original_finished_at = original_finished_at.replace(tzinfo=None)
+
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "deployment-region")
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket")
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group")
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30")
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "success"}
+        assert mock_kicker.queued_calls == []
+        database_session.expire_all()
+        persisted_benchmark = database_session.get(Benchmark, benchmark_row.id)
+        persisted_task = database_session.get(Task, task_row.id)
+        assert persisted_benchmark is not None
+        assert persisted_benchmark.status == BenchmarkStatus.FINISHED
+        assert persisted_benchmark.finished_at == original_finished_at
+        assert persisted_task is not None
+        assert persisted_task.status == TaskStatus.FINISHED
+        assert database_session.exec(select(ExecutorDispatch)).all() == []
+
     async def test_running_resume_noops(
         self,
         example_benchmark_object: Benchmark,
