@@ -285,9 +285,9 @@ def resolve_agent_library_aws_runtime(
 
 
 def resolve_aws_runtime_metadata(org_id: UUID) -> AWSResources | None:
-    """Return non-secret deployment resource locations for an eligible organization."""
+    """Return deployment resources when managed submissions are available to the organization."""
     try:
-        if not organization_can_use_managed_aws(org_id):
+        if not config.AWS_MANAGED_SUBMISSIONS_ENABLED or not organization_can_use_managed_aws(org_id):
             return None
         return _managed_resources()
     except ManagedAWSConfigurationError as exc:
