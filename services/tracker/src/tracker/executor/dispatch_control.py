@@ -134,10 +134,12 @@ def active_dispatch_exists(
     return session.exec(dispatches).first() is not None
 
 
-def _terminalize_failed_task(
+def _terminalize_dispatch_tasks(
     session: Session,
     *,
-    task: Task,
+    benchmark: Benchmark,
+    dispatch: ExecutorDispatch,
+    task_ids: list[str],
     error_message: str,
     producer: str,
     operation: str,
@@ -145,20 +147,34 @@ def _terminalize_failed_task(
     cause_code: str | None,
     finished_at: datetime,
 ) -> None:
-    session.add(
-        ErrorResult(
-            org_id=task.org_id,
-            task=task.id,
-            error_message=error_message,
-            producer=producer,
-            operation=operation,
-            error_type=error_type,
-            cause_code=cause_code,
+    tasks = session.exec(
+        select(Task)
+        .where(col(Task.benchmark) == benchmark.id)
+        .where(col(Task.org_id) == benchmark.org_id)
+        .where(col(Task.task_id).in_(task_ids))
+        .where(col(Task.started_at) <= dispatch.created_at)
+        .where(
+            col(Task.status).in_(
+                (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
+            )
         )
-    )
-    task.status = TaskStatus.ERROR
-    task.finished_at = finished_at
-    session.add(task)
+        .with_for_update()
+    ).all()
+    for task in tasks:
+        session.add(
+            ErrorResult(
+                org_id=task.org_id,
+                task=task.id,
+                error_message=error_message,
+                producer=producer,
+                operation=operation,
+                error_type=error_type,
+                cause_code=cause_code,
+            )
+        )
+        task.status = TaskStatus.ERROR
+        task.finished_at = finished_at
+        session.add(task)
 
 
 def record_dispatch_failure(
@@ -191,30 +207,18 @@ def record_dispatch_failure(
     now = datetime.now(ZoneInfo("UTC"))
     sibling_active = active_dispatch_exists(session, benchmark.id, except_dispatch_id=dispatch_id)
 
-    tasks = session.exec(
-        select(Task)
-        .where(col(Task.benchmark) == benchmark.id)
-        .where(col(Task.org_id) == benchmark.org_id)
-        .where(col(Task.task_id).in_(task_ids))
-        .where(col(Task.started_at) <= dispatch.created_at)
-        .where(
-            col(Task.status).in_(
-                (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
-            )
-        )
-        .with_for_update()
-    ).all()
-    for task in tasks:
-        _terminalize_failed_task(
-            session,
-            task=task,
-            error_message=error_message,
-            producer=producer,
-            operation=operation,
-            error_type=error_type,
-            cause_code=cause_code,
-            finished_at=now,
-        )
+    _terminalize_dispatch_tasks(
+        session,
+        benchmark=benchmark,
+        dispatch=dispatch,
+        task_ids=task_ids,
+        error_message=error_message,
+        producer=producer,
+        operation=operation,
+        error_type=error_type,
+        cause_code=cause_code,
+        finished_at=now,
+    )
     if sibling_active:
         dispatch.status = ExecutorDispatchStatus.FAILED
         dispatch.finished_at = now
@@ -271,29 +275,17 @@ def resolve_enqueue_failure(
         benchmark.error_message = error_message
         session.add(benchmark)
 
-    tasks = session.exec(
-        select(Task)
-        .where(col(Task.benchmark) == benchmark_id)
-        .where(col(Task.org_id) == benchmark.org_id)
-        .where(col(Task.task_id).in_(task_ids))
-        .where(col(Task.started_at) <= dispatch.created_at)
-        .where(
-            col(Task.status).in_(
-                (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
-            )
-        )
-        .with_for_update()
-    ).all()
-    for task in tasks:
-        _terminalize_failed_task(
-            session,
-            task=task,
-            error_message=error_message,
-            producer="executor_dispatch",
-            operation="enqueue",
-            error_type="ExecutorDispatchEnqueueError",
-            cause_code=None,
-            finished_at=now,
-        )
+    _terminalize_dispatch_tasks(
+        session,
+        benchmark=benchmark,
+        dispatch=dispatch,
+        task_ids=task_ids,
+        error_message=error_message,
+        producer="executor_dispatch",
+        operation="enqueue",
+        error_type="ExecutorDispatchEnqueueError",
+        cause_code=None,
+        finished_at=now,
+    )
     session.commit()
     return EnqueueFailureResolution.FAILED

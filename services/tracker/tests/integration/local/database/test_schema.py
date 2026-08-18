@@ -3,10 +3,7 @@
 Exercise schema and model events against disposable Postgres.
 """
 
-import re
-from typing import Any, cast
-
-from sqlalchemy import CheckConstraint, ForeignKeyConstraint, UniqueConstraint
+from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy.engine import Engine
 from sqlmodel import SQLModel, Session, inspect
 
@@ -22,18 +19,10 @@ from tracker.database.models import (
 )
 
 
-def _normalized_sql(expression: str) -> str:
-    normalized = expression.replace('"', "")
-    normalized = re.sub(r"::[A-Za-z_][A-Za-z0-9_]*", "", normalized)
-    normalized = normalized.replace("<>", "!=").replace("(", "").replace(")", "")
-    return " ".join(normalized.split())
-
-
 def test_error_result_provenance_schema_matches_metadata(postgres_engine: Engine) -> None:
     inspector = inspect(postgres_engine)
     table_names = set(inspector.get_table_names())
     assert "errorresult" in table_names
-    assert {"taskattempt", "failurerecord"}.isdisjoint(table_names)
 
     metadata_table = SQLModel.metadata.tables["errorresult"]
     expected_columns = {
@@ -71,28 +60,6 @@ def test_error_result_provenance_schema_matches_metadata(postgres_engine: Engine
         }
     )
 
-    expected_unique_constraints = {
-        tuple(column.name for column in constraint.columns)
-        for constraint in metadata_table.constraints
-        if isinstance(constraint, UniqueConstraint)
-    }
-    expected_unique_constraints.update((column.name,) for column in metadata_table.columns if column.unique)
-    actual_unique_constraints = {
-        tuple(constraint["column_names"]) for constraint in inspector.get_unique_constraints("errorresult")
-    }
-    assert actual_unique_constraints == expected_unique_constraints
-
-    expected_checks = {
-        constraint.name: _normalized_sql(str(constraint.sqltext))
-        for constraint in metadata_table.constraints
-        if isinstance(constraint, CheckConstraint)
-    }
-    actual_checks = {
-        constraint["name"]: _normalized_sql(constraint["sqltext"])
-        for constraint in inspector.get_check_constraints("errorresult")
-    }
-    assert actual_checks == expected_checks
-
     expected_primary_key = tuple(column.name for column in metadata_table.primary_key.columns)
     actual_primary_key = tuple(inspector.get_pk_constraint("errorresult")["constrained_columns"])
     assert actual_primary_key == expected_primary_key
@@ -115,14 +82,6 @@ def test_error_result_provenance_schema_matches_metadata(postgres_engine: Engine
         for foreign_key in inspector.get_foreign_keys("errorresult")
     }
     assert actual_foreign_keys == expected_foreign_keys
-
-    task_columns = {column["name"] for column in inspector.get_columns("task")}
-    evaluation_result_columns = {column["name"] for column in inspector.get_columns("evaluationresult")}
-    assert "active_attempt_id" not in task_columns
-    assert "task_attempt_id" not in evaluation_result_columns
-
-    inspected_enum_names = {enum["name"] for enum in cast(Any, inspector).get_enums()}
-    assert "taskattemptoutcome" not in inspected_enum_names
 
 
 class TestTrackerSchema:

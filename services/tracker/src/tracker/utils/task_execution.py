@@ -86,7 +86,6 @@ def _exception_message(exc: BaseException) -> str:
 
 def _record_scheduled_task_retry(
     task_row: Task,
-    org: Org,
     authority: ExecutionAuthority,
     exc: SandboxSetupError,
     retry_sequence: int,
@@ -101,7 +100,7 @@ def _record_scheduled_task_retry(
         task = session.exec(
             select(Task)
             .where(col(Task.id) == task_row.id)
-            .where(col(Task.org_id) == org.id)
+            .where(col(Task.org_id) == task_row.org_id)
             .where(col(Task.benchmark) == authority.benchmark_id)
             .where(col(Task.started_at) == task_row.started_at)
             .where(
@@ -138,8 +137,7 @@ def _before_process_task_retry(retry_state: RetryCallState) -> None:
     if not isinstance(exc, SandboxSetupError):
         return
     _record_scheduled_task_retry(
-        cast(Task, retry_state.args[0]),
-        cast(Org, retry_state.args[6]),
+        cast(Task, retry_state.kwargs["task_row"]),
         cast(ExecutionAuthority, retry_state.kwargs["authority"]),
         exc,
         retry_state.attempt_number,
@@ -509,15 +507,15 @@ async def process_task(
 ) -> dict[str, dict[str, Any] | None]:
     """Process one task while retaining dependency recovery state across sandbox attempts."""
     return await _process_task_attempt(
-        task_row,
-        start_benchmark_request,
-        benchmark_service,
-        benchmark_id,
-        task_id,
-        harness_config,
-        org,
-        sandbox_provider_config,
-        creation_semaphore,
+        task_row=task_row,
+        start_benchmark_request=start_benchmark_request,
+        benchmark_service=benchmark_service,
+        benchmark_id=benchmark_id,
+        task_id=task_id,
+        harness_config=harness_config,
+        org=org,
+        sandbox_provider_config=sandbox_provider_config,
+        creation_semaphore=creation_semaphore,
         dependency_setup_recovery=_DependencySetupRecoveryState(),
         authority=authority,
     )
@@ -563,7 +561,11 @@ async def _process_task_attempt(
 
     requested_attempt_started_at = task_row.started_at
     with Session(bind=engine) as task_session:
-        benchmark_row = fetch_benchmark_row(benchmark_id, task_session, org)
+        try:
+            benchmark_row = lock_execution_authority(task_session, authority)
+        except ExecutionAuthorityRevoked:
+            task_session.rollback()
+            return {task_id: None}
         task_row = fetch_task_row(task_row.id, task_session, org)
 
         if _normalized_attempt_time(task_row.started_at) != _normalized_attempt_time(requested_attempt_started_at):

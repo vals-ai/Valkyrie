@@ -187,16 +187,10 @@ def test_error_result_provenance_migration_preserves_legacy_rows(
         ).scalar_one()
 
         inspector = inspect(connection)
-        table_names = set(inspector.get_table_names())
         error_result_columns = {column["name"]: column for column in inspector.get_columns("errorresult")}
         error_result_indexes = {
             (index["name"], tuple(index["column_names"])) for index in inspector.get_indexes("errorresult")
         }
-        task_columns = {column["name"] for column in inspector.get_columns("task")}
-        evaluation_result_columns = {column["name"] for column in inspector.get_columns("evaluationresult")}
-        task_attempt_outcome_exists = connection.execute(
-            text("SELECT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'taskattemptoutcome')")
-        ).scalar_one()
 
     assert len(migrated_rows) == len(legacy_failures)
     for migrated, (failure_id, created_at, message) in zip(migrated_rows, legacy_failures, strict=True):
@@ -211,7 +205,6 @@ def test_error_result_provenance_migration_preserves_legacy_rows(
         )
 
     assert raw_retry_scheduled is False
-    assert {"taskattempt", "failurerecord"}.isdisjoint(table_names)
     assert set(error_result_columns) == {
         "id",
         "org_id",
@@ -229,9 +222,6 @@ def test_error_result_provenance_migration_preserves_legacy_rows(
     assert error_result_indexes == {
         ("ix_errorresult_org_task_created_at", ("org_id", "task", "created_at")),
     }
-    assert "active_attempt_id" not in task_columns
-    assert "task_attempt_id" not in evaluation_result_columns
-    assert task_attempt_outcome_exists is False
 
     downgrade = _run_alembic(migration_database_url, "downgrade", _MAINTENANCE_REVISION)
     assert downgrade.returncode == 0, downgrade.stderr

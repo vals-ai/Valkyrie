@@ -215,30 +215,37 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
 
         sandbox_entry_count = 0
+        retrieve_task_call_count = 0
 
         @asynccontextmanager
-        async def _revoke_authority_then_fail(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+        async def _fail_sandbox_setup(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
             nonlocal sandbox_entry_count
             sandbox_entry_count += 1
+            raise SandboxSetupError("sandbox setup failed")
+            yield AsyncMock()
+
+        def _revoke_authority(_retry_state: object) -> None:
             with Session(bind=database_session.bind) as session:
                 dispatch = session.get(ExecutorDispatch, authority.dispatch_id)
                 assert dispatch is not None
                 dispatch.status = ExecutorDispatchStatus.FAILED
                 session.add(dispatch)
                 session.commit()
-            raise SandboxSetupError("sandbox setup failed")
-            yield AsyncMock()
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            nonlocal retrieve_task_call_count
+            retrieve_task_call_count += 1
             return make_retrieve_task_response(problem_path="/tmp/problem.txt")
 
-        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _revoke_authority_then_fail)
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _fail_sandbox_setup)
+        monkeypatch.setattr(task_execution_module, "_process_task_retry_observer", _revoke_authority)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         assert result == {"task_0": None}
         assert sandbox_entry_count == 1
+        assert retrieve_task_call_count == 1
         assert database_session.exec(select(ErrorResult).where(col(ErrorResult.task) == task_row.id)).all() == []
 
     async def test_process_task_spans_timed_status_transitions(

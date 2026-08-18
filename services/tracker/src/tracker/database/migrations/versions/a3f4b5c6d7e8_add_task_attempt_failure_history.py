@@ -23,18 +23,9 @@ def upgrade() -> None:
     op.add_column("errorresult", sa.Column("cause_code", sa.String(), nullable=True))
     op.add_column(
         "errorresult",
-        sa.Column("retry_scheduled", sa.Boolean(), nullable=True),
+        sa.Column("retry_scheduled", sa.Boolean(), nullable=False, server_default=sa.false()),
     )
     op.add_column("errorresult", sa.Column("retry_sequence", sa.Integer(), nullable=True))
-
-    op.execute(sa.text("UPDATE errorresult SET retry_scheduled = false WHERE retry_scheduled IS NULL"))
-    op.alter_column(
-        "errorresult",
-        "retry_scheduled",
-        existing_type=sa.Boolean(),
-        nullable=False,
-        server_default=sa.false(),
-    )
     op.create_index(
         "ix_errorresult_org_task_created_at",
         "errorresult",
