@@ -42,10 +42,7 @@ class DeployWorkflowTest(unittest.TestCase):
             "AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}",
             dev_core,
         )
-        self.assertIn(
-            "AWS_EXECUTOR_SECRET_NAME_PREFIXES: ${{ secrets.AWS_EXECUTOR_SECRET_NAME_PREFIXES }}",
-            dev_core,
-        )
+        self.assertNotIn("AWS_EXECUTOR_SECRET_NAME_PREFIXES", dev_core)
         self.assertIn("Deploy dev core stacks", dev_core)
         self.assertNotIn("services/executor_artifact/build.py", dev_core)
         self.assertNotIn("executor_release/main.py", dev_core)
@@ -115,10 +112,7 @@ class DeployWorkflowTest(unittest.TestCase):
             "AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}",
             dev_executor,
         )
-        self.assertIn(
-            "AWS_EXECUTOR_SECRET_NAME_PREFIXES: ${{ secrets.AWS_EXECUTOR_SECRET_NAME_PREFIXES }}",
-            dev_executor,
-        )
+        self.assertNotIn("AWS_EXECUTOR_SECRET_NAME_PREFIXES", dev_executor)
         self.assertIn("needs: [classify-deployment, deploy-production-core]", prod_executor)
         self.assertIn("environment: prod", prod_executor)
         self.assertNotIn("production-executor-approval", workflow)

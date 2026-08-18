@@ -42,6 +42,7 @@ class ManagedAWSRuntimeConfig:
     submissions_enabled: bool = False
     tracker_secret_name_prefixes: tuple[str, ...] = ()
     executor_secret_name_prefixes: tuple[str, ...] = ()
+    executor_all_secret_access: bool = False
     tracker_lambda_function_name_patterns: tuple[str, ...] = ()
     executor_lambda_function_name_patterns: tuple[str, ...] = ()
     kms_key_arns: tuple[str, ...] = ()
@@ -62,6 +63,9 @@ class ManagedAWSRuntimeConfig:
         ):
             if any(_SECRET_NAME_PREFIX_PATTERN.fullmatch(prefix) is None for prefix in prefixes):
                 raise ValueError(f"{field_name} must contain literal, non-empty Secrets Manager name prefixes")
+
+        if self.executor_all_secret_access and self.executor_secret_name_prefixes:
+            raise ValueError("executor_all_secret_access cannot be combined with executor_secret_name_prefixes")
 
         for field_name, patterns in (
             ("tracker_lambda_function_name_patterns", self.tracker_lambda_function_name_patterns),
@@ -118,6 +122,7 @@ DEV_CONFIG = StageConfig(
         benchmark_log_group_prefix="/valkyrie/benchmarks",
         benchmark_log_retention_days=7,
         submissions_enabled=True,
+        executor_all_secret_access=True,
     ),
 )
 
@@ -154,25 +159,20 @@ def config_for(stage: Stage) -> StageConfig:
 
     deployment_role_org_ids = _csv_environment("AWS_DEPLOYMENT_ROLE_ORG_IDS")
     tracker_secret_name_prefixes = _csv_environment("AWS_TRACKER_SECRET_NAME_PREFIXES")
-    executor_secret_name_prefixes = _csv_environment("AWS_EXECUTOR_SECRET_NAME_PREFIXES")
     if os.environ.get("DESCOPE_PROJECT_ID") == _OFFLINE_SYNTH_SECRET_PREFIX:
         deployment_role_org_ids = deployment_role_org_ids or (_OFFLINE_SYNTH_ORG_ID,)
         tracker_secret_name_prefixes = tracker_secret_name_prefixes or (_OFFLINE_SYNTH_SECRET_PREFIX,)
-        executor_secret_name_prefixes = executor_secret_name_prefixes or (_OFFLINE_SYNTH_SECRET_PREFIX,)
     if config.managed_aws.submissions_enabled:
         if not deployment_role_org_ids:
             raise ValueError("Development deployments require AWS_DEPLOYMENT_ROLE_ORG_IDS.")
         if not tracker_secret_name_prefixes:
             raise ValueError("Development deployments require AWS_TRACKER_SECRET_NAME_PREFIXES.")
-        if not executor_secret_name_prefixes:
-            raise ValueError("Development deployments require AWS_EXECUTOR_SECRET_NAME_PREFIXES.")
     return replace(
         config,
         managed_aws=replace(
             config.managed_aws,
             deployment_role_org_ids=deployment_role_org_ids,
             tracker_secret_name_prefixes=tracker_secret_name_prefixes,
-            executor_secret_name_prefixes=executor_secret_name_prefixes,
         ),
     )
 

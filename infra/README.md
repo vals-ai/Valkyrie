@@ -39,8 +39,9 @@ Managed AWS execution also requires these dev Environment secrets:
   to submit managed runs
 - `AWS_TRACKER_SECRET_NAME_PREFIXES` -- comma-separated Secrets Manager name
   prefixes the Tracker may resolve for benchmark-service authentication
-- `AWS_EXECUTOR_SECRET_NAME_PREFIXES` -- comma-separated Secrets Manager name
-  prefixes the executor may resolve for sandbox providers
+
+The dev ExecutorHost task role can read every Secrets Manager secret in the dev
+account and Region. Production and release-test do not receive this access.
 
 To enable Sentry in dev, also set the `SENTRY_DSN_SECRET_NAME` secret to the
 name of an account-local Secrets Manager secret containing the DSN. Production
@@ -108,14 +109,13 @@ export DESCOPE_PROJECT_ID="dev-project-id"
 export DESCOPE_MANAGEMENT_KEY_SECRET_NAME="dev-descope-management-key-secret"
 export AWS_DEPLOYMENT_ROLE_ORG_IDS="00000000-0000-0000-0000-000000000001"
 export AWS_TRACKER_SECRET_NAME_PREFIXES="benchmark-services/"
-export AWS_EXECUTOR_SECRET_NAME_PREFIXES="AgenticHarnessSecrets"
 ```
 
    In GitHub, the corresponding values are under **Settings → Environments →
    dev → Environment secrets**. GitHub does not reveal stored secret values, so
    an administrator must obtain the approved values from the deployment owner.
 
-   **Done when** -- All six variables print as non-empty when checked locally;
+   **Done when** -- All five variables print as non-empty when checked locally;
    do not print their values into shared logs.
 
 2. Plan the intended scope.

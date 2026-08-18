@@ -45,11 +45,9 @@ TEST_DEPLOYMENT_SLACK_ENV = {
 TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME = "example-descope-management-key"
 TEST_MANAGED_ORG_ID = "00000000-0000-0000-0000-000000000001"
 TEST_TRACKER_SECRET_NAME_PREFIX = "test-tracker-secret"
-TEST_EXECUTOR_SECRET_NAME_PREFIX = "test-executor-secret"
 TEST_DEV_ENV = {
     "AWS_DEPLOYMENT_ROLE_ORG_IDS": TEST_MANAGED_ORG_ID,
     "AWS_TRACKER_SECRET_NAME_PREFIXES": TEST_TRACKER_SECRET_NAME_PREFIX,
-    "AWS_EXECUTOR_SECRET_NAME_PREFIXES": TEST_EXECUTOR_SECRET_NAME_PREFIX,
     "DESCOPE_PROJECT_ID": "dev-project",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
 }
@@ -229,7 +227,6 @@ class MonitoringStackTest(unittest.TestCase):
         for variable in (
             "AWS_DEPLOYMENT_ROLE_ORG_IDS",
             "AWS_TRACKER_SECRET_NAME_PREFIXES",
-            "AWS_EXECUTOR_SECRET_NAME_PREFIXES",
         ):
             with self.subTest(variable=variable):
                 environment = dict(TEST_DEV_ENV)
@@ -244,7 +241,8 @@ class MonitoringStackTest(unittest.TestCase):
 
         self.assertEqual(managed_aws.deployment_role_org_ids, (TEST_MANAGED_ORG_ID,))
         self.assertEqual(managed_aws.tracker_secret_name_prefixes, ("offline-synth",))
-        self.assertEqual(managed_aws.executor_secret_name_prefixes, ("offline-synth",))
+        self.assertEqual(managed_aws.executor_secret_name_prefixes, ())
+        self.assertTrue(managed_aws.executor_all_secret_access)
 
     def test_dev_stack_ids_are_valk_scoped(self) -> None:
         self.assertEqual(Stage(PROD).stack_id("TrackerStack"), "TrackerStack")

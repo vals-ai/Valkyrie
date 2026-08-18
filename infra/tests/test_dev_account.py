@@ -65,7 +65,6 @@ DESCOPE_MANAGEMENT_KEY_SECRET_NAME = "example-descope-management-key"
 DEV_AUTH_ENV = {
     "AWS_DEPLOYMENT_ROLE_ORG_IDS": "00000000-0000-0000-0000-000000000001",
     "AWS_TRACKER_SECRET_NAME_PREFIXES": "test-tracker-secret",
-    "AWS_EXECUTOR_SECRET_NAME_PREFIXES": "test-executor-secret",
     "DESCOPE_PROJECT_ID": "dev-project",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
 }
@@ -373,7 +372,6 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         managed_runtime_environment = {
             "AWS_DEPLOYMENT_ROLE_ORG_IDS": DEV_AUTH_ENV["AWS_DEPLOYMENT_ROLE_ORG_IDS"],
             "AWS_TRACKER_SECRET_NAME_PREFIXES": DEV_AUTH_ENV["AWS_TRACKER_SECRET_NAME_PREFIXES"],
-            "AWS_EXECUTOR_SECRET_NAME_PREFIXES": DEV_AUTH_ENV["AWS_EXECUTOR_SECRET_NAME_PREFIXES"],
         }
         with mock.patch.dict(os.environ, managed_runtime_environment, clear=True):
             with self.assertRaisesRegex(ValueError, "Development deployments require DESCOPE_PROJECT_ID"):
