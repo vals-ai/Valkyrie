@@ -539,25 +539,27 @@ async def _stream_command_output_with_egress_allowlist(
     command: str,
     on_output: Callable[[str], None],
     allowed_addresses: list[str],
+    agent_timeout: float | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     if not allowed_addresses:
-        return await stream_command_output(sandbox, command, on_output)
+        return await stream_command_output(sandbox, command, on_output, agent_timeout)
 
-    command_completed = False
+    cleanup_must_succeed = False
     try:
         await _apply_egress_allowlist(sandbox, allowed_addresses)
-        result = await stream_command_output(sandbox, command, on_output)
-        command_completed = True
+        result = await stream_command_output(sandbox, command, on_output, agent_timeout)
+        cleanup_must_succeed = result[0] is not AgentCausedExitReason.TIMEOUT
         return result
     finally:
         # After a clean agent run, stale egress rules would affect evaluation; otherwise preserve the original error.
-        await _clear_egress_allowlist(sandbox, fail_on_error=command_completed)
+        await _clear_egress_allowlist(sandbox, fail_on_error=cleanup_must_succeed)
 
 
 async def stream_command_output(
     sandbox: Sandbox,
     command: str,
     on_output: Callable[[str], None],
+    agent_timeout: float | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     # Bounded tail of recent output, kept only for error messages; capped by characters
     # rather than chunk count since a single chunk can be arbitrarily large.
@@ -592,6 +594,10 @@ async def stream_command_output(
         except SandboxNotFoundError:
             raise
         except ProviderSandboxError as e:
+            duration = time.monotonic() - monotonic_start
+            if agent_timeout is not None and duration >= agent_timeout:
+                logger.warning("agent command failed after its timeout; preserving sandbox outputs", exc_info=True)
+                return AgentCausedExitReason.TIMEOUT, duration
             raise SandboxError(str(e)) from e
 
         # Prefer the sandbox-measured duration; fall back to the tracker-side monotonic
@@ -902,6 +908,7 @@ async def run_agent(
         f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
         log_output,
         contract.egress_allowlist,
+        agent_timeout,
     )
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:

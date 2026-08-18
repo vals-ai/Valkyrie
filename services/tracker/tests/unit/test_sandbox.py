@@ -544,7 +544,7 @@ class TestArchiveAndUploadOutput:
 class TestRunAgent:
     """Agent execution, output collection, and runtime command construction."""
 
-    async def test_run_agent_uploads_declared_output_artifacts(
+    async def test_run_agent_uploads_declared_output_artifacts_after_timeout(
         self,
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
@@ -563,8 +563,8 @@ class TestRunAgent:
                 return ExecResult(exit_code=0, output="")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
-            return None, 0.0
+        async def fake_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[AgentCausedExitReason, float]:
+            return AgentCausedExitReason.TIMEOUT, 0.0
 
         async def fake_upload_output_artifacts(
             _sandbox: Any,
@@ -689,7 +689,9 @@ class TestRunAgent:
             assert command == "mkdir -p /workspace"
             return ExecResult(exit_code=0)
 
-        async def fake_stream_command_output(sandbox: Any, command: str, _log_output: Any) -> tuple[None, float]:
+        async def fake_stream_command_output(
+            sandbox: Any, command: str, _log_output: Any, _agent_timeout: float | None
+        ) -> tuple[None, float]:
             observed_sandboxes.append(sandbox)
             assert command == "cd /workspace && PYTHONSAFEPATH=1 echo done"
             return None, 0.0
@@ -741,7 +743,9 @@ class TestRunAgent:
             assert command == "mkdir -p /workspace"
             return ExecResult(exit_code=0)
 
-        async def fake_stream_command_output(_sandbox: Any, command: str, _log_output: Any) -> tuple[None, float]:
+        async def fake_stream_command_output(
+            _sandbox: Any, command: str, _log_output: Any, _agent_timeout: float | None
+        ) -> tuple[None, float]:
             observed_commands.append(command)
             return None, 0.0
 
@@ -1641,6 +1645,28 @@ class TestEgressAllowlist:
         mock_sandbox.modify_egress_rules.assert_not_awaited()
         mock_sandbox.clear_egress_rules.assert_not_awaited()
 
+    async def test_timeout_keeps_egress_cleanup_best_effort(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def timed_out_stream(*_args: Any, **_kwargs: Any) -> tuple[AgentCausedExitReason, float]:
+            return AgentCausedExitReason.TIMEOUT, 10.0
+
+        monkeypatch.setattr(sandbox_module, "stream_command_output", timed_out_stream)
+        mock_sandbox = Mock(
+            id="sandbox-123",
+            modify_egress_rules=AsyncMock(),
+            clear_egress_rules=AsyncMock(side_effect=ProviderSandboxError("provider failed")),
+        )
+
+        result = await _stream_command_output_with_egress_allowlist(
+            mock_sandbox,
+            "run-agent.sh",
+            on_output=_ignore_output,
+            allowed_addresses=["https://api.openai.com"],
+            agent_timeout=10.0,
+        )
+
+        assert result == (AgentCausedExitReason.TIMEOUT, 10.0)
+        assert mock_sandbox.clear_egress_rules.await_count == 3
+
     @pytest.mark.parametrize(
         ("provider_error", "expected_error", "message"),
         [
@@ -1734,6 +1760,22 @@ class TestStreamCommandOutputAgentFailure:
         # No crash on int() of the cat error text; duration degrades to the monotonic fallback.
         assert exit_reason is None
         assert duration >= 0
+
+    async def test_provider_failure_after_agent_timeout_is_recoverable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def failed_command(_command: str) -> AsyncIterator[str]:
+            if False:
+                yield ""
+            raise ProviderSandboxError("Daytona PTY exited before writing command status")
+
+        mock_sandbox = Mock(command=failed_command, exec=AsyncMock(return_value=ExecResult(exit_code=0)))
+        monkeypatch.setattr(sandbox_module, "time", Mock(monotonic=Mock(side_effect=(100.0, 110.0))))
+
+        exit_reason, duration = await sandbox_module.stream_command_output(
+            mock_sandbox, "run-agent.sh", on_output=lambda _: None, agent_timeout=10.0
+        )
+
+        assert exit_reason is AgentCausedExitReason.TIMEOUT
+        assert duration == 10.0
 
     @pytest.mark.parametrize("exit_code", [1, 2, 127])
     async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(
