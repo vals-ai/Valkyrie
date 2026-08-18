@@ -173,6 +173,8 @@ class ExecutorStack(Stack):
                 "STABLE_QUEUE_NAME": "valkyrie-stable",
                 "EXECUTOR_RELEASE_BUCKET": self.executor_release_bucket.bucket_name,
                 "EXECUTOR_RELEASE_PREFIX": EXECUTOR_RELEASE_PREFIX,
+                # TEMPORARY: remove before merging the maintenance-approval rollout PR.
+                "MAINTENANCE_APPROVAL_PROBE": "true",
             },
             secrets=db_secrets,
             stop_timeout=Duration.seconds(WORKER_STOP_TIMEOUT_SECONDS),
