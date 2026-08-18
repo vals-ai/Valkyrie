@@ -88,7 +88,7 @@ PROD_CONFIG = StageConfig(
     tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=1, max_tasks=2),
     worker=ServiceConfig(cpu=8192, memory_mib=32768, min_tasks=4, max_tasks=8),
     database=DatabaseConfig(
-        instance_class="t4g.small",
+        instance_class="r7g.large",
         allocated_storage_gb=20,
         backup_retention_days=7,
         connection_alarm_threshold=135,
