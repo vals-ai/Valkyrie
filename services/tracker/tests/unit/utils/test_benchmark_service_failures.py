@@ -28,7 +28,14 @@ import tracker.utils.run_orchestration as run_orchestration_module
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
 from tracker.aws.runtime import AWSRuntime
-from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, EvaluationResult, Task, TaskStatus
+from tracker.database.models import (
+    AgentContractRequest,
+    BenchmarkStatus,
+    ErrorResult,
+    EvaluationResult,
+    Task,
+    TaskStatus,
+)
 from tracker.types import HarnessConfig
 from tracker.utils import (
     fetch_benchmark_row,
@@ -153,13 +160,9 @@ class TestBenchmarkServiceFailures:
         assert resume_calls == 1
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.FINISHED
-        evaluation = database_session.exec(
-            select(EvaluationResult).where(EvaluationResult.task == task_row.id)
-        ).one()
+        evaluation = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
         assert evaluation.instance_id is None
-        assert not database_session.exec(
-            select(ErrorResult).where(ErrorResult.task == task_row.id)
-        ).first()
+        assert not database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).first()
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_dns_failure_is_reported_as_preconnection_error(
