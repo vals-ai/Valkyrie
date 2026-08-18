@@ -15,7 +15,6 @@ from benchmark_service import SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from opentelemetry import trace
 from pydantic import ValidationError
-from sqlalchemy.orm import object_session
 from sqlmodel import Session, col, desc, func, select
 
 from tracker._lambda import dry_run_lambda, invoke_lambda
@@ -361,14 +360,13 @@ def _preflight_managed_aws(
 
 
 @asynccontextmanager
-async def terminal_side_effect_authority(authority: ExecutionAuthority) -> AsyncGenerator[Benchmark, None]:
+async def hold_dispatch_authority(
+    authority: ExecutionAuthority,
+) -> AsyncGenerator[tuple[Session, Benchmark], None]:
     """Hold dispatch authority while a terminal side effect runs."""
     with Session(bind=engine) as session:
         benchmark = lock_execution_authority(session, authority, require_in_progress=False)
-        try:
-            yield benchmark
-        finally:
-            session.rollback()
+        yield session, benchmark
 
 
 # Keep the Tracker producer and ExecutorHost on one stable Taskiq wire name.
@@ -583,11 +581,11 @@ async def process_benchmark(
                 lambda_payload["benchmark_id"] = str(benchmark_id)
                 lambda_payload["benchmark_name"] = benchmark_row.name
 
-        async with terminal_side_effect_authority(authority) as benchmark_row:
+        async with hold_dispatch_authority(authority) as (_, benchmark_row):
             await upload_final_view(benchmark_row, final_view, aws_runtime)
 
         if lambda_function and lambda_payload is not None:
-            async with terminal_side_effect_authority(authority):
+            async with hold_dispatch_authority(authority) as (_, _):
                 invoke_lambda(aws_runtime.clients, lambda_function, lambda_payload)
 
     except ExecutionAuthorityRevoked:
@@ -644,8 +642,7 @@ async def process_benchmark(
 
         if notifier and not finalization_deferred and authority_current:
             try:
-                async with terminal_side_effect_authority(authority) as benchmark_row:
-                    notification_session = cast(Session, object_session(benchmark_row))
+                async with hold_dispatch_authority(authority) as (notification_session, benchmark_row):
                     notification_context = NotificationContext.from_benchmark(benchmark_row, notification_session, org)
                     final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
                     notification_status = benchmark_row.status
