@@ -13,9 +13,11 @@ from aws_cdk import (
     aws_ecs,
     aws_ecs_patterns,
     aws_elasticloadbalancingv2,
+    aws_iam,
     aws_logs,
     aws_rds,
     aws_route53,
+    aws_s3,
     aws_secretsmanager,
     aws_servicediscovery,
     aws_ssm,
@@ -45,6 +47,7 @@ from constants import (
     stage_parameter_name,
 )
 from constructs import Construct
+from runtime_iam import create_tracker_task_role, managed_runtime_environment
 from stage import Stage
 from stage_config import benchmark_service_base_url, config_for
 
@@ -79,6 +82,7 @@ class TrackerStack(Stack):
     ):
         super().__init__(scope, id, **kwargs)
         stage_config = config_for(stage)
+        bucket = aws_s3.Bucket.from_bucket_name(self, "ManagedRuntimeBucket", bucket_name)
 
         # Release-test writes images only to its stage-qualified repository;
         # other stages retain the established CDK asset path.
@@ -105,6 +109,7 @@ class TrackerStack(Stack):
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
             **({"BENCHMARK_SERVICE_BASE_URL": benchmark_service_url} if benchmark_service_url else {}),
+            **managed_runtime_environment(self, stage, bucket, stage_config.managed_aws),
         }
 
         # ── RDS ──────────────────────────────────────────────────────────
@@ -190,13 +195,17 @@ class TrackerStack(Stack):
 
         # ── Tracker API service ──────────────────────────────────────────
 
+        self.tracker_task_role = create_tracker_task_role(self, stage, bucket, stage_config.managed_aws)
         tracker_task_def = aws_ecs.FargateTaskDefinition(
             self,
             "TrackerTaskDef",
             cpu=stage_config.tracker.cpu,
             memory_limit_mib=stage_config.tracker.memory_mib,
             runtime_platform=_ARM64_PLATFORM,
+            task_role=cast(aws_iam.IRole, self.tracker_task_role),
         )
+
+        cdk.CfnOutput(self, "TrackerTaskRoleArn", value=self.tracker_task_role.role_arn)
 
         tracker_task_def.add_container(
             "TrackerContainer",
@@ -344,7 +353,7 @@ class TrackerStack(Stack):
             description="Allow Tracker and ExecutorHost to connect to Redis",
         )
 
-        # Allow VPC services (tracker + worker) to reach RDS.
+        # Allow VPC services (Tracker and ExecutorHost) to reach RDS.
         db_security_group.add_ingress_rule(
             peer=aws_ec2.Peer.ipv4(VPC_CIDR),
             connection=aws_ec2.Port.tcp(POSTGRES_PORT),

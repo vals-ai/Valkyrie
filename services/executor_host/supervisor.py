@@ -25,7 +25,7 @@ from executor_protocol import (
     DEFAULT_EXECUTOR_RELEASE_PREFIX,
     DEFAULT_STABLE_QUEUE_NAME,
     EXECUTOR_TASK_NAME,
-    SUPPORTED_PROTOCOL_VERSION,
+    SUPPORTED_PROTOCOL_VERSIONS,
     ExecutorPayload,
     validate_executor_artifact_uri,
     validate_executor_digest,
@@ -147,7 +147,7 @@ class ArtifactDispatch:
     def from_payload(cls, payload: Mapping[str, object]) -> ArtifactDispatch:
         digest = validate_executor_digest(_required_string(payload, "executor_artifact_digest"))
         protocol_version = _required_string(payload, "executor_protocol_version")
-        if protocol_version != SUPPORTED_PROTOCOL_VERSION:
+        if protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
             raise ValueError(f"Unsupported executor protocol version: {protocol_version}")
         return cls(
             release_id=_required_string(payload, "executor_release_id"),
@@ -161,6 +161,51 @@ class ArtifactDispatch:
 class DispatchAuthority:
     dispatch_id: str
     benchmark_id: str
+
+
+@dataclass(frozen=True)
+class ExecutorProcessPayload:
+    benchmark_id: str
+    verified_task_ids: list[str]
+    arguments: dict[str, object]
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object]) -> ExecutorProcessPayload:
+        execution_context = payload.get("execution_context_json")
+        access_key_values = (
+            payload.get("start_benchmark_request_json"),
+            payload.get("benchmark_id_str"),
+            payload.get("verified_task_ids"),
+        )
+        if execution_context is not None:
+            if any(value is not None for value in access_key_values):
+                raise ValueError("Executor payload mixes access-key and managed execution inputs")
+            if not isinstance(execution_context, Mapping):
+                raise ValueError("Executor payload has no valid managed execution context")
+            execution_context_mapping = cast(Mapping[str, object], execution_context)
+            benchmark_id = execution_context_mapping.get("benchmark_id")
+            raw_task_ids = execution_context_mapping.get("verified_task_ids")
+            arguments: dict[str, object] = {"execution_context_json": dict(execution_context_mapping)}
+        else:
+            request, benchmark_id, raw_task_ids = access_key_values
+            if not isinstance(request, Mapping):
+                raise ValueError("Executor payload has no valid access-key benchmark request")
+            request_mapping = cast(Mapping[str, object], request)
+            arguments = {
+                "start_benchmark_request_json": dict(request_mapping),
+                "benchmark_id_str": benchmark_id,
+                "verified_task_ids": raw_task_ids,
+            }
+        if not isinstance(benchmark_id, str) or not benchmark_id:
+            raise ValueError("Executor payload has no valid benchmark ID")
+        verified_task_ids = (
+            [str(task_id) for task_id in cast(list[object], raw_task_ids)] if isinstance(raw_task_ids, list) else []
+        )
+        return cls(
+            benchmark_id=benchmark_id,
+            verified_task_ids=verified_task_ids,
+            arguments=arguments,
+        )
 
 
 class ExecutorDispatchStore(Protocol):
@@ -510,19 +555,13 @@ class ExecutorSupervisor:
         artifact_path: Path,
         dispatch: ArtifactDispatch,
         *,
-        start_benchmark_request_json: Mapping[str, object],
-        verified_task_ids: list[str],
+        process_payload: ExecutorProcessPayload,
         authority: DispatchAuthority,
         is_current: Callable[[], Awaitable[bool]],
     ) -> None:
         if not await is_current():
             raise DispatchAuthorityLostError(f"Executor dispatch {authority.dispatch_id} was superseded before spawn")
-        payload = {
-            "start_benchmark_request_json": dict(start_benchmark_request_json),
-            "benchmark_id_str": authority.benchmark_id,
-            "verified_task_ids": verified_task_ids,
-            "executor_dispatch_id": authority.dispatch_id,
-        }
+        payload = {**process_payload.arguments, "executor_dispatch_id": authority.dispatch_id}
         with tempfile.TemporaryDirectory(dir=self.cache_dir, prefix=".dispatch-") as temporary_directory:
             payload_path = Path(temporary_directory) / "payload.json"
             payload_path.write_text(json.dumps(payload))
@@ -661,9 +700,7 @@ async def run_executor_dispatch(
     *,
     executor_dispatch_id: str,
     dispatch: ArtifactDispatch,
-    start_benchmark_request_json: Mapping[str, object],
-    benchmark_id_str: str,
-    verified_task_ids: list[str],
+    process_payload: ExecutorProcessPayload,
 ) -> None:
     protection_task = asyncio.create_task(_acquire_task_protection())
     try:
@@ -678,7 +715,7 @@ async def run_executor_dispatch(
         claim_task = asyncio.create_task(
             store.claim(
                 executor_dispatch_id,
-                benchmark_id_str,
+                process_payload.benchmark_id,
                 dispatch,
             )
         )
@@ -687,7 +724,7 @@ async def run_executor_dispatch(
         except asyncio.CancelledError:
             authority = await claim_task
             if authority is not None:
-                await _terminalize_after_failure(store, authority, verified_task_ids)
+                await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
             raise
 
         if authority is None:
@@ -702,8 +739,7 @@ async def run_executor_dispatch(
             await executor_supervisor.run(
                 artifact_path,
                 dispatch,
-                start_benchmark_request_json=start_benchmark_request_json,
-                verified_task_ids=verified_task_ids,
+                process_payload=process_payload,
                 authority=authority,
                 is_current=lambda: store.is_current(authority),
             )
@@ -713,10 +749,10 @@ async def run_executor_dispatch(
                     authority.dispatch_id,
                 )
         except asyncio.CancelledError:
-            await _terminalize_after_failure(store, authority, verified_task_ids)
+            await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
             raise
         except BaseException:
-            await _terminalize_after_failure(store, authority, verified_task_ids)
+            await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
             raise
     finally:
         release_task = asyncio.create_task(_release_task_protection())
@@ -728,12 +764,11 @@ async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
     raw_payload: dict[str, object] = dict(payload)
     dispatch_id = _required_string(raw_payload, "executor_dispatch_id")
     dispatch = ArtifactDispatch.from_payload(raw_payload)
+    process_payload = ExecutorProcessPayload.from_payload(raw_payload)
     await run_executor_dispatch(
         supervisor,
         dispatch_store,
         executor_dispatch_id=dispatch_id,
         dispatch=dispatch,
-        start_benchmark_request_json=payload["start_benchmark_request_json"],
-        benchmark_id_str=payload["benchmark_id_str"],
-        verified_task_ids=payload["verified_task_ids"],
+        process_payload=process_payload,
     )

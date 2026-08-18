@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import update
 from sqlmodel import Session, col, select
 
+from executor_protocol import MANAGED_EXECUTION_PROTOCOL_VERSION
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -15,10 +16,12 @@ from tracker.database.models import (
     ExecutorDispatch,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
+    ExecutorRelease,
     Task,
     TaskStatus,
 )
 from tracker.executor.release_control import (
+    ReleaseControlError,
     create_executor_dispatch,
     lock_executor_admission,
     pin_benchmark_to_release,
@@ -38,6 +41,21 @@ class EnqueueFailureResolution(str, Enum):
     SUPERSEDED = "SUPERSEDED"
 
 
+def _require_managed_execution_release(release: ExecutorRelease) -> None:
+    if release.protocol_version != MANAGED_EXECUTION_PROTOCOL_VERSION:
+        raise ReleaseControlError("Activate an executor release that supports managed runs")
+
+
+def _require_compatible_release(benchmark: Benchmark, release: ExecutorRelease) -> None:
+    if benchmark.aws_managed:
+        _require_managed_execution_release(release)
+
+
+def validate_managed_execution_release(session: Session) -> None:
+    """Reject managed work unless the active executor can consume its queue payload."""
+    _require_managed_execution_release(select_active_release(session))
+
+
 def admit_start_dispatch(
     session: Session,
     *,
@@ -47,6 +65,7 @@ def admit_start_dispatch(
     """Select the active release and persist one start dispatch."""
     with session.no_autoflush:
         release = select_active_release(session, for_update=True)
+    _require_compatible_release(benchmark, release)
     session.add(benchmark)
     pin_benchmark_to_release(benchmark, release)
     dispatch = create_executor_dispatch(
@@ -75,6 +94,7 @@ def admit_recovery_dispatch(
             release = resolve_current_execution_release(session, benchmark, for_update=True)
         else:
             release = select_active_release(session, for_update=True)
+    _require_compatible_release(benchmark, release)
     if pre_action_status != BenchmarkStatus.IN_PROGRESS:
         benchmark.current_execution_release_id = release.id
         benchmark.finished_at = None

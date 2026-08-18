@@ -16,6 +16,7 @@ from sqlalchemy import JSON, literal, tuple_, type_coerce
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, asc, case, col, desc, func, or_, select
 
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     create_benchmark_url,
@@ -40,7 +41,6 @@ from tracker.types import (
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FinalViewResponse,
-    HarnessConfig,
     Order,
 )
 
@@ -255,7 +255,7 @@ def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: U
 
 
 async def stream_benchmark_results(
-    benchmark_id: UUID, session: Session, harness_config: HarnessConfig, org: Org
+    benchmark_id: UUID, session: Session, aws_runtime: AWSRuntime, org: Org
 ) -> AsyncGenerator[str]:
     """
     Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
@@ -288,9 +288,7 @@ async def stream_benchmark_results(
                     benchmark_name=fresh_benchmark.name,
                     benchmark_id=fresh_benchmark.id,
                     details=benchmark_context.benchmark_details,
-                    s3_bucket_url=create_benchmark_url(
-                        str(fresh_benchmark.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
-                    ),
+                    s3_bucket_url=create_benchmark_url(str(fresh_benchmark.id), aws_runtime.resources),
                     label=fresh_benchmark.label,
                     executor_release_id=fresh_benchmark.executor_release_id,
                     current_execution_release_id=fresh_benchmark.current_execution_release_id,
@@ -554,16 +552,13 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
     return final_view
 
 
-async def upload_final_view(
-    benchmark_row: Benchmark, final_view: FinalViewResponse, harness_config: HarnessConfig
-) -> str:
+async def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse, aws_runtime: AWSRuntime) -> str:
     """Uploads the final view to the root of the benchmark folder and returns the s3 key"""
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/{benchmark_row.name}.json"
     await upload_to_s3(
         final_view.model_dump_json(indent=4, exclude_none=True).encode(),
         s3_key,
-        harness_config.aws,
-        harness_config.s3_bucket,
+        aws_runtime,
     )
 
     return s3_key

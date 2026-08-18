@@ -16,7 +16,6 @@ from testcontainers.postgres import PostgresContainer
 
 from tracker.database.models import (
     AgentContractRequest,
-    Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
     ExecutorRelease,
@@ -160,18 +159,29 @@ def test_current_execution_ownership_migration_rejects_downgrade(
             )
         )
         session.commit()
-        session.add(
-            Benchmark(
-                id=benchmark_id,
-                org_id=org_id,
-                name="migration-test-benchmark",
-                status=BenchmarkStatus.IN_PROGRESS,
-                arguments=BenchmarkArguments(
-                    contract=AgentContractRequest(name="migration-test-agent", install_cmd="true", run_cmd="true"),
-                    concurrency=1,
-                ),
-                current_execution_release_id="migration-test-release",
-            )
+        # Insert with explicit columns: the schema is pinned at the ownership
+        # revision, which predates columns the current ORM model would include.
+        arguments = BenchmarkArguments(
+            contract=AgentContractRequest(name="migration-test-agent", install_cmd="true", run_cmd="true"),
+            concurrency=1,
+        )
+        session.execute(
+            text(
+                "INSERT INTO benchmark"
+                " (id, org_id, name, started_at, status, arguments, docent_reading_status,"
+                " current_execution_release_id)"
+                " VALUES (:id, :org_id, :name, now(), CAST(:status AS benchmarkstatus),"
+                " CAST(:arguments AS json), CAST(:docent_reading_status AS docentreadingstatus), :release_id)"
+            ),
+            {
+                "id": benchmark_id,
+                "org_id": org_id,
+                "name": "migration-test-benchmark",
+                "status": BenchmarkStatus.IN_PROGRESS.value,
+                "arguments": arguments.model_dump_json(),
+                "docent_reading_status": "IDLE",
+                "release_id": "migration-test-release",
+            },
         )
         session.commit()
 

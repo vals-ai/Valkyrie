@@ -29,6 +29,7 @@ from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
 from tracker.aws.cloudwatch_logs import write_benchmark_log_event
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import (
     get_agent_result_s3_key,
 )
@@ -57,8 +58,6 @@ from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
-    AWSCredentials,
-    HarnessConfig,
     StartBenchmarkRequest,
 )
 
@@ -317,7 +316,10 @@ def handle_early_exit(task_row: Task, task_session: Session, authority: Executio
 
 
 def buffer_logs(
-    log_queue: asyncio.Queue[str], stream_key: str, aws: AWSCredentials, log_group: str, force_flush: bool = False
+    log_queue: asyncio.Queue[str],
+    stream_key: str,
+    aws_runtime: AWSRuntime,
+    force_flush: bool = False,
 ) -> None:
     """
     Buffers the logs in the queue and waits till they are full before streaming them to CloudWatch.
@@ -331,7 +333,7 @@ def buffer_logs(
 
     message = "".join(messages)
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, write_benchmark_log_event, stream_key, message, aws, log_group)
+    loop.run_in_executor(None, write_benchmark_log_event, stream_key, message, aws_runtime)
 
 
 def save_eval_resume_state(
@@ -429,14 +431,14 @@ def commit_task_status_transition(
     )
 
 
-@logfire.instrument("process_task")
+@logfire.instrument("process_task", extract_args=("benchmark_id", "task_id"))
 async def process_task(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
     benchmark_service: BenchmarkServiceClient,
     benchmark_id: UUID,
     task_id: str,
-    harness_config: HarnessConfig,
+    aws_runtime: AWSRuntime,
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,
@@ -449,7 +451,7 @@ async def process_task(
         benchmark_service,
         benchmark_id,
         task_id,
-        harness_config,
+        aws_runtime,
         org,
         sandbox_provider_config,
         creation_semaphore,
@@ -471,7 +473,7 @@ async def _process_task_attempt(
     benchmark_service: BenchmarkServiceClient,
     benchmark_id: UUID,
     task_id: str,
-    harness_config: HarnessConfig,
+    aws_runtime: AWSRuntime,
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,
@@ -524,7 +526,7 @@ async def _process_task_attempt(
         nonlocal last_log_time
         last_log_time = time.monotonic()
         log_queue.put_nowait(data)
-        buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group)
+        buffer_logs(log_queue, stream_key, aws_runtime)
 
     # Auto flush if process takes a while to produce next log
     # If a process pauses without producing anymore logs, the logs we have collected get stuck
@@ -532,7 +534,7 @@ async def _process_task_attempt(
         while True:
             await asyncio.sleep(1)
             if not log_queue.empty() and time.monotonic() - last_log_time >= 10:
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+                buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
 
     flush_task = asyncio.create_task(auto_flush_logs())
 
@@ -637,7 +639,7 @@ async def _process_task_attempt(
             identity["email"] = benchmark_started_by_email
 
         env_vars = {
-            **resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
+            **resolve_secrets(start_benchmark_request.contract.secrets, aws_runtime.clients),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             "IDENTITY": json.dumps(identity),
@@ -684,8 +686,7 @@ async def _process_task_attempt(
                     sandbox,
                     start_benchmark_request.contract,
                     str(benchmark_id),
-                    harness_config.aws,
-                    harness_config.s3_bucket,
+                    aws_runtime,
                 )
 
                 # Reset timer to keep the last received message from the benchmarks service accurate
@@ -699,7 +700,7 @@ async def _process_task_attempt(
                 )
 
                 # Force flush the logs if anything has been buffered
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+                buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
 
                 # Compute the S3 key for the agent's output archive
                 agent_output_s3_key = None
@@ -714,8 +715,7 @@ async def _process_task_attempt(
                         task_id,
                         log_output,
                         task_data.cwd,
-                        aws=harness_config.aws,
-                        s3_bucket=harness_config.s3_bucket,
+                        aws_runtime=aws_runtime,
                         agent_output_s3_key=agent_output_s3_key,
                         agent_timeout=task_data.agent_timeout,
                         benchmark_id=str(benchmark_id),
@@ -780,7 +780,7 @@ async def _process_task_attempt(
                 task_breakdown.sandbox_run_duration = time.perf_counter() - start_sandbox_run_time
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+                buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
 
                 # Save the evaluation result to the database with the task row
                 # Record the termination reason if the agent did not exit cleanly (timeout / OS kill)
@@ -920,7 +920,7 @@ async def _process_task_attempt(
         flush_task.cancel()
         with suppress(asyncio.CancelledError):
             await flush_task
-        buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+        buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
 
 
 def commit_task_error(

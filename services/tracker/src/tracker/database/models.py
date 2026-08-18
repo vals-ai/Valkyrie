@@ -308,6 +308,7 @@ class Benchmark(SQLModel, table=True):
     finished_at: datetime | None = None
     status: BenchmarkStatus = Field(default=BenchmarkStatus.IN_PROGRESS)
     label: str | None = Field(default=None, index=True)
+    aws_managed: bool = Field(default=False, nullable=False)
     executor_release_id: str | None = Field(default=None, foreign_key="executorrelease.id", index=True)
     current_execution_release_id: str | None = Field(default=None, foreign_key="executorrelease.id", index=True)
     executor_artifact_uri: str | None = None
@@ -353,12 +354,15 @@ class Benchmark(SQLModel, table=True):
 
         return errors_by_task_id
 
-    def start_benchmark_request(
+    def access_key_start_benchmark_request(
         self, harness_config: "HarnessConfig", service_headers: dict[str, str] | None = None
     ) -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
 
-        # TODO: Remove this fallback after legacy benchmark rows have been migrated for a few weeks.
+        if self.aws_managed:
+            raise ValueError("Managed runs cannot create access-key execution requests")
+
+        # Older rows may persist the provider secret only in benchmark arguments.
         if self.arguments.sandbox_provider_secret_name:
             harness_config = harness_config.model_copy(
                 update={"sandbox_provider_secret_name": self.arguments.sandbox_provider_secret_name}
@@ -374,6 +378,32 @@ class Benchmark(SQLModel, table=True):
             dataset=self.arguments.dataset,
             harness_config=harness_config,
             sandbox_provider=self.arguments.sandbox_provider,
+            custom_benchmark_service=self.custom_benchmark_service,
+            webhook_secret_name=self.webhook_secret_name,
+            webhook_intervals=self.webhook_intervals,
+            service_headers=service_headers or {},
+        )
+
+    def managed_start_benchmark_request(self, service_headers: dict[str, str] | None = None) -> "StartBenchmarkRequest":
+        from tracker.types import StartBenchmarkRequest
+
+        if not self.aws_managed:
+            raise ValueError("Access-key runs cannot create managed execution requests")
+        if not self.arguments.sandbox_provider_secret_name:
+            raise ValueError("Managed runs require a sandbox provider secret name")
+
+        return StartBenchmarkRequest(
+            contract=self.arguments.contract,
+            benchmark_name=self.name,
+            concurrency=self.arguments.concurrency,
+            label=self.label,
+            task_ids=self.arguments.task_ids,
+            slice_str=self.arguments.slice_str,
+            lambda_function=self.arguments.lambda_function,
+            dataset=self.arguments.dataset,
+            harness_config=None,
+            sandbox_provider=self.arguments.sandbox_provider,
+            sandbox_provider_secret_name=self.arguments.sandbox_provider_secret_name,
             custom_benchmark_service=self.custom_benchmark_service,
             webhook_secret_name=self.webhook_secret_name,
             webhook_intervals=self.webhook_intervals,

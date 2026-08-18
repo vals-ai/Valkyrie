@@ -11,7 +11,6 @@ from typing import Any
 import click
 import pytest
 from tracker.exceptions import S3Error
-from tracker.types import AWSCredentials
 
 from valkyrie.cli.run.artifacts import download_s3_path
 
@@ -40,9 +39,10 @@ class ConcurrencyTracker:
 class MockS3Client:
     """Serve deterministic S3 pages and response bodies."""
 
-    def __init__(self, payloads: dict[str, bytes], tracker: ConcurrencyTracker) -> None:
+    def __init__(self, payloads: dict[str, bytes], tracker: ConcurrencyTracker, expected_prefix: str) -> None:
         self._payloads = payloads
         self._tracker = tracker
+        self._expected_prefix = expected_prefix
 
     def client(self, _name: str) -> "MockS3Client":
         return self
@@ -61,7 +61,9 @@ class MockS3Client:
     def get_paginator(self, _name: str) -> "MockS3Client":
         return self
 
-    async def paginate(self, **_kwargs: object) -> Any:
+    async def paginate(self, *, Bucket: str, Prefix: str) -> Any:
+        assert Bucket == "test-bucket"
+        assert Prefix == self._expected_prefix
         yield {"Contents": [{"Key": key} for key in self._payloads]}
 
     async def get_object(self, *, Bucket: str, Key: str) -> dict[str, MockBody]:
@@ -69,20 +71,17 @@ class MockS3Client:
         return {"Body": MockBody(self._payloads[Key], self._tracker)}
 
 
-def patch_s3(monkeypatch: pytest.MonkeyPatch, payloads: dict[str, bytes], tracker: ConcurrencyTracker) -> None:
-    def tracker_s3_client(_credentials: AWSCredentials) -> MockS3Client:
-        return MockS3Client(payloads, tracker)
-
+def patch_s3(
+    monkeypatch: pytest.MonkeyPatch,
+    payloads: dict[str, bytes],
+    tracker: ConcurrencyTracker,
+    expected_prefix: str,
+) -> None:
+    monkeypatch.setattr("valkyrie.cli.run.artifacts.cli_s3.fetch_bucket_name", lambda: "test-bucket")
     monkeypatch.setattr(
-        "valkyrie.cli.s3_config.load_config",
-        lambda: {
-            "AWS_ACCESS_KEY_ID": "key",
-            "AWS_SECRET_ACCESS_KEY": "secret",
-            "AWS_DEFAULT_REGION": "us-east-1",
-            "S3_BUCKET": "test-bucket",
-        },
+        "valkyrie.cli.run.artifacts.cli_s3.s3_client",
+        lambda: MockS3Client(payloads, tracker, expected_prefix),
     )
-    monkeypatch.setattr("valkyrie.cli.s3_config.tracker_s3_client", tracker_s3_client)
 
 
 async def test_download_s3_path_downloads_files_in_parallel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -93,7 +92,7 @@ async def test_download_s3_path_downloads_files_in_parallel(monkeypatch: pytest.
         "benchmarks/run-1/summary.json": b"summary",
     }
 
-    patch_s3(monkeypatch, payloads, tracker)
+    patch_s3(monkeypatch, payloads, tracker, "benchmarks/run-1/")
 
     count = await download_s3_path("benchmarks/run-1", tmp_path)
 
@@ -108,7 +107,7 @@ async def test_download_s3_path_handles_exact_file_path(monkeypatch: pytest.Monk
     tracker = ConcurrencyTracker()
     payloads = {"benchmarks/run-1/results.json": b"results"}
 
-    patch_s3(monkeypatch, payloads, tracker)
+    patch_s3(monkeypatch, payloads, tracker, "benchmarks/run-1/results.json")
 
     count = await download_s3_path("benchmarks/run-1/results.json", tmp_path)
 
@@ -129,7 +128,7 @@ async def test_download_s3_path_rejects_keys_outside_output_directory(
     tracker = ConcurrencyTracker()
     payloads = {"benchmarks/run-1/../escaped.txt": b"escaped"}
     output_dir = tmp_path / "output"
-    patch_s3(monkeypatch, payloads, tracker)
+    patch_s3(monkeypatch, payloads, tracker, "benchmarks/run-1/")
 
     with pytest.raises(S3Error, match="Requested path is not relative the output directory"):
         await download_s3_path("benchmarks/run-1", output_dir)
