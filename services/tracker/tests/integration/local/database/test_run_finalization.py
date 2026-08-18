@@ -15,6 +15,7 @@ from benchmark_service.sandbox import DaytonaProviderConfig
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 import pytest
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
 import tracker.utils.run_control as run_control_module
@@ -43,7 +44,6 @@ from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
 from tracker.utils.reporting import create_final_view
 from tracker.utils.resources import fetch_benchmark_row
-from tracker.utils.run_orchestration import upload_final_view_if_current
 from tracker.utils.task_error_summary import summarize_task_errors
 from tracker.utils.task_execution import TaskMonitor
 
@@ -189,12 +189,8 @@ class TestRunFinalization:
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", record_upload)
 
         with pytest.raises(ExecutionAuthorityRevoked):
-            await upload_final_view_if_current(
-                benchmark,
-                final_view,
-                harness_config,
-                authority,
-            )
+            async with run_orchestration_module.terminal_side_effect_authority(authority):
+                await getattr(run_orchestration_module, "upload_final_view")(benchmark, final_view, harness_config)
 
         assert upload_calls == []
         postgres_session.refresh(retry_dispatch)
@@ -381,8 +377,11 @@ class TestRunFinalization:
         )
         first_authority = executor_authority_kwargs(benchmark, dispatch_id=uuid4(), session=postgres_session)
         second_authority = executor_authority_kwargs(benchmark, dispatch_id=uuid4(), session=postgres_session)
+        upload_calls = 0
 
         async def skip_cloud_operation(*_args: Any, **_kwargs: Any) -> None:
+            nonlocal upload_calls
+            upload_calls += 1
             return None
 
         def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
@@ -443,9 +442,95 @@ class TestRunFinalization:
             ).all()
 
         assert final_score_calls == 1
+        assert upload_calls == 1
         assert persisted_benchmark is not None
         assert persisted_benchmark.status == BenchmarkStatus.FINISHED
         assert len(final_evaluations) == 1
+
+    async def test_final_view_upload_holds_benchmark_lock(
+        self,
+        postgres_engine: Engine,
+        postgres_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        executor_authority_kwargs: Any,
+    ) -> None:
+        org = Org(id=uuid4(), name=f"final-view-lock-{uuid4()}")
+        contract = AgentContractRequest(name="final-view-lock-agent", install_cmd="true", run_cmd="true")
+        benchmark = make_benchmark(
+            name="final-view-lock",
+            org_id=org.id,
+            contract=contract,
+            status=BenchmarkStatus.IN_PROGRESS,
+        )
+        task = make_task(benchmark, "finished-task", status=TaskStatus.FINISHED)
+        postgres_session.add(org)
+        postgres_session.flush()
+        postgres_session.add(benchmark)
+        postgres_session.flush()
+        postgres_session.add(task)
+        postgres_session.flush()
+        postgres_session.add(
+            EvaluationResult(
+                org_id=org.id,
+                task=task.id,
+                instance_id=f"final-view-lock-{task.id}",
+                result={"score": 1.0},
+            )
+        )
+        postgres_session.commit()
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name=benchmark.name,
+            concurrency=1,
+            harness_config=harness_config,
+        )
+        authority_kwargs = executor_authority_kwargs(benchmark, dispatch_id=uuid4(), session=postgres_session)
+        upload_calls = 0
+        lock_blocked = False
+
+        async def assert_lock_held(*_args: Any, **_kwargs: Any) -> None:
+            nonlocal lock_blocked, upload_calls
+            upload_calls += 1
+            benchmark_id = _args[0].id
+            with Session(postgres_engine) as retry_session:
+                retry_session.connection().exec_driver_sql("SET LOCAL lock_timeout = '100ms'")
+                try:
+                    retry_session.exec(
+                        select(Benchmark).where(Benchmark.id == benchmark_id).with_for_update()
+                    ).one()
+                except OperationalError:
+                    lock_blocked = True
+
+        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+            return "test-log-group"
+
+        def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
+            return DaytonaProviderConfig(
+                DAYTONA_API_KEY="test-key",
+                DAYTONA_API_URL="https://example.com",
+                DAYTONA_TARGET="test-target",
+            )
+
+        async def final_score(*_args: Any, **_kwargs: Any) -> FinalScoreResponse:
+            return FinalScoreResponse(tasks_evaluated=[task.task_id], final_score=1.0, metadata={})
+
+        monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
+        monkeypatch.setattr(run_orchestration_module, "create_benchmark_log_group", skip_log_group)
+        monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", provider_config)
+        monkeypatch.setattr(run_orchestration_module, "upload_final_view", assert_lock_held)
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", final_score)
+
+        await process_benchmark(
+            start_benchmark_request_json=request.model_dump(),
+            benchmark_id_str=str(benchmark.id),
+            verified_task_ids=[],
+            **authority_kwargs,
+        )
+
+        assert upload_calls == 1
+        assert lock_blocked
 
     async def test_all_error_finalization_returns_distinct_representatives(
         self,
