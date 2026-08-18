@@ -26,8 +26,7 @@ async with ValkyrieClient.from_config() as client:
 Pass `base_url` to `ValkyrieClient` for a self-hosted tracker. Otherwise, the SDK uses
 `TRACKER_SERVICE_URL` or the hosted tracker URL.
 
-The SDK sends AWS credentials in `X-Harness-*` headers. Only connect to trusted trackers, and use
-HTTPS outside local development.
+When both static AWS access-key fields are configured, the SDK sends the access-key harness configuration to the Tracker. When both fields are absent, start requests omit AWS credentials and select managed execution for an eligible hosted organization. Always use HTTPS outside local development.
 
 ## Examples
 
