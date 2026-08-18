@@ -32,9 +32,19 @@ so CDK DNS validation can complete. Configure the protected `dev` GitHub
 Environment with the `AWS_REGION=us-east-1` variable and the `DEV_ACCOUNT_ID`,
 `AWS_DEPLOY_ROLE_ARN`, `DESCOPE_PROJECT_ID`, and
 `DESCOPE_MANAGEMENT_KEY_SECRET_NAME` secrets (the last one names an
-account-local Secrets Manager secret holding the Descope management key). To
-enable Sentry in dev, also set the `SENTRY_DSN_SECRET_NAME` secret to the name
-of an account-local Secrets Manager secret containing the DSN. Production
+account-local Secrets Manager secret holding the Descope management key).
+Managed AWS execution also requires these dev Environment secrets:
+
+- `AWS_DEPLOYMENT_ROLE_ORG_IDS` -- comma-separated organization UUIDs allowed
+  to submit managed runs
+- `AWS_TRACKER_SECRET_NAME_PREFIXES` -- comma-separated Secrets Manager name
+  prefixes the Tracker may resolve for benchmark-service authentication
+
+The dev ExecutorHost task role can read every Secrets Manager secret in the dev
+account and Region. Production and release-test do not receive this access.
+
+To enable Sentry in dev, also set the `SENTRY_DSN_SECRET_NAME` secret to the
+name of an account-local Secrets Manager secret containing the DSN. Production
 requires `SENTRY_DSN_SECRET_NAME`, and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`
 whenever `AUTH_REQUIRED` is `true`. The dev Environment holds every dev
 deployment input as an Environment secret except `AWS_REGION`, which stays a
@@ -85,20 +95,62 @@ executor work fails closed until the bootstrap publishes the stage's sealed
 release-control SSM parameter. Later workflow deployments keep existing
 executions pinned while previous releases drain normally.
 
-For a local plan or an administrator break-glass deployment, pass the target
-explicitly. The preflight rejects the wrong account, Region, or STS identity.
+For a local plan or an administrator break-glass deployment, follow these
+steps. The preflight rejects the wrong account, Region, or STS identity.
+
+1. Export the target account and deployment-owned managed AWS inventory.
+
+   **Why** -- Local CDK commands cannot read GitHub Environment secrets. The
+   deployment must receive the same organization and secret namespaces as CI.
 
 ```bash
 export DEV_ACCOUNT_ID=123456789012
 export DESCOPE_PROJECT_ID="dev-project-id"
 export DESCOPE_MANAGEMENT_KEY_SECRET_NAME="dev-descope-management-key-secret"
+export AWS_DEPLOYMENT_ROLE_ORG_IDS="00000000-0000-0000-0000-000000000001"
+export AWS_TRACKER_SECRET_NAME_PREFIXES="benchmark-services/"
+```
+
+   In GitHub, the corresponding values are under **Settings → Environments →
+   dev → Environment secrets**. GitHub does not reveal stored secret values, so
+   an administrator must obtain the approved values from the deployment owner.
+
+   **Done when** -- All five variables print as non-empty when checked locally;
+   do not print their values into shared logs.
+
+2. Plan the intended scope.
+
+   **Why** -- The plan verifies the account boundary and shows the exact
+   CloudFormation changes before any resource is modified.
+
+```bash
 
 make plan STAGE=dev SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
+```
+
+   Console alternative: run **Actions → Deploy to AWS → Run workflow** on
+   `dev`, choose `plan`, and select the intended scope.
+
+   **Done when** -- The plan targets the expected dev account and contains only
+   the intended stack changes.
+
+3. Deploy the approved scope only when break-glass access is authorized.
+
+   **Why** -- Direct deployment bypasses the normal branch-push workflow and is
+   reserved for recovery operations.
+
+```bash
 
 make deploy STAGE=dev SCOPE=shared AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
 ```
+
+   This step is CLI-only because the manual GitHub workflow intentionally does
+   not offer deployment. Normal deployments come from a merge to `dev`.
+
+   **Done when** -- CDK reports the selected stack deployed in the expected dev
+   account and its CloudFormation events contain no failed resources.
 
 `release-test` is an isolated, dev-sized deployment in the account selected by
 `DEV_ACCOUNT_ID`. It uses `-release-test` resource names and

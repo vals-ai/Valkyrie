@@ -63,6 +63,8 @@ DEV_TRACKER_CONTRACT_PARAMETERS = {
 EXECUTOR_CONTRACT_PARAMETERS = {executor_release_launch_parameter(DEV)}
 DESCOPE_MANAGEMENT_KEY_SECRET_NAME = "example-descope-management-key"
 DEV_AUTH_ENV = {
+    "AWS_DEPLOYMENT_ROLE_ORG_IDS": "00000000-0000-0000-0000-000000000001",
+    "AWS_TRACKER_SECRET_NAME_PREFIXES": "test-tracker-secret",
     "DESCOPE_PROJECT_ID": "dev-project",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
 }
@@ -184,6 +186,11 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                 {"ServerSideEncryptionConfiguration": [{"ServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]},
             )
 
+        self.assertEqual(
+            bucket["Properties"]["LifecycleConfiguration"],
+            {"Rules": [{"AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}, "Status": "Enabled"}]},
+        )
+
         conditional_write_statements = [
             statement
             for policy in executor_template.find_resources("AWS::S3::BucketPolicy").values()
@@ -218,8 +225,15 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         hosted_zone_parameter = ssm_parameter_id(template, DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER)
         rendered = json.dumps(template)
         iam_policies = tracker_template.find_resources("AWS::IAM::Policy")
-        rendered_policies = json.dumps(iam_policies)
-        self.assertNotIn("s3:DeleteObject", rendered_policies)
+        delete_statements = [
+            statement
+            for policy in iam_policies.values()
+            for statement in policy["Properties"]["PolicyDocument"]["Statement"]
+            if set(statement["Action"]) == {"s3:DeleteObject", "s3:DeleteObjectVersion"}
+        ]
+        self.assertEqual(len(delete_statements), 1)
+        self.assertIn("benchmarks/*", json.dumps(delete_statements[0]["Resource"]))
+        self.assertNotIn("agents/*", json.dumps(delete_statements[0]["Resource"]))
         self.assertIn(DESCOPE_MANAGEMENT_KEY_SECRET_NAME, rendered)
         self.assertNotIn("/vals/dev/descope/project-id", rendered)
         self.assertNotIn("SENTRY_DSN", rendered)
@@ -355,7 +369,11 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         self.assertNotIn("s3:DeleteObject", policies)
 
     def test_dev_tracker_requires_descope_project(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True):
+        managed_runtime_environment = {
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS": DEV_AUTH_ENV["AWS_DEPLOYMENT_ROLE_ORG_IDS"],
+            "AWS_TRACKER_SECRET_NAME_PREFIXES": DEV_AUTH_ENV["AWS_TRACKER_SECRET_NAME_PREFIXES"],
+        }
+        with mock.patch.dict(os.environ, managed_runtime_environment, clear=True):
             with self.assertRaisesRegex(ValueError, "Development deployments require DESCOPE_PROJECT_ID"):
                 dev_tracker_template()
 

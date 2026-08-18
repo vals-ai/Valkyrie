@@ -19,6 +19,7 @@ from tests.unit.utils.task_execution_support import (
     make_retrieve_task_response,
     run_process_task,
 )
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
     ErrorResult,
@@ -81,6 +82,7 @@ class TestTaskExecutionRetry:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
         fail_target: str,
         error: SandboxSetupError,
         second_error: Exception | None,
@@ -156,7 +158,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         expected_result = None if expected_status is TaskStatus.ERROR else {"status": "success", "score": 1.0}
         assert result == {"task_0": expected_result}
@@ -203,6 +205,7 @@ class TestTaskExecutionRetry:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
@@ -241,7 +244,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr(task_execution_module, "_process_task_retry_observer", _revoke_authority)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         assert result == {"task_0": None}
         assert sandbox_entry_count == 1
@@ -254,6 +257,7 @@ class TestTaskExecutionRetry:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
@@ -327,7 +331,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         transition_records = [record for record in span_records if record["message"] == "task.status_transition"]
 

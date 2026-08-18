@@ -23,7 +23,7 @@ from tracker.database.models import (
     ExecutorReleaseStatus,
 )
 from executor_protocol import (
-    SUPPORTED_PROTOCOL_VERSION,
+    SUPPORTED_PROTOCOL_VERSIONS,
     validate_executor_artifact_uri,
     validate_executor_digest,
 )
@@ -435,7 +435,7 @@ def _validate_release_manifest(release: ExecutorRelease) -> None:
         release.artifact_digest = validate_executor_digest(release.artifact_digest)
     except ValueError as error:
         raise ReleaseControlError(str(error)) from error
-    if release.protocol_version != SUPPORTED_PROTOCOL_VERSION:
+    if release.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
         raise ReleaseControlError(f"Unsupported executor protocol version: {release.protocol_version}")
     if not release.artifact_uri.startswith("s3://"):
         raise ReleaseControlError("Executor artifact URI must use s3://")

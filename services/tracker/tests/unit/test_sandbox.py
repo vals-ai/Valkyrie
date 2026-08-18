@@ -28,6 +28,7 @@ from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxComm
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
 from tracker import sandbox as sandbox_module
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentCausedExitReason,
     AgentContractRequest,
@@ -50,7 +51,6 @@ from tracker.sandbox import (
     upload_agent_artifacts,
     upload_output_artifacts,
 )
-from tracker.types import AWSCredentials
 
 
 def _ignore_output(_message: str) -> None:
@@ -74,7 +74,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_downloads_file_without_exec_output(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """
         Verify artifact contents use the sandbox file-transfer API instead of command output.
@@ -94,7 +94,7 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output=str(len(artifact_content)))
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -110,8 +110,7 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            harness_config.s3_bucket,
+            aws_runtime,
         )
 
         assert uploaded == [(artifact_content, "benchmarks/benchmark-123/task_0/artifacts/turns.jsonl")]
@@ -119,7 +118,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_rechecks_authority_after_download(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         artifact = "artifacts/turns.jsonl"
         authority_checks = iter([True, False])
@@ -145,8 +144,7 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            harness_config.s3_bucket,
+            aws_runtime,
             execution_is_current=lambda: next(authority_checks),
         )
 
@@ -156,7 +154,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_can_upload_explicit_glob_sources(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         uploaded: list[tuple[bytes, str]] = []
 
@@ -171,7 +169,7 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="13")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -190,8 +188,7 @@ class TestOutputArtifacts:
             ],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            harness_config.s3_bucket,
+            aws_runtime,
         )
 
         assert uploaded == [
@@ -202,7 +199,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_uses_result_paired_with_model_library_config(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         uploaded: list[tuple[bytes, str]] = []
 
@@ -213,7 +210,7 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="13")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -229,8 +226,7 @@ class TestOutputArtifacts:
             [OutputArtifact(path="artifacts/result.json", source="/logs/model-library-run/result.json")],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            harness_config.s3_bucket,
+            aws_runtime,
         )
 
         assert uploaded == [(b'{"turns":[]}\n', "benchmarks/benchmark-123/task_0/artifacts/result.json")]
@@ -238,7 +234,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_fails_when_declared_file_is_missing(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         artifact = "artifacts/missing.json"
 
@@ -249,12 +245,12 @@ class TestOutputArtifacts:
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
 
         with pytest.raises(OutputArtifactError, match="Required output artifact missing"):
-            await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
+            await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", aws_runtime)
 
     async def test_upload_output_artifacts_skips_missing_optional_model_patch(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         artifact = OutputArtifact(
             path="artifacts/model.patch",
@@ -273,8 +269,7 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            "bucket",
+            aws_runtime,
         )
 
         exec_mock.assert_awaited_once_with(
@@ -291,7 +286,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_handles_non_glob_symlinks_by_requiredness(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
         required: bool,
         expected_uploads: list[bytes],
     ) -> None:
@@ -307,7 +302,7 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="6")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, _s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+        async def fake_upload_to_s3(file_content: bytes, _s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append(file_content)
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -324,8 +319,7 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            "bucket",
+            aws_runtime,
         )
 
         assert uploaded == expected_uploads
@@ -333,7 +327,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_prioritizes_required_artifacts_for_total_size_limit(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         optional_source = "/logs/optional.json"
         required_source = "/logs/required.json"
@@ -354,7 +348,7 @@ class TestOutputArtifacts:
         async def fake_download_file(path: str) -> bytes:
             return path.encode()
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -373,8 +367,7 @@ class TestOutputArtifacts:
             ],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            "bucket",
+            aws_runtime,
         )
 
         assert uploaded == [
@@ -387,7 +380,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_fails_when_file_exceeds_tracker_limit(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         artifact = "artifacts/large.json"
 
@@ -403,7 +396,7 @@ class TestOutputArtifacts:
         monkeypatch.setattr(sandbox_module, "upload_to_s3", upload_mock)
 
         with pytest.raises(OutputArtifactError, match="too large"):
-            await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
+            await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", aws_runtime)
 
         upload_mock.assert_not_awaited()
 
@@ -422,7 +415,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifact_rejects_invalid_sizes(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
         stat_result: ExecResult,
         total_bytes: int,
         error: str,
@@ -443,8 +436,7 @@ class TestOutputArtifacts:
                 "artifacts/result.json",
                 "benchmark-123",
                 "task_0",
-                harness_config.aws,
-                "bucket",
+                aws_runtime,
                 total_bytes,
             )
 
@@ -453,7 +445,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_skips_invalid_optional_file(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         artifact = OutputArtifact(
             path="atif/trajectory.json",
@@ -477,8 +469,7 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            "bucket",
+            aws_runtime,
         )
 
         assert exec_mock.await_args_list == [
@@ -497,7 +488,7 @@ class TestArchiveAndUploadOutput:
     async def test_archive_and_upload_output_streams_archive_to_s3(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """
         Test cases:
@@ -514,8 +505,7 @@ class TestArchiveAndUploadOutput:
         async def fake_upload_stream_to_s3(
             chunks: Any,
             s3_key: str,
-            _aws: Any,
-            _s3_bucket: str,
+            _aws_runtime: AWSRuntime,
             should_continue: Any = None,
         ) -> int:
             data = b"".join([chunk async for chunk in chunks])
@@ -543,8 +533,7 @@ class TestArchiveAndUploadOutput:
             mock_sandbox,
             "/logs",
             "benchmarks/benchmark-123/task_0/output.tar.gz",
-            harness_config.aws,
-            harness_config.s3_bucket,
+            aws_runtime,
         )
 
         assert uploaded == [(b"chunk-1chunk-2", "benchmarks/benchmark-123/task_0/output.tar.gz")]
@@ -558,7 +547,7 @@ class TestRunAgent:
     async def test_run_agent_uploads_declared_output_artifacts(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         contract = AgentContractRequest(
             name="test-agent",
@@ -582,8 +571,7 @@ class TestRunAgent:
             artifacts: list[str],
             benchmark_id: str,
             task_id: str,
-            _aws: Any,
-            _s3_bucket: str,
+            _aws_runtime: AWSRuntime,
             _execution_is_current: Any,
         ) -> None:
             artifact_calls.append(f"{benchmark_id}:{task_id}:{artifacts[0]}")
@@ -603,8 +591,7 @@ class TestRunAgent:
             "task_0",
             lambda _msg: None,
             "/testbed",
-            aws=harness_config.aws,
-            s3_bucket=harness_config.s3_bucket,
+            aws_runtime=aws_runtime,
             benchmark_id="benchmark-123",
         )
 
@@ -613,7 +600,7 @@ class TestRunAgent:
     async def test_run_agent_threads_benchmark_id_to_archive_and_upload(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         contract = AgentContractRequest(
             name="test-agent",
@@ -635,8 +622,7 @@ class TestRunAgent:
             _sandbox: Any,
             output_path: str,
             _s3_key: str,
-            _aws: Any,
-            _s3_bucket: str,
+            _aws_runtime: AWSRuntime,
             *,
             benchmark_id: str | None = None,
             task_id: str | None = None,
@@ -659,8 +645,7 @@ class TestRunAgent:
             "task_0",
             lambda _msg: None,
             "/testbed",
-            aws=harness_config.aws,
-            s3_bucket=harness_config.s3_bucket,
+            aws_runtime=aws_runtime,
             agent_output_s3_key="benchmarks/run/task/agent_output.tar.gz",
             benchmark_id="benchmark-123",
         )
@@ -675,8 +660,7 @@ class TestRunAgent:
             "task_0",
             lambda _msg: None,
             "/testbed",
-            aws=harness_config.aws,
-            s3_bucket=harness_config.s3_bucket,
+            aws_runtime=aws_runtime,
             agent_output_s3_key="benchmarks/run/task/agent_output.tar.gz",
             benchmark_id="benchmark-123",
             execution_is_current=lambda: False,
@@ -686,7 +670,7 @@ class TestRunAgent:
     async def test_run_agent_wraps_compose_runtime_source(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """Compose runtime sources should route agent setup and execution through the wrapper.
 
@@ -725,8 +709,7 @@ class TestRunAgent:
             "task_0",
             lambda _msg: None,
             "/workspace",
-            aws=harness_config.aws,
-            s3_bucket=harness_config.s3_bucket,
+            aws_runtime=aws_runtime,
             runtime_source=ComposeSource(
                 outer=ImageSource(image="docker:28.3.3-dind"),
                 compose_command="docker compose -f /harbor/compose.yaml",
@@ -739,7 +722,7 @@ class TestRunAgent:
     async def test_run_agent_shell_wraps_agent_timeout_command(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """Task timeouts should apply to the full shell-form agent command.
 
@@ -776,8 +759,7 @@ class TestRunAgent:
             "task_0",
             lambda _msg: None,
             "/workspace",
-            aws=harness_config.aws,
-            s3_bucket=harness_config.s3_bucket,
+            aws_runtime=aws_runtime,
             agent_timeout=2.5,
         )
 
@@ -1546,7 +1528,7 @@ class TestUploadAgentArtifacts:
         self,
         contract: AgentContractRequest,
         monkeypatch: pytest.MonkeyPatch,
-        aws_credentials: AWSCredentials,
+        aws_runtime: AWSRuntime,
         exit_code: int,
         retryable: bool,
     ) -> None:
@@ -1573,13 +1555,7 @@ class TestUploadAgentArtifacts:
 
         expected = SSLConnectionError if retryable else SandboxError
         with pytest.raises(expected) as exc_info:
-            await upload_agent_artifacts(
-                mock_sandbox,
-                contract,
-                "bench-123",
-                aws_credentials,
-                "test-bucket",
-            )
+            await upload_agent_artifacts(mock_sandbox, contract, "bench-123", aws_runtime)
 
         if not retryable:
             assert not isinstance(exc_info.value, SandboxSetupError)

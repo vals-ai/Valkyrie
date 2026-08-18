@@ -19,6 +19,7 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     DispatchAuthority,
     DispatchAuthorityLostError,
     DeleteAfterAckRedisStreamBroker,
+    ExecutorProcessPayload,
     ExecutorSupervisor,
     PostgresExecutorDispatchStore,
     run_executor_dispatch,
@@ -163,6 +164,48 @@ def _dispatch(*, digest: str) -> ArtifactDispatch:
             "executor_protocol_version": "1",
         }
     )
+
+
+def _process_payload(
+    request: dict[str, object] | None = None,
+    *,
+    benchmark_id: str = "benchmark-1",
+    task_ids: list[str] | None = None,
+) -> ExecutorProcessPayload:
+    return ExecutorProcessPayload.from_payload(
+        {
+            "start_benchmark_request_json": request or {},
+            "benchmark_id_str": benchmark_id,
+            "verified_task_ids": task_ids or [],
+        }
+    )
+
+
+def test_managed_process_payload_is_normalized_once() -> None:
+    context: dict[str, object] = {
+        "benchmark_id": "benchmark-1",
+        "verified_task_ids": ["task-1"],
+        "start_benchmark_request": {},
+    }
+
+    payload = ExecutorProcessPayload.from_payload({"execution_context_json": context})
+
+    assert payload.benchmark_id == "benchmark-1"
+    assert payload.verified_task_ids == ["task-1"]
+    assert payload.arguments == {"execution_context_json": context}
+
+
+def test_process_payload_rejects_mixed_execution_shapes() -> None:
+    with pytest.raises(ValueError, match="mixes access-key and managed"):
+        ExecutorProcessPayload.from_payload(
+            {
+                "execution_context_json": {
+                    "benchmark_id": "benchmark-1",
+                    "verified_task_ids": [],
+                },
+                "start_benchmark_request_json": {},
+            }
+        )
 
 
 def _supervisor(
@@ -428,9 +471,7 @@ async def test_run_forwards_dispatch_authority_to_executor(
             store,
             executor_dispatch_id="dispatch-1",
             dispatch=_dispatch(digest=digest),
-            start_benchmark_request_json={"benchmark_name": "swebench"},
-            benchmark_id_str="benchmark-1",
-            verified_task_ids=["task-1"],
+            process_payload=_process_payload({"benchmark_name": "swebench"}, task_ids=["task-1"]),
         )
 
     try:
@@ -466,9 +507,7 @@ async def test_non_claimable_dispatch_does_not_launch(tmp_path: Path) -> None:
         store,
         executor_dispatch_id="dispatch-1",
         dispatch=_dispatch(digest=hashlib.sha256(artifact).hexdigest()),
-        start_benchmark_request_json={},
-        benchmark_id_str="benchmark-1",
-        verified_task_ids=[],
+        process_payload=_process_payload(),
     )
 
     assert len(store.claimed) == 1
@@ -489,18 +528,14 @@ async def test_duplicate_dispatch_claim_does_not_launch_again(tmp_path: Path) ->
         store,
         executor_dispatch_id="dispatch-1",
         dispatch=_dispatch(digest=digest),
-        start_benchmark_request_json={},
-        benchmark_id_str="benchmark-1",
-        verified_task_ids=[],
+        process_payload=_process_payload(),
     )
     await run_executor_dispatch(
         supervisor,
         store,
         executor_dispatch_id="dispatch-1",
         dispatch=_dispatch(digest=digest),
-        start_benchmark_request_json={},
-        benchmark_id_str="benchmark-1",
-        verified_task_ids=[],
+        process_payload=_process_payload(),
     )
 
     assert len(store.claimed) == 2
@@ -517,9 +552,7 @@ async def test_artifact_failure_terminalizes_current_dispatch(tmp_path: Path) ->
             store,
             executor_dispatch_id="dispatch-1",
             dispatch=_dispatch(digest="0" * 64),
-            start_benchmark_request_json={},
-            benchmark_id_str="benchmark-1",
-            verified_task_ids=[],
+            process_payload=_process_payload(),
         )
 
     assert len(store.claimed) == 1
@@ -539,9 +572,7 @@ async def test_failed_executor_terminalizes_dispatch(tmp_path: Path) -> None:
             store,
             executor_dispatch_id="dispatch-1",
             dispatch=_dispatch(digest=digest),
-            start_benchmark_request_json={},
-            benchmark_id_str="benchmark-1",
-            verified_task_ids=[],
+            process_payload=_process_payload(),
         )
 
     assert store.terminalized == [store.authority]
@@ -822,9 +853,7 @@ async def test_task_protection_is_acquired_before_claim(
         store,
         executor_dispatch_id="dispatch-1",
         dispatch=_dispatch(digest=hashlib.sha256(artifact).hexdigest()),
-        start_benchmark_request_json={},
-        benchmark_id_str="benchmark-1",
-        verified_task_ids=[],
+        process_payload=_process_payload(),
     )
 
     assert events == ["protection-True", "claim", "protection-False"]
@@ -870,9 +899,7 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
             store,
             executor_dispatch_id="dispatch-1",
             dispatch=dispatch,
-            start_benchmark_request_json={},
-            benchmark_id_str="benchmark-1",
-            verified_task_ids=[],
+            process_payload=_process_payload(),
         )
     )
     await enable_started.wait()
@@ -900,9 +927,7 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
         store,
         executor_dispatch_id="dispatch-2",
         dispatch=dispatch,
-        start_benchmark_request_json={},
-        benchmark_id_str="benchmark-1",
-        verified_task_ids=[],
+        process_payload=_process_payload(),
     )
 
     assert protection_calls == [True, False, True, False]
@@ -931,9 +956,7 @@ async def test_cancellation_after_claim_terminalizes_dispatch(
             store,
             executor_dispatch_id="dispatch-1",
             dispatch=_dispatch(digest=hashlib.sha256(artifact).hexdigest()),
-            start_benchmark_request_json={},
-            benchmark_id_str="benchmark-1",
-            verified_task_ids=[],
+            process_payload=_process_payload(),
         )
     )
     await entered_run.wait()
@@ -999,9 +1022,7 @@ async def test_authority_revocation_terminates_process_before_terminalization(
             store,
             executor_dispatch_id="dispatch-1",
             dispatch=_dispatch(digest=digest),
-            start_benchmark_request_json={},
-            benchmark_id_str="benchmark-1",
-            verified_task_ids=[],
+            process_payload=_process_payload(),
         )
     )
     await authority_check_due.wait()
@@ -1025,9 +1046,7 @@ async def test_stale_successful_finish_cannot_finish_dispatch(tmp_path: Path) ->
         store,
         executor_dispatch_id="dispatch-1",
         dispatch=_dispatch(digest=digest),
-        start_benchmark_request_json={},
-        benchmark_id_str="benchmark-1",
-        verified_task_ids=[],
+        process_payload=_process_payload(),
     )
 
     assert store.finished == [store.authority]

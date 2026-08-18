@@ -18,6 +18,7 @@ from sqlmodel import Session, select
 import tracker.utils as tracker_utils
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import copy_agent_to_benchmark, delete_from_s3, get_benchmark_contract_s3_key
 from tracker.database.models import (
     AgentContractRequest,
@@ -48,7 +49,7 @@ async def frozen_contract_keys(harness_config: HarnessConfig) -> AsyncGenerator[
         yield keys
     finally:
         for key in sorted(keys):
-            await delete_from_s3(key, harness_config.aws, harness_config.s3_bucket)
+            await delete_from_s3(key, AWSRuntime.from_harness_config(harness_config))
 
 
 async def _create_benchmark(
@@ -72,12 +73,12 @@ async def _create_benchmark(
     benchmark = start_benchmark_request_to_benchmark(
         request,
         RequestIdentity(org=Org(id=TEST_ORG_ID, name="default"), access_key_id=None, email=None, name=None),
+        aws_managed=False,
     )
     copied = await copy_agent_to_benchmark(
         str(benchmark.id),
         contract.name,
-        harness_config.aws,
-        harness_config.s3_bucket,
+        AWSRuntime.from_harness_config(harness_config),
     )
     if copied:
         frozen_contract_keys.add(get_benchmark_contract_s3_key(str(benchmark.id), contract.name))
@@ -349,7 +350,10 @@ class TestProcessBenchmark:
         await gather(
             *[
                 process_benchmark(
-                    request.model_dump(),
+                    benchmark.access_key_start_benchmark_request(
+                        harness_config,
+                        service_headers=service_headers,
+                    ).model_dump(),
                     str(benchmark.id),
                     [_TASK_ID],
                     **authority_by_benchmark[benchmark.id],
