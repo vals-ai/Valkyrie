@@ -4,18 +4,16 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
+    ErrorResult,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
-    FailureRecord,
     Task,
-    TaskAttempt,
-    TaskAttemptOutcome,
     TaskStatus,
 )
 from tracker.executor.dispatch_control import (
@@ -27,7 +25,6 @@ from tracker.executor.dispatch_control import (
     terminalize_active_dispatches,
 )
 from tracker.exceptions import ExecutionAuthorityRevoked
-from tracker.failure_provenance import FailureEvidence
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.executor.release_control import (
     create_executor_dispatch,
@@ -140,6 +137,15 @@ def test_enqueue_failure_makes_start_retryable(
     assert dispatch.status == ExecutorDispatchStatus.FAILED
     assert task.status == TaskStatus.ERROR
 
+    error_result = database_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).one()
+    assert error_result.error_message == "Executor dispatch enqueue failed"
+    assert error_result.producer == "executor_dispatch"
+    assert error_result.operation == "enqueue"
+    assert error_result.error_type == "ExecutorDispatchEnqueueError"
+    assert error_result.cause_code is None
+    assert error_result.retry_scheduled is False
+    assert error_result.retry_sequence is None
+
 
 def test_additive_retry_enqueue_failure_keeps_original_execution_active(
     database_session: Session,
@@ -195,16 +201,6 @@ def test_additive_retry_enqueue_failure_keeps_original_execution_active(
     database_session.add(newer_retry_task)
     database_session.add(original_dispatch)
     database_session.add(dispatch)
-    database_session.flush()
-    retry_attempt = TaskAttempt(
-        org_id=retry_task.org_id,
-        task=retry_task.id,
-        started_at=retry_task.started_at,
-    )
-    database_session.add(retry_attempt)
-    database_session.flush()
-    retry_task.active_attempt_id = retry_attempt.id
-    database_session.add(retry_task)
     database_session.commit()
 
     resolution = resolve_enqueue_failure(
@@ -215,22 +211,23 @@ def test_additive_retry_enqueue_failure_keeps_original_execution_active(
     )
     database_session.refresh(example_benchmark_object)
     database_session.refresh(retry_task)
-    database_session.refresh(retry_attempt)
     database_session.refresh(original_task)
     database_session.refresh(stopped_task)
     database_session.refresh(newer_retry_task)
-    retry_failure = database_session.exec(select(FailureRecord).where(FailureRecord.task == retry_task.id)).one()
 
     assert resolution == EnqueueFailureResolution.FAILED
     assert example_benchmark_object.status == BenchmarkStatus.IN_PROGRESS
     assert retry_task.status == TaskStatus.ERROR
-    assert retry_task.finished_at is not None
-    assert retry_attempt.outcome == TaskAttemptOutcome.ERROR
-    assert retry_attempt.finished_at is not None
-    assert retry_failure.task_attempt_id == retry_attempt.id
     assert original_task.status == TaskStatus.IN_PROGRESS
     assert stopped_task.status == TaskStatus.STOPPED
     assert newer_retry_task.status == TaskStatus.PENDING
+
+    error_results = database_session.exec(
+        select(ErrorResult).where(col(ErrorResult.task).in_([retry_task.id, stopped_task.id, newer_retry_task.id]))
+    ).all()
+    assert len(error_results) == 1
+    assert error_results[0].task == retry_task.id
+    assert error_results[0].retry_scheduled is False
 
 
 def test_enqueue_failure_does_not_override_claimed_delivery(
@@ -301,56 +298,43 @@ def test_running_dispatch_failure_preserves_active_sibling(
     database_session.add(example_benchmark_object)
     database_session.add(retry_task)
     database_session.add(newer_retry_task)
-    database_session.flush()
-    retry_attempt = TaskAttempt(
-        org_id=retry_task.org_id,
-        task=retry_task.id,
-        dispatch_id=failing_dispatch.id,
-        started_at=retry_task.started_at,
-    )
-    database_session.add(retry_attempt)
-    database_session.flush()
-    retry_task.active_attempt_id = retry_attempt.id
-    database_session.add(retry_task)
     database_session.commit()
-
-    # Persisted dispatch timestamps are naive while newly assigned task timestamps can still be UTC-aware.
-    failing_dispatch.created_at = failing_dispatch.created_at.replace(tzinfo=None)
-    retry_task.started_at = retry_task.started_at.replace(tzinfo=UTC)
-    newer_retry_task.started_at = newer_retry_task.started_at.replace(tzinfo=UTC)
-    database_session.add_all([failing_dispatch, retry_task, newer_retry_task])
 
     assert record_dispatch_failure(
         database_session,
         benchmark=example_benchmark_object,
         dispatch_id=failing_dispatch.id,
         task_ids=[retry_task.task_id, newer_retry_task.task_id],
-        evidence=FailureEvidence(
-            producer="executor_dispatch",
-            operation="dispatch",
-            error_type="DispatchFailure",
-            message="retry failed",
-        ),
+        error_message="retry failed",
+        producer="tracker",
+        operation="process_benchmark",
+        error_type="RuntimeError",
     )
     database_session.commit()
     database_session.refresh(example_benchmark_object)
     database_session.refresh(failing_dispatch)
     database_session.refresh(sibling_dispatch)
     database_session.refresh(retry_task)
-    database_session.refresh(retry_attempt)
     database_session.refresh(newer_retry_task)
-    retry_failure = database_session.exec(select(FailureRecord).where(FailureRecord.task == retry_task.id)).one()
 
     assert example_benchmark_object.status == BenchmarkStatus.IN_PROGRESS
     assert failing_dispatch.status == ExecutorDispatchStatus.FAILED
     assert sibling_dispatch.status == ExecutorDispatchStatus.RUNNING
     assert retry_task.status == TaskStatus.ERROR
-    assert retry_task.finished_at is not None
-    assert retry_attempt.outcome == TaskAttemptOutcome.ERROR
-    assert retry_attempt.finished_at is not None
-    assert retry_failure.task_attempt_id == retry_attempt.id
-    assert retry_failure.retry_scheduled is False
     assert newer_retry_task.status == TaskStatus.PENDING
+
+    error_results = database_session.exec(
+        select(ErrorResult).where(col(ErrorResult.task).in_([retry_task.id, newer_retry_task.id]))
+    ).all()
+    assert len(error_results) == 1
+    error_result = error_results[0]
+    assert error_result.task == retry_task.id
+    assert error_result.error_message == "retry failed"
+    assert error_result.producer == "tracker"
+    assert error_result.operation == "process_benchmark"
+    assert error_result.error_type == "RuntimeError"
+    assert error_result.retry_scheduled is False
+    assert error_result.retry_sequence is None
 
 
 def test_terminal_recovery_terminalizes_active_dispatches(

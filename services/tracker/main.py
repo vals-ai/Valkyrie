@@ -85,7 +85,6 @@ from tracker.docent_analysis import (
     analyze_event_stream,
 )
 from tracker.exceptions import TrackerServiceError
-from tracker.failure_views import current_run_failure_record, summarize_failure
 from executor_protocol import EXECUTOR_TASK_NAME, executor_task_signature
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
@@ -604,7 +603,6 @@ async def fetch_benchmark(
         )
 
     benchmark_context = BenchmarkContext(benchmark_row, session, org)
-    run_failure = current_run_failure_record(session, benchmark_row)
 
     return FetchBenchmarkResponse(
         benchmark_name=benchmark_row.name,
@@ -616,7 +614,6 @@ async def fetch_benchmark(
         label=benchmark_row.label,
         final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
         error_message=benchmark_row.error_message if benchmark_row.status == BenchmarkStatus.ERROR else None,
-        run_failure=summarize_failure(run_failure) if run_failure else None,
         executor_release_id=benchmark_row.executor_release_id,
         current_execution_release_id=benchmark_row.current_execution_release_id,
         executor_artifact_digest=benchmark_row.executor_artifact_digest,
@@ -729,7 +726,6 @@ async def retrieve_results(
 
         final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
         final_view.task_errors = _filter_task_map(final_view.task_errors)
-        final_view.task_failures = _filter_task_map(final_view.task_failures)
 
         # Include every requested task with its result or None, so tasks without a result
         # (e.g. stopped/errored) still count toward the denominator instead of being dropped.

@@ -707,11 +707,19 @@ class TestRunRecovery:
         )
         database_session.add_all([task_error, task_result])
         database_session.flush()
-        error_result = make_error_result(task_error, "retry failed before", _created_at(2))
-        error_result.benchmark_id = benchmark_row.id
         for result_row in (
             make_evaluation_result(task_error, "older-task-error-result", {"score": 0.25}, _created_at(1)),
-            error_result,
+            make_error_result(task_error, "retry failed before", _created_at(2)),
+            make_error_result(
+                task_error,
+                "scheduled retry",
+                _created_at(3),
+                producer="sandbox_provider",
+                operation="setup",
+                error_type="SandboxSetupError",
+                retry_scheduled=True,
+                retry_sequence=1,
+            ),
             make_evaluation_result(task_result, "previous-task-result", {"score": 0.5}, _created_at(1)),
         ):
             database_session.add(result_row)
@@ -740,7 +748,7 @@ class TestRunRecovery:
             task.status = TaskStatus.FINISHED
             database_session.add(task)
             database_session.add(
-                make_evaluation_result(task, f"current-{task.task_id}", {"score": 1.0}, _created_at(3))
+                make_evaluation_result(task, f"current-{task.task_id}", {"score": 1.0}, _created_at(4))
             )
         database_session.commit()
 

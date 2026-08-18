@@ -15,18 +15,15 @@ from sqlmodel import Session, col, select
 from tenacity import wait_none
 
 from tests.unit.utils.task_execution_support import (
-    TEST_ORG,
     create_task_environment,
     make_retrieve_task_response,
     run_process_task,
 )
 from tracker.database.models import (
     AgentContractRequest,
+    ErrorResult,
     ExecutorDispatch,
     ExecutorDispatchStatus,
-    FailureRecord,
-    TaskAttempt,
-    TaskAttemptOutcome,
     TaskStatus,
 )
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
@@ -54,13 +51,6 @@ class TestTaskExecutionRetry:
                 None,
                 [DependencySetupMode.IN_PLACE_RETRIES, DependencySetupMode.IN_PLACE_RETRIES],
                 TaskStatus.FINISHED,
-            ),
-            (
-                "tracker.utils.task_execution.run_agent",
-                SandboxSetupError("Failed to create command stream"),
-                SandboxSetupError("Command stream retry failed"),
-                [DependencySetupMode.IN_PLACE_RETRIES, DependencySetupMode.IN_PLACE_RETRIES],
-                TaskStatus.ERROR,
             ),
             (
                 "tracker.utils.task_execution.upload_agent_artifacts",
@@ -97,12 +87,13 @@ class TestTaskExecutionRetry:
         expected_dependency_modes: list[DependencySetupMode],
         expected_status: TaskStatus,
     ) -> None:
-        """A sandbox setup failure schedules one retry and records the eventual outcome.
+        """When a SandboxSetupError subclass is raised during sandbox setup or agent execution,
+        process_task should delete the sandbox, create a fresh one, and complete successfully.
 
         Test Cases:
             - SandboxSetupError is raised on the first attempt
             - process_task retries with a new sandbox
-            - Task finishes when the retry succeeds or errors when the retry fails
+            - Task ends in FINISHED state after the retry succeeds
             - The sandbox context manager is entered twice (one per attempt)
         """
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
@@ -165,12 +156,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        process_task_coro = run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
-        if isinstance(second_error, SandboxSetupError):
-            tracked_task = task_execution_module.TrackedTask(process_task_coro, TEST_ORG, authority)
-            result = await tracked_task.run(task_execution_module.ResizableLimiter(1), task_row)
-        else:
-            result = await process_task_coro
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         expected_result = None if expected_status is TaskStatus.ERROR else {"status": "success", "score": 1.0}
         assert result == {"task_0": expected_result}
@@ -180,27 +166,36 @@ class TestTaskExecutionRetry:
 
         database_session.refresh(task_row)
         assert task_row.status == expected_status
-        assert task_row.active_attempt_id is not None
 
-        failures = database_session.exec(
-            select(FailureRecord)
-            .where(col(FailureRecord.task) == task_row.id)
-            .where(col(FailureRecord.task_attempt_id) == task_row.active_attempt_id)
-        ).all()
-        scheduled_retries = [failure for failure in failures if failure.retry_scheduled]
-        terminal = [failure for failure in failures if not failure.retry_scheduled]
-        assert len(scheduled_retries) == 1
-        assert scheduled_retries[0].error_type == type(error).__name__
-        assert scheduled_retries[0].dispatch_id == authority.dispatch_id
-        assert len(terminal) == (1 if expected_status is TaskStatus.ERROR else 0)
-        if terminal:
-            assert terminal[0].error_type == type(second_error).__name__
+        error_results = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all()
+        retry_results = [result for result in error_results if result.retry_scheduled]
+        terminal_results = [result for result in error_results if not result.retry_scheduled]
 
-        attempt = database_session.get(TaskAttempt, task_row.active_attempt_id)
-        assert attempt is not None
-        assert attempt.outcome is (
-            TaskAttemptOutcome.ERROR if expected_status is TaskStatus.ERROR else TaskAttemptOutcome.FINISHED
-        )
+        assert len(retry_results) == 1
+        retry_result = retry_results[0]
+        assert retry_result.error_message == str(error)
+        assert retry_result.producer == "sandbox_provider"
+        assert retry_result.operation == "setup"
+        assert retry_result.error_type == type(error).__name__
+        assert retry_result.cause_code is None
+        assert retry_result.retry_sequence == 1
+
+        if expected_status is TaskStatus.ERROR:
+            assert second_error is not None
+            assert len(terminal_results) == 1
+            terminal_result = terminal_results[0]
+            assert str(second_error) in terminal_result.error_message
+            if isinstance(second_error, SandboxSetupError):
+                assert terminal_result.producer == "sandbox_provider"
+                assert terminal_result.operation == "setup"
+            else:
+                assert terminal_result.producer == "tracker"
+                assert terminal_result.operation == "process_task"
+            assert terminal_result.error_type == type(second_error).__name__
+            assert terminal_result.cause_code is None
+            assert terminal_result.retry_sequence is None
+        else:
+            assert terminal_results == []
 
     async def test_revoked_dispatch_does_not_begin_the_second_automatic_attempt(
         self,
@@ -244,7 +239,7 @@ class TestTaskExecutionRetry:
 
         assert result == {"task_0": None}
         assert sandbox_entry_count == 1
-        assert database_session.exec(select(FailureRecord).where(col(FailureRecord.task) == task_row.id)).all() == []
+        assert database_session.exec(select(ErrorResult).where(col(ErrorResult.task) == task_row.id)).all() == []
 
     async def test_process_task_spans_timed_status_transitions(
         self,

@@ -36,11 +36,10 @@ from tracker.aws.secrets import resolve_secrets
 from tracker.config import ENVIRONMENT
 from tracker.database.models import (
     BenchmarkStatus,
+    ErrorResult,
     EvaluationResult,
     Org,
     Task,
-    TaskAttempt,
-    TaskAttemptOutcome,
     TaskBreakdown,
     TaskStatus,
 )
@@ -53,7 +52,6 @@ from tracker.exceptions import (
     TrackerServiceError,
 )
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
-from tracker.failure_provenance import FailureEvidence, record_failure
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
@@ -86,76 +84,49 @@ def _exception_message(exc: BaseException) -> str:
     return str(exc).strip() or type(exc).__name__
 
 
-def _failure_evidence(
-    exc: BaseException,
-    message: str,
-    *,
-    producer: str = "tracker",
-    operation: str = "process_task",
-    cause_code: str | None = None,
-) -> FailureEvidence:
-    return FailureEvidence(
-        producer=producer,
-        operation=operation,
-        error_type=type(exc).__name__,
-        message=message,
-        cause_code=cause_code,
-    )
-
-
-def _record_recovered_task_retry(
+def _record_scheduled_task_retry(
     task_row: Task,
     org: Org,
-    active_attempt_id: UUID,
     authority: ExecutionAuthority,
     exc: SandboxSetupError,
-) -> bool:
-    """Persist a scheduled retry failure only while this attempt remains authoritative."""
+    retry_sequence: int,
+) -> None:
+    """Persist one scheduled retry while this task execution still owns the row."""
     with Session(bind=engine) as session:
         try:
             lock_execution_authority(session, authority)
         except ExecutionAuthorityRevoked:
             session.rollback()
-            return False
+            return
         task = session.exec(
             select(Task)
             .where(col(Task.id) == task_row.id)
             .where(col(Task.org_id) == org.id)
             .where(col(Task.benchmark) == authority.benchmark_id)
+            .where(col(Task.started_at) == task_row.started_at)
+            .where(
+                col(Task.status).in_(
+                    (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
+                )
+            )
             .with_for_update()
         ).one_or_none()
-        if task is None or task.active_attempt_id != active_attempt_id:
+        if task is None:
             session.rollback()
-            return False
-        attempt = session.exec(
-            select(TaskAttempt)
-            .where(col(TaskAttempt.id) == active_attempt_id)
-            .where(col(TaskAttempt.org_id) == org.id)
-            .where(col(TaskAttempt.task) == task.id)
-            .where(col(TaskAttempt.dispatch_id) == authority.dispatch_id)
-            .where(col(TaskAttempt.outcome) == TaskAttemptOutcome.PENDING)
-            .with_for_update()
-        ).one_or_none()
-        if attempt is None:
-            session.rollback()
-            return False
-        record_failure(
-            session,
-            org_id=task.org_id,
-            benchmark_id=task.benchmark,
-            evidence=_failure_evidence(
-                exc,
-                _exception_message(exc),
+            return
+        session.add(
+            ErrorResult(
+                org_id=task.org_id,
+                task=task.id,
+                error_message=_exception_message(exc),
                 producer="sandbox_provider",
                 operation="setup",
-            ),
-            retry_scheduled=True,
-            task_id=task.id,
-            task_attempt_id=active_attempt_id,
-            dispatch_id=authority.dispatch_id,
+                error_type=type(exc).__name__,
+                retry_scheduled=True,
+                retry_sequence=retry_sequence,
+            )
         )
         session.commit()
-        return True
 
 
 _process_task_retry_observer = retry_callback("valkyrie.task")
@@ -166,56 +137,13 @@ def _before_process_task_retry(retry_state: RetryCallState) -> None:
     exc = retry_state.outcome.exception() if retry_state.outcome is not None else None
     if not isinstance(exc, SandboxSetupError):
         return
-    _record_recovered_task_retry(
+    _record_scheduled_task_retry(
         cast(Task, retry_state.args[0]),
         cast(Org, retry_state.args[6]),
-        cast(UUID, retry_state.kwargs["active_attempt_id"]),
         cast(ExecutionAuthority, retry_state.kwargs["authority"]),
         exc,
+        retry_state.attempt_number,
     )
-
-
-def _claim_active_attempt(task_row: Task, org: Org, authority: ExecutionAuthority) -> UUID | None:
-    """Claim legacy active work and bind the active attempt to this dispatch."""
-    with Session(bind=engine) as session:
-        try:
-            lock_execution_authority(session, authority)
-        except ExecutionAuthorityRevoked:
-            session.rollback()
-            return None
-        task = session.exec(
-            select(Task).where(col(Task.id) == task_row.id).where(col(Task.org_id) == org.id).with_for_update()
-        ).one()
-        if _normalized_attempt_time(task.started_at) != _normalized_attempt_time(task_row.started_at):
-            session.rollback()
-            return None
-        if task.active_attempt_id is None:
-            attempt = TaskAttempt(
-                org_id=task.org_id,
-                task=task.id,
-                dispatch_id=authority.dispatch_id,
-                started_at=task.started_at,
-            )
-            session.add(attempt)
-            session.flush()
-            task.active_attempt_id = attempt.id
-            session.add(task)
-        else:
-            attempt = session.exec(
-                select(TaskAttempt)
-                .where(col(TaskAttempt.id) == task.active_attempt_id)
-                .where(col(TaskAttempt.org_id) == org.id)
-                .where(col(TaskAttempt.task) == task.id)
-                .with_for_update()
-            ).one()
-            if attempt.dispatch_id is None:
-                attempt.dispatch_id = authority.dispatch_id
-                session.add(attempt)
-            elif attempt.dispatch_id != authority.dispatch_id:
-                session.rollback()
-                return None
-        session.commit()
-        return attempt.id
 
 
 class TrackedTaskStatus(str, Enum):
@@ -307,24 +235,16 @@ class TrackedTask:
             logger.error(error_message)
             logfire.exception("tracked_task_run failed")
             sentry_sdk.capture_exception(e)
-            evidence = (
-                _failure_evidence(
-                    e,
-                    error_message,
-                    producer="sandbox_provider",
-                    operation="setup",
-                )
-                if isinstance(e, SandboxSetupError)
-                else _failure_evidence(e, error_message)
-            )
             with Session(bind=engine) as session:
                 task = fetch_task_row(task_row.id, session, self._org)
                 commit_task_error(
                     task,
                     session,
-                    evidence,
+                    error_message,
+                    producer="sandbox_provider" if isinstance(e, SandboxSetupError) else "tracker",
+                    operation="setup" if isinstance(e, SandboxSetupError) else "process_task",
+                    error_type=type(e).__name__,
                     expected_started_at=task_row.started_at,
-                    expected_attempt_id=task_row.active_attempt_id,
                     authority=self._authority,
                 )
 
@@ -458,7 +378,6 @@ def handle_early_exit(task_row: Task, task_session: Session, authority: Executio
         TaskStatus.STOPPED,
         authority=authority,
         expected_started_at=task_row.started_at,
-        expected_attempt_id=task_row.active_attempt_id,
     )
 
 
@@ -517,7 +436,6 @@ def _commit_task_status(
     error_message: str | None = None,
     extra: dict[str, Any] | None = None,
     expected_started_at: datetime | None = None,
-    expected_attempt_id: UUID | None = None,
 ) -> bool:
     from_status = task.status
     span_attributes = {
@@ -537,45 +455,19 @@ def _commit_task_status(
             session.rollback()
             return False
         values: dict[str, TaskStatus | datetime] = {"status": to_status}
-        terminal_outcomes = {
-            TaskStatus.FINISHED: TaskAttemptOutcome.FINISHED,
-            TaskStatus.ERROR: TaskAttemptOutcome.ERROR,
-            TaskStatus.STOPPED: TaskAttemptOutcome.STOPPED,
-        }
-        now = datetime.now(ZoneInfo("UTC"))
-        if to_status in terminal_outcomes:
-            values["finished_at"] = now
+        if to_status in [TaskStatus.FINISHED, TaskStatus.ERROR]:
+            values["finished_at"] = datetime.now(ZoneInfo("UTC"))
 
         task_update = update(Task).where(col(Task.id) == task.id).where(col(Task.org_id) == task.org_id)
         if to_status != TaskStatus.STOPPED:
             task_update = task_update.where(col(Task.status) != TaskStatus.STOPPED)
         if expected_started_at is not None:
             task_update = task_update.where(col(Task.started_at) == expected_started_at)
-        if expected_attempt_id is not None:
-            task_update = task_update.where(col(Task.active_attempt_id) == expected_attempt_id)
 
         result = session.exec(task_update.values(**values))
         if result.rowcount == 0:
             session.rollback()
             return False
-
-        if to_status in terminal_outcomes:
-            if expected_attempt_id is None:
-                session.rollback()
-                return False
-            attempt = session.exec(
-                select(TaskAttempt)
-                .where(col(TaskAttempt.id) == expected_attempt_id)
-                .where(col(TaskAttempt.task) == task.id)
-                .where(col(TaskAttempt.outcome) == TaskAttemptOutcome.PENDING)
-                .with_for_update()
-            ).one_or_none()
-            if attempt is None:
-                session.rollback()
-                return False
-            attempt.outcome = terminal_outcomes[to_status]
-            attempt.finished_at = now
-            session.add(attempt)
 
         session.commit()
         return True
@@ -589,7 +481,6 @@ def commit_task_status_transition(
     *,
     authority: ExecutionAuthority,
     expected_started_at: datetime | None = None,
-    expected_attempt_id: UUID | None = None,
 ) -> bool:
     fetch_start = time.monotonic()
     task = fetch_task_row(task_row_id, session, org)
@@ -599,7 +490,6 @@ def commit_task_status_transition(
         to_status,
         extra={"fetch_duration_ms": elapsed_ms(fetch_start)},
         expected_started_at=expected_started_at,
-        expected_attempt_id=expected_attempt_id,
         authority=authority,
     )
 
@@ -618,10 +508,6 @@ async def process_task(
     authority: ExecutionAuthority,
 ) -> dict[str, dict[str, Any] | None]:
     """Process one task while retaining dependency recovery state across sandbox attempts."""
-    active_attempt_id = _claim_active_attempt(task_row, org, authority)
-    if active_attempt_id is None:
-        return {task_id: None}
-    task_row.active_attempt_id = active_attempt_id
     return await _process_task_attempt(
         task_row,
         start_benchmark_request,
@@ -633,7 +519,6 @@ async def process_task(
         sandbox_provider_config,
         creation_semaphore,
         dependency_setup_recovery=_DependencySetupRecoveryState(),
-        active_attempt_id=active_attempt_id,
         authority=authority,
     )
 
@@ -656,7 +541,6 @@ async def _process_task_attempt(
     sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,
     dependency_setup_recovery: _DependencySetupRecoveryState,
-    active_attempt_id: UUID,
     authority: ExecutionAuthority,
 ) -> dict[str, dict[str, Any] | None]:
     """
@@ -679,19 +563,10 @@ async def _process_task_attempt(
 
     requested_attempt_started_at = task_row.started_at
     with Session(bind=engine) as task_session:
-        try:
-            lock_execution_authority(task_session, authority)
-        except ExecutionAuthorityRevoked:
-            task_session.rollback()
-            return {task_id: None}
         benchmark_row = fetch_benchmark_row(benchmark_id, task_session, org)
         task_row = fetch_task_row(task_row.id, task_session, org)
 
-        if (
-            _normalized_attempt_time(task_row.started_at) != _normalized_attempt_time(requested_attempt_started_at)
-            or task_row.active_attempt_id != active_attempt_id
-        ):
-            task_session.rollback()
+        if _normalized_attempt_time(task_row.started_at) != _normalized_attempt_time(requested_attempt_started_at):
             return {task_id: None}
         attempt_started_at = task_row.started_at
         if benchmark_row.status == BenchmarkStatus.STOPPING or task_row.status == TaskStatus.STOPPED:
@@ -737,23 +612,32 @@ async def _process_task_attempt(
                 task_session.rollback()
                 return False
             task = fetch_task_row(task_row.id, task_session, org)
-            is_current = (
-                task.status != TaskStatus.STOPPED
-                and task.started_at == attempt_started_at
-                and task.active_attempt_id == active_attempt_id
-            )
+            is_current = task.status != TaskStatus.STOPPED and task.started_at == attempt_started_at
             task_session.rollback()
             return is_current
 
-    def commit_terminal_error(evidence: FailureEvidence) -> dict[str, dict[str, Any] | None]:
+    def task_is_stopped() -> bool:
+        return not execution_is_current()
+
+    def commit_terminal_error(
+        exc: BaseException,
+        error_message: str,
+        *,
+        producer: str,
+        operation: str,
+        cause_code: str | None = None,
+    ) -> dict[str, dict[str, Any] | None]:
         with Session(bind=engine) as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
             commit_task_error(
                 task,
                 task_session,
-                evidence,
+                error_message,
+                producer=producer,
+                operation=operation,
+                error_type=type(exc).__name__,
+                cause_code=cause_code,
                 expected_started_at=attempt_started_at,
-                expected_attempt_id=active_attempt_id,
                 authority=authority,
             )
         return {task_id: None}
@@ -780,7 +664,6 @@ async def _process_task_attempt(
                     instance_id=None,
                     result=cast(dict[str, Any], evaluation_result),
                     agent_caused_exit_reason=None,
-                    task_attempt_id=active_attempt_id,
                 )
 
                 with Session(bind=engine) as task_session:
@@ -796,7 +679,6 @@ async def _process_task_attempt(
                         org,
                         TaskStatus.FINISHED,
                         expected_started_at=attempt_started_at,
-                        expected_attempt_id=active_attempt_id,
                         authority=authority,
                     ):
                         return {task_id: None}
@@ -831,7 +713,6 @@ async def _process_task_attempt(
                 org,
                 TaskStatus.BUILDING,
                 expected_started_at=attempt_started_at,
-                expected_attempt_id=active_attempt_id,
                 authority=authority,
             ):
                 return {task_id: None}
@@ -882,7 +763,6 @@ async def _process_task_attempt(
                         org,
                         TaskStatus.IN_PROGRESS,
                         expected_started_at=attempt_started_at,
-                        expected_attempt_id=active_attempt_id,
                         authority=authority,
                     ):
                         return {task_id: None}
@@ -956,7 +836,6 @@ async def _process_task_attempt(
                         org,
                         TaskStatus.EVALUATING,
                         expected_started_at=attempt_started_at,
-                        expected_attempt_id=active_attempt_id,
                         authority=authority,
                     ):
                         return {task_id: None}
@@ -999,7 +878,6 @@ async def _process_task_attempt(
                     instance_id=sandbox.id,
                     result=cast(dict[str, Any], evaluation_result),
                     agent_caused_exit_reason=exit_reason,
-                    task_attempt_id=active_attempt_id,
                 )
 
                 with Session(bind=engine) as task_session:
@@ -1016,7 +894,6 @@ async def _process_task_attempt(
                         org,
                         TaskStatus.FINISHED,
                         expected_started_at=attempt_started_at,
-                        expected_attempt_id=active_attempt_id,
                         authority=authority,
                     ):
                         return {task_id: None}
@@ -1031,22 +908,25 @@ async def _process_task_attempt(
                 raise
 
     except SandboxSetupError as e:
-        if not execution_is_current():
+        if task_is_stopped():
             return {task_id: None}
         log_output(f"\n[ERROR] {_exception_message(e)}")
         raise
     except OutputArtifactError as e:
-        if not execution_is_current():
+        if task_is_stopped():
             return {task_id: None}
         error_message = _exception_message(e)
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
         return commit_terminal_error(
-            _failure_evidence(e, error_message, producer="output_artifact", operation="upload_output_artifacts")
+            e,
+            error_message,
+            producer="output_artifact",
+            operation="upload_output_artifacts",
         )
     except ConnectionClosedError as e:
-        if not execution_is_current():
+        if task_is_stopped():
             return {task_id: None}
         seconds = int(time.monotonic() - last_log_time)
         error_message = (
@@ -1056,16 +936,14 @@ async def _process_task_attempt(
         log_output(f"\n[ERROR] {error_message}")
 
         return commit_terminal_error(
-            _failure_evidence(
-                e,
-                error_message,
-                producer="benchmark_service",
-                operation="websocket",
-                cause_code="websocket_connection_closed",
-            )
+            e,
+            error_message,
+            producer="benchmark_service",
+            operation="websocket",
+            cause_code="websocket_connection_closed",
         )
     except ValidationError as e:
-        if not execution_is_current():
+        if task_is_stopped():
             return {task_id: None}
         field_names = ", ".join(".".join(str(loc) for loc in err["loc"]) for err in e.errors())
         error_message = (
@@ -1074,45 +952,39 @@ async def _process_task_attempt(
         log_output(f"\n[ERROR] {error_message}")
 
         return commit_terminal_error(
-            _failure_evidence(
-                e,
-                error_message,
-                producer="benchmark_service",
-                operation="decode_task_response",
-                cause_code="incompatible_response",
-            )
+            e,
+            error_message,
+            producer="benchmark_service",
+            operation="decode_task_response",
+            cause_code="incompatible_response",
         )
     except InvalidStatus as e:
-        if not execution_is_current():
+        if task_is_stopped():
             return {task_id: None}
         error_message = f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code})"
         log_output(f"\n[ERROR] {error_message}")
 
         return commit_terminal_error(
-            _failure_evidence(
-                e,
-                error_message,
-                producer="benchmark_service",
-                operation="websocket_connect",
-                cause_code="websocket_http_rejected",
-            )
+            e,
+            error_message,
+            producer="benchmark_service",
+            operation="websocket_connect",
+            cause_code="websocket_http_rejected",
         )
     except BenchmarkServiceError as e:
-        if not execution_is_current():
+        if task_is_stopped():
             return {task_id: None}
         error_message = _exception_message(e)
         log_output(f"\n[ERROR] {error_message}")
 
         return commit_terminal_error(
-            _failure_evidence(
-                e,
-                error_message,
-                producer="benchmark_service",
-                operation="request",
-            )
+            e,
+            error_message,
+            producer="benchmark_service",
+            operation="request",
         )
     except Exception as e:
-        if not execution_is_current():
+        if task_is_stopped():
             return {task_id: None}
         logfire.exception("process_task failed")
         error_message = _exception_message(e)
@@ -1123,7 +995,12 @@ async def _process_task_attempt(
         # include the error message
         log_output(f"\n[ERROR] {error_message}")
 
-        return commit_terminal_error(_failure_evidence(e, error_message))
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="tracker",
+            operation="process_task",
+        )
     finally:
         flush_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -1134,28 +1011,31 @@ async def _process_task_attempt(
 def commit_task_error(
     task_row: Task,
     session: Session,
-    evidence: FailureEvidence,
+    error_message: str,
     *,
+    producer: str,
+    operation: str,
+    error_type: str,
     authority: ExecutionAuthority,
+    cause_code: str | None = None,
     expected_started_at: datetime | None = None,
-    expected_attempt_id: UUID | None = None,
 ) -> bool:
-    record_failure(
-        session,
-        org_id=task_row.org_id,
-        benchmark_id=task_row.benchmark,
-        evidence=evidence,
-        retry_scheduled=False,
-        task_id=task_row.id,
-        task_attempt_id=expected_attempt_id,
-        dispatch_id=authority.dispatch_id,
+    session.add(
+        ErrorResult(
+            org_id=task_row.org_id,
+            task=task_row.id,
+            error_message=error_message,
+            producer=producer,
+            operation=operation,
+            error_type=error_type,
+            cause_code=cause_code,
+        )
     )
     return _commit_task_status(
         task_row,
         session,
         TaskStatus.ERROR,
-        error_message=evidence.message,
+        error_message=error_message,
         expected_started_at=expected_started_at,
-        expected_attempt_id=expected_attempt_id,
         authority=authority,
     )

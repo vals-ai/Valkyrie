@@ -126,7 +126,6 @@ async def test_task_and_artifacts_escape_task_id_path_segment(make_client) -> No
     run_id = uuid4()
     task_row_id = uuid4()
     raw_paths: list[bytes] = []
-    task_query_params: list[dict[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         raw_paths.append(request.url.raw_path)
@@ -139,7 +138,6 @@ async def test_task_and_artifacts_escape_task_id_path_segment(make_client) -> No
                     "agent_output_expires_in": 300,
                 },
             )
-        task_query_params.append(dict(request.url.params))
         return httpx.Response(
             200,
             json={
@@ -155,23 +153,15 @@ async def test_task_and_artifacts_escape_task_id_path_segment(make_client) -> No
         )
 
     async with make_client(handler) as client:
-        task = await client.benchmarks.task(run_id, "task one", failure_history_limit=25)
+        task = await client.benchmarks.task(run_id, "task one")
         artifacts = await client.benchmarks.artifacts(run_id, "task one")
 
     assert raw_paths == [
-        f"/benchmarks/{run_id}/tasks/task%20one?failure_history_limit=25".encode(),
+        f"/benchmarks/{run_id}/tasks/task%20one".encode(),
         f"/benchmarks/{run_id}/tasks/task%20one/artifacts".encode(),
     ]
-    assert task_query_params == [{"failure_history_limit": "25"}]
     assert task.evaluation_result == {"score": 1.0}
     assert artifacts.agent_output_expires_in == 300
-
-
-@pytest.mark.parametrize("limit", [0, 501])
-async def test_task_rejects_failure_history_limit_outside_server_bounds(make_client, limit: int) -> None:
-    async with make_client(lambda _request: pytest.fail("request should not be sent")) as client:
-        with pytest.raises(ValueError, match="failure_history_limit must be between 1 and 500"):
-            await client.benchmarks.task(uuid4(), "task", failure_history_limit=limit)
 
 
 @pytest.mark.parametrize("method_name", ["task", "artifacts"])

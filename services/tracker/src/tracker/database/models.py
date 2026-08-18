@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, SerializerFunctionWrapHandler, field_serializer, field_validator, model_serializer
-from sqlalchemy import Connection, Dialect, Enum as SAEnum, ForeignKey, Index, event, text
+from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
     JSON,
@@ -93,17 +93,6 @@ class AgentCausedExitReason(str, Enum):
 class RetryMode(str, Enum):
     AUTO = "auto"
     FROM_SCRATCH = "from_scratch"
-
-
-def _enum_values(enum_class: type[Enum]) -> list[str]:
-    return [str(member.value) for member in enum_class]
-
-
-class TaskAttemptOutcome(str, Enum):
-    PENDING = "pending"
-    FINISHED = "finished"
-    ERROR = "error"
-    STOPPED = "stopped"
 
 
 MAX_OUTPUT_ARTIFACT_BYTES = 100 * 1024 * 1024
@@ -346,10 +335,28 @@ class Benchmark(SQLModel, table=True):
         return fetch_evaluation_results(self.id, session, self.org_id)
 
     def fetch_tasks_with_errors(self, session: Session) -> dict[str, str] | None:
-        from tracker.failure_views import benchmark_task_failure_views
+        error_rows = session.exec(
+            select(Task.task_id, ErrorResult.error_message)
+            .outerjoin(
+                ErrorResult,
+                (col(ErrorResult.task) == col(Task.id))
+                & (col(ErrorResult.org_id) == self.org_id)
+                & col(ErrorResult.retry_scheduled).is_(False),
+            )
+            .where(Task.benchmark == self.id)
+            .where(Task.org_id == self.org_id)
+            .where(Task.status == TaskStatus.ERROR)
+            .order_by(col(Task.id), col(ErrorResult.created_at).desc())
+        ).all()
 
-        task_errors, _ = benchmark_task_failure_views(session, self.id, self.org_id)
-        return task_errors
+        if not error_rows:
+            return None
+
+        errors_by_task_id: dict[str, str] = {}
+        for task_id, error_message in error_rows:
+            errors_by_task_id.setdefault(task_id, error_message or "No error message was provided")
+
+        return errors_by_task_id
 
     def start_benchmark_request(
         self, harness_config: "HarnessConfig", service_headers: dict[str, str] | None = None
@@ -514,13 +521,6 @@ class Task(SQLModel, table=True):
     eval_resume_state: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     benchmark: UUID = Field(foreign_key="benchmark.id")
     task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")
-    active_attempt_id: UUID | None = Field(
-        default=None,
-        sa_column=Column(
-            ForeignKey("taskattempt.id", name="fk_task_active_attempt_id_taskattempt", use_alter=True),
-            nullable=True,
-        ),
-    )
 
 
 @event.listens_for(Task, "before_insert")
@@ -541,22 +541,6 @@ def set_finished_at_when_task_finished(_mapper: Mapper[Task], _connection: Conne
         target.finished_at = datetime.now(ZoneInfo("UTC"))
 
 
-class TaskAttempt(SQLModel, table=True):
-    id: UUID = Field(default_factory=uuid4, primary_key=True)
-    org_id: UUID = Field(foreign_key="org.id")
-    task: UUID = Field(foreign_key="task.id")
-    dispatch_id: UUID | None = Field(default=None, foreign_key="executordispatch.id")
-    started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
-    finished_at: datetime | None = None
-    outcome: TaskAttemptOutcome = Field(
-        default=TaskAttemptOutcome.PENDING,
-        sa_column=Column(
-            SAEnum(TaskAttemptOutcome, values_callable=_enum_values, name="taskattemptoutcome"),
-            nullable=False,
-        ),
-    )
-
-
 class TaskBreakdown(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True, exclude=True)
     sandbox_build_duration: float | None = Field(default=None)
@@ -574,31 +558,20 @@ class ResultBase(SQLModel):
 
 class EvaluationResult(ResultBase, table=True):
     instance_id: str | None = Field(default=None, unique=True)
-    task_attempt_id: UUID | None = Field(default=None, foreign_key="taskattempt.id")
     agent_caused_exit_reason: AgentCausedExitReason | None = Field(default=None)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
 
 
-class FailureRecord(SQLModel, table=True):
-    __table_args__ = (
-        CheckConstraint(
-            "task_attempt_id IS NULL OR task IS NOT NULL",
-            name="ck_failurerecord_task_attempt_requires_task",
-        ),
-        Index("ix_failurerecord_org_benchmark_occurred_at", "org_id", "benchmark_id", "occurred_at"),
-        Index("ix_failurerecord_org_task_occurred_at", "org_id", "task", "occurred_at"),
-    )
+class ErrorResult(ResultBase, table=True):
+    __table_args__ = (Index("ix_errorresult_org_task_created_at", "org_id", "task", "created_at"),)
 
-    id: UUID = Field(default_factory=uuid4, primary_key=True)
-    org_id: UUID = Field(foreign_key="org.id")
-    benchmark_id: UUID = Field(foreign_key="benchmark.id")
-    task: UUID | None = Field(default=None, foreign_key="task.id")
-    task_attempt_id: UUID | None = Field(default=None, foreign_key="taskattempt.id")
-    dispatch_id: UUID | None = Field(default=None, foreign_key="executordispatch.id")
-    occurred_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+    error_message: str = Field(nullable=False)
     producer: str | None = Field(default=None)
     operation: str | None = Field(default=None)
     error_type: str | None = Field(default=None)
-    message: str = Field(nullable=False)
     cause_code: str | None = Field(default=None)
-    retry_scheduled: bool = Field(nullable=False)
+    retry_scheduled: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+    retry_sequence: int | None = Field(default=None)

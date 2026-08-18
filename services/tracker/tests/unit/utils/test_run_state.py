@@ -26,16 +26,14 @@ from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkStatus,
+    ErrorResult,
     EvaluationResult,
     ExecutorRelease,
-    FailureRecord,
     Org,
     Task,
-    TaskAttempt,
     TaskStatus,
 )
 from tracker.exceptions import TrackerServiceError
-from tracker.failure_provenance import FailureEvidence
 from tracker.executor.release_control import promote_release
 from tracker.types import AWSCredentials, FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
@@ -259,12 +257,10 @@ class TestRunState:
         assert response.json() == {"status": "success"}
 
         # Validate stopped tasks are now in pending state
-        resumed_tasks = database_session.exec(
-            select(Task).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.PENDING)
+        task_ids = database_session.exec(
+            select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.PENDING)
         ).all()
-        assert len(resumed_tasks) == 5
-        first_attempt_ids = {task.id: task.active_attempt_id for task in resumed_tasks}
-        assert all(attempt_id is not None for attempt_id in first_attempt_ids.values())
+        assert len(task_ids) == 5
 
         # Validate the benchmark is now in progress state
         benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session, self._test_org)
@@ -299,18 +295,6 @@ class TestRunState:
         fetched_task_rows = database_session.exec(select(Task).where(col(Task.benchmark) == benchmark_row.id)).all()
         assert len(fetched_task_rows) == 10
         assert all(task_row.status == TaskStatus.PENDING for task_row in fetched_task_rows)
-
-        for task_row in fetched_task_rows:
-            if task_row.id not in first_attempt_ids:
-                continue
-            first_attempt_id = first_attempt_ids[task_row.id]
-            assert first_attempt_id is not None
-            assert task_row.active_attempt_id is not None
-            assert task_row.active_attempt_id != first_attempt_id
-            current_attempt = database_session.get(TaskAttempt, task_row.active_attempt_id)
-            assert current_attempt is not None
-            assert current_attempt.task == task_row.id
-            assert current_attempt.org_id == task_row.org_id
 
     def test_resume_benchmark_edge_cases(
         self,
@@ -459,13 +443,6 @@ class TestRunState:
         )
         assert len(task_rows) == len(verified_task_ids)
         assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
-        for _, task in task_rows:
-            assert task.active_attempt_id is not None
-            attempt = database_session.get(TaskAttempt, task.active_attempt_id)
-            assert attempt is not None
-            assert attempt.task == task.id
-            assert attempt.org_id == task.org_id
-            assert attempt.dispatch_id == authority.dispatch_id
 
         # Same order is returned as the verified task ids are passed in (must be deterministic)
         for i, task_row in enumerate(task_rows):
@@ -573,45 +550,37 @@ class TestRunState:
         database_session.commit()
         authority = executor_authority(example_benchmark_object, session=database_session)
 
-        task_row = create_task_rows(
-            ["task_0"], example_benchmark_object, database_session, self._test_org, authority=authority
-        )[0][1]
-        task_row.status = TaskStatus.IN_PROGRESS
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=example_benchmark_object.id,
+            status=TaskStatus.IN_PROGRESS,
+        )
         database_session.add(task_row)
         database_session.commit()
 
         commit_task_error(
             task_row,
             database_session,
-            FailureEvidence(
-                producer="tracker",
-                operation="process_task",
-                error_type="AgentRunFailedError",
-                message="agent failed",
-            ),
-            expected_started_at=task_row.started_at,
-            expected_attempt_id=task_row.active_attempt_id,
+            "agent failed",
+            producer="tracker",
+            operation="process_task",
+            error_type="RuntimeError",
             authority=authority,
         )
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        message = database_session.exec(
-            select(FailureRecord.message)
-            .where(FailureRecord.task == task_row.id)
-            .where(FailureRecord.org_id == TEST_ORG_ID)
+        error_result = database_session.exec(
+            select(ErrorResult).where(ErrorResult.task == task_row.id).where(ErrorResult.org_id == TEST_ORG_ID)
         ).one()
-        assert message == "agent failed"
-        failure = database_session.exec(
-            select(FailureRecord).where(FailureRecord.task == task_row.id).where(FailureRecord.org_id == TEST_ORG_ID)
-        ).one()
-        assert failure.benchmark_id == example_benchmark_object.id
-        assert failure.task_attempt_id == task_row.active_attempt_id
-        assert failure.dispatch_id == authority.dispatch_id
-        assert failure.producer == "tracker"
-        assert failure.operation == "process_task"
-        assert failure.cause_code is None
-        assert failure.retry_scheduled is False
+        assert error_result.error_message == "agent failed"
+        assert error_result.producer == "tracker"
+        assert error_result.operation == "process_task"
+        assert error_result.error_type == "RuntimeError"
+        assert error_result.cause_code is None
+        assert error_result.retry_scheduled is False
+        assert error_result.retry_sequence is None
         transition_record = next(record for record in span_records if record["message"] == "task.status_transition")
         assert transition_record["from_status"] == TaskStatus.IN_PROGRESS.value
         assert transition_record["to_status"] == TaskStatus.ERROR.value
@@ -620,6 +589,43 @@ class TestRunState:
         assert transition_record["entered"] and transition_record["exited"]
         assert transition_record["has_error_message"]
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
+
+    def test_commit_task_error_rolls_back_when_started_at_is_stale(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        executor_authority: Any,
+    ) -> None:
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        authority = executor_authority(example_benchmark_object, session=database_session)
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="stale-task",
+            benchmark=example_benchmark_object.id,
+            status=TaskStatus.IN_PROGRESS,
+        )
+        database_session.add(task_row)
+        database_session.commit()
+
+        committed = commit_task_error(
+            task_row,
+            database_session,
+            "stale failure",
+            producer="tracker",
+            operation="process_task",
+            error_type="RuntimeError",
+            expected_started_at=datetime(2000, 1, 1, tzinfo=ZoneInfo("UTC")),
+            authority=authority,
+        )
+
+        assert committed is False
+        database_session.expire_all()
+        persisted_task = database_session.get(Task, task_row.id)
+        assert persisted_task is not None
+        assert persisted_task.status == TaskStatus.IN_PROGRESS
+        assert persisted_task.finished_at is None
+        assert database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all() == []
 
     async def test_set_benchmark_final_status(
         self,

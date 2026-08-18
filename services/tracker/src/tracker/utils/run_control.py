@@ -23,8 +23,6 @@ from tracker.database.models import (
     Org,
     RetryMode,
     Task,
-    TaskAttempt,
-    TaskAttemptOutcome,
     TaskStatus,
 )
 from tracker.executor.dispatch_control import active_dispatch_exists, terminalize_active_dispatches
@@ -52,36 +50,18 @@ def apply_stop_benchmark(
     task_ids: list[str] | None = None,
 ) -> None:
     """Apply the Stop state transition without committing the transaction."""
-    task_query = (
-        select(Task)
+    task_update = (
+        update(Task)
         .where(col(Task.benchmark) == benchmark_row.id)
         .where(col(Task.org_id) == org.id)
         .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]))
-        .with_for_update()
     )
     if task_ids:
-        task_query = task_query.where(col(Task.task_id).in_(task_ids))
+        task_update = task_update.where(col(Task.task_id).in_(task_ids))
 
-    tasks = session.exec(task_query).all()
-    now = datetime.now(ZoneInfo("UTC"))
-    for task in tasks:
-        task.status = TaskStatus.STOPPED
-        task.finished_at = now
-        session.add(task)
-        if task.active_attempt_id is not None:
-            attempt = session.exec(
-                select(TaskAttempt)
-                .where(col(TaskAttempt.id) == task.active_attempt_id)
-                .where(col(TaskAttempt.org_id) == task.org_id)
-                .where(col(TaskAttempt.task) == task.id)
-                .with_for_update()
-            ).one()
-            if attempt.outcome == TaskAttemptOutcome.PENDING:
-                attempt.outcome = TaskAttemptOutcome.STOPPED
-                attempt.finished_at = now
-                session.add(attempt)
+    result = session.exec(task_update.values(status=TaskStatus.STOPPED))
 
-    if task_ids is None and (tasks or force):
+    if task_ids is None and (result.rowcount > 0 or force):
         benchmark_row.status = BenchmarkStatus.STOPPING
         session.add(benchmark_row)
 
@@ -292,39 +272,19 @@ async def reset_to_in_progress_status(
         session.add(benchmark_row)
 
         for task in existing_rows:
-            started_at = datetime.now(ZoneInfo("UTC"))
             task.status = (
                 TaskStatus.EVALUATING
                 if retry_mode == RetryMode.AUTO and task.eval_resume_state is not None
                 else TaskStatus.PENDING
             )
-            task.started_at = started_at
+            task.started_at = datetime.now(ZoneInfo("UTC"))
             task.finished_at = None
             if retry_mode == RetryMode.FROM_SCRATCH:
                 task.eval_resume_state = None
-            attempt = TaskAttempt(
-                org_id=org.id,
-                task=task.id,
-                started_at=started_at,
-            )
-            session.add(attempt)
-            session.flush()
-            task.active_attempt_id = attempt.id
             session.add(task)
 
         for task_id in new_task_ids:
-            task = Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING)
-            session.add(task)
-            session.flush()
-            attempt = TaskAttempt(
-                org_id=org.id,
-                task=task.id,
-                started_at=task.started_at,
-            )
-            session.add(attempt)
-            session.flush()
-            task.active_attempt_id = attempt.id
-            session.add(task)
+            session.add(Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING))
 
         return verify_response.task_ids
     except (TrackerServiceError, BenchmarkServiceError):

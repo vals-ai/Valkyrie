@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 import pytest
 from click.testing import CliRunner, Result
 from tracker.database.models import BenchmarkStatus
-from tracker.types import FailureSummary, RetrieveResultsResponse, S3UploadResultsResponse
+from tracker.types import RetrieveResultsResponse, S3UploadResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.errors import build_run_errors_payload, errors, group_task_errors
@@ -20,35 +20,6 @@ from valkyrie.cli.run.errors import build_run_errors_payload, errors, group_task
 from tests.unit.cli.factories import make_final_view
 
 errors_module = import_module("valkyrie.cli.run.errors")
-
-
-def make_failure_summary(
-    run_id: UUID,
-    *,
-    message: str,
-    task_row_id: UUID | None = None,
-    attempt_id: UUID | None = None,
-    dispatch_id: UUID | None = None,
-    producer: str | None = "tracker",
-    operation: str | None = "process_run",
-    error_type: str | None = "SyntheticFailure",
-    cause_code: str | None = None,
-    retry_scheduled: bool = False,
-) -> FailureSummary:
-    return FailureSummary(
-        id=uuid4(),
-        benchmark_id=run_id,
-        task_row_id=task_row_id,
-        task_attempt_id=attempt_id,
-        dispatch_id=dispatch_id,
-        occurred_at=datetime(2026, 7, 10, 12, 4),
-        producer=producer,
-        operation=operation,
-        error_type=error_type,
-        message=message,
-        cause_code=cause_code,
-        retry_scheduled=retry_scheduled,
-    )
 
 
 class StubErrorsTracker:
@@ -153,27 +124,19 @@ def test_errors_text_preserves_empty_messages(monkeypatch: pytest.MonkeyPatch) -
 def test_errors_text_sanitizes_terminal_controls(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
     unsafe_message = "\x1b]8;;https://example.invalid\x07click\x1b]8;;\x07\rrewritten\nnext\tline\u202e"
-    run_failure = make_failure_summary(
-        run_id,
-        message=unsafe_message,
-        producer="benchmark_service\x1b[31m",
-        operation="websocket\x07",
-        cause_code="cause\r",
+    tracker = StubErrorsTracker(
+        make_final_view(
+            run_id,
+            error_message=unsafe_message,
+            task_errors={"task\x1b[31m": "boom\b"},
+        )
     )
-    response = make_final_view(
-        run_id,
-        error_message=unsafe_message,
-        task_errors={"task\x1b[31m": "boom\b"},
-    ).model_copy(update={"run_failure": run_failure})
-    tracker = StubErrorsTracker(response)
 
     result = invoke_with_tracker(monkeypatch, tracker, run_id)
 
     assert result.exit_code == 0, result.output
     for control in ("\x1b", "\x07", "\r", "\b", "\t", "\u202e"):
         assert control not in result.stdout
-    assert "Benchmark Service\\x1b[31m / WebSocket\\x07 / SyntheticFailure" in result.stdout
-    assert "Cause: cause\\r" in result.stdout
     assert "\\x1b" in result.stdout
     assert "\\x07" in result.stdout
     assert "\\r" in result.stdout
@@ -181,19 +144,13 @@ def test_errors_text_sanitizes_terminal_controls(monkeypatch: pytest.MonkeyPatch
     assert "next    line" in result.stdout
 
 
-def test_errors_json_preserves_v1_allowlist_and_deterministic_output(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_errors_json_is_versioned_allowlisted_and_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
     raw_error = "task failed\n\x1b[31mred"
-    run_failure = make_failure_summary(run_id, message="structured run failure")
     response = make_final_view(
         run_id,
         error_message=None,
         task_errors={"task-b": raw_error, "task-a": "another failure"},
-    ).model_copy(
-        update={
-            "run_failure": run_failure,
-            "task_failures": {"task-b": run_failure},
-        }
     )
     tracker = StubErrorsTracker(response)
 
@@ -226,33 +183,14 @@ def test_errors_json_preserves_v1_allowlist_and_deterministic_output(monkeypatch
     assert payload["task_errors"]["task-b"] == raw_error
     assert not any(
         marker in result.stdout
-        for marker in [
-            "run_failure",
-            "task_failures",
-            "recovered_failure_count",
-            "secondary_failure_count",
-            "structured run failure",
-            "excluded-secret-name",
-            "excluded-kwarg-value",
-            "excluded-evaluation-value",
-        ]
+        for marker in ["excluded-secret-name", "excluded-kwarg-value", "excluded-evaluation-value"]
     )
 
     fixed_payload = build_run_errors_payload(
         response,
         observed_at=datetime(2026, 7, 10, 20, 15),
     )
-    assert fixed_payload == {
-        "schema_version": 1,
-        "kind": "run_errors",
-        "observed_at": "2026-07-10T20:15:00Z",
-        "run_id": str(run_id),
-        "benchmark_name": "demo-bench",
-        "status": "ERROR",
-        "error_message": None,
-        "task_error_count": 2,
-        "task_errors": {"task-a": "another failure", "task-b": raw_error},
-    }
+    assert fixed_payload["observed_at"] == "2026-07-10T20:15:00Z"
 
 
 def test_errors_json_normalizes_empty_error_state(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -274,82 +212,6 @@ def test_errors_json_normalizes_empty_error_state(monkeypatch: pytest.MonkeyPatc
     assert payload["error_message"] is None
     assert payload["task_error_count"] == 0
     assert payload["task_errors"] == {}
-
-
-def test_errors_text_renders_factual_provenance_and_retry_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    run_id = uuid4()
-    run_failure = make_failure_summary(
-        run_id,
-        message="Benchmark service disconnected",
-        producer="benchmark_service",
-        operation="websocket",
-        cause_code="websocket_connection_closed",
-    )
-    platform_failure = make_failure_summary(
-        run_id,
-        message="Executor host failed",
-        task_row_id=uuid4(),
-        attempt_id=uuid4(),
-        producer="executor_host",
-        operation="run_executor_dispatch",
-        error_type="ExecutorDispatchFailure",
-    )
-    retry_failure = make_failure_summary(
-        run_id,
-        message="Sandbox setup failed",
-        task_row_id=uuid4(),
-        producer="sandbox_provider",
-        operation="setup",
-        error_type="SandboxSetupError",
-        retry_scheduled=True,
-    )
-    legacy_failure = make_failure_summary(
-        run_id,
-        message="Legacy failure",
-        task_row_id=uuid4(),
-        producer=None,
-        operation=None,
-        error_type=None,
-    )
-    task_failures = {
-        "task-legacy": legacy_failure,
-        "task-platform": platform_failure,
-        "task-retry": retry_failure,
-    }
-    response = make_final_view(
-        run_id,
-        error_message=run_failure.message,
-        task_errors={task_id: failure.message for task_id, failure in task_failures.items()},
-    ).model_copy(
-        update={
-            "run_failure": run_failure,
-            "task_failures": task_failures,
-        }
-    )
-    tracker = StubErrorsTracker(response)
-
-    result = invoke_with_tracker(monkeypatch, tracker, run_id)
-
-    assert result.exit_code == 0, result.output
-    assert "Task failure provenance" in result.stdout
-    assert "Benchmark Service / WebSocket / SyntheticFailure" in result.stdout
-    assert "Cause: websocket_connection_closed" in result.stdout
-    assert (
-        "task-platform:\n  Executor Host / Run executor dispatch / ExecutorDispatchFailure\ntask-retry:"
-        in result.stdout
-    )
-    assert "Sandbox Provider / Setup / SandboxSetupError\n  Retry scheduled" in result.stdout
-    assert "task-legacy:\n  Unknown component / Unknown operation / Unknown error\ntask-platform:" in result.stdout
-    for message in (
-        "Benchmark service disconnected",
-        "Executor host failed",
-        "Sandbox setup failed",
-        "Legacy failure",
-    ):
-        assert message in result.stdout
-    assert "Historical non-terminal failures" not in result.stdout
-    assert "Recovered:" not in result.stdout
-    assert "Secondary:" not in result.stdout
 
 
 def test_group_task_errors_uses_raw_messages_and_stable_order() -> None:

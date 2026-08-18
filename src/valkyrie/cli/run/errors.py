@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 import click
-from tracker.types import FailureSummary, FinalViewResponse
+from tracker.types import FinalViewResponse
 
 from valkyrie.cli.display import terminal_safe
 from valkyrie.cli.exceptions import TrackerServiceError
@@ -58,7 +58,7 @@ def build_run_errors_payload(
     *,
     observed_at: datetime | None = None,
 ) -> dict[str, object]:
-    """Build an allowlist containing only run-error diagnostics."""
+    """Build a versioned allowlist containing only run-error diagnostics."""
     task_errors = dict(sorted((response.task_errors or {}).items()))
     return {
         "schema_version": 1,
@@ -83,37 +83,9 @@ def format_run_errors_json(response: FinalViewResponse) -> str:
     )
 
 
-def _failure_label(value: str | None, fallback: str, *, capitalize_words: bool) -> str:
-    if value is None:
-        return fallback
-
-    safe_value = terminal_safe(value, preserve_newlines=False).replace("_", " ")
-    if capitalize_words:
-        return " ".join(word[:1].upper() + word[1:] for word in safe_value.split(" "))
-
-    label = safe_value[:1].upper() + safe_value[1:]
-    return label.replace("Websocket", "WebSocket")
-
-
-def _failure_context(failure: FailureSummary) -> str:
-    component = _failure_label(failure.producer, "Unknown component", capitalize_words=True)
-    operation = _failure_label(failure.operation, "Unknown operation", capitalize_words=False)
-    error_type = _failure_label(failure.error_type, "Unknown error", capitalize_words=False)
-    lines = [f"{component} / {operation} / {error_type}"]
-
-    if failure.cause_code is not None:
-        safe_cause = terminal_safe(failure.cause_code, preserve_newlines=False)
-        lines.append(f"Cause: {safe_cause}")
-    if failure.retry_scheduled:
-        lines.append("Retry scheduled")
-
-    return "\n".join(lines)
-
-
 def format_run_errors_text(response: FinalViewResponse) -> None:
     """Render stored run and current task errors for a human reader."""
     task_errors = response.task_errors or {}
-    task_failures = response.task_failures or {}
     groups = group_task_errors(task_errors)
 
     click.echo(click.style("Run Errors", bold=True))
@@ -125,8 +97,6 @@ def format_run_errors_text(response: FinalViewResponse) -> None:
         click.echo()
         click.echo(click.style("Stored run error", bold=True))
         click.echo(_indent_message(_display_error_message(response.error_message)))
-        if response.run_failure is not None:
-            click.echo(_indent_message(_failure_context(response.run_failure)))
 
     if groups:
         click.echo()
@@ -142,16 +112,7 @@ def format_run_errors_text(response: FinalViewResponse) -> None:
             click.echo()
             click.echo(f"[{_count_label(len(task_ids), 'task')}] {_format_task_id_preview(task_ids)}")
             click.echo(_indent_message(_display_error_message(message)))
-
-    if task_failures:
-        click.echo()
-        click.echo(click.style("Task failure provenance", bold=True))
-        for task_id, failure in sorted(task_failures.items()):
-            safe_task_id = terminal_safe(task_id, preserve_newlines=False)
-            click.echo(f"{safe_task_id}:")
-            click.echo(_indent_message(_failure_context(failure)))
-
-    if not groups and response.error_message is None:
+    elif response.error_message is None:
         click.echo()
         click.echo("No current error messages recorded.")
 

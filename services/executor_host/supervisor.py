@@ -19,10 +19,7 @@ from uuid import uuid4
 
 import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
-from psycopg2.extensions import (  # pyright: ignore[reportMissingModuleSource]
-    connection as PostgresConnection,
-    cursor as PostgresCursor,
-)
+from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
 from redis.asyncio import Redis
 from taskiq_redis import RedisStreamBroker
 from executor_protocol import (
@@ -167,27 +164,6 @@ class DispatchAuthority:
     benchmark_id: str
 
 
-@dataclass(frozen=True)
-class _HostFailureEvidence:
-    operation: str
-    error_type: str
-    message: str
-    cause_code: str | None = None
-
-
-_EXECUTOR_HOST_FAILURE = _HostFailureEvidence(
-    operation="run_executor_dispatch",
-    error_type="ExecutorHostFailure",
-    message="Executor host failed",
-)
-_EXECUTOR_FINALIZATION_FAILURE = _HostFailureEvidence(
-    operation="finish_dispatch",
-    error_type="ExecutorExitedWithoutFinalization",
-    message="Executor exited without finalizing benchmark",
-    cause_code="executor_exited_without_finalization",
-)
-
-
 class ExecutorDispatchStore(Protocol):
     async def claim(
         self,
@@ -200,7 +176,7 @@ class ExecutorDispatchStore(Protocol):
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool: ...
 
-    async def finish(self, authority: DispatchAuthority, task_ids: list[str]) -> bool: ...
+    async def finish(self, authority: DispatchAuthority) -> bool: ...
 
 
 class PostgresExecutorDispatchStore:
@@ -312,177 +288,6 @@ class PostgresExecutorDispatchStore:
             )
             return cursor.fetchone() is not None
 
-    @staticmethod
-    def _record_failure(
-        cursor: PostgresCursor,
-        *,
-        authority: DispatchAuthority,
-        org_id: object,
-        evidence: _HostFailureEvidence,
-        task_id: object | None = None,
-        task_attempt_id: object | None = None,
-    ) -> None:
-        cursor.execute(
-            """
-            INSERT INTO failurerecord (
-                id,
-                org_id,
-                benchmark_id,
-                task,
-                task_attempt_id,
-                dispatch_id,
-                occurred_at,
-                producer,
-                operation,
-                error_type,
-                message,
-                cause_code,
-                retry_scheduled
-            )
-            VALUES (
-                %s::uuid,
-                %s::uuid,
-                %s::uuid,
-                %s::uuid,
-                %s::uuid,
-                %s::uuid,
-                CURRENT_TIMESTAMP,
-                'executor_host',
-                %s,
-                %s,
-                %s,
-                %s,
-                false
-            )
-            """,
-            (
-                str(uuid4()),
-                str(org_id),
-                authority.benchmark_id,
-                str(task_id) if task_id is not None else None,
-                str(task_attempt_id) if task_attempt_id is not None else None,
-                authority.dispatch_id,
-                evidence.operation,
-                evidence.error_type,
-                evidence.message,
-                evidence.cause_code,
-            ),
-        )
-
-    @classmethod
-    def _terminalize_owned_tasks(
-        cls,
-        cursor: PostgresCursor,
-        *,
-        authority: DispatchAuthority,
-        task_ids: list[str],
-        evidence: _HostFailureEvidence,
-    ) -> None:
-        cursor.execute(
-            """
-            SELECT task.id, task.org_id, task.active_attempt_id
-            FROM task
-            WHERE task.benchmark = %s::uuid
-              AND task.task_id = ANY(%s)
-              AND (
-                  task.started_at <= (
-                      SELECT created_at
-                      FROM executordispatch
-                      WHERE id = %s::uuid
-                  )
-                  OR EXISTS (
-                      SELECT 1
-                      FROM taskattempt
-                      WHERE taskattempt.id = task.active_attempt_id
-                        AND taskattempt.dispatch_id = %s::uuid
-                  )
-              )
-              AND task.status IN ('PENDING', 'BUILDING', 'IN_PROGRESS', 'EVALUATING')
-            FOR UPDATE
-            """,
-            (
-                authority.benchmark_id,
-                task_ids,
-                authority.dispatch_id,
-                authority.dispatch_id,
-            ),
-        )
-        task_rows = cursor.fetchall()
-
-        for task_id, org_id, active_attempt_id in task_rows:
-            if active_attempt_id is not None:
-                cursor.execute(
-                    """
-                    SELECT dispatch_id, outcome
-                    FROM taskattempt
-                    WHERE id = %s::uuid
-                      AND org_id = %s::uuid
-                      AND task = %s::uuid
-                    FOR UPDATE
-                    """,
-                    (str(active_attempt_id), str(org_id), str(task_id)),
-                )
-                attempt_row = cursor.fetchone()
-                if attempt_row is None:
-                    raise RuntimeError(f"Active attempt {active_attempt_id} does not belong to task {task_id}")
-                attempt_dispatch_id, attempt_outcome = attempt_row
-                if attempt_outcome != "pending" or (
-                    attempt_dispatch_id is not None and str(attempt_dispatch_id) != authority.dispatch_id
-                ):
-                    continue
-                cursor.execute(
-                    """
-                    UPDATE taskattempt
-                    SET outcome = 'error'::taskattemptoutcome,
-                        finished_at = CURRENT_TIMESTAMP
-                    WHERE id = %s::uuid
-                    """,
-                    (str(active_attempt_id),),
-                )
-
-            cursor.execute(
-                """
-                UPDATE task
-                SET status = 'ERROR', finished_at = CURRENT_TIMESTAMP
-                WHERE id = %s::uuid
-                """,
-                (str(task_id),),
-            )
-            cls._record_failure(
-                cursor,
-                authority=authority,
-                org_id=org_id,
-                evidence=evidence,
-                task_id=task_id,
-                task_attempt_id=active_attempt_id,
-            )
-
-    @classmethod
-    def _terminalize_benchmark(
-        cls,
-        cursor: PostgresCursor,
-        *,
-        authority: DispatchAuthority,
-        org_id: object,
-        evidence: _HostFailureEvidence,
-    ) -> None:
-        cursor.execute(
-            """
-            UPDATE benchmark
-            SET status = 'ERROR',
-                finished_at = CURRENT_TIMESTAMP,
-                error_message = %s
-            WHERE id = %s::uuid
-            """,
-            (evidence.message, authority.benchmark_id),
-        )
-        cls._record_failure(
-            cursor,
-            authority=authority,
-            org_id=org_id,
-            evidence=evidence,
-        )
-
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
         return await asyncio.to_thread(self._terminalize, authority, task_ids)
 
@@ -490,7 +295,7 @@ class PostgresExecutorDispatchStore:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT status, org_id
+                SELECT status
                 FROM benchmark
                 WHERE id = %s::uuid
                 FOR UPDATE
@@ -511,15 +316,53 @@ class PostgresExecutorDispatchStore:
                 """,
                 (authority.dispatch_id, authority.benchmark_id),
             )
-            if cursor.fetchone() is None:
+            failed_dispatch_row = cursor.fetchone()
+            if failed_dispatch_row is None:
                 return False
-
-            self._terminalize_owned_tasks(
-                cursor,
-                authority=authority,
-                task_ids=task_ids,
-                evidence=_EXECUTOR_HOST_FAILURE,
+            cursor.execute(
+                """
+                UPDATE task
+                SET status = 'ERROR', finished_at = CURRENT_TIMESTAMP
+                WHERE benchmark = %s::uuid
+                  AND task_id = ANY(%s)
+                  AND started_at <= (
+                      SELECT created_at
+                      FROM executordispatch
+                      WHERE id = %s::uuid
+                  )
+                  AND status IN ('PENDING', 'BUILDING', 'IN_PROGRESS', 'EVALUATING')
+                RETURNING id, org_id
+                """,
+                (authority.benchmark_id, task_ids, authority.dispatch_id),
             )
+            for task_id, org_id in cursor.fetchall():
+                cursor.execute(
+                    """
+                    INSERT INTO errorresult (
+                        id,
+                        org_id,
+                        task,
+                        created_at,
+                        error_message,
+                        producer,
+                        operation,
+                        error_type,
+                        cause_code
+                    )
+                    VALUES (
+                        %s::uuid,
+                        %s::uuid,
+                        %s::uuid,
+                        CURRENT_TIMESTAMP,
+                        'Executor host failed',
+                        'executor_host',
+                        'run_executor_dispatch',
+                        'ExecutorHostFailure',
+                        NULL
+                    )
+                    """,
+                    (str(uuid4()), str(org_id), str(task_id)),
+                )
             if benchmark_row[0] == "IN_PROGRESS":
                 cursor.execute(
                     """
@@ -527,30 +370,35 @@ class PostgresExecutorDispatchStore:
                         SELECT 1
                         FROM executordispatch
                         WHERE benchmark_id = %s::uuid
+                          AND id != %s::uuid
                           AND status IN ('QUEUED', 'RUNNING')
                     )
                     """,
-                    (authority.benchmark_id,),
+                    (authority.benchmark_id, authority.dispatch_id),
                 )
                 active_dispatch_row = cursor.fetchone()
                 assert active_dispatch_row is not None
                 if not bool(active_dispatch_row[0]):
-                    self._terminalize_benchmark(
-                        cursor,
-                        authority=authority,
-                        org_id=benchmark_row[1],
-                        evidence=_EXECUTOR_HOST_FAILURE,
+                    cursor.execute(
+                        """
+                        UPDATE benchmark
+                        SET status = 'ERROR',
+                            finished_at = CURRENT_TIMESTAMP,
+                            error_message = 'Executor host failed'
+                        WHERE id = %s::uuid
+                        """,
+                        (authority.benchmark_id,),
                     )
             return True
 
-    async def finish(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
-        return await asyncio.to_thread(self._finish, authority, task_ids)
+    async def finish(self, authority: DispatchAuthority) -> bool:
+        return await asyncio.to_thread(self._finish, authority)
 
-    def _finish(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
+    def _finish(self, authority: DispatchAuthority) -> bool:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT status, org_id
+                SELECT status
                 FROM benchmark
                 WHERE id = %s::uuid
                 FOR UPDATE
@@ -576,12 +424,6 @@ class PostgresExecutorDispatchStore:
                 return False
 
             if benchmark_row[0] == "IN_PROGRESS":
-                self._terminalize_owned_tasks(
-                    cursor,
-                    authority=authority,
-                    task_ids=task_ids,
-                    evidence=_EXECUTOR_FINALIZATION_FAILURE,
-                )
                 cursor.execute(
                     """
                     SELECT EXISTS (
@@ -596,11 +438,15 @@ class PostgresExecutorDispatchStore:
                 active_dispatch_row = cursor.fetchone()
                 assert active_dispatch_row is not None
                 if not bool(active_dispatch_row[0]):
-                    self._terminalize_benchmark(
-                        cursor,
-                        authority=authority,
-                        org_id=benchmark_row[1],
-                        evidence=_EXECUTOR_FINALIZATION_FAILURE,
+                    cursor.execute(
+                        """
+                        UPDATE benchmark
+                        SET status = 'ERROR',
+                            finished_at = CURRENT_TIMESTAMP,
+                            error_message = 'Executor exited without finalizing benchmark'
+                        WHERE id = %s::uuid
+                        """,
+                        (authority.benchmark_id,),
                     )
             return True
 
@@ -891,7 +737,7 @@ async def run_executor_dispatch(
                 authority=authority,
                 is_current=lambda: store.is_current(authority),
             )
-            if not await store.finish(authority, verified_task_ids):
+            if not await store.finish(authority):
                 logger.warning(
                     "Executor dispatch %s lost authority before successful finish",
                     authority.dispatch_id,

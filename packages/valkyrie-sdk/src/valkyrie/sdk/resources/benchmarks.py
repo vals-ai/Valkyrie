@@ -52,22 +52,13 @@ class BenchmarksResource:
             params=params,
         )
 
-    async def task(
-        self,
-        run_id: UUID,
-        task_id: str,
-        *,
-        failure_history_limit: int = 50,
-    ) -> SingleTaskResponse:
-        """Fetch detailed state and bounded failure history for one task."""
+    async def task(self, run_id: UUID, task_id: str) -> SingleTaskResponse:
+        """Fetch detailed state and evaluation output for one task."""
         task_segment = self._task_segment(task_id)
-        if not 1 <= failure_history_limit <= 500:
-            raise ValueError("failure_history_limit must be between 1 and 500")
         return await self._sdk.request_model(
             "GET",
             f"/benchmarks/{run_id}/tasks/{task_segment}",
             SingleTaskResponse,
-            params={"failure_history_limit": failure_history_limit},
         )
 
     async def artifacts(self, run_id: UUID, task_id: str) -> TaskArtifactsResponse:

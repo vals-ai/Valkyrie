@@ -6,7 +6,7 @@ Exercise schema and model events against disposable Postgres.
 import re
 from typing import Any, cast
 
-from sqlalchemy import CheckConstraint, Enum as SAEnum, ForeignKeyConstraint, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, UniqueConstraint
 from sqlalchemy.engine import Engine
 from sqlmodel import SQLModel, Session, inspect
 
@@ -29,131 +29,100 @@ def _normalized_sql(expression: str) -> str:
     return " ".join(normalized.split())
 
 
-def test_task_attempt_failure_history_schema_matches_metadata(postgres_engine: Engine) -> None:
+def test_error_result_provenance_schema_matches_metadata(postgres_engine: Engine) -> None:
     inspector = inspect(postgres_engine)
     table_names = set(inspector.get_table_names())
+    assert "errorresult" in table_names
+    assert {"taskattempt", "failurerecord"}.isdisjoint(table_names)
+
+    metadata_table = SQLModel.metadata.tables["errorresult"]
     expected_columns = {
-        "taskattempt": {
-            "id",
-            "org_id",
-            "task",
-            "dispatch_id",
-            "started_at",
-            "finished_at",
-            "outcome",
-        },
-        "failurerecord": {
-            "id",
-            "org_id",
-            "benchmark_id",
-            "task",
-            "task_attempt_id",
-            "dispatch_id",
-            "occurred_at",
-            "producer",
-            "operation",
-            "error_type",
-            "message",
-            "cause_code",
-            "retry_scheduled",
-        },
+        "id",
+        "org_id",
+        "task",
+        "created_at",
+        "error_message",
+        "producer",
+        "operation",
+        "error_type",
+        "cause_code",
+        "retry_scheduled",
+        "retry_sequence",
     }
-    expected_tables = set(expected_columns)
-    assert expected_tables <= table_names
-    assert "errorresult" not in table_names
+    metadata_columns = {column.name for column in metadata_table.columns}
+    actual_columns = {column["name"]: column for column in inspector.get_columns("errorresult")}
+    assert metadata_columns == expected_columns
+    assert set(actual_columns) == expected_columns
+    assert {column_name: column.nullable for column_name, column in metadata_table.columns.items()} == {
+        column_name: column["nullable"] for column_name, column in actual_columns.items()
+    }
 
-    for table_name in expected_tables:
-        metadata_table = SQLModel.metadata.tables[table_name]
-        metadata_columns = {column.name for column in metadata_table.columns}
-        actual_columns = {column["name"]: column for column in inspector.get_columns(table_name)}
-        assert metadata_columns == expected_columns[table_name]
-        assert set(actual_columns) == expected_columns[table_name]
-        assert {column_name: column.nullable for column_name, column in metadata_table.columns.items()} == {
-            column_name: column["nullable"] for column_name, column in actual_columns.items()
+    expected_indexes = {
+        (index.name, tuple(column.name for column in index.columns)) for index in metadata_table.indexes
+    }
+    actual_indexes = {
+        (index["name"], tuple(index["column_names"])) for index in inspector.get_indexes("errorresult") if index["name"]
+    }
+    assert (
+        actual_indexes
+        == expected_indexes
+        == {
+            ("ix_errorresult_org_task_created_at", ("org_id", "task", "created_at")),
         }
+    )
 
-        expected_indexes = {
-            (index.name, tuple(column.name for column in index.columns)) for index in metadata_table.indexes
-        }
-        actual_indexes = {
-            (index["name"], tuple(index["column_names"]))
-            for index in inspector.get_indexes(table_name)
-            if index["name"]
-        }
-        assert actual_indexes == expected_indexes
+    expected_unique_constraints = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in metadata_table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    expected_unique_constraints.update((column.name,) for column in metadata_table.columns if column.unique)
+    actual_unique_constraints = {
+        tuple(constraint["column_names"]) for constraint in inspector.get_unique_constraints("errorresult")
+    }
+    assert actual_unique_constraints == expected_unique_constraints
 
-        expected_unique_constraints = {
-            tuple(column.name for column in constraint.columns)
-            for constraint in metadata_table.constraints
-            if isinstance(constraint, UniqueConstraint)
-        }
-        expected_unique_constraints.update((column.name,) for column in metadata_table.columns if column.unique)
-        actual_unique_constraints = {
-            tuple(constraint["column_names"]) for constraint in inspector.get_unique_constraints(table_name)
-        }
-        assert actual_unique_constraints == expected_unique_constraints
+    expected_checks = {
+        constraint.name: _normalized_sql(str(constraint.sqltext))
+        for constraint in metadata_table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    actual_checks = {
+        constraint["name"]: _normalized_sql(constraint["sqltext"])
+        for constraint in inspector.get_check_constraints("errorresult")
+    }
+    assert actual_checks == expected_checks
 
-        expected_checks = {
-            constraint.name: _normalized_sql(str(constraint.sqltext))
-            for constraint in metadata_table.constraints
-            if isinstance(constraint, CheckConstraint)
-        }
-        actual_checks = {
-            constraint["name"]: _normalized_sql(constraint["sqltext"])
-            for constraint in inspector.get_check_constraints(table_name)
-        }
-        assert actual_checks == expected_checks
+    expected_primary_key = tuple(column.name for column in metadata_table.primary_key.columns)
+    actual_primary_key = tuple(inspector.get_pk_constraint("errorresult")["constrained_columns"])
+    assert actual_primary_key == expected_primary_key
 
-        expected_primary_key = tuple(column.name for column in metadata_table.primary_key.columns)
-        actual_primary_key = tuple(inspector.get_pk_constraint(table_name)["constrained_columns"])
-        assert actual_primary_key == expected_primary_key
-
-        expected_foreign_keys = {
-            (
-                tuple(constraint.column_keys),
-                constraint.elements[0].target_fullname.split(".")[0],
-                tuple(element.column.name for element in constraint.elements),
-            )
-            for constraint in metadata_table.constraints
-            if isinstance(constraint, ForeignKeyConstraint)
-        }
-        actual_foreign_keys = {
-            (
-                tuple(foreign_key["constrained_columns"]),
-                foreign_key["referred_table"],
-                tuple(foreign_key["referred_columns"]),
-            )
-            for foreign_key in inspector.get_foreign_keys(table_name)
-        }
-        assert actual_foreign_keys == expected_foreign_keys
-
-    for table_name, column_name in (
-        ("task", "active_attempt_id"),
-        ("evaluationresult", "task_attempt_id"),
-    ):
-        columns = {column["name"]: column for column in inspector.get_columns(table_name)}
-        assert columns[column_name]["nullable"] is True
-        assert any(
-            tuple(foreign_key["constrained_columns"]) == (column_name,)
-            and foreign_key["referred_table"] == "taskattempt"
-            and tuple(foreign_key["referred_columns"]) == ("id",)
-            for foreign_key in inspector.get_foreign_keys(table_name)
+    expected_foreign_keys = {
+        (
+            tuple(constraint.column_keys),
+            constraint.elements[0].target_fullname.split(".")[0],
+            tuple(element.column.name for element in constraint.elements),
         )
+        for constraint in metadata_table.constraints
+        if isinstance(constraint, ForeignKeyConstraint)
+    }
+    actual_foreign_keys = {
+        (
+            tuple(foreign_key["constrained_columns"]),
+            foreign_key["referred_table"],
+            tuple(foreign_key["referred_columns"]),
+        )
+        for foreign_key in inspector.get_foreign_keys("errorresult")
+    }
+    assert actual_foreign_keys == expected_foreign_keys
 
-    expected_enums: dict[str, tuple[str, ...]] = {}
-    for table_name in expected_tables:
-        for column in SQLModel.metadata.tables[table_name].columns:
-            if isinstance(column.type, SAEnum) and column.type.name:
-                expected_enums[column.type.name] = tuple(column.type.enums)
-    inspected_enums = {enum["name"]: tuple(enum["labels"]) for enum in cast(Any, inspector).get_enums()}
-    assert expected_enums == {"taskattemptoutcome": ("pending", "finished", "error", "stopped")}
-    assert {
-        "failurecategory",
-        "failureclassificationstate",
-        "failureterminaleffect",
-        "taskattemptadmissionreason",
-    }.isdisjoint(inspected_enums)
-    assert {name: inspected_enums[name] for name in expected_enums} == expected_enums
+    task_columns = {column["name"] for column in inspector.get_columns("task")}
+    evaluation_result_columns = {column["name"] for column in inspector.get_columns("evaluationresult")}
+    assert "active_attempt_id" not in task_columns
+    assert "task_attempt_id" not in evaluation_result_columns
+
+    inspected_enum_names = {enum["name"] for enum in cast(Any, inspector).get_enums()}
+    assert "taskattemptoutcome" not in inspected_enum_names
 
 
 class TestTrackerSchema:

@@ -13,8 +13,8 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    ErrorResult,
     EvaluationResult,
-    FailureRecord,
     Task,
     TaskStatus,
 )
@@ -136,22 +136,43 @@ def make_evaluation_result(
     )
 
 
-def make_error_result(task: Task, error_message: str, created_at: datetime) -> FailureRecord:
+def make_error_result(
+    task: Task,
+    error_message: str,
+    created_at: datetime,
+    *,
+    producer: str | None = None,
+    operation: str | None = None,
+    error_type: str | None = None,
+    cause_code: str | None = None,
+    retry_scheduled: bool = False,
+    retry_sequence: int | None = None,
+) -> ErrorResult:
     """Build an error attempt for a task.
 
     Arguments
     - task: Task associated with the error.
     - error_message: Stored failure detail.
     - created_at: Fixed ordering timestamp.
+    - producer: Optional component that produced the error.
+    - operation: Optional failed operation.
+    - error_type: Optional factual exception or error type.
+    - cause_code: Optional producer-owned cause code.
+    - retry_scheduled: Whether this error caused a scheduled retry.
+    - retry_sequence: Producer-supplied retry sequence.
 
     Returns
     - An error-result row ready to persist.
     """
-    return FailureRecord(
+    return ErrorResult(
         org_id=task.org_id,
-        benchmark_id=task.benchmark,
         task=task.id,
-        message=error_message,
-        occurred_at=created_at,
-        retry_scheduled=False,
+        error_message=error_message,
+        created_at=created_at,
+        producer=producer,
+        operation=operation,
+        error_type=error_type,
+        cause_code=cause_code,
+        retry_scheduled=retry_scheduled,
+        retry_sequence=retry_sequence,
     )

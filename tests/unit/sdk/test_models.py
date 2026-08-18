@@ -14,13 +14,11 @@ from pydantic import ValidationError
 from valkyrie.sdk.models import (
     AWSCredentials,
     AgentContractRequest,
-    FailureSummary,
     FetchBenchmarkResponse,
     FetchBenchmarksResponse,
     FinalViewResponse,
     HarnessConfig,
     OutputArtifact,
-    SingleTaskResponse,
     StartBenchmarkRequest,
 )
 
@@ -159,71 +157,3 @@ def test_non_empty_list_and_final_results_parse() -> None:
     assert len(list_response.benchmarks) == 1
     assert result.final_evaluation is not None
     assert result.benchmark_arguments.contract.output_artifacts
-    assert result.run_failure is None
-    assert result.task_failures is None
-    assert result.error_message is None
-    assert result.task_errors is None
-
-
-def test_structured_failure_models_parse_factual_provenance() -> None:
-    payload = {
-        "id": "10000000-0000-0000-0000-000000000001",
-        "benchmark_id": "20000000-0000-0000-0000-000000000001",
-        "task_row_id": "30000000-0000-0000-0000-000000000001",
-        "task_attempt_id": "40000000-0000-0000-0000-000000000001",
-        "dispatch_id": "50000000-0000-0000-0000-000000000001",
-        "occurred_at": "2026-07-08T12:00:00Z",
-        "producer": "benchmark_service",
-        "operation": "evaluate",
-        "error_type": "ConnectionClosedError",
-        "message": "benchmark service connection closed",
-        "cause_code": "websocket_closed",
-        "retry_scheduled": True,
-    }
-
-    summary = FailureSummary.model_validate(payload)
-
-    assert str(summary.dispatch_id) == "50000000-0000-0000-0000-000000000001"
-    assert summary.retry_scheduled is True
-    assert summary.model_dump(mode="json") == {
-        **payload,
-        "occurred_at": "2026-07-08T12:00:00+00:00",
-    }
-
-
-def test_single_task_parses_bounded_failure_history() -> None:
-    failure = {
-        "id": "10000000-0000-0000-0000-000000000001",
-        "benchmark_id": "20000000-0000-0000-0000-000000000001",
-        "task_row_id": "30000000-0000-0000-0000-000000000001",
-        "task_attempt_id": "40000000-0000-0000-0000-000000000001",
-        "dispatch_id": "50000000-0000-0000-0000-000000000001",
-        "occurred_at": "2026-07-08T12:05:00Z",
-        "producer": "tracker",
-        "operation": "process_task",
-        "error_type": "RuntimeError",
-        "message": "task failed",
-        "cause_code": None,
-        "retry_scheduled": False,
-    }
-    response = SingleTaskResponse.model_validate(
-        {
-            "id": "30000000-0000-0000-0000-000000000001",
-            "task_id": "repo__issue-1",
-            "status": "ERROR",
-            "started_at": "2026-07-08T12:00:00Z",
-            "finished_at": "2026-07-08T12:05:00Z",
-            "error_message": "task failed",
-            "evaluation_result": None,
-            "agent_caused_exit_reason": None,
-            "failure": failure,
-            "failure_history": [failure],
-            "failure_history_truncated": True,
-        }
-    )
-
-    assert response.task_id == "repo__issue-1"
-    assert response.failure is not None
-    assert str(response.failure.task_row_id) == "30000000-0000-0000-0000-000000000001"
-    assert response.failure_history[0].retry_scheduled is False
-    assert response.failure_history_truncated is True

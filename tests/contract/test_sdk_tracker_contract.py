@@ -33,7 +33,6 @@ from tracker.types import (
     BenchmarkStatusEntry,
     BenchmarkStatusResponse,
     BenchmarkTableRow,
-    FailureSummary,
     FetchBenchmarkResponse,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkTasksRequest,
@@ -70,7 +69,6 @@ from valkyrie.sdk.models import (
     BenchmarkStatusEntry as SDKBenchmarkStatusEntry,
     BenchmarkStatusResponse as SDKBenchmarkStatusResponse,
     BenchmarkTableRow as SDKBenchmarkTableRow,
-    FailureSummary as SDKFailureSummary,
     FetchBenchmarkResponse as SDKFetchBenchmarkResponse,
     FetchBenchmarkMetadataResponse as SDKFetchBenchmarkMetadataResponse,
     FetchBenchmarkTasksRequest as SDKFetchBenchmarkTasksRequest,
@@ -112,11 +110,7 @@ ROUTES = (
         "get",
         "benchmark_id status task_id_search sort sort_dir limit offset",
     ),
-    (
-        "/benchmarks/{benchmark_id}/tasks/{task_id}",
-        "get",
-        "benchmark_id task_id failure_history_limit",
-    ),
+    ("/benchmarks/{benchmark_id}/tasks/{task_id}", "get", "benchmark_id task_id"),
     ("/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts", "get", "benchmark_id task_id"),
     ("/agents", "get", ""),
     ("/agents/{name}/download-url", "get", "name"),
@@ -156,7 +150,6 @@ MODEL_PAIRS = (
     (FetchBenchmarkResponse, SDKFetchBenchmarkResponse),
     (FetchBenchmarksRequest, SDKFetchBenchmarksRequest),
     (BenchmarkTableRow, SDKBenchmarkTableRow),
-    (FailureSummary, SDKFailureSummary),
     (FetchBenchmarksResponse, SDKFetchBenchmarksResponse),
     (BenchmarkArguments, SDKBenchmarkArguments),
     (FinalEvaluation, SDKFinalEvaluation),
@@ -223,8 +216,8 @@ def test_sdk_and_tracker_accept_canonical_fixture(
 
     assert isinstance(tracker_value, tracker_model)
     assert isinstance(sdk_value, sdk_model)
-    assert tracker_value.model_dump(mode="json", warnings=False, exclude_unset=True) == payload
-    assert sdk_value.model_dump(mode="json", exclude_unset=True) == payload
+    assert tracker_value.model_dump(mode="json", warnings=False) == payload
+    assert sdk_value.model_dump(mode="json") == payload
 
 
 @pytest.mark.parametrize(("tracker_model", "sdk_model"), MODEL_PAIRS)
@@ -276,8 +269,8 @@ def test_fetch_stream_fixture_matches_tracker_and_sdk_response_models() -> None:
     assert event["event"] == ""
     tracker_value = FetchBenchmarkResponse.model_validate(event["data"])
     sdk_value = SDKFetchBenchmarkResponse.model_validate(event["data"])
-    assert tracker_value.model_dump(mode="json", exclude_unset=True) == event["data"]
-    assert sdk_value.model_dump(mode="json", exclude_unset=True) == event["data"]
+    assert tracker_value.model_dump(mode="json") == event["data"]
+    assert sdk_value.model_dump(mode="json") == event["data"]
 
 
 def test_tracker_routes_match_the_sdk_http_contract() -> None:
@@ -369,17 +362,6 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
         "minimum": 0,
         "default": 0,
         "title": "Offset",
-    }
-    task_detail_parameters = {
-        parameter["name"]: parameter
-        for parameter in schema["paths"]["/benchmarks/{benchmark_id}/tasks/{task_id}"]["get"]["parameters"]
-    }
-    assert task_detail_parameters["failure_history_limit"]["schema"] == {
-        "type": "integer",
-        "maximum": 500,
-        "minimum": 1,
-        "default": 50,
-        "title": "Failure History Limit",
     }
 
     for path, method, parameter_name in (

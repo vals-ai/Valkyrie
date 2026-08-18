@@ -7,20 +7,15 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import case
-from sqlmodel import Session, col, func, select
+from sqlmodel import Session, col, desc, func, select
 
 from tracker.api.parsing import parse_csv
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.s3 import create_benchmark_url
-from tracker.database.models import Benchmark, Org, Task, TaskStatus
+from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
-from tracker.failure_views import (
-    current_run_failure_record,
-    current_task_failure_records,
-    summarize_failure,
-)
 from tracker.types import (
     HarnessConfig,
     SingleBenchmarkResponse,
@@ -86,8 +81,6 @@ def get_single_benchmark(
                 log_group=harness_config.log_group,
             )
 
-    run_failure = current_run_failure_record(session, benchmark)
-
     return SingleBenchmarkResponse(
         id=benchmark.id,
         name=benchmark.name,
@@ -106,7 +99,6 @@ def get_single_benchmark(
         started_by_email=benchmark.started_by_email,
         final_score=benchmark.fetch_final_score(session),
         error_message=benchmark.error_message,
-        run_failure=summarize_failure(run_failure) if run_failure else None,
         cloudwatch_url=cloudwatch_url,
         s3_bucket_url=s3_bucket_url,
     )
@@ -141,6 +133,15 @@ def get_benchmark_tasks(
         escaped_search = _escape_sql_like_pattern(task_id_search)
         base_filters.append(col(Task.task_id).ilike(f"%{escaped_search}%", escape="\\"))
 
+    latest_error_message = (
+        select(ErrorResult.error_message)
+        .where(ErrorResult.task == Task.id)
+        .where(ErrorResult.org_id == org.id)
+        .where(col(ErrorResult.retry_scheduled).is_(False))
+        .order_by(desc(ErrorResult.created_at))
+        .limit(1)
+        .scalar_subquery()
+    )
     sort_expr = {
         "task_id": col(Task.task_id),
         "started_at": col(Task.started_at),
@@ -151,9 +152,10 @@ def get_benchmark_tasks(
     # Tie-break newest-first for stable ordering within equal keys.
     order_by = [primary, col(Task.started_at).desc()]
 
-    tasks = session.exec(select(Task).where(*base_filters).order_by(*order_by).limit(limit).offset(offset)).all()
+    rows = session.exec(
+        select(Task, latest_error_message).where(*base_filters).order_by(*order_by).limit(limit).offset(offset)
+    ).all()
     total = session.exec(select(func.count(col(Task.id))).where(*base_filters)).one()
-    failures = current_task_failure_records(session, tasks)
 
     return TasksResponse(
         tasks=[
@@ -163,10 +165,9 @@ def get_benchmark_tasks(
                 status=task.status,
                 started_at=task.started_at,
                 finished_at=task.finished_at,
-                error_message=(failures[task.id].message if task.id in failures else None),
-                failure=(summarize_failure(failures[task.id]) if task.id in failures else None),
+                error_message=error_message if task.status == TaskStatus.ERROR else None,
             )
-            for task in tasks
+            for task, error_message in rows
         ],
         total_count=total,
     )

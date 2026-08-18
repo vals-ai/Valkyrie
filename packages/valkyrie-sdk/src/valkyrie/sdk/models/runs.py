@@ -59,30 +59,6 @@ class Order(str, Enum):
     DESC = "desc"
 
 
-class FailureSummary(ResponseModel):
-    """Factual provenance for one failure event."""
-
-    id: UUID
-    benchmark_id: UUID
-    task_row_id: UUID | None
-    task_attempt_id: UUID | None
-    dispatch_id: UUID | None
-    occurred_at: datetime
-    producer: str | None
-    operation: str | None
-    error_type: str | None
-    message: str
-    cause_code: str | None
-    retry_scheduled: bool
-
-    @field_serializer("occurred_at")
-    def serialize_occurred_at(self, value: datetime) -> str:
-        """Serialize occurrence time with an explicit offset."""
-        serialized = serialize_utc(value)
-        assert serialized is not None
-        return serialized
-
-
 class StartBenchmarkRequest(BaseModel):
     """Wire payload used to start a benchmark run."""
 
@@ -176,7 +152,6 @@ class FetchBenchmarkResponse(ResponseModel):
     label: str | None = None
     final_score: float | None = None
     error_message: str | None = None
-    run_failure: FailureSummary | None = None
     executor_release_id: str | None = None
     current_execution_release_id: str | None = None
     executor_artifact_digest: str | None = None
@@ -205,7 +180,6 @@ class BenchmarkTableRow(ResponseModel):
     task_state_counts: dict[str, int] = Field(default_factory=dict)
     final_score: float | None = None
     error_message: str | None = None
-    run_failure: FailureSummary | None = None
 
     @field_serializer("started_at")
     def serialize_started_at(self, value: datetime) -> str:
@@ -289,8 +263,6 @@ class FinalViewResponse(ResponseModel):
     average_task_breakdown: AverageTaskBreakdown | None
     evaluation_results: dict[str, dict[str, Any]] | None
     task_errors: dict[str, str] | None
-    run_failure: FailureSummary | None = None
-    task_failures: dict[str, FailureSummary] | None = None
 
 
 class S3UploadResultsResponse(ResponseModel):

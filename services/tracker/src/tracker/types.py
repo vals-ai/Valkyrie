@@ -134,27 +134,6 @@ class StartBenchmarkResponse(BaseModel):
     executor_protocol_version: str | None = None
 
 
-class FailureSummary(BaseModel):
-    id: UUID
-    benchmark_id: UUID
-    task_row_id: UUID | None
-    task_attempt_id: UUID | None
-    dispatch_id: UUID | None
-    occurred_at: datetime
-    producer: str | None
-    operation: str | None
-    error_type: str | None
-    message: str
-    cause_code: str | None
-    retry_scheduled: bool
-
-    @field_serializer("occurred_at")
-    def _serialize_occurred_at(self, value: datetime) -> str:
-        result = _serialize_utc(value)
-        assert result is not None
-        return result
-
-
 class FetchBenchmarkResponse(BaseModel):
     benchmark_name: str
     benchmark_id: UUID
@@ -163,7 +142,6 @@ class FetchBenchmarkResponse(BaseModel):
     label: str | None = None
     final_score: float | None = None
     error_message: str | None = None
-    run_failure: FailureSummary | None = None
     executor_release_id: str | None = None
     current_execution_release_id: str | None = None
     executor_artifact_digest: str | None = None
@@ -190,8 +168,6 @@ class FinalViewResponse(BaseModel):
     average_task_breakdown: AverageTaskBreakdown | None
     evaluation_results: dict[str, dict[str, Any]] | None
     task_errors: dict[str, str] | None
-    run_failure: FailureSummary | None = None
-    task_failures: dict[str, FailureSummary] | None = None
 
 
 class S3UploadResultsResponse(BaseModel):
@@ -270,7 +246,6 @@ class BenchmarkTableRow(BaseModel):
     task_state_counts: dict[str, int] = Field(default_factory=dict)
     final_score: float | None = None
     error_message: str | None = None
-    run_failure: FailureSummary | None = None
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:
@@ -382,7 +357,6 @@ class SingleBenchmarkResponse(BaseModel):
     started_by_email: str | None = None
     final_score: float | None = None
     error_message: str | None = None
-    run_failure: FailureSummary | None = None
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
 
@@ -404,7 +378,6 @@ class TaskSummary(BaseModel):
     started_at: datetime
     finished_at: datetime | None
     error_message: str | None = None
-    failure: FailureSummary | None = None
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:
@@ -431,9 +404,6 @@ class SingleTaskResponse(BaseModel):
     error_message: str | None
     evaluation_result: dict[str, Any] | None
     agent_caused_exit_reason: str | None
-    failure: FailureSummary | None = None
-    failure_history: list[FailureSummary] = Field(default_factory=list)
-    failure_history_truncated: bool = False
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:

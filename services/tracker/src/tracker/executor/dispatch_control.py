@@ -11,15 +11,13 @@ from sqlmodel import Session, col, select
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
+    ErrorResult,
     ExecutorDispatch,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     Task,
-    TaskAttempt,
-    TaskAttemptOutcome,
     TaskStatus,
 )
-from tracker.failure_provenance import FailureEvidence, record_failure
 from tracker.executor.release_control import (
     create_executor_dispatch,
     lock_executor_admission,
@@ -32,41 +30,6 @@ _ACTIVE_DISPATCH_STATUSES = (
     ExecutorDispatchStatus.QUEUED,
     ExecutorDispatchStatus.RUNNING,
 )
-
-
-def _normalized_time(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value
-    return value.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
-
-
-def _terminalize_failed_task(
-    session: Session,
-    *,
-    task: Task,
-    attempt: TaskAttempt | None,
-    benchmark_id: UUID,
-    dispatch_id: UUID,
-    evidence: FailureEvidence,
-    finished_at: datetime,
-) -> None:
-    record_failure(
-        session,
-        org_id=task.org_id,
-        benchmark_id=benchmark_id,
-        evidence=evidence,
-        retry_scheduled=False,
-        task_id=task.id,
-        task_attempt_id=attempt.id if attempt is not None else None,
-        dispatch_id=dispatch_id,
-    )
-    task.status = TaskStatus.ERROR
-    task.finished_at = finished_at
-    session.add(task)
-    if attempt is not None:
-        attempt.outcome = TaskAttemptOutcome.ERROR
-        attempt.finished_at = finished_at
-        session.add(attempt)
 
 
 class EnqueueFailureResolution(str, Enum):
@@ -171,18 +134,49 @@ def active_dispatch_exists(
     return session.exec(dispatches).first() is not None
 
 
+def _terminalize_failed_task(
+    session: Session,
+    *,
+    task: Task,
+    error_message: str,
+    producer: str,
+    operation: str,
+    error_type: str,
+    cause_code: str | None,
+    finished_at: datetime,
+) -> None:
+    session.add(
+        ErrorResult(
+            org_id=task.org_id,
+            task=task.id,
+            error_message=error_message,
+            producer=producer,
+            operation=operation,
+            error_type=error_type,
+            cause_code=cause_code,
+        )
+    )
+    task.status = TaskStatus.ERROR
+    task.finished_at = finished_at
+    session.add(task)
+
+
 def record_dispatch_failure(
     session: Session,
     *,
     benchmark: Benchmark,
     dispatch_id: UUID,
     task_ids: list[str],
-    evidence: FailureEvidence,
+    error_message: str,
+    producer: str,
+    operation: str,
+    error_type: str,
+    cause_code: str | None = None,
 ) -> bool:
-    """Record a dispatch failure without overwriting attempts admitted by a newer dispatch.
+    """Record a dispatch failure without overwriting work admitted by a newer dispatch.
 
-    An explicit attempt dispatch ID owns the work. For a null-dispatch attempt or a task
-    without an attempt, the task must predate this dispatch.
+    Admission timestamps selected tasks before creating the dispatch, so its creation time
+    is the durable upper bound for task executions owned by that dispatch.
     """
     dispatch = session.exec(
         select(ExecutorDispatch)
@@ -202,6 +196,7 @@ def record_dispatch_failure(
         .where(col(Task.benchmark) == benchmark.id)
         .where(col(Task.org_id) == benchmark.org_id)
         .where(col(Task.task_id).in_(task_ids))
+        .where(col(Task.started_at) <= dispatch.created_at)
         .where(
             col(Task.status).in_(
                 (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
@@ -210,30 +205,14 @@ def record_dispatch_failure(
         .with_for_update()
     ).all()
     for task in tasks:
-        attempt = None
-        if task.active_attempt_id is not None:
-            attempt = session.exec(
-                select(TaskAttempt)
-                .where(col(TaskAttempt.id) == task.active_attempt_id)
-                .where(col(TaskAttempt.org_id) == task.org_id)
-                .where(col(TaskAttempt.task) == task.id)
-                .with_for_update()
-            ).one()
-            if attempt.dispatch_id not in (None, dispatch_id):
-                continue
-            if attempt.dispatch_id is None and _normalized_time(task.started_at) > _normalized_time(
-                dispatch.created_at
-            ):
-                continue
-        elif _normalized_time(task.started_at) > _normalized_time(dispatch.created_at):
-            continue
         _terminalize_failed_task(
             session,
             task=task,
-            attempt=attempt,
-            benchmark_id=benchmark.id,
-            dispatch_id=dispatch_id,
-            evidence=evidence,
+            error_message=error_message,
+            producer=producer,
+            operation=operation,
+            error_type=error_type,
+            cause_code=cause_code,
             finished_at=now,
         )
     if sibling_active:
@@ -241,17 +220,9 @@ def record_dispatch_failure(
         dispatch.finished_at = now
         session.add(dispatch)
     else:
-        record_failure(
-            session,
-            org_id=benchmark.org_id,
-            benchmark_id=benchmark.id,
-            evidence=evidence,
-            retry_scheduled=False,
-            dispatch_id=dispatch_id,
-        )
         benchmark.status = BenchmarkStatus.ERROR
         benchmark.finished_at = now
-        benchmark.error_message = evidence.message
+        benchmark.error_message = error_message
         session.add(benchmark)
     return True
 
@@ -288,29 +259,16 @@ def resolve_enqueue_failure(
         return resolution
 
     now = datetime.now(ZoneInfo("UTC"))
+    error_message = "Executor dispatch enqueue failed"
     dispatch.status = ExecutorDispatchStatus.FAILED
     dispatch.finished_at = now
     session.add(dispatch)
     session.flush()
 
-    evidence = FailureEvidence(
-        producer="executor_dispatch",
-        operation="enqueue",
-        error_type="ExecutorDispatchEnqueueError",
-        message="Executor dispatch enqueue failed",
-    )
     if benchmark.status == BenchmarkStatus.IN_PROGRESS and not active_dispatch_exists(session, benchmark_id):
-        record_failure(
-            session,
-            org_id=benchmark.org_id,
-            benchmark_id=benchmark.id,
-            evidence=evidence,
-            retry_scheduled=False,
-            dispatch_id=dispatch_id,
-        )
         benchmark.status = BenchmarkStatus.ERROR
         benchmark.finished_at = now
-        benchmark.error_message = evidence.message
+        benchmark.error_message = error_message
         session.add(benchmark)
 
     tasks = session.exec(
@@ -327,26 +285,14 @@ def resolve_enqueue_failure(
         .with_for_update()
     ).all()
     for task in tasks:
-        attempt = None
-        if task.active_attempt_id is not None:
-            attempt = session.exec(
-                select(TaskAttempt)
-                .where(col(TaskAttempt.id) == task.active_attempt_id)
-                .where(col(TaskAttempt.org_id) == task.org_id)
-                .where(col(TaskAttempt.task) == task.id)
-                .with_for_update()
-            ).one()
-            if attempt.dispatch_id is not None or _normalized_time(task.started_at) > _normalized_time(
-                dispatch.created_at
-            ):
-                continue
         _terminalize_failed_task(
             session,
             task=task,
-            attempt=attempt,
-            benchmark_id=benchmark_id,
-            dispatch_id=dispatch_id,
-            evidence=evidence,
+            error_message=error_message,
+            producer="executor_dispatch",
+            operation="enqueue",
+            error_type="ExecutorDispatchEnqueueError",
+            cause_code=None,
             finished_at=now,
         )
     session.commit()

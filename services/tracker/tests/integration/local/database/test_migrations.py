@@ -32,7 +32,7 @@ _EXECUTOR_RELEASE_OWNERSHIP_PREDECESSOR = "6f3c2d9a8b10"
 _CURRENT_OWNERSHIP_REVISION = "e9f0a1b2c3d4"
 _PREVIOUS_REVISION = "d8e9f0a1b2c3"
 _MAINTENANCE_REVISION = "f0a1b2c3d4e5"
-_TASK_ATTEMPT_FAILURE_HISTORY_REVISION = "a3f4b5c6d7e8"
+_ERROR_RESULT_PROVENANCE_REVISION = "a3f4b5c6d7e8"
 _MIGRATION_ADVISORY_LOCK_ID = 0x56414C4B59524945
 
 
@@ -86,7 +86,7 @@ def test_executor_release_ownership_downgrade_restores_predecessor_schema(
     engine.dispose()
 
 
-def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing_attempts(
+def test_error_result_provenance_migration_preserves_legacy_rows(
     migration_database_url: str,
 ) -> None:
     upgrade = _run_alembic(migration_database_url, "upgrade", _MAINTENANCE_REVISION)
@@ -96,30 +96,27 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
     org_id = uuid4()
     benchmark_id = uuid4()
     task_id = uuid4()
+    raw_insert_id = uuid4()
     legacy_failures = [
         (uuid4(), datetime(2026, 8, 10, 12, 0, tzinfo=UTC), "first legacy failure"),
         (uuid4(), datetime(2026, 8, 11, 12, 0, tzinfo=UTC), "second legacy failure"),
     ]
-    benchmark_finished_at = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
     with engine.begin() as connection:
         connection.execute(
             text("INSERT INTO org (id, name) VALUES (:id, :name)"),
-            {"id": org_id, "name": "legacy-failure-migration-org"},
+            {"id": org_id, "name": "legacy-error-result-migration-org"},
         )
         connection.execute(
             text(
-                "INSERT INTO benchmark "
-                "(id, org_id, name, started_at, finished_at, status, error_message) "
-                "VALUES (:id, :org_id, :name, :started_at, :finished_at, :status, :error_message)"
+                "INSERT INTO benchmark (id, org_id, name, started_at, status) "
+                "VALUES (:id, :org_id, :name, :started_at, :status)"
             ),
             {
                 "id": benchmark_id,
                 "org_id": org_id,
-                "name": "legacy-failure-migration-benchmark",
-                "started_at": benchmark_finished_at,
-                "finished_at": benchmark_finished_at,
-                "status": "ERROR",
-                "error_message": "benchmark-level failure",
+                "name": "legacy-error-result-migration-benchmark",
+                "started_at": legacy_failures[0][1],
+                "status": "IN_PROGRESS",
             },
         )
         connection.execute(
@@ -155,164 +152,129 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
             ],
         )
 
-    upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_ATTEMPT_FAILURE_HISTORY_REVISION)
+    upgrade = _run_alembic(migration_database_url, "upgrade", _ERROR_RESULT_PROVENANCE_REVISION)
     assert upgrade.returncode == 0, upgrade.stderr
 
-    with engine.connect() as connection:
-        migrated_failures = (
+    with engine.begin() as connection:
+        migrated_rows = (
             connection.execute(
                 text(
-                    "SELECT id, org_id, benchmark_id, task, task_attempt_id, dispatch_id, occurred_at, "
-                    "producer, operation, error_type, message, cause_code, retry_scheduled "
-                    "FROM failurerecord WHERE task = :task ORDER BY occurred_at"
+                    "SELECT id, org_id, task, created_at, error_message, producer, operation, "
+                    "error_type, cause_code, retry_scheduled, retry_sequence "
+                    "FROM errorresult WHERE task = :task ORDER BY created_at"
                 ),
                 {"task": task_id},
             )
             .mappings()
             .all()
         )
-        benchmark_failures = (
+        connection.execute(
+            text(
+                "INSERT INTO errorresult (id, org_id, task, created_at, error_message) "
+                "VALUES (:id, :org_id, :task, :created_at, :error_message)"
+            ),
+            {
+                "id": raw_insert_id,
+                "org_id": org_id,
+                "task": task_id,
+                "created_at": datetime(2026, 8, 12, 12, 0, tzinfo=UTC),
+                "error_message": "terminal row using database default",
+            },
+        )
+        raw_retry_scheduled = connection.execute(
+            text("SELECT retry_scheduled FROM errorresult WHERE id = :id"),
+            {"id": raw_insert_id},
+        ).scalar_one()
+
+        inspector = inspect(connection)
+        table_names = set(inspector.get_table_names())
+        error_result_columns = {column["name"]: column for column in inspector.get_columns("errorresult")}
+        error_result_indexes = {
+            (index["name"], tuple(index["column_names"])) for index in inspector.get_indexes("errorresult")
+        }
+        task_columns = {column["name"] for column in inspector.get_columns("task")}
+        evaluation_result_columns = {column["name"] for column in inspector.get_columns("evaluationresult")}
+        task_attempt_outcome_exists = connection.execute(
+            text("SELECT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'taskattemptoutcome')")
+        ).scalar_one()
+
+    assert len(migrated_rows) == len(legacy_failures)
+    for migrated, (failure_id, created_at, message) in zip(migrated_rows, legacy_failures, strict=True):
+        assert migrated["id"] == failure_id
+        assert migrated["org_id"] == org_id
+        assert migrated["task"] == task_id
+        assert migrated["created_at"] == created_at.replace(tzinfo=None)
+        assert migrated["error_message"] == message
+        assert migrated["retry_scheduled"] is False
+        assert all(
+            migrated[field] is None for field in ("producer", "operation", "error_type", "cause_code", "retry_sequence")
+        )
+
+    assert raw_retry_scheduled is False
+    assert {"taskattempt", "failurerecord"}.isdisjoint(table_names)
+    assert set(error_result_columns) == {
+        "id",
+        "org_id",
+        "task",
+        "created_at",
+        "error_message",
+        "producer",
+        "operation",
+        "error_type",
+        "cause_code",
+        "retry_scheduled",
+        "retry_sequence",
+    }
+    assert error_result_columns["retry_scheduled"]["nullable"] is False
+    assert error_result_indexes == {
+        ("ix_errorresult_org_task_created_at", ("org_id", "task", "created_at")),
+    }
+    assert "active_attempt_id" not in task_columns
+    assert "task_attempt_id" not in evaluation_result_columns
+    assert task_attempt_outcome_exists is False
+
+    downgrade = _run_alembic(migration_database_url, "downgrade", _MAINTENANCE_REVISION)
+    assert downgrade.returncode == 0, downgrade.stderr
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        downgraded_columns = {column["name"] for column in inspector.get_columns("errorresult")}
+        downgraded_indexes = {index["name"] for index in inspector.get_indexes("errorresult")}
+        downgraded_rows = (
             connection.execute(
-                text(
-                    "SELECT id, org_id, benchmark_id, task, task_attempt_id, dispatch_id, occurred_at, "
-                    "producer, operation, error_type, message, cause_code, retry_scheduled "
-                    "FROM failurerecord WHERE task IS NULL AND benchmark_id = :benchmark_id"
-                ),
-                {"benchmark_id": benchmark_id},
+                text("SELECT id, org_id, task, created_at, error_message FROM errorresult ORDER BY created_at")
             )
             .mappings()
             .all()
         )
-        attempt_count = connection.execute(text("SELECT count(*) FROM taskattempt")).scalar_one()
-        active_attempt_id = connection.execute(
-            text("SELECT active_attempt_id FROM task WHERE id = :task_id"), {"task_id": task_id}
-        ).scalar_one()
-
-        inspector = inspect(connection)
-        task_attempt_columns = {column["name"] for column in inspector.get_columns("taskattempt")}
-        task_attempt_foreign_keys = {foreign_key["name"] for foreign_key in inspector.get_foreign_keys("taskattempt")}
-        task_attempt_indexes = {index["name"] for index in inspector.get_indexes("taskattempt")}
-        task_indexes = {index["name"] for index in inspector.get_indexes("task")}
-        evaluation_result_indexes = {index["name"] for index in inspector.get_indexes("evaluationresult")}
-        failure_record_columns = {column["name"] for column in inspector.get_columns("failurerecord")}
-        failure_record_indexes = {index["name"] for index in inspector.get_indexes("failurerecord")}
-        obsolete_enum_names = set(
-            connection.execute(
-                text(
-                    "SELECT typname FROM pg_type WHERE typname IN "
-                    "('failurecategory', 'failureclassificationstate', 'failureterminaleffect', "
-                    "'taskattemptadmissionreason')"
-                )
-            )
-            .scalars()
-            .all()
-        )
-        task_attempt_outcome_labels = (
-            connection.execute(
-                text(
-                    "SELECT enumlabel FROM pg_enum "
-                    "JOIN pg_type ON pg_type.oid = pg_enum.enumtypid "
-                    "WHERE pg_type.typname = 'taskattemptoutcome' "
-                    "ORDER BY enumsortorder"
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-    assert len(migrated_failures) == len(legacy_failures)
-    for migrated, (failure_id, created_at, message) in zip(migrated_failures, legacy_failures, strict=True):
-        assert migrated["id"] == failure_id
-        assert migrated["org_id"] == org_id
-        assert migrated["benchmark_id"] == benchmark_id
-        assert migrated["task"] == task_id
-        assert migrated["occurred_at"] == created_at.replace(tzinfo=None)
-        assert migrated["message"] == message
-        assert migrated["retry_scheduled"] is False
-        assert all(
-            migrated[field] is None
-            for field in (
-                "task_attempt_id",
-                "dispatch_id",
-                "producer",
-                "operation",
-                "error_type",
-                "cause_code",
-            )
-        )
-
-    assert len(benchmark_failures) == 1
-    benchmark_failure = benchmark_failures[0]
-    assert benchmark_failure["org_id"] == org_id
-    assert benchmark_failure["benchmark_id"] == benchmark_id
-    assert benchmark_failure["occurred_at"] == benchmark_finished_at.replace(tzinfo=None)
-    assert benchmark_failure["message"] == "benchmark-level failure"
-    assert benchmark_failure["retry_scheduled"] is False
-    assert all(
-        benchmark_failure[field] is None
-        for field in (
-            "task",
-            "task_attempt_id",
-            "dispatch_id",
-            "producer",
-            "operation",
-            "error_type",
-            "cause_code",
-        )
-    )
-    assert attempt_count == 0
-    assert active_attempt_id is None
-
-    assert task_attempt_columns == {
-        "id",
-        "org_id",
-        "task",
-        "dispatch_id",
-        "started_at",
-        "finished_at",
-        "outcome",
-    }
-    assert "fk_taskattempt_previous_attempt_id_taskattempt" not in task_attempt_foreign_keys
-    assert "ix_taskattempt_org_task_started_at" not in task_attempt_indexes
-    assert "ix_taskattempt_dispatch_id" not in task_attempt_indexes
-    assert "ix_task_active_attempt_id" not in task_indexes
-    assert "ix_evaluationresult_task_attempt_id" not in evaluation_result_indexes
-    assert failure_record_columns == {
-        "id",
-        "org_id",
-        "benchmark_id",
-        "task",
-        "task_attempt_id",
-        "dispatch_id",
-        "occurred_at",
-        "producer",
-        "operation",
-        "error_type",
-        "message",
-        "cause_code",
-        "retry_scheduled",
-    }
-    assert failure_record_indexes == {
-        "ix_failurerecord_org_benchmark_occurred_at",
-        "ix_failurerecord_org_task_occurred_at",
-    }
-    assert obsolete_enum_names == set()
-    assert task_attempt_outcome_labels == ["pending", "finished", "error", "stopped"]
-    engine.dispose()
-
-
-def test_task_attempt_failure_history_head_is_roll_forward_only(migration_database_url: str) -> None:
-    upgrade = _run_alembic(migration_database_url, "upgrade", "head")
-    assert upgrade.returncode == 0, upgrade.stderr
-
-    downgrade = _run_alembic(migration_database_url, "downgrade", _MAINTENANCE_REVISION)
-
-    assert downgrade.returncode != 0
-    assert "cannot be reconstructed" in downgrade.stderr
-    engine = create_engine(migration_database_url)
-    with engine.connect() as connection:
         revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert revision == _TASK_ATTEMPT_FAILURE_HISTORY_REVISION
+
+    assert downgraded_columns == {"id", "org_id", "task", "created_at", "error_message"}
+    assert "ix_errorresult_org_task_created_at" not in downgraded_indexes
+    assert [dict(row) for row in downgraded_rows] == [
+        {
+            "id": legacy_failures[0][0],
+            "org_id": org_id,
+            "task": task_id,
+            "created_at": legacy_failures[0][1].replace(tzinfo=None),
+            "error_message": legacy_failures[0][2],
+        },
+        {
+            "id": legacy_failures[1][0],
+            "org_id": org_id,
+            "task": task_id,
+            "created_at": legacy_failures[1][1].replace(tzinfo=None),
+            "error_message": legacy_failures[1][2],
+        },
+        {
+            "id": raw_insert_id,
+            "org_id": org_id,
+            "task": task_id,
+            "created_at": datetime(2026, 8, 12, 12, 0),
+            "error_message": "terminal row using database default",
+        },
+    ]
+    assert revision == _MAINTENANCE_REVISION
     engine.dispose()
 
 

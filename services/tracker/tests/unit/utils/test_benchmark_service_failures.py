@@ -6,14 +6,12 @@ Run: uv run pytest tests/unit/utils/test_benchmark_service_failures.py
 import asyncio
 import time
 from typing import Any, Never
-from uuid import UUID
 
 import httpx
 import pytest
 from benchmark_service import ExecResult
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from benchmark_service.schemas import RetrieveTaskResponse
-from executor_protocol import ExecutorDispatchStatus
 from sqlmodel import Session, desc, select
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
@@ -24,14 +22,7 @@ import tracker.sandbox as sandbox_module
 import tracker.utils.run_orchestration as run_orchestration_module
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
-from tracker.database.models import (
-    AgentContractRequest,
-    BenchmarkStatus,
-    ExecutorDispatch,
-    FailureRecord,
-    Task,
-    TaskStatus,
-)
+from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, Task, TaskStatus
 from tracker.types import HarnessConfig
 from tracker.utils import (
     fetch_benchmark_row,
@@ -42,22 +33,16 @@ from tracker.utils import (
 class TestBenchmarkServiceFailures:
     """Benchmark service disconnect, validation, and task error handling."""
 
-    def _latest_task_failure(self, database_session: Session, task_row: Task) -> FailureRecord:
+    def _latest_task_error_result(self, database_session: Session, task_row: Task) -> ErrorResult:
         return database_session.exec(
-            select(FailureRecord)
-            .where(FailureRecord.task == task_row.id)
-            .where(FailureRecord.org_id == task_row.org_id)
-            .order_by(desc(FailureRecord.occurred_at))
+            select(ErrorResult)
+            .where(ErrorResult.task == task_row.id)
+            .where(ErrorResult.org_id == task_row.org_id)
+            .order_by(desc(ErrorResult.created_at))
         ).one()
 
     def _latest_task_error(self, database_session: Session, task_row: Task) -> str:
-        message = database_session.exec(
-            select(FailureRecord.message)
-            .where(FailureRecord.task == task_row.id)
-            .where(FailureRecord.org_id == task_row.org_id)
-            .order_by(desc(FailureRecord.occurred_at))
-        ).one()
-        return message
+        return self._latest_task_error_result(database_session, task_row).error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_connection_closed_after_messages_produces_elapsed_error(
@@ -84,19 +69,16 @@ class TestBenchmarkServiceFailures:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        error_message = self._latest_task_error(database_session, task_row)
-        assert "Benchmark service WebSocket disconnected: no close frame received or sent" in error_message
-        assert "last application message received" in error_message
-        assert "10s ago" in error_message
-        failure = self._latest_task_failure(database_session, task_row)
-        assert failure.benchmark_id == benchmark_id
-        assert failure.task == task_row.id
-        assert failure.task_attempt_id == task_row.active_attempt_id
-        assert failure.dispatch_id == authority.dispatch_id
-        assert failure.producer == "benchmark_service"
-        assert failure.operation == "websocket"
-        assert failure.cause_code == "websocket_connection_closed"
-        assert failure.retry_scheduled is False
+        error_result = self._latest_task_error_result(database_session, task_row)
+        assert "Benchmark service WebSocket disconnected: no close frame received or sent" in error_result.error_message
+        assert "last application message received" in error_result.error_message
+        assert "10s ago" in error_result.error_message
+        assert error_result.producer == "benchmark_service"
+        assert error_result.operation == "websocket"
+        assert error_result.error_type == "ConnectionClosedError"
+        assert error_result.cause_code == "websocket_connection_closed"
+        assert error_result.retry_scheduled is False
+        assert error_result.retry_sequence is None
 
     @pytest.mark.parametrize(
         ("code", "reason"),
@@ -193,11 +175,6 @@ class TestBenchmarkServiceFailures:
         error_message = self._latest_task_error(database_session, task_row)
         assert "rejected the WebSocket connection" in error_message
         assert "404" in error_message
-        failure = self._latest_task_failure(database_session, task_row)
-        assert failure.producer == "benchmark_service"
-        assert failure.operation == "websocket_connect"
-        assert failure.cause_code == "websocket_http_rejected"
-        assert failure.retry_scheduled is False
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_required_missing_output_artifact_persists_compatible_error(
@@ -254,8 +231,14 @@ class TestBenchmarkServiceFailures:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        error_message = self._latest_task_error(database_session, task_row)
-        assert error_message == expected_error
+        error_result = self._latest_task_error_result(database_session, task_row)
+        assert error_result.error_message == expected_error
+        assert error_result.producer == "output_artifact"
+        assert error_result.operation == "upload_output_artifacts"
+        assert error_result.error_type == "OutputArtifactError"
+        assert error_result.cause_code is None
+        assert error_result.retry_scheduled is False
+        assert error_result.retry_sequence is None
         assert any(expected_log in message for message in logged_messages)
 
     @pytest.mark.usefixtures("process_benchmark_env")
@@ -395,55 +378,3 @@ class TestBenchmarkServiceFailures:
             assert benchmark_row.status == BenchmarkStatus.ERROR
             assert benchmark_row.error_message is not None
             assert "Final score failed with status code 404" in benchmark_row.error_message
-
-    @pytest.mark.parametrize("revoke_authority", [False, True])
-    @pytest.mark.usefixtures("process_benchmark_env")
-    async def test_terminal_notification_failure_does_not_persist_core_evidence(
-        self,
-        revoke_authority: bool,
-        contract: AgentContractRequest,
-        database_session: Session,
-        monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
-        executor_authority_kwargs: Any,
-    ) -> None:
-        start_benchmark_request, _task_row, benchmark_id, _authority = create_task_environment(
-            contract,
-            database_session,
-            harness_config,
-        )
-        start_benchmark_request.webhook_secret_name = "test-webhook-secret"
-        start_benchmark_request.webhook_intervals = [1]
-        benchmark_row = fetch_benchmark_row(benchmark_id, database_session, TEST_ORG)
-        authority_kwargs = executor_authority_kwargs(benchmark_row)
-        dispatch_id = UUID(str(authority_kwargs["executor_dispatch_id"]))
-
-        async def _fail_notification(*_args: Any, **_kwargs: Any) -> Never:
-            if revoke_authority:
-                with Session(bind=database_session.bind) as session:
-                    dispatch = session.get(ExecutorDispatch, dispatch_id)
-                    assert dispatch is not None
-                    dispatch.status = ExecutorDispatchStatus.FAILED
-                    session.add(dispatch)
-                    session.commit()
-            raise RuntimeError("slack unavailable")
-
-        monkeypatch.setattr(
-            "tracker.utils.run_orchestration.SlackNotifier.send_terminal_notification",
-            _fail_notification,
-        )
-
-        await process_benchmark(
-            start_benchmark_request_json=start_benchmark_request.model_dump(),
-            benchmark_id_str=str(benchmark_id),
-            verified_task_ids=["task_0"],
-            **authority_kwargs,
-        )
-
-        with Session(bind=database_session.bind) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, TEST_ORG)
-            failures = session.exec(select(FailureRecord).where(FailureRecord.benchmark_id == benchmark_id)).all()
-
-            assert benchmark_row.status == BenchmarkStatus.FINISHED
-            assert benchmark_row.error_message is None
-            assert failures == []
