@@ -23,7 +23,7 @@ Name: valkyrie-sdk
 Version: {SDK_VERSION}
 License-Expression: AGPL-3.0-only
 License-File: LICENSE
-Requires-Python: >=3.12
+Requires-Python: >=3.11
 Requires-Dist: httpx<1,>=0.28.1
 Requires-Dist: pydantic<3,>=2
 Requires-Dist: pyyaml<7,>=6.0.3
@@ -80,9 +80,9 @@ def test_sdk_package_configuration_matches_release_boundaries() -> None:
         sdk_project = tomllib.load(sdk_file)
 
     assert root_project["project"]["requires-python"] == ">=3.12,<3.13"
-    assert sdk_project["project"]["requires-python"] == ">=3.12"
+    assert sdk_project["project"]["requires-python"] == ">=3.11"
     assert root_project["tool"]["basedpyright"]["pythonVersion"] == "3.12"
-    assert sdk_project["tool"]["basedpyright"]["pythonVersion"] == "3.12"
+    assert sdk_project["tool"]["basedpyright"]["pythonVersion"] == "3.11"
     assert sdk_project["build-system"]["requires"] == ["hatchling==1.27.0"]
     assert (PACKAGE_ROOT / ".gitignore").read_text(encoding="utf-8") == ".ruff_cache/\n__pycache__/\ndist/\n"
 

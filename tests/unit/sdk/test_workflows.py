@@ -87,9 +87,9 @@ def test_workflows_verify_the_exact_artifacts() -> None:
     assert upload["with"]["name"] == "valkyrie-sdk-${{ steps.version.outputs.version }}"
 
 
-def test_sdk_ci_checks_newer_python_versions() -> None:
+def test_sdk_ci_checks_supported_python_versions() -> None:
     compatibility = load("sdk-package.yml")["jobs"]["compatibility"]
     assert compatibility["needs"] == "package"
-    assert compatibility["strategy"]["matrix"]["python-version"] == ["3.13", "3.14"]
+    assert compatibility["strategy"]["matrix"]["python-version"] == ["3.11", "3.13", "3.14"]
     install = next(step["run"] for step in compatibility["steps"] if step["name"] == "Install and import SDK")
     assert "--prerelease=disallow" in install

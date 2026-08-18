@@ -1,6 +1,6 @@
 # Python SDK
 
-Use Valkyrie's async Python SDK to manage runs from Python. The SDK requires Python 3.12 or newer.
+Use Valkyrie's async Python SDK to manage runs from Python. The SDK requires Python 3.11 or newer.
 
 ## Installation
 

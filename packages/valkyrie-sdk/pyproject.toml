@@ -1,9 +1,9 @@
 [project]
 name = "valkyrie-sdk"
-version = "0.2.6"
+version = "0.2.7"
 description = "Async Python SDK for managing Valkyrie benchmark runs"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
 dependencies = [
@@ -45,7 +45,7 @@ include = [
 
 [tool.ruff]
 line-length = 120
-target-version = "py312"
+target-version = "py311"
 
 [tool.ruff.format]
 quote-style = "double"
@@ -53,7 +53,7 @@ indent-style = "space"
 
 [tool.basedpyright]
 typeCheckingMode = "strict"
-pythonVersion = "3.12"
+pythonVersion = "3.11"
 include = ["src"]
 reportExplicitAny = false
 reportAny = false
