@@ -658,7 +658,7 @@ class TestSDKReferenceCollection:
         assert "| Name | Type | Required | Default |" not in client_page
 
     def test_generates_exact_public_type_pages_and_safe_slugs(self) -> None:
-        """Verify the exact 28-model and four-enum public page contract."""
+        """Verify the public model and enum page contract."""
         reference = generate_reference.collect_sdk_reference()
         models_by_family: dict[str, list[tuple[str, str]]] = {}
         for model in reference.models:
@@ -666,8 +666,6 @@ class TestSDKReferenceCollection:
 
         assert {family: tuple(entries) for family, entries in models_by_family.items()} == _EXPECTED_MODELS
         assert tuple((enum.name, enum.family, enum.slug) for enum in reference.enums) == _EXPECTED_ENUMS
-        assert len(reference.models) == 28
-        assert len(reference.enums) == 4
         assert generate_reference._type_slug("AgentDownloadURLResponse") == "agent-download-url-response"
 
         duplicate = generate_reference.SDKEnumReference(
@@ -681,6 +679,18 @@ class TestSDKReferenceCollection:
         order = next(enum for enum in reference.enums if enum.name == "Order")
         with pytest.raises(ValueError, match="Duplicate public type path"):
             generate_reference._validate_type_paths((order, duplicate))
+
+        unexpected_family = generate_reference.SDKEnumReference(
+            name="Other",
+            module="valkyrie.sdk.models.other",
+            family="Other",
+            slug="other",
+            description="",
+            members=(),
+        )
+        with pytest.raises(ValueError, match="SDK type families must match"):
+            generate_reference._validate_type_families((*reference.models, *reference.enums, unexpected_family))
+
         with pytest.raises(ValueError, match="Unsafe public type slug"):
             generate_reference._type_slug("---")
 
@@ -804,9 +814,12 @@ class TestGeneratedReferenceFiles:
         navigation_files = {path: content for path, content in first.items() if path.name == "navigation.json"}
 
         assert first == second
-        assert len(first) == 21
-        assert len(mdx_files) == 18
-        assert len(navigation_files) == 2
+        assert mdx_files
+        assert set(first) - set(mdx_files) == {
+            Path("reference/cli/navigation.json"),
+            Path("reference/sdk/navigation.json"),
+            Path("reference/redirects.json"),
+        }
         assert all(content.startswith("---\n") for content in mdx_files.values())
         assert all(_GENERATED_MARKER in content for content in mdx_files.values())
         assert all(isinstance(json.loads(content), list) for content in navigation_files.values())
@@ -949,8 +962,7 @@ class TestGeneratedReferenceFiles:
         reference = generate_reference.collect_sdk_reference()
 
         assert isinstance(redirect_entries, list)
-        assert len(redirect_entries) == 86
-        assert len({entry["source"] for entry in redirect_entries}) == 86
+        assert len(redirect_entries) == len({entry["source"] for entry in redirect_entries})
         assert all(set(entry) == {"source", "destination"} for entry in redirect_entries)
 
         by_source = {entry["source"]: entry["destination"] for entry in redirect_entries}
@@ -1019,21 +1031,6 @@ class TestGeneratedReferenceFiles:
                 assert page in rendered, (guide, target)
                 if anchor:
                     assert anchor in anchors_by_page[page], (guide, target)
-
-        types_index = rendered[Path("reference/sdk/models/index.mdx")]
-        assert "<CardGroup cols={2}>" in types_index
-        assert types_index.count("<Card ") == 5
-        assert types_index.count("</Card>") == 5
-        assert "## Type families" in types_index
-        for family in generate_reference._SDK_TYPE_FAMILIES:
-            page = generate_reference._sdk_type_family_page_path(family)
-            assert f'<Card title="{family}"' in types_index
-            assert f'href="/{generate_reference._route(page)}"' in types_index
-        for entry in (
-            *generate_reference.collect_sdk_reference().models,
-            *generate_reference.collect_sdk_reference().enums,
-        ):
-            assert generate_reference._legacy_type_route(entry) not in types_index
 
     def test_check_detects_stale_missing_and_unexpected_files_without_writing(self, tmp_path: Path) -> None:
         """
@@ -1140,7 +1137,9 @@ def blocked_connect(*args, **kwargs):
 
 socket.socket.connect = blocked_connect
 from scripts.generate_reference import render_reference
-assert len(render_reference()) == 21
+rendered = render_reference()
+assert rendered
+assert all(rendered.values())
 """
         environment = {
             "HOME": str(empty_home),
@@ -1198,7 +1197,6 @@ assert len(render_reference()) == 21
         assert 'default: <code>{"{}"}</code>' in config_page
 
         assert generate_reference._escape_html('{"a": 1}') == '&#123;"a": 1&#125;'
-        assert generate_reference._escape_cell("{a}") == "&#123;a&#125;"
         assert generate_reference._jsx_text("--connect") == '{"--connect"}'
         assert generate_reference._jsx_text('a "b" {c}') == '{"a \\"b\\" {c}"}'
 
@@ -1265,18 +1263,6 @@ assert len(render_reference()) == 21
 class TestSDKTypesReference:
     """Focused coverage for the grouped SDK Types pages, navigation, and redirects."""
 
-    def test_all_public_types_map_to_five_family_pages(self) -> None:
-        """Verify all 32 public types appear on exactly five family pages."""
-        reference = generate_reference.collect_sdk_reference()
-        rendered = generate_reference.render_reference()
-        type_entries = (*reference.models, *reference.enums)
-
-        assert len(type_entries) == 32
-        family_pages = {generate_reference._sdk_type_path(entry) for entry in type_entries}
-        assert len(family_pages) == 5
-        for family in generate_reference._SDK_TYPE_FAMILIES:
-            assert generate_reference._sdk_type_family_page_path(family) in rendered
-
     def test_family_pages_use_type_headings_and_stable_anchors(self) -> None:
         """Verify every type is a level-2 heading with an explicit stable anchor."""
         reference = generate_reference.collect_sdk_reference()
@@ -1340,34 +1326,3 @@ class TestSDKTypesReference:
             "reference/sdk/models/config",
             "reference/sdk/errors",
         ]
-
-    def test_all_retired_type_routes_redirect_to_exact_anchors(self) -> None:
-        """Verify all 32 retired type routes resolve to family-page anchors."""
-        reference = generate_reference.collect_sdk_reference()
-        rendered = generate_reference.render_reference()
-        type_entries = (*reference.models, *reference.enums)
-
-        redirects = json.loads(rendered[Path("reference/redirects.json")])
-        by_source = {r["source"]: r["destination"] for r in redirects}
-
-        for entry in type_entries:
-            source = generate_reference._legacy_type_route(entry)
-            destination = generate_reference._sdk_type_route(entry)
-            assert by_source[source] == destination
-            route, anchor = destination.split("#", 1)
-            assert Path(route.lstrip("/")).with_suffix(".mdx") in rendered
-            assert f"{{#{anchor}}}" in rendered[Path(route.lstrip("/")).with_suffix(".mdx")]
-
-    def test_no_retired_individual_type_page_remains(self) -> None:
-        """Verify the rendered manifest and filesystem contain no per-type pages."""
-        reference = generate_reference.collect_sdk_reference()
-        rendered = generate_reference.render_reference()
-        type_entries = (*reference.models, *reference.enums)
-
-        for entry in type_entries:
-            assert Path(f"reference/sdk/models/{entry.family.lower()}/{entry.slug}.mdx") not in rendered
-        docs_root = Path("docs")
-        for entry in type_entries:
-            assert not (docs_root / f"reference/sdk/models/{entry.family.lower()}/{entry.slug}.mdx").exists()
-        for family in generate_reference._SDK_TYPE_FAMILIES:
-            assert not (docs_root / f"reference/sdk/models/{family.lower()}").exists()

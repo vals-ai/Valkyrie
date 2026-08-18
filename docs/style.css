@@ -28,8 +28,8 @@ pre code .line {
   text-indent: -2ch;
 }
 
-/* Keep the native right table of contents usable when a page lists many commands, such as the
-   13-command run and config CLI group pages. Targets Mintlify's documented TOC ids rather than
+/* Keep the native right table of contents usable when a page lists many commands. Targets
+   Mintlify's documented TOC ids rather than
    generated class names. The theme's own sticky positioning and active-item scrolling continue
    to work; this only bounds the height and gives the list its own scroll region. */
 #table-of-contents {
