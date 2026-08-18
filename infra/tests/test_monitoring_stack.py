@@ -44,9 +44,11 @@ TEST_DEPLOYMENT_SLACK_ENV = {
 }
 TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME = "example-descope-management-key"
 TEST_MANAGED_ORG_ID = "00000000-0000-0000-0000-000000000001"
+TEST_TRACKER_SECRET_NAME_PREFIX = "test-tracker-secret"
 TEST_EXECUTOR_SECRET_NAME_PREFIX = "test-executor-secret"
 TEST_DEV_ENV = {
     "AWS_DEPLOYMENT_ROLE_ORG_IDS": TEST_MANAGED_ORG_ID,
+    "AWS_TRACKER_SECRET_NAME_PREFIXES": TEST_TRACKER_SECRET_NAME_PREFIX,
     "AWS_EXECUTOR_SECRET_NAME_PREFIXES": TEST_EXECUTOR_SECRET_NAME_PREFIX,
     "DESCOPE_PROJECT_ID": "dev-project",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
@@ -224,13 +226,25 @@ def service_templates(
 
 class MonitoringStackTest(unittest.TestCase):
     def test_dev_managed_runtime_requires_deployment_authority(self) -> None:
-        for variable in ("AWS_DEPLOYMENT_ROLE_ORG_IDS", "AWS_EXECUTOR_SECRET_NAME_PREFIXES"):
+        for variable in (
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS",
+            "AWS_TRACKER_SECRET_NAME_PREFIXES",
+            "AWS_EXECUTOR_SECRET_NAME_PREFIXES",
+        ):
             with self.subTest(variable=variable):
                 environment = dict(TEST_DEV_ENV)
                 environment.pop(variable)
                 with mock.patch.dict(os.environ, environment, clear=True):
                     with self.assertRaisesRegex(ValueError, variable):
                         config_for(Stage(DEV))
+
+    def test_offline_synth_uses_safe_managed_runtime_placeholders(self) -> None:
+        with mock.patch.dict(os.environ, {"DESCOPE_PROJECT_ID": "offline-synth"}, clear=True):
+            managed_aws = config_for(Stage(DEV)).managed_aws
+
+        self.assertEqual(managed_aws.deployment_role_org_ids, (TEST_MANAGED_ORG_ID,))
+        self.assertEqual(managed_aws.tracker_secret_name_prefixes, ("offline-synth",))
+        self.assertEqual(managed_aws.executor_secret_name_prefixes, ("offline-synth",))
 
     def test_dev_stack_ids_are_valk_scoped(self) -> None:
         self.assertEqual(Stage(PROD).stack_id("TrackerStack"), "TrackerStack")

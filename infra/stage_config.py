@@ -14,6 +14,8 @@ from stage import DEV, PROD, RELEASE_TEST, Stage
 _SECRET_NAME_PREFIX_PATTERN = re.compile(r"[A-Za-z0-9/_+=.@-]+")
 _LAMBDA_FUNCTION_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\*?")
 _KMS_KEY_ARN_PATTERN = re.compile(r"arn:[^:]+:kms:[^:]+:[0-9]{12}:key/[A-Za-z0-9-]+")
+_OFFLINE_SYNTH_ORG_ID = "00000000-0000-0000-0000-000000000001"
+_OFFLINE_SYNTH_SECRET_PREFIX = "offline-synth"
 
 
 @dataclass(frozen=True)
@@ -151,10 +153,17 @@ def config_for(stage: Stage) -> StageConfig:
         return config
 
     deployment_role_org_ids = _csv_environment("AWS_DEPLOYMENT_ROLE_ORG_IDS")
+    tracker_secret_name_prefixes = _csv_environment("AWS_TRACKER_SECRET_NAME_PREFIXES")
     executor_secret_name_prefixes = _csv_environment("AWS_EXECUTOR_SECRET_NAME_PREFIXES")
+    if os.environ.get("DESCOPE_PROJECT_ID") == _OFFLINE_SYNTH_SECRET_PREFIX:
+        deployment_role_org_ids = deployment_role_org_ids or (_OFFLINE_SYNTH_ORG_ID,)
+        tracker_secret_name_prefixes = tracker_secret_name_prefixes or (_OFFLINE_SYNTH_SECRET_PREFIX,)
+        executor_secret_name_prefixes = executor_secret_name_prefixes or (_OFFLINE_SYNTH_SECRET_PREFIX,)
     if config.managed_aws.submissions_enabled:
         if not deployment_role_org_ids:
             raise ValueError("Development deployments require AWS_DEPLOYMENT_ROLE_ORG_IDS.")
+        if not tracker_secret_name_prefixes:
+            raise ValueError("Development deployments require AWS_TRACKER_SECRET_NAME_PREFIXES.")
         if not executor_secret_name_prefixes:
             raise ValueError("Development deployments require AWS_EXECUTOR_SECRET_NAME_PREFIXES.")
     return replace(
@@ -162,6 +171,7 @@ def config_for(stage: Stage) -> StageConfig:
         managed_aws=replace(
             config.managed_aws,
             deployment_role_org_ids=deployment_role_org_ids,
+            tracker_secret_name_prefixes=tracker_secret_name_prefixes,
             executor_secret_name_prefixes=executor_secret_name_prefixes,
         ),
     )

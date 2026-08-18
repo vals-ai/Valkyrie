@@ -18,6 +18,7 @@ from test_monitoring_stack import (
     TEST_EXECUTOR_SECRET_NAME_PREFIX,
     TEST_MANAGED_ORG_ID,
     TEST_RELEASE_TEST_ENV,
+    TEST_TRACKER_SECRET_NAME_PREFIX,
     JsonObject,
     service_templates,
 )
@@ -122,7 +123,7 @@ class RuntimeIamTest(unittest.TestCase):
                 tracker_template,
                 "ValkyrieTrackerTaskRole-dev",
                 "TrackerTaskRoleArn",
-                expected_actions | {"s3:DeleteObject", "s3:DeleteObjectVersion"},
+                expected_actions | {"s3:DeleteObject", "s3:DeleteObjectVersion", "secretsmanager:GetSecretValue"},
             ),
             (
                 executor_template,
@@ -218,14 +219,18 @@ class RuntimeIamTest(unittest.TestCase):
                     if resources == "*" or (isinstance(resources, list) and "*" in resources):
                         self.assertEqual(_statement_actions(statement), {"ecs:UpdateTaskProtection"})
 
+                secret_statement = next(
+                    statement
+                    for statement in statements
+                    if _statement_actions(statement) == {"secretsmanager:GetSecretValue"}
+                )
                 if role_name.startswith("ValkyrieExecutor"):
-                    secret_statement = next(
-                        statement
-                        for statement in statements
-                        if _statement_actions(statement) == {"secretsmanager:GetSecretValue"}
-                    )
                     self.assertIn(
                         f"secret:{TEST_EXECUTOR_SECRET_NAME_PREFIX}*",
+                        json.dumps(secret_statement["Resource"]),
+                    )
+                    self.assertNotIn(
+                        f"secret:{TEST_TRACKER_SECRET_NAME_PREFIX}*",
                         json.dumps(secret_statement["Resource"]),
                     )
                     log_statement = next(
@@ -237,6 +242,15 @@ class RuntimeIamTest(unittest.TestCase):
                     )
                     self.assertIn("/valkyrie/benchmarks-dev/*", json.dumps(log_statement["Resource"]))
                     self.assertNotIn(":log-stream:", json.dumps(log_statement["Resource"]))
+                else:
+                    self.assertIn(
+                        f"secret:{TEST_TRACKER_SECRET_NAME_PREFIX}*",
+                        json.dumps(secret_statement["Resource"]),
+                    )
+                    self.assertNotIn(
+                        f"secret:{TEST_EXECUTOR_SECRET_NAME_PREFIX}*",
+                        json.dumps(secret_statement["Resource"]),
+                    )
 
     def test_release_test_managed_runtime_remains_closed(self) -> None:
         with mock.patch.dict(os.environ, TEST_RELEASE_TEST_ENV, clear=True):

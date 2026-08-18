@@ -39,6 +39,10 @@ class DeployWorkflowTest(unittest.TestCase):
             dev_core,
         )
         self.assertIn(
+            "AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}",
+            dev_core,
+        )
+        self.assertIn(
             "AWS_EXECUTOR_SECRET_NAME_PREFIXES: ${{ secrets.AWS_EXECUTOR_SECRET_NAME_PREFIXES }}",
             dev_core,
         )
@@ -105,6 +109,10 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("environment: dev", dev_executor)
         self.assertIn(
             "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}",
+            dev_executor,
+        )
+        self.assertIn(
+            "AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}",
             dev_executor,
         )
         self.assertIn(
@@ -273,11 +281,16 @@ class DeployWorkflowTest(unittest.TestCase):
             classification_workflow.count("AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth"),
             2,
         )
+        self.assertEqual(
+            classification_workflow.count("AWS_TRACKER_SECRET_NAME_PREFIXES=offline-synth"),
+            2,
+        )
         self.assertIn(
             "AWS_DEPLOYMENT_ROLE_ORG_IDS=00000000-0000-0000-0000-000000000001",
             workflow,
         )
         self.assertIn("AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth", workflow)
+        self.assertIn("AWS_TRACKER_SECRET_NAME_PREFIXES=offline-synth", workflow)
         self.assertNotIn("id-token: write", classification_workflow)
         trusted_checkout = classification_workflow.split("      - name: Checkout trusted classifier", maxsplit=1)[
             1
