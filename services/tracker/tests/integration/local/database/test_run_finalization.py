@@ -508,9 +508,7 @@ class TestRunFinalization:
             with Session(postgres_engine) as retry_session:
                 retry_session.connection().exec_driver_sql("SET LOCAL lock_timeout = '100ms'")
                 try:
-                    retry_session.exec(
-                        select(Benchmark).where(Benchmark.id == benchmark_id).with_for_update()
-                    ).one()
+                    retry_session.exec(select(Benchmark).where(Benchmark.id == benchmark_id).with_for_update()).one()
                 except OperationalError:
                     return True
             return False
