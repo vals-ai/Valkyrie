@@ -97,7 +97,6 @@ class TestBenchmarkServiceFailures:
         assert failure.operation == "websocket"
         assert failure.cause_code == "websocket_connection_closed"
         assert failure.retry_scheduled is False
-        assert failure.safe_details == {"last_message_age_seconds": 10}
 
     @pytest.mark.parametrize(
         ("code", "reason"),
@@ -199,7 +198,6 @@ class TestBenchmarkServiceFailures:
         assert failure.operation == "websocket_connect"
         assert failure.cause_code == "websocket_http_rejected"
         assert failure.retry_scheduled is False
-        assert failure.safe_details == {"http_status": 404}
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_required_missing_output_artifact_persists_compatible_error(

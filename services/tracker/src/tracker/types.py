@@ -155,10 +155,6 @@ class FailureSummary(BaseModel):
         return result
 
 
-class FailureDetail(FailureSummary):
-    safe_details: dict[str, str | int | float | bool | None] | None = None
-
-
 class FetchBenchmarkResponse(BaseModel):
     benchmark_name: str
     benchmark_id: UUID
@@ -435,8 +431,8 @@ class SingleTaskResponse(BaseModel):
     error_message: str | None
     evaluation_result: dict[str, Any] | None
     agent_caused_exit_reason: str | None
-    failure: FailureDetail | None = None
-    failure_history: list[FailureDetail] = Field(default_factory=list)
+    failure: FailureSummary | None = None
+    failure_history: list[FailureSummary] = Field(default_factory=list)
     failure_history_truncated: bool = False
 
     @field_serializer("started_at")

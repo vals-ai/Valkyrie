@@ -4,7 +4,6 @@ import json
 from collections import defaultdict
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Literal
 from uuid import UUID
 
 import click
@@ -54,34 +53,15 @@ def group_task_errors(task_errors: Mapping[str, str]) -> list[tuple[str, tuple[s
     return sorted(groups, key=lambda group: (-len(group[1]), group[1][0]))
 
 
-def _failure_payload(failure: FailureSummary) -> dict[str, object]:
-    """Project a failure onto the public schema-v2 CLI allowlist."""
-    return {
-        "id": str(failure.id),
-        "benchmark_id": str(failure.benchmark_id),
-        "task_row_id": str(failure.task_row_id) if failure.task_row_id is not None else None,
-        "task_attempt_id": str(failure.task_attempt_id) if failure.task_attempt_id is not None else None,
-        "dispatch_id": str(failure.dispatch_id) if failure.dispatch_id is not None else None,
-        "occurred_at": _utc_isoformat(failure.occurred_at),
-        "producer": failure.producer,
-        "operation": failure.operation,
-        "error_type": failure.error_type,
-        "message": failure.message,
-        "cause_code": failure.cause_code,
-        "retry_scheduled": failure.retry_scheduled,
-    }
-
-
 def build_run_errors_payload(
     response: FinalViewResponse,
     *,
-    schema_version: Literal[1, 2] = 1,
     observed_at: datetime | None = None,
 ) -> dict[str, object]:
-    """Build a versioned allowlist containing only run-error diagnostics."""
+    """Build an allowlist containing only run-error diagnostics."""
     task_errors = dict(sorted((response.task_errors or {}).items()))
-    payload: dict[str, object] = {
-        "schema_version": schema_version,
+    return {
+        "schema_version": 1,
         "kind": "run_errors",
         "observed_at": _utc_isoformat(observed_at or datetime.now(timezone.utc)),
         "run_id": str(response.benchmark_id),
@@ -91,27 +71,12 @@ def build_run_errors_payload(
         "task_error_count": len(task_errors),
         "task_errors": task_errors,
     }
-    if schema_version == 1:
-        return payload
-
-    task_failures = {
-        task_id: _failure_payload(failure) for task_id, failure in sorted((response.task_failures or {}).items())
-    }
-    return {
-        **payload,
-        "run_failure": _failure_payload(response.run_failure) if response.run_failure is not None else None,
-        "task_failures": task_failures,
-    }
 
 
-def format_run_errors_json(
-    response: FinalViewResponse,
-    *,
-    schema_version: Literal[1, 2] = 1,
-) -> str:
+def format_run_errors_json(response: FinalViewResponse) -> str:
     """Serialize one compact, machine-readable run-errors document."""
     return json.dumps(
-        build_run_errors_payload(response, schema_version=schema_version),
+        build_run_errors_payload(response),
         allow_nan=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -207,18 +172,8 @@ def format_run_errors_text(response: FinalViewResponse) -> None:
     show_default=True,
     help="Output format.",
 )
-@click.option(
-    "--schema-version",
-    type=click.IntRange(min=1, max=2),
-    default=1,
-    show_default=True,
-    help="JSON output schema version.",
-)
-def errors(run_id: UUID, output_format: str, schema_version: Literal[1, 2]) -> None:
+def errors(run_id: UUID, output_format: str) -> None:
     """Show stored run and current task error messages."""
-    if output_format != "json" and schema_version != 1:
-        raise click.UsageError("--schema-version 2 requires --format json")
-
     try:
         with TrackerService() as tracker:
             response = tracker.retrieve_results(run_id, s3=False)
@@ -229,6 +184,6 @@ def errors(run_id: UUID, output_format: str, schema_version: Literal[1, 2]) -> N
         raise click.ClickException(safe_error) from error
 
     if output_format == "json":
-        click.echo(format_run_errors_json(response, schema_version=schema_version))
+        click.echo(format_run_errors_json(response))
     else:
         format_run_errors_text(response)

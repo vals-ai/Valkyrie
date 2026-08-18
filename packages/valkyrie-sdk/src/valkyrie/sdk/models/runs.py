@@ -83,12 +83,6 @@ class FailureSummary(ResponseModel):
         return serialized
 
 
-class FailureDetail(FailureSummary):
-    """Authenticated task-detail failure including allowlisted scalar details."""
-
-    safe_details: dict[str, str | int | float | bool | None] | None = None
-
-
 class StartBenchmarkRequest(BaseModel):
     """Wire payload used to start a benchmark run."""
 

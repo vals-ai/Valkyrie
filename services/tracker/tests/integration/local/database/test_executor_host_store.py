@@ -208,7 +208,6 @@ async def test_terminalize_records_owned_and_legacy_task_failures(
         assert failure.message == "Executor host failed"
         assert failure.cause_code is None
         assert failure.retry_scheduled is False
-        assert failure.safe_details is None
 
 
 @pytest.mark.asyncio
@@ -314,7 +313,6 @@ async def test_finish_records_missing_finalization_and_owned_attempts(
         assert failure.message == "Executor exited without finalizing benchmark"
         assert failure.cause_code == "executor_exited_without_finalization"
         assert failure.retry_scheduled is False
-        assert failure.safe_details is None
 
 
 @pytest.mark.asyncio

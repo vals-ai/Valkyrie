@@ -602,4 +602,3 @@ class FailureRecord(SQLModel, table=True):
     message: str = Field(nullable=False)
     cause_code: str | None = Field(default=None)
     retry_scheduled: bool = Field(nullable=False)
-    safe_details: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))

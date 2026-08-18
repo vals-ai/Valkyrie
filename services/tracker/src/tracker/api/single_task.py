@@ -22,7 +22,7 @@ from tracker.database.models import (
 from tracker.database.session import get_session
 from tracker.failure_views import (
     current_task_failure_record,
-    detail_failure,
+    summarize_failure,
     task_failure_history,
 )
 from tracker.types import HarnessConfig, SingleTaskResponse, TaskArtifactsResponse
@@ -108,7 +108,7 @@ def get_single_task(
         agent_caused_exit_reason=(
             eval_row.agent_caused_exit_reason.value if eval_row and eval_row.agent_caused_exit_reason else None
         ),
-        failure=detail_failure(failure_record) if failure_record else None,
+        failure=summarize_failure(failure_record) if failure_record else None,
         failure_history=failure_history,
         failure_history_truncated=failure_history_truncated,
     )

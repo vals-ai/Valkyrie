@@ -9,13 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
-from valkyrie.sdk.models.runs import (
-    BenchmarkStatus,
-    FailureDetail,
-    FailureSummary,
-    Order,
-    TaskStatus,
-)
+from valkyrie.sdk.models.runs import BenchmarkStatus, FailureSummary, Order, TaskStatus
 
 
 class FetchTasksRequest(BaseModel):
@@ -134,8 +128,8 @@ class SingleTaskResponse(ResponseModel):
     error_message: str | None
     evaluation_result: dict[str, Any] | None
     agent_caused_exit_reason: str | None
-    failure: FailureDetail | None = None
-    failure_history: list[FailureDetail] = Field(default_factory=list)
+    failure: FailureSummary | None = None
+    failure_history: list[FailureSummary] = Field(default_factory=list)
     failure_history_truncated: bool = False
 
     @field_serializer("started_at")

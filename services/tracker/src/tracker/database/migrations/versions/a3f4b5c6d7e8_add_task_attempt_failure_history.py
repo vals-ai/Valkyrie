@@ -58,7 +58,6 @@ def upgrade() -> None:
     op.add_column("failurerecord", sa.Column("error_type", sa.String(), nullable=True))
     op.add_column("failurerecord", sa.Column("cause_code", sa.String(), nullable=True))
     op.add_column("failurerecord", sa.Column("retry_scheduled", sa.Boolean(), nullable=True))
-    op.add_column("failurerecord", sa.Column("safe_details", sa.JSON(), nullable=True))
 
     op.execute(
         sa.text(

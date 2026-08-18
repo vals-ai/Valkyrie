@@ -163,7 +163,7 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
             connection.execute(
                 text(
                     "SELECT id, org_id, benchmark_id, task, task_attempt_id, dispatch_id, occurred_at, "
-                    "producer, operation, error_type, message, cause_code, retry_scheduled, safe_details "
+                    "producer, operation, error_type, message, cause_code, retry_scheduled "
                     "FROM failurerecord WHERE task = :task ORDER BY occurred_at"
                 ),
                 {"task": task_id},
@@ -175,7 +175,7 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
             connection.execute(
                 text(
                     "SELECT id, org_id, benchmark_id, task, task_attempt_id, dispatch_id, occurred_at, "
-                    "producer, operation, error_type, message, cause_code, retry_scheduled, safe_details "
+                    "producer, operation, error_type, message, cause_code, retry_scheduled "
                     "FROM failurerecord WHERE task IS NULL AND benchmark_id = :benchmark_id"
                 ),
                 {"benchmark_id": benchmark_id},
@@ -238,7 +238,6 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
                 "operation",
                 "error_type",
                 "cause_code",
-                "safe_details",
             )
         )
 
@@ -259,7 +258,6 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
             "operation",
             "error_type",
             "cause_code",
-            "safe_details",
         )
     )
     assert attempt_count == 0
@@ -293,7 +291,6 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
         "message",
         "cause_code",
         "retry_scheduled",
-        "safe_details",
     }
     assert failure_record_indexes == {
         "ix_failurerecord_org_benchmark_occurred_at",

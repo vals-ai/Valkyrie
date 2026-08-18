@@ -14,7 +14,6 @@ from pydantic import ValidationError
 from valkyrie.sdk.models import (
     AWSCredentials,
     AgentContractRequest,
-    FailureDetail,
     FailureSummary,
     FetchBenchmarkResponse,
     FetchBenchmarksResponse,
@@ -183,15 +182,16 @@ def test_structured_failure_models_parse_factual_provenance() -> None:
     }
 
     summary = FailureSummary.model_validate(payload)
-    detail = FailureDetail.model_validate({**payload, "safe_details": {"websocket_close_code": 1011}})
 
     assert str(summary.dispatch_id) == "50000000-0000-0000-0000-000000000001"
     assert summary.retry_scheduled is True
-    assert summary.model_dump(mode="json")["occurred_at"] == "2026-07-08T12:00:00+00:00"
-    assert detail.safe_details == {"websocket_close_code": 1011}
+    assert summary.model_dump(mode="json") == {
+        **payload,
+        "occurred_at": "2026-07-08T12:00:00+00:00",
+    }
 
 
-def test_single_task_parses_bounded_failure_detail_history() -> None:
+def test_single_task_parses_bounded_failure_history() -> None:
     failure = {
         "id": "10000000-0000-0000-0000-000000000001",
         "benchmark_id": "20000000-0000-0000-0000-000000000001",
@@ -205,7 +205,6 @@ def test_single_task_parses_bounded_failure_detail_history() -> None:
         "message": "task failed",
         "cause_code": None,
         "retry_scheduled": False,
-        "safe_details": None,
     }
     response = SingleTaskResponse.model_validate(
         {
@@ -226,6 +225,5 @@ def test_single_task_parses_bounded_failure_detail_history() -> None:
     assert response.task_id == "repo__issue-1"
     assert response.failure is not None
     assert str(response.failure.task_row_id) == "30000000-0000-0000-0000-000000000001"
-    assert response.failure.safe_details is None
     assert response.failure_history[0].retry_scheduled is False
     assert response.failure_history_truncated is True

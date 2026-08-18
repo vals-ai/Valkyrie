@@ -6,34 +6,19 @@ Run: uv run pytest tests/unit/test_failure_provenance.py
 from unittest.mock import Mock
 from uuid import uuid4
 
-import pytest
-from pydantic import ValidationError
 from sqlmodel import Session
 
 from tracker.failure_provenance import FailureEvidence, record_failure
 
 
-def _evidence(**overrides: object) -> FailureEvidence:
-    values: dict[str, object] = {
-        "producer": "benchmark_service",
-        "operation": "setup_task",
-        "error_type": "BenchmarkServiceError",
-        "message": "benchmark service request failed",
-    }
-    values.update(overrides)
-    return FailureEvidence(**values)
-
-
-@pytest.mark.parametrize(
-    "safe_details",
-    [
-        {"not_approved": "value"},
-        {"http_status": [500]},
-    ],
-)
-def test_failure_evidence_rejects_unapproved_or_non_scalar_details(safe_details: dict[str, object]) -> None:
-    with pytest.raises(ValidationError):
-        _evidence(safe_details=safe_details)
+def _evidence(*, cause_code: str | None = None) -> FailureEvidence:
+    return FailureEvidence(
+        producer="benchmark_service",
+        operation="setup_task",
+        error_type="BenchmarkServiceError",
+        message="benchmark service request failed",
+        cause_code=cause_code,
+    )
 
 
 def test_record_failure_preserves_factual_evidence_and_retry_decision() -> None:
@@ -43,10 +28,7 @@ def test_record_failure_preserves_factual_evidence_and_retry_decision() -> None:
     task_id = uuid4()
     task_attempt_id = uuid4()
     dispatch_id = uuid4()
-    evidence = _evidence(
-        cause_code="sandbox_setup_failed",
-        safe_details={"http_status": 503},
-    )
+    evidence = _evidence(cause_code="sandbox_setup_failed")
 
     failure = record_failure(
         session,
@@ -70,5 +52,4 @@ def test_record_failure_preserves_factual_evidence_and_retry_decision() -> None:
     assert failure.message == evidence.message
     assert failure.cause_code == evidence.cause_code
     assert failure.retry_scheduled is True
-    assert failure.safe_details == evidence.safe_details
     session.add.assert_called_once_with(failure)

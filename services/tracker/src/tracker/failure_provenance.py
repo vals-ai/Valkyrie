@@ -1,15 +1,11 @@
 """Internal provenance contract and canonical persistence for failures."""
 
-from typing import TypeAlias
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict
 from sqlmodel import Session
 
 from tracker.database.models import FailureRecord
-
-SafeDetailValue: TypeAlias = str | int | float | bool | None
-_SAFE_DETAIL_KEYS = frozenset({"http_status", "last_message_age_seconds"})
 
 
 class FailureEvidence(BaseModel):
@@ -22,15 +18,6 @@ class FailureEvidence(BaseModel):
     error_type: str
     message: str
     cause_code: str | None = None
-    safe_details: dict[str, SafeDetailValue] | None = None
-
-    @model_validator(mode="after")
-    def validate_safe_details(self) -> "FailureEvidence":
-        if self.safe_details is not None:
-            unsupported = self.safe_details.keys() - _SAFE_DETAIL_KEYS
-            if unsupported:
-                raise ValueError(f"unsupported safe detail keys: {', '.join(sorted(unsupported))}")
-        return self
 
 
 def record_failure(
@@ -57,7 +44,6 @@ def record_failure(
         message=evidence.message,
         cause_code=evidence.cause_code,
         retry_scheduled=retry_scheduled,
-        safe_details=evidence.safe_details,
     )
     session.add(failure)
     return failure

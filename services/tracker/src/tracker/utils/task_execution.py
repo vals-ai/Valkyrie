@@ -93,7 +93,6 @@ def _failure_evidence(
     producer: str = "tracker",
     operation: str = "process_task",
     cause_code: str | None = None,
-    safe_details: dict[str, str | int | float | bool | None] | None = None,
 ) -> FailureEvidence:
     return FailureEvidence(
         producer=producer,
@@ -101,7 +100,6 @@ def _failure_evidence(
         error_type=type(exc).__name__,
         message=message,
         cause_code=cause_code,
-        safe_details=safe_details,
     )
 
 
@@ -1064,7 +1062,6 @@ async def _process_task_attempt(
                 producer="benchmark_service",
                 operation="websocket",
                 cause_code="websocket_connection_closed",
-                safe_details={"last_message_age_seconds": seconds},
             )
         )
     except ValidationError as e:
@@ -1098,7 +1095,6 @@ async def _process_task_attempt(
                 producer="benchmark_service",
                 operation="websocket_connect",
                 cause_code="websocket_http_rejected",
-                safe_details={"http_status": e.response.status_code},
             )
         )
     except BenchmarkServiceError as e:

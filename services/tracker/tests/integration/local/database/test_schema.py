@@ -56,7 +56,6 @@ def test_task_attempt_failure_history_schema_matches_metadata(postgres_engine: E
             "message",
             "cause_code",
             "retry_scheduled",
-            "safe_details",
         },
     }
     expected_tables = set(expected_columns)

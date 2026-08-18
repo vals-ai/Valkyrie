@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 import pytest
 from click.testing import CliRunner, Result
 from tracker.database.models import BenchmarkStatus
-from tracker.types import FailureDetail, FailureSummary, RetrieveResultsResponse, S3UploadResultsResponse
+from tracker.types import FailureSummary, RetrieveResultsResponse, S3UploadResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.errors import build_run_errors_payload, errors, group_task_errors
@@ -181,7 +181,7 @@ def test_errors_text_sanitizes_terminal_controls(monkeypatch: pytest.MonkeyPatch
     assert "next    line" in result.stdout
 
 
-def test_errors_json_is_versioned_allowlisted_and_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_errors_json_preserves_v1_allowlist_and_deterministic_output(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
     raw_error = "task failed\n\x1b[31mred"
     run_failure = make_failure_summary(run_id, message="structured run failure")
@@ -255,89 +255,6 @@ def test_errors_json_is_versioned_allowlisted_and_deterministic(monkeypatch: pyt
     }
 
 
-def test_errors_json_v2_is_structured_allowlisted_and_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
-    run_id = uuid4()
-    run_failure = FailureDetail(
-        **make_failure_summary(
-            run_id,
-            message="Run stream closed.",
-            producer="benchmark_service",
-            operation="stream",
-            cause_code="websocket_closed",
-        ).model_dump(),
-        safe_details={"status_code": 503},
-    )
-    task_failure = make_failure_summary(
-        run_id,
-        message="Task retry exhausted.",
-        task_row_id=uuid4(),
-        attempt_id=uuid4(),
-        dispatch_id=uuid4(),
-        producer="tracker",
-        operation="process_task",
-        retry_scheduled=True,
-    )
-    response = make_final_view(
-        run_id,
-        error_message=run_failure.message,
-        task_errors={"task-b": task_failure.message, "task-a": "Another task failed."},
-    ).model_copy(
-        update={
-            "run_failure": run_failure,
-            "task_failures": {"task-b": task_failure, "task-a": task_failure},
-        }
-    )
-    tracker = StubErrorsTracker(response)
-
-    result = invoke_with_tracker(
-        monkeypatch,
-        tracker,
-        run_id,
-        "--format",
-        "json",
-        "--schema-version",
-        "2",
-    )
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
-    assert set(payload) == {
-        "schema_version",
-        "kind",
-        "observed_at",
-        "run_id",
-        "benchmark_name",
-        "status",
-        "error_message",
-        "task_error_count",
-        "task_errors",
-        "run_failure",
-        "task_failures",
-    }
-    assert payload["schema_version"] == 2
-    assert list(payload["task_failures"]) == ["task-a", "task-b"]
-    assert set(payload["run_failure"]) == {
-        "id",
-        "benchmark_id",
-        "task_row_id",
-        "task_attempt_id",
-        "dispatch_id",
-        "occurred_at",
-        "producer",
-        "operation",
-        "error_type",
-        "message",
-        "cause_code",
-        "retry_scheduled",
-    }
-    assert payload["run_failure"]["cause_code"] == "websocket_closed"
-    assert payload["run_failure"]["retry_scheduled"] is False
-    assert payload["task_failures"]["task-b"]["task_attempt_id"] == str(task_failure.task_attempt_id)
-    assert payload["task_failures"]["task-b"]["dispatch_id"] == str(task_failure.dispatch_id)
-    assert payload["task_failures"]["task-b"]["retry_scheduled"] is True
-    assert "safe_details" not in result.stdout
-
-
 def test_errors_json_normalizes_empty_error_state(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
     tracker = StubErrorsTracker(
@@ -357,20 +274,6 @@ def test_errors_json_normalizes_empty_error_state(monkeypatch: pytest.MonkeyPatc
     assert payload["error_message"] is None
     assert payload["task_error_count"] == 0
     assert payload["task_errors"] == {}
-
-    v2_result = invoke_with_tracker(
-        monkeypatch,
-        tracker,
-        run_id,
-        "--format",
-        "json",
-        "--schema-version",
-        "2",
-    )
-    assert v2_result.exit_code == 0, v2_result.output
-    v2_payload = json.loads(v2_result.stdout)
-    assert v2_payload["run_failure"] is None
-    assert v2_payload["task_failures"] == {}
 
 
 def test_errors_text_renders_factual_provenance_and_retry_state(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -447,18 +350,6 @@ def test_errors_text_renders_factual_provenance_and_retry_state(monkeypatch: pyt
     assert "Historical non-terminal failures" not in result.stdout
     assert "Recovered:" not in result.stdout
     assert "Secondary:" not in result.stdout
-
-
-def test_errors_schema_v2_requires_json_without_tracker_access(monkeypatch: pytest.MonkeyPatch) -> None:
-    def unexpected_tracker() -> None:
-        pytest.fail("invalid option combination should fail before constructing a tracker")
-
-    monkeypatch.setattr(errors_module, "TrackerService", unexpected_tracker)
-
-    result = CliRunner().invoke(errors, [str(uuid4()), "--schema-version", "2"])
-
-    assert result.exit_code == 2
-    assert "--schema-version 2 requires --format json" in result.stderr
 
 
 def test_group_task_errors_uses_raw_messages_and_stable_order() -> None:

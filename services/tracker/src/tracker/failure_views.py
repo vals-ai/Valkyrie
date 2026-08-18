@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlmodel import Session, col, desc, select
 
 from tracker.database.models import Benchmark, BenchmarkStatus, FailureRecord, Task, TaskStatus
-from tracker.types import FailureDetail, FailureSummary
+from tracker.types import FailureSummary
 
 
 def summarize_failure(record: FailureRecord) -> FailureSummary:
@@ -23,13 +23,6 @@ def summarize_failure(record: FailureRecord) -> FailureSummary:
         message=record.message,
         cause_code=record.cause_code,
         retry_scheduled=record.retry_scheduled,
-    )
-
-
-def detail_failure(record: FailureRecord) -> FailureDetail:
-    return FailureDetail(
-        **summarize_failure(record).model_dump(),
-        safe_details=record.safe_details,
     )
 
 
@@ -141,7 +134,7 @@ def task_failure_history(
     task: Task,
     *,
     limit: int,
-) -> tuple[list[FailureDetail], bool]:
+) -> tuple[list[FailureSummary], bool]:
     records = session.exec(
         select(FailureRecord)
         .where(FailureRecord.org_id == task.org_id)
@@ -150,4 +143,4 @@ def task_failure_history(
         .limit(limit + 1)
     ).all()
     truncated = len(records) > limit
-    return [detail_failure(record) for record in records[:limit]], truncated
+    return [summarize_failure(record) for record in records[:limit]], truncated

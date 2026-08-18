@@ -122,7 +122,6 @@ def test_single_task_returns_current_failure_and_enforces_org_scope(
                 message="active attempt failure",
                 cause_code="terminal_failure",
                 retry_scheduled=False,
-                safe_details={"http_status": 500},
                 occurred_at=now - timedelta(minutes=1),
             ),
             FailureRecord(
@@ -169,7 +168,6 @@ def test_single_task_returns_current_failure_and_enforces_org_scope(
     assert error_body["failure"]["message"] == "active attempt failure"
     assert error_body["failure"]["cause_code"] == "terminal_failure"
     assert error_body["failure"]["retry_scheduled"] is False
-    assert error_body["failure"]["safe_details"] == {"http_status": 500}
     assert [failure["message"] for failure in error_body["failure_history"]] == [
         "newer stale failure",
         "active attempt failure",

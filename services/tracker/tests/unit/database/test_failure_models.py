@@ -29,7 +29,6 @@ def test_factual_failure_and_task_attempt_defaults() -> None:
     assert failure.operation is None
     assert failure.error_type is None
     assert failure.cause_code is None
-    assert failure.safe_details is None
 
     attempt = TaskAttempt(org_id=uuid4(), task=uuid4())
     assert attempt.outcome is TaskAttemptOutcome.PENDING
