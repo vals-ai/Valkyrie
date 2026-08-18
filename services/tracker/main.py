@@ -991,7 +991,8 @@ async def stop_benchmark(
 ) -> StopBenchmarkResponse:
     """
     Stop a benchmark by its id.
-    If force is True, the sandboxes will be stopped and deleted, even if the tasks are in progress.
+    If force is True, the database run is stopped immediately and provider kill signals are sent
+    without waiting for provider teardown to complete.
 
     Usage:
     curl -X POST http://<endpoint>/stop-benchmark/<benchmark_id>?force=true
@@ -1040,7 +1041,6 @@ async def stop_benchmark(
     if provider_secret_name is not None:
         await force_stop_sandboxes(
             benchmark_row,
-            session,
             provider_secret_name,
             runtime_resolution.runtime,
             org,

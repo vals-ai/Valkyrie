@@ -4,7 +4,6 @@ Exercise run-finalization concurrency against disposable Postgres.
 """
 
 import asyncio
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from threading import Event, Thread
 from time import monotonic, sleep
@@ -21,7 +20,6 @@ from sqlmodel import Session, select
 import tracker.utils.run_control as run_control_module
 import tracker.utils.run_orchestration as run_orchestration_module
 from tests.factories import make_benchmark, make_task
-from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -42,7 +40,7 @@ from tracker.executor.dispatch_control import admit_recovery_dispatch, terminali
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.executor.release_control import promote_release
 from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import force_stop_sandboxes, process_benchmark, reset_to_in_progress_status
+from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
 from tracker.utils.reporting import create_final_view
 from tracker.utils.resources import fetch_benchmark_row
 from tracker.utils.run_orchestration import upload_final_view_if_current
@@ -548,7 +546,6 @@ class TestRunFinalization:
         self,
         postgres_engine: Engine,
         postgres_session: Session,
-        harness_config: HarnessConfig,
         monkeypatch: pytest.MonkeyPatch,
         executor_authority_kwargs: Any,
     ) -> None:
@@ -571,24 +568,6 @@ class TestRunFinalization:
         assert benchmark.current_execution_release_id is not None
         promote_release(postgres_session, benchmark.current_execution_release_id)
         postgres_session.commit()
-
-        class EmptyProvider:
-            async def list_sandboxes(self, *_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:
-                if False:
-                    yield None
-
-        def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
-            return DaytonaProviderConfig(
-                DAYTONA_API_KEY="test-key",
-                DAYTONA_API_URL="https://example.com",
-                DAYTONA_TARGET="test-target",
-            )
-
-        def empty_provider(*_args: Any, **_kwargs: Any) -> EmptyProvider:
-            return EmptyProvider()
-
-        monkeypatch.setattr(run_control_module, "fetch_sandbox_provider_config", provider_config)
-        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", empty_provider)
 
         retry_ready = Event()
         allow_retry_lock = Event()
@@ -657,12 +636,11 @@ class TestRunFinalization:
         monkeypatch.setattr(run_control_module, "terminalize_active_dispatches", terminalize_with_concurrent_retry)
 
         try:
-            await force_stop_sandboxes(
+            await initiate_stop_benchmark(
                 benchmark,
                 postgres_session,
-                harness_config.sandbox_provider_secret_name,
-                AWSRuntime.from_harness_config(harness_config),
-                org,
+                force=True,
+                org=org,
             )
         finally:
             allow_retry_lock.set()
