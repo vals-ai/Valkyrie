@@ -72,11 +72,11 @@ def init() -> None:
         _rotate_matching_benchmark_auth(current_config, api_key)
         current_config["api_key"] = api_key
 
-        # Validate the key and create/confirm org (uses default tracker URL)
         try:
             result = TrackerService.init_org(api_key)
+            runtime = TrackerService.aws_runtime_metadata(api_key)
         except TrackerServiceError as e:
-            raise click.ClickException(str(e))
+            raise click.ClickException(str(e)) from e
         click.echo(f"Organization '{result['org_name']}' configured successfully.\n")
 
         if result.get("email_claim_missing"):
@@ -90,7 +90,6 @@ def init() -> None:
                 )
             )
 
-        runtime = TrackerService.aws_runtime_metadata(api_key)
         if runtime.mode == "managed":
             if not runtime.region or not runtime.s3_bucket:
                 raise click.ClickException("Managed AWS configuration is missing its Region or S3 bucket.")

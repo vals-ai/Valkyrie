@@ -870,6 +870,10 @@ def test_start_benchmark_without_static_keys_sends_managed_request(
             "AWS_SECRET_ACCESS_KEY": None,
             "AWS_SESSION_TOKEN": "orphan-session-token",
         },
+        {
+            "AWS_ACCESS_KEY_ID": " ",
+            "AWS_SECRET_ACCESS_KEY": "",
+        },
     ],
 )
 def test_tracker_client_rejects_incomplete_static_credentials(
@@ -885,7 +889,7 @@ def test_tracker_client_rejects_incomplete_static_credentials(
     )
     monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
 
-    with pytest.raises(TrackerServiceError, match="requires|configured together"):
+    with pytest.raises(TrackerServiceError, match="blank|requires|configured together"):
         TrackerService(base_url="http://tracker")
 
 

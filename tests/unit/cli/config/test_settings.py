@@ -167,6 +167,26 @@ def test_init_hosted_names_incomplete_managed_aws_config(monkeypatch: pytest.Mon
 
 
 @pytest.mark.usefixtures("config_path")
+def test_init_hosted_names_runtime_discovery_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("VALKYRIE_API_KEY", raising=False)
+    monkeypatch.setattr(
+        settings.TrackerService,
+        "init_org",
+        lambda _api_key: {"org_name": "test-org"},
+    )
+
+    def fail_runtime_discovery(_api_key: str) -> None:
+        raise settings.TrackerServiceError("Failed to resolve AWS runtime: service unavailable")
+
+    monkeypatch.setattr(settings.TrackerService, "aws_runtime_metadata", fail_runtime_discovery)
+
+    result = CliRunner().invoke(settings.init, input="hosted\nvals-key\n")
+
+    assert result.exit_code == 1
+    assert "Error: Failed to resolve AWS runtime: service unavailable" in result.output
+
+
+@pytest.mark.usefixtures("config_path")
 def test_init_whitespace_only_required_value_aborts(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in settings._REQUIRED_ENVIRONMENT_VARIABLES:
         monkeypatch.delenv(key, raising=False)
