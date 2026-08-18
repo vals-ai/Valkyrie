@@ -84,6 +84,8 @@ jobs:
             CDK_DEFAULT_REGION=us-east-1 \
             AWS_REGION=us-east-1 \
             STAGE="$stage" \
+            AWS_DEPLOYMENT_ROLE_ORG_IDS=00000000-0000-0000-0000-000000000001 \
+            AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth \
             SENTRY_DSN_SECRET_NAME=offline-synth \
             DESCOPE_MANAGEMENT_KEY_SECRET_NAME=offline-synth \
             DESCOPE_PROJECT_ID=offline-synth \
@@ -185,6 +187,8 @@ jobs:
             CDK_DEFAULT_REGION=us-east-1 \
             AWS_REGION=us-east-1 \
             STAGE="$stage" \
+            AWS_DEPLOYMENT_ROLE_ORG_IDS=00000000-0000-0000-0000-000000000001 \
+            AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth \
             SENTRY_DSN_SECRET_NAME=offline-synth \
             DESCOPE_MANAGEMENT_KEY_SECRET_NAME=offline-synth \
             DESCOPE_PROJECT_ID=offline-synth \

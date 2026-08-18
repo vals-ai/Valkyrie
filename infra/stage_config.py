@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import UUID
 
 from aws_cdk import aws_logs
@@ -114,9 +115,7 @@ DEV_CONFIG = StageConfig(
     managed_aws=ManagedAWSRuntimeConfig(
         benchmark_log_group_prefix="/valkyrie/benchmarks",
         benchmark_log_retention_days=7,
-        deployment_role_org_ids=("431bc4f8-c66b-47eb-8d53-2c4622be04e6",),
         submissions_enabled=True,
-        executor_secret_name_prefixes=("AgenticHarnessSecrets",),
     ),
 )
 
@@ -144,9 +143,32 @@ _STAGE_CONFIGS = {
 
 def config_for(stage: Stage) -> StageConfig:
     try:
-        return _STAGE_CONFIGS[stage.name]
+        config = _STAGE_CONFIGS[stage.name]
     except KeyError:
         raise ValueError(f"unknown stage {stage.name!r}; expected {PROD!r}, {DEV!r}, or 'release-test'") from None
+
+    if stage.name != DEV:
+        return config
+
+    deployment_role_org_ids = _csv_environment("AWS_DEPLOYMENT_ROLE_ORG_IDS")
+    executor_secret_name_prefixes = _csv_environment("AWS_EXECUTOR_SECRET_NAME_PREFIXES")
+    if config.managed_aws.submissions_enabled:
+        if not deployment_role_org_ids:
+            raise ValueError("Development deployments require AWS_DEPLOYMENT_ROLE_ORG_IDS.")
+        if not executor_secret_name_prefixes:
+            raise ValueError("Development deployments require AWS_EXECUTOR_SECRET_NAME_PREFIXES.")
+    return replace(
+        config,
+        managed_aws=replace(
+            config.managed_aws,
+            deployment_role_org_ids=deployment_role_org_ids,
+            executor_secret_name_prefixes=executor_secret_name_prefixes,
+        ),
+    )
+
+
+def _csv_environment(name: str) -> tuple[str, ...]:
+    return tuple(value.strip() for value in os.environ.get(name, "").split(",") if value.strip())
 
 
 def benchmark_service_base_url(stage: Stage) -> str | None:

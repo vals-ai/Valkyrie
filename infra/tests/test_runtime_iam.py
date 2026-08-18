@@ -15,6 +15,8 @@ from test_monitoring_stack import (
     TEST_AWS_ACCOUNT,
     TEST_AWS_REGION,
     TEST_DEV_ENV,
+    TEST_EXECUTOR_SECRET_NAME_PREFIX,
+    TEST_MANAGED_ORG_ID,
     TEST_RELEASE_TEST_ENV,
     JsonObject,
     service_templates,
@@ -100,7 +102,7 @@ class RuntimeIamTest(unittest.TestCase):
             [
                 {
                     "Name": "AWS_DEPLOYMENT_ROLE_ORG_IDS",
-                    "Value": "431bc4f8-c66b-47eb-8d53-2c4622be04e6",
+                    "Value": TEST_MANAGED_ORG_ID,
                 },
                 {"Name": "AWS_DEPLOYMENT_REGION", "Value": TEST_AWS_REGION},
                 assertions.Match.object_like({"Name": "AWS_DEPLOYMENT_S3_BUCKET"}),
@@ -222,7 +224,10 @@ class RuntimeIamTest(unittest.TestCase):
                         for statement in statements
                         if _statement_actions(statement) == {"secretsmanager:GetSecretValue"}
                     )
-                    self.assertIn("secret:AgenticHarnessSecrets*", json.dumps(secret_statement["Resource"]))
+                    self.assertIn(
+                        f"secret:{TEST_EXECUTOR_SECRET_NAME_PREFIX}*",
+                        json.dumps(secret_statement["Resource"]),
+                    )
                     log_statement = next(
                         statement for statement in statements if "logs:CreateLogStream" in _statement_actions(statement)
                     )
