@@ -26,7 +26,7 @@ async with ValkyrieClient.from_config() as client:
 Pass `base_url` to `ValkyrieClient` for a self-hosted tracker. Otherwise, the SDK uses
 `TRACKER_SERVICE_URL` or the hosted tracker URL.
 
-When both static AWS access-key fields are configured, the SDK sends the access-key harness configuration to the Tracker. When both fields are absent, start requests omit AWS credentials and select managed execution for an eligible hosted organization. Always use HTTPS outside local development.
+Hosted mode supports both AWS execution modes. When both AWS access-key fields are configured, the SDK sends the configured credentials and AWS resources to Tracker for the run. When both fields are absent, start requests omit AWS credentials and request managed execution. Tracker must be configured to accept managed starts for the organization. Hosted or self-hosted selects the Tracker deployment; the credential fields select the request mode. See [Hosted vs Self-Hosted Mode](../HOSTED_MODE.md#aws-execution-mode) for the complete configuration and switching instructions. Always use HTTPS outside local development.
 
 ## Examples
 
