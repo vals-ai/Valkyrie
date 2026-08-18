@@ -147,6 +147,26 @@ def test_init_hosted_managed_aws_omits_static_keys(config_path: Path, monkeypatc
 
 
 @pytest.mark.usefixtures("config_path")
+def test_init_hosted_names_incomplete_managed_aws_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("VALKYRIE_API_KEY", raising=False)
+    monkeypatch.setattr(
+        settings.TrackerService,
+        "init_org",
+        lambda _api_key: {"org_name": "test-org"},
+    )
+    monkeypatch.setattr(
+        settings.TrackerService,
+        "aws_runtime_metadata",
+        lambda _api_key: SimpleNamespace(mode="managed", region=None, s3_bucket="managed-bucket"),
+    )
+
+    result = CliRunner().invoke(settings.init, input="hosted\nvals-key\n")
+
+    assert result.exit_code == 1
+    assert "Managed AWS configuration is missing its Region or S3 bucket" in result.output
+
+
+@pytest.mark.usefixtures("config_path")
 def test_init_whitespace_only_required_value_aborts(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in settings._REQUIRED_ENVIRONMENT_VARIABLES:
         monkeypatch.delenv(key, raising=False)
