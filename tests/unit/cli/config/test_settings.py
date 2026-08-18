@@ -144,6 +144,7 @@ def test_init_hosted_managed_aws_omits_static_keys(config_path: Path, monkeypatc
     assert config["LOG_RETENTION_POLICY"] == "365"
     assert not settings._STATIC_AWS_CREDENTIAL_KEYS.intersection(config)
     assert "Local AWS operations will use the AWS SDK credential chain" in result.output
+    assert "Restore them before retrying or resuming an access-key run" in result.output
 
 
 @pytest.mark.usefixtures("config_path")

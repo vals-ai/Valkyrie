@@ -77,6 +77,15 @@ valkyrie config remove AWS_SESSION_TOKEN
 
 Removing a field that is not present is safe. The Region and bucket remain in the config for local AWS operations.
 
+### Retry or resume an existing run
+
+Tracker stores the AWS execution mode when a run starts. Retrying or resuming the run uses that stored mode rather than selecting a new mode from the current local config.
+
+- A managed run continues to use the deployment task roles.
+- An access-key run still requires a complete access-key configuration. If the credential fields were removed, restore the configuration used for that run before retrying or resuming it.
+
+Adding or removing local credential fields does not convert an existing run to a different AWS execution mode.
+
 You can also set the API key manually:
 
 ```bash

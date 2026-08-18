@@ -95,6 +95,7 @@ def init() -> None:
                 raise click.ClickException("Managed AWS configuration is missing its Region or S3 bucket.")
             current_config["AWS_DEFAULT_REGION"] = runtime.region
             current_config["S3_BUCKET"] = runtime.s3_bucket
+            removed_static_credentials = any(key in current_config for key in _STATIC_AWS_CREDENTIAL_KEYS)
             for key in _STATIC_AWS_CREDENTIAL_KEYS:
                 current_config.pop(key, None)
             environment_variables = {
@@ -104,6 +105,11 @@ def init() -> None:
             click.echo(
                 "Managed AWS execution is enabled. Local AWS operations will use the AWS SDK credential chain.\n"
             )
+            if removed_static_credentials:
+                click.echo(
+                    "Existing static AWS credentials were removed. Restore them before retrying or resuming "
+                    "an access-key run.\n"
+                )
 
     collected_keys: dict[str, str] = {}
     for key, default in environment_variables.items():
