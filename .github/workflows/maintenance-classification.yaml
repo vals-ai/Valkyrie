@@ -1,8 +1,7 @@
 name: Maintenance classification
 
 on:
-  # TEMPORARY: run the PR's workflow only to demo approval; restore pull_request_target before merge.
-  pull_request:
+  pull_request_target:
     branches: [dev, prod]
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
