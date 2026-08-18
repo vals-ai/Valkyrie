@@ -7,7 +7,7 @@ import asyncio
 from datetime import UTC, datetime
 from threading import Event, Thread
 from time import monotonic, sleep
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from benchmark_service.client import BenchmarkServiceClient
@@ -21,6 +21,7 @@ from sqlmodel import Session, select
 import tracker.utils.run_control as run_control_module
 import tracker.utils.run_orchestration as run_orchestration_module
 from tests.factories import make_benchmark, make_task
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -191,10 +192,10 @@ class TestRunFinalization:
 
         with pytest.raises(ExecutionAuthorityRevoked):
             async with run_orchestration_module.hold_dispatch_authority(authority):
-                await run_orchestration_module.upload_final_view(  # pyright: ignore[reportPrivateImportUsage, reportArgumentType]
+                await run_orchestration_module.upload_final_view(  # pyright: ignore[reportPrivateImportUsage]
                     benchmark,
                     final_view,
-                    harness_config,  # pyright: ignore[reportArgumentType]
+                    cast(AWSRuntime, harness_config),
                 )
 
         assert upload_calls == []
@@ -452,7 +453,7 @@ class TestRunFinalization:
         assert persisted_benchmark.status == BenchmarkStatus.FINISHED
         assert len(final_evaluations) == 1
 
-    async def test_final_view_upload_and_lambda_hold_benchmark_lock(
+    async def test_terminal_side_effects_hold_benchmark_lock(
         self,
         postgres_engine: Engine,
         postgres_session: Session,
@@ -497,12 +498,11 @@ class TestRunFinalization:
         benchmark.arguments = benchmark.arguments.model_copy(update={"lambda_function": "test-lambda"})
         postgres_session.add(benchmark)
         postgres_session.commit()
-        upload_calls = 0
-        lambda_calls = 0
-        notification_calls = 0
-        upload_lock_blocked = False
-        lambda_lock_blocked = False
-        notification_lock_blocked = False
+        side_effects: dict[str, dict[str, int | bool]] = {
+            "upload": {"calls": 0, "lock_held": False},
+            "lambda": {"calls": 0, "lock_held": False},
+            "notification": {"calls": 0, "lock_held": False},
+        }
 
         def assert_lock_held(benchmark_id: UUID) -> bool:
             with Session(postgres_engine) as retry_session:
@@ -516,23 +516,20 @@ class TestRunFinalization:
             return False
 
         async def assert_upload_lock_held(*_args: Any, **_kwargs: Any) -> None:
-            nonlocal upload_lock_blocked, upload_calls
-            upload_calls += 1
-            upload_lock_blocked = assert_lock_held(_args[0].id)
+            side_effects["upload"]["calls"] += 1
+            side_effects["upload"]["lock_held"] = assert_lock_held(benchmark.id)
 
         def assert_lambda_lock_held(*_args: Any, **_kwargs: Any) -> None:
-            nonlocal lambda_lock_blocked, lambda_calls
-            lambda_calls += 1
-            lambda_lock_blocked = assert_lock_held(UUID(str(_args[2]["benchmark_id"])))
+            side_effects["lambda"]["calls"] += 1
+            side_effects["lambda"]["lock_held"] = assert_lock_held(benchmark.id)
 
         async def assert_notification_lock_held(
             _notifier: SlackNotifier,
-            context: Any,
+            _context: Any,
             **_kwargs: Any,
         ) -> None:
-            nonlocal notification_calls, notification_lock_blocked
-            notification_calls += 1
-            notification_lock_blocked = assert_lock_held(context.benchmark_id)
+            side_effects["notification"]["calls"] += 1
+            side_effects["notification"]["lock_held"] = assert_lock_held(benchmark.id)
 
         def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
             return "test-log-group"
@@ -554,6 +551,7 @@ class TestRunFinalization:
         monkeypatch.setattr(run_orchestration_module, "invoke_lambda", assert_lambda_lock_held)
         monkeypatch.setattr(SlackNotifier, "send_terminal_notification", assert_notification_lock_held)
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", final_score)
+        # Release the fixture connection so separate probe sessions can contend for the row lock.
         postgres_session.close()
 
         await process_benchmark(
@@ -563,10 +561,11 @@ class TestRunFinalization:
             **authority_kwargs,
         )
 
-        assert upload_calls == 1
-        assert lambda_calls == 1
-        assert notification_calls == 1
-        assert (upload_lock_blocked, lambda_lock_blocked, notification_lock_blocked) == (True, True, True)
+        assert side_effects == {
+            "upload": {"calls": 1, "lock_held": True},
+            "lambda": {"calls": 1, "lock_held": True},
+            "notification": {"calls": 1, "lock_held": True},
+        }
 
     async def test_all_error_finalization_returns_distinct_representatives(
         self,

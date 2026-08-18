@@ -585,7 +585,7 @@ async def process_benchmark(
             await upload_final_view(benchmark_row, final_view, aws_runtime)
 
         if lambda_function and lambda_payload is not None:
-            async with hold_dispatch_authority(authority) as (_, _):
+            async with hold_dispatch_authority(authority):
                 invoke_lambda(aws_runtime.clients, lambda_function, lambda_payload)
 
     except ExecutionAuthorityRevoked:
