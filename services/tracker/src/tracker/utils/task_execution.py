@@ -18,11 +18,10 @@ from zoneinfo import ZoneInfo
 
 import logfire
 import sentry_sdk
-import benchmark_service.client as benchmark_service_client
 from benchmark_service import (
     SandboxProviderConfig,
 )
-from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceStreamClosedError
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceStreamError
 from opentelemetry import trace
 from pydantic import ValidationError
 from sqlmodel import Session, col, select, update
@@ -68,11 +67,6 @@ from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 logger = get_logger(__name__)
 
 _PTY_TASK_RETRY_LIMIT: int = 1
-
-BenchmarkServiceStreamIdleError: type[BenchmarkServiceError] = cast(
-    type[BenchmarkServiceError],
-    getattr(benchmark_service_client, "BenchmarkServiceStreamIdleError", BenchmarkServiceStreamClosedError),
-)
 
 
 @dataclass
@@ -946,7 +940,7 @@ async def _process_task_attempt(
             )
 
         return {task_id: None}
-    except (BenchmarkServiceStreamClosedError, BenchmarkServiceStreamIdleError) as e:
+    except BenchmarkServiceStreamError as e:
         if task_is_stopped():
             return {task_id: None}
         error_message = f"Benchmark service WebSocket stream failed: {_exception_message(e)}"
