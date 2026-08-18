@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import socket
 import time
 import traceback
 from asyncio import Semaphore
@@ -17,10 +18,11 @@ from zoneinfo import ZoneInfo
 
 import logfire
 import sentry_sdk
+import benchmark_service.client as benchmark_service_client
 from benchmark_service import (
     SandboxProviderConfig,
 )
-from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceStreamClosedError
 from opentelemetry import trace
 from pydantic import ValidationError
 from sqlmodel import Session, col, select, update
@@ -66,6 +68,11 @@ from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 logger = get_logger(__name__)
 
 _PTY_TASK_RETRY_LIMIT: int = 1
+
+BenchmarkServiceStreamIdleError: type[BenchmarkServiceError] = cast(
+    type[BenchmarkServiceError],
+    getattr(benchmark_service_client, "BenchmarkServiceStreamIdleError", BenchmarkServiceStreamClosedError),
+)
 
 
 @dataclass
@@ -538,7 +545,11 @@ async def _process_task_attempt(
 
     flush_task = asyncio.create_task(auto_flush_logs())
 
+    evaluation_resume_state = task_row.eval_resume_state
+
     def on_eval_resume_state(state: dict[str, Any]) -> None:
+        nonlocal evaluation_resume_state
+        evaluation_resume_state = state
         save_eval_resume_state(task_row.id, org, state, expected_started_at=attempt_started_at, authority=authority)
 
     def execution_is_current() -> bool:
@@ -555,6 +566,69 @@ async def _process_task_attempt(
 
     def task_is_stopped() -> bool:
         return not execution_is_current()
+
+    async def recover_evaluation_stream_failure(error_message: str) -> dict[str, dict[str, Any] | None] | None:
+        """Resume an interrupted evaluation when the service has persisted continuation state."""
+        nonlocal last_log_time
+        if evaluation_resume_state is None:
+            return None
+        if task_is_stopped():
+            return {task_id: None}
+
+        recovery_message = f"{error_message}; resuming evaluation from durable benchmark state"
+        logger.warning(recovery_message)
+        log_output(f"\n[WARN] {recovery_message}\n")
+        resume_eval_start_time = time.perf_counter()
+        try:
+            last_log_time = time.monotonic()
+            evaluation_result = await benchmark_service.resume_evaluation(
+                task_row.task_id,
+                eval_resume_state=evaluation_resume_state,
+                on_message=log_output,
+                on_eval_resume_state=on_eval_resume_state,
+                dataset=start_benchmark_request.dataset,
+                sandbox_provider=sandbox_provider_config,
+            )
+        except Exception as resume_error:
+            if task_is_stopped():
+                return {task_id: None}
+            terminal_error = f"{recovery_message}; resume failed: {_exception_message(resume_error)}"
+            logger.warning(terminal_error)
+            log_output(f"\n[ERROR] {terminal_error}")
+            with Session(bind=engine) as task_session:
+                task = fetch_task_row(task_row.id, task_session, org)
+                commit_task_error(
+                    task, task_session, terminal_error, expected_started_at=attempt_started_at, authority=authority
+                )
+            return {task_id: None}
+
+        resume_eval_duration = time.perf_counter() - resume_eval_start_time
+        evaluation_result_value = cast(dict[str, Any], evaluation_result)
+        evaluation_result_row = EvaluationResult(
+            org_id=org.id,
+            task=task_row.id,
+            instance_id=None,
+            result=evaluation_result_value,
+            agent_caused_exit_reason=None,
+        )
+        with Session(bind=engine) as task_session:
+            task_session.add(evaluation_result_row)
+            task_in_session = fetch_task_row(task_row.id, task_session, org)
+            if task_in_session.task_breakdown:
+                existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
+                if existing_breakdown is not None:
+                    existing_breakdown.evaluation_run_duration = resume_eval_duration
+            if not commit_task_status_transition(
+                task_row.id,
+                task_session,
+                org,
+                TaskStatus.FINISHED,
+                expected_started_at=attempt_started_at,
+                authority=authority,
+            ):
+                return {task_id: None}
+
+        return {task_id: evaluation_result_value}
 
     try:
         if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
@@ -838,6 +912,20 @@ async def _process_task_attempt(
             )
 
         return {task_id: None}
+    except socket.gaierror as e:
+        if task_is_stopped():
+            return {task_id: None}
+        error_message = f"Benchmark service WebSocket connection failed during DNS resolution: {_exception_message(e)}"
+        logger.warning(error_message)
+        log_output(f"\n[ERROR] {error_message}")
+
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(
+                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
+            )
+
+        return {task_id: None}
     except ConnectionClosedError as e:
         if task_is_stopped():
             return {task_id: None}
@@ -845,6 +933,26 @@ async def _process_task_attempt(
         error_message = (
             f"Benchmark service WebSocket disconnected: {e}; last application message received {seconds}s ago"
         )
+        recovered = await recover_evaluation_stream_failure(error_message)
+        if recovered is not None:
+            return recovered
+        logger.warning(error_message)
+        log_output(f"\n[ERROR] {error_message}")
+
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(
+                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
+            )
+
+        return {task_id: None}
+    except (BenchmarkServiceStreamClosedError, BenchmarkServiceStreamIdleError) as e:
+        if task_is_stopped():
+            return {task_id: None}
+        error_message = f"Benchmark service WebSocket stream failed: {_exception_message(e)}"
+        recovered = await recover_evaluation_stream_failure(error_message)
+        if recovered is not None:
+            return recovered
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 

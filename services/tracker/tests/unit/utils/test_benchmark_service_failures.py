@@ -4,13 +4,18 @@ Run: uv run pytest tests/unit/utils/test_benchmark_service_failures.py
 """
 
 import asyncio
+import socket
 import time
 from typing import Any, Never
 
 import httpx
 import pytest
 from benchmark_service import ExecResult
-from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
+from benchmark_service.client import (
+    BenchmarkServiceClient,
+    BenchmarkServiceError,
+    BenchmarkServiceStreamClosedError,
+)
 from benchmark_service.schemas import RetrieveTaskResponse
 from sqlmodel import Session, desc, select
 from websockets.datastructures import Headers
@@ -23,7 +28,7 @@ import tracker.utils.run_orchestration as run_orchestration_module
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
 from tracker.aws.runtime import AWSRuntime
-from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, Task, TaskStatus
+from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, EvaluationResult, Task, TaskStatus
 from tracker.types import HarnessConfig
 from tracker.utils import (
     fetch_benchmark_row,
@@ -111,6 +116,77 @@ class TestBenchmarkServiceFailures:
         assert f"received {code}" in error_message
         assert reason in error_message
         assert "last application message received" in error_message
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_stream_close_with_saved_state_resumes_evaluation(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
+        resume_calls = 0
+
+        async def _mock_evaluate_instance(*_args: Any, on_eval_resume_state: Any, **_kwargs: Any) -> dict[str, Any]:
+            on_eval_resume_state(saved_state)
+            raise BenchmarkServiceStreamClosedError(close_code=1011, close_reason="keepalive timeout", idle_s=30.0)
+
+        async def _mock_resume_evaluation(
+            *_args: Any, eval_resume_state: dict[str, Any], **_kwargs: Any
+        ) -> dict[str, Any]:
+            nonlocal resume_calls
+            resume_calls += 1
+            assert eval_resume_state == saved_state
+            return {"status": "success", "score": 1.0}
+
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        assert resume_calls == 1
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.FINISHED
+        evaluation = database_session.exec(
+            select(EvaluationResult).where(EvaluationResult.task == task_row.id)
+        ).one()
+        assert evaluation.instance_id is None
+        assert not database_session.exec(
+            select(ErrorResult).where(ErrorResult.task == task_row.id)
+        ).first()
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_dns_failure_is_reported_as_preconnection_error(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+
+        async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise socket.gaierror(-2, "Name or service not known")
+
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+
+        assert result == {"task_0": None}
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        error_message = self._latest_task_error(database_session, task_row)
+        assert "WebSocket connection failed during DNS resolution" in error_message
+        assert "Name or service not known" in error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_validation_error_produces_human_readable_message(
