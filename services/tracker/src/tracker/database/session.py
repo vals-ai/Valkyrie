@@ -10,8 +10,8 @@ _exposed_models: list[type[SQLModel]] = [Benchmark, EvaluationResult, Org, Task]
 
 engine = create_engine(
     DATABASE_URL,
-    pool_size=15,
-    max_overflow=5,
+    pool_size=50,
+    max_overflow=10,
     pool_pre_ping=True,
     pool_recycle=3600,
 )
