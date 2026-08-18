@@ -9,12 +9,13 @@ import aws_cdk as cdk
 from aws_cdk import assertions, aws_s3
 
 from runtime_iam import create_executor_task_role, create_tracker_task_role
-from stage import DEV, Stage
+from stage import DEV, RELEASE_TEST, Stage
 from stage_config import ManagedAWSRuntimeConfig
 from test_monitoring_stack import (
     TEST_AWS_ACCOUNT,
     TEST_AWS_REGION,
     TEST_DEV_ENV,
+    TEST_RELEASE_TEST_ENV,
     JsonObject,
     service_templates,
 )
@@ -91,18 +92,21 @@ class RuntimeIamTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, field_name):
                     replace(config, **{field_name: value})
 
-    def test_managed_runtime_task_roles_are_scoped_and_closed_by_default(self) -> None:
+    def test_dev_managed_runtime_is_enabled_for_the_configured_org(self) -> None:
         with mock.patch.dict(os.environ, TEST_DEV_ENV, clear=True):
             tracker_template, executor_template, _ = service_templates(DEV)
 
         expected_environment = assertions.Match.array_with(
             [
-                {"Name": "AWS_DEPLOYMENT_ROLE_ORG_IDS", "Value": ""},
+                {
+                    "Name": "AWS_DEPLOYMENT_ROLE_ORG_IDS",
+                    "Value": "431bc4f8-c66b-47eb-8d53-2c4622be04e6",
+                },
                 {"Name": "AWS_DEPLOYMENT_REGION", "Value": TEST_AWS_REGION},
                 assertions.Match.object_like({"Name": "AWS_DEPLOYMENT_S3_BUCKET"}),
                 {"Name": "AWS_DEPLOYMENT_LOG_GROUP", "Value": "/valkyrie/benchmarks-dev"},
                 {"Name": "AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "Value": "7"},
-                {"Name": "AWS_MANAGED_SUBMISSIONS_ENABLED", "Value": "false"},
+                {"Name": "AWS_MANAGED_SUBMISSIONS_ENABLED", "Value": "true"},
             ]
         )
 
@@ -125,6 +129,7 @@ class RuntimeIamTest(unittest.TestCase):
                 expected_actions
                 | {
                     "s3:AbortMultipartUpload",
+                    "secretsmanager:GetSecretValue",
                     "logs:CreateLogGroup",
                     "logs:PutRetentionPolicy",
                     "logs:CreateLogStream",
@@ -212,6 +217,12 @@ class RuntimeIamTest(unittest.TestCase):
                         self.assertEqual(_statement_actions(statement), {"ecs:UpdateTaskProtection"})
 
                 if role_name.startswith("ValkyrieExecutor"):
+                    secret_statement = next(
+                        statement
+                        for statement in statements
+                        if _statement_actions(statement) == {"secretsmanager:GetSecretValue"}
+                    )
+                    self.assertIn("secret:AgenticHarnessSecrets*", json.dumps(secret_statement["Resource"]))
                     log_statement = next(
                         statement for statement in statements if "logs:CreateLogStream" in _statement_actions(statement)
                     )
@@ -221,6 +232,34 @@ class RuntimeIamTest(unittest.TestCase):
                     )
                     self.assertIn("/valkyrie/benchmarks-dev/*", json.dumps(log_statement["Resource"]))
                     self.assertNotIn(":log-stream:", json.dumps(log_statement["Resource"]))
+
+    def test_release_test_managed_runtime_remains_closed(self) -> None:
+        with mock.patch.dict(os.environ, TEST_RELEASE_TEST_ENV, clear=True):
+            tracker_template, executor_template, _ = service_templates(RELEASE_TEST)
+
+        expected_environment = assertions.Match.array_with(
+            [
+                {"Name": "AWS_DEPLOYMENT_ROLE_ORG_IDS", "Value": ""},
+                {"Name": "AWS_MANAGED_SUBMISSIONS_ENABLED", "Value": "false"},
+            ]
+        )
+        for template, role_name in (
+            (tracker_template, "ValkyrieTrackerTaskRole-release-test"),
+            (executor_template, "ValkyrieExecutorTaskRole-release-test"),
+        ):
+            template.has_resource_properties(
+                "AWS::ECS::TaskDefinition",
+                {
+                    "ContainerDefinitions": assertions.Match.array_with(
+                        [assertions.Match.object_like({"Environment": expected_environment})]
+                    )
+                },
+            )
+            role_logical_id, _ = _named_role(template, role_name)
+            actions = set[str]().union(
+                *(_statement_actions(statement) for statement in _role_policy_statements(template, role_logical_id))
+            )
+            self.assertNotIn("secretsmanager:GetSecretValue", actions)
 
     def test_managed_runtime_optional_grants_are_limited_to_configured_resources(self) -> None:
         app = cdk.App()

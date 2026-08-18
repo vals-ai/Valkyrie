@@ -114,6 +114,9 @@ DEV_CONFIG = StageConfig(
     managed_aws=ManagedAWSRuntimeConfig(
         benchmark_log_group_prefix="/valkyrie/benchmarks",
         benchmark_log_retention_days=7,
+        deployment_role_org_ids=("431bc4f8-c66b-47eb-8d53-2c4622be04e6",),
+        submissions_enabled=True,
+        executor_secret_name_prefixes=("AgenticHarnessSecrets",),
     ),
 )
 
@@ -123,7 +126,10 @@ RELEASE_TEST_CONFIG = StageConfig(
     worker=DEV_CONFIG.worker,
     database=DEV_CONFIG.database,
     service_log_retention=DEV_CONFIG.service_log_retention,
-    managed_aws=DEV_CONFIG.managed_aws,
+    managed_aws=ManagedAWSRuntimeConfig(
+        benchmark_log_group_prefix="/valkyrie/benchmarks",
+        benchmark_log_retention_days=7,
+    ),
 )
 
 RELEASE_TEST_BENCHMARK_SERVICE_BASE_URL = "benchmarks.vals.ai"
