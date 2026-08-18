@@ -852,9 +852,12 @@ def test_start_benchmark_without_static_keys_sends_managed_request(
     )
 
     request = requests[0]
+
     assert request.headers["X-Api-Key"] == "vals-key"
     assert not any(name.lower().startswith("x-harness-") for name in request.headers)
+
     body = json.loads(request.content)
+
     assert body["harness_config"] is None
     assert body["sandbox_provider"] == "daytona"
     assert body["sandbox_provider_secret_name"] == "DaytonaSecrets"

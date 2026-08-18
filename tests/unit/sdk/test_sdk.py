@@ -237,9 +237,12 @@ async def test_start_without_static_keys_builds_managed_request(make_client, sdk
         await client.runs.start("sweagent", "swebench", ignore_custom_services=True)
 
     request = requests[0]
+
     assert request.headers["x-api-key"] == "vals-key"
     assert not any(name.lower().startswith("x-harness-") for name in request.headers)
+
     body = json.loads(request.content)
+
     assert body["harness_config"] is None
     assert body["sandbox_provider"] == "daytona"
     assert body["sandbox_provider_secret_name"] == "DaytonaSecret"
