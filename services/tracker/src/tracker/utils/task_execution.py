@@ -37,13 +37,9 @@ from tracker.config import ENVIRONMENT
 from tracker.database.models import (
     BenchmarkStatus,
     EvaluationResult,
-    FailureCategory,
-    FailureClassificationState,
-    FailureTerminalEffect,
     Org,
     Task,
     TaskAttempt,
-    TaskAttemptAdmissionReason,
     TaskAttemptOutcome,
     TaskBreakdown,
     TaskStatus,
@@ -57,7 +53,7 @@ from tracker.exceptions import (
     TrackerServiceError,
 )
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
-from tracker.failure_provenance import FailureEvidence, record_failure, record_terminal_failure
+from tracker.failure_provenance import FailureEvidence, record_failure
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
@@ -92,22 +88,18 @@ def _exception_message(exc: BaseException) -> str:
 
 def _failure_evidence(
     exc: BaseException,
-    error_message: str,
+    message: str,
     *,
-    category: FailureCategory = FailureCategory.VALKYRIE,
     producer: str = "tracker",
     operation: str = "process_task",
     cause_code: str | None = None,
-    classification_state: FailureClassificationState = FailureClassificationState.UNCLASSIFIED,
     safe_details: dict[str, str | int | float | bool | None] | None = None,
 ) -> FailureEvidence:
     return FailureEvidence(
-        category=category,
         producer=producer,
         operation=operation,
         error_type=type(exc).__name__,
-        error_message=error_message,
-        classification_state=classification_state,
+        message=message,
         cause_code=cause_code,
         safe_details=safe_details,
     )
@@ -119,9 +111,8 @@ def _record_recovered_task_retry(
     active_attempt_id: UUID,
     authority: ExecutionAuthority,
     exc: SandboxSetupError,
-    retry_sequence: int,
 ) -> bool:
-    """Persist a retryable task failure only while this attempt remains authoritative."""
+    """Persist a scheduled retry failure only while this attempt remains authoritative."""
     with Session(bind=engine) as session:
         try:
             lock_execution_authority(session, authority)
@@ -157,16 +148,13 @@ def _record_recovered_task_retry(
             evidence=_failure_evidence(
                 exc,
                 _exception_message(exc),
-                category=FailureCategory.UNKNOWN,
                 producer="sandbox_provider",
                 operation="setup",
-                classification_state=FailureClassificationState.DETAILS_UNAVAILABLE,
             ),
-            terminal_effect=FailureTerminalEffect.RECOVERED,
+            retry_scheduled=True,
             task_id=task.id,
             task_attempt_id=active_attempt_id,
             dispatch_id=authority.dispatch_id,
-            retry_sequence=retry_sequence,
         )
         session.commit()
         return True
@@ -186,7 +174,6 @@ def _before_process_task_retry(retry_state: RetryCallState) -> None:
         cast(UUID, retry_state.kwargs["active_attempt_id"]),
         cast(ExecutionAuthority, retry_state.kwargs["authority"]),
         exc,
-        retry_state.attempt_number,
     )
 
 
@@ -209,7 +196,6 @@ def _claim_active_attempt(task_row: Task, org: Org, authority: ExecutionAuthorit
                 org_id=task.org_id,
                 task=task.id,
                 dispatch_id=authority.dispatch_id,
-                admission_reason=TaskAttemptAdmissionReason.ROLLOUT_CLAIM,
                 started_at=task.started_at,
             )
             session.add(attempt)
@@ -327,10 +313,8 @@ class TrackedTask:
                 _failure_evidence(
                     e,
                     error_message,
-                    category=FailureCategory.UNKNOWN,
                     producer="sandbox_provider",
                     operation="setup",
-                    classification_state=FailureClassificationState.DETAILS_UNAVAILABLE,
                 )
                 if isinstance(e, SandboxSetupError)
                 else _failure_evidence(e, error_message)
@@ -1077,11 +1061,9 @@ async def _process_task_attempt(
             _failure_evidence(
                 e,
                 error_message,
-                category=FailureCategory.HARNESS,
                 producer="benchmark_service",
                 operation="websocket",
                 cause_code="websocket_connection_closed",
-                classification_state=FailureClassificationState.CLASSIFIED,
                 safe_details={"last_message_age_seconds": seconds},
             )
         )
@@ -1098,11 +1080,9 @@ async def _process_task_attempt(
             _failure_evidence(
                 e,
                 error_message,
-                category=FailureCategory.HARNESS,
                 producer="benchmark_service",
                 operation="decode_task_response",
                 cause_code="incompatible_response",
-                classification_state=FailureClassificationState.CLASSIFIED,
             )
         )
     except InvalidStatus as e:
@@ -1115,11 +1095,9 @@ async def _process_task_attempt(
             _failure_evidence(
                 e,
                 error_message,
-                category=FailureCategory.HARNESS,
                 producer="benchmark_service",
                 operation="websocket_connect",
                 cause_code="websocket_http_rejected",
-                classification_state=FailureClassificationState.CLASSIFIED,
                 safe_details={"http_status": e.response.status_code},
             )
         )
@@ -1133,7 +1111,6 @@ async def _process_task_attempt(
             _failure_evidence(
                 e,
                 error_message,
-                category=FailureCategory.HARNESS,
                 producer="benchmark_service",
                 operation="request",
             )
@@ -1167,11 +1144,12 @@ def commit_task_error(
     expected_started_at: datetime | None = None,
     expected_attempt_id: UUID | None = None,
 ) -> bool:
-    record_terminal_failure(
+    record_failure(
         session,
         org_id=task_row.org_id,
         benchmark_id=task_row.benchmark,
         evidence=evidence,
+        retry_scheduled=False,
         task_id=task_row.id,
         task_attempt_id=expected_attempt_id,
         dispatch_id=authority.dispatch_id,
@@ -1180,7 +1158,7 @@ def commit_task_error(
         task_row,
         session,
         TaskStatus.ERROR,
-        error_message=evidence.error_message,
+        error_message=evidence.message,
         expected_started_at=expected_started_at,
         expected_attempt_id=expected_attempt_id,
         authority=authority,

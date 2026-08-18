@@ -171,22 +171,19 @@ class DispatchAuthority:
 class _HostFailureEvidence:
     operation: str
     error_type: str
-    error_message: str
-    classification_state: str
+    message: str
     cause_code: str | None = None
 
 
 _EXECUTOR_HOST_FAILURE = _HostFailureEvidence(
     operation="run_executor_dispatch",
     error_type="ExecutorHostFailure",
-    error_message="Executor host failed",
-    classification_state="unclassified",
+    message="Executor host failed",
 )
 _EXECUTOR_FINALIZATION_FAILURE = _HostFailureEvidence(
     operation="finish_dispatch",
     error_type="ExecutorExitedWithoutFinalization",
-    error_message="Executor exited without finalizing benchmark",
-    classification_state="classified",
+    message="Executor exited without finalizing benchmark",
     cause_code="executor_exited_without_finalization",
 )
 
@@ -329,39 +326,33 @@ class PostgresExecutorDispatchStore:
             """
             INSERT INTO failurerecord (
                 id,
-                schema_version,
                 org_id,
                 benchmark_id,
                 task,
                 task_attempt_id,
                 dispatch_id,
-                created_at,
-                category,
+                occurred_at,
                 producer,
                 operation,
                 error_type,
-                error_message,
-                classification_state,
+                message,
                 cause_code,
-                terminal_effect
+                retry_scheduled
             )
             VALUES (
                 %s::uuid,
-                1,
                 %s::uuid,
                 %s::uuid,
                 %s::uuid,
                 %s::uuid,
                 %s::uuid,
                 CURRENT_TIMESTAMP,
-                'valkyrie'::failurecategory,
                 'executor_host',
                 %s,
                 %s,
                 %s,
-                %s::failureclassificationstate,
                 %s,
-                'terminal'::failureterminaleffect
+                false
             )
             """,
             (
@@ -373,8 +364,7 @@ class PostgresExecutorDispatchStore:
                 authority.dispatch_id,
                 evidence.operation,
                 evidence.error_type,
-                evidence.error_message,
-                evidence.classification_state,
+                evidence.message,
                 evidence.cause_code,
             ),
         )
@@ -484,7 +474,7 @@ class PostgresExecutorDispatchStore:
                 error_message = %s
             WHERE id = %s::uuid
             """,
-            (evidence.error_message, authority.benchmark_id),
+            (evidence.message, authority.benchmark_id),
         )
         cls._record_failure(
             cursor,

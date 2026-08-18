@@ -16,9 +16,6 @@ from tracker.database.models import (
     BenchmarkArguments,
     BenchmarkStatus,
     DocentReadingStatus,
-    FailureCategory,
-    FailureClassificationState,
-    FailureTerminalEffect,
     FinalEvaluation,
     TaskStatus,
 )
@@ -139,20 +136,17 @@ class StartBenchmarkResponse(BaseModel):
 
 class FailureSummary(BaseModel):
     id: UUID
-    schema_version: int
-    category: FailureCategory
     benchmark_id: UUID
     task_row_id: UUID | None
     task_attempt_id: UUID | None
-    retry_sequence: int | None
+    dispatch_id: UUID | None
     occurred_at: datetime
     producer: str | None
     operation: str | None
     error_type: str | None
     message: str
-    classification_state: FailureClassificationState
     cause_code: str | None
-    terminal_effect: FailureTerminalEffect
+    retry_scheduled: bool
 
     @field_serializer("occurred_at")
     def _serialize_occurred_at(self, value: datetime) -> str:
@@ -202,8 +196,6 @@ class FinalViewResponse(BaseModel):
     task_errors: dict[str, str] | None
     run_failure: FailureSummary | None = None
     task_failures: dict[str, FailureSummary] | None = None
-    recovered_failure_count: int = 0
-    secondary_failure_count: int = 0
 
 
 class S3UploadResultsResponse(BaseModel):

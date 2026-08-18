@@ -28,13 +28,10 @@ from tracker.database.models import (
     BenchmarkStatus,
     EvaluationResult,
     ExecutorRelease,
-    FailureCategory,
-    FailureClassificationState,
     FailureRecord,
     Org,
     Task,
     TaskAttempt,
-    TaskAttemptAdmissionReason,
     TaskStatus,
 )
 from tracker.exceptions import TrackerServiceError
@@ -306,12 +303,14 @@ class TestRunState:
         for task_row in fetched_task_rows:
             if task_row.id not in first_attempt_ids:
                 continue
-            previous_attempt_id = first_attempt_ids[task_row.id]
-            assert previous_attempt_id is not None
+            first_attempt_id = first_attempt_ids[task_row.id]
+            assert first_attempt_id is not None
             assert task_row.active_attempt_id is not None
+            assert task_row.active_attempt_id != first_attempt_id
             current_attempt = database_session.get(TaskAttempt, task_row.active_attempt_id)
             assert current_attempt is not None
-            assert current_attempt.previous_attempt_id == previous_attempt_id
+            assert current_attempt.task == task_row.id
+            assert current_attempt.org_id == task_row.org_id
 
     def test_resume_benchmark_edge_cases(
         self,
@@ -466,7 +465,7 @@ class TestRunState:
             assert attempt is not None
             assert attempt.task == task.id
             assert attempt.org_id == task.org_id
-            assert attempt.admission_reason is TaskAttemptAdmissionReason.INITIAL
+            assert attempt.dispatch_id == authority.dispatch_id
 
         # Same order is returned as the verified task ids are passed in (must be deterministic)
         for i, task_row in enumerate(task_rows):
@@ -585,12 +584,10 @@ class TestRunState:
             task_row,
             database_session,
             FailureEvidence(
-                category=FailureCategory.VALKYRIE,
                 producer="tracker",
                 operation="process_task",
                 error_type="AgentRunFailedError",
-                error_message="agent failed",
-                classification_state=FailureClassificationState.UNCLASSIFIED,
+                message="agent failed",
             ),
             expected_started_at=task_row.started_at,
             expected_attempt_id=task_row.active_attempt_id,
@@ -599,23 +596,22 @@ class TestRunState:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        error_message = database_session.exec(
-            select(FailureRecord.error_message)
+        message = database_session.exec(
+            select(FailureRecord.message)
             .where(FailureRecord.task == task_row.id)
             .where(FailureRecord.org_id == TEST_ORG_ID)
         ).one()
-        assert error_message == "agent failed"
+        assert message == "agent failed"
         failure = database_session.exec(
             select(FailureRecord).where(FailureRecord.task == task_row.id).where(FailureRecord.org_id == TEST_ORG_ID)
         ).one()
         assert failure.benchmark_id == example_benchmark_object.id
         assert failure.task_attempt_id == task_row.active_attempt_id
         assert failure.dispatch_id == authority.dispatch_id
-        assert failure.category is FailureCategory.VALKYRIE
         assert failure.producer == "tracker"
         assert failure.operation == "process_task"
-        assert failure.classification_state is FailureClassificationState.UNCLASSIFIED
         assert failure.cause_code is None
+        assert failure.retry_scheduled is False
         transition_record = next(record for record in span_records if record["message"] == "task.status_transition")
         assert transition_record["from_status"] == TaskStatus.IN_PROGRESS.value
         assert transition_record["to_status"] == TaskStatus.ERROR.value

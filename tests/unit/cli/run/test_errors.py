@@ -11,12 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from click.testing import CliRunner, Result
-from tracker.database.models import (
-    BenchmarkStatus,
-    FailureCategory,
-    FailureClassificationState,
-    FailureTerminalEffect,
-)
+from tracker.database.models import BenchmarkStatus
 from tracker.types import FailureDetail, FailureSummary, RetrieveResultsResponse, S3UploadResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
@@ -33,30 +28,26 @@ def make_failure_summary(
     message: str,
     task_row_id: UUID | None = None,
     attempt_id: UUID | None = None,
-    category: FailureCategory = FailureCategory.VALKYRIE,
+    dispatch_id: UUID | None = None,
     producer: str | None = "tracker",
     operation: str | None = "process_run",
-    classification_state: FailureClassificationState = FailureClassificationState.UNCLASSIFIED,
+    error_type: str | None = "SyntheticFailure",
     cause_code: str | None = None,
-    terminal_effect: FailureTerminalEffect = FailureTerminalEffect.TERMINAL,
-    retry_sequence: int | None = None,
+    retry_scheduled: bool = False,
 ) -> FailureSummary:
     return FailureSummary(
         id=uuid4(),
-        schema_version=1,
-        category=category,
         benchmark_id=run_id,
         task_row_id=task_row_id,
         task_attempt_id=attempt_id,
-        retry_sequence=retry_sequence,
+        dispatch_id=dispatch_id,
         occurred_at=datetime(2026, 7, 10, 12, 4),
         producer=producer,
         operation=operation,
-        error_type="SyntheticFailure",
+        error_type=error_type,
         message=message,
-        classification_state=classification_state,
         cause_code=cause_code,
-        terminal_effect=terminal_effect,
+        retry_scheduled=retry_scheduled,
     )
 
 
@@ -165,10 +156,8 @@ def test_errors_text_sanitizes_terminal_controls(monkeypatch: pytest.MonkeyPatch
     run_failure = make_failure_summary(
         run_id,
         message=unsafe_message,
-        category=FailureCategory.HARNESS,
         producer="benchmark_service\x1b[31m",
         operation="websocket\x07",
-        classification_state=FailureClassificationState.CLASSIFIED,
         cause_code="cause\r",
     )
     response = make_final_view(
@@ -183,7 +172,7 @@ def test_errors_text_sanitizes_terminal_controls(monkeypatch: pytest.MonkeyPatch
     assert result.exit_code == 0, result.output
     for control in ("\x1b", "\x07", "\r", "\b", "\t", "\u202e"):
         assert control not in result.stdout
-    assert "Harness / Benchmark Service\\x1b[31m / WebSocket\\x07" in result.stdout
+    assert "Benchmark Service\\x1b[31m / WebSocket\\x07 / SyntheticFailure" in result.stdout
     assert "Cause: cause\\r" in result.stdout
     assert "\\x1b" in result.stdout
     assert "\\x07" in result.stdout
@@ -204,8 +193,6 @@ def test_errors_json_is_versioned_allowlisted_and_deterministic(monkeypatch: pyt
         update={
             "run_failure": run_failure,
             "task_failures": {"task-b": run_failure},
-            "recovered_failure_count": 3,
-            "secondary_failure_count": 2,
         }
     )
     tracker = StubErrorsTracker(response)
@@ -255,7 +242,17 @@ def test_errors_json_is_versioned_allowlisted_and_deterministic(monkeypatch: pyt
         response,
         observed_at=datetime(2026, 7, 10, 20, 15),
     )
-    assert fixed_payload["observed_at"] == "2026-07-10T20:15:00Z"
+    assert fixed_payload == {
+        "schema_version": 1,
+        "kind": "run_errors",
+        "observed_at": "2026-07-10T20:15:00Z",
+        "run_id": str(run_id),
+        "benchmark_name": "demo-bench",
+        "status": "ERROR",
+        "error_message": None,
+        "task_error_count": 2,
+        "task_errors": {"task-a": "another failure", "task-b": raw_error},
+    }
 
 
 def test_errors_json_v2_is_structured_allowlisted_and_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -264,10 +261,8 @@ def test_errors_json_v2_is_structured_allowlisted_and_deterministic(monkeypatch:
         **make_failure_summary(
             run_id,
             message="Run stream closed.",
-            category=FailureCategory.HARNESS,
             producer="benchmark_service",
             operation="stream",
-            classification_state=FailureClassificationState.CLASSIFIED,
             cause_code="websocket_closed",
         ).model_dump(),
         safe_details={"status_code": 503},
@@ -277,9 +272,10 @@ def test_errors_json_v2_is_structured_allowlisted_and_deterministic(monkeypatch:
         message="Task retry exhausted.",
         task_row_id=uuid4(),
         attempt_id=uuid4(),
+        dispatch_id=uuid4(),
         producer="tracker",
         operation="process_task",
-        retry_sequence=1,
+        retry_scheduled=True,
     )
     response = make_final_view(
         run_id,
@@ -289,8 +285,6 @@ def test_errors_json_v2_is_structured_allowlisted_and_deterministic(monkeypatch:
         update={
             "run_failure": run_failure,
             "task_failures": {"task-b": task_failure, "task-a": task_failure},
-            "recovered_failure_count": 4,
-            "secondary_failure_count": 1,
         }
     )
     tracker = StubErrorsTracker(response)
@@ -319,33 +313,28 @@ def test_errors_json_v2_is_structured_allowlisted_and_deterministic(monkeypatch:
         "task_errors",
         "run_failure",
         "task_failures",
-        "recovered_failure_count",
-        "secondary_failure_count",
     }
     assert payload["schema_version"] == 2
-    assert payload["recovered_failure_count"] == 4
-    assert payload["secondary_failure_count"] == 1
     assert list(payload["task_failures"]) == ["task-a", "task-b"]
     assert set(payload["run_failure"]) == {
         "id",
-        "schema_version",
-        "category",
         "benchmark_id",
         "task_row_id",
         "task_attempt_id",
-        "retry_sequence",
+        "dispatch_id",
         "occurred_at",
         "producer",
         "operation",
         "error_type",
         "message",
-        "classification_state",
         "cause_code",
-        "terminal_effect",
+        "retry_scheduled",
     }
-    assert payload["run_failure"]["category"] == "harness"
     assert payload["run_failure"]["cause_code"] == "websocket_closed"
+    assert payload["run_failure"]["retry_scheduled"] is False
     assert payload["task_failures"]["task-b"]["task_attempt_id"] == str(task_failure.task_attempt_id)
+    assert payload["task_failures"]["task-b"]["dispatch_id"] == str(task_failure.dispatch_id)
+    assert payload["task_failures"]["task-b"]["retry_scheduled"] is True
     assert "safe_details" not in result.stdout
 
 
@@ -382,19 +371,15 @@ def test_errors_json_normalizes_empty_error_state(monkeypatch: pytest.MonkeyPatc
     v2_payload = json.loads(v2_result.stdout)
     assert v2_payload["run_failure"] is None
     assert v2_payload["task_failures"] == {}
-    assert v2_payload["recovered_failure_count"] == 0
-    assert v2_payload["secondary_failure_count"] == 0
 
 
-def test_errors_text_renders_structured_provenance_and_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_errors_text_renders_factual_provenance_and_retry_state(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
     run_failure = make_failure_summary(
         run_id,
         message="Benchmark service disconnected",
-        category=FailureCategory.HARNESS,
         producer="benchmark_service",
         operation="websocket",
-        classification_state=FailureClassificationState.CLASSIFIED,
         cause_code="websocket_connection_closed",
     )
     platform_failure = make_failure_summary(
@@ -404,30 +389,29 @@ def test_errors_text_renders_structured_provenance_and_counts(monkeypatch: pytes
         attempt_id=uuid4(),
         producer="executor_host",
         operation="run_executor_dispatch",
-        retry_sequence=2,
+        error_type="ExecutorDispatchFailure",
     )
-    unknown_failure = make_failure_summary(
+    retry_failure = make_failure_summary(
         run_id,
         message="Sandbox setup failed",
         task_row_id=uuid4(),
-        category=FailureCategory.UNKNOWN,
         producer="sandbox_provider",
         operation="setup",
-        classification_state=FailureClassificationState.DETAILS_UNAVAILABLE,
+        error_type="SandboxSetupError",
+        retry_scheduled=True,
     )
     legacy_failure = make_failure_summary(
         run_id,
         message="Legacy failure",
         task_row_id=uuid4(),
-        category=FailureCategory.UNKNOWN,
         producer=None,
         operation=None,
-        classification_state=FailureClassificationState.LEGACY_UNCLASSIFIED,
+        error_type=None,
     )
     task_failures = {
         "task-legacy": legacy_failure,
         "task-platform": platform_failure,
-        "task-unknown": unknown_failure,
+        "task-retry": retry_failure,
     }
     response = make_final_view(
         run_id,
@@ -437,8 +421,6 @@ def test_errors_text_renders_structured_provenance_and_counts(monkeypatch: pytes
         update={
             "run_failure": run_failure,
             "task_failures": task_failures,
-            "recovered_failure_count": 3,
-            "secondary_failure_count": 1,
         }
     )
     tracker = StubErrorsTracker(response)
@@ -447,13 +429,14 @@ def test_errors_text_renders_structured_provenance_and_counts(monkeypatch: pytes
 
     assert result.exit_code == 0, result.output
     assert "Task failure provenance" in result.stdout
-    assert "Historical non-terminal failures" in result.stdout
-    assert "Harness / Benchmark Service / WebSocket" in result.stdout
+    assert "Benchmark Service / WebSocket / SyntheticFailure" in result.stdout
     assert "Cause: websocket_connection_closed" in result.stdout
-    assert ("task-platform:\n  Platform / Executor Host / Run executor dispatch\ntask-unknown:") in result.stdout
-    assert "Unknown / Sandbox Provider / Setup" in result.stdout
-    assert "Details unavailable" in result.stdout
-    assert ("task-legacy:\n  Unknown / Unknown component / Unknown operation\ntask-platform:") in result.stdout
+    assert (
+        "task-platform:\n  Executor Host / Run executor dispatch / ExecutorDispatchFailure\ntask-retry:"
+        in result.stdout
+    )
+    assert "Sandbox Provider / Setup / SandboxSetupError\n  Retry scheduled" in result.stdout
+    assert "task-legacy:\n  Unknown component / Unknown operation / Unknown error\ntask-platform:" in result.stdout
     for message in (
         "Benchmark service disconnected",
         "Executor host failed",
@@ -461,19 +444,9 @@ def test_errors_text_renders_structured_provenance_and_counts(monkeypatch: pytes
         "Legacy failure",
     ):
         assert message in result.stdout
-    for technical_field in (
-        "category=",
-        "classification=",
-        "effect=",
-        "producer=",
-        "operation=",
-        "type=",
-        "attempt=",
-        "retry=",
-    ):
-        assert technical_field not in result.stdout
-    assert "Recovered: 3" in result.stdout
-    assert "Secondary: 1" in result.stdout
+    assert "Historical non-terminal failures" not in result.stdout
+    assert "Recovered:" not in result.stdout
+    assert "Secondary:" not in result.stdout
 
 
 def test_errors_schema_v2_requires_json_without_tracker_access(monkeypatch: pytest.MonkeyPatch) -> None:

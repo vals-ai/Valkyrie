@@ -18,7 +18,6 @@ from tests.utils import TEST_ORG_ID
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
-    FailureCategory,
     FailureRecord,
     FinalEvaluation,
     Org,
@@ -65,11 +64,11 @@ def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
             FailureRecord(
                 org_id=TEST_ORG_ID,
                 benchmark_id=benchmark.id,
-                category=FailureCategory.VALKYRIE,
                 producer="tracker",
                 operation="process_benchmark",
                 error_type="RuntimeError",
-                error_message="run failed",
+                message="run failed",
+                retry_scheduled=False,
             ),
         ]
     )
@@ -104,6 +103,7 @@ def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
     assert response_body["error_message"] == "run failed"
     assert response_body["run_failure"]["message"] == "run failed"
     assert response_body["run_failure"]["producer"] == "tracker"
+    assert response_body["run_failure"]["retry_scheduled"] is False
     assert str(benchmark.id) in response_body["cloudwatch_url"]
     assert str(benchmark.id) in response_body["s3_bucket_url"]
     assert other_org_response.status_code == 404
@@ -153,26 +153,28 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
                 org_id=TEST_ORG_ID,
                 benchmark_id=benchmark.id,
                 task=literal_task.id,
-                error_message="old failure",
-                created_at=now - timedelta(minutes=1),
+                message="retry was scheduled",
+                retry_scheduled=True,
+                occurred_at=now - timedelta(minutes=1),
             ),
             FailureRecord(
                 org_id=TEST_ORG_ID,
                 benchmark_id=benchmark.id,
                 task=literal_task.id,
-                category=FailureCategory.VALKYRIE,
                 producer="tracker",
                 operation="process_task",
                 error_type="RuntimeError",
-                error_message="latest failure",
-                created_at=now,
+                message="latest failure",
+                retry_scheduled=False,
+                occurred_at=now,
             ),
             FailureRecord(
                 org_id=TEST_ORG_ID,
                 benchmark_id=benchmark.id,
                 task=other_error.id,
-                error_message="other failure",
-                created_at=now,
+                message="other failure",
+                retry_scheduled=False,
+                occurred_at=now,
             ),
         ]
     )
@@ -194,7 +196,7 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
     literal_row = next(task for task in sorted_body["tasks"] if task["task_id"] == literal_task.task_id)
     assert literal_row["error_message"] == "latest failure"
     assert literal_row["failure"]["message"] == "latest failure"
-    assert literal_row["failure"]["category"] == "valkyrie"
+    assert literal_row["failure"]["retry_scheduled"] is False
     assert literal_search_response.status_code == 200
     assert literal_search_response.json()["total_count"] == 1
     assert literal_search_response.json()["tasks"][0]["task_id"] == "literal_%_match"

@@ -26,7 +26,6 @@ from tracker.database.models import (
     BenchmarkStatus,
     EvaluationResult,
     FailureRecord,
-    FailureTerminalEffect,
     Org,
     Task,
     TaskBreakdown,
@@ -37,7 +36,6 @@ from tracker.failure_views import (
     benchmark_task_failure_views,
     current_run_failure_record,
     current_run_failure_records,
-    failure_effect_counts,
     summarize_failure,
 )
 from tracker.logging import get_logger
@@ -166,10 +164,10 @@ def _fetch_result_histories(
 
     # Fetch all of the error results from the provided task_rows (A task can have a error message and a evaluation result depending on if its been reran)
     error_rows = session.exec(
-        select(FailureRecord.task, FailureRecord.created_at, FailureRecord.error_message)
+        select(FailureRecord.task, FailureRecord.occurred_at, FailureRecord.message)
         .where(col(FailureRecord.task).in_(task_row_ids))
         .where(col(FailureRecord.org_id) == org_id)
-        .where(FailureRecord.terminal_effect == FailureTerminalEffect.TERMINAL)
+        .where(col(FailureRecord.retry_scheduled).is_(False))
     ).all()
 
     # Create a mapping of the task row, time stamp of when the result for the row was created, and the resulting row
@@ -556,12 +554,6 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
         benchmark_row.id,
         org.id,
     )
-    effect_counts = failure_effect_counts(
-        session,
-        benchmark_id=benchmark_row.id,
-        org_id=org.id,
-    )
-
     final_view: FinalViewResponse = FinalViewResponse(
         benchmark_name=benchmark_row.name,
         status=benchmark_row.status,
@@ -578,8 +570,6 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
         task_failures=(
             {task_id: summarize_failure(failure) for task_id, failure in task_failure_records.items()} or None
         ),
-        recovered_failure_count=effect_counts.get(FailureTerminalEffect.RECOVERED, 0),
-        secondary_failure_count=effect_counts.get(FailureTerminalEffect.SECONDARY, 0),
         average_task_breakdown=fetch_average_task_breakdown(benchmark_row.id, session, org.id),
     )
 

@@ -163,7 +163,7 @@ def get_benchmark_tasks(
                 status=task.status,
                 started_at=task.started_at,
                 finished_at=task.finished_at,
-                error_message=(failures[task.id].error_message if task.id in failures else None),
+                error_message=(failures[task.id].message if task.id in failures else None),
                 failure=(summarize_failure(failures[task.id]) if task.id in failures else None),
             )
             for task in tasks

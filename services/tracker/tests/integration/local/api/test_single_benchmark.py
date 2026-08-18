@@ -268,7 +268,8 @@ class TestBenchmarkTaskListing:
                 org_id=benchmark.org_id,
                 benchmark_id=benchmark.id,
                 task=finished_task.id,
-                error_message="old boom",
+                message="old boom",
+                retry_scheduled=False,
             )
         )
         database_session.add(
@@ -276,7 +277,8 @@ class TestBenchmarkTaskListing:
                 org_id=benchmark.org_id,
                 benchmark_id=benchmark.id,
                 task=error_task.id,
-                error_message="boom",
+                message="boom",
+                retry_scheduled=False,
             )
         )
         database_session.commit()

@@ -1,4 +1,4 @@
-"""Add task attempts and failure records.
+"""Add task attempts and factual failure records.
 
 Revision ID: a3f4b5c6d7e8
 Revises: f0a1b2c3d4e5
@@ -19,36 +19,6 @@ down_revision: Union[str, Sequence[str], None] = "f0a1b2c3d4e5"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-failure_category = postgresql.ENUM(
-    "valkyrie",
-    "harness",
-    "unknown",
-    name="failurecategory",
-    create_type=False,
-)
-failure_classification_state = postgresql.ENUM(
-    "classified",
-    "unclassified",
-    "details_unavailable",
-    "legacy_unclassified",
-    name="failureclassificationstate",
-    create_type=False,
-)
-failure_terminal_effect = postgresql.ENUM(
-    "recovered",
-    "secondary",
-    "terminal",
-    name="failureterminaleffect",
-    create_type=False,
-)
-task_attempt_admission_reason = postgresql.ENUM(
-    "initial",
-    "manual_retry",
-    "resume",
-    "rollout_claim",
-    name="taskattemptadmissionreason",
-    create_type=False,
-)
 task_attempt_outcome = postgresql.ENUM(
     "pending",
     "finished",
@@ -61,30 +31,33 @@ task_attempt_outcome = postgresql.ENUM(
 
 def upgrade() -> None:
     bind = op.get_bind()
-    for enum_type in (
-        failure_category,
-        failure_classification_state,
-        failure_terminal_effect,
-        task_attempt_admission_reason,
-        task_attempt_outcome,
-    ):
-        enum_type.create(bind, checkfirst=True)
+    task_attempt_outcome.create(bind, checkfirst=True)
 
     op.rename_table("errorresult", "failurerecord")
+    op.alter_column(
+        "failurerecord",
+        "created_at",
+        existing_type=sa.DateTime(),
+        existing_nullable=False,
+        new_column_name="occurred_at",
+    )
+    op.alter_column(
+        "failurerecord",
+        "error_message",
+        existing_type=sa.String(),
+        existing_nullable=False,
+        new_column_name="message",
+    )
     legacy_failure_count = bind.execute(sa.text("SELECT count(*) FROM failurerecord")).scalar_one()
 
-    op.add_column("failurerecord", sa.Column("schema_version", sa.Integer(), nullable=True))
     op.add_column("failurerecord", sa.Column("benchmark_id", sa.Uuid(), nullable=True))
     op.add_column("failurerecord", sa.Column("task_attempt_id", sa.Uuid(), nullable=True))
     op.add_column("failurerecord", sa.Column("dispatch_id", sa.Uuid(), nullable=True))
-    op.add_column("failurerecord", sa.Column("retry_sequence", sa.Integer(), nullable=True))
-    op.add_column("failurerecord", sa.Column("category", failure_category, nullable=True))
     op.add_column("failurerecord", sa.Column("producer", sa.String(), nullable=True))
     op.add_column("failurerecord", sa.Column("operation", sa.String(), nullable=True))
     op.add_column("failurerecord", sa.Column("error_type", sa.String(), nullable=True))
-    op.add_column("failurerecord", sa.Column("classification_state", failure_classification_state, nullable=True))
     op.add_column("failurerecord", sa.Column("cause_code", sa.String(), nullable=True))
-    op.add_column("failurerecord", sa.Column("terminal_effect", failure_terminal_effect, nullable=True))
+    op.add_column("failurerecord", sa.Column("retry_scheduled", sa.Boolean(), nullable=True))
     op.add_column("failurerecord", sa.Column("safe_details", sa.JSON(), nullable=True))
 
     op.execute(
@@ -110,27 +83,9 @@ def upgrade() -> None:
     if unmapped_failure_count:
         raise CommandError(f"Cannot derive benchmark_id for {unmapped_failure_count} legacy failure records")
 
-    op.execute(
-        sa.text(
-            """
-            UPDATE failurerecord
-            SET schema_version = 1,
-                category = 'unknown'::failurecategory,
-                classification_state = 'legacy_unclassified'::failureclassificationstate,
-                terminal_effect = 'terminal'::failureterminaleffect
-            """
-        )
-    )
-    op.alter_column("failurerecord", "schema_version", existing_type=sa.Integer(), nullable=False)
+    op.execute(sa.text("UPDATE failurerecord SET retry_scheduled = false"))
     op.alter_column("failurerecord", "benchmark_id", existing_type=sa.Uuid(), nullable=False)
-    op.alter_column("failurerecord", "category", existing_type=failure_category, nullable=False)
-    op.alter_column(
-        "failurerecord",
-        "classification_state",
-        existing_type=failure_classification_state,
-        nullable=False,
-    )
-    op.alter_column("failurerecord", "terminal_effect", existing_type=failure_terminal_effect, nullable=False)
+    op.alter_column("failurerecord", "retry_scheduled", existing_type=sa.Boolean(), nullable=False)
     op.alter_column("failurerecord", "task", existing_type=sa.Uuid(), nullable=True)
     op.create_foreign_key(
         "fk_failurerecord_benchmark_id_benchmark",
@@ -140,35 +95,19 @@ def upgrade() -> None:
         ["id"],
     )
     op.create_check_constraint(
-        "ck_failurerecord_schema_version_positive",
-        "failurerecord",
-        "schema_version > 0",
-    )
-    op.create_check_constraint(
-        "ck_failurerecord_retry_sequence_nonnegative",
-        "failurerecord",
-        "retry_sequence IS NULL OR retry_sequence >= 0",
-    )
-    op.create_check_constraint(
         "ck_failurerecord_task_attempt_requires_task",
         "failurerecord",
         "task_attempt_id IS NULL OR task IS NOT NULL",
     )
-    op.create_check_constraint(
-        "ck_failurerecord_classification_cause",
+    op.create_index(
+        "ix_failurerecord_org_benchmark_occurred_at",
         "failurerecord",
-        "(classification_state = 'classified' AND cause_code IS NOT NULL) "
-        "OR (classification_state != 'classified' AND cause_code IS NULL)",
+        ["org_id", "benchmark_id", "occurred_at"],
     )
     op.create_index(
-        "ix_failurerecord_org_benchmark_created_at",
+        "ix_failurerecord_org_task_occurred_at",
         "failurerecord",
-        ["org_id", "benchmark_id", "created_at"],
-    )
-    op.create_index(
-        "ix_failurerecord_org_task_created_at",
-        "failurerecord",
-        ["org_id", "task", "created_at"],
+        ["org_id", "task", "occurred_at"],
     )
 
     op.create_table(
@@ -177,8 +116,6 @@ def upgrade() -> None:
         sa.Column("org_id", sa.Uuid(), nullable=False),
         sa.Column("task", sa.Uuid(), nullable=False),
         sa.Column("dispatch_id", sa.Uuid(), nullable=True),
-        sa.Column("previous_attempt_id", sa.Uuid(), nullable=True),
-        sa.Column("admission_reason", task_attempt_admission_reason, nullable=False),
         sa.Column("started_at", sa.DateTime(), nullable=False),
         sa.Column("finished_at", sa.DateTime(), nullable=True),
         sa.Column("outcome", task_attempt_outcome, nullable=False),
@@ -186,9 +123,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["task"], ["task.id"], name="fk_taskattempt_task_task"),
         sa.ForeignKeyConstraint(
             ["dispatch_id"], ["executordispatch.id"], name="fk_taskattempt_dispatch_id_executordispatch"
-        ),
-        sa.ForeignKeyConstraint(
-            ["previous_attempt_id"], ["taskattempt.id"], name="fk_taskattempt_previous_attempt_id_taskattempt"
         ),
         sa.PrimaryKeyConstraint("id"),
     )
@@ -222,6 +156,7 @@ def upgrade() -> None:
         ["task_attempt_id"],
         ["id"],
     )
+
     benchmark_error_rows = (
         bind.execute(
             sa.text("SELECT id, org_id, finished_at, error_message FROM benchmark WHERE error_message IS NOT NULL")
@@ -233,15 +168,12 @@ def upgrade() -> None:
         failure_record_table = sa.table(
             "failurerecord",
             sa.column("id", sa.Uuid()),
-            sa.column("schema_version", sa.Integer()),
             sa.column("org_id", sa.Uuid()),
             sa.column("benchmark_id", sa.Uuid()),
             sa.column("task", sa.Uuid()),
-            sa.column("created_at", sa.DateTime()),
-            sa.column("category", failure_category),
-            sa.column("error_message", sa.String()),
-            sa.column("classification_state", failure_classification_state),
-            sa.column("terminal_effect", failure_terminal_effect),
+            sa.column("occurred_at", sa.DateTime()),
+            sa.column("message", sa.String()),
+            sa.column("retry_scheduled", sa.Boolean()),
         )
         current_time = datetime.now(UTC)
         op.bulk_insert(
@@ -249,15 +181,12 @@ def upgrade() -> None:
             [
                 {
                     "id": uuid4(),
-                    "schema_version": 1,
                     "org_id": benchmark_row["org_id"],
                     "benchmark_id": benchmark_row["id"],
                     "task": None,
-                    "created_at": benchmark_row["finished_at"] or current_time,
-                    "category": "unknown",
-                    "error_message": benchmark_row["error_message"],
-                    "classification_state": "legacy_unclassified",
-                    "terminal_effect": "terminal",
+                    "occurred_at": benchmark_row["finished_at"] or current_time,
+                    "message": benchmark_row["error_message"],
+                    "retry_scheduled": False,
                 }
                 for benchmark_row in benchmark_error_rows
             ],

@@ -99,32 +99,6 @@ def _enum_values(enum_class: type[Enum]) -> list[str]:
     return [str(member.value) for member in enum_class]
 
 
-class FailureCategory(str, Enum):
-    VALKYRIE = "valkyrie"
-    HARNESS = "harness"
-    UNKNOWN = "unknown"
-
-
-class FailureClassificationState(str, Enum):
-    CLASSIFIED = "classified"
-    UNCLASSIFIED = "unclassified"
-    DETAILS_UNAVAILABLE = "details_unavailable"
-    LEGACY_UNCLASSIFIED = "legacy_unclassified"
-
-
-class FailureTerminalEffect(str, Enum):
-    RECOVERED = "recovered"
-    SECONDARY = "secondary"
-    TERMINAL = "terminal"
-
-
-class TaskAttemptAdmissionReason(str, Enum):
-    INITIAL = "initial"
-    MANUAL_RETRY = "manual_retry"
-    RESUME = "resume"
-    ROLLOUT_CLAIM = "rollout_claim"
-
-
 class TaskAttemptOutcome(str, Enum):
     PENDING = "pending"
     FINISHED = "finished"
@@ -572,18 +546,6 @@ class TaskAttempt(SQLModel, table=True):
     org_id: UUID = Field(foreign_key="org.id")
     task: UUID = Field(foreign_key="task.id")
     dispatch_id: UUID | None = Field(default=None, foreign_key="executordispatch.id")
-    previous_attempt_id: UUID | None = Field(default=None, foreign_key="taskattempt.id")
-    admission_reason: TaskAttemptAdmissionReason = Field(
-        default=TaskAttemptAdmissionReason.INITIAL,
-        sa_column=Column(
-            SAEnum(
-                TaskAttemptAdmissionReason,
-                values_callable=_enum_values,
-                name="taskattemptadmissionreason",
-            ),
-            nullable=False,
-        ),
-    )
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     finished_at: datetime | None = None
     outcome: TaskAttemptOutcome = Field(
@@ -619,61 +581,25 @@ class EvaluationResult(ResultBase, table=True):
 
 class FailureRecord(SQLModel, table=True):
     __table_args__ = (
-        CheckConstraint("schema_version > 0", name="ck_failurerecord_schema_version_positive"),
-        CheckConstraint(
-            "retry_sequence IS NULL OR retry_sequence >= 0",
-            name="ck_failurerecord_retry_sequence_nonnegative",
-        ),
         CheckConstraint(
             "task_attempt_id IS NULL OR task IS NOT NULL",
             name="ck_failurerecord_task_attempt_requires_task",
         ),
-        CheckConstraint(
-            "(classification_state = 'classified' AND cause_code IS NOT NULL) "
-            "OR (classification_state != 'classified' AND cause_code IS NULL)",
-            name="ck_failurerecord_classification_cause",
-        ),
-        Index("ix_failurerecord_org_benchmark_created_at", "org_id", "benchmark_id", "created_at"),
-        Index("ix_failurerecord_org_task_created_at", "org_id", "task", "created_at"),
+        Index("ix_failurerecord_org_benchmark_occurred_at", "org_id", "benchmark_id", "occurred_at"),
+        Index("ix_failurerecord_org_task_occurred_at", "org_id", "task", "occurred_at"),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    schema_version: int = Field(default=1)
     org_id: UUID = Field(foreign_key="org.id")
     benchmark_id: UUID = Field(foreign_key="benchmark.id")
     task: UUID | None = Field(default=None, foreign_key="task.id")
     task_attempt_id: UUID | None = Field(default=None, foreign_key="taskattempt.id")
     dispatch_id: UUID | None = Field(default=None, foreign_key="executordispatch.id")
-    retry_sequence: int | None = Field(default=None)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
-    category: FailureCategory = Field(
-        default=FailureCategory.UNKNOWN,
-        sa_column=Column(
-            SAEnum(FailureCategory, values_callable=_enum_values, name="failurecategory"),
-            nullable=False,
-        ),
-    )
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     producer: str | None = Field(default=None)
     operation: str | None = Field(default=None)
     error_type: str | None = Field(default=None)
-    error_message: str = Field(nullable=False)
-    classification_state: FailureClassificationState = Field(
-        default=FailureClassificationState.UNCLASSIFIED,
-        sa_column=Column(
-            SAEnum(
-                FailureClassificationState,
-                values_callable=_enum_values,
-                name="failureclassificationstate",
-            ),
-            nullable=False,
-        ),
-    )
+    message: str = Field(nullable=False)
     cause_code: str | None = Field(default=None)
-    terminal_effect: FailureTerminalEffect = Field(
-        default=FailureTerminalEffect.TERMINAL,
-        sa_column=Column(
-            SAEnum(FailureTerminalEffect, values_callable=_enum_values, name="failureterminaleffect"),
-            nullable=False,
-        ),
-    )
+    retry_scheduled: bool = Field(nullable=False)
     safe_details: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))

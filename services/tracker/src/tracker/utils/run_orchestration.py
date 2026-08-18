@@ -20,21 +20,17 @@ from tracker.database.models import (
     BenchmarkStatus,
     DocentReadingStatus,
     EvaluationResult,
-    FailureCategory,
-    FailureClassificationState,
-    FailureTerminalEffect,
     FinalEvaluation,
     Org,
     Task,
     TaskAttempt,
-    TaskAttemptAdmissionReason,
     TaskStatus,
 )
 from tracker.database.session import engine
 from tracker.executor.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
 from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
-from tracker.failure_provenance import FailureEvidence, record_failure
+from tracker.failure_provenance import FailureEvidence
 from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
@@ -142,7 +138,6 @@ def create_task_rows(
             org_id=org.id,
             task=task_row.id,
             dispatch_id=authority.dispatch_id,
-            admission_reason=TaskAttemptAdmissionReason.INITIAL,
             started_at=task_row.started_at,
         )
         session.add(attempt)
@@ -273,12 +268,10 @@ async def finalize_all_error_run(
             benchmark_row,
             session,
             FailureEvidence(
-                category=FailureCategory.VALKYRIE,
                 producer="tracker",
                 operation="summarize_task_errors",
                 error_type="AllTasksFailed",
-                error_message=error_message,
-                classification_state=FailureClassificationState.UNCLASSIFIED,
+                message=error_message,
             ),
             authority=authority,
         )
@@ -528,12 +521,10 @@ async def process_benchmark(
                 benchmark_row,
                 session,
                 FailureEvidence(
-                    category=FailureCategory.HARNESS,
                     producer="benchmark_service",
                     operation="authenticate",
                     error_type=type(e).__name__,
-                    error_message=error_message,
-                    classification_state=FailureClassificationState.CLASSIFIED,
+                    message=error_message,
                     cause_code="authentication_failed",
                 ),
                 authority=authority,
@@ -547,12 +538,10 @@ async def process_benchmark(
                 benchmark_row,
                 session,
                 FailureEvidence(
-                    category=FailureCategory.HARNESS,
                     producer="benchmark_service",
                     operation="process_benchmark",
                     error_type=type(e).__name__,
-                    error_message=error_message,
-                    classification_state=FailureClassificationState.UNCLASSIFIED,
+                    message=error_message,
                 ),
                 authority=authority,
                 task_ids=verified_task_ids,
@@ -567,12 +556,10 @@ async def process_benchmark(
                 benchmark_row,
                 session,
                 FailureEvidence(
-                    category=FailureCategory.VALKYRIE,
                     producer="tracker",
                     operation="process_benchmark",
                     error_type=type(e).__name__,
-                    error_message=error_message,
-                    classification_state=FailureClassificationState.UNCLASSIFIED,
+                    message=error_message,
                 ),
                 authority=authority,
                 task_ids=verified_task_ids,
@@ -613,32 +600,6 @@ async def process_benchmark(
                 pass
             except Exception as notification_error:
                 logger.warning(f"Failed to send terminal notification: {notification_error}")
-                with Session(bind=engine) as session:
-                    try:
-                        benchmark_row = lock_execution_authority(
-                            session,
-                            authority,
-                            require_in_progress=False,
-                        )
-                    except ExecutionAuthorityRevoked:
-                        session.rollback()
-                    else:
-                        record_failure(
-                            session,
-                            org_id=benchmark_row.org_id,
-                            benchmark_id=benchmark_row.id,
-                            evidence=FailureEvidence(
-                                category=FailureCategory.VALKYRIE,
-                                producer="slack_notifier",
-                                operation="send_terminal_notification",
-                                error_type=type(notification_error).__name__,
-                                error_message=str(notification_error),
-                                classification_state=FailureClassificationState.UNCLASSIFIED,
-                            ),
-                            terminal_effect=FailureTerminalEffect.SECONDARY,
-                            dispatch_id=authority.dispatch_id,
-                        )
-                        session.commit()
 
         await benchmark_service.close()
 
@@ -724,12 +685,10 @@ def catch_errors_during_cleanup(
         dispatch_id=authority.dispatch_id,
         task_ids=[task.task_id for task in undetected_exit_tasks],
         evidence=FailureEvidence(
-            category=FailureCategory.VALKYRIE,
             producer="tracker",
             operation="cleanup",
             error_type="UndetectedExecutorExit",
-            error_message=error_message,
-            classification_state=FailureClassificationState.UNCLASSIFIED,
+            message=error_message,
         ),
     )
     session.commit()

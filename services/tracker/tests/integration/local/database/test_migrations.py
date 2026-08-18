@@ -162,10 +162,9 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
         migrated_failures = (
             connection.execute(
                 text(
-                    "SELECT id, schema_version, org_id, benchmark_id, task, task_attempt_id, dispatch_id, "
-                    "retry_sequence, created_at, category, producer, operation, error_type, error_message, "
-                    "classification_state, cause_code, terminal_effect, safe_details "
-                    "FROM failurerecord WHERE task = :task ORDER BY created_at"
+                    "SELECT id, org_id, benchmark_id, task, task_attempt_id, dispatch_id, occurred_at, "
+                    "producer, operation, error_type, message, cause_code, retry_scheduled, safe_details "
+                    "FROM failurerecord WHERE task = :task ORDER BY occurred_at"
                 ),
                 {"task": task_id},
             )
@@ -175,9 +174,8 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
         benchmark_failures = (
             connection.execute(
                 text(
-                    "SELECT id, schema_version, org_id, benchmark_id, task, task_attempt_id, dispatch_id, "
-                    "retry_sequence, created_at, category, producer, operation, error_type, error_message, "
-                    "classification_state, cause_code, terminal_effect, safe_details "
+                    "SELECT id, org_id, benchmark_id, task, task_attempt_id, dispatch_id, occurred_at, "
+                    "producer, operation, error_type, message, cause_code, retry_scheduled, safe_details "
                     "FROM failurerecord WHERE task IS NULL AND benchmark_id = :benchmark_id"
                 ),
                 {"benchmark_id": benchmark_id},
@@ -196,13 +194,25 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
         task_attempt_indexes = {index["name"] for index in inspector.get_indexes("taskattempt")}
         task_indexes = {index["name"] for index in inspector.get_indexes("task")}
         evaluation_result_indexes = {index["name"] for index in inspector.get_indexes("evaluationresult")}
+        failure_record_columns = {column["name"] for column in inspector.get_columns("failurerecord")}
         failure_record_indexes = {index["name"] for index in inspector.get_indexes("failurerecord")}
-        failure_category_labels = (
+        obsolete_enum_names = set(
+            connection.execute(
+                text(
+                    "SELECT typname FROM pg_type WHERE typname IN "
+                    "('failurecategory', 'failureclassificationstate', 'failureterminaleffect', "
+                    "'taskattemptadmissionreason')"
+                )
+            )
+            .scalars()
+            .all()
+        )
+        task_attempt_outcome_labels = (
             connection.execute(
                 text(
                     "SELECT enumlabel FROM pg_enum "
                     "JOIN pg_type ON pg_type.oid = pg_enum.enumtypid "
-                    "WHERE pg_type.typname = 'failurecategory' "
+                    "WHERE pg_type.typname = 'taskattemptoutcome' "
                     "ORDER BY enumsortorder"
                 )
             )
@@ -213,21 +223,17 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
     assert len(migrated_failures) == len(legacy_failures)
     for migrated, (failure_id, created_at, message) in zip(migrated_failures, legacy_failures, strict=True):
         assert migrated["id"] == failure_id
-        assert migrated["schema_version"] == 1
         assert migrated["org_id"] == org_id
         assert migrated["benchmark_id"] == benchmark_id
         assert migrated["task"] == task_id
-        assert migrated["created_at"] == created_at.replace(tzinfo=None)
-        assert migrated["error_message"] == message
-        assert migrated["category"] == "unknown"
-        assert migrated["classification_state"] == "legacy_unclassified"
-        assert migrated["terminal_effect"] == "terminal"
+        assert migrated["occurred_at"] == created_at.replace(tzinfo=None)
+        assert migrated["message"] == message
+        assert migrated["retry_scheduled"] is False
         assert all(
             migrated[field] is None
             for field in (
                 "task_attempt_id",
                 "dispatch_id",
-                "retry_sequence",
                 "producer",
                 "operation",
                 "error_type",
@@ -238,21 +244,17 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
 
     assert len(benchmark_failures) == 1
     benchmark_failure = benchmark_failures[0]
-    assert benchmark_failure["schema_version"] == 1
     assert benchmark_failure["org_id"] == org_id
     assert benchmark_failure["benchmark_id"] == benchmark_id
-    assert benchmark_failure["created_at"] == benchmark_finished_at.replace(tzinfo=None)
-    assert benchmark_failure["error_message"] == "benchmark-level failure"
-    assert benchmark_failure["category"] == "unknown"
-    assert benchmark_failure["classification_state"] == "legacy_unclassified"
-    assert benchmark_failure["terminal_effect"] == "terminal"
+    assert benchmark_failure["occurred_at"] == benchmark_finished_at.replace(tzinfo=None)
+    assert benchmark_failure["message"] == "benchmark-level failure"
+    assert benchmark_failure["retry_scheduled"] is False
     assert all(
         benchmark_failure[field] is None
         for field in (
             "task",
             "task_attempt_id",
             "dispatch_id",
-            "retry_sequence",
             "producer",
             "operation",
             "error_type",
@@ -263,17 +265,42 @@ def test_task_attempt_failure_history_migrates_legacy_failures_without_inventing
     assert attempt_count == 0
     assert active_attempt_id is None
 
-    assert "reason_failure_id" not in task_attempt_columns
-    assert "fk_taskattempt_reason_failure_id_failurerecord" not in task_attempt_foreign_keys
+    assert task_attempt_columns == {
+        "id",
+        "org_id",
+        "task",
+        "dispatch_id",
+        "started_at",
+        "finished_at",
+        "outcome",
+    }
+    assert "fk_taskattempt_previous_attempt_id_taskattempt" not in task_attempt_foreign_keys
     assert "ix_taskattempt_org_task_started_at" not in task_attempt_indexes
     assert "ix_taskattempt_dispatch_id" not in task_attempt_indexes
     assert "ix_task_active_attempt_id" not in task_indexes
     assert "ix_evaluationresult_task_attempt_id" not in evaluation_result_indexes
-    assert failure_record_indexes == {
-        "ix_failurerecord_org_benchmark_created_at",
-        "ix_failurerecord_org_task_created_at",
+    assert failure_record_columns == {
+        "id",
+        "org_id",
+        "benchmark_id",
+        "task",
+        "task_attempt_id",
+        "dispatch_id",
+        "occurred_at",
+        "producer",
+        "operation",
+        "error_type",
+        "message",
+        "cause_code",
+        "retry_scheduled",
+        "safe_details",
     }
-    assert failure_category_labels == ["valkyrie", "harness", "unknown"]
+    assert failure_record_indexes == {
+        "ix_failurerecord_org_benchmark_occurred_at",
+        "ix_failurerecord_org_task_occurred_at",
+    }
+    assert obsolete_enum_names == set()
+    assert task_attempt_outcome_labels == ["pending", "finished", "error", "stopped"]
     engine.dispose()
 
 

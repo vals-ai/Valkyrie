@@ -28,10 +28,7 @@ from tracker.database.models import (
     AgentContractRequest,
     BenchmarkStatus,
     ExecutorDispatch,
-    FailureCategory,
-    FailureClassificationState,
     FailureRecord,
-    FailureTerminalEffect,
     Task,
     TaskStatus,
 )
@@ -50,17 +47,17 @@ class TestBenchmarkServiceFailures:
             select(FailureRecord)
             .where(FailureRecord.task == task_row.id)
             .where(FailureRecord.org_id == task_row.org_id)
-            .order_by(desc(FailureRecord.created_at))
+            .order_by(desc(FailureRecord.occurred_at))
         ).one()
 
     def _latest_task_error(self, database_session: Session, task_row: Task) -> str:
-        error_message = database_session.exec(
-            select(FailureRecord.error_message)
+        message = database_session.exec(
+            select(FailureRecord.message)
             .where(FailureRecord.task == task_row.id)
             .where(FailureRecord.org_id == task_row.org_id)
-            .order_by(desc(FailureRecord.created_at))
+            .order_by(desc(FailureRecord.occurred_at))
         ).one()
-        return error_message
+        return message
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_connection_closed_after_messages_produces_elapsed_error(
@@ -96,11 +93,10 @@ class TestBenchmarkServiceFailures:
         assert failure.task == task_row.id
         assert failure.task_attempt_id == task_row.active_attempt_id
         assert failure.dispatch_id == authority.dispatch_id
-        assert failure.category is FailureCategory.HARNESS
         assert failure.producer == "benchmark_service"
         assert failure.operation == "websocket"
-        assert failure.classification_state is FailureClassificationState.CLASSIFIED
         assert failure.cause_code == "websocket_connection_closed"
+        assert failure.retry_scheduled is False
         assert failure.safe_details == {"last_message_age_seconds": 10}
 
     @pytest.mark.parametrize(
@@ -199,11 +195,10 @@ class TestBenchmarkServiceFailures:
         assert "rejected the WebSocket connection" in error_message
         assert "404" in error_message
         failure = self._latest_task_failure(database_session, task_row)
-        assert failure.category is FailureCategory.HARNESS
         assert failure.producer == "benchmark_service"
         assert failure.operation == "websocket_connect"
-        assert failure.classification_state is FailureClassificationState.CLASSIFIED
         assert failure.cause_code == "websocket_http_rejected"
+        assert failure.retry_scheduled is False
         assert failure.safe_details == {"http_status": 404}
 
     @pytest.mark.usefixtures("process_benchmark_env")
@@ -405,7 +400,7 @@ class TestBenchmarkServiceFailures:
 
     @pytest.mark.parametrize("revoke_authority", [False, True])
     @pytest.mark.usefixtures("process_benchmark_env")
-    async def test_terminal_notification_failure_records_secondary_evidence(
+    async def test_terminal_notification_failure_does_not_persist_core_evidence(
         self,
         revoke_authority: bool,
         contract: AgentContractRequest,
@@ -449,22 +444,8 @@ class TestBenchmarkServiceFailures:
 
         with Session(bind=database_session.bind) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, TEST_ORG)
-            failures = session.exec(
-                select(FailureRecord)
-                .where(FailureRecord.benchmark_id == benchmark_id)
-                .where(FailureRecord.terminal_effect == FailureTerminalEffect.SECONDARY)
-            ).all()
+            failures = session.exec(select(FailureRecord).where(FailureRecord.benchmark_id == benchmark_id)).all()
 
             assert benchmark_row.status == BenchmarkStatus.FINISHED
             assert benchmark_row.error_message is None
-            if revoke_authority:
-                assert failures == []
-            else:
-                assert len(failures) == 1
-                failure = failures[0]
-                assert failure.task is None
-                assert failure.dispatch_id == dispatch_id
-                assert failure.producer == "slack_notifier"
-                assert failure.operation == "send_terminal_notification"
-                assert failure.error_type == "RuntimeError"
-                assert failure.error_message == "slack unavailable"
+            assert failures == []

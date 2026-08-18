@@ -12,8 +12,6 @@ from tracker.database.models import (
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
-    FailureCategory,
-    FailureClassificationState,
     FailureRecord,
     Task,
     TaskAttempt,
@@ -328,12 +326,10 @@ def test_running_dispatch_failure_preserves_active_sibling(
         dispatch_id=failing_dispatch.id,
         task_ids=[retry_task.task_id, newer_retry_task.task_id],
         evidence=FailureEvidence(
-            category=FailureCategory.VALKYRIE,
             producer="executor_dispatch",
             operation="dispatch",
             error_type="DispatchFailure",
-            error_message="retry failed",
-            classification_state=FailureClassificationState.UNCLASSIFIED,
+            message="retry failed",
         ),
     )
     database_session.commit()
@@ -353,6 +349,7 @@ def test_running_dispatch_failure_preserves_active_sibling(
     assert retry_attempt.outcome == TaskAttemptOutcome.ERROR
     assert retry_attempt.finished_at is not None
     assert retry_failure.task_attempt_id == retry_attempt.id
+    assert retry_failure.retry_scheduled is False
     assert newer_retry_task.status == TaskStatus.PENDING
 
 

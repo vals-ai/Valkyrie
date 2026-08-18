@@ -12,8 +12,6 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     ExecutorDispatch,
-    FailureCategory,
-    FailureClassificationState,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     Task,
@@ -21,7 +19,7 @@ from tracker.database.models import (
     TaskAttemptOutcome,
     TaskStatus,
 )
-from tracker.failure_provenance import FailureEvidence, record_terminal_failure
+from tracker.failure_provenance import FailureEvidence, record_failure
 from tracker.executor.release_control import (
     create_executor_dispatch,
     lock_executor_admission,
@@ -52,11 +50,12 @@ def _terminalize_failed_task(
     evidence: FailureEvidence,
     finished_at: datetime,
 ) -> None:
-    record_terminal_failure(
+    record_failure(
         session,
         org_id=task.org_id,
         benchmark_id=benchmark_id,
         evidence=evidence,
+        retry_scheduled=False,
         task_id=task.id,
         task_attempt_id=attempt.id if attempt is not None else None,
         dispatch_id=dispatch_id,
@@ -242,16 +241,17 @@ def record_dispatch_failure(
         dispatch.finished_at = now
         session.add(dispatch)
     else:
-        record_terminal_failure(
+        record_failure(
             session,
             org_id=benchmark.org_id,
             benchmark_id=benchmark.id,
             evidence=evidence,
+            retry_scheduled=False,
             dispatch_id=dispatch_id,
         )
         benchmark.status = BenchmarkStatus.ERROR
         benchmark.finished_at = now
-        benchmark.error_message = evidence.error_message
+        benchmark.error_message = evidence.message
         session.add(benchmark)
     return True
 
@@ -294,24 +294,23 @@ def resolve_enqueue_failure(
     session.flush()
 
     evidence = FailureEvidence(
-        category=FailureCategory.VALKYRIE,
         producer="executor_dispatch",
         operation="enqueue",
         error_type="ExecutorDispatchEnqueueError",
-        error_message="Executor dispatch enqueue failed",
-        classification_state=FailureClassificationState.UNCLASSIFIED,
+        message="Executor dispatch enqueue failed",
     )
     if benchmark.status == BenchmarkStatus.IN_PROGRESS and not active_dispatch_exists(session, benchmark_id):
-        record_terminal_failure(
+        record_failure(
             session,
             org_id=benchmark.org_id,
             benchmark_id=benchmark.id,
             evidence=evidence,
+            retry_scheduled=False,
             dispatch_id=dispatch_id,
         )
         benchmark.status = BenchmarkStatus.ERROR
         benchmark.finished_at = now
-        benchmark.error_message = evidence.error_message
+        benchmark.error_message = evidence.message
         session.add(benchmark)
 
     tasks = session.exec(

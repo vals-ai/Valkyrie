@@ -32,14 +32,43 @@ def _normalized_sql(expression: str) -> str:
 def test_task_attempt_failure_history_schema_matches_metadata(postgres_engine: Engine) -> None:
     inspector = inspect(postgres_engine)
     table_names = set(inspector.get_table_names())
-    expected_tables = {"taskattempt", "failurerecord"}
+    expected_columns = {
+        "taskattempt": {
+            "id",
+            "org_id",
+            "task",
+            "dispatch_id",
+            "started_at",
+            "finished_at",
+            "outcome",
+        },
+        "failurerecord": {
+            "id",
+            "org_id",
+            "benchmark_id",
+            "task",
+            "task_attempt_id",
+            "dispatch_id",
+            "occurred_at",
+            "producer",
+            "operation",
+            "error_type",
+            "message",
+            "cause_code",
+            "retry_scheduled",
+            "safe_details",
+        },
+    }
+    expected_tables = set(expected_columns)
     assert expected_tables <= table_names
     assert "errorresult" not in table_names
 
     for table_name in expected_tables:
         metadata_table = SQLModel.metadata.tables[table_name]
+        metadata_columns = {column.name for column in metadata_table.columns}
         actual_columns = {column["name"]: column for column in inspector.get_columns(table_name)}
-        assert set(actual_columns) == {column.name for column in metadata_table.columns}
+        assert metadata_columns == expected_columns[table_name]
+        assert set(actual_columns) == expected_columns[table_name]
         assert {column_name: column.nullable for column_name, column in metadata_table.columns.items()} == {
             column_name: column["nullable"] for column_name, column in actual_columns.items()
         }
@@ -117,12 +146,15 @@ def test_task_attempt_failure_history_schema_matches_metadata(postgres_engine: E
         for column in SQLModel.metadata.tables[table_name].columns:
             if isinstance(column.type, SAEnum) and column.type.name:
                 expected_enums[column.type.name] = tuple(column.type.enums)
-    actual_enums = {
-        enum["name"]: tuple(enum["labels"])
-        for enum in cast(Any, inspector).get_enums()
-        if enum["name"] in expected_enums
-    }
-    assert actual_enums == expected_enums
+    inspected_enums = {enum["name"]: tuple(enum["labels"]) for enum in cast(Any, inspector).get_enums()}
+    assert expected_enums == {"taskattemptoutcome": ("pending", "finished", "error", "stopped")}
+    assert {
+        "failurecategory",
+        "failureclassificationstate",
+        "failureterminaleffect",
+        "taskattemptadmissionreason",
+    }.isdisjoint(inspected_enums)
+    assert {name: inspected_enums[name] for name in expected_enums} == expected_enums
 
 
 class TestTrackerSchema:

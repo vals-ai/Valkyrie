@@ -352,11 +352,17 @@ async def test_postgres_finish_errors_orphaned_in_progress_benchmark(
         if "INSERT INTO failurerecord" in statement
     )
     assert "'executor_host'" in failure_statement
+    assert "occurred_at" in failure_statement
+    assert "message" in failure_statement
+    assert "retry_scheduled" in failure_statement
+    assert "false" in failure_statement
+    assert "schema_version" not in failure_statement
+    assert "classification_state" not in failure_statement
+    assert "terminal_effect" not in failure_statement
     assert failure_parameters[6:] == (
         "finish_dispatch",
         "ExecutorExitedWithoutFinalization",
         "Executor exited without finalizing benchmark",
-        "classified",
         "executor_exited_without_finalization",
     )
 
@@ -406,7 +412,6 @@ async def test_postgres_terminalize_marks_current_run_and_runnable_tasks_error(
         "run_executor_dispatch",
         "ExecutorHostFailure",
         "Executor host failed",
-        "unclassified",
         None,
     )
     assert failure_parameters[1][3:6] == (None, None, "dispatch-1")

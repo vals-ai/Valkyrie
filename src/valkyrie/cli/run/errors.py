@@ -15,11 +15,6 @@ from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.tracker_client import TrackerService
 
 _TASK_ID_PREVIEW_LIMIT = 5
-_FAILURE_CATEGORY_LABELS = {
-    "valkyrie": "Platform",
-    "harness": "Harness",
-    "unknown": "Unknown",
-}
 
 
 def _utc_isoformat(value: datetime) -> str:
@@ -63,20 +58,17 @@ def _failure_payload(failure: FailureSummary) -> dict[str, object]:
     """Project a failure onto the public schema-v2 CLI allowlist."""
     return {
         "id": str(failure.id),
-        "schema_version": failure.schema_version,
-        "category": failure.category.value,
         "benchmark_id": str(failure.benchmark_id),
         "task_row_id": str(failure.task_row_id) if failure.task_row_id is not None else None,
         "task_attempt_id": str(failure.task_attempt_id) if failure.task_attempt_id is not None else None,
-        "retry_sequence": failure.retry_sequence,
+        "dispatch_id": str(failure.dispatch_id) if failure.dispatch_id is not None else None,
         "occurred_at": _utc_isoformat(failure.occurred_at),
         "producer": failure.producer,
         "operation": failure.operation,
         "error_type": failure.error_type,
         "message": failure.message,
-        "classification_state": failure.classification_state.value,
         "cause_code": failure.cause_code,
-        "terminal_effect": failure.terminal_effect.value,
+        "retry_scheduled": failure.retry_scheduled,
     }
 
 
@@ -109,8 +101,6 @@ def build_run_errors_payload(
         **payload,
         "run_failure": _failure_payload(response.run_failure) if response.run_failure is not None else None,
         "task_failures": task_failures,
-        "recovered_failure_count": response.recovered_failure_count,
-        "secondary_failure_count": response.secondary_failure_count,
     }
 
 
@@ -141,16 +131,16 @@ def _failure_label(value: str | None, fallback: str, *, capitalize_words: bool) 
 
 
 def _failure_context(failure: FailureSummary) -> str:
-    category = _FAILURE_CATEGORY_LABELS[failure.category.value]
     component = _failure_label(failure.producer, "Unknown component", capitalize_words=True)
     operation = _failure_label(failure.operation, "Unknown operation", capitalize_words=False)
-    lines = [f"{category} / {component} / {operation}"]
+    error_type = _failure_label(failure.error_type, "Unknown error", capitalize_words=False)
+    lines = [f"{component} / {operation} / {error_type}"]
 
     if failure.cause_code is not None:
         safe_cause = terminal_safe(failure.cause_code, preserve_newlines=False)
         lines.append(f"Cause: {safe_cause}")
-    elif failure.classification_state.value == "details_unavailable":
-        lines.append("Details unavailable")
+    if failure.retry_scheduled:
+        lines.append("Retry scheduled")
 
     return "\n".join(lines)
 
@@ -195,12 +185,6 @@ def format_run_errors_text(response: FinalViewResponse) -> None:
             safe_task_id = terminal_safe(task_id, preserve_newlines=False)
             click.echo(f"{safe_task_id}:")
             click.echo(_indent_message(_failure_context(failure)))
-
-    if response.recovered_failure_count or response.secondary_failure_count:
-        click.echo()
-        click.echo(click.style("Historical non-terminal failures", bold=True))
-        click.echo(f"  Recovered: {response.recovered_failure_count}")
-        click.echo(f"  Secondary: {response.secondary_failure_count}")
 
     if not groups and response.error_message is None:
         click.echo()

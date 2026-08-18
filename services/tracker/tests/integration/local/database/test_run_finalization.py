@@ -92,7 +92,8 @@ class TestRunFinalization:
                     org_id=org.id,
                     benchmark_id=benchmark.id,
                     task=task.id,
-                    error_message="Agent failed",
+                    message="Agent failed",
+                    retry_scheduled=False,
                 )
             )
             benchmarks.append(benchmark)
@@ -519,7 +520,8 @@ class TestRunFinalization:
                         org_id=org.id,
                         benchmark_id=benchmark.id,
                         task=task.id,
-                        error_message=error_message,
+                        message=error_message,
+                        retry_scheduled=False,
                     )
                 )
             benchmarks.append((benchmark, expected_summary))

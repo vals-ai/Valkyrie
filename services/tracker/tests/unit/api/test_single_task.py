@@ -20,7 +20,6 @@ from tests.factories import make_evaluation_result, make_task
 from tracker.database.models import (
     AgentCausedExitReason,
     Benchmark,
-    FailureCategory,
     FailureRecord,
     Org,
     TaskAttempt,
@@ -31,15 +30,16 @@ from tracker.database.models import (
 _client = TestClient(app)
 
 
-def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
+def test_single_task_returns_current_failure_and_enforces_org_scope(
     database_session: Session,
     example_benchmark_object: Benchmark,
 ) -> None:
-    """Task detail must expose the latest terminal result without leaking another organization.
+    """Task detail must expose the active attempt's current failure without leaking another organization.
 
     Test cases:
     - Finished, error, and pending tasks return status-appropriate result fields.
-    - The newest result row wins when a task has retry history.
+    - A scheduled retry remains in history but cannot replace the current failure.
+    - A newer failure from a stale attempt cannot replace the active attempt's failure.
     - A benchmark from another organization returns 404.
     """
     now = datetime.now(ZoneInfo("UTC"))
@@ -66,8 +66,8 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     previous_attempt = TaskAttempt(
         org_id=error_task.org_id,
         task=error_task.id,
-        started_at=now - timedelta(minutes=2),
-        finished_at=now - timedelta(minutes=1),
+        started_at=now - timedelta(minutes=4),
+        finished_at=now - timedelta(minutes=3),
         outcome=TaskAttemptOutcome.ERROR,
     )
     database_session.add(previous_attempt)
@@ -75,8 +75,7 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     active_attempt = TaskAttempt(
         org_id=error_task.org_id,
         task=error_task.id,
-        previous_attempt_id=previous_attempt.id,
-        started_at=now - timedelta(minutes=1),
+        started_at=now - timedelta(minutes=2),
         finished_at=now,
         outcome=TaskAttemptOutcome.ERROR,
     )
@@ -105,21 +104,35 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
                 benchmark_id=benchmark.id,
                 task=error_task.id,
                 task_attempt_id=active_attempt.id,
-                category=FailureCategory.VALKYRIE,
+                producer="sandbox_provider",
+                operation="setup",
+                error_type="SandboxSetupError",
+                message="automatic retry was scheduled",
+                retry_scheduled=True,
+                occurred_at=now - timedelta(seconds=90),
+            ),
+            FailureRecord(
+                org_id=error_task.org_id,
+                benchmark_id=benchmark.id,
+                task=error_task.id,
+                task_attempt_id=active_attempt.id,
                 producer="tracker",
                 operation="process_task",
                 error_type="RuntimeError",
-                error_message="active attempt failure",
+                message="active attempt failure",
+                cause_code="terminal_failure",
+                retry_scheduled=False,
                 safe_details={"http_status": 500},
-                created_at=now - timedelta(minutes=1),
+                occurred_at=now - timedelta(minutes=1),
             ),
             FailureRecord(
                 org_id=error_task.org_id,
                 benchmark_id=benchmark.id,
                 task=error_task.id,
                 task_attempt_id=previous_attempt.id,
-                error_message="newer stale failure",
-                created_at=now,
+                message="newer stale failure",
+                retry_scheduled=False,
+                occurred_at=now,
             ),
         ]
     )
@@ -136,7 +149,7 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     finished_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}")
     error_response = _client.get(
         f"/benchmarks/{benchmark.id}/tasks/{error_task.task_id}",
-        params={"failure_history_limit": 1},
+        params={"failure_history_limit": 3},
     )
     pending_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{pending_task.task_id}")
     other_org_response = _client.get(f"/benchmarks/{other_benchmark.id}/tasks/unknown")
@@ -150,13 +163,20 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     assert error_body["task_id"] == error_task.task_id
     assert error_body["error_message"] == "active attempt failure"
     assert error_body["evaluation_result"] is None
-    assert error_body["failure"]["category"] == "valkyrie"
     assert error_body["failure"]["task_row_id"] == str(error_task.id)
     assert error_body["failure"]["task_attempt_id"] == str(active_attempt.id)
+    assert error_body["failure"]["dispatch_id"] is None
     assert error_body["failure"]["message"] == "active attempt failure"
+    assert error_body["failure"]["cause_code"] == "terminal_failure"
+    assert error_body["failure"]["retry_scheduled"] is False
     assert error_body["failure"]["safe_details"] == {"http_status": 500}
-    assert [failure["message"] for failure in error_body["failure_history"]] == ["newer stale failure"]
-    assert error_body["failure_history_truncated"] is True
+    assert [failure["message"] for failure in error_body["failure_history"]] == [
+        "newer stale failure",
+        "active attempt failure",
+        "automatic retry was scheduled",
+    ]
+    assert [failure["retry_scheduled"] for failure in error_body["failure_history"]] == [False, False, True]
+    assert error_body["failure_history_truncated"] is False
     assert pending_response.status_code == 200
     assert pending_response.json()["error_message"] is None
     assert pending_response.json()["evaluation_result"] is None

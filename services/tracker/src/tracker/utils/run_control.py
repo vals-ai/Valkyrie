@@ -24,7 +24,6 @@ from tracker.database.models import (
     RetryMode,
     Task,
     TaskAttempt,
-    TaskAttemptAdmissionReason,
     TaskAttemptOutcome,
     TaskStatus,
 )
@@ -292,9 +291,7 @@ async def reset_to_in_progress_status(
         benchmark_row.finished_at = None
         session.add(benchmark_row)
 
-        admission_reason = TaskAttemptAdmissionReason.MANUAL_RETRY if retry else TaskAttemptAdmissionReason.RESUME
         for task in existing_rows:
-            previous_attempt_id = task.active_attempt_id
             started_at = datetime.now(ZoneInfo("UTC"))
             task.status = (
                 TaskStatus.EVALUATING
@@ -308,8 +305,6 @@ async def reset_to_in_progress_status(
             attempt = TaskAttempt(
                 org_id=org.id,
                 task=task.id,
-                previous_attempt_id=previous_attempt_id,
-                admission_reason=admission_reason,
                 started_at=started_at,
             )
             session.add(attempt)
@@ -324,7 +319,6 @@ async def reset_to_in_progress_status(
             attempt = TaskAttempt(
                 org_id=org.id,
                 task=task.id,
-                admission_reason=TaskAttemptAdmissionReason.INITIAL,
                 started_at=task.started_at,
             )
             session.add(attempt)

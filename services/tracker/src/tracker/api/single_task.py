@@ -103,7 +103,7 @@ def get_single_task(
         status=task.status,
         started_at=task.started_at,
         finished_at=task.finished_at,
-        error_message=failure_record.error_message if failure_record else None,
+        error_message=failure_record.message if failure_record else None,
         evaluation_result=eval_row.result if eval_row else None,
         agent_caused_exit_reason=(
             eval_row.agent_caused_exit_reason.value if eval_row and eval_row.agent_caused_exit_reason else None

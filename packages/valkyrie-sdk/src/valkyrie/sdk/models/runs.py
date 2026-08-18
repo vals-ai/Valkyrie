@@ -59,49 +59,21 @@ class Order(str, Enum):
     DESC = "desc"
 
 
-class FailureCategory(str, Enum):
-    """Producer-assigned category for one failure event."""
-
-    VALKYRIE = "valkyrie"
-    HARNESS = "harness"
-    UNKNOWN = "unknown"
-
-
-class FailureClassificationState(str, Enum):
-    """Evidence state for a failure classification."""
-
-    CLASSIFIED = "classified"
-    UNCLASSIFIED = "unclassified"
-    DETAILS_UNAVAILABLE = "details_unavailable"
-    LEGACY_UNCLASSIFIED = "legacy_unclassified"
-
-
-class FailureTerminalEffect(str, Enum):
-    """Effect that the historical failure had on its execution."""
-
-    RECOVERED = "recovered"
-    SECONDARY = "secondary"
-    TERMINAL = "terminal"
-
-
 class FailureSummary(ResponseModel):
-    """Versioned public provenance for one failure event."""
+    """Factual provenance for one failure event."""
 
     id: UUID
-    schema_version: int
-    category: FailureCategory
     benchmark_id: UUID
     task_row_id: UUID | None
     task_attempt_id: UUID | None
-    retry_sequence: int | None
+    dispatch_id: UUID | None
     occurred_at: datetime
     producer: str | None
     operation: str | None
     error_type: str | None
     message: str
-    classification_state: FailureClassificationState
     cause_code: str | None
-    terminal_effect: FailureTerminalEffect
+    retry_scheduled: bool
 
     @field_serializer("occurred_at")
     def serialize_occurred_at(self, value: datetime) -> str:
@@ -325,8 +297,6 @@ class FinalViewResponse(ResponseModel):
     task_errors: dict[str, str] | None
     run_failure: FailureSummary | None = None
     task_failures: dict[str, FailureSummary] | None = None
-    recovered_failure_count: int = 0
-    secondary_failure_count: int = 0
 
 
 class S3UploadResultsResponse(ResponseModel):

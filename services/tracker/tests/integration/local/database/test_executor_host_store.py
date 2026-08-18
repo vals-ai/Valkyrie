@@ -20,10 +20,7 @@ from tracker.database.models import (
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
-    FailureCategory,
-    FailureClassificationState,
     FailureRecord,
-    FailureTerminalEffect,
     Org,
     Task,
     TaskAttempt,
@@ -205,14 +202,13 @@ async def test_terminalize_records_owned_and_legacy_task_failures(
     assert len(run_failures) == 1
     for failure in failures:
         assert failure.dispatch_id == dispatch.id
-        assert failure.category == FailureCategory.VALKYRIE
         assert failure.producer == "executor_host"
         assert failure.operation == "run_executor_dispatch"
         assert failure.error_type == "ExecutorHostFailure"
-        assert failure.error_message == "Executor host failed"
-        assert failure.classification_state == FailureClassificationState.UNCLASSIFIED
+        assert failure.message == "Executor host failed"
         assert failure.cause_code is None
-        assert failure.terminal_effect == FailureTerminalEffect.TERMINAL
+        assert failure.retry_scheduled is False
+        assert failure.safe_details is None
 
 
 @pytest.mark.asyncio
@@ -312,14 +308,13 @@ async def test_finish_records_missing_finalization_and_owned_attempts(
     assert task_failure.task_attempt_id == attempt.id
     for failure in (task_failure, run_failure):
         assert failure.dispatch_id == dispatch.id
-        assert failure.category == FailureCategory.VALKYRIE
         assert failure.producer == "executor_host"
         assert failure.operation == "finish_dispatch"
         assert failure.error_type == "ExecutorExitedWithoutFinalization"
-        assert failure.error_message == "Executor exited without finalizing benchmark"
-        assert failure.classification_state == FailureClassificationState.CLASSIFIED
+        assert failure.message == "Executor exited without finalizing benchmark"
         assert failure.cause_code == "executor_exited_without_finalization"
-        assert failure.terminal_effect == FailureTerminalEffect.TERMINAL
+        assert failure.retry_scheduled is False
+        assert failure.safe_details is None
 
 
 @pytest.mark.asyncio

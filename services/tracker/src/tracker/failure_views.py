@@ -3,36 +3,26 @@
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlmodel import Session, col, desc, func, select
+from sqlmodel import Session, col, desc, select
 
-from tracker.database.models import (
-    Benchmark,
-    BenchmarkStatus,
-    FailureRecord,
-    FailureTerminalEffect,
-    Task,
-    TaskStatus,
-)
+from tracker.database.models import Benchmark, BenchmarkStatus, FailureRecord, Task, TaskStatus
 from tracker.types import FailureDetail, FailureSummary
 
 
 def summarize_failure(record: FailureRecord) -> FailureSummary:
     return FailureSummary(
         id=record.id,
-        schema_version=record.schema_version,
-        category=record.category,
         benchmark_id=record.benchmark_id,
         task_row_id=record.task,
         task_attempt_id=record.task_attempt_id,
-        retry_sequence=record.retry_sequence,
-        occurred_at=record.created_at,
+        dispatch_id=record.dispatch_id,
+        occurred_at=record.occurred_at,
         producer=record.producer,
         operation=record.operation,
         error_type=record.error_type,
-        message=record.error_message,
-        classification_state=record.classification_state,
+        message=record.message,
         cause_code=record.cause_code,
-        terminal_effect=record.terminal_effect,
+        retry_scheduled=record.retry_scheduled,
     )
 
 
@@ -72,8 +62,8 @@ def current_task_failure_records(
         select(FailureRecord)
         .where(col(FailureRecord.task).in_(task_ids))
         .where(FailureRecord.org_id == error_tasks[0].org_id)
-        .where(FailureRecord.terminal_effect == FailureTerminalEffect.TERMINAL)
-        .order_by(desc(FailureRecord.created_at), desc(FailureRecord.id))
+        .where(col(FailureRecord.retry_scheduled).is_(False))
+        .order_by(desc(FailureRecord.occurred_at), desc(FailureRecord.id))
     ).all()
 
     records_by_task: dict[UUID, list[FailureRecord]] = {}
@@ -108,9 +98,7 @@ def benchmark_task_failure_views(
     records = current_task_failure_records(session, tasks)
     task_errors = (
         {
-            task.task_id: (
-                records[task.id].error_message if task.id in records else "No error message was provided"
-            )
+            task.task_id: (records[task.id].message if task.id in records else "No error message was provided")
             for task in tasks
         }
         if tasks
@@ -134,8 +122,8 @@ def current_run_failure_records(
         .where(col(FailureRecord.benchmark_id).in_(benchmark_ids))
         .where(FailureRecord.org_id == error_benchmarks[0].org_id)
         .where(col(FailureRecord.task).is_(None))
-        .where(FailureRecord.terminal_effect == FailureTerminalEffect.TERMINAL)
-        .order_by(desc(FailureRecord.created_at), desc(FailureRecord.id))
+        .where(col(FailureRecord.retry_scheduled).is_(False))
+        .order_by(desc(FailureRecord.occurred_at), desc(FailureRecord.id))
     ).all()
 
     current: dict[UUID, FailureRecord] = {}
@@ -158,26 +146,8 @@ def task_failure_history(
         select(FailureRecord)
         .where(FailureRecord.org_id == task.org_id)
         .where(FailureRecord.task == task.id)
-        .order_by(desc(FailureRecord.created_at), desc(FailureRecord.id))
+        .order_by(desc(FailureRecord.occurred_at), desc(FailureRecord.id))
         .limit(limit + 1)
     ).all()
     truncated = len(records) > limit
     return [detail_failure(record) for record in records[:limit]], truncated
-
-
-def failure_effect_counts(
-    session: Session,
-    *,
-    benchmark_id: UUID,
-    org_id: UUID,
-) -> dict[FailureTerminalEffect, int]:
-    rows = session.exec(
-        select(FailureRecord.terminal_effect, func.count(col(FailureRecord.id)))
-        .where(FailureRecord.benchmark_id == benchmark_id)
-        .where(FailureRecord.org_id == org_id)
-        .where(
-            col(FailureRecord.terminal_effect).in_((FailureTerminalEffect.RECOVERED, FailureTerminalEffect.SECONDARY))
-        )
-        .group_by(FailureRecord.terminal_effect)
-    ).all()
-    return {FailureTerminalEffect(effect): count for effect, count in rows}

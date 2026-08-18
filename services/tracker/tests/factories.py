@@ -151,6 +151,7 @@ def make_error_result(task: Task, error_message: str, created_at: datetime) -> F
         org_id=task.org_id,
         benchmark_id=task.benchmark,
         task=task.id,
-        error_message=error_message,
-        created_at=created_at,
+        message=error_message,
+        occurred_at=created_at,
+        retry_scheduled=False,
     )

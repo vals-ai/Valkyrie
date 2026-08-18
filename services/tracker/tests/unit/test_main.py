@@ -46,9 +46,7 @@ from tracker.database.models import (
     ExecutorReleaseStatus,
     DocentReadingStatus,
     EvaluationResult,
-    FailureCategory,
     FailureRecord,
-    FailureTerminalEffect,
     FinalEvaluation,
     Org,
     Task,
@@ -1092,7 +1090,8 @@ class TestTrackerAPI:
                         org_id=TEST_ORG_ID,
                         benchmark_id=benchmark_row.id,
                         task=task_row.id,
-                        error_message="Error occurred during task execution or evaluation",
+                        message="Error occurred during task execution or evaluation",
+                        retry_scheduled=False,
                     )
                 )
 
@@ -1131,11 +1130,11 @@ class TestTrackerAPI:
         run_failure = FailureRecord(
             org_id=TEST_ORG_ID,
             benchmark_id=benchmark_row.id,
-            category=FailureCategory.VALKYRIE,
             producer="tracker",
             operation="process_benchmark",
             error_type="TrackerServiceError",
-            error_message=benchmark_row.error_message,
+            message=benchmark_row.error_message,
+            retry_scheduled=False,
         )
         database_session.add_all([benchmark_row, run_failure])
         database_session.commit()
@@ -1147,10 +1146,10 @@ class TestTrackerAPI:
         response_json = response.json()
         assert response_json["error_message"] == "Dominant task error affecting 10/10 tasks"
         assert response_json["run_failure"]["id"] == str(run_failure.id)
-        assert response_json["run_failure"]["category"] == FailureCategory.VALKYRIE
         assert response_json["run_failure"]["producer"] == "tracker"
         assert response_json["run_failure"]["operation"] == "process_benchmark"
         assert response_json["run_failure"]["message"] == benchmark_row.error_message
+        assert response_json["run_failure"]["retry_scheduled"] is False
 
     async def test_retrieve_results(
         self, monkeypatch: MonkeyPatch, database_session: Session, example_benchmark_object: Benchmark
@@ -1284,28 +1283,23 @@ class TestTrackerAPI:
                 FailureRecord(
                     org_id=TEST_ORG_ID,
                     benchmark_id=benchmark_row.id,
+                    task=task_rows[0].id,
+                    message="Automatic retry was scheduled",
+                    retry_scheduled=True,
+                ),
+                FailureRecord(
+                    org_id=TEST_ORG_ID,
+                    benchmark_id=benchmark_row.id,
                     task=task_rows[2].id,
-                    error_message="Another terminal task failure",
+                    message="Another terminal task failure",
+                    retry_scheduled=False,
                 ),
                 FailureRecord(
                     org_id=TEST_ORG_ID,
                     benchmark_id=benchmark_row.id,
                     task=task_rows[0].id,
-                    error_message=error_message,
-                ),
-                FailureRecord(
-                    org_id=TEST_ORG_ID,
-                    benchmark_id=benchmark_row.id,
-                    task=task_rows[0].id,
-                    error_message="Recovered sandbox setup failure",
-                    terminal_effect=FailureTerminalEffect.RECOVERED,
-                ),
-                FailureRecord(
-                    org_id=TEST_ORG_ID,
-                    benchmark_id=benchmark_row.id,
-                    task=task_rows[0].id,
-                    error_message="Secondary cleanup failure",
-                    terminal_effect=FailureTerminalEffect.SECONDARY,
+                    message=error_message,
+                    retry_scheduled=False,
                 ),
             ]
         )
@@ -1329,8 +1323,7 @@ class TestTrackerAPI:
         # Error message we saved was returned in the response
         assert response_json.get("task_errors").get("task_22") == error_message
         assert response_json["task_failures"]["task_22"]["message"] == error_message
-        assert response_json["recovered_failure_count"] == 1
-        assert response_json["secondary_failure_count"] == 1
+        assert response_json["task_failures"]["task_22"]["retry_scheduled"] is False
 
         # If we did not get an error message, we return a default message
         assert response_json.get("task_errors").get("task_23") == "No error message was provided"
@@ -1356,8 +1349,6 @@ class TestTrackerAPI:
         body = response.json()
         assert set(body["evaluation_results"]) == {"task_1", "task_3"}
         assert body["task_failures"] is None
-        assert body["recovered_failure_count"] == 1
-        assert body["secondary_failure_count"] == 1
         assert body["final_evaluation"]["final_score"] == 2.0
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
 
