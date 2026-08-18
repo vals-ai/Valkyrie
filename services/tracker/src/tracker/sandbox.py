@@ -332,6 +332,7 @@ async def create_sandbox(
     retry=retry_if_exception_type(SandboxError) & retry_if_not_exception_type(SandboxSetupError),
     reraise=True,
     stop=stop_after_attempt(3),
+    wait=wait_chain(wait_none(), wait_fixed(30)),
     before_sleep=retry_callback("valkyrie.sandbox.upload"),
 )
 async def upload_agent_artifacts(
