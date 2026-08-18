@@ -302,13 +302,9 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertNotIn("actions/github-script", classification_workflow)
 
     def test_maintenance_classification_waits_for_environment_approval(self) -> None:
-        workflow = (ROOT / ".github" / "workflows" / "maintenance-classification.yaml").read_text(
-            encoding="utf-8"
-        )
+        workflow = (ROOT / ".github" / "workflows" / "maintenance-classification.yaml").read_text(encoding="utf-8")
         classifier = workflow.split("  classify:", maxsplit=1)[1].split("  approve-maintenance:", maxsplit=1)[0]
-        approval = workflow.split("  approve-maintenance:", maxsplit=1)[1].split(
-            "  maintenance-gate:", maxsplit=1
-        )[0]
+        approval = workflow.split("  approve-maintenance:", maxsplit=1)[1].split("  maintenance-gate:", maxsplit=1)[0]
         gate = workflow.split("  maintenance-gate:", maxsplit=1)[1]
 
         self.assertIn("classification: ${{ steps.classification.outputs.classification }}", classifier)
