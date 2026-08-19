@@ -367,6 +367,15 @@ class TestRunState:
         )
         assert response.status_code == 200
 
+        # That resume dispatched a new execution, so the run is active again
+        benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session, self._test_org)
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+
+        # Back to a terminal run for the task id validation cases below
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.commit()
+
         # Ensure that we can recreate the environment the benchmark was started in
         original_start_benchmark_request = StartBenchmarkRequest(
             contract=contract,
