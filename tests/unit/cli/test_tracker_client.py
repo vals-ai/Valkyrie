@@ -811,6 +811,91 @@ def test_start_benchmark_resolves_provider_configuration(
     assert harness_config["sandbox_provider_secret_name"] == expected_secret
 
 
+def test_start_benchmark_without_static_keys_sends_managed_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A config without static keys must send an API-key-only managed start."""
+    config_path = _write_valkyrie_config(
+        tmp_path / "valkyrie.yaml",
+        AWS_ACCESS_KEY_ID=None,
+        AWS_SECRET_ACCESS_KEY=None,
+        api_key="vals-key",
+        sandbox_providers={"daytona": "DaytonaSecrets"},
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"status": "success"})
+
+    original_client = httpx.Client
+
+    def build_client(
+        *,
+        timeout: float | httpx.Timeout | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Client:
+        return original_client(transport=httpx.MockTransport(handler), timeout=timeout, headers=headers)
+
+    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    tracker.start_benchmark(
+        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+        benchmark_name="swebench",
+        concurrency=1,
+        ignore_custom_services=True,
+        task_ids=None,
+        slice_str=None,
+    )
+
+    request = requests[0]
+
+    assert request.headers["X-Api-Key"] == "vals-key"
+    assert not any(name.lower().startswith("x-harness-") for name in request.headers)
+
+    body = json.loads(request.content)
+
+    assert body["harness_config"] is None
+    assert body["sandbox_provider"] == "daytona"
+    assert body["sandbox_provider_secret_name"] == "DaytonaSecrets"
+
+
+@pytest.mark.parametrize(
+    "config_overrides",
+    [
+        {"AWS_SECRET_ACCESS_KEY": None},
+        {"AWS_ACCESS_KEY_ID": None},
+        {
+            "AWS_ACCESS_KEY_ID": None,
+            "AWS_SECRET_ACCESS_KEY": None,
+            "AWS_SESSION_TOKEN": "orphan-session-token",
+        },
+        {
+            "AWS_ACCESS_KEY_ID": " ",
+            "AWS_SECRET_ACCESS_KEY": "",
+        },
+    ],
+)
+def test_tracker_client_rejects_incomplete_static_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config_overrides: dict[str, object],
+) -> None:
+    """Partial static credentials must fail before creating a Tracker request."""
+    config_path = _write_valkyrie_config(
+        tmp_path / "valkyrie.yaml",
+        sandbox_providers={"daytona": "DaytonaSecrets"},
+        **config_overrides,
+    )
+    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
+
+    with pytest.raises(TrackerServiceError, match="blank|requires|configured together"):
+        TrackerService(base_url="http://tracker")
+
+
 def test_config_provider_commands_manage_named_provider_secrets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

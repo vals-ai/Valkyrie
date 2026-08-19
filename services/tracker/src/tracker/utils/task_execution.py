@@ -24,7 +24,7 @@ from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceErr
 from opentelemetry import trace
 from pydantic import ValidationError
 from sqlmodel import Session, col, select, update
-from tenacity import retry as tenacity_retry
+from tenacity import RetryCallState, retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
@@ -81,6 +81,66 @@ def _normalized_attempt_time(value: datetime) -> datetime:
 
 def _exception_message(exc: BaseException) -> str:
     return str(exc).strip() or type(exc).__name__
+
+
+def _record_failure_before_retry(
+    task_row: Task,
+    authority: ExecutionAuthority,
+    exc: SandboxSetupError,
+    failed_attempt_number: int,
+) -> None:
+    """Persist the failure that scheduled the next attempt while this execution owns the task."""
+    with Session(bind=engine) as session:
+        try:
+            lock_execution_authority(session, authority)
+        except ExecutionAuthorityRevoked:
+            session.rollback()
+            return
+        task = session.exec(
+            select(Task)
+            .where(col(Task.id) == task_row.id)
+            .where(col(Task.org_id) == task_row.org_id)
+            .where(col(Task.benchmark) == authority.benchmark_id)
+            .where(col(Task.started_at) == task_row.started_at)
+            .where(
+                col(Task.status).in_(
+                    (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
+                )
+            )
+            .with_for_update()
+        ).one_or_none()
+        if task is None:
+            session.rollback()
+            return
+        session.add(
+            ErrorResult(
+                org_id=task.org_id,
+                task=task.id,
+                error_message=_exception_message(exc),
+                producer="sandbox_provider",
+                operation="setup",
+                error_type=type(exc).__name__,
+                retry_scheduled=True,
+                failed_attempt_number=failed_attempt_number,
+            )
+        )
+        session.commit()
+
+
+_process_task_retry_observer = retry_callback("valkyrie.task")
+
+
+def _before_process_task_retry(retry_state: RetryCallState) -> None:
+    _process_task_retry_observer(retry_state)
+    exc = retry_state.outcome.exception() if retry_state.outcome is not None else None
+    if not isinstance(exc, SandboxSetupError):
+        return
+    _record_failure_before_retry(
+        cast(Task, retry_state.kwargs["task_row"]),
+        cast(ExecutionAuthority, retry_state.kwargs["authority"]),
+        exc,
+        retry_state.attempt_number,
+    )
 
 
 class TrackedTaskStatus(str, Enum):
@@ -178,6 +238,9 @@ class TrackedTask:
                     task,
                     session,
                     error_message,
+                    producer="sandbox_provider" if isinstance(e, SandboxSetupError) else "tracker",
+                    operation="setup" if isinstance(e, SandboxSetupError) else "process_task",
+                    error_type=type(e).__name__,
                     expected_started_at=task_row.started_at,
                     authority=self._authority,
                 )
@@ -446,15 +509,15 @@ async def process_task(
 ) -> dict[str, dict[str, Any] | None]:
     """Process one task while retaining dependency recovery state across sandbox attempts."""
     return await _process_task_attempt(
-        task_row,
-        start_benchmark_request,
-        benchmark_service,
-        benchmark_id,
-        task_id,
-        aws_runtime,
-        org,
-        sandbox_provider_config,
-        creation_semaphore,
+        task_row=task_row,
+        start_benchmark_request=start_benchmark_request,
+        benchmark_service=benchmark_service,
+        benchmark_id=benchmark_id,
+        task_id=task_id,
+        aws_runtime=aws_runtime,
+        org=org,
+        sandbox_provider_config=sandbox_provider_config,
+        creation_semaphore=creation_semaphore,
         dependency_setup_recovery=_DependencySetupRecoveryState(),
         authority=authority,
     )
@@ -464,7 +527,7 @@ async def process_task(
     retry=retry_if_exception_type(SandboxSetupError),
     stop=stop_after_attempt(_PTY_TASK_RETRY_LIMIT + 1),
     wait=wait_fixed(2),
-    before_sleep=retry_callback("valkyrie.task"),
+    before_sleep=_before_process_task_retry,
     reraise=True,
 )
 async def _process_task_attempt(
@@ -500,7 +563,11 @@ async def _process_task_attempt(
 
     requested_attempt_started_at = task_row.started_at
     with Session(bind=engine) as task_session:
-        benchmark_row = fetch_benchmark_row(benchmark_id, task_session, org)
+        try:
+            benchmark_row = lock_execution_authority(task_session, authority)
+        except ExecutionAuthorityRevoked:
+            task_session.rollback()
+            return {task_id: None}
         task_row = fetch_task_row(task_row.id, task_session, org)
 
         if _normalized_attempt_time(task_row.started_at) != _normalized_attempt_time(requested_attempt_started_at):
@@ -555,6 +622,29 @@ async def _process_task_attempt(
 
     def task_is_stopped() -> bool:
         return not execution_is_current()
+
+    def commit_terminal_error(
+        exc: BaseException,
+        error_message: str,
+        *,
+        producer: str,
+        operation: str,
+        cause_code: str | None = None,
+    ) -> dict[str, dict[str, Any] | None]:
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(
+                task,
+                task_session,
+                error_message,
+                producer=producer,
+                operation=operation,
+                error_type=type(exc).__name__,
+                cause_code=cause_code,
+                expected_started_at=attempt_started_at,
+                authority=authority,
+            )
+        return {task_id: None}
 
     try:
         if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
@@ -831,13 +921,12 @@ async def _process_task_attempt(
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
-            )
-
-        return {task_id: None}
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="output_artifact",
+            operation="upload_output_artifacts",
+        )
     except ConnectionClosedError as e:
         if task_is_stopped():
             return {task_id: None}
@@ -848,13 +937,13 @@ async def _process_task_attempt(
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
-            )
-
-        return {task_id: None}
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="benchmark_service",
+            operation="websocket",
+            cause_code="websocket_connection_closed",
+        )
     except ValidationError as e:
         if task_is_stopped():
             return {task_id: None}
@@ -864,39 +953,38 @@ async def _process_task_attempt(
         )
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
-            )
-
-        return {task_id: None}
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="benchmark_service",
+            operation="decode_task_response",
+            cause_code="incompatible_response",
+        )
     except InvalidStatus as e:
         if task_is_stopped():
             return {task_id: None}
         error_message = f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code})"
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
-            )
-
-        return {task_id: None}
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="benchmark_service",
+            operation="websocket_connect",
+            cause_code="websocket_http_rejected",
+        )
     except BenchmarkServiceError as e:
         if task_is_stopped():
             return {task_id: None}
         error_message = _exception_message(e)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
-            )
-
-        return {task_id: None}
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="benchmark_service",
+            operation="request",
+        )
     except Exception as e:
         if task_is_stopped():
             return {task_id: None}
@@ -909,13 +997,12 @@ async def _process_task_attempt(
         # include the error message
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
-            )
-
-        return {task_id: None}
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="tracker",
+            operation="process_task",
+        )
     finally:
         flush_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -928,10 +1015,24 @@ def commit_task_error(
     session: Session,
     error_message: str,
     *,
+    producer: str,
+    operation: str,
+    error_type: str,
     authority: ExecutionAuthority,
+    cause_code: str | None = None,
     expected_started_at: datetime | None = None,
 ) -> bool:
-    session.add(ErrorResult(org_id=task_row.org_id, task=task_row.id, error_message=error_message))
+    session.add(
+        ErrorResult(
+            org_id=task_row.org_id,
+            task=task_row.id,
+            error_message=error_message,
+            producer=producer,
+            operation=operation,
+            error_type=error_type,
+            cause_code=cause_code,
+        )
+    )
     return _commit_task_status(
         task_row,
         session,

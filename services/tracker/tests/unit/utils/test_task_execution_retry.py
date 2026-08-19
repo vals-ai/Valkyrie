@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse, VolumeMount
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 from tenacity import wait_none
 
 from tests.unit.utils.task_execution_support import (
@@ -20,7 +20,13 @@ from tests.unit.utils.task_execution_support import (
     run_process_task,
 )
 from tracker.aws.runtime import AWSRuntime
-from tracker.database.models import AgentContractRequest, TaskStatus
+from tracker.database.models import (
+    AgentContractRequest,
+    ErrorResult,
+    ExecutorDispatch,
+    ExecutorDispatchStatus,
+    TaskStatus,
+)
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
 from tracker.sandbox import DependencySetupMode
 from tracker.types import HarnessConfig
@@ -162,6 +168,88 @@ class TestTaskExecutionRetry:
 
         database_session.refresh(task_row)
         assert task_row.status == expected_status
+
+        error_results = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all()
+        retry_results = [result for result in error_results if result.retry_scheduled]
+        terminal_results = [result for result in error_results if not result.retry_scheduled]
+
+        assert len(retry_results) == 1
+        retry_result = retry_results[0]
+        assert retry_result.error_message == str(error)
+        assert retry_result.producer == "sandbox_provider"
+        assert retry_result.operation == "setup"
+        assert retry_result.error_type == type(error).__name__
+        assert retry_result.cause_code is None
+        assert retry_result.failed_attempt_number == 1
+
+        if expected_status is TaskStatus.ERROR:
+            assert second_error is not None
+            assert len(terminal_results) == 1
+            terminal_result = terminal_results[0]
+            assert str(second_error) in terminal_result.error_message
+            if isinstance(second_error, SandboxSetupError):
+                assert terminal_result.producer == "sandbox_provider"
+                assert terminal_result.operation == "setup"
+            else:
+                assert terminal_result.producer == "tracker"
+                assert terminal_result.operation == "process_task"
+            assert terminal_result.error_type == type(second_error).__name__
+            assert terminal_result.cause_code is None
+            assert terminal_result.failed_attempt_number is None
+        else:
+            assert terminal_results == []
+
+    async def test_revoked_dispatch_does_not_begin_the_second_automatic_attempt(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        retryable_process_task = getattr(task_execution_module, "_process_task_attempt")
+        monkeypatch.setattr(retryable_process_task.retry, "wait", wait_none())
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+
+        sandbox_entry_count = 0
+        retrieve_task_call_count = 0
+
+        @asynccontextmanager
+        async def _fail_sandbox_setup(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+            nonlocal sandbox_entry_count
+            sandbox_entry_count += 1
+            raise SandboxSetupError("sandbox setup failed")
+            yield AsyncMock()
+
+        def _revoke_authority(_retry_state: object) -> None:
+            with Session(bind=database_session.bind) as session:
+                dispatch = session.get(ExecutorDispatch, authority.dispatch_id)
+                assert dispatch is not None
+                dispatch.status = ExecutorDispatchStatus.FAILED
+                session.add(dispatch)
+                session.commit()
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            nonlocal retrieve_task_call_count
+            retrieve_task_call_count += 1
+            return make_retrieve_task_response(problem_path="/tmp/problem.txt")
+
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _fail_sandbox_setup)
+        monkeypatch.setattr(task_execution_module, "_process_task_retry_observer", _revoke_authority)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+
+        assert result == {"task_0": None}
+        assert sandbox_entry_count == 1
+        assert retrieve_task_call_count == 1
+        assert database_session.exec(select(ErrorResult).where(col(ErrorResult.task) == task_row.id)).all() == []
 
     async def test_process_task_spans_timed_status_transitions(
         self,

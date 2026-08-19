@@ -109,6 +109,9 @@ jobs:
               CDK_DEFAULT_REGION=us-east-1 \
               AWS_REGION=us-east-1 \
               STAGE="$stage" \
+              AWS_DEPLOYMENT_ROLE_ORG_IDS=00000000-0000-0000-0000-000000000001 \
+              AWS_TRACKER_SECRET_NAME_PREFIXES=offline-synth \
+              AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth \
               SENTRY_DSN_SECRET_NAME=offline-synth \
               DESCOPE_MANAGEMENT_KEY_SECRET_NAME=offline-synth \
               DESCOPE_PROJECT_ID=offline-synth \
@@ -237,6 +240,8 @@ jobs:
       id-token: write
     env:
       AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}
+      AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
       CDK_DEFAULT_ACCOUNT: ${{ secrets.DEV_ACCOUNT_ID }}
@@ -263,6 +268,10 @@ jobs:
           fi
           if [[ "$OPERATION" != "credentials-only" && -z "$DESCOPE_MANAGEMENT_KEY_SECRET_NAME" ]]; then
             echo "::error::The dev Environment must define DESCOPE_MANAGEMENT_KEY_SECRET_NAME before planning or deploying."
+            exit 1
+          fi
+          if [[ "$OPERATION" != "credentials-only" && ( -z "$AWS_DEPLOYMENT_ROLE_ORG_IDS" || -z "$AWS_TRACKER_SECRET_NAME_PREFIXES" ) ]]; then
+            echo "::error::The dev Environment must define AWS_DEPLOYMENT_ROLE_ORG_IDS and AWS_TRACKER_SECRET_NAME_PREFIXES before planning or deploying."
             exit 1
           fi
           if [[ ! "$DEV_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
@@ -358,6 +367,8 @@ jobs:
       id-token: write
     env:
       AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}
+      AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
       CDK_DEFAULT_ACCOUNT: ${{ secrets.DEV_ACCOUNT_ID }}

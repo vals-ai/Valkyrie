@@ -35,7 +35,7 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
 
     Test cases:
     - Finished, error, and pending tasks return status-appropriate result fields.
-    - The newest result row wins when a task has retry history.
+    - The newest terminal result wins when a newer scheduled-retry row exists.
     - A benchmark from another organization returns 404.
     """
     now = datetime.now(ZoneInfo("UTC"))
@@ -75,6 +75,16 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
             ),
             make_error_result(error_task, "old failure", now - timedelta(minutes=1)),
             make_error_result(error_task, "latest failure", now),
+            make_error_result(
+                error_task,
+                "scheduled retry",
+                now + timedelta(minutes=1),
+                producer="sandbox_provider",
+                operation="setup",
+                error_type="SandboxSetupError",
+                retry_scheduled=True,
+                failed_attempt_number=1,
+            ),
         ]
     )
 

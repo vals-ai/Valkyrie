@@ -128,18 +128,44 @@ def _call_name(call: ast.Call) -> str | None:
     return None
 
 
-def _is_nullable_add_column(call: ast.Call) -> bool:
+def _is_constant_boolean_server_default(value: ast.expr) -> bool:
+    return (
+        isinstance(value, ast.Call)
+        and _call_name(value) in {"sa.false", "sa.true"}
+        and not value.args
+        and not value.keywords
+    )
+
+
+def _is_safe_add_column(call: ast.Call) -> bool:
     if _call_name(call) != "op.add_column" or len(call.args) < 2:
         return False
     column = call.args[1]
     if not isinstance(column, ast.Call) or _call_name(column) != "sa.Column" or len(column.args) != 2:
         return False
-    return len(column.keywords) == 1 and any(
-        keyword.arg == "nullable"
-        and isinstance(keyword.value, ast.Constant)
-        and isinstance(keyword.value.value, bool)
-        and keyword.value.value
-        for keyword in column.keywords
+    if len(column.keywords) == 1:
+        nullable = column.keywords[0]
+        return (
+            nullable.arg == "nullable"
+            and isinstance(nullable.value, ast.Constant)
+            and isinstance(nullable.value.value, bool)
+            and nullable.value.value
+        )
+    if len(call.args) != 2 or call.keywords or len(column.keywords) != 2:
+        return False
+    keywords = {keyword.arg: keyword.value for keyword in column.keywords}
+    if set(keywords) != {"nullable", "server_default"}:
+        return False
+    column_type = column.args[1]
+    nullable = keywords["nullable"]
+    return (
+        isinstance(column_type, ast.Call)
+        and _call_name(column_type) == "sa.Boolean"
+        and not column_type.args
+        and not column_type.keywords
+        and isinstance(nullable, ast.Constant)
+        and nullable.value is False
+        and _is_constant_boolean_server_default(keywords["server_default"])
     )
 
 
@@ -213,7 +239,7 @@ def _migration_findings(source: str, path: str) -> list[Finding]:
             operation = _call_name(call)
             if (
                 operation == "op.create_table"
-                or _is_nullable_add_column(call)
+                or _is_safe_add_column(call)
                 or _is_non_unique_index(call)
                 or _is_nullable_alter_column(call)
             ):

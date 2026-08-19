@@ -34,14 +34,16 @@ from tracker.utils import (
 class TestBenchmarkServiceFailures:
     """Benchmark service disconnect, validation, and task error handling."""
 
-    def _latest_task_error(self, database_session: Session, task_row: Task) -> str:
-        error_message = database_session.exec(
-            select(ErrorResult.error_message)
+    def _latest_task_error_result(self, database_session: Session, task_row: Task) -> ErrorResult:
+        return database_session.exec(
+            select(ErrorResult)
             .where(ErrorResult.task == task_row.id)
             .where(ErrorResult.org_id == task_row.org_id)
             .order_by(desc(ErrorResult.created_at))
         ).one()
-        return error_message
+
+    def _latest_task_error(self, database_session: Session, task_row: Task) -> str:
+        return self._latest_task_error_result(database_session, task_row).error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_connection_closed_after_messages_produces_elapsed_error(
@@ -69,10 +71,16 @@ class TestBenchmarkServiceFailures:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        error_message = self._latest_task_error(database_session, task_row)
-        assert "Benchmark service WebSocket disconnected: no close frame received or sent" in error_message
-        assert "last application message received" in error_message
-        assert "10s ago" in error_message
+        error_result = self._latest_task_error_result(database_session, task_row)
+        assert "Benchmark service WebSocket disconnected: no close frame received or sent" in error_result.error_message
+        assert "last application message received" in error_result.error_message
+        assert "10s ago" in error_result.error_message
+        assert error_result.producer == "benchmark_service"
+        assert error_result.operation == "websocket"
+        assert error_result.error_type == "ConnectionClosedError"
+        assert error_result.cause_code == "websocket_connection_closed"
+        assert error_result.retry_scheduled is False
+        assert error_result.failed_attempt_number is None
 
     @pytest.mark.parametrize(
         ("code", "reason"),
@@ -229,8 +237,14 @@ class TestBenchmarkServiceFailures:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        error_message = self._latest_task_error(database_session, task_row)
-        assert error_message == expected_error
+        error_result = self._latest_task_error_result(database_session, task_row)
+        assert error_result.error_message == expected_error
+        assert error_result.producer == "output_artifact"
+        assert error_result.operation == "upload_output_artifacts"
+        assert error_result.error_type == "OutputArtifactError"
+        assert error_result.cause_code is None
+        assert error_result.retry_scheduled is False
+        assert error_result.failed_attempt_number is None
         assert any(expected_log in message for message in logged_messages)
 
     @pytest.mark.usefixtures("process_benchmark_env")

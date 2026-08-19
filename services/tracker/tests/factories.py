@@ -136,13 +136,30 @@ def make_evaluation_result(
     )
 
 
-def make_error_result(task: Task, error_message: str, created_at: datetime) -> ErrorResult:
+def make_error_result(
+    task: Task,
+    error_message: str,
+    created_at: datetime,
+    *,
+    producer: str | None = None,
+    operation: str | None = None,
+    error_type: str | None = None,
+    cause_code: str | None = None,
+    retry_scheduled: bool = False,
+    failed_attempt_number: int | None = None,
+) -> ErrorResult:
     """Build an error attempt for a task.
 
     Arguments
     - task: Task associated with the error.
     - error_message: Stored failure detail.
     - created_at: Fixed ordering timestamp.
+    - producer: Optional component that produced the error.
+    - operation: Optional failed operation.
+    - error_type: Optional factual exception or error type.
+    - cause_code: Optional producer-owned cause code.
+    - retry_scheduled: Whether this error caused a scheduled retry.
+    - failed_attempt_number: 1-indexed failed attempt that scheduled the next attempt.
 
     Returns
     - An error-result row ready to persist.
@@ -152,4 +169,10 @@ def make_error_result(task: Task, error_message: str, created_at: datetime) -> E
         task=task.id,
         error_message=error_message,
         created_at=created_at,
+        producer=producer,
+        operation=operation,
+        error_type=error_type,
+        cause_code=cause_code,
+        retry_scheduled=retry_scheduled,
+        failed_attempt_number=failed_attempt_number,
     )

@@ -80,6 +80,30 @@ def _metadata_payload() -> dict[str, object]:
 class TestTrackerJsonEndpoints:
     """Typed parsing and request contracts for tracker JSON endpoints."""
 
+    def test_aws_runtime_metadata_uses_api_key_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Runtime discovery must authenticate without sending harness credentials."""
+        requests: list[httpx.Request] = []
+
+        def handle_request(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                200,
+                json={"mode": "managed", "region": "us-east-1", "s3_bucket": "managed-bucket"},
+                request=request,
+            )
+
+        with _tracker_with_handler(monkeypatch, handle_request):
+            runtime = TrackerService.aws_runtime_metadata("vals-key", base_url="http://tracker")
+
+        assert runtime.mode == "managed"
+        assert runtime.region == "us-east-1"
+        assert runtime.s3_bucket == "managed-bucket"
+        assert len(requests) == 1
+        assert requests[0].method == "GET"
+        assert requests[0].url.path == "/aws-runtime"
+        assert requests[0].headers["X-Api-Key"] == "vals-key"
+        assert not any(name.lower().startswith("x-harness-") for name in requests[0].headers)
+
     def test_malformed_success_response_raises_tracker_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Successful HTTP responses with an invalid tracker payload need a stable CLI error.
 

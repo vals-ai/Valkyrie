@@ -161,6 +161,7 @@ def _fetch_result_histories(
         select(ErrorResult.task, ErrorResult.created_at, ErrorResult.error_message)
         .where(col(ErrorResult.task).in_(task_row_ids))
         .where(col(ErrorResult.org_id) == org_id)
+        .where(col(ErrorResult.retry_scheduled).is_(False))
     ).all()
 
     # Create a mapping of the task row, time stamp of when the result for the row was created, and the resulting row

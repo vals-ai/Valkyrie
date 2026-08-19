@@ -68,7 +68,10 @@ def create_executor_task_role(
         )
     )
     _add_benchmark_log_access(role, stage, config.benchmark_log_group_prefix)
-    _add_secret_access(role, config.executor_secret_name_prefixes)
+    if config.executor_all_secret_access:
+        _add_all_secret_access(role)
+    else:
+        _add_secret_access(role, config.executor_secret_name_prefixes)
     _add_lambda_access(role, config.executor_lambda_function_name_patterns)
     _add_kms_access(role, config.kms_key_arns)
     return role
@@ -143,6 +146,23 @@ def _add_secret_access(role: aws_iam.Role, secret_name_prefixes: tuple[str, ...]
                     arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
                 )
                 for prefix in secret_name_prefixes
+            ],
+        )
+    )
+
+
+def _add_all_secret_access(role: aws_iam.Role) -> None:
+    stack = cdk.Stack.of(role)
+    role.add_to_policy(
+        aws_iam.PolicyStatement(
+            actions=["secretsmanager:GetSecretValue"],
+            resources=[
+                stack.format_arn(
+                    service="secretsmanager",
+                    resource="secret",
+                    resource_name="*",
+                    arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
+                )
             ],
         )
     )

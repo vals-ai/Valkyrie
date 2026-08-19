@@ -14,7 +14,6 @@ from main import app
 from tracker import config
 from tracker.aws.clients import DefaultChainAWSClientProvider, ExplicitCredentialsAWSClientProvider
 from tracker.aws.resolver import (
-    resolve_aws_runtime_metadata,
     resolve_run_metadata_aws_runtime,
     resolve_run_aws_runtime,
     resolve_start_aws_runtime,
@@ -225,16 +224,38 @@ def test_run_runtime_rejects_managed_run_for_ineligible_org(monkeypatch: pytest.
     assert exc_info.value.status_code == 403
 
 
-@pytest.mark.parametrize("eligible", [True, False])
-def test_deployment_runtime_metadata_requires_eligible_org(
+@pytest.mark.parametrize(
+    ("eligible", "submissions_enabled", "expected_mode"),
+    [
+        pytest.param(True, True, "managed", id="eligible-and-open"),
+        pytest.param(True, False, "access_key", id="eligible-but-closed"),
+        pytest.param(False, True, "access_key", id="ineligible"),
+    ],
+)
+def test_aws_runtime_metadata_reflects_managed_submission_availability(
     monkeypatch: pytest.MonkeyPatch,
     eligible: bool,
+    submissions_enabled: bool,
+    expected_mode: Literal["access_key", "managed"],
 ) -> None:
-    _configure_managed_runtime(monkeypatch, eligible=eligible, submissions_enabled=False)
+    _configure_managed_runtime(
+        monkeypatch,
+        eligible=eligible,
+        submissions_enabled=submissions_enabled,
+    )
 
-    resources = resolve_aws_runtime_metadata(_ORG_ID)
+    response = TestClient(app).get("/aws-runtime")
 
-    assert (resources.s3_bucket if resources is not None else None) == ("deployment-bucket" if eligible else None)
+    assert response.status_code == 200
+    assert response.json() == (
+        {
+            "mode": "managed",
+            "region": "deployment-region",
+            "s3_bucket": "deployment-bucket",
+        }
+        if expected_mode == "managed"
+        else {"mode": "access_key", "region": None, "s3_bucket": None}
+    )
 
 
 def _mapping_keys(value: Any) -> Iterator[str]:
