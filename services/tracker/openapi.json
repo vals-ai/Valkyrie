@@ -1,0 +1,3814 @@
+{
+  "components": {
+    "schemas": {
+      "AWSCredentials": {
+        "properties": {
+          "aws_access_key_id": {
+            "title": "Aws Access Key Id",
+            "type": "string"
+          },
+          "aws_default_region": {
+            "title": "Aws Default Region",
+            "type": "string"
+          },
+          "aws_secret_access_key": {
+            "title": "Aws Secret Access Key",
+            "type": "string"
+          },
+          "aws_session_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Session Token"
+          }
+        },
+        "required": [
+          "aws_access_key_id",
+          "aws_secret_access_key",
+          "aws_default_region"
+        ],
+        "title": "AWSCredentials",
+        "type": "object"
+      },
+      "AWSRuntimeResponse": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "access_key",
+              "managed"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          },
+          "s3_bucket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "S3 Bucket"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "AWSRuntimeResponse",
+        "type": "object"
+      },
+      "AgentContractRequest-Input": {
+        "properties": {
+          "egress_allowlist": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Egress Allowlist",
+            "type": "array"
+          },
+          "final_output": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Output"
+          },
+          "install_cmd": {
+            "default": "",
+            "title": "Install Cmd",
+            "type": "string"
+          },
+          "kwargs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Kwargs",
+            "type": "object"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "output_artifacts": {
+            "default": [],
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/components/schemas/OutputArtifact-Input"
+                }
+              ]
+            },
+            "title": "Output Artifacts",
+            "type": "array"
+          },
+          "run_cmd": {
+            "default": "",
+            "title": "Run Cmd",
+            "type": "string"
+          },
+          "secrets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Secrets",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "AgentContractRequest",
+        "type": "object"
+      },
+      "AgentContractRequest-Output": {
+        "properties": {
+          "egress_allowlist": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Egress Allowlist",
+            "type": "array"
+          },
+          "final_output": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Output"
+          },
+          "install_cmd": {
+            "default": "",
+            "title": "Install Cmd",
+            "type": "string"
+          },
+          "kwargs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Kwargs",
+            "type": "object"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "output_artifacts": {
+            "default": [],
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/components/schemas/OutputArtifact-Output"
+                }
+              ]
+            },
+            "title": "Output Artifacts",
+            "type": "array"
+          },
+          "run_cmd": {
+            "default": "",
+            "title": "Run Cmd",
+            "type": "string"
+          },
+          "secrets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Secrets",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "AgentContractRequest",
+        "type": "object"
+      },
+      "AgentDownloadURLResponse": {
+        "properties": {
+          "download_url": {
+            "title": "Download Url",
+            "type": "string"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "download_url",
+          "expires_in"
+        ],
+        "title": "AgentDownloadURLResponse",
+        "type": "object"
+      },
+      "AgentEntry": {
+        "properties": {
+          "last_modified": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Modified"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "AgentEntry",
+        "type": "object"
+      },
+      "AgentsResponse": {
+        "properties": {
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/AgentEntry"
+            },
+            "title": "Agents",
+            "type": "array"
+          }
+        },
+        "required": [
+          "agents"
+        ],
+        "title": "AgentsResponse",
+        "type": "object"
+      },
+      "AnalyzeBenchmarkRequest": {
+        "properties": {
+          "lambda_function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
+          "no_cache": {
+            "default": false,
+            "title": "No Cache",
+            "type": "boolean"
+          }
+        },
+        "title": "AnalyzeBenchmarkRequest",
+        "type": "object"
+      },
+      "AverageTaskBreakdown": {
+        "properties": {
+          "agent_run_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Run Duration"
+          },
+          "evaluation_run_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Run Duration"
+          },
+          "sandbox_build_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Build Duration"
+          },
+          "sandbox_run_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Run Duration"
+          }
+        },
+        "required": [
+          "sandbox_build_duration",
+          "agent_run_duration",
+          "evaluation_run_duration",
+          "sandbox_run_duration"
+        ],
+        "title": "AverageTaskBreakdown",
+        "type": "object"
+      },
+      "BenchmarkArguments": {
+        "additionalProperties": false,
+        "properties": {
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/AgentContractRequest-Output"
+          },
+          "dataset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset"
+          },
+          "lambda_function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
+          "sandbox_provider": {
+            "default": "daytona",
+            "title": "Sandbox Provider",
+            "type": "string"
+          },
+          "sandbox_provider_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Provider Secret Name"
+          },
+          "slice_str": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slice Str"
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          }
+        },
+        "required": [
+          "contract",
+          "concurrency"
+        ],
+        "title": "BenchmarkArguments",
+        "type": "object"
+      },
+      "BenchmarkServiceCatalogResponse": {
+        "properties": {
+          "services": {
+            "items": {
+              "$ref": "#/components/schemas/BenchmarkServiceEntry"
+            },
+            "title": "Services",
+            "type": "array"
+          }
+        },
+        "required": [
+          "services"
+        ],
+        "title": "BenchmarkServiceCatalogResponse",
+        "type": "object"
+      },
+      "BenchmarkServiceEntry": {
+        "properties": {
+          "auth_header_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Header Name"
+          },
+          "auth_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Secret Name"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "url"
+        ],
+        "title": "BenchmarkServiceEntry",
+        "type": "object"
+      },
+      "BenchmarkServiceHealth": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "healthy": {
+            "title": "Healthy",
+            "type": "boolean"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "url",
+          "healthy",
+          "latency_ms"
+        ],
+        "title": "BenchmarkServiceHealth",
+        "type": "object"
+      },
+      "BenchmarkServicesRequest": {
+        "properties": {
+          "services": {
+            "items": {
+              "$ref": "#/components/schemas/BenchmarkServiceEntry"
+            },
+            "title": "Services",
+            "type": "array"
+          }
+        },
+        "title": "BenchmarkServicesRequest",
+        "type": "object"
+      },
+      "BenchmarkServicesResponse": {
+        "properties": {
+          "services": {
+            "items": {
+              "$ref": "#/components/schemas/BenchmarkServiceHealth"
+            },
+            "title": "Services",
+            "type": "array"
+          }
+        },
+        "required": [
+          "services"
+        ],
+        "title": "BenchmarkServicesResponse",
+        "type": "object"
+      },
+      "BenchmarkStatus": {
+        "enum": [
+          "IN_PROGRESS",
+          "STOPPING",
+          "STOPPED",
+          "FINISHED",
+          "ERROR"
+        ],
+        "title": "BenchmarkStatus",
+        "type": "string"
+      },
+      "BenchmarkStatusEntry": {
+        "properties": {
+          "current_execution_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Execution Release Id"
+          },
+          "executor_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Artifact Digest"
+          },
+          "executor_protocol_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Protocol Version"
+          },
+          "executor_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Release Id"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "finished_tasks": {
+            "title": "Finished Tasks",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/BenchmarkStatus"
+          },
+          "task_state_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Task State Counts",
+            "type": "object"
+          },
+          "total_tasks": {
+            "title": "Total Tasks",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "finished_at",
+          "total_tasks",
+          "finished_tasks"
+        ],
+        "title": "BenchmarkStatusEntry",
+        "type": "object"
+      },
+      "BenchmarkStatusResponse": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/BenchmarkStatusEntry"
+            },
+            "title": "Entries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "entries"
+        ],
+        "title": "BenchmarkStatusResponse",
+        "type": "object"
+      },
+      "BenchmarkTableRow": {
+        "properties": {
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "current_execution_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Execution Release Id"
+          },
+          "dataset": {
+            "default": "default",
+            "title": "Dataset",
+            "type": "string"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "executor_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Artifact Digest"
+          },
+          "executor_protocol_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Protocol Version"
+          },
+          "executor_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Release Id"
+          },
+          "final_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Score"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "finished_tasks": {
+            "title": "Finished Tasks",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
+          "started_by_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started By Email"
+          },
+          "status": {
+            "$ref": "#/components/schemas/BenchmarkStatus"
+          },
+          "task_state_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Task State Counts",
+            "type": "object"
+          },
+          "total_tasks": {
+            "title": "Total Tasks",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "agent_name",
+          "model",
+          "started_by_email",
+          "started_at",
+          "finished_at",
+          "status",
+          "total_tasks",
+          "finished_tasks"
+        ],
+        "title": "BenchmarkTableRow",
+        "type": "object"
+      },
+      "Body_retry_or_resume_benchmark": {
+        "properties": {
+          "benchmark_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Benchmark Url"
+          },
+          "secrets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Secrets",
+            "type": "object"
+          },
+          "service_headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Service Headers",
+            "type": "object"
+          },
+          "task_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Task Ids",
+            "type": "array"
+          }
+        },
+        "title": "Body_retry_or_resume_benchmark",
+        "type": "object"
+      },
+      "Body_stop_benchmark": {
+        "properties": {
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          }
+        },
+        "title": "Body_stop_benchmark",
+        "type": "object"
+      },
+      "FetchBenchmarkMetadataResponse": {
+        "properties": {
+          "benchmark_arguments": {
+            "$ref": "#/components/schemas/BenchmarkArguments"
+          },
+          "benchmark_id": {
+            "format": "uuid",
+            "title": "Benchmark Id",
+            "type": "string"
+          },
+          "benchmark_name": {
+            "title": "Benchmark Name",
+            "type": "string"
+          },
+          "current_execution_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Execution Release Id"
+          },
+          "executor_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Artifact Digest"
+          },
+          "executor_artifact_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Artifact Uri"
+          },
+          "executor_protocol_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Protocol Version"
+          },
+          "executor_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Release Id"
+          },
+          "started_by_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started By Email"
+          }
+        },
+        "required": [
+          "benchmark_id",
+          "benchmark_name",
+          "benchmark_arguments"
+        ],
+        "title": "FetchBenchmarkMetadataResponse",
+        "type": "object"
+      },
+      "FetchBenchmarkTasksRequest": {
+        "properties": {
+          "benchmark_name": {
+            "title": "Benchmark Name",
+            "type": "string"
+          },
+          "custom_benchmark_service": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Benchmark Service"
+          },
+          "dataset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset"
+          },
+          "service_headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Service Headers",
+            "type": "object"
+          }
+        },
+        "required": [
+          "benchmark_name"
+        ],
+        "title": "FetchBenchmarkTasksRequest",
+        "type": "object"
+      },
+      "FetchBenchmarksResponse": {
+        "properties": {
+          "benchmarks": {
+            "items": {
+              "$ref": "#/components/schemas/BenchmarkTableRow"
+            },
+            "title": "Benchmarks",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "total_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Count"
+          }
+        },
+        "required": [
+          "benchmarks"
+        ],
+        "title": "FetchBenchmarksResponse",
+        "type": "object"
+      },
+      "FilterOptionsResponse": {
+        "properties": {
+          "agent_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Agent Names",
+            "type": "array"
+          },
+          "benchmark_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Benchmark Names",
+            "type": "array"
+          }
+        },
+        "required": [
+          "benchmark_names",
+          "agent_names"
+        ],
+        "title": "FilterOptionsResponse",
+        "type": "object"
+      },
+      "FinalEvaluation": {
+        "properties": {
+          "benchmark": {
+            "title": "Benchmark",
+            "type": "string"
+          },
+          "final_score": {
+            "title": "Final Score",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "properties": {
+            "additionalProperties": true,
+            "title": "Properties",
+            "type": "object"
+          }
+        },
+        "required": [
+          "org_id",
+          "benchmark",
+          "final_score"
+        ],
+        "title": "FinalEvaluation",
+        "type": "object"
+      },
+      "FinalViewResponse": {
+        "properties": {
+          "average_task_breakdown": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AverageTaskBreakdown"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "benchmark_arguments": {
+            "$ref": "#/components/schemas/BenchmarkArguments"
+          },
+          "benchmark_id": {
+            "format": "uuid",
+            "title": "Benchmark Id",
+            "type": "string"
+          },
+          "benchmark_name": {
+            "title": "Benchmark Name",
+            "type": "string"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "evaluation_results": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Results"
+          },
+          "final_evaluation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FinalEvaluation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/BenchmarkStatus"
+          },
+          "task_errors": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Errors"
+          },
+          "tasks_stopped": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tasks Stopped"
+          }
+        },
+        "required": [
+          "benchmark_id",
+          "benchmark_name",
+          "started_at",
+          "finished_at",
+          "status",
+          "error_message",
+          "benchmark_arguments",
+          "tasks_stopped",
+          "final_evaluation",
+          "average_task_breakdown",
+          "evaluation_results",
+          "task_errors"
+        ],
+        "title": "FinalViewResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HarnessConfig": {
+        "properties": {
+          "aws": {
+            "$ref": "#/components/schemas/AWSCredentials"
+          },
+          "log_group": {
+            "title": "Log Group",
+            "type": "string"
+          },
+          "log_retention_policy": {
+            "title": "Log Retention Policy",
+            "type": "integer"
+          },
+          "s3_bucket": {
+            "title": "S3 Bucket",
+            "type": "string"
+          },
+          "sandbox_provider_secret_name": {
+            "title": "Sandbox Provider Secret Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "aws",
+          "s3_bucket",
+          "log_group",
+          "log_retention_policy",
+          "sandbox_provider_secret_name"
+        ],
+        "title": "HarnessConfig",
+        "type": "object"
+      },
+      "Order": {
+        "enum": [
+          "asc",
+          "desc"
+        ],
+        "title": "Order",
+        "type": "string"
+      },
+      "OutputArtifact-Input": {
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "OutputArtifact",
+        "type": "object"
+      },
+      "OutputArtifact-Output": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "RetryMode": {
+        "enum": [
+          "auto",
+          "from_scratch"
+        ],
+        "title": "RetryMode",
+        "type": "string"
+      },
+      "RetryOrResumeBenchmarkResponse": {
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "RetryOrResumeBenchmarkResponse",
+        "type": "object"
+      },
+      "S3UploadResultsResponse": {
+        "properties": {
+          "console_url": {
+            "title": "Console Url",
+            "type": "string"
+          },
+          "expires_in": {
+            "default": 86400,
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "presigned_url": {
+            "title": "Presigned Url",
+            "type": "string"
+          },
+          "s3_url": {
+            "title": "S3 Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "s3_url",
+          "presigned_url",
+          "console_url"
+        ],
+        "title": "S3UploadResultsResponse",
+        "type": "object"
+      },
+      "SingleBenchmarkResponse": {
+        "description": "Single-run view: BenchmarkTableRow fields plus optional final_score.",
+        "properties": {
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "cloudwatch_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cloudwatch Url"
+          },
+          "current_execution_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Execution Release Id"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "executor_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Artifact Digest"
+          },
+          "executor_protocol_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Protocol Version"
+          },
+          "executor_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Release Id"
+          },
+          "final_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Score"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "finished_tasks": {
+            "title": "Finished Tasks",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "s3_bucket_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "S3 Bucket Url"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
+          "started_by_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started By Email"
+          },
+          "status": {
+            "$ref": "#/components/schemas/BenchmarkStatus"
+          },
+          "task_state_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Task State Counts",
+            "type": "object"
+          },
+          "total_tasks": {
+            "title": "Total Tasks",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "agent_name",
+          "model",
+          "started_at",
+          "finished_at",
+          "status",
+          "total_tasks",
+          "finished_tasks"
+        ],
+        "title": "SingleBenchmarkResponse",
+        "type": "object"
+      },
+      "SingleTaskResponse": {
+        "properties": {
+          "agent_caused_exit_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Caused Exit Reason"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "evaluation_result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Result"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "task_id",
+          "status",
+          "started_at",
+          "finished_at",
+          "error_message",
+          "evaluation_result",
+          "agent_caused_exit_reason"
+        ],
+        "title": "SingleTaskResponse",
+        "type": "object"
+      },
+      "StartBenchmarkRequest": {
+        "properties": {
+          "benchmark_name": {
+            "title": "Benchmark Name",
+            "type": "string"
+          },
+          "concurrency": {
+            "default": 5,
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/AgentContractRequest-Input"
+          },
+          "custom_benchmark_service": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Benchmark Service"
+          },
+          "dataset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset"
+          },
+          "harness_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HarnessConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "lambda_function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
+          "sandbox_provider": {
+            "default": "daytona",
+            "title": "Sandbox Provider",
+            "type": "string"
+          },
+          "sandbox_provider_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Provider Secret Name"
+          },
+          "service_auth_header_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Auth Header Name"
+          },
+          "service_auth_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Auth Secret Name"
+          },
+          "service_headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Service Headers",
+            "type": "object"
+          },
+          "slice_str": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slice Str"
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          },
+          "webhook_intervals": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Intervals"
+          },
+          "webhook_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Secret Name"
+          }
+        },
+        "required": [
+          "contract",
+          "benchmark_name"
+        ],
+        "title": "StartBenchmarkRequest",
+        "type": "object"
+      },
+      "StartBenchmarkResponse": {
+        "properties": {
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "benchmark_id": {
+            "format": "uuid",
+            "title": "Benchmark Id",
+            "type": "string"
+          },
+          "benchmark_name": {
+            "title": "Benchmark Name",
+            "type": "string"
+          },
+          "cloudwatch_url": {
+            "title": "Cloudwatch Url",
+            "type": "string"
+          },
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "current_execution_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Execution Release Id"
+          },
+          "executor_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Artifact Digest"
+          },
+          "executor_protocol_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Protocol Version"
+          },
+          "executor_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Release Id"
+          },
+          "s3_bucket_url": {
+            "title": "S3 Bucket Url",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "task_count": {
+            "title": "Task Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "benchmark_name",
+          "agent_name",
+          "benchmark_id",
+          "concurrency",
+          "started_at",
+          "task_count",
+          "cloudwatch_url",
+          "s3_bucket_url"
+        ],
+        "title": "StartBenchmarkResponse",
+        "type": "object"
+      },
+      "StopBenchmarkResponse": {
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "StopBenchmarkResponse",
+        "type": "object"
+      },
+      "TaskArtifactsResponse": {
+        "properties": {
+          "agent_output_expires_in": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Output Expires In"
+          },
+          "agent_output_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Output Url"
+          },
+          "cloudwatch_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cloudwatch Url"
+          }
+        },
+        "required": [
+          "cloudwatch_url",
+          "agent_output_url",
+          "agent_output_expires_in"
+        ],
+        "title": "TaskArtifactsResponse",
+        "type": "object"
+      },
+      "TaskLogAttempt": {
+        "properties": {
+          "current": {
+            "title": "Current",
+            "type": "boolean"
+          },
+          "first_event_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Event At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_event_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Event At"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "started_at",
+          "first_event_at",
+          "last_event_at",
+          "current"
+        ],
+        "title": "TaskLogAttempt",
+        "type": "object"
+      },
+      "TaskLogAttemptsResponse": {
+        "properties": {
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/TaskLogAttempt"
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "attempts",
+          "truncated"
+        ],
+        "title": "TaskLogAttemptsResponse",
+        "type": "object"
+      },
+      "TaskLogEvent": {
+        "properties": {
+          "ingestion_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ingestion Time"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "ingestion_time",
+          "message"
+        ],
+        "title": "TaskLogEvent",
+        "type": "object"
+      },
+      "TaskLogEventsResponse": {
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/TaskLogEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "newer_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newer Cursor"
+          },
+          "older_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Older Cursor"
+          }
+        },
+        "required": [
+          "events",
+          "older_cursor",
+          "newer_cursor"
+        ],
+        "title": "TaskLogEventsResponse",
+        "type": "object"
+      },
+      "TaskStatus": {
+        "enum": [
+          "PENDING",
+          "BUILDING",
+          "IN_PROGRESS",
+          "EVALUATING",
+          "STOPPED",
+          "FINISHED",
+          "ERROR"
+        ],
+        "title": "TaskStatus",
+        "type": "string"
+      },
+      "TaskSummary": {
+        "properties": {
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "task_id",
+          "status",
+          "started_at",
+          "finished_at"
+        ],
+        "title": "TaskSummary",
+        "type": "object"
+      },
+      "TasksResponse": {
+        "properties": {
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskSummary"
+            },
+            "title": "Tasks",
+            "type": "array"
+          },
+          "total_count": {
+            "title": "Total Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tasks",
+          "total_count"
+        ],
+        "title": "TasksResponse",
+        "type": "object"
+      },
+      "UpdateBenchmarkConcurrencyRequest": {
+        "properties": {
+          "concurrency": {
+            "minimum": 1.0,
+            "title": "Concurrency",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "concurrency"
+        ],
+        "title": "UpdateBenchmarkConcurrencyRequest",
+        "type": "object"
+      },
+      "UpdateBenchmarkConcurrencyResponse": {
+        "properties": {
+          "benchmark_id": {
+            "format": "uuid",
+            "title": "Benchmark Id",
+            "type": "string"
+          },
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/BenchmarkStatus"
+          }
+        },
+        "required": [
+          "benchmark_id",
+          "status",
+          "concurrency"
+        ],
+        "title": "UpdateBenchmarkConcurrencyResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "VerifyTaskIdsResponse": {
+        "description": "Response containing verified task IDs that exist in your benchmark.",
+        "properties": {
+          "task_ids": {
+            "description": "List of verified task IDs that exist in the benchmark",
+            "items": {
+              "type": "string"
+            },
+            "title": "Task Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "task_ids"
+        ],
+        "title": "VerifyTaskIdsResponse",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "FastAPI",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/agents": {
+      "get": {
+        "description": "List agent zips under the org's S3 bucket.",
+        "operationId": "list_agents_endpoint",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Agents Endpoint"
+      }
+    },
+    "/agents/{name}/download-url": {
+      "get": {
+        "description": "Return a 5-minute presigned URL to download agents/<name>.zip.",
+        "operationId": "get_agent_download_url",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDownloadURLResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent Download Url"
+      }
+    },
+    "/analyze-benchmark/{benchmark_id}": {
+      "post": {
+        "description": "Invoke the Docent analyzer Lambda for a benchmark and emit SSE-formatted progress events\n(started/heartbeat/done/error) that clients consume as buffered text (the response is read\nin full; the terminal done/error event carries the result).\n\nCache short-circuit: when the benchmark already has docent_reading_status=DONE and\nno_cache=false, returns the existing reading_plan_url without invoking the Lambda.",
+        "operationId": "analyze_benchmark",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyzeBenchmarkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Analyze Benchmark"
+      }
+    },
+    "/aws-runtime": {
+      "get": {
+        "description": "Return managed AWS resource locations without credential material.",
+        "operationId": "fetch_aws_runtime_metadata",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AWSRuntimeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Fetch Aws Runtime Metadata"
+      }
+    },
+    "/benchmark-services": {
+      "get": {
+        "description": "Fetch catalog benchmark services visible to the caller.",
+        "operationId": "catalog_benchmark_services",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BenchmarkServiceCatalogResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Catalog Benchmark Services"
+      },
+      "post": {
+        "description": "Health-check the caller-provided benchmark services with concurrent pings.",
+        "operationId": "list_benchmark_services",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BenchmarkServicesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BenchmarkServicesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Benchmark Services"
+      }
+    },
+    "/benchmarks/filter-options": {
+      "get": {
+        "description": "Distinct benchmark + agent names in this org, for the runs-list filter dropdowns.",
+        "operationId": "get_filter_options",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilterOptionsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Filter Options"
+      }
+    },
+    "/benchmarks/status": {
+      "get": {
+        "description": "Return status + task-count breakdown for the listed benchmark ids.",
+        "operationId": "get_benchmarks_status",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "ids",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ids",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BenchmarkStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Benchmarks Status"
+      }
+    },
+    "/benchmarks/{benchmark_id}": {
+      "get": {
+        "description": "Fetch a single benchmark with task counts + final score for the SingleRun page.",
+        "operationId": "get_single_benchmark",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SingleBenchmarkResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Single Benchmark"
+      }
+    },
+    "/benchmarks/{benchmark_id}/concurrency": {
+      "patch": {
+        "operationId": "patch_benchmark_concurrency",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateBenchmarkConcurrencyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateBenchmarkConcurrencyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Benchmark Concurrency"
+      }
+    },
+    "/benchmarks/{benchmark_id}/tasks": {
+      "get": {
+        "description": "Paginated tasks for a benchmark, with optional status filter + task-id search.\n\nsort=status desc surfaces errors first (attention priority). Default: started_at desc.",
+        "operationId": "get_benchmark_tasks",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_id_search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Id Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "started_at",
+              "enum": [
+                "task_id",
+                "started_at",
+                "duration",
+                "status"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_dir",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "title": "Sort Dir",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TasksResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Benchmark Tasks"
+      }
+    },
+    "/benchmarks/{benchmark_id}/tasks/{task_id}": {
+      "get": {
+        "description": "Fetch a single task's status + evaluation result for the SingleTask page.",
+        "operationId": "get_single_task",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SingleTaskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Single Task"
+      }
+    },
+    "/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts": {
+      "get": {
+        "description": "CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page.",
+        "operationId": "get_task_artifacts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskArtifactsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task Artifacts"
+      }
+    },
+    "/benchmarks/{benchmark_id}/tasks/{task_id}/logs/attempts": {
+      "get": {
+        "description": "List CloudWatch log attempts through the run's persisted AWS runtime.",
+        "operationId": "get_task_log_attempts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskLogAttemptsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task Log Attempts"
+      }
+    },
+    "/benchmarks/{benchmark_id}/tasks/{task_id}/logs/events": {
+      "get": {
+        "description": "Read one bounded CloudWatch page through the run's persisted AWS runtime.",
+        "operationId": "get_task_log_events",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "attempt_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{1,16}$",
+              "title": "Attempt Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "direction",
+            "required": false,
+            "schema": {
+              "default": "initial",
+              "enum": [
+                "initial",
+                "older",
+                "newer"
+              ],
+              "title": "Direction",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskLogEventsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task Log Events"
+      }
+    },
+    "/check-results-exist": {
+      "get": {
+        "description": "Check if the benchmark's final view already exists in S3.\n\nUsage:\ncurl -X GET http://<endpoint>/check-results-exist?benchmark_id=<uuid>\n\nReturns:\n    {\"exists\": true/false}",
+        "operationId": "check_results_exist",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Check Results Exist",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Check Results Exist"
+      }
+    },
+    "/fetch-benchmark": {
+      "get": {
+        "description": "Fetch a benchmark by its id.\n\nUsage:\ncurl -X GET http://<endpoint>/fetch-benchmark/<benchmark_id>?connect=true\n\nReturns:\n    FetchBenchmarkResponse\n\nReturns:\n- 200 OK if benchmark is found\n- 404 Not Found if benchmark is not found",
+        "operationId": "fetch_benchmark",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "connect",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Connect",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fetch Benchmark"
+      }
+    },
+    "/fetch-benchmark-metadata/{benchmark_id}": {
+      "get": {
+        "description": "Fetch benchmark metadata by its id.\n\nUsage:\ncurl -X GET http://<endpoint>/fetch-benchmark-metadata/<benchmark_id>\n\nReturns:\n    FetchBenchmarkMetadataResponse",
+        "operationId": "fetch_benchmark_metadata",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FetchBenchmarkMetadataResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fetch Benchmark Metadata"
+      }
+    },
+    "/fetch-benchmark-tasks": {
+      "post": {
+        "description": "Fetch all task ids for a benchmark dataset.",
+        "operationId": "fetch_benchmark_tasks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FetchBenchmarkTasksRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyTaskIdsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fetch Benchmark Tasks"
+      }
+    },
+    "/fetch-benchmarks": {
+      "get": {
+        "description": "Fetch benchmarks based on the request parameters.\n\nUsage:\ncurl -X GET http://<endpoint>/fetch-benchmarks?agent_name=claude_code&benchmark_name=swebench&status=IN_PROGRESS&order_by=DESC&limit=5&offset=0",
+        "operationId": "fetch_benchmarks",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "agent_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent Name"
+            }
+          },
+          {
+            "in": "query",
+            "name": "benchmark_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Benchmark Name"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "$ref": "#/components/schemas/BenchmarkStatus"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "started_by",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started By"
+            }
+          },
+          {
+            "in": "query",
+            "name": "model",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dataset"
+            }
+          },
+          {
+            "in": "query",
+            "name": "label",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Label"
+            }
+          },
+          {
+            "in": "query",
+            "name": "started_after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "started_before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "order_by",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Order",
+              "default": "desc"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FetchBenchmarksResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fetch Benchmarks"
+      }
+    },
+    "/fetch-run-outputs/{benchmark_id}": {
+      "get": {
+        "description": "Stream a tar file with run outputs to the client.\n\nUsage:\ncurl -X GET http://<endpoint>/fetch-run-outputs/<benchmark_id>\n\nReturns:\n    StreamingResponse",
+        "operationId": "fetch_run_outputs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_ids",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Ids"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fetch Run Outputs"
+      }
+    },
+    "/health": {
+      "get": {
+        "description": "Health check to ensure that the tracker service is running correctly.\n\nUsage:\ncurl -X GET http://<endpoint>/health\n\nReturns:\n{\n    \"status\": \"ok\"\n}\n\nReturns:\n- 200 OK if the server is running and database is accessible\n- 503 Service Unavailable if the database is not accessible",
+        "operationId": "health_check",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Check",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health Check"
+      }
+    },
+    "/init": {
+      "post": {
+        "description": "Initialize org for hosted mode. Validates Descope key and creates org if needed.",
+        "operationId": "init_org",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "boolean"
+                      }
+                    ]
+                  },
+                  "title": "Response Init Org",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Init Org"
+      }
+    },
+    "/retrieve-results": {
+      "get": {
+        "description": "Retrieve the results of a benchmark by its id. When task_ids is non-empty, the final view is\nfiltered to that subset and the final score is recomputed over the subset; the persisted\nFinalEvaluation / per-task rows are left untouched.\n\nNote: with `s3=True` the S3 final view at the canonical key is overwritten with whatever was\njust computed (full or subset). The DB remains source of truth, so re-running without\ntask_ids re-uploads the canonical full view.\n\nUsage:\ncurl -X GET http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=false\ncurl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'",
+        "operationId": "retrieve_results",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "s3",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "S3",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_ids",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Ids"
+            }
+          },
+          {
+            "in": "query",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FinalViewResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/S3UploadResultsResponse"
+                    }
+                  ],
+                  "title": "Response Retrieve Results"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retrieve Results"
+      }
+    },
+    "/retry-or-resume-benchmark/{benchmark_id}": {
+      "post": {
+        "description": "Retry or resume a benchmark run by its id.\n\nUsage:\ncurl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true&concurrency=20\n  -d '{\"task_ids\": [\"task_id_1\", \"task_id_2\"]}'\n\nArgs:\n    benchmark_id: The benchmark ID to retry/resume\n    retry: If true, retry failed tasks. If false, resume from where it left off\n    concurrency: Optional new concurrency level (overrides original value)\n    task_ids: Optional list of specific task IDs to run. If a task id is not yet\n        registered but is valid in the current dataset, a fresh PENDING row is created.\n    benchmark_url: Optional replacement benchmark service URL stored on the run.\n\nReturns:\n    RetryOrResumeBenchmarkResponse",
+        "operationId": "retry_or_resume_benchmark",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "retry",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Retry",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "retry_mode",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/RetryMode",
+              "default": "auto"
+            }
+          },
+          {
+            "in": "query",
+            "name": "concurrency",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Concurrency"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_retry_or_resume_benchmark"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetryOrResumeBenchmarkResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Or Resume Benchmark"
+      }
+    },
+    "/start-benchmark": {
+      "post": {
+        "description": "Start a benchmark run with the uploaded contract.\n\nUsage:\ncurl -X POST http://<endpoint>/start-benchmark       -H \"Content-Type: application/json\"       -d '{\"agent_name\": \"claude_code\", \"benchmark_name\": \"swebench\", \"task_ids\": [\"astropy__astropy-12907\"]}'\n\nReturns:\n    StartBenchmarkResponse\n\nReturns:\n- 200 OK if benchmark starts successfully\n- 400 Bad Request if parameters are invalid\n- 500 Internal Server Error if benchmark fails to start",
+        "operationId": "start_benchmark",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartBenchmarkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartBenchmarkResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Benchmark"
+      }
+    },
+    "/stop-benchmark/{benchmark_id}": {
+      "post": {
+        "description": "Stop a benchmark by its id.\nIf force is True, the database run is stopped immediately and provider kill signals are sent\nwithout waiting for provider teardown to complete.\n\nUsage:\ncurl -X POST http://<endpoint>/stop-benchmark/<benchmark_id>?force=true\n\nReturns:\n    StopBenchmarkResponse",
+        "operationId": "stop_benchmark",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force",
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_stop_benchmark"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopBenchmarkResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop Benchmark"
+      }
+    }
+  }
+}

@@ -5,18 +5,21 @@ Cover task details and artifact-link behavior.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from unittest.mock import ANY, AsyncMock, Mock
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
+from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 import tracker.api.single_task as single_task_module
 from main import app
 from tests.factories import make_error_result, make_evaluation_result, make_task
+from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
 from tracker.database.models import (
     AgentCausedExitReason,
     Benchmark,
@@ -25,6 +28,10 @@ from tracker.database.models import (
 )
 
 _client = TestClient(app)
+
+
+def _cloudwatch_client(client: Mock) -> Callable[[ExplicitCredentialsAWSClientProvider], Mock]:
+    return lambda _provider: client
 
 
 def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
@@ -166,3 +173,231 @@ def test_task_artifacts_only_presign_existing_output(
     assert missing_response.json()["agent_output_url"] is None
     assert missing_response.json()["agent_output_expires_in"] is None
     assert create_presigned_url.await_count == 1
+
+
+def test_task_logs_use_the_run_aws_runtime(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_headers: dict[str, str],
+) -> None:
+    """Log attempts and cursor pages must use the same scoped runtime as artifacts."""
+    benchmark = example_benchmark_object
+    started_at = datetime(2026, 8, 19, 12, 30, tzinfo=ZoneInfo("UTC"))
+    task = make_task(benchmark, "suite/task:managed", started_at=started_at)
+    database_session.add_all([benchmark, task])
+    database_session.commit()
+
+    suffix = f"{int(started_at.timestamp() * 1_000_000):x}"
+    stream_name = f"suite/task%3Amanaged_{suffix}"
+    cloudwatch = Mock()
+    cloudwatch.describe_log_streams.return_value = {
+        "logStreams": [
+            {
+                "logStreamName": stream_name,
+                "creationTime": int(started_at.timestamp() * 1_000),
+                "firstEventTimestamp": int(started_at.timestamp() * 1_000),
+                "lastEventTimestamp": int(started_at.timestamp() * 1_000) + 500,
+            }
+        ]
+    }
+    cloudwatch.get_log_events.return_value = {
+        "events": [
+            {
+                "timestamp": int(started_at.timestamp() * 1_000),
+                "ingestionTime": int(started_at.timestamp() * 1_000) + 100,
+                "message": "starting task",
+            }
+        ],
+        "nextBackwardToken": "older",
+        "nextForwardToken": "newer",
+    }
+    monkeypatch.setattr(
+        ExplicitCredentialsAWSClientProvider,
+        "cloudwatch_logs_client",
+        _cloudwatch_client(cloudwatch),
+    )
+
+    attempts = _client.get(
+        f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/logs/attempts",
+        headers=harness_headers,
+    )
+    events = _client.get(
+        f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/logs/events",
+        params={"attempt_id": suffix},
+        headers=harness_headers,
+    )
+
+    assert attempts.status_code == 200
+    assert attempts.json() == {
+        "attempts": [
+            {
+                "id": suffix,
+                "started_at": "2026-08-19T12:30:00Z",
+                "first_event_at": "2026-08-19T12:30:00Z",
+                "last_event_at": "2026-08-19T12:30:00.500000Z",
+                "current": True,
+            }
+        ],
+        "truncated": False,
+    }
+    assert events.status_code == 200
+    assert events.json()["events"] == [
+        {
+            "timestamp": "2026-08-19T12:30:00Z",
+            "ingestion_time": "2026-08-19T12:30:00.100000Z",
+            "message": "starting task",
+        }
+    ]
+    assert events.json()["newer_cursor"] == "newer"
+    assert cloudwatch.describe_log_streams.call_args.kwargs["logStreamNamePrefix"] == "suite/task%3Amanaged"
+    assert cloudwatch.get_log_events.call_args.kwargs["logStreamName"] == stream_name
+
+
+def test_task_log_attempts_page_cloudwatch_and_ignore_other_streams(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_headers: dict[str, str],
+) -> None:
+    benchmark = example_benchmark_object
+    started_at = datetime(2026, 8, 19, 12, 30, tzinfo=ZoneInfo("UTC"))
+    task = make_task(benchmark, "task", started_at=started_at)
+    sibling = make_task(benchmark, "task_deadbeef", started_at=started_at)
+    database_session.add_all([benchmark, task, sibling])
+    database_session.commit()
+
+    cloudwatch = Mock()
+    cloudwatch.describe_log_streams.side_effect = [
+        {
+            "logStreams": [
+                {"logStreamName": f"task_{int(started_at.timestamp() * 1_000_000):x}"},
+                {"logStreamName": "task"},
+                {"logStreamName": "task_ffffffffffffffffffff"},
+                {"logStreamName": "task_deadbeef"},
+                {},
+            ],
+            "nextToken": "page-2",
+        },
+        {"logStreams": []},
+    ]
+    monkeypatch.setattr(
+        ExplicitCredentialsAWSClientProvider,
+        "cloudwatch_logs_client",
+        _cloudwatch_client(cloudwatch),
+    )
+
+    response = _client.get(
+        f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/logs/attempts",
+        headers=harness_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["attempts"] == [
+        {
+            "id": f"{int(started_at.timestamp() * 1_000_000):x}",
+            "started_at": "2026-08-19T12:30:00Z",
+            "first_event_at": None,
+            "last_event_at": None,
+            "current": True,
+        }
+    ]
+    assert cloudwatch.describe_log_streams.call_args_list[1].kwargs["nextToken"] == "page-2"
+    collision = _client.get(
+        f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/logs/events",
+        params={"attempt_id": "deadbeef"},
+        headers=harness_headers,
+    )
+    assert collision.status_code == 404
+
+
+def test_task_log_events_validate_cursors_and_handle_missing_streams(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_headers: dict[str, str],
+) -> None:
+    benchmark = example_benchmark_object
+    task = make_task(benchmark, "task")
+    database_session.add_all([benchmark, task])
+    database_session.commit()
+
+    missing = ClientError(
+        {"Error": {"Code": "ResourceNotFoundException", "Message": "missing"}},
+        "GetLogEvents",
+    )
+    cloudwatch = Mock()
+    cloudwatch.describe_log_streams.side_effect = missing
+    cloudwatch.get_log_events.side_effect = missing
+    monkeypatch.setattr(
+        ExplicitCredentialsAWSClientProvider,
+        "cloudwatch_logs_client",
+        _cloudwatch_client(cloudwatch),
+    )
+    base = f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/logs"
+
+    no_cursor = _client.get(
+        f"{base}/events",
+        params={"attempt_id": "deadbeef", "direction": "newer"},
+        headers=harness_headers,
+    )
+    initial_cursor = _client.get(
+        f"{base}/events",
+        params={"attempt_id": "deadbeef", "direction": "initial", "cursor": "token"},
+        headers=harness_headers,
+    )
+    attempts = _client.get(f"{base}/attempts", headers=harness_headers)
+    events = _client.get(
+        f"{base}/events",
+        params={"attempt_id": "deadbeef"},
+        headers=harness_headers,
+    )
+    cloudwatch.get_log_events.side_effect = None
+    cloudwatch.get_log_events.return_value = {
+        "events": [],
+        "nextBackwardToken": "older",
+        "nextForwardToken": "tail",
+    }
+    tail = _client.get(
+        f"{base}/events",
+        params={
+            "attempt_id": "deadbeef",
+            "direction": "newer",
+            "cursor": "tail",
+        },
+        headers=harness_headers,
+    )
+
+    assert no_cursor.status_code == 400
+    assert initial_cursor.status_code == 400
+    assert attempts.json() == {"attempts": [], "truncated": False}
+    assert events.json() == {"events": [], "older_cursor": None, "newer_cursor": None}
+    assert tail.json()["newer_cursor"] == "tail"
+
+
+def test_task_log_events_reject_incomplete_cloudwatch_events(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_headers: dict[str, str],
+) -> None:
+    benchmark = example_benchmark_object
+    task = make_task(benchmark, "task")
+    database_session.add_all([benchmark, task])
+    database_session.commit()
+
+    cloudwatch = Mock()
+    cloudwatch.get_log_events.return_value = {"events": [{"timestamp": 1}]}
+    monkeypatch.setattr(
+        ExplicitCredentialsAWSClientProvider,
+        "cloudwatch_logs_client",
+        _cloudwatch_client(cloudwatch),
+    )
+
+    response = _client.get(
+        f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/logs/events",
+        params={"attempt_id": "deadbeef"},
+        headers=harness_headers,
+    )
+
+    assert response.status_code == 502

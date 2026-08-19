@@ -27,7 +27,7 @@ from tracker.aws.s3 import handle_s3_error
 from tracker.exceptions import CloudWatchError, S3Error
 from tracker.types import AWSCredentials
 
-_sanitize_log_stream_name = getattr(cloudwatch_logs, "_sanitize_log_stream_name")
+sanitize_log_stream_name = cloudwatch_logs.sanitize_log_stream_name
 
 _AWS = AWSCredentials(
     aws_access_key_id="test-key",
@@ -214,25 +214,25 @@ class TestCloudWatchClient:
 
 
 class TestSanitizeLogStreamName:
-    """logStreamName must satisfy AWS constraint [^:*]* (no ':' or '*')."""
+    """logStreamName must satisfy AWS constraint [^:*]* without collisions."""
 
-    def test_replaces_colon(self) -> None:
-        assert _sanitize_log_stream_name("provider/model:fast") == "provider/model_fast"
+    def test_encodes_colon(self) -> None:
+        assert sanitize_log_stream_name("provider/model:fast") == "provider/model%3Afast"
 
-    def test_replaces_asterisk(self) -> None:
-        assert _sanitize_log_stream_name("task*glob") == "task_glob"
+    def test_encodes_asterisk(self) -> None:
+        assert sanitize_log_stream_name("task*glob") == "task%2Aglob"
 
-    def test_replaces_both_and_multiple(self) -> None:
-        assert _sanitize_log_stream_name("a:b:c*d") == "a_b_c_d"
+    def test_encodes_both_and_multiple(self) -> None:
+        assert sanitize_log_stream_name("a:b:c*d") == "a%3Ab%3Ac%2Ad"
 
     def test_preserves_clean_name(self) -> None:
         # plain ids and the allowed '/' are left intact
-        assert _sanitize_log_stream_name("water_intake_tracker") == "water_intake_tracker"
-        assert _sanitize_log_stream_name("group/sub/name") == "group/sub/name"
+        assert sanitize_log_stream_name("water_intake_tracker") == "water_intake_tracker"
+        assert sanitize_log_stream_name("group/sub/name") == "group/sub/name"
 
     def test_result_matches_aws_constraint(self) -> None:
         for raw in ["openai/gpt-5.5", "laguna-xs.2:fast", "x*:y", "plain_id"]:
-            assert re.fullmatch(r"[^:*]*", _sanitize_log_stream_name(raw))
+            assert re.fullmatch(r"[^:*]*", sanitize_log_stream_name(raw))
 
 
 class TestGetBenchmarkLogUrl:
@@ -240,8 +240,8 @@ class TestGetBenchmarkLogUrl:
 
     def test_sanitizes_task_id_in_url(self) -> None:
         url = get_benchmark_log_url("bench123", _AWS_RESOURCES, task_id="provider/model:fast")
-        # task id is sanitized before being url-quoted into the log-events path
-        assert "model_fast" in url
+        # The hash URL quotes the percent-encoded CloudWatch stream name again.
+        assert "model%253Afast" in url
         assert "model:fast" not in url
 
     def test_no_task_id_omits_log_events(self) -> None:
@@ -270,9 +270,9 @@ class TestWriteBenchmarkLogEvent:
         write_benchmark_log_event("bench123:provider/model:fast", "hello", runtime)
 
         client.create_log_stream.assert_called_once_with(
-            logGroupName="/valkyrie/worker/bench123", logStreamName="provider/model_fast"
+            logGroupName="/valkyrie/worker/bench123", logStreamName="provider/model%3Afast"
         )
-        assert client.put_log_events.call_args.kwargs["logStreamName"] == "provider/model_fast"
+        assert client.put_log_events.call_args.kwargs["logStreamName"] == "provider/model%3Afast"
 
     def test_create_stream_botocore_error_reports_sanitized_name(
         self,
@@ -284,5 +284,5 @@ class TestWriteBenchmarkLogEvent:
         with pytest.raises(CloudWatchError) as exc_info:
             write_benchmark_log_event("bench123:provider/model:fast", "hello", runtime)
 
-        assert "provider/model_fast" in str(exc_info.value)
+        assert "provider/model%3Afast" in str(exc_info.value)
         client.put_log_events.assert_not_called()

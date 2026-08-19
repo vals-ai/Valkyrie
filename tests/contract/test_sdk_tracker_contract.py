@@ -181,6 +181,8 @@ MODEL_PAIRS = (
 INTERNAL_ROUTES = {
     ("/aws-runtime", "get"),
     ("/benchmarks/{benchmark_id}/concurrency", "patch"),
+    ("/benchmarks/{benchmark_id}/tasks/{task_id}/logs/attempts", "get"),
+    ("/benchmarks/{benchmark_id}/tasks/{task_id}/logs/events", "get"),
     ("/benchmarks/filter-options", "get"),
     ("/health", "get"),
     ("/init", "post"),

@@ -5,16 +5,44 @@ Run: uv run pytest tests/unit/utils/test_task_execution.py
 
 import asyncio
 from typing import Any
-from unittest.mock import MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 from uuid import uuid4
 
 import pytest
 from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import Benchmark, Org, Task, TaskStatus
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.utils import ResizableLimiter, TaskMonitor, TrackedTask, TrackedTaskStatus
+from tracker.utils.task_execution import upload_task_definition
+
+
+async def test_upload_task_definition_preserves_the_problem_file_type(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+) -> None:
+    sandbox = Mock()
+    sandbox.download_file = AsyncMock(return_value=b"task definition")
+    upload = AsyncMock()
+    monkeypatch.setattr("tracker.utils.task_execution.upload_to_s3", upload)
+    benchmark_id = uuid4()
+
+    await upload_task_definition(
+        sandbox,
+        benchmark_id,
+        "suite/task",
+        "/workspace/problem.md",
+        aws_runtime,
+    )
+
+    sandbox.download_file.assert_awaited_once_with("/workspace/problem.md")
+    upload.assert_awaited_once_with(
+        b"task definition",
+        f"benchmarks/{benchmark_id}/suite/task/task_definition.md",
+        aws_runtime,
+    )
 
 
 class TestTaskExecution:

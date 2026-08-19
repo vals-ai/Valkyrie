@@ -1,4 +1,3 @@
-import re
 import time
 from collections.abc import Callable
 from functools import wraps
@@ -16,16 +15,9 @@ _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
 
-def _sanitize_log_stream_name(task_id: str) -> str:
-    """Make a task_id safe to use as a CloudWatch logStreamName.
-
-    AWS requires log stream names to match the regex ``[^:*]*`` (no ``:`` or
-    ``*``). Some task ids carry these characters (e.g. model-suffixed ids like
-    ``provider/model:fast``), which makes ``CreateLogStream`` raise
-    ``InvalidParameterException`` and silently drops the run's logs. Replace the
-    forbidden characters so logging degrades gracefully instead of failing.
-    """
-    return re.sub(r"[:*]", "_", task_id)
+def sanitize_log_stream_name(task_id: str) -> str:
+    """Encode a task ID without changing common CloudWatch-safe IDs."""
+    return quote(task_id, safe="/-_.~")
 
 
 def handle_cloudwatch_error(message: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
@@ -60,7 +52,7 @@ def get_benchmark_log_url(benchmark_id: str, resources: AWSResources, task_id: s
     base = f"https://{safe_region}.console.aws.amazon.com/cloudwatch/home?region={safe_region}"
     encoded_log_group = f"{safe_log_group}$252F{safe_benchmark_id}"
     if task_id:
-        safe_task_id = quote(_sanitize_log_stream_name(task_id), safe="-_.")
+        safe_task_id = quote(sanitize_log_stream_name(task_id), safe="-_.")
         return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}/log-events/{safe_task_id}"
 
     return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}"
@@ -117,7 +109,7 @@ def write_benchmark_log_event(stream_key: str, message: str, runtime: AWSRuntime
 
     client = runtime.clients.cloudwatch_logs_client()
     log_group_name = f"{runtime.resources.log_group}/{benchmark_id}"
-    stream_name = _sanitize_log_stream_name(task_id)
+    stream_name = sanitize_log_stream_name(task_id)
 
     if stream_key not in _created_streams:
         try:

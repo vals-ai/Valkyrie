@@ -486,3 +486,28 @@ class TaskArtifactsResponse(BaseModel):
     cloudwatch_url: str | None
     agent_output_url: str | None
     agent_output_expires_in: int | None
+
+
+class TaskLogAttempt(BaseModel):
+    id: str
+    started_at: datetime
+    first_event_at: datetime | None
+    last_event_at: datetime | None
+    current: bool
+
+
+class TaskLogAttemptsResponse(BaseModel):
+    attempts: list[TaskLogAttempt]
+    truncated: bool
+
+
+class TaskLogEvent(BaseModel):
+    timestamp: datetime
+    ingestion_time: datetime | None
+    message: str
+
+
+class TaskLogEventsResponse(BaseModel):
+    events: list[TaskLogEvent]
+    older_cursor: str | None
+    newer_cursor: str | None

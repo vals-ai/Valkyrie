@@ -10,6 +10,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from types import TracebackType
 from typing import Any, cast
 from uuid import UUID
@@ -18,6 +19,7 @@ from zoneinfo import ZoneInfo
 import logfire
 import sentry_sdk
 from benchmark_service import (
+    Sandbox,
     SandboxNotFoundError,
     SandboxProviderConfig,
     SandboxRecoveryAttempt,
@@ -30,9 +32,7 @@ from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
 from tracker.aws.cloudwatch_logs import write_benchmark_log_event
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import (
-    get_agent_result_s3_key,
-)
+from tracker.aws.s3 import get_agent_result_s3_key, upload_to_s3
 from tracker.aws.secrets import resolve_secrets
 from tracker.config import ENVIRONMENT
 from tracker.database.models import (
@@ -78,6 +78,21 @@ def _normalized_attempt_time(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value
     return value.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+
+
+async def upload_task_definition(
+    sandbox: Sandbox,
+    benchmark_id: UUID,
+    task_id: str,
+    problem_path: str,
+    aws_runtime: AWSRuntime,
+) -> None:
+    definition_name = f"task_definition{Path(problem_path).suffix or '.txt'}"
+    await upload_to_s3(
+        await sandbox.download_file(problem_path),
+        get_agent_result_s3_key(str(benchmark_id), task_id, definition_name),
+        aws_runtime,
+    )
 
 
 def _exception_message(exc: BaseException) -> str:
@@ -830,6 +845,13 @@ async def _process_task_attempt(
                 # outage metadata in its restored volume. A later loss is a
                 # distinct outage and must receive a new identity.
                 recovery_attempt.mark_replacement_ready()
+                await upload_task_definition(
+                    sandbox,
+                    benchmark_id,
+                    task_id,
+                    task_data.problem_path,
+                    aws_runtime,
+                )
 
                 # Force flush the logs if anything has been buffered
                 buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
