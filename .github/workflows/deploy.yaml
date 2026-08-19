@@ -384,7 +384,6 @@ jobs:
       DEV_ACCOUNT_ID: ${{ secrets.DEV_ACCOUNT_ID }}
       EXECUTOR_RELEASE_LAUNCH_PARAMETER: /valkyrie/dev/executor-release/launch-config
       SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
-      SENTRY_RELEASE: ${{ github.sha }}
 
     steps:
       - name: Verify current dev executor revision
@@ -725,7 +724,6 @@ jobs:
           DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
           SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
-          SENTRY_RELEASE: ${{ github.sha }}
           SANDBOX_CLEANUP_ENABLED: ${{ vars.SANDBOX_CLEANUP_ENABLED }}
           SANDBOX_CLEANUP_PROVIDER: ${{ vars.SANDBOX_CLEANUP_PROVIDER }}
           SANDBOX_CLEANUP_SECRET_NAME: ${{ secrets.SANDBOX_CLEANUP_SECRET_NAME }}

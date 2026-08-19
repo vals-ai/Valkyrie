@@ -3,6 +3,8 @@
 Run: uv run pytest tests/unit/utils/test_task_execution_retry.py
 """
 
+import asyncio
+import threading
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any, cast
@@ -52,6 +54,49 @@ async def test_buffered_cloudwatch_write_exposes_failure(monkeypatch: pytest.Mon
     assert write is not None
     with pytest.raises(RuntimeError, match="cloudwatch unavailable"):
         await write
+
+
+async def test_buffered_cloudwatch_writes_stay_ordered(monkeypatch: pytest.MonkeyPatch) -> None:
+    first_started = threading.Event()
+    release_first = threading.Event()
+    messages: list[str] = []
+
+    def record_write(_stream_key: str, message: str, _runtime: AWSRuntime) -> None:
+        messages.append(message)
+        if message == "first":
+            first_started.set()
+            assert release_first.wait(timeout=2)
+
+    monkeypatch.setattr(task_execution_module, "write_benchmark_log_event", record_write)
+    runtime = cast(AWSRuntime, Mock(spec=AWSRuntime))
+
+    first_queue = task_execution_module.asyncio.Queue[str]()
+    first_queue.put_nowait("first")
+    first_write = task_execution_module.buffer_logs(
+        first_queue,
+        "benchmark-123:task-456",
+        runtime,
+        force_flush=True,
+    )
+    assert first_write is not None
+    assert await asyncio.to_thread(first_started.wait, 2)
+
+    second_queue = task_execution_module.asyncio.Queue[str]()
+    second_queue.put_nowait("second")
+    second_write = task_execution_module.buffer_logs(
+        second_queue,
+        "benchmark-123:task-456",
+        runtime,
+        force_flush=True,
+        previous_write=first_write,
+    )
+    assert second_write is not None
+    await asyncio.sleep(0.05)
+    assert messages == ["first"]
+
+    release_first.set()
+    await asyncio.gather(first_write, second_write)
+    assert messages == ["first", "second"]
 
 
 class TestTaskExecutionRetry:
@@ -422,9 +467,11 @@ class TestTaskExecutionRetry:
         async def _lost_grading_sandbox(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
             raise SandboxNotFoundError("grading sandbox was preempted")
 
+        capture_exception = Mock()
         monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monkeypatch.setattr(task_execution_module, "buffer_logs", Mock(return_value=None))
+        monkeypatch.setattr(task_execution_module.sentry_sdk, "capture_exception", capture_exception)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _failed_policy_lookup)
         monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _lost_grading_sandbox, raising=False)
 
@@ -439,6 +486,8 @@ class TestTaskExecutionRetry:
             .order_by(desc(ErrorResult.created_at))
         ).one()
         assert error_message == "grading sandbox was preempted"
+        captured_error = capture_exception.call_args.args[0]
+        assert isinstance(captured_error, SandboxNotFoundError)
 
     async def test_process_task_spans_timed_status_transitions(
         self,

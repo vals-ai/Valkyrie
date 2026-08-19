@@ -809,10 +809,14 @@ class MonitoringStackTest(unittest.TestCase):
                 },
             )
 
-    def test_production_requires_sentry_secret(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(ValueError, "require SENTRY_DSN_SECRET_NAME"):
-                service_templates(PROD)
+    def test_deployed_stages_require_sentry_secret(self) -> None:
+        for stage, environment in ((DEV, TEST_DEV_ENV), (PROD, TEST_PROD_ENV)):
+            environment_without_sentry = {
+                key: value for key, value in environment.items() if key != "SENTRY_DSN_SECRET_NAME"
+            }
+            with self.subTest(stage=stage), mock.patch.dict(os.environ, environment_without_sentry, clear=True):
+                with self.assertRaisesRegex(ValueError, "require SENTRY_DSN_SECRET_NAME"):
+                    service_templates(stage)
 
     def test_dev_sentry_secret_is_injected(self) -> None:
         custom_sentry_secret_name = "custom/dev-sentry-dsn"
@@ -832,13 +836,6 @@ class MonitoringStackTest(unittest.TestCase):
                         [
                             assertions.Match.object_like(
                                 {
-                                    "Environment": assertions.Match.array_with(
-                                        [
-                                            assertions.Match.object_like(
-                                                {"Name": "SENTRY_RELEASE", "Value": "deployment-sha"}
-                                            )
-                                        ]
-                                    ),
                                     "Secrets": assertions.Match.array_with(
                                         [assertions.Match.object_like({"Name": "SENTRY_DSN"})]
                                     ),
@@ -848,6 +845,49 @@ class MonitoringStackTest(unittest.TestCase):
                     )
                 },
             )
+        tracker_template.has_resource_properties(
+            "AWS::ECS::TaskDefinition",
+            {
+                "ContainerDefinitions": assertions.Match.array_with(
+                    [
+                        assertions.Match.object_like(
+                            {
+                                "Environment": assertions.Match.array_with(
+                                    [
+                                        assertions.Match.object_like(
+                                            {"Name": "SENTRY_RELEASE", "Value": "deployment-sha"}
+                                        )
+                                    ]
+                                )
+                            }
+                        )
+                    ]
+                )
+            },
+        )
+        executor_template.has_resource_properties(
+            "AWS::ECS::TaskDefinition",
+            {
+                "ContainerDefinitions": assertions.Match.array_with(
+                    [
+                        assertions.Match.object_like(
+                            {
+                                "Environment": assertions.Match.array_with(
+                                    [
+                                        assertions.Match.object_like(
+                                            {
+                                                "Name": "SENTRY_RELEASE",
+                                                "Value": assertions.Match.string_like_regexp("executor-host@.+"),
+                                            }
+                                        )
+                                    ]
+                                )
+                            }
+                        )
+                    ]
+                )
+            },
+        )
         sentry_value_from = [
             secret["ValueFrom"]
             for template in (tracker_template, executor_template)

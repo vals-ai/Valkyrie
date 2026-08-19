@@ -53,7 +53,7 @@ def _before_send_log(log: Log, _hint: Hint) -> Log | None:
 
 
 def init_sentry(service_name: str, environment: str) -> None:
-    """Initialize Sentry SDK. No-op if SENTRY_DSN is not set.
+    """Initialize Sentry SDK when configured and require it in production.
 
     Args:
         service_name: Identifies the process in Sentry (e.g. "valkyrie-tracker").
@@ -61,6 +61,8 @@ def init_sentry(service_name: str, environment: str) -> None:
     """
     dsn = os.environ.get("SENTRY_DSN", "")
     if not dsn:
+        if environment == "production":
+            raise RuntimeError("Sentry could not start. Check the production DSN secret and deploy again.")
         return
 
     try:

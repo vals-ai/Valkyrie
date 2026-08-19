@@ -388,6 +388,7 @@ def buffer_logs(
     stream_key: str,
     aws_runtime: AWSRuntime,
     force_flush: bool = False,
+    previous_write: asyncio.Future[None] | None = None,
 ) -> asyncio.Future[None] | None:
     """
     Buffers the logs in the queue and waits till they are full before streaming them to CloudWatch.
@@ -401,7 +402,13 @@ def buffer_logs(
 
     message = "".join(messages)
     loop = asyncio.get_running_loop()
-    return loop.run_in_executor(None, write_benchmark_log_event, stream_key, message, aws_runtime)
+
+    async def write_in_order() -> None:
+        if previous_write is not None:
+            await asyncio.gather(previous_write, return_exceptions=True)
+        await loop.run_in_executor(None, write_benchmark_log_event, stream_key, message, aws_runtime)
+
+    return asyncio.create_task(write_in_order())
 
 
 def save_eval_resume_state(
@@ -499,7 +506,6 @@ def commit_task_status_transition(
     )
 
 
-@logfire.instrument("process_task", extract_args=("benchmark_id", "task_id"))
 async def process_task(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
@@ -608,6 +614,7 @@ async def _process_task_attempt(
     stream_key: str = f"{benchmark_id}:{task_stream_name}"
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
     pending_log_writes: set[asyncio.Future[None]] = set()
+    latest_log_write: asyncio.Future[None] | None = None
 
     logger.info(
         "Task output stream selected",
@@ -625,9 +632,17 @@ async def _process_task_attempt(
     last_log_time: float = time.monotonic()
 
     def schedule_log_flush(*, force: bool = False) -> None:
-        write = buffer_logs(log_queue, stream_key, aws_runtime, force_flush=force)
+        nonlocal latest_log_write
+        write = buffer_logs(
+            log_queue,
+            stream_key,
+            aws_runtime,
+            force_flush=force,
+            previous_write=latest_log_write,
+        )
         if write is None:
             return
+        latest_log_write = write
         pending_log_writes.add(write)
 
         def handle_completion(completed: asyncio.Future[None]) -> None:
@@ -1016,21 +1031,14 @@ async def _process_task_attempt(
             raise
 
         error_message = _exception_message(e)
-        logger.error(error_message)
         log_output(f"\n[ERROR] {error_message}")
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task,
-                task_session,
-                error_message,
-                producer="sandbox_provider",
-                operation="sandbox_recovery",
-                error_type=type(e).__name__,
-                expected_started_at=attempt_started_at,
-                authority=authority,
-            )
-        return {task_id: None}
+
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="sandbox_provider",
+            operation="sandbox_recovery",
+        )
     except OutputArtifactError as e:
         if task_is_stopped():
             return {task_id: None}

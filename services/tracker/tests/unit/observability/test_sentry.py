@@ -150,3 +150,9 @@ class TestSentrySetup:
             sentry_module.init_sentry("valkyrie-worker", environment="production")
 
         assert exc_info.value.__cause__ is None
+
+    def test_init_sentry_requires_production_dsn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SENTRY_DSN", raising=False)
+
+        with pytest.raises(RuntimeError, match="Check the production DSN secret"):
+            sentry_module.init_sentry("valkyrie-worker", environment="production")

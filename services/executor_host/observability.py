@@ -64,6 +64,8 @@ def configure_observability() -> None:
 
     dsn = os.environ.get("SENTRY_DSN", "")
     if not dsn:
+        if os.environ.get("ENVIRONMENT") == "production":
+            raise RuntimeError("Sentry could not start. Check the production DSN secret and deploy again.")
         return
     try:
         sentry_sdk.init(

@@ -23,7 +23,7 @@ from aws_cdk import (
     aws_sqs,
     aws_ssm,
 )
-from aws_cdk.aws_ecr_assets import Platform
+from aws_cdk.aws_ecr_assets import DockerImageAsset, Platform
 from constants import (
     DOCKER_ASSET_EXCLUDES,
     EXECUTOR_HOST_LOG_GROUP_NAME,
@@ -108,14 +108,19 @@ class ExecutorStack(Stack):
                     "Release-test ExecutorStack requires an executor-host repository and immutable image tag"
                 )
             executor_host_image = aws_ecs.ContainerImage.from_ecr_repository(executor_host_repository, image_tag)
+            executor_host_release = image_tag
         else:
-            executor_host_image = aws_ecs.ContainerImage.from_asset(
-                "..",
+            executor_host_asset = DockerImageAsset(
+                self,
+                "ExecutorHostImageAsset",
+                directory="..",
                 file="services/executor_host/Dockerfile",
                 platform=Platform.LINUX_ARM64,
                 exclude=list(DOCKER_ASSET_EXCLUDES),
                 ignore_mode=cdk.IgnoreMode.DOCKER,
             )
+            executor_host_image = aws_ecs.ContainerImage.from_docker_image_asset(executor_host_asset)
+            executor_host_release = executor_host_asset.asset_hash
 
         benchmark_service_url = benchmark_service_base_url(stage)
         bucket = aws_s3.Bucket.from_bucket_name(self, "ManagedRuntimeBucket", bucket_name)
@@ -142,8 +147,8 @@ class ExecutorStack(Stack):
         }
 
         sentry_secret_name = os.environ.get("SENTRY_DSN_SECRET_NAME", "")
-        if stage.is_prod and not sentry_secret_name:
-            raise ValueError("Production deployments require SENTRY_DSN_SECRET_NAME.")
+        if not stage.is_release_test and not sentry_secret_name:
+            raise ValueError("Dev and production deployments require SENTRY_DSN_SECRET_NAME.")
 
         sentry_secrets: dict[str, aws_ecs.Secret] = {}
         if sentry_secret_name:
@@ -193,7 +198,7 @@ class ExecutorStack(Stack):
                 "STABLE_QUEUE_NAME": "valkyrie-stable",
                 "EXECUTOR_RELEASE_BUCKET": self.executor_release_bucket.bucket_name,
                 "EXECUTOR_RELEASE_PREFIX": EXECUTOR_RELEASE_PREFIX,
-                "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
+                "SENTRY_RELEASE": f"executor-host@{executor_host_release}",
             },
             secrets={**db_secrets, **sentry_secrets},
             stop_timeout=Duration.seconds(WORKER_STOP_TIMEOUT_SECONDS),

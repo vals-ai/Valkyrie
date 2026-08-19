@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Any, Sequence, cast
 from uuid import UUID
 
-import logfire
 import sentry_sdk
 from benchmark_service import SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
@@ -64,6 +63,28 @@ _SANDBOX_CREATION_CAP: int = 10
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 # Limit non-idempotent completion callbacks to one attempt and a 60-second read.
 _COMPLETION_CALLBACK_CONFIG = Config(read_timeout=60, retries={"total_max_attempts": 1})
+
+
+def _capture_run_error(
+    exc: BaseException,
+    benchmark_id: UUID,
+    *,
+    producer: str,
+    operation: str,
+    cause_code: str | None = None,
+) -> None:
+    logger.error(
+        "Run execution failed",
+        exc_info=(type(exc), exc, exc.__traceback__),
+        extra={
+            "benchmark_id": str(benchmark_id),
+            "producer": producer,
+            "operation": operation,
+            "error_type": type(exc).__name__,
+            "cause_code": cause_code or "",
+        },
+    )
+    sentry_sdk.capture_exception(exc)
 
 
 def set_benchmark_final_status(
@@ -382,7 +403,6 @@ async def hold_dispatch_authority(
 
 # Keep the Tracker producer and ExecutorHost on one stable Taskiq wire name.
 @broker.task(EXECUTOR_TASK_NAME)
-@logfire.instrument("process_benchmark", extract_args=("benchmark_id_str", "verified_task_ids"))
 async def process_benchmark(
     start_benchmark_request_json: dict[str, Any] | None = None,
     benchmark_id_str: str | None = None,
@@ -608,7 +628,13 @@ async def process_benchmark(
     except ExecutionAuthorityRevoked:
         finalization_deferred = True
     except BenchmarkServiceUnauthenticatedError as e:
-        logfire.warn("process_benchmark failed due to benchmark service auth error")
+        _capture_run_error(
+            e,
+            benchmark_id,
+            producer="benchmark_service",
+            operation="authenticate",
+            cause_code="authentication_failed",
+        )
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = f"{str(e)}\n{traceback.format_exc()}"
@@ -625,6 +651,12 @@ async def process_benchmark(
                 task_ids=verified_task_ids,
             )
     except BenchmarkServiceError as e:
+        _capture_run_error(
+            e,
+            benchmark_id,
+            producer="benchmark_service",
+            operation="process_benchmark",
+        )
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = str(e)
@@ -639,8 +671,7 @@ async def process_benchmark(
                 task_ids=verified_task_ids,
             )
     except Exception as e:
-        logfire.exception("process_benchmark failed")
-        sentry_sdk.capture_exception(e)
+        _capture_run_error(e, benchmark_id, producer="tracker", operation="process_benchmark")
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = f"{str(e)}\n{traceback.format_exc()}"

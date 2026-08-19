@@ -22,6 +22,14 @@ def test_invalid_production_sentry_configuration_fails_startup(monkeypatch: pyte
     assert exc_info.value.__cause__ is None
 
 
+def test_missing_production_sentry_configuration_fails_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SENTRY_DSN", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+
+    with pytest.raises(RuntimeError, match="Check the production DSN secret"):
+        observability.configure_observability()
+
+
 def test_dispatch_context_correlates_cloudwatch_logs_and_child_trace(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sentry_sdk, "get_traceparent", lambda: "sentry-child-trace")
     monkeypatch.setattr(sentry_sdk, "get_baggage", lambda: "sentry-child-baggage")
