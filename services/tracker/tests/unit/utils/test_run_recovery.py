@@ -180,7 +180,12 @@ class TestRunRecovery:
             task_ids=task_ids,
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter, aws_managed=False)
+        benchmark_row = start_benchmark_request_to_benchmark(
+            request,
+            self._test_starter,
+            aws_managed=False,
+            run_aws_resources=None,
+        )
         benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": 1})
         database_session.add(benchmark_row)
         database_session.commit()
@@ -381,6 +386,7 @@ class TestRunRecovery:
             start_request,
             self._test_starter,
             aws_managed=False,
+            run_aws_resources=None,
         )
         benchmark_row.executor_release_id = "test-release"
         benchmark_row.executor_artifact_uri = "s3://artifacts/test-release.pex"
@@ -560,6 +566,7 @@ class TestRunRecovery:
             start_benchmark_request,
             self._test_starter,
             aws_managed=False,
+            run_aws_resources=None,
         )
         database_session.add(benchmark_row)
         database_session.commit()
@@ -894,6 +901,7 @@ class TestRunRecovery:
             start_benchmark_request,
             self._test_starter,
             aws_managed=False,
+            run_aws_resources=None,
         )
         benchmark_row.status = BenchmarkStatus.FINISHED
         benchmark_row.finished_at = datetime.now(ZoneInfo("UTC"))
@@ -993,6 +1001,7 @@ class TestRunRecovery:
             request,
             self._test_starter,
             aws_managed=False,
+            run_aws_resources=None,
         )
         database_session.add(benchmark_row)
         database_session.commit()
@@ -1081,6 +1090,7 @@ class TestRunRecovery:
             request,
             self._test_starter,
             aws_managed=False,
+            run_aws_resources=None,
         )
         database_session.add(benchmark_row)
         database_session.commit()

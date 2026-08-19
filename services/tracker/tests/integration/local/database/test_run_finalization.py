@@ -299,6 +299,7 @@ class TestRunFinalization:
                     pre_action_status=pre_action_status,
                     dispatch_id=uuid4(),
                     kind=ExecutorDispatchKind.RETRY,
+                    aws_managed=retry_benchmark.aws_managed,
                 )
                 retry_session.commit()
                 retry_dispatch_ids.append(dispatch.id)
@@ -601,6 +602,7 @@ class TestRunFinalization:
                         pre_action_status=pre_action_status,
                         dispatch_id=uuid4(),
                         kind=ExecutorDispatchKind.RESUME,
+                        aws_managed=retry_benchmark.aws_managed,
                     )
                     retry_session.commit()
                     retry_dispatch_ids.append(dispatch.id)

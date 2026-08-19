@@ -58,6 +58,10 @@ class AWSClientProvider(ABC):
     def lambda_client(self, config: Config | None = None) -> Any:
         return _boto3_client("lambda", config=config, **self._client_kwargs())
 
+    @lru_cache(maxsize=32)
+    def sts_client(self) -> Any:
+        return _boto3_client("sts", **self._client_kwargs())
+
     def maximum_presign_ttl(self, requested_seconds: int) -> int:
         return requested_seconds
 

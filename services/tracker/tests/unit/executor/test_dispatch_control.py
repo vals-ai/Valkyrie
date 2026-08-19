@@ -60,6 +60,7 @@ def test_start_admission_selects_active_release(
         database_session,
         benchmark=example_benchmark_object,
         dispatch_id=dispatch_id,
+        aws_managed=example_benchmark_object.aws_managed,
     )
     database_session.commit()
 
@@ -82,6 +83,7 @@ def test_managed_start_requires_a_compatible_active_release(
             database_session,
             benchmark=example_benchmark_object,
             dispatch_id=uuid4(),
+            aws_managed=example_benchmark_object.aws_managed,
         )
 
 
@@ -99,6 +101,7 @@ def test_managed_start_accepts_the_managed_execution_protocol(
         database_session,
         benchmark=example_benchmark_object,
         dispatch_id=uuid4(),
+        aws_managed=example_benchmark_object.aws_managed,
     )
 
     assert dispatch.executor_release_id == release.id
@@ -130,6 +133,7 @@ def test_in_progress_retry_keeps_release_and_original_dispatch_active(
         pre_action_status=BenchmarkStatus.IN_PROGRESS,
         dispatch_id=uuid4(),
         kind=ExecutorDispatchKind.RETRY,
+        aws_managed=example_benchmark_object.aws_managed,
     )
     database_session.commit()
     database_session.refresh(old_dispatch)
@@ -156,6 +160,7 @@ def test_enqueue_failure_makes_start_retryable(
         database_session,
         benchmark=example_benchmark_object,
         dispatch_id=uuid4(),
+        aws_managed=example_benchmark_object.aws_managed,
     )
     database_session.add(task)
     database_session.commit()
@@ -278,6 +283,7 @@ def test_enqueue_failure_does_not_override_claimed_delivery(
         database_session,
         benchmark=example_benchmark_object,
         dispatch_id=uuid4(),
+        aws_managed=example_benchmark_object.aws_managed,
     )
     dispatch.status = ExecutorDispatchStatus.RUNNING
     dispatch.started_at = datetime.now(UTC)
@@ -404,6 +410,7 @@ def test_terminal_recovery_terminalizes_active_dispatches(
         pre_action_status=BenchmarkStatus.ERROR,
         dispatch_id=uuid4(),
         kind=ExecutorDispatchKind.RESUME,
+        aws_managed=example_benchmark_object.aws_managed,
     )
     database_session.commit()
     database_session.refresh(old_dispatch)

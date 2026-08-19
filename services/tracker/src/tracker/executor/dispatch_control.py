@@ -8,7 +8,10 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import update
 from sqlmodel import Session, col, select
 
-from executor_protocol import MANAGED_EXECUTION_PROTOCOL_VERSION
+from executor_protocol import (
+    MANAGED_EXECUTION_PROTOCOL_VERSIONS,
+    RESOURCE_BOUND_EXECUTION_PROTOCOL_VERSION,
+)
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -42,12 +45,20 @@ class EnqueueFailureResolution(str, Enum):
 
 
 def _require_managed_execution_release(release: ExecutorRelease) -> None:
-    if release.protocol_version != MANAGED_EXECUTION_PROTOCOL_VERSION:
+    if release.protocol_version not in MANAGED_EXECUTION_PROTOCOL_VERSIONS:
         raise ReleaseControlError("Activate an executor release that supports managed runs")
 
 
-def _require_compatible_release(benchmark: Benchmark, release: ExecutorRelease) -> None:
-    if benchmark.aws_managed:
+def _require_compatible_release(
+    benchmark: Benchmark,
+    release: ExecutorRelease,
+    *,
+    aws_managed: bool,
+) -> None:
+    if benchmark.run_aws_resources is not None and aws_managed != benchmark.aws_managed:
+        if release.protocol_version != RESOURCE_BOUND_EXECUTION_PROTOCOL_VERSION:
+            raise ReleaseControlError("Activate an executor release that supports resource-bound runs")
+    elif aws_managed:
         _require_managed_execution_release(release)
 
 
@@ -61,11 +72,16 @@ def admit_start_dispatch(
     *,
     benchmark: Benchmark,
     dispatch_id: UUID,
+    aws_managed: bool,
 ) -> ExecutorDispatch:
     """Select the active release and persist one start dispatch."""
     with session.no_autoflush:
         release = select_active_release(session, for_update=True)
-    _require_compatible_release(benchmark, release)
+    _require_compatible_release(
+        benchmark,
+        release,
+        aws_managed=aws_managed,
+    )
     session.add(benchmark)
     pin_benchmark_to_release(benchmark, release)
     dispatch = create_executor_dispatch(
@@ -86,15 +102,15 @@ def admit_recovery_dispatch(
     pre_action_status: BenchmarkStatus,
     dispatch_id: UUID,
     kind: ExecutorDispatchKind,
+    aws_managed: bool,
 ) -> ExecutorDispatch:
     """Persist additive in-progress work or replace a terminal execution."""
-    with session.no_autoflush:
-        lock_executor_admission(session)
-        if pre_action_status == BenchmarkStatus.IN_PROGRESS:
-            release = resolve_current_execution_release(session, benchmark, for_update=True)
-        else:
-            release = select_active_release(session, for_update=True)
-    _require_compatible_release(benchmark, release)
+    release = _select_recovery_release(session, benchmark, pre_action_status)
+    _require_compatible_release(
+        benchmark,
+        release,
+        aws_managed=aws_managed,
+    )
     if pre_action_status != BenchmarkStatus.IN_PROGRESS:
         benchmark.current_execution_release_id = release.id
         benchmark.finished_at = None
@@ -110,6 +126,34 @@ def admit_recovery_dispatch(
     session.add(dispatch)
     session.flush()
     return dispatch
+
+
+def _select_recovery_release(
+    session: Session,
+    benchmark: Benchmark,
+    pre_action_status: BenchmarkStatus,
+) -> ExecutorRelease:
+    with session.no_autoflush:
+        lock_executor_admission(session)
+        if pre_action_status == BenchmarkStatus.IN_PROGRESS:
+            return resolve_current_execution_release(session, benchmark, for_update=True)
+        return select_active_release(session, for_update=True)
+
+
+def validate_recovery_execution_release(
+    session: Session,
+    *,
+    benchmark: Benchmark,
+    pre_action_status: BenchmarkStatus,
+    aws_managed: bool,
+) -> None:
+    """Reject recovery before external work when its selected release is incompatible."""
+    release = _select_recovery_release(session, benchmark, pre_action_status)
+    _require_compatible_release(
+        benchmark,
+        release,
+        aws_managed=aws_managed,
+    )
 
 
 def terminalize_active_dispatches(

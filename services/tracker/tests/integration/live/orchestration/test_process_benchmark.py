@@ -74,6 +74,7 @@ async def _create_benchmark(
         request,
         RequestIdentity(org=Org(id=TEST_ORG_ID, name="default"), access_key_id=None, email=None, name=None),
         aws_managed=False,
+        run_aws_resources=None,
     )
     copied = await copy_agent_to_benchmark(
         str(benchmark.id),

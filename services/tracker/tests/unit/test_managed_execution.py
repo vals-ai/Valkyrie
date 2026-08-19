@@ -8,6 +8,7 @@ from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
+from tracker.aws.models import RunAWSResources
 from tracker.aws.resolver import ManagedAWSEligibilityError
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org
@@ -58,6 +59,7 @@ def _persist_benchmark(
     request: StartBenchmarkRequest,
     *,
     aws_managed: bool,
+    run_aws_resources: RunAWSResources | None = None,
 ) -> Benchmark:
     starter = RequestIdentity(
         org=Org(id=TEST_ORG_ID, name="default"),
@@ -69,6 +71,7 @@ def _persist_benchmark(
         request,
         starter,
         aws_managed=aws_managed,
+        run_aws_resources=run_aws_resources,
     )
     session.add(benchmark)
     session.commit()
@@ -267,6 +270,39 @@ async def test_access_key_execution_for_managed_row_marks_run_error(
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
     assert "Queued access-key execution does not match the stored managed run mode" in (benchmark.error_message or "")
+
+
+async def test_matching_access_key_execution_can_continue_a_resource_bound_managed_run(
+    contract: AgentContractRequest,
+    harness_config: HarnessConfig,
+    database_session: Session,
+    process_benchmark_env: None,
+    executor_authority_kwargs: Any,
+) -> None:
+    managed_request = _managed_request(contract)
+    benchmark = _persist_benchmark(
+        database_session,
+        managed_request,
+        aws_managed=True,
+        run_aws_resources=RunAWSResources(
+            account_id="123456789012",
+            region=harness_config.aws.aws_default_region,
+            s3_bucket=harness_config.s3_bucket,
+            log_group=harness_config.log_group,
+            log_retention_days=harness_config.log_retention_policy,
+        ),
+    )
+    access_key_request = benchmark.access_key_start_benchmark_request(harness_config)
+
+    await process_benchmark(
+        start_benchmark_request_json=access_key_request.model_dump(mode="json"),
+        benchmark_id_str=str(benchmark.id),
+        verified_task_ids=_TASK_IDS,
+        **executor_authority_kwargs(benchmark),
+    )
+
+    database_session.refresh(benchmark)
+    assert benchmark.status == BenchmarkStatus.FINISHED
 
 
 async def test_ineligible_managed_execution_marks_run_error(

@@ -52,6 +52,16 @@ class RetryMode(str, Enum):
     FROM_SCRATCH = "from_scratch"
 
 
+class RunAWSResources(ResponseModel):
+    """AWS resource namespace and locations permanently bound to a run."""
+
+    account_id: str
+    region: str
+    s3_bucket: str
+    log_group: str
+    log_retention_days: int
+
+
 class Order(str, Enum):
     """Sort order for run listings."""
 
@@ -227,6 +237,7 @@ class FetchBenchmarkMetadataResponse(ResponseModel):
     executor_artifact_uri: str | None = None
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
+    run_aws_resources: RunAWSResources | None = None
 
 
 class FinalEvaluation(ResponseModel):

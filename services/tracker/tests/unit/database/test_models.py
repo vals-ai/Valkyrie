@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
+from tracker.aws.models import RunAWSResources
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -85,3 +86,28 @@ def test_create_benchmark_table_row_counts_stopped_tasks_as_finished(database_se
 
     assert row.total_tasks == 4
     assert row.finished_tasks == 3
+
+
+def test_run_aws_resources_cannot_change_after_benchmark_insert(database_session: Session) -> None:
+    resources = RunAWSResources(
+        account_id="123456789012",
+        region="us-east-1",
+        s3_bucket="run-bucket",
+        log_group="run-logs",
+        log_retention_days=30,
+    )
+    benchmark = Benchmark(
+        org_id=TEST_ORG_ID,
+        name="swebench",
+        run_aws_resources=resources,
+        arguments=BenchmarkArguments(
+            contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+            concurrency=1,
+        ),
+    )
+    database_session.add(benchmark)
+    database_session.commit()
+
+    benchmark.run_aws_resources = resources.model_copy(update={"s3_bucket": "different-bucket"})
+    with pytest.raises(ValueError, match="cannot be changed"):
+        database_session.commit()

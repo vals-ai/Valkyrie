@@ -382,6 +382,7 @@ class TestRunState:
             original_start_benchmark_request,
             self._test_starter,
             aws_managed=False,
+            run_aws_resources=None,
         )
         assert benchmark_row.arguments.sandbox_provider_secret_name == "ModalSecrets"
 

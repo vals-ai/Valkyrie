@@ -34,6 +34,7 @@ from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from main import app, tracker_service_error_handler
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
+from tracker.aws.models import RunAWSResources
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3ObjectCopy
 from tracker.database.models import (
@@ -2075,6 +2076,13 @@ class TestTrackerAPI:
             arguments=BenchmarkArguments(contract=contract, concurrency=1),
             started_by_email="alice@vals.ai",
             started_by_id="K2abc",
+            run_aws_resources=RunAWSResources(
+                account_id="123456789012",
+                region="us-east-1",
+                s3_bucket="run-bucket",
+                log_group="run-logs",
+                log_retention_days=30,
+            ),
         )
         database_session.add(bench)
         database_session.commit()
@@ -2082,6 +2090,7 @@ class TestTrackerAPI:
         response = client.get(f"/fetch-benchmark-metadata/{bench.id}")
         assert response.status_code == 200
         assert response.json()["started_by_email"] == "alice@vals.ai"
+        assert response.json()["run_aws_resources"]["s3_bucket"] == "run-bucket"
 
     async def test_fetch_run_outputs_streams_tar(
         self,

@@ -44,7 +44,7 @@ from tracker.aws.resolver import (
     resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
 )
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.runtime import AWSRuntime, identify_run_aws_resources
 from tracker.aws.secrets import resolve_secrets
 from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
@@ -88,6 +88,7 @@ from tracker.executor.dispatch_control import (
     admit_recovery_dispatch,
     admit_start_dispatch,
     resolve_enqueue_failure,
+    validate_recovery_execution_release,
     validate_managed_execution_release,
 )
 from tracker.database.session import check_database_connection, get_session
@@ -212,8 +213,10 @@ def _process_benchmark_kwargs(
     benchmark_row: Benchmark,
     request: StartBenchmarkRequest,
     verified_task_ids: list[str],
+    *,
+    aws_managed: bool,
 ) -> dict[str, Any]:
-    if benchmark_row.aws_managed:
+    if aws_managed:
         return {
             "execution_context_json": ManagedExecutionContext(
                 version=2,
@@ -559,6 +562,8 @@ async def start_benchmark(
             detail=f"Agent '{request.contract.name}' is not available in the deployment bucket.",
         )
 
+    run_aws_resources = identify_run_aws_resources(aws_runtime)
+
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
     benchmark_service = request.benchmark_service
@@ -594,6 +599,7 @@ async def start_benchmark(
         request,
         run_starter,
         aws_managed=aws_managed,
+        run_aws_resources=run_aws_resources,
     )
     dispatch_id = uuid4()
     created_agent_copy: S3ObjectCopy | None = None
@@ -609,8 +615,14 @@ async def start_benchmark(
             session,
             benchmark=benchmark_row,
             dispatch_id=dispatch_id,
+            aws_managed=aws_managed,
         )
-        executor_payload = _process_benchmark_kwargs(benchmark_row, request, verify_response.task_ids)
+        executor_payload = _process_benchmark_kwargs(
+            benchmark_row,
+            request,
+            verify_response.task_ids,
+            aws_managed=aws_managed,
+        )
         session.commit()
     except Exception as exc:
         await _rollback_failed_start_admission(
@@ -843,7 +855,8 @@ async def retrieve_results(
     )
     aws_runtime = resolve_run_aws_runtime(
         http_request,
-        aws_managed=benchmark_row.aws_managed,
+        run_aws_resources=benchmark_row.run_aws_resources,
+        legacy_aws_managed=benchmark_row.aws_managed,
         org_id=org.id,
     )
 
@@ -1016,10 +1029,10 @@ async def stop_benchmark(
 
     runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
         http_request,
-        aws_managed=benchmark_row.aws_managed,
+        run_aws_resources=benchmark_row.run_aws_resources,
+        legacy_aws_managed=benchmark_row.aws_managed,
         org_id=org.id,
     )
-
     provider_secret_name = (
         _resolve_force_stop_provider_secret_name(
             benchmark_row,
@@ -1127,9 +1140,11 @@ async def retry_or_resume_benchmark(
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
     runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
         http_request,
-        aws_managed=benchmark_row.aws_managed,
+        run_aws_resources=benchmark_row.run_aws_resources,
+        legacy_aws_managed=benchmark_row.aws_managed,
         org_id=org.id,
     )
+    current_aws_managed = runtime_resolution.aws_managed
 
     if benchmark_row.status == BenchmarkStatus.STOPPING:
         raise HTTPException(
@@ -1195,7 +1210,14 @@ async def retry_or_resume_benchmark(
             )
         pre_action_status = benchmark_row.status
 
-        if benchmark_row.aws_managed:
+        validate_recovery_execution_release(
+            session,
+            benchmark=benchmark_row,
+            pre_action_status=pre_action_status,
+            aws_managed=current_aws_managed,
+        )
+
+        if current_aws_managed:
             prospective_request = benchmark_row.managed_start_benchmark_request(
                 service_headers=effective_service_headers,
             )
@@ -1247,7 +1269,7 @@ async def retry_or_resume_benchmark(
                 benchmark_url=benchmark_url,
             )
 
-        if benchmark_row.aws_managed:
+        if current_aws_managed:
             resume_request = benchmark_row.managed_start_benchmark_request(
                 service_headers=effective_service_headers,
             )
@@ -1264,8 +1286,14 @@ async def retry_or_resume_benchmark(
             pre_action_status=pre_action_status,
             dispatch_id=dispatch_id,
             kind=dispatch_kind,
+            aws_managed=current_aws_managed,
         )
-        executor_payload = _process_benchmark_kwargs(benchmark_row, resume_request, verified_task_ids)
+        executor_payload = _process_benchmark_kwargs(
+            benchmark_row,
+            resume_request,
+            verified_task_ids,
+            aws_managed=current_aws_managed,
+        )
         session.commit()
     except ReleaseControlError as exc:
         session.rollback()

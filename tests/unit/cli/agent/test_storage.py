@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
+from tracker.aws.models import RunAWSResources
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.agent import storage
@@ -114,14 +115,31 @@ async def test_agent_download_ingest_and_remove_use_configured_s3(
     assert deleted_keys == ["agents/demo.zip"]
 
 
-async def test_update_benchmark_agent_version_copies_configured_agent_snapshot(
+async def test_update_benchmark_agent_version_requires_run_resources_before_copy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = AsyncMock()
     client.copy_object.return_value = {}
     _configure_s3_clients(monkeypatch, [client, client])
+    sts_client = AsyncMock()
+    sts_client.get_caller_identity = lambda: {"Account": "123456789012"}
+    monkeypatch.setattr(ExplicitCredentialsAWSClientProvider, "sts_client", lambda _provider: sts_client)
 
-    await storage.update_benchmark_agent_version("alpha", "benchmark-1")
+    resources = RunAWSResources(
+        account_id="123456789012",
+        region="us-east-1",
+        s3_bucket="agent-bucket",
+        log_group="",
+        log_retention_days=30,
+    )
+    with pytest.raises(S3Error, match="s3_bucket"):
+        await storage.update_benchmark_agent_version(
+            "alpha",
+            "benchmark-1",
+            resources.model_copy(update={"s3_bucket": "other-bucket"}),
+        )
+
+    await storage.update_benchmark_agent_version("alpha", "benchmark-1", resources)
 
     client.head_object.assert_awaited_once_with(
         Bucket="agent-bucket",

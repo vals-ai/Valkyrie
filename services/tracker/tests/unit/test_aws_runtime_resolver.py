@@ -13,8 +13,9 @@ from starlette.requests import Request
 from main import app
 from tracker import config
 from tracker.aws.clients import DefaultChainAWSClientProvider, ExplicitCredentialsAWSClientProvider
+from tracker.aws.models import RunAWSResources
 from tracker.aws.resolver import (
-    resolve_run_metadata_aws_runtime,
+    resolve_run_metadata_aws_resources,
     resolve_run_aws_runtime,
     resolve_start_aws_runtime,
 )
@@ -24,6 +25,7 @@ from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmark
 
 _ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
 _OTHER_ORG_ID = UUID("00000000-0000-0000-0000-000000000002")
+_AWS_ACCOUNT_ID = "123456789012"
 
 _COMPLETE_HARNESS_HEADERS = {
     "x-harness-aws-access-key-id": "header-access-key",
@@ -167,7 +169,8 @@ def test_run_runtime_uses_stored_mode(
 
     runtime = resolve_run_aws_runtime(
         _request(_COMPLETE_HARNESS_HEADERS),
-        aws_managed=aws_managed,
+        run_aws_resources=None,
+        legacy_aws_managed=aws_managed,
         org_id=_ORG_ID,
     )
 
@@ -180,7 +183,8 @@ def test_managed_run_ignores_partial_access_key_headers(monkeypatch: pytest.Monk
 
     runtime = resolve_run_aws_runtime(
         _request({"x-harness-aws-access-key-id": "ignored"}),
-        aws_managed=True,
+        run_aws_resources=None,
+        legacy_aws_managed=True,
         org_id=_ORG_ID,
     )
 
@@ -202,13 +206,35 @@ def test_optional_run_runtime_preserves_stored_mode(
 ) -> None:
     _configure_managed_runtime(monkeypatch, submissions_enabled=False)
 
-    runtime = resolve_run_metadata_aws_runtime(
+    resources = resolve_run_metadata_aws_resources(
         _request(),
-        aws_managed=aws_managed,
+        run_aws_resources=None,
+        legacy_aws_managed=aws_managed,
         org_id=_ORG_ID,
     )
 
-    assert (runtime.resources.s3_bucket if runtime is not None else None) == expected_bucket
+    assert (resources.s3_bucket if resources is not None else None) == expected_bucket
+
+
+def test_resource_bound_metadata_uses_stored_locations_without_aws_authority() -> None:
+    resources = RunAWSResources(
+        account_id=_AWS_ACCOUNT_ID,
+        region="run-region",
+        s3_bucket="run-bucket",
+        log_group="run-log-group",
+        log_retention_days=14,
+    )
+
+    resolved = resolve_run_metadata_aws_resources(
+        _request(),
+        run_aws_resources=resources,
+        legacy_aws_managed=False,
+        org_id=_ORG_ID,
+    )
+
+    assert resolved is not None
+    assert resolved.s3_bucket == "run-bucket"
+    assert resolved.log_group == "run-log-group"
 
 
 def test_run_runtime_rejects_managed_run_for_ineligible_org(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -217,11 +243,82 @@ def test_run_runtime_rejects_managed_run_for_ineligible_org(monkeypatch: pytest.
     with pytest.raises(HTTPException) as exc_info:
         resolve_run_aws_runtime(
             _request(_COMPLETE_HARNESS_HEADERS),
-            aws_managed=True,
+            run_aws_resources=None,
+            legacy_aws_managed=True,
             org_id=_ORG_ID,
         )
 
     assert exc_info.value.status_code == 403
+
+
+def test_resource_bound_run_can_switch_from_access_keys_to_managed(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_managed_runtime(monkeypatch, submissions_enabled=False)
+    resources = RunAWSResources(
+        account_id=_AWS_ACCOUNT_ID,
+        region="deployment-region",
+        s3_bucket="deployment-bucket",
+        log_group="deployment-log-group",
+        log_retention_days=14,
+    )
+
+    runtime = resolve_run_aws_runtime(
+        _request(),
+        run_aws_resources=resources,
+        legacy_aws_managed=False,
+        org_id=_ORG_ID,
+    )
+
+    assert runtime.resources.log_retention_days == 14
+    assert isinstance(runtime.clients, DefaultChainAWSClientProvider)
+
+
+def test_resource_bound_run_can_switch_from_managed_to_access_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_managed_runtime(monkeypatch)
+    headers = {
+        **_COMPLETE_HARNESS_HEADERS,
+        "x-harness-aws-default-region": "deployment-region",
+        "x-harness-s3-bucket": "deployment-bucket",
+        "x-harness-log-group": "deployment-log-group",
+    }
+    resources = RunAWSResources(
+        account_id=_AWS_ACCOUNT_ID,
+        region="deployment-region",
+        s3_bucket="deployment-bucket",
+        log_group="deployment-log-group",
+        log_retention_days=30,
+    )
+
+    runtime = resolve_run_aws_runtime(
+        _request(headers),
+        run_aws_resources=resources,
+        legacy_aws_managed=True,
+        org_id=_ORG_ID,
+    )
+
+    assert runtime.resources.s3_bucket == "deployment-bucket"
+    assert isinstance(runtime.clients, ExplicitCredentialsAWSClientProvider)
+
+
+def test_resource_bound_run_rejects_a_different_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_managed_runtime(monkeypatch)
+    resources = RunAWSResources(
+        account_id=_AWS_ACCOUNT_ID,
+        region="deployment-region",
+        s3_bucket="original-bucket",
+        log_group="deployment-log-group",
+        log_retention_days=30,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_run_aws_runtime(
+            _request(),
+            run_aws_resources=resources,
+            legacy_aws_managed=True,
+            org_id=_ORG_ID,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "AWS configuration does not match this run: s3_bucket"
 
 
 @pytest.mark.parametrize(
