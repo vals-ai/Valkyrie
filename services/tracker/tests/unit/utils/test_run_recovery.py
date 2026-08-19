@@ -1671,6 +1671,97 @@ class TestRunRecovery:
         assert persisted_task.status == TaskStatus.FINISHED
         assert database_session.exec(select(ExecutorDispatch)).all() == []
 
+    @pytest.mark.parametrize(
+        ("status", "retry"),
+        [
+            (BenchmarkStatus.FINISHED, False),
+            (BenchmarkStatus.ERROR, True),
+        ],
+    )
+    async def test_terminal_resume_or_retry_noops_without_eligible_tasks(
+        self,
+        status: BenchmarkStatus,
+        retry: bool,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        harness_headers: dict[str, str],
+        mock_kicker: MockKicker,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = status
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_finished",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        database_session.add_all([benchmark_row, task_row])
+        database_session.commit()
+        original_finished_at = benchmark_row.finished_at
+        assert original_finished_at is not None
+        original_finished_at = original_finished_at.replace(tzinfo=None)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry={str(retry).lower()}",
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "success"}
+        assert mock_kicker.queued_calls == []
+        database_session.expire_all()
+        persisted_benchmark = database_session.get(Benchmark, benchmark_row.id)
+        persisted_task = database_session.get(Task, task_row.id)
+        assert persisted_benchmark is not None
+        assert persisted_benchmark.status == status
+        assert persisted_benchmark.finished_at == original_finished_at
+        assert persisted_task is not None
+        assert persisted_task.status == TaskStatus.FINISHED
+        assert database_session.exec(select(ExecutorDispatch)).all() == []
+
+    async def test_terminal_retry_noop_persists_overrides(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        harness_headers: dict[str, str],
+        mock_kicker: MockKicker,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.FINISHED
+        benchmark_row.custom_benchmark_service = "https://old.example"
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_finished",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        database_session.add_all([benchmark_row, task_row])
+        database_session.commit()
+        original_finished_at = benchmark_row.finished_at
+        assert original_finished_at is not None
+        original_finished_at = original_finished_at.replace(tzinfo=None)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true&concurrency=10",
+            json={
+                "task_ids": [],
+                "service_headers": {},
+                "secrets": {"MODEL_API_KEY": "rotated-secret"},
+                "benchmark_url": "https://new.example/",
+            },
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "success"}
+        assert mock_kicker.queued_calls == []
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.FINISHED
+        assert benchmark_row.finished_at == original_finished_at
+        assert benchmark_row.custom_benchmark_service == "https://new.example"
+        assert benchmark_row.arguments.concurrency == 10
+        assert benchmark_row.arguments.contract.secrets == {"MODEL_API_KEY": "rotated-secret"}
+
     async def test_running_resume_noops(
         self,
         example_benchmark_object: Benchmark,
