@@ -1950,6 +1950,7 @@ class TestRunRecovery:
         assert persisted_benchmark.status == BenchmarkStatus.IN_PROGRESS
         assert persisted_benchmark.finished_at is None
         assert persisted_benchmark.final_evaluation is None
+
         persisted_task = database_session.get(Task, task.id)
         assert persisted_task is not None
         assert persisted_task.status == TaskStatus.FINISHED

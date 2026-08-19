@@ -366,8 +366,10 @@ class TestRunState:
             headers=harness_headers,
         )
         assert response.status_code == 200
+
         database_session.refresh(benchmark_row)
         assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+
         benchmark_row.status = BenchmarkStatus.STOPPED
         database_session.add(benchmark_row)
         database_session.commit()
