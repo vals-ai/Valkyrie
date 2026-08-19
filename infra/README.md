@@ -42,9 +42,8 @@ values:
 - `AWS_TRACKER_SECRET_NAME_PREFIXES` -- comma-separated Secrets Manager name
   prefixes the Tracker may resolve for benchmark-service authentication
 
-The dev and production ExecutorHost task roles can read every Secrets Manager
-secret in their own account and Region. Release-test does not receive this
-access.
+The ExecutorHost task roles can read every Secrets Manager secret in their own
+account and Region. Release-test does not receive this access.
 
 To enable Sentry in dev, also set the `SENTRY_DSN_SECRET_NAME` secret to the
 name of an account-local Secrets Manager secret containing the DSN. Production

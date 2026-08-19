@@ -53,7 +53,7 @@ class ManagedAWSRuntimeConfig:
 
         for org_id in self.deployment_role_org_ids:
             try:
-                parsed_org_id = UUID(org_id)
+                parsed_org_id = UUID(org_id.strip())
             except ValueError:
                 raise ValueError(f"deployment_role_org_ids contains an invalid UUID: {org_id!r}") from None
             if org_id != str(parsed_org_id):
