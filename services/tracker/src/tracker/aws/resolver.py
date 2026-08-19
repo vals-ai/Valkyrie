@@ -8,7 +8,13 @@ from fastapi import HTTPException, Request
 
 from tracker import config
 from tracker.aws.clients import DefaultChainAWSClientProvider
-from tracker.aws.runtime import AWSResources, AWSRuntime
+from tracker.aws.models import RunAWSResources
+from tracker.aws.runtime import (
+    AWSResources,
+    AWSRuntime,
+    bind_runtime_to_run,
+    resources_for_run,
+)
 from tracker.types import AWSCredentials, HarnessConfig
 
 _REQUIRED_HARNESS_HEADER_KEYS = (
@@ -234,41 +240,76 @@ def resolve_start_aws_runtime(
 def resolve_run_aws_runtime(
     request: Request,
     *,
-    aws_managed: bool,
+    run_aws_resources: RunAWSResources | None,
     org_id: UUID,
 ) -> AWSRuntime:
-    """Resolve AWS authority from a persisted run mode."""
+    """Resolve current AWS authority against a run's persisted resources."""
     return resolve_run_aws_runtime_and_access_key_config(
         request,
-        aws_managed=aws_managed,
+        run_aws_resources=run_aws_resources,
         org_id=org_id,
     ).runtime
+
+
+def _resolve_current_run_authority(request: Request, org_id: UUID) -> AWSRuntimeResolution:
+    header_inspection = inspect_harness_headers(request)
+    if header_inspection.config is not None:
+        harness_config = header_inspection.config
+        return AWSRuntimeResolution(AWSRuntime.from_harness_config(harness_config), harness_config)
+    if header_inspection.present:
+        assert header_inspection.first_missing_key is not None
+        _raise_missing_header(header_inspection.first_missing_key)
+    return AWSRuntimeResolution(_http_deployment_runtime(org_id), None)
+
+
+def _bind_resolution_to_run(
+    resolution: AWSRuntimeResolution,
+    run_aws_resources: RunAWSResources,
+) -> AWSRuntimeResolution:
+    access_key_harness_config = resolution.access_key_harness_config
+    if access_key_harness_config is not None:
+        access_key_harness_config = access_key_harness_config.model_copy(
+            update={
+                "aws": access_key_harness_config.aws.model_copy(
+                    update={"aws_default_region": run_aws_resources.region}
+                ),
+                "s3_bucket": run_aws_resources.s3_bucket,
+                "log_group": run_aws_resources.log_group,
+                "log_retention_policy": run_aws_resources.log_retention_days,
+            }
+        )
+    return AWSRuntimeResolution(
+        runtime=bind_runtime_to_run(resolution.runtime, run_aws_resources),
+        access_key_harness_config=access_key_harness_config,
+    )
 
 
 def resolve_run_aws_runtime_and_access_key_config(
     request: Request,
     *,
-    aws_managed: bool,
+    run_aws_resources: RunAWSResources | None,
     org_id: UUID,
 ) -> AWSRuntimeResolution:
-    """Resolve AWS authority and retain any access-key harness configuration."""
-    if aws_managed:
-        return AWSRuntimeResolution(_http_deployment_runtime(org_id), None)
+    """Resolve current authority while keeping historical runs on access keys."""
+    if run_aws_resources is not None:
+        return _bind_resolution_to_run(
+            _resolve_current_run_authority(request, org_id),
+            run_aws_resources,
+        )
     harness_config = fetch_harness_config(request)
     return AWSRuntimeResolution(AWSRuntime.from_harness_config(harness_config), harness_config)
 
 
-def resolve_run_metadata_aws_runtime(
+def resolve_run_metadata_aws_resources(
     request: Request,
     *,
-    aws_managed: bool,
-    org_id: UUID,
-) -> AWSRuntime | None:
-    """Resolve AWS authority when access-key metadata links may be omitted."""
-    if aws_managed:
-        return _http_deployment_runtime(org_id)
+    run_aws_resources: RunAWSResources | None,
+) -> AWSResources | None:
+    """Resolve stored resource locations for run metadata links."""
+    if run_aws_resources is not None:
+        return resources_for_run(run_aws_resources)
     harness_config = try_fetch_harness_config(request)
-    return AWSRuntime.from_harness_config(harness_config) if harness_config is not None else None
+    return AWSRuntime.from_harness_config(harness_config).resources if harness_config is not None else None
 
 
 def resolve_agent_library_aws_runtime(

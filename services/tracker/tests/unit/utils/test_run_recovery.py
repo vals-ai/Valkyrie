@@ -33,6 +33,7 @@ from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_ta
 from tests.utils import TEST_ORG_ID
 from tracker import config
 from tracker.auth import RequestIdentity
+from tracker.aws.models import RunAWSResources
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
@@ -180,7 +181,12 @@ class TestRunRecovery:
             task_ids=task_ids,
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter, aws_managed=False)
+        benchmark_row = start_benchmark_request_to_benchmark(
+            request,
+            self._test_starter,
+            aws_managed=False,
+            run_aws_resources=None,
+        )
         benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": 1})
         database_session.add(benchmark_row)
         database_session.commit()
@@ -381,6 +387,7 @@ class TestRunRecovery:
             start_request,
             self._test_starter,
             aws_managed=False,
+            run_aws_resources=None,
         )
         benchmark_row.executor_release_id = "test-release"
         benchmark_row.executor_artifact_uri = "s3://artifacts/test-release.pex"
@@ -560,6 +567,7 @@ class TestRunRecovery:
             start_benchmark_request,
             self._test_starter,
             aws_managed=False,
+            run_aws_resources=None,
         )
         database_session.add(benchmark_row)
         database_session.commit()
@@ -894,6 +902,7 @@ class TestRunRecovery:
             start_benchmark_request,
             self._test_starter,
             aws_managed=False,
+            run_aws_resources=None,
         )
         benchmark_row.status = BenchmarkStatus.FINISHED
         benchmark_row.finished_at = datetime.now(ZoneInfo("UTC"))
@@ -993,6 +1002,7 @@ class TestRunRecovery:
             request,
             self._test_starter,
             aws_managed=False,
+            run_aws_resources=None,
         )
         database_session.add(benchmark_row)
         database_session.commit()
@@ -1081,6 +1091,7 @@ class TestRunRecovery:
             request,
             self._test_starter,
             aws_managed=False,
+            run_aws_resources=None,
         )
         database_session.add(benchmark_row)
         database_session.commit()
@@ -1312,12 +1323,17 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
-        harness_headers: dict[str, str],
     ) -> None:
         """Reject an invalid managed force stop without changing run state."""
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
         benchmark_row.aws_managed = True
+        benchmark_row.run_aws_resources = RunAWSResources(
+            region="deployment-region",
+            s3_bucket="deployment-bucket",
+            log_group="deployment-log-group",
+            log_retention_days=30,
+        )
         benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"sandbox_provider_secret_name": ""})
         pending_task = Task(
             org_id=TEST_ORG_ID,
@@ -1336,7 +1352,7 @@ class TestRunRecovery:
         force_stop = AsyncMock()
         monkeypatch.setattr("main.force_stop_sandboxes", force_stop)
 
-        response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=true", headers=harness_headers)
+        response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=true")
 
         assert response.status_code == 400
         detail = response.json()["detail"]

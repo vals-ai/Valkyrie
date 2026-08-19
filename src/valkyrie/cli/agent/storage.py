@@ -10,6 +10,8 @@ from typing import cast
 import click
 import yaml
 from tracker import handle_s3_error
+from tracker.aws.models import RunAWSResources
+from tracker.aws.runtime import bind_runtime_to_run
 from tracker.aws.s3 import (
     copy_s3_object,
     delete_from_s3,
@@ -192,9 +194,15 @@ async def push_agent(agent_name: str, agent_path: Path):
                 raise
 
 
-async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> None:
+async def update_benchmark_agent_version(
+    agent_name: str,
+    benchmark_id: str,
+    run_aws_resources: RunAWSResources | None = None,
+) -> None:
     """Overwrite the frozen benchmark agent copy from agents/<name>.zip in S3."""
     runtime = cli_s3.aws_runtime()
+    if run_aws_resources is not None:
+        runtime = bind_runtime_to_run(runtime, run_aws_resources)
     source_key = get_contract_s3_key(agent_name)
     dest_key = get_benchmark_contract_s3_key(benchmark_id, agent_name)
 

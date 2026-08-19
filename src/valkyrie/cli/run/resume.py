@@ -114,7 +114,13 @@ def resume(
                 metadata = tracker.fetch_benchmark_metadata(run_id)
                 agent_name = metadata.benchmark_arguments.contract.name
                 click.echo(f"\r\033[KUpdating agent '{agent_name}'...", nl=False)
-                asyncio.run(update_benchmark_agent_version(agent_name, str(run_id)))
+                asyncio.run(
+                    update_benchmark_agent_version(
+                        agent_name,
+                        str(run_id),
+                        metadata.run_aws_resources,
+                    )
+                )
                 click.echo(click.style("\r\033[K✓ Agent updated", fg="green"))
 
             _ = tracker.retry_or_resume_benchmark(

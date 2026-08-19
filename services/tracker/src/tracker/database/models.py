@@ -24,6 +24,7 @@ from sqlmodel import (
 )
 
 from tracker.database.utils import has_field_changed
+from tracker.aws.models import RunAWSResources
 from executor_protocol import ExecutorDispatchStatus as ExecutorDispatchStatus
 
 if TYPE_CHECKING:
@@ -237,6 +238,23 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
         return BenchmarkArguments(**value)
 
 
+class RunAWSResourcesType(TypeDecorator[RunAWSResources]):
+    """Store a validated run AWS resource binding as JSON."""
+
+    impl = JSON
+    cache_ok = True
+
+    def process_bind_param(self, value: RunAWSResources | None, dialect: Dialect) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        return value.model_dump()
+
+    def process_result_value(self, value: dict[str, Any] | None, dialect: Dialect) -> RunAWSResources | None:
+        if value is None:
+            return None
+        return RunAWSResources.model_validate(value)
+
+
 class ExecutorRelease(SQLModel, table=True):
     id: str = Field(primary_key=True)
     artifact_uri: str
@@ -309,6 +327,10 @@ class Benchmark(SQLModel, table=True):
     status: BenchmarkStatus = Field(default=BenchmarkStatus.IN_PROGRESS)
     label: str | None = Field(default=None, index=True)
     aws_managed: bool = Field(default=False, nullable=False)
+    run_aws_resources: RunAWSResources | None = Field(
+        default=None,
+        sa_column=Column(RunAWSResourcesType(), nullable=True),
+    )
     executor_release_id: str | None = Field(default=None, foreign_key="executorrelease.id", index=True)
     current_execution_release_id: str | None = Field(default=None, foreign_key="executorrelease.id", index=True)
     executor_artifact_uri: str | None = None
@@ -364,9 +386,6 @@ class Benchmark(SQLModel, table=True):
     ) -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
 
-        if self.aws_managed:
-            raise ValueError("Managed runs cannot create access-key execution requests")
-
         # Older rows may persist the provider secret only in benchmark arguments.
         if self.arguments.sandbox_provider_secret_name:
             harness_config = harness_config.model_copy(
@@ -392,10 +411,13 @@ class Benchmark(SQLModel, table=True):
     def managed_start_benchmark_request(self, service_headers: dict[str, str] | None = None) -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
 
-        if not self.aws_managed:
-            raise ValueError("Access-key runs cannot create managed execution requests")
+        if self.run_aws_resources is None:
+            raise ValueError("Runs without stored AWS resources require access-key execution")
         if not self.arguments.sandbox_provider_secret_name:
-            raise ValueError("Managed runs require a sandbox provider secret name")
+            raise ValueError(
+                "Managed execution requires a stored sandbox provider secret name. "
+                "Resume this run with its access-key configuration."
+            )
 
         return StartBenchmarkRequest(
             contract=self.arguments.contract,
@@ -445,6 +467,7 @@ class Benchmark(SQLModel, table=True):
             executor_artifact_uri=self.executor_artifact_uri,
             executor_artifact_digest=self.executor_artifact_digest,
             executor_protocol_version=self.executor_protocol_version,
+            run_aws_resources=self.run_aws_resources,
         )
 
     def create_benchmark_table_row(self, session: Session) -> "BenchmarkTableRow":
@@ -531,6 +554,13 @@ def set_finished_at_when_benchmark_finished(_mapper: Mapper[Benchmark], _connect
     # If the status has changed and the new status is in a finished state, set the finished_at timestamp
     if status_changed and target.status in finished_states:
         target.finished_at = datetime.now(ZoneInfo("UTC"))
+
+
+@event.listens_for(Benchmark, "before_update")
+def prevent_run_aws_resource_changes(_mapper: Mapper[Benchmark], _connection: Connection, target: Benchmark) -> None:
+    """Keep a run's AWS destinations fixed after insertion."""
+    if has_field_changed(target, "run_aws_resources"):
+        raise ValueError("Run AWS resources cannot be changed after the run starts")
 
 
 class Task(SQLModel, table=True):

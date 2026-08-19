@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
+from tracker.aws.models import RunAWSResources
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.agent import storage
@@ -43,11 +44,13 @@ def _agent_zip(agent_name: str) -> bytes:
 def _configure_s3_clients(
     monkeypatch: pytest.MonkeyPatch,
     clients: list[AsyncMock],
+    *,
+    expected_region: str = "us-east-1",
 ) -> None:
     def s3_client(provider: ExplicitCredentialsAWSClientProvider) -> MockAsyncClientContext:
         assert provider.credentials.aws_access_key_id == "key"
         assert provider.credentials.aws_secret_access_key == "secret"
-        assert provider.credentials.aws_default_region == "us-east-1"
+        assert provider.credentials.aws_default_region == expected_region
 
         return MockAsyncClientContext(clients.pop(0))
 
@@ -114,14 +117,30 @@ async def test_agent_download_ingest_and_remove_use_configured_s3(
     assert deleted_keys == ["agents/demo.zip"]
 
 
-async def test_update_benchmark_agent_version_copies_configured_agent_snapshot(
+async def test_update_benchmark_agent_version_uses_stored_run_resources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = AsyncMock()
     client.copy_object.return_value = {}
-    _configure_s3_clients(monkeypatch, [client, client])
+    _configure_s3_clients(monkeypatch, [client, client], expected_region="run-region")
+    monkeypatch.setattr(
+        storage.cli_s3,
+        "load_config",
+        lambda: {
+            "AWS_ACCESS_KEY_ID": "key",
+            "AWS_SECRET_ACCESS_KEY": "secret",
+            "AWS_DEFAULT_REGION": "us-east-1",
+            "S3_BUCKET": "local-bucket",
+        },
+    )
 
-    await storage.update_benchmark_agent_version("alpha", "benchmark-1")
+    resources = RunAWSResources(
+        region="run-region",
+        s3_bucket="agent-bucket",
+        log_group="run-log-group",
+        log_retention_days=30,
+    )
+    await storage.update_benchmark_agent_version("alpha", "benchmark-1", resources)
 
     client.head_object.assert_awaited_once_with(
         Bucket="agent-bucket",

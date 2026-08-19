@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 
 from tracker.auth import RequestIdentity
 from tracker.aws.clients import AWSClientProvider
+from tracker.aws.models import RunAWSResources
 from tracker.aws.secrets import fetch_aws_secret
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -77,6 +78,7 @@ def start_benchmark_request_to_benchmark(
     run_starter: RequestIdentity,
     *,
     aws_managed: bool,
+    run_aws_resources: RunAWSResources | None,
 ) -> Benchmark:
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
     if aws_managed != (request.harness_config is None):
@@ -91,6 +93,7 @@ def start_benchmark_request_to_benchmark(
         label=request.label,
         custom_benchmark_service=request.custom_benchmark_service,
         aws_managed=aws_managed,
+        run_aws_resources=run_aws_resources,
         webhook_secret_name=request.webhook_secret_name,
         webhook_intervals=request.webhook_intervals,
         arguments=BenchmarkArguments(

@@ -373,7 +373,11 @@ def test_start_admission_persists_benchmark_before_pending_task_autoflush(
     )
     postgres_session.add(task)
 
-    dispatch = admit_start_dispatch(postgres_session, benchmark=benchmark, dispatch_id=uuid4())
+    dispatch = admit_start_dispatch(
+        postgres_session,
+        benchmark=benchmark,
+        dispatch_id=uuid4(),
+    )
     postgres_session.commit()
 
     postgres_session.refresh(benchmark)
@@ -406,7 +410,11 @@ def test_start_and_promotion_use_the_winning_admission_lock_order(
                 concurrency=1,
             ),
         )
-        admit_start_dispatch(session, benchmark=benchmark, dispatch_id=uuid4())
+        admit_start_dispatch(
+            session,
+            benchmark=benchmark,
+            dispatch_id=uuid4(),
+        )
 
     start_first_id = uuid4()
     outcomes = _run_while_first_transaction_holds_locks(
@@ -641,7 +649,11 @@ def test_maintenance_commit_rejects_start_waiting_on_admission_lock(
                 concurrency=1,
             ),
         )
-        admit_start_dispatch(session, benchmark=benchmark, dispatch_id=uuid4())
+        admit_start_dispatch(
+            session,
+            benchmark=benchmark,
+            dispatch_id=uuid4(),
+        )
 
     outcomes = _run_while_first_transaction_holds_locks(
         lambda session: begin_maintenance(session, target_sha="a" * 40),

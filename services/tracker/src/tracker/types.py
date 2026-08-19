@@ -11,6 +11,7 @@ from benchmark_service.client import BenchmarkServiceClient
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from tracker.config import create_benchmark_service_url
+from tracker.aws.models import RunAWSResources
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
@@ -325,6 +326,7 @@ class FetchBenchmarkMetadataResponse(BaseModel):
     executor_artifact_uri: str | None = None
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
+    run_aws_resources: RunAWSResources | None = None
 
 
 class AnalyzeBenchmarkRequest(BaseModel):

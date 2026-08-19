@@ -36,6 +36,7 @@ EXPECTED_ALL = [
     "Order",
     "RetryMode",
     "RetryOrResumeBenchmarkResponse",
+    "RunAWSResources",
     "ResultsExistResponse",
     "S3UploadResultsResponse",
     "SingleBenchmarkResponse",

@@ -18,7 +18,7 @@ from sqlmodel import Session, col, desc, func, select
 from tracker._lambda import dry_run_lambda, invoke_lambda
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group
 from tracker.aws.resolver import deployment_aws_runtime
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.runtime import AWSRuntime, bind_runtime_to_run
 from tracker.aws.secrets import fetch_aws_secret, resolve_secrets
 from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
@@ -365,6 +365,26 @@ def _preflight_managed_aws(
     return sandbox_provider_config
 
 
+def _runtime_for_queued_execution(
+    execution: _QueuedExecution,
+    benchmark: Benchmark,
+    org: Org,
+) -> AWSRuntime:
+    """Resolve queued authority without allowing the run's resources to move."""
+    if benchmark.run_aws_resources is None:
+        if execution.aws_managed:
+            raise TrackerServiceError("Runs without stored AWS resources require access-key execution")
+        harness_config = cast(HarnessConfig, execution.request.harness_config)
+        return AWSRuntime.from_harness_config(harness_config)
+
+    runtime = (
+        deployment_aws_runtime(org.id)
+        if execution.aws_managed
+        else AWSRuntime.from_harness_config(cast(HarnessConfig, execution.request.harness_config))
+    )
+    return bind_runtime_to_run(runtime, benchmark.run_aws_resources)
+
+
 async def upload_final_view_if_current(
     benchmark: Benchmark,
     final_view: FinalViewResponse,
@@ -433,13 +453,6 @@ async def process_benchmark(
             }
         )
 
-        if execution.aws_managed != benchmark_row.aws_managed:
-            queued_mode = "managed" if execution.aws_managed else "access-key"
-            stored_mode = "managed" if benchmark_row.aws_managed else "access-key"
-            raise TrackerServiceError(
-                f"Queued {queued_mode} execution does not match the stored {stored_mode} run mode"
-            )
-
         if start_benchmark_request.custom_benchmark_service is not None:
             validate_custom_service_destination(
                 start_benchmark_request.custom_benchmark_service,
@@ -447,12 +460,11 @@ async def process_benchmark(
                 auth_required=AUTH_REQUIRED,
             )
 
+        aws_runtime = _runtime_for_queued_execution(execution, benchmark_row, org)
         if execution.aws_managed:
-            aws_runtime = deployment_aws_runtime(org.id)
             sandbox_provider_config = _preflight_managed_aws(execution, aws_runtime)
         else:
             harness_config = cast(HarnessConfig, start_benchmark_request.harness_config)
-            aws_runtime = AWSRuntime.from_harness_config(harness_config)
             sandbox_provider_config = fetch_sandbox_provider_config(
                 harness_config.sandbox_provider_secret_name,
                 aws_runtime.clients,

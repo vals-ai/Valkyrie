@@ -7,6 +7,7 @@ import pytest
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from fastapi.testclient import TestClient
+from sqlalchemy import update
 from sqlmodel import Session, select
 
 from main import app
@@ -162,7 +163,6 @@ def test_managed_start_and_resume_emit_credential_free_v2(
 
     response = client.post(
         f"/retry-or-resume-benchmark/{benchmark.id}",
-        headers=_CALLER_AWS_HEADERS,
         json={"secrets": {"MODEL_API_KEY": "resume-model-secret"}},
     )
 
@@ -189,7 +189,129 @@ def test_managed_start_and_resume_emit_credential_free_v2(
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.STOPPED
     assert reset_to_in_progress.await_count == 1
+
+
+def test_managed_run_can_resume_with_access_keys_using_stored_resources(
+    contract: AgentContractRequest,
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_managed_runtime(monkeypatch)
+    _promote_test_release(database_session)
+    payloads = _capture_task_payloads(monkeypatch)
+    monkeypatch.setattr(
+        BenchmarkServiceClient,
+        "verify_task_ids",
+        AsyncMock(return_value=VerifyTaskIdsResponse(task_ids=["task-1"])),
+    )
+    monkeypatch.setattr("main.s3_object_exists", AsyncMock(return_value=True))
+    reset_to_in_progress = AsyncMock(return_value=["task-1"])
+    monkeypatch.setattr("main.reset_to_in_progress_status", reset_to_in_progress)
+
+    response = client.post("/start-benchmark", json=_start_request(contract, None).model_dump(mode="json"))
+    assert response.status_code == 200
+    benchmark = database_session.get(Benchmark, UUID(response.json()["benchmark_id"]))
+    assert benchmark is not None
+    assert benchmark.run_aws_resources is not None
+    _stop_benchmark(benchmark, database_session)
+    payloads.clear()
+
+    access_key_headers = {
+        "x-harness-aws-access-key-id": "caller-access-key",
+        "x-harness-aws-secret-access-key": "caller-secret-key",
+        "x-harness-aws-default-region": "local-region",
+        "x-harness-s3-bucket": "local-bucket",
+        "x-harness-log-group": "local-log-group",
+        "x-harness-log-retention-policy": "7",
+        "x-harness-sandbox-provider-secret-name": "provider-secret",
+    }
+    _promote_test_release(database_session, release_id="protocol-2-release", protocol_version="2")
+    response = client.post(
+        f"/retry-or-resume-benchmark/{benchmark.id}",
+        headers=access_key_headers,
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Activate an executor release that supports resource-bound runs"
+    assert reset_to_in_progress.await_count == 0
     assert payloads == []
+
+    _promote_test_release(database_session, release_id="protocol-3-release")
+    response = client.post(
+        f"/retry-or-resume-benchmark/{benchmark.id}",
+        headers=access_key_headers,
+    )
+
+    assert response.status_code == 200
+    assert reset_to_in_progress.await_count == 1
+    assert len(payloads) == 1
+    assert set(payloads[0]) == _ACCESS_KEY_TASK_KWARGS
+    queued_config = payloads[0]["start_benchmark_request_json"]["harness_config"]
+    assert queued_config["aws"]["aws_default_region"] == "deployment-region"
+    assert queued_config["s3_bucket"] == "deployment-bucket"
+    assert queued_config["log_group"] == "deployment-log-group"
+    assert queued_config["log_retention_policy"] == 30
+
+
+def test_access_key_run_without_provider_secret_rejects_managed_resume_before_mutation(
+    contract: AgentContractRequest,
+    database_session: Session,
+    harness_config: HarnessConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_managed_runtime(monkeypatch)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", harness_config.aws.aws_default_region)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", harness_config.s3_bucket)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_GROUP", harness_config.log_group)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_RETENTION_DAYS", str(harness_config.log_retention_policy))
+    _promote_test_release(database_session)
+    payloads = _capture_task_payloads(monkeypatch)
+    monkeypatch.setattr(
+        BenchmarkServiceClient,
+        "verify_task_ids",
+        AsyncMock(return_value=VerifyTaskIdsResponse(task_ids=["task-1"])),
+    )
+    monkeypatch.setattr("main.copy_agent_to_benchmark", AsyncMock(return_value=True))
+
+    request = _start_request(contract, harness_config)
+    response = client.post("/start-benchmark", json=request.model_dump(mode="json"))
+
+    assert response.status_code == 200
+    benchmark_id = UUID(response.json()["benchmark_id"])
+    benchmark = database_session.get(Benchmark, benchmark_id)
+    assert benchmark is not None
+    benchmark.arguments = benchmark.arguments.model_copy(update={"sandbox_provider_secret_name": None})
+    assert benchmark.arguments.sandbox_provider_secret_name is None
+    _stop_benchmark(benchmark, database_session)
+    original_dispatch_ids = {
+        dispatch.id
+        for dispatch in database_session.exec(
+            select(ExecutorDispatch).where(ExecutorDispatch.benchmark_id == benchmark_id)
+        ).all()
+    }
+    payloads.clear()
+    reset_to_in_progress = AsyncMock(return_value=["task-1"])
+    monkeypatch.setattr("main.reset_to_in_progress_status", reset_to_in_progress)
+
+    response = client.post(f"/retry-or-resume-benchmark/{benchmark_id}")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Managed execution requires a stored sandbox provider secret name. "
+        "Resume this run with its access-key configuration."
+    )
+    database_session.expire_all()
+    persisted_benchmark = database_session.get(Benchmark, benchmark_id)
+    assert persisted_benchmark is not None
+    assert persisted_benchmark.status == BenchmarkStatus.STOPPED
+    assert {
+        dispatch.id
+        for dispatch in database_session.exec(
+            select(ExecutorDispatch).where(ExecutorDispatch.benchmark_id == benchmark_id)
+        ).all()
+    } == original_dispatch_ids
+    assert payloads == []
+    reset_to_in_progress.assert_not_awaited()
 
 
 def test_managed_start_rejects_aws_authority_before_persistence(
@@ -236,7 +358,7 @@ def test_managed_start_rejects_aws_authority_from_resolved_contract(
     assert payloads == []
 
 
-def test_managed_start_requires_a_compatible_executor_release(
+def test_new_start_requires_a_resource_bound_executor_release(
     contract: AgentContractRequest,
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -247,11 +369,11 @@ def test_managed_start_requires_a_compatible_executor_release(
     response = client.post("/start-benchmark", json=_start_request(contract, None).model_dump(mode="json"))
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "Activate an executor release that supports managed runs"
+    assert response.json()["detail"] == "Activate an executor release that supports resource-bound runs"
     assert database_session.exec(select(Benchmark).where(Benchmark.name == "producer-contract-test")).all() == []
 
 
-def test_managed_resume_rolls_back_when_the_active_release_is_incompatible(
+def test_resource_bound_resume_rolls_back_when_the_active_release_is_incompatible(
     contract: AgentContractRequest,
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -292,7 +414,7 @@ def test_managed_resume_rolls_back_when_the_active_release_is_incompatible(
     response = client.post(f"/retry-or-resume-benchmark/{benchmark_id}")
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "Activate an executor release that supports managed runs"
+    assert response.json()["detail"] == "Activate an executor release that supports resource-bound runs"
     database_session.expire_all()
     persisted_benchmark = database_session.get(Benchmark, benchmark_id)
     persisted_task = database_session.get(Task, task.id)
@@ -371,14 +493,14 @@ def test_managed_resume_payload_failure_rolls_back_recovery_state(
     assert payloads == []
 
 
-def test_access_key_start_and_resume_keep_v1_task_kwargs(
+def test_access_key_wire_shape_supports_new_and_historical_runs(
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
     harness_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _promote_test_release(database_session, protocol_version="1")
+    _promote_test_release(database_session)
     payloads = _capture_task_payloads(monkeypatch)
 
     async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
@@ -405,6 +527,9 @@ def test_access_key_start_and_resume_keep_v1_task_kwargs(
     assert payloads[0]["start_benchmark_request_json"]["harness_config"] is not None
 
     _stop_benchmark(benchmark, database_session)
+    database_session.exec(update(Benchmark).where(Benchmark.id == benchmark.id).values(run_aws_resources=None))
+    database_session.commit()
+    _promote_test_release(database_session, release_id="historical-release", protocol_version="1")
     payloads.clear()
 
     response = client.post(

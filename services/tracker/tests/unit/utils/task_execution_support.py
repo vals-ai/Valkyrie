@@ -81,6 +81,7 @@ def create_task_environment(
         start_benchmark_request,
         run_starter or _TEST_STARTER,
         aws_managed=False,
+        run_aws_resources=None,
     )
     benchmark_row.status = BenchmarkStatus.IN_PROGRESS
     database_session.add(benchmark_row)

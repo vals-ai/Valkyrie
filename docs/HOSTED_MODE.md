@@ -79,12 +79,14 @@ Removing a field that is not present is safe. The Region and bucket remain in th
 
 ### Retry or resume an existing run
 
-Tracker stores the AWS execution mode when a run starts. Retrying or resuming the run uses that stored mode rather than selecting a new mode from the current local config.
+Tracker stores the Region, S3 bucket, CloudWatch log group, and log retention used by each new run. Retry and resume select credentials from the current config, then use the run's stored destinations instead of the config's current resource values:
 
-- A managed run continues to use the deployment task roles.
-- An access-key run still requires a complete access-key configuration. If the credential fields were removed, restore the configuration used for that run before retrying or resuming it.
+- A config with both access-key fields uses those credentials.
+- A config without access-key fields uses managed AWS when the organization is eligible.
 
-Adding or removing local credential fields does not convert an existing run to a different AWS execution mode.
+The selected credentials must have permission to use the stored resources. AWS operations return a permission error when they do not. Adding or removing access-key fields changes the authority used for recovery; it does not redirect the run to different resources.
+
+Runs created before resource binding was deployed do not have stored destinations. These historical runs require access-key credentials for retry and resume.
 
 You can also set the API key manually:
 
