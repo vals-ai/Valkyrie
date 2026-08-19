@@ -9,13 +9,14 @@ import aws_cdk as cdk
 from aws_cdk import assertions, aws_s3
 
 from runtime_iam import create_executor_task_role, create_tracker_task_role
-from stage import DEV, RELEASE_TEST, Stage
+from stage import DEV, PROD, RELEASE_TEST, Stage
 from stage_config import ManagedAWSRuntimeConfig
 from test_monitoring_stack import (
     TEST_AWS_ACCOUNT,
     TEST_AWS_REGION,
     TEST_DEV_ENV,
     TEST_MANAGED_ORG_ID,
+    TEST_PROD_ENV,
     TEST_RELEASE_TEST_ENV,
     TEST_TRACKER_SECRET_NAME_PREFIX,
     JsonObject,
@@ -67,6 +68,7 @@ class RuntimeIamTest(unittest.TestCase):
             ("benchmark_log_retention_days", 0),
             ("benchmark_log_retention_days", -1),
             ("deployment_role_org_ids", ("not-a-uuid",)),
+            ("deployment_role_org_ids", ("AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",)),
             ("tracker_secret_name_prefixes", ("",)),
             ("tracker_secret_name_prefixes", ("*",)),
             ("tracker_secret_name_prefixes", ("valkyrie/*",)),
@@ -247,6 +249,49 @@ class RuntimeIamTest(unittest.TestCase):
                 else:
                     secret_resources = json.dumps(secret_statement["Resource"])
                     self.assertIn("secretsmanager", secret_resources)
+                    self.assertIn(f"secret:{TEST_TRACKER_SECRET_NAME_PREFIX}*", secret_resources)
+
+    def test_prod_managed_runtime_uses_prod_inventory_and_task_roles(self) -> None:
+        with mock.patch.dict(os.environ, TEST_PROD_ENV, clear=True):
+            tracker_template, executor_template, _ = service_templates(PROD)
+
+        expected_environment = assertions.Match.array_with(
+            [
+                {"Name": "AWS_DEPLOYMENT_ROLE_ORG_IDS", "Value": TEST_MANAGED_ORG_ID},
+                {"Name": "AWS_DEPLOYMENT_REGION", "Value": TEST_AWS_REGION},
+                assertions.Match.object_like({"Name": "AWS_DEPLOYMENT_S3_BUCKET"}),
+                {"Name": "AWS_DEPLOYMENT_LOG_GROUP", "Value": "/valkyrie/benchmarks"},
+                {"Name": "AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "Value": "365"},
+                {"Name": "AWS_MANAGED_SUBMISSIONS_ENABLED", "Value": "true"},
+            ]
+        )
+
+        for template, role_name in (
+            (tracker_template, "ValkyrieTrackerTaskRole"),
+            (executor_template, "ValkyrieExecutorTaskRole"),
+        ):
+            with self.subTest(role=role_name):
+                role_logical_id, _ = _named_role(template, role_name)
+                template.has_resource_properties(
+                    "AWS::ECS::TaskDefinition",
+                    {
+                        "TaskRoleArn": {"Fn::GetAtt": [role_logical_id, "Arn"]},
+                        "ContainerDefinitions": assertions.Match.array_with(
+                            [assertions.Match.object_like({"Environment": expected_environment})]
+                        ),
+                    },
+                )
+
+                secret_statement = next(
+                    statement
+                    for statement in _role_policy_statements(template, role_logical_id)
+                    if _statement_actions(statement) == {"secretsmanager:GetSecretValue"}
+                )
+                secret_resources = json.dumps(secret_statement["Resource"])
+                if role_name.startswith("ValkyrieExecutor"):
+                    self.assertIn("secret:*", secret_resources)
+                    self.assertNotIn(TEST_TRACKER_SECRET_NAME_PREFIX, secret_resources)
+                else:
                     self.assertIn(f"secret:{TEST_TRACKER_SECRET_NAME_PREFIX}*", secret_resources)
 
     def test_release_test_managed_runtime_remains_closed(self) -> None:
