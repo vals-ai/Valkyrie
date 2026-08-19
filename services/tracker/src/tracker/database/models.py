@@ -386,9 +386,6 @@ class Benchmark(SQLModel, table=True):
     ) -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
 
-        if self.run_aws_resources is None and self.aws_managed:
-            raise ValueError("Managed runs cannot create access-key execution requests")
-
         # Older rows may persist the provider secret only in benchmark arguments.
         if self.arguments.sandbox_provider_secret_name:
             harness_config = harness_config.model_copy(
@@ -414,8 +411,8 @@ class Benchmark(SQLModel, table=True):
     def managed_start_benchmark_request(self, service_headers: dict[str, str] | None = None) -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
 
-        if self.run_aws_resources is None and not self.aws_managed:
-            raise ValueError("Access-key runs cannot create managed execution requests")
+        if self.run_aws_resources is None:
+            raise ValueError("Runs without stored AWS resources require access-key execution")
         if not self.arguments.sandbox_provider_secret_name:
             raise ValueError("Managed runs require a sandbox provider secret name")
 

@@ -89,7 +89,7 @@ from tracker.executor.dispatch_control import (
     admit_start_dispatch,
     resolve_enqueue_failure,
     validate_recovery_execution_release,
-    validate_managed_execution_release,
+    validate_resource_bound_execution_release,
 )
 from tracker.database.session import check_database_connection, get_session
 from tracker.docent_analysis import (
@@ -502,10 +502,6 @@ async def start_benchmark(
             validate_managed_execution_request(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        try:
-            validate_managed_execution_release(session)
-        except ReleaseControlError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
     else:
         effective_harness_config = cast(HarnessConfig, effective_harness_config)
         body_provider_secret_name = (
@@ -520,6 +516,11 @@ async def start_benchmark(
             effective_harness_config = effective_harness_config.model_copy(
                 update={"sandbox_provider_secret_name": provider_secret_name}
             )
+
+    try:
+        validate_resource_bound_execution_release(session)
+    except ReleaseControlError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     service_headers = dict(request.service_headers)
     if request.service_auth_header_name and request.service_auth_secret_name:
@@ -615,7 +616,6 @@ async def start_benchmark(
             session,
             benchmark=benchmark_row,
             dispatch_id=dispatch_id,
-            aws_managed=aws_managed,
         )
         executor_payload = _process_benchmark_kwargs(
             benchmark_row,
@@ -856,7 +856,6 @@ async def retrieve_results(
     aws_runtime = resolve_run_aws_runtime(
         http_request,
         run_aws_resources=benchmark_row.run_aws_resources,
-        legacy_aws_managed=benchmark_row.aws_managed,
         org_id=org.id,
     )
 
@@ -1030,7 +1029,6 @@ async def stop_benchmark(
     runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
         http_request,
         run_aws_resources=benchmark_row.run_aws_resources,
-        legacy_aws_managed=benchmark_row.aws_managed,
         org_id=org.id,
     )
     provider_secret_name = (
@@ -1141,7 +1139,6 @@ async def retry_or_resume_benchmark(
     runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
         http_request,
         run_aws_resources=benchmark_row.run_aws_resources,
-        legacy_aws_managed=benchmark_row.aws_managed,
         org_id=org.id,
     )
     current_aws_managed = runtime_resolution.aws_managed
@@ -1214,7 +1211,6 @@ async def retry_or_resume_benchmark(
             session,
             benchmark=benchmark_row,
             pre_action_status=pre_action_status,
-            aws_managed=current_aws_managed,
         )
 
         if current_aws_managed:
@@ -1286,7 +1282,6 @@ async def retry_or_resume_benchmark(
             pre_action_status=pre_action_status,
             dispatch_id=dispatch_id,
             kind=dispatch_kind,
-            aws_managed=current_aws_managed,
         )
         executor_payload = _process_benchmark_kwargs(
             benchmark_row,

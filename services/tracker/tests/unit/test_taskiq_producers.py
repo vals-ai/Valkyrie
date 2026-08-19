@@ -7,6 +7,7 @@ import pytest
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from fastapi.testclient import TestClient
+from sqlalchemy import update
 from sqlmodel import Session, select
 
 from main import app
@@ -302,7 +303,7 @@ def test_managed_start_rejects_aws_authority_from_resolved_contract(
     assert payloads == []
 
 
-def test_managed_start_requires_a_compatible_executor_release(
+def test_new_start_requires_a_resource_bound_executor_release(
     contract: AgentContractRequest,
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -313,11 +314,11 @@ def test_managed_start_requires_a_compatible_executor_release(
     response = client.post("/start-benchmark", json=_start_request(contract, None).model_dump(mode="json"))
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "Activate an executor release that supports managed runs"
+    assert response.json()["detail"] == "Activate an executor release that supports resource-bound runs"
     assert database_session.exec(select(Benchmark).where(Benchmark.name == "producer-contract-test")).all() == []
 
 
-def test_managed_resume_rolls_back_when_the_active_release_is_incompatible(
+def test_resource_bound_resume_rolls_back_when_the_active_release_is_incompatible(
     contract: AgentContractRequest,
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -358,7 +359,7 @@ def test_managed_resume_rolls_back_when_the_active_release_is_incompatible(
     response = client.post(f"/retry-or-resume-benchmark/{benchmark_id}")
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "Activate an executor release that supports managed runs"
+    assert response.json()["detail"] == "Activate an executor release that supports resource-bound runs"
     database_session.expire_all()
     persisted_benchmark = database_session.get(Benchmark, benchmark_id)
     persisted_task = database_session.get(Task, task.id)
@@ -437,14 +438,14 @@ def test_managed_resume_payload_failure_rolls_back_recovery_state(
     assert payloads == []
 
 
-def test_access_key_start_and_resume_keep_v1_task_kwargs(
+def test_access_key_wire_shape_supports_new_and_historical_runs(
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
     harness_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _promote_test_release(database_session, protocol_version="1")
+    _promote_test_release(database_session)
     payloads = _capture_task_payloads(monkeypatch)
 
     async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
@@ -471,6 +472,9 @@ def test_access_key_start_and_resume_keep_v1_task_kwargs(
     assert payloads[0]["start_benchmark_request_json"]["harness_config"] is not None
 
     _stop_benchmark(benchmark, database_session)
+    database_session.exec(update(Benchmark).where(Benchmark.id == benchmark.id).values(run_aws_resources=None))
+    database_session.commit()
+    _promote_test_release(database_session, release_id="historical-release", protocol_version="1")
     payloads.clear()
 
     response = client.post(

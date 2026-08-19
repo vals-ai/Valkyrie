@@ -21,6 +21,13 @@ from tracker.utils.run_orchestration import (
 
 
 _TASK_IDS = ["task-1", "task-2"]
+_RUN_AWS_RESOURCES = RunAWSResources(
+    account_id="123456789012",
+    region="us-east-1",
+    s3_bucket="test-bucket",
+    log_group="test-log-group",
+    log_retention_days=30,
+)
 
 
 def _access_key_request(contract: AgentContractRequest, harness_config: HarnessConfig) -> StartBenchmarkRequest:
@@ -59,7 +66,7 @@ def _persist_benchmark(
     request: StartBenchmarkRequest,
     *,
     aws_managed: bool,
-    run_aws_resources: RunAWSResources | None = None,
+    run_aws_resources: RunAWSResources | None = _RUN_AWS_RESOURCES,
 ) -> Benchmark:
     starter = RequestIdentity(
         org=Org(id=TEST_ORG_ID, name="default"),
@@ -78,7 +85,7 @@ def _persist_benchmark(
     return benchmark
 
 
-def test_persisted_request_reconstruction_rejects_invalid_aws_modes(
+def test_resource_bound_request_reconstruction_supports_either_aws_authority(
     contract: AgentContractRequest,
     harness_config: HarnessConfig,
     database_session: Session,
@@ -94,14 +101,28 @@ def test_persisted_request_reconstruction_rejects_invalid_aws_modes(
         aws_managed=True,
     )
 
-    with pytest.raises(ValueError, match="Managed runs cannot create access-key"):
-        managed_benchmark.access_key_start_benchmark_request(harness_config)
-    with pytest.raises(ValueError, match="Access-key runs cannot create managed"):
-        access_key_benchmark.managed_start_benchmark_request()
+    assert managed_benchmark.access_key_start_benchmark_request(harness_config).harness_config is not None
+    assert access_key_benchmark.managed_start_benchmark_request().harness_config is None
 
     managed_benchmark.arguments = managed_benchmark.arguments.model_copy(update={"sandbox_provider_secret_name": None})
     with pytest.raises(ValueError, match="Managed runs require a sandbox provider secret name"):
         managed_benchmark.managed_start_benchmark_request()
+
+
+def test_historical_run_cannot_create_managed_execution_request(
+    contract: AgentContractRequest,
+    harness_config: HarnessConfig,
+    database_session: Session,
+) -> None:
+    benchmark = _persist_benchmark(
+        database_session,
+        _access_key_request(contract, harness_config),
+        aws_managed=False,
+        run_aws_resources=None,
+    )
+
+    with pytest.raises(ValueError, match="without stored AWS resources require access-key"):
+        benchmark.managed_start_benchmark_request()
 
 
 def test_benchmark_creation_rejects_inconsistent_managed_inputs(
@@ -231,7 +252,7 @@ async def test_queued_execution_parse_failure_marks_run_error(
     assert "Queued managed execution context is invalid" in (benchmark.error_message or "")
 
 
-async def test_managed_execution_for_access_key_row_marks_run_error(
+async def test_managed_execution_for_historical_run_marks_run_error(
     contract: AgentContractRequest,
     harness_config: HarnessConfig,
     database_session: Session,
@@ -239,17 +260,22 @@ async def test_managed_execution_for_access_key_row_marks_run_error(
     executor_authority_kwargs: Any,
 ) -> None:
     access_key_request = _access_key_request(contract, harness_config)
-    benchmark = _persist_benchmark(database_session, access_key_request, aws_managed=False)
+    benchmark = _persist_benchmark(
+        database_session,
+        access_key_request,
+        aws_managed=False,
+        run_aws_resources=None,
+    )
     context = _execution_context(_managed_request(contract), benchmark.id)
 
     await process_benchmark(execution_context_json=context, **executor_authority_kwargs(benchmark))
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
-    assert "Queued managed execution does not match the stored access-key run mode" in (benchmark.error_message or "")
+    assert "Runs without stored AWS resources require access-key execution" in (benchmark.error_message or "")
 
 
-async def test_access_key_execution_for_managed_row_marks_run_error(
+async def test_access_key_execution_can_continue_a_resource_bound_managed_run(
     contract: AgentContractRequest,
     harness_config: HarnessConfig,
     database_session: Session,
@@ -268,41 +294,7 @@ async def test_access_key_execution_for_managed_row_marks_run_error(
     )
 
     database_session.refresh(benchmark)
-    assert benchmark.status == BenchmarkStatus.ERROR
-    assert "Queued access-key execution does not match the stored managed run mode" in (benchmark.error_message or "")
-
-
-async def test_matching_access_key_execution_can_continue_a_resource_bound_managed_run(
-    contract: AgentContractRequest,
-    harness_config: HarnessConfig,
-    database_session: Session,
-    process_benchmark_env: None,
-    executor_authority_kwargs: Any,
-) -> None:
-    managed_request = _managed_request(contract)
-    benchmark = _persist_benchmark(
-        database_session,
-        managed_request,
-        aws_managed=True,
-        run_aws_resources=RunAWSResources(
-            account_id="123456789012",
-            region=harness_config.aws.aws_default_region,
-            s3_bucket=harness_config.s3_bucket,
-            log_group=harness_config.log_group,
-            log_retention_days=harness_config.log_retention_policy,
-        ),
-    )
-    access_key_request = benchmark.access_key_start_benchmark_request(harness_config)
-
-    await process_benchmark(
-        start_benchmark_request_json=access_key_request.model_dump(mode="json"),
-        benchmark_id_str=str(benchmark.id),
-        verified_task_ids=_TASK_IDS,
-        **executor_authority_kwargs(benchmark),
-    )
-
-    database_session.refresh(benchmark)
-    assert benchmark.status == BenchmarkStatus.FINISHED
+    assert benchmark.status == BenchmarkStatus.FINISHED, benchmark.error_message
 
 
 async def test_ineligible_managed_execution_marks_run_error(
@@ -349,7 +341,8 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         return aws_runtime
 
     def create_log_group(_benchmark_id: str, runtime: AWSRuntime) -> str:
-        assert runtime is aws_runtime
+        assert runtime.resources == aws_runtime.resources
+        assert runtime.clients is aws_runtime.clients
         calls.append("logs")
         return "benchmark-log-group"
 
@@ -368,7 +361,8 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         calls.append("lambda-dry-run")
 
     async def upload_results(_benchmark: Benchmark, _final_view: object, runtime: AWSRuntime) -> None:
-        assert runtime is aws_runtime
+        assert runtime.resources == aws_runtime.resources
+        assert runtime.clients is aws_runtime.clients
         calls.append("s3-final-upload")
 
     def invoke_post_run(clients: object, _function_name: str, _payload: object) -> dict[str, Any]:
@@ -394,7 +388,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     await process_benchmark(execution_context_json=execution_context, **executor_authority_kwargs(benchmark))
 
     database_session.refresh(benchmark)
-    assert benchmark.status == BenchmarkStatus.FINISHED
+    assert benchmark.status == BenchmarkStatus.FINISHED, benchmark.error_message
     assert calls[:4] == ["logs", "provider-secret", "agent-secrets", "lambda-dry-run"]
     assert calls.count("agent-secrets") >= 2
     assert calls[-2:] == ["s3-final-upload", "lambda-post-run"]

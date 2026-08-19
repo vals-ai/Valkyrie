@@ -242,14 +242,12 @@ def resolve_run_aws_runtime(
     request: Request,
     *,
     run_aws_resources: RunAWSResources | None,
-    legacy_aws_managed: bool,
     org_id: UUID,
 ) -> AWSRuntime:
     """Resolve current AWS authority against a run's persisted resources."""
     return resolve_run_aws_runtime_and_access_key_config(
         request,
         run_aws_resources=run_aws_resources,
-        legacy_aws_managed=legacy_aws_managed,
         org_id=org_id,
     ).runtime
 
@@ -286,17 +284,14 @@ def resolve_run_aws_runtime_and_access_key_config(
     request: Request,
     *,
     run_aws_resources: RunAWSResources | None,
-    legacy_aws_managed: bool,
     org_id: UUID,
 ) -> AWSRuntimeResolution:
-    """Resolve authority, preserving mode behavior for runs without a resource binding."""
+    """Resolve current authority while keeping historical runs on access keys."""
     if run_aws_resources is not None:
         return _bind_resolution_to_run(
             _resolve_current_run_authority(request, org_id),
             run_aws_resources,
         )
-    if legacy_aws_managed:
-        return AWSRuntimeResolution(_http_deployment_runtime(org_id), None)
     harness_config = fetch_harness_config(request)
     return AWSRuntimeResolution(AWSRuntime.from_harness_config(harness_config), harness_config)
 
@@ -305,14 +300,10 @@ def resolve_run_metadata_aws_resources(
     request: Request,
     *,
     run_aws_resources: RunAWSResources | None,
-    legacy_aws_managed: bool,
-    org_id: UUID,
 ) -> AWSResources | None:
     """Resolve stored resource locations for run metadata links."""
     if run_aws_resources is not None:
         return resources_for_run(run_aws_resources)
-    if legacy_aws_managed:
-        return _http_deployment_runtime(org_id).resources
     harness_config = try_fetch_harness_config(request)
     return AWSRuntime.from_harness_config(harness_config).resources if harness_config is not None else None
 

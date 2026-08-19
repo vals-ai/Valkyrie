@@ -67,8 +67,6 @@ def get_single_benchmark(
     aws_resources = resolve_run_metadata_aws_resources(
         request,
         run_aws_resources=benchmark.run_aws_resources,
-        legacy_aws_managed=benchmark.aws_managed,
-        org_id=org.id,
     )
     if aws_resources:
         s3_bucket_url = create_benchmark_url(str(benchmark.id), aws_resources)

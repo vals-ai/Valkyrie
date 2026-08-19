@@ -575,8 +575,8 @@ class TestTrackerAPI:
 
     @pytest.mark.parametrize(
         ("protocol_version", "aws_managed"),
-        [("1", False), (SUPPORTED_PROTOCOL_VERSION, True)],
-        ids=["protocol-1-access-key", "protocol-2-managed"],
+        [(SUPPORTED_PROTOCOL_VERSION, False), (SUPPORTED_PROTOCOL_VERSION, True)],
+        ids=["protocol-3-access-key", "protocol-3-managed"],
     )
     async def test_start_benchmark_serializes_committed_dispatch_for_executor_host(
         self,
@@ -755,21 +755,18 @@ class TestTrackerAPI:
         assert dispatch.status == ExecutorDispatchStatus.FAILED
         assert task.status == TaskStatus.ERROR
 
-    @pytest.mark.parametrize("agent_copy_created", [False, True])
     async def test_start_benchmark_rejects_without_active_executor_release(
         self,
         contract: AgentContractRequest,
         database_session: Session,
         harness_config: HarnessConfig,
         monkeypatch: MonkeyPatch,
-        agent_copy_created: bool,
     ) -> None:
         admission = database_session.get(ExecutorAdmission, 1)
         assert admission is not None
         database_session.delete(admission)
         database_session.commit()
-        created_copy = S3ObjectCopy(version_id="copy-version") if agent_copy_created else None
-        copy_agent = AsyncMock(return_value=created_copy)
+        copy_agent = AsyncMock()
         delete_agent_copy = AsyncMock()
         monkeypatch.setattr("main.copy_agent_to_benchmark", copy_agent)
         monkeypatch.setattr("main.delete_from_s3", delete_agent_copy)
@@ -786,18 +783,8 @@ class TestTrackerAPI:
         assert response.status_code == 503
         expected_detail = "No active executor release is configured"
         assert response.json().get("detail") == expected_detail
-        copy_agent.assert_awaited_once()
-        if agent_copy_created:
-            copy_call = copy_agent.await_args
-            assert copy_call is not None
-            copied_benchmark_id = copy_call.args[0]
-            delete_agent_copy.assert_awaited_once_with(
-                f"benchmarks/{copied_benchmark_id}/{contract.name}.zip",
-                AWSRuntime.from_harness_config(harness_config),
-                version_id="copy-version",
-            )
-        else:
-            delete_agent_copy.assert_not_awaited()
+        copy_agent.assert_not_awaited()
+        delete_agent_copy.assert_not_awaited()
 
     async def test_start_payload_failure_rolls_back_and_deletes_created_copy(
         self,

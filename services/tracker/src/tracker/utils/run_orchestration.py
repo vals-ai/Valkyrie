@@ -372,14 +372,8 @@ def _runtime_for_queued_execution(
 ) -> AWSRuntime:
     """Resolve queued authority without allowing the run's resources to move."""
     if benchmark.run_aws_resources is None:
-        if execution.aws_managed != benchmark.aws_managed:
-            queued_mode = "managed" if execution.aws_managed else "access-key"
-            stored_mode = "managed" if benchmark.aws_managed else "access-key"
-            raise TrackerServiceError(
-                f"Queued {queued_mode} execution does not match the stored {stored_mode} run mode"
-            )
         if execution.aws_managed:
-            return deployment_aws_runtime(org.id)
+            raise TrackerServiceError("Runs without stored AWS resources require access-key execution")
         harness_config = cast(HarnessConfig, execution.request.harness_config)
         return AWSRuntime.from_harness_config(harness_config)
 

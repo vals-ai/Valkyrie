@@ -44,7 +44,6 @@ def get_run_aws_context(
         aws_runtime=resolve_run_aws_runtime(
             request,
             run_aws_resources=benchmark.run_aws_resources,
-            legacy_aws_managed=benchmark.aws_managed,
             org_id=org.id,
         ),
     )

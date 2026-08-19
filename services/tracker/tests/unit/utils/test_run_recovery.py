@@ -33,6 +33,7 @@ from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_ta
 from tests.utils import TEST_ORG_ID
 from tracker import config
 from tracker.auth import RequestIdentity
+from tracker.aws.models import RunAWSResources
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
@@ -1322,12 +1323,18 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
-        harness_headers: dict[str, str],
     ) -> None:
         """Reject an invalid managed force stop without changing run state."""
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
         benchmark_row.aws_managed = True
+        benchmark_row.run_aws_resources = RunAWSResources(
+            account_id="123456789012",
+            region="deployment-region",
+            s3_bucket="deployment-bucket",
+            log_group="deployment-log-group",
+            log_retention_days=30,
+        )
         benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"sandbox_provider_secret_name": ""})
         pending_task = Task(
             org_id=TEST_ORG_ID,
@@ -1346,7 +1353,7 @@ class TestRunRecovery:
         force_stop = AsyncMock()
         monkeypatch.setattr("main.force_stop_sandboxes", force_stop)
 
-        response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=true", headers=harness_headers)
+        response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=true")
 
         assert response.status_code == 400
         detail = response.json()["detail"]
