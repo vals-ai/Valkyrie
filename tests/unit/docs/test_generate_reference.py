@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 import valkyrie.sdk as sdk
+from valkyrie.sdk import resources as sdk_resources
 
 from scripts import generate_reference
 
@@ -468,6 +469,36 @@ class TestSDKReferenceCollection:
         assert "Literal[False]" in results.signatures[0]
         assert "Literal[True]" in results.signatures[1]
         assert "RetrieveResultsResponse" in results.signatures[2]
+
+    def test_collects_and_renders_source_docstrings(self, monkeypatch) -> None:
+        """Verify each SDK source category reads its current docstring at collection time."""
+        sources = (
+            sdk_resources.RunsResource,
+            sdk_resources.RunsResource.start,
+            sdk.FetchBenchmarksRequest,
+            sdk.BenchmarkStatus,
+            sdk.ValkyrieAPIError,
+            sdk.ValkyrieClient,
+            sdk.ValkyrieClient.from_config.__func__,
+            sdk.ValkyrieClient.close,
+        )
+        sentinels = {source: f"DOCSTRING_SENTINEL_{index}" for index, source in enumerate(sources)}
+        for source, sentinel in sentinels.items():
+            monkeypatch.setattr(source, "__doc__", sentinel)
+
+        reference = generate_reference.collect_sdk_reference()
+        rendered = generate_reference.render_reference()
+        descriptions = [resource.description for resource in reference.resources]
+        descriptions.extend(method.description for resource in reference.resources for method in resource.methods)
+        descriptions.extend(model.description for model in reference.models)
+        descriptions.extend(enum.description for enum in reference.enums)
+        descriptions.extend(exception.description for exception in reference.exceptions)
+        descriptions.extend(method.description for method in reference.client_methods)
+        combined = "\n".join(rendered.values())
+
+        for sentinel in sentinels.values():
+            assert sentinel in descriptions
+            assert sentinel in combined
 
     def test_maps_each_public_resource_method_to_one_section_on_one_resource_page(self) -> None:
         """Verify that all 22 methods map to four complete anchored resource pages."""
