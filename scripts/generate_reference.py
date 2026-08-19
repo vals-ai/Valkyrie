@@ -27,7 +27,6 @@ _MAX_DIFF_LINES = 80
 _CLI_INDEX_PATH = Path("reference/cli/index.mdx")
 _CLI_NAVIGATION_PATH = Path("reference/cli/navigation.json")
 _REDIRECTS_PATH = Path("reference/redirects.json")
-_RETIRED_GENERATED_PATHS = (Path("reference/cli/redirects.json"),)
 _SDK_INDEX_PATH = Path("reference/sdk/index.mdx")
 _SDK_CLIENT_PATH = Path("reference/sdk/client.mdx")
 _SDK_TYPES_INDEX_PATH = Path("reference/sdk/models/index.mdx")
@@ -132,7 +131,6 @@ class SDKParameterReference:
     """Stable documentation data for one Python callable parameter."""
 
     name: str
-    kind: str
     type_name: str
     required: bool
     default: str | None
@@ -177,7 +175,6 @@ class SDKModelReference:
     """Stable documentation data for one public Pydantic model."""
 
     name: str
-    module: str
     family: str
     slug: str
     description: str
@@ -189,7 +186,6 @@ class SDKEnumReference:
     """Stable documentation data for one public enum."""
 
     name: str
-    module: str
     family: str
     slug: str
     description: str
@@ -211,7 +207,6 @@ class SDKExportReference:
     """Stable documentation data for one top-level SDK export."""
 
     name: str
-    kind: str
     target: str
 
 
@@ -486,7 +481,6 @@ def _collect_method(name: str, callable_object: Callable[..., object]) -> SDKMet
     parameter_references = tuple(
         SDKParameterReference(
             name=parameter.name,
-            kind=parameter.kind.name,
             type_name=_format_annotation(parameter.annotation),
             required=parameter.default is inspect.Parameter.empty,
             default=(None if parameter.default is inspect.Parameter.empty else _format_value(parameter.default)),
@@ -598,7 +592,6 @@ def _collect_model(model: type[BaseModel]) -> SDKModelReference:
     )
     return SDKModelReference(
         name=model.__name__,
-        module=model.__module__,
         family=_model_family(model.__module__),
         slug=_type_slug(model.__name__),
         description=_clean_docstring(inspect.getdoc(model)),
@@ -609,7 +602,6 @@ def _collect_model(model: type[BaseModel]) -> SDKModelReference:
 def _collect_enum(enum_class: type[Enum]) -> SDKEnumReference:
     return SDKEnumReference(
         name=enum_class.__name__,
-        module=enum_class.__module__,
         family=_model_family(enum_class.__module__),
         slug=_type_slug(enum_class.__name__),
         description=_clean_docstring(inspect.getdoc(enum_class)),
@@ -708,23 +700,18 @@ def collect_sdk_reference() -> SDKReference:
         value = getattr(sdk, name)
         if inspect.isclass(value) and issubclass(value, Enum):
             enums.append(_collect_enum(value))
-            kind = "enum"
             target = _sdk_type_route(enums[-1])
         elif inspect.isclass(value) and issubclass(value, BaseModel):
             models.append(_collect_model(value))
-            kind = "model"
             target = _sdk_type_route(models[-1])
         elif inspect.isclass(value) and issubclass(value, Exception):
             exceptions.append(_collect_exception(value))
-            kind = "exception"
             target = f"/reference/sdk/errors#{name.lower()}"
         elif value is ValkyrieClient:
-            kind = "client"
             target = "/reference/sdk/client"
         else:
-            kind = "export"
             target = "/reference/sdk/index"
-        exports.append(SDKExportReference(name=name, kind=kind, target=target))
+        exports.append(SDKExportReference(name=name, target=target))
 
     type_entries = (*models, *enums)
     _validate_type_paths(type_entries)
@@ -975,19 +962,13 @@ def _render_parameter_row(
     return lines
 
 
-def _render_cli_parameter_table(
-    parameters: Sequence[CLIParameterReference], kind: str, *, label_only: bool = False
-) -> list[str]:
-    """Render compact parameter rows under a section label.
-
-    ``label_only`` emits a bold label instead of a heading so that grouped command pages keep
-    the native table of contents limited to command headings.
-    """
+def _render_cli_parameter_table(parameters: Sequence[CLIParameterReference], kind: str) -> list[str]:
+    """Render compact parameter rows under a bold section label."""
     selected = [parameter for parameter in parameters if parameter.kind == kind]
     if not selected:
         return []
     title = "Arguments" if kind == "argument" else "Options"
-    lines = [f"**{title}**" if label_only else f"## {title}", ""]
+    lines = [f"**{title}**", ""]
     for parameter in selected:
         lines.extend(
             _render_parameter_row(
@@ -1077,8 +1058,8 @@ def _render_cli_command_section(command: CLICommandReference) -> list[str]:
                 "",
             )
         )
-    lines.extend(_render_cli_parameter_table(command.parameters, "argument", label_only=True))
-    lines.extend(_render_cli_parameter_table(command.parameters, "option", label_only=True))
+    lines.extend(_render_cli_parameter_table(command.parameters, "argument"))
+    lines.extend(_render_cli_parameter_table(command.parameters, "option"))
     guide = _GUIDE_LINKS[command.path[0]]
     lines.extend((f"Task guidance: [{command.path[0].title()} guides]({guide}).", ""))
     return lines
@@ -1482,20 +1463,7 @@ def _obsolete_generated_files(docs_root: Path, expected: set[Path]) -> tuple[Pat
             continue
         if _GENERATED_MARKER in path.read_text(encoding="utf-8"):
             obsolete.append(relative_path)
-    for relative_path in _RETIRED_GENERATED_PATHS:
-        if relative_path not in expected and (docs_root / relative_path).is_file():
-            obsolete.append(relative_path)
     return tuple(sorted(obsolete))
-
-
-def _prune_empty_reference_directories(docs_root: Path) -> None:
-    """Remove directories left empty after retired generated pages are deleted."""
-    reference_root = docs_root / "reference"
-    if not reference_root.exists():
-        return
-    for path in sorted(reference_root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-        if path.is_dir() and not any(path.iterdir()):
-            path.rmdir()
 
 
 def write_reference(docs_root: Path = _DOCS_ROOT) -> tuple[Path, ...]:
@@ -1511,7 +1479,6 @@ def write_reference(docs_root: Path = _DOCS_ROOT) -> tuple[Path, ...]:
     obsolete = _obsolete_generated_files(docs_root, set(rendered))
     for relative_path in obsolete:
         (docs_root / relative_path).unlink()
-    _prune_empty_reference_directories(docs_root)
 
     for relative_path, content in rendered.items():
         output_path = docs_root / relative_path
@@ -1565,7 +1532,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     obsolete = write_reference(_DOCS_ROOT)
-    print(f"Generated {len(render_reference())} documentation reference files.")
+    print("Generated documentation reference.")
     if obsolete:
         print(f"Removed {len(obsolete)} obsolete generated files.")
     return 0

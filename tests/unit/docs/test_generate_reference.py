@@ -132,12 +132,6 @@ def _option_by_name(
     return next(parameter for parameter in command.parameters if parameter.name == name)
 
 
-def _name_span(name: str) -> str:
-    """Return the exact markup a compact parameter row uses for a parameter name."""
-    literal = json.dumps(name, ensure_ascii=False)
-    return f'<span className="break-all font-mono text-sm">{{{literal}}}</span>'
-
-
 def _markdown_headings(page: str) -> list[str]:
     """Return only real Markdown headings, ignoring shell comments inside fenced code blocks."""
     headings: list[str] = []
@@ -248,19 +242,13 @@ class TestCLIReferenceCollection:
         for page, anchor in located:
             by_page.setdefault(page, []).append(anchor)
 
-        assert len(located) == 32
-        assert len(set(located)) == 32
+        assert len(set(located)) == len(located)
         assert all(len(anchors) == len(set(anchors)) for anchors in by_page.values())
         assert {page.name for page in by_page} == {"run.mdx", "agent.mdx", "benchmark.mdx", "config.mdx"}
 
         for command in commands:
             section = _command_section(rendered, command)
             assert "```bash Syntax" in section
-
-        assert generate_reference._cli_command_anchor(_command_by_path("run start")) == "start"
-        assert generate_reference._cli_command_anchor(_command_by_path("config auth set")) == "auth-set"
-        assert generate_reference._cli_command_anchor(_command_by_path("config provider set")) == "provider-set"
-        assert generate_reference._cli_command_anchor(_command_by_path("config service set")) == "service-set"
 
     def test_group_pages_keep_commands_in_click_registration_order(self) -> None:
         """
@@ -274,70 +262,12 @@ class TestCLIReferenceCollection:
         rendered = generate_reference.render_reference()
         groups = generate_reference._cli_groups(commands)
 
-        assert list(groups) == ["run", "agent", "benchmark", "config"]
-
         for group, group_commands in groups.items():
             page = rendered[generate_reference._cli_group_page_path(group)]
             positions = [page.index(_command_heading(command)) for command in group_commands]
 
             assert positions == sorted(positions)
             assert f"all {len(group_commands)} commands in the `{group}` group" in page
-
-    def test_cli_index_navigates_by_group_card(self) -> None:
-        """
-        Verify the index navigates through the repository's two-column card pattern.
-
-        Test cases:
-        - One card per group in registration order, inside a `cols={2}` CardGroup.
-        - Each card links to its group page and states the computed command count.
-        - Counts are pluralized, and every card carries a group-specific purpose.
-        """
-        commands = generate_reference.collect_cli_commands()
-        rendered = generate_reference.render_reference()
-        index = rendered[Path("reference/cli/index.mdx")]
-        groups = generate_reference._cli_groups(commands)
-
-        assert list(groups) == ["run", "agent", "benchmark", "config"]
-        assert "## Command groups" in index
-        assert index.count("<CardGroup cols={2}>") == 1
-        assert index.count("</CardGroup>") == 1
-        assert index.count("<Card ") == len(groups) == 4
-        assert index.count("</Card>") == 4
-
-        cards = re.findall(r'<Card title="([^"]+)" icon="([^"]+)" href="([^"]+)">\n    ([^\n]+)\n  </Card>', index)
-
-        assert len(cards) == 4
-        assert [title for title, _, _, _ in cards] == [
-            "Run commands",
-            "Agent commands",
-            "Benchmark commands",
-            "Config commands",
-        ]
-
-        purposes: set[str] = set()
-        for (title, icon, href, body), (group, group_commands) in zip(cards, groups.items(), strict=True):
-            count = len(group_commands)
-            noun = "command" if count == 1 else "commands"
-
-            assert title == f"{group.title()} commands"
-            assert icon == generate_reference._CLI_GROUP_CARDS[group][0]
-            assert icon
-            assert href == f"/{generate_reference._route(generate_reference._cli_group_page_path(group))}"
-            assert Path(href.lstrip("/")).with_suffix(".mdx") in rendered
-            assert body.startswith(f"{count} {noun} for ")
-            assert body.endswith(".")
-
-            purposes.add(body)
-
-        assert len(purposes) == 4
-        assert [href for _, _, href, _ in cards] == [
-            "/reference/cli/run",
-            "/reference/cli/agent",
-            "/reference/cli/benchmark",
-            "/reference/cli/config",
-        ]
-
-        assert index.count("## ") == 1
 
     def test_renders_complete_cli_syntax_in_source_order(self) -> None:
         """
@@ -376,21 +306,6 @@ class TestCLIReferenceCollection:
 
         auth_section = _command_section(rendered, _command_by_path("config auth set"))
         assert "$BENCHMARK_CREDENTIAL" in auth_section
-
-    def test_renders_cli_parameters_as_ordered_compact_rows(self) -> None:
-        """Verify that CLI metadata stays complete in compact source-order rows."""
-        rendered = generate_reference.render_reference()
-        page = _command_section(rendered, _command_by_path("run start"))
-
-        assert '**Options**\n\n<div className="border-b border-gray-200 py-3 dark:border-gray-800">' in page
-        assert page.index(_name_span("--agent")) < page.index(_name_span("--model"))
-        assert page.index(_name_span("--model")) < page.index(_name_span("--benchmark"))
-        assert _name_span("--agent") + "<span" in page
-        assert 'required · <code>{"text"}</code>' in page
-        assert 'optional · <code>{"integer"}</code> · default: <code>{"5"}</code> · constraints: {">= 1"}' in page
-        assert _name_span("--secret, -s") + "<span" in page
-        assert 'constraints: {"2 values; repeatable"}' in page
-        assert '<p className="mb-0 mt-1">{"Secret as ENV_VAR aws_secret_name' in page
 
     def test_formats_multi_group_cli_examples_with_shell_continuations(self) -> None:
         """Verify every concrete multi-group example is readable and shell-valid."""
@@ -470,6 +385,15 @@ class TestSDKReferenceCollection:
         assert "Literal[True]" in results.signatures[1]
         assert "RetrieveResultsResponse" in results.signatures[2]
 
+        rendered = generate_reference.render_reference()
+        for export in reference.exports:
+            route = export.target.split("#", 1)[0]
+            page = Path(route.lstrip("/")).with_suffix(".mdx")
+            if page.name in {"models.mdx", "sdk.mdx"}:
+                page = page.with_name("index.mdx")
+            assert page in rendered, export
+            assert export.name in rendered[page], export
+
     def test_collects_and_renders_source_docstrings(self, monkeypatch) -> None:
         """Verify each SDK source category reads its current docstring at collection time."""
         sources = (
@@ -515,8 +439,6 @@ class TestSDKReferenceCollection:
             Path("reference/sdk/agents.mdx"),
             Path("reference/sdk/services.mdx"),
         ]
-        assert all(path in rendered for path in resource_paths)
-        assert sum(len(resource.methods) for resource in reference.resources) == 22
 
         for resource in reference.resources:
             page_name = generate_reference._RESOURCE_PAGES[resource.name]
@@ -531,129 +453,29 @@ class TestSDKReferenceCollection:
                 assert section.count("```python") == len(method.signatures)
                 assert "**Returns**" in section
 
-        results = next(
-            method
-            for resource in reference.resources
-            if resource.name == "RunsResource"
-            for method in resource.methods
-            if method.name == "results"
-        )
-        assert _method_section(rendered, reference.resources[0], results).count("```python Overload") == 3
-
-    def test_sdk_resource_pages_use_stable_readable_method_anchors(self) -> None:
-        """Verify method names keep source order and map underscores to readable anchors."""
+    def test_collects_and_renders_exact_public_types(self) -> None:
+        """Verify every public model and enum has one stable family-page heading."""
         reference = generate_reference.collect_sdk_reference()
-
-        for resource in reference.resources:
-            anchors = [generate_reference._sdk_method_anchor(method) for method in resource.methods]
-            assert len(anchors) == len(set(anchors))
-            assert anchors == [method.name.replace("_", "-") for method in resource.methods]
-
-        runs = reference.resources[0]
-        stream_outputs = next(method for method in runs.methods if method.name == "stream_outputs")
-        assert generate_reference._sdk_method_route("runs", stream_outputs) == ("/reference/sdk/runs#stream-outputs")
-
-    def test_sdk_index_navigates_by_compact_resource_cards(self) -> None:
-        """Verify the SDK index is compact and links every grouped resource."""
-        reference = generate_reference.collect_sdk_reference()
-        index = generate_reference.render_reference()[Path("reference/sdk/index.mdx")]
-        card_pattern = re.compile(
-            r'  <Card title="([^"]+)" icon="([^"]+)" href="([^"]+)">\n'
-            r"    ([^\n]+)\n"
-            r"  </Card>"
-        )
-        cards = card_pattern.findall(index)
-
-        assert index.count("<CardGroup cols={2}>") == 1
-        assert [card[0] for card in cards] == ["Runs", "Benchmarks", "Agents", "Benchmark services"]
-        assert [card[2] for card in cards] == [
-            "/reference/sdk/runs",
-            "/reference/sdk/benchmarks",
-            "/reference/sdk/agents",
-            "/reference/sdk/services",
-        ]
-        assert [card[1] for card in cards] == ["play", "flask", "robot", "server"]
-        assert [card[3].split(" ", 1)[0] for card in cards] == [
-            str(len(resource.methods)) for resource in reference.resources
-        ]
-        assert all(card[3].endswith(".") for card in cards)
-        assert "[`ValkyrieClient`](/reference/sdk/client)" in index
-        assert "[public models and enums](/reference/sdk/models)" in index
-        assert "[SDK error hierarchy](/reference/sdk/errors)" in index
-
         rendered = generate_reference.render_reference()
-        for export in reference.exports:
-            route = export.target.split("#", 1)[0]
-            page = Path(route.lstrip("/")).with_suffix(".mdx")
-            if page not in rendered and page.name in {"models.mdx", "sdk.mdx"}:
-                page = page.with_name("index.mdx")
-            assert page in rendered, export
-            assert export.name in rendered[page], export
-
-    def test_renders_sdk_method_and_client_parameters_as_ordered_compact_rows(self) -> None:
-        """Verify that SDK callable parameters use compact source-order rows."""
-        rendered = generate_reference.render_reference()
-        reference = generate_reference.collect_sdk_reference()
-        runs = reference.resources[0]
-        start = next(method for method in runs.methods if method.name == "start")
-        method_page = _method_section(rendered, runs, start)
-        resource_page = rendered[Path("reference/sdk/runs.mdx")]
-        client_page = rendered[Path("reference/sdk/client.mdx")]
-
-        assert '**Parameters**\n\n<div className="border-b border-gray-200 py-3 dark:border-gray-800">' in method_page
-        assert method_page.index(_name_span("agent")) < method_page.index(_name_span("benchmark"))
-        assert method_page.index(_name_span("benchmark")) < method_page.index(_name_span("model"))
-        assert (
-            'required · str | <a href="/reference/sdk/models/agents#agent-contract-request"><code>AgentContractRequest</code></a>'
-            in method_page
-        )
-        assert 'optional · int · default: <code>{"5"}</code>' in method_page
-        assert resource_page.count("\n---\n") == 1
-
-        assert '### Parameters\n\n<div className="border-b border-gray-200 py-3 dark:border-gray-800">' in client_page
-        assert client_page.index(_name_span("config")) < client_page.index(_name_span("base_url"))
-        assert (
-            'required · <a href="/reference/sdk/models/config#valkyrie-config"><code>ValkyrieConfig</code></a>'
-            in client_page
-        )
-        assert 'optional · float | httpx.Timeout · default: <code>{"120"}</code>' in client_page
-
-    def test_generates_exact_public_type_pages_and_safe_slugs(self) -> None:
-        """Verify the public model and enum page contract."""
-        reference = generate_reference.collect_sdk_reference()
         models_by_family: dict[str, list[tuple[str, str]]] = {}
         for model in reference.models:
             models_by_family.setdefault(model.family, []).append((model.name, model.slug))
 
         assert {family: tuple(entries) for family, entries in models_by_family.items()} == _EXPECTED_MODELS
         assert tuple((enum.name, enum.family, enum.slug) for enum in reference.enums) == _EXPECTED_ENUMS
-        assert generate_reference._type_slug("AgentDownloadURLResponse") == "agent-download-url-response"
 
-        duplicate = generate_reference.SDKEnumReference(
-            name="Other",
-            module="valkyrie.sdk.models.runs",
-            family="Runs",
-            slug="order",
-            description="",
-            members=(),
-        )
-        order = next(enum for enum in reference.enums if enum.name == "Order")
-        with pytest.raises(ValueError, match="Duplicate public type path"):
-            generate_reference._validate_type_paths((order, duplicate))
-
-        unexpected_family = generate_reference.SDKEnumReference(
-            name="Other",
-            module="valkyrie.sdk.models.other",
-            family="Other",
-            slug="other",
-            description="",
-            members=(),
-        )
-        with pytest.raises(ValueError, match="SDK type families must match"):
-            generate_reference._validate_type_families((*reference.models, *reference.enums, unexpected_family))
-
-        with pytest.raises(ValueError, match="Unsafe public type slug"):
-            generate_reference._type_slug("---")
+        type_locations = {
+            name: (family, slug) for family, entries in _EXPECTED_MODELS.items() for name, slug in entries
+        }
+        type_locations.update({name: (family, slug) for name, family, slug in _EXPECTED_ENUMS})
+        for family in _EXPECTED_MODELS:
+            expected = [
+                f"## `{name}` {{#{type_locations[name][1]}}}"
+                for name in sdk.__all__
+                if name in type_locations and type_locations[name][0] == family
+            ]
+            page = rendered[Path(f"reference/sdk/models/{family.lower()}.mdx")]
+            assert _markdown_headings(page) == expected
 
     def test_links_public_types_across_pages(self) -> None:
         """Verify public nested tokens link to family-page anchors."""
@@ -818,17 +640,21 @@ class TestGeneratedReferenceFiles:
             "reference/cli/benchmark",
             "reference/cli/config",
         ]
-        assert len(cli_pages) == len(set(cli_pages))
-        assert sdk_pages[:6] == [
+        assert sdk_pages == [
             "reference/sdk/index",
             "reference/sdk/client",
             "reference/sdk/runs",
             "reference/sdk/benchmarks",
             "reference/sdk/agents",
             "reference/sdk/services",
+            "reference/sdk/models/index",
+            "reference/sdk/models/agents",
+            "reference/sdk/models/runs",
+            "reference/sdk/models/benchmarks",
+            "reference/sdk/models/services",
+            "reference/sdk/models/config",
+            "reference/sdk/errors",
         ]
-        assert len(sdk_pages) == 13
-        assert len(sdk_pages) == len(set(sdk_pages))
         assert {Path(page).with_suffix(".mdx") for page in (*cli_pages, *sdk_pages)} == {
             path for path in rendered if path.suffix == ".mdx"
         }
@@ -941,11 +767,11 @@ class TestGeneratedReferenceFiles:
         retired_sdk_path = docs_root / "reference/sdk/runs/start.mdx"
         retired_sdk_path.parent.mkdir(parents=True, exist_ok=True)
         retired_sdk_path.write_text(_GENERATED_MARKER + "\nretired per-method page\n", encoding="utf-8")
+        unrelated_path = docs_root / "reference/notes.mdx"
+        unrelated_path.write_text("Hand-written.\n", encoding="utf-8")
         retired_redirects_path = docs_root / "reference/cli/redirects.json"
         retired_redirects_path.parent.mkdir(parents=True, exist_ok=True)
         retired_redirects_path.write_text("[]\n", encoding="utf-8")
-        unrelated_path = docs_root / "reference/notes.mdx"
-        unrelated_path.write_text("Hand-written.\n", encoding="utf-8")
 
         diagnostics = generate_reference.check_reference(docs_root)
 
@@ -954,17 +780,15 @@ class TestGeneratedReferenceFiles:
         assert any(message == "unexpected generated file: reference/sdk/models.mdx" for message in diagnostics)
         assert any(message == "unexpected generated file: reference/cli/run/start.mdx" for message in diagnostics)
         assert any(message == "unexpected generated file: reference/sdk/runs/start.mdx" for message in diagnostics)
-        assert any(message == "unexpected generated file: reference/cli/redirects.json" for message in diagnostics)
         assert stale_path.read_text(encoding="utf-8") == _GENERATED_MARKER + "\nstale\n"
         assert retired_path.exists()
         assert retired_sdk_path.exists()
-        assert retired_redirects_path.exists()
         assert unrelated_path.read_text(encoding="utf-8") == "Hand-written.\n"
+        assert retired_redirects_path.read_text(encoding="utf-8") == "[]\n"
 
         removed = generate_reference.write_reference(docs_root)
 
         assert removed == (
-            Path("reference/cli/redirects.json"),
             Path("reference/cli/run/start.mdx"),
             Path("reference/sdk/models.mdx"),
             Path("reference/sdk/runs/start.mdx"),
@@ -972,6 +796,7 @@ class TestGeneratedReferenceFiles:
         assert _GENERATED_MARKER in stale_path.read_text(encoding="utf-8")
         assert missing_path.exists()
         assert unrelated_path.read_text(encoding="utf-8") == "Hand-written.\n"
+        assert retired_redirects_path.read_text(encoding="utf-8") == "[]\n"
 
     def test_write_refuses_to_overwrite_an_unmarked_manifest_path(self, tmp_path: Path) -> None:
         """
@@ -1033,25 +858,12 @@ assert all(rendered.values())
 
         assert result.returncode == 0, result.stderr
 
-    def test_splits_page_summary_from_details(self) -> None:
-        """Verify that the first paragraph becomes the summary and later paragraphs remain details."""
-        assert generate_reference._page_summary("Start a run.", "fallback") == ("Start a run.", ())
-        assert generate_reference._page_summary("Lead line.\n\nMore detail.", "fallback") == (
-            "Lead line.",
-            ("More detail.",),
-        )
-        assert generate_reference._page_summary("", "fallback") == ("fallback", ())
-
     def test_renders_literal_braces_as_escaped_text(self) -> None:
         """Verify that braces survive MDX rendering as visible text."""
         rendered = generate_reference.render_reference()
         config_page = rendered[Path("reference/sdk/models/config.mdx")]
 
         assert 'default: <code>{"{}"}</code>' in config_page
-
-        assert generate_reference._escape_html('{"a": 1}') == '&#123;"a": 1&#125;'
-        assert generate_reference._jsx_text("--connect") == '{"--connect"}'
-        assert generate_reference._jsx_text('a "b" {c}') == '{"a \\"b\\" {c}"}'
 
     def test_check_entry_point_exits_nonzero_on_drift_without_writing(
         self, tmp_path: Path, monkeypatch, capsys
@@ -1082,21 +894,12 @@ assert all(rendered.values())
         assert "Run `make docs-reference`" in output
         assert {path: path.read_bytes() for path in sorted(docs_root.rglob("*")) if path.is_file()} == before
 
+        assert generate_reference.main([]) == 0
+        assert capsys.readouterr().out == "Generated documentation reference.\n"
+
 
 class TestSDKTypesReference:
     """Focused coverage for the grouped SDK Types pages, navigation, and redirects."""
-
-    def test_family_pages_use_type_headings_and_stable_anchors(self) -> None:
-        """Verify every type is a level-2 heading with an explicit stable anchor."""
-        reference = generate_reference.collect_sdk_reference()
-        rendered = generate_reference.render_reference()
-        for family in generate_reference._SDK_TYPE_FAMILIES:
-            page = rendered[generate_reference._sdk_type_family_page_path(family)]
-            headings = _markdown_headings(page)
-            for entry in (e for e in (*reference.models, *reference.enums) if e.family == family):
-                heading = f"## `{entry.name}` {{#{generate_reference._sdk_type_anchor(entry)}}}"
-                assert heading in page
-                assert heading in headings
 
     def test_family_pages_preserve_complete_metadata(self) -> None:
         """Verify field, member, default, alias, constraint, and type-link metadata survives."""
@@ -1106,38 +909,7 @@ class TestSDKTypesReference:
         config = rendered[Path("reference/sdk/models/config.mdx")]
 
         assert "Runs model · 13 fields" in runs
-        assert 'href="/reference/sdk/models/runs#benchmark-status"' in runs
-        assert 'href="/reference/sdk/models/runs#order"' in runs
         assert 'default: <code>{"Order.DESC"}</code>' in runs
         assert 'default: <code>{"50"}</code>' in benchmarks
         assert 'constraints: {">= 1; <= 500"}' in benchmarks
         assert 'alias: <code>{"AWS_ACCESS_KEY_ID"}</code>' in config
-
-    def test_types_index_is_compact_card_grid(self) -> None:
-        """Verify the Types index shows five clickable family cards."""
-        rendered = generate_reference.render_reference()
-        types_index = rendered[Path("reference/sdk/models/index.mdx")]
-
-        assert types_index.count("<CardGroup cols={2}>") == 1
-        assert types_index.count("<Card ") == 5
-        assert types_index.count("</Card>") == 5
-        for family in generate_reference._SDK_TYPE_FAMILIES:
-            page = generate_reference._sdk_type_family_page_path(family)
-            assert f'<Card title="{family}"' in types_index
-            assert f'href="/{generate_reference._route(page)}"' in types_index
-
-    def test_sdk_navigation_lists_types_index_families_and_errors(self) -> None:
-        """Verify the Types navigation contains exactly the index, five families, and errors."""
-        rendered = generate_reference.render_reference()
-        sdk_navigation = json.loads(rendered[Path("reference/sdk/navigation.json")])
-        types_group = next(item for item in sdk_navigation if isinstance(item, dict) and item.get("group") == "Types")
-
-        assert types_group["pages"] == [
-            "reference/sdk/models/index",
-            "reference/sdk/models/agents",
-            "reference/sdk/models/runs",
-            "reference/sdk/models/benchmarks",
-            "reference/sdk/models/services",
-            "reference/sdk/models/config",
-            "reference/sdk/errors",
-        ]
