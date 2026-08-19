@@ -87,14 +87,8 @@ class FakeS3Client:
 
 
 class RecordingCursor:
-    def __init__(
-        self,
-        row: tuple[object, ...] | None | list[tuple[object, ...] | None],
-        *,
-        all_rows: list[tuple[object, ...]] | None = None,
-    ) -> None:
+    def __init__(self, row: tuple[object, ...] | None | list[tuple[object, ...] | None]) -> None:
         self.rows = row if isinstance(row, list) else [row]
-        self.all_rows = all_rows or []
         self.statements: list[tuple[str, tuple[object, ...]]] = []
 
     def __enter__(self) -> RecordingCursor:
@@ -110,9 +104,6 @@ class RecordingCursor:
         if len(self.rows) == 1:
             return self.rows[0]
         return self.rows.pop(0)
-
-    def fetchall(self) -> list[tuple[object, ...]]:
-        return self.all_rows
 
 
 class RecordingConnection:
@@ -376,17 +367,13 @@ async def test_postgres_finish_errors_orphaned_in_progress_benchmark(
     assert "SET status = 'FINISHED'" in cursor.statements[1][0]
     assert "SELECT EXISTS" in cursor.statements[2][0]
     assert "SET status = 'ERROR'" in cursor.statements[3][0]
-    assert all("INSERT INTO errorresult" not in statement for statement, _ in cursor.statements)
 
 
 @pytest.mark.asyncio
 async def test_postgres_terminalize_marks_current_run_and_runnable_tasks_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cursor = RecordingCursor(
-        [("IN_PROGRESS",), ("dispatch-1",), (False,)],
-        all_rows=[("task-row-1", "org-1")],
-    )
+    cursor = RecordingCursor([("IN_PROGRESS",), ("dispatch-1",), (False,)])
     store = PostgresExecutorDispatchStore(
         host="db",
         port="5432",
@@ -405,21 +392,13 @@ async def test_postgres_terminalize_marks_current_run_and_runnable_tasks_error(
     lock_statement = cursor.statements[0][0]
     dispatch_statement = cursor.statements[1][0]
     task_statement, task_parameters = cursor.statements[2]
-    error_result_statement, error_result_parameters = cursor.statements[3]
-    benchmark_statement = cursor.statements[5][0]
+    benchmark_statement = cursor.statements[4][0]
     assert "FOR UPDATE" in lock_statement
     assert "SET status = 'FAILED'" in dispatch_statement
     assert "task_id = ANY(%s)" in task_statement
     assert "started_at <= ( SELECT created_at FROM executordispatch" in task_statement
     assert "status IN ('PENDING', 'BUILDING', 'IN_PROGRESS', 'EVALUATING')" in task_statement
-    assert "RETURNING id, org_id" in task_statement
     assert task_parameters == ("benchmark-1", ["task-1"], "dispatch-1")
-    assert "INSERT INTO errorresult" in error_result_statement
-    assert "error_message" in error_result_statement
-    assert "'executor_host'" in error_result_statement
-    assert "'run_executor_dispatch'" in error_result_statement
-    assert "'ExecutorHostFailure'" in error_result_statement
-    assert error_result_parameters[1:] == ("org-1", "task-row-1")
     assert "SET status = 'ERROR'" in benchmark_statement
 
 
@@ -427,10 +406,7 @@ async def test_postgres_terminalize_marks_current_run_and_runnable_tasks_error(
 async def test_postgres_terminalize_keeps_benchmark_active_for_coexisting_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cursor = RecordingCursor(
-        [("IN_PROGRESS",), ("dispatch-1",), (True,)],
-        all_rows=[("retry-task-row", "org-1")],
-    )
+    cursor = RecordingCursor([("IN_PROGRESS",), ("dispatch-1",), (True,)])
     store = PostgresExecutorDispatchStore(
         host="db",
         port="5432",
@@ -446,11 +422,9 @@ async def test_postgres_terminalize_keeps_benchmark_active_for_coexisting_dispat
 
     assert await store.terminalize(authority, ["retry-task"])
 
-    assert len(cursor.statements) == 5
+    assert len(cursor.statements) == 4
     assert cursor.statements[2][1] == ("benchmark-1", ["retry-task"], "dispatch-1")
-    assert "INSERT INTO errorresult" in cursor.statements[3][0]
-    assert cursor.statements[3][1][1:] == ("org-1", "retry-task-row")
-    assert "SELECT EXISTS" in cursor.statements[4][0]
+    assert "SELECT EXISTS" in cursor.statements[3][0]
 
 
 @pytest.mark.asyncio

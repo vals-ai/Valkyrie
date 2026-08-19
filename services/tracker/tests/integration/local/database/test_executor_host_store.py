@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.engine import Engine
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from services.executor_host.supervisor import (  # pyright: ignore[reportMissingImports]
     ArtifactDispatch,
@@ -15,7 +15,6 @@ from tests.factories import make_benchmark, make_task
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkStatus,
-    ErrorResult,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
@@ -112,7 +111,6 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     assert persisted_benchmark.status == BenchmarkStatus.IN_PROGRESS
     assert persisted_task is not None
     assert persisted_task.status == TaskStatus.IN_PROGRESS
-    assert postgres_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).all() == []
 
     assert await store.terminalize(sibling_authority, [task.task_id, newer_task.task_id])
     postgres_session.expire_all()
@@ -121,8 +119,6 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     persisted_newer_task = postgres_session.get(type(newer_task), newer_task.id)
     persisted_first_dispatch = postgres_session.get(type(first_dispatch), first_dispatch.id)
     persisted_sibling_dispatch = postgres_session.get(type(sibling_dispatch), sibling_dispatch.id)
-    task_errors = postgres_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).all()
-    newer_task_errors = postgres_session.exec(select(ErrorResult).where(ErrorResult.task == newer_task.id)).all()
 
     assert persisted_benchmark is not None
     assert persisted_benchmark.status == BenchmarkStatus.ERROR
@@ -135,16 +131,3 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     assert persisted_first_dispatch.status == ExecutorDispatchStatus.FINISHED
     assert persisted_sibling_dispatch is not None
     assert persisted_sibling_dispatch.status == ExecutorDispatchStatus.FAILED
-
-    assert len(task_errors) == 1
-    error_result = task_errors[0]
-    assert error_result.org_id == org.id
-    assert error_result.task == task.id
-    assert error_result.error_message == "Executor host failed"
-    assert error_result.producer == "executor_host"
-    assert error_result.operation == "run_executor_dispatch"
-    assert error_result.error_type == "ExecutorHostFailure"
-    assert error_result.cause_code is None
-    assert error_result.retry_scheduled is False
-    assert error_result.failed_attempt_number is None
-    assert newer_task_errors == []

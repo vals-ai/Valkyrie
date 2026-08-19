@@ -15,7 +15,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Protocol, Unpack, cast
-from uuid import uuid4
 
 import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
@@ -376,38 +375,9 @@ class PostgresExecutorDispatchStore:
                       WHERE id = %s::uuid
                   )
                   AND status IN ('PENDING', 'BUILDING', 'IN_PROGRESS', 'EVALUATING')
-                RETURNING id, org_id
                 """,
                 (authority.benchmark_id, task_ids, authority.dispatch_id),
             )
-            for task_id, org_id in cursor.fetchall():
-                cursor.execute(
-                    """
-                    INSERT INTO errorresult (
-                        id,
-                        org_id,
-                        task,
-                        created_at,
-                        error_message,
-                        producer,
-                        operation,
-                        error_type,
-                        cause_code
-                    )
-                    VALUES (
-                        %s::uuid,
-                        %s::uuid,
-                        %s::uuid,
-                        CURRENT_TIMESTAMP,
-                        'Executor host failed',
-                        'executor_host',
-                        'run_executor_dispatch',
-                        'ExecutorHostFailure',
-                        NULL
-                    )
-                    """,
-                    (str(uuid4()), str(org_id), str(task_id)),
-                )
             if benchmark_row[0] == "IN_PROGRESS":
                 cursor.execute(
                     """
