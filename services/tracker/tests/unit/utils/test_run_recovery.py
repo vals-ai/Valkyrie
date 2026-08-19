@@ -1912,6 +1912,49 @@ class TestRunRecovery:
             assert dispatch.status == ExecutorDispatchStatus.QUEUED
             assert dispatch.kind == dispatch_kind
 
+    async def test_terminal_resume_without_tasks_resets_benchmark_lifecycle(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
+        mock_kicker: MockKicker,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.ERROR
+        benchmark_row.finished_at = datetime.now(ZoneInfo("UTC"))
+        task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="finished-task",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+            finished_at=datetime.now(ZoneInfo("UTC")),
+        )
+        old_evaluation = FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark_row.id, final_score=0.5)
+        database_session.add_all([benchmark_row, task, old_evaluation])
+        database_session.commit()
+
+        async def _unexpected_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            raise AssertionError("resume without tasks should not verify task ids")
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _unexpected_verify_task_ids)
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}", headers=harness_headers)
+
+        assert response.status_code == 200
+        assert mock_kicker.queued_calls[0]["verified_task_ids"] == []
+
+        database_session.expire_all()
+        persisted_benchmark = database_session.get(Benchmark, benchmark_row.id)
+        assert persisted_benchmark is not None
+        assert persisted_benchmark.status == BenchmarkStatus.IN_PROGRESS
+        assert persisted_benchmark.finished_at is None
+        assert persisted_benchmark.final_evaluation is None
+
+        persisted_task = database_session.get(Task, task.id)
+        assert persisted_task is not None
+        assert persisted_task.status == TaskStatus.FINISHED
+
     async def test_terminal_resume_without_active_release_returns_503_without_mutation(
         self,
         example_benchmark_object: Benchmark,
