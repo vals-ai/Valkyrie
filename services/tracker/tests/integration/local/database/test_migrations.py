@@ -200,7 +200,14 @@ def test_error_result_provenance_migration_preserves_legacy_rows(
         assert migrated["error_message"] == message
         assert migrated["retry_scheduled"] is False
         assert all(
-            migrated[field] is None for field in ("producer", "operation", "error_type", "cause_code", "failed_attempt_number")
+            migrated[field] is None
+            for field in (
+                "producer",
+                "operation",
+                "error_type",
+                "cause_code",
+                "failed_attempt_number",
+            )
         )
 
     assert raw_retry_scheduled is False
