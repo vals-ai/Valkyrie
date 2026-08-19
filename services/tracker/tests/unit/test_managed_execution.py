@@ -335,7 +335,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         assert runtime is aws_runtime
         calls.append("s3-final-upload")
 
-    def invoke_post_run(clients: object, _function_name: str, _payload: object) -> dict[str, Any]:
+    def invoke_post_run(clients: object, _function_name: str, _payload: object, **_kwargs: Any) -> dict[str, Any]:
         assert clients is aws_runtime.clients
         calls.append("lambda-post-run")
         return {}

@@ -3,6 +3,8 @@
 import asyncio
 import traceback
 from asyncio import Semaphore, gather
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Sequence, cast
 from uuid import UUID
@@ -11,6 +13,7 @@ import logfire
 import sentry_sdk
 from benchmark_service import SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
+from botocore.config import Config
 from opentelemetry import trace
 from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
@@ -59,6 +62,8 @@ logger = get_logger(__name__)
 
 _SANDBOX_CREATION_CAP: int = 10
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+# Limit non-idempotent completion callbacks to one attempt and a 60-second read.
+_COMPLETION_CALLBACK_CONFIG = Config(read_timeout=60, retries={"total_max_attempts": 1})
 
 
 def set_benchmark_final_status(
@@ -365,17 +370,14 @@ def _preflight_managed_aws(
     return sandbox_provider_config
 
 
-async def upload_final_view_if_current(
-    benchmark: Benchmark,
-    final_view: FinalViewResponse,
-    aws_runtime: AWSRuntime,
+@asynccontextmanager
+async def hold_dispatch_authority(
     authority: ExecutionAuthority,
-) -> None:
-    """Upload the canonical final view only while this dispatch still owns the run."""
+) -> AsyncGenerator[tuple[Session, Benchmark], None]:
+    """Hold dispatch authority while a terminal side effect runs."""
     with Session(bind=engine) as session:
-        lock_execution_authority(session, authority, require_in_progress=False)
-        session.rollback()
-    await upload_final_view(benchmark, final_view, aws_runtime)
+        benchmark = lock_execution_authority(session, authority, require_in_progress=False)
+        yield session, benchmark
 
 
 # Keep the Tracker producer and ExecutorHost on one stable Taskiq wire name.
@@ -582,13 +584,7 @@ async def process_benchmark(
             # Commit the final score and terminal status together while retry/resume is blocked.
             set_benchmark_final_status(benchmark_row, session, org, authority=authority)
 
-            # Recheck dispatch authority after the status commit without holding the
-            # Retry admission lock across external operations.
-            lock_execution_authority(session, authority, require_in_progress=False)
-            session.commit()
-
             final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
-            final_view_benchmark = benchmark_row
             lambda_function = benchmark_row.arguments.lambda_function
             lambda_payload: dict[str, Any] | None = None
             if lambda_function:
@@ -596,25 +592,18 @@ async def process_benchmark(
                 lambda_payload["benchmark_id"] = str(benchmark_id)
                 lambda_payload["benchmark_name"] = benchmark_row.name
 
-        await upload_final_view_if_current(
-            final_view_benchmark,
-            final_view,
-            aws_runtime,
-            authority,
-        )
-
-        # A Retry may win while the upload is in flight. Do not emit follow-on
-        # callbacks for an execution that no longer owns the run.
-        with Session(bind=engine) as authority_session:
-            lock_execution_authority(
-                authority_session,
-                authority,
-                require_in_progress=False,
-            )
-            authority_session.commit()
+        async with hold_dispatch_authority(authority) as (_, benchmark_row):
+            await upload_final_view(benchmark_row, final_view, aws_runtime)
 
         if lambda_function and lambda_payload is not None:
-            invoke_lambda(aws_runtime.clients, lambda_function, lambda_payload)
+            async with hold_dispatch_authority(authority):
+                await asyncio.to_thread(
+                    invoke_lambda,
+                    aws_runtime.clients,
+                    lambda_function,
+                    lambda_payload,
+                    config=_COMPLETION_CALLBACK_CONFIG,
+                )
 
     except ExecutionAuthorityRevoked:
         finalization_deferred = True
@@ -680,17 +669,11 @@ async def process_benchmark(
 
         if notifier and not finalization_deferred and authority_current:
             try:
-                with Session(bind=engine) as session:
-                    benchmark_row = lock_execution_authority(
-                        session,
-                        authority,
-                        require_in_progress=False,
-                    )
-                    notification_context = NotificationContext.from_benchmark(benchmark_row, session, org)
+                async with hold_dispatch_authority(authority) as (notification_session, benchmark_row):
+                    notification_context = NotificationContext.from_benchmark(benchmark_row, notification_session, org)
                     final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
                     notification_status = benchmark_row.status
                     notification_error_message = benchmark_row.error_message
-                    session.commit()
                     await notifier.send_terminal_notification(
                         notification_context,
                         status=notification_status,

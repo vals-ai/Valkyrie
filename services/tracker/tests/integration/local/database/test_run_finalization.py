@@ -5,21 +5,24 @@ Exercise run-finalization concurrency against disposable Postgres.
 
 import asyncio
 from datetime import UTC, datetime
-from threading import Event, Thread
+from threading import Event, Thread, get_ident
 from time import monotonic, sleep
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.sandbox import DaytonaProviderConfig
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 import pytest
+from botocore.config import Config
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
 import tracker.utils.run_control as run_control_module
 import tracker.utils.run_orchestration as run_orchestration_module
 from tests.factories import make_benchmark, make_task
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -39,11 +42,11 @@ from tracker.exceptions import ExecutionAuthorityRevoked
 from tracker.executor.dispatch_control import admit_recovery_dispatch, terminalize_active_dispatches
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.executor.release_control import promote_release
+from tracker.notifications import SlackNotifier
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
 from tracker.utils.reporting import create_final_view
 from tracker.utils.resources import fetch_benchmark_row
-from tracker.utils.run_orchestration import upload_final_view_if_current
 from tracker.utils.task_error_summary import summarize_task_errors
 from tracker.utils.task_execution import TaskMonitor
 
@@ -189,12 +192,12 @@ class TestRunFinalization:
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", record_upload)
 
         with pytest.raises(ExecutionAuthorityRevoked):
-            await upload_final_view_if_current(
-                benchmark,
-                final_view,
-                harness_config,
-                authority,
-            )
+            async with run_orchestration_module.hold_dispatch_authority(authority):
+                await run_orchestration_module.upload_final_view(  # pyright: ignore[reportPrivateImportUsage]
+                    benchmark,
+                    final_view,
+                    cast(AWSRuntime, harness_config),
+                )
 
         assert upload_calls == []
         postgres_session.refresh(retry_dispatch)
@@ -381,8 +384,11 @@ class TestRunFinalization:
         )
         first_authority = executor_authority_kwargs(benchmark, dispatch_id=uuid4(), session=postgres_session)
         second_authority = executor_authority_kwargs(benchmark, dispatch_id=uuid4(), session=postgres_session)
+        upload_calls = 0
 
         async def skip_cloud_operation(*_args: Any, **_kwargs: Any) -> None:
+            nonlocal upload_calls
+            upload_calls += 1
             return None
 
         def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
@@ -443,9 +449,131 @@ class TestRunFinalization:
             ).all()
 
         assert final_score_calls == 1
+        assert upload_calls == 1
         assert persisted_benchmark is not None
         assert persisted_benchmark.status == BenchmarkStatus.FINISHED
         assert len(final_evaluations) == 1
+
+    async def test_terminal_side_effects_hold_benchmark_lock(
+        self,
+        postgres_engine: Engine,
+        postgres_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        executor_authority_kwargs: Any,
+    ) -> None:
+        org = Org(id=uuid4(), name=f"final-view-lock-{uuid4()}")
+        contract = AgentContractRequest(name="final-view-lock-agent", install_cmd="true", run_cmd="true")
+        benchmark = make_benchmark(
+            name="final-view-lock",
+            org_id=org.id,
+            contract=contract,
+            status=BenchmarkStatus.IN_PROGRESS,
+        )
+        task = make_task(benchmark, "finished-task", status=TaskStatus.FINISHED)
+        postgres_session.add(org)
+        postgres_session.flush()
+        postgres_session.add(benchmark)
+        postgres_session.flush()
+        postgres_session.add(task)
+        postgres_session.flush()
+        postgres_session.add(
+            EvaluationResult(
+                org_id=org.id,
+                task=task.id,
+                instance_id=f"final-view-lock-{task.id}",
+                result={"score": 1.0},
+            )
+        )
+        postgres_session.commit()
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name=benchmark.name,
+            concurrency=1,
+            harness_config=harness_config,
+            webhook_secret_name="test-webhook-secret",
+            webhook_intervals=[100],
+        )
+        authority_kwargs = executor_authority_kwargs(benchmark, dispatch_id=uuid4(), session=postgres_session)
+        benchmark.arguments = benchmark.arguments.model_copy(update={"lambda_function": "test-lambda"})
+        postgres_session.add(benchmark)
+        postgres_session.commit()
+        side_effects: dict[str, dict[str, int | bool]] = {
+            "upload": {"calls": 0, "lock_held": False},
+            "lambda": {"calls": 0, "lock_held": False},
+            "notification": {"calls": 0, "lock_held": False},
+        }
+        lambda_configs: list[Config] = []
+        lambda_thread_ids: list[int] = []
+
+        def assert_lock_held(benchmark_id: UUID) -> bool:
+            with Session(postgres_engine) as retry_session:
+                retry_session.connection().exec_driver_sql("SET LOCAL lock_timeout = '100ms'")
+                try:
+                    retry_session.exec(select(Benchmark).where(Benchmark.id == benchmark_id).with_for_update()).one()
+                except OperationalError:
+                    return True
+            return False
+
+        async def assert_upload_lock_held(*_args: Any, **_kwargs: Any) -> None:
+            side_effects["upload"]["calls"] += 1
+            side_effects["upload"]["lock_held"] = assert_lock_held(benchmark.id)
+
+        def assert_lambda_lock_held(*_args: Any, **_kwargs: Any) -> None:
+            side_effects["lambda"]["calls"] += 1
+            side_effects["lambda"]["lock_held"] = assert_lock_held(benchmark.id)
+            callback_config = _kwargs.get("config")
+            assert isinstance(callback_config, Config)
+            lambda_configs.append(callback_config)
+            lambda_thread_ids.append(get_ident())
+
+        async def assert_notification_lock_held(
+            _notifier: SlackNotifier,
+            _context: Any,
+            **_kwargs: Any,
+        ) -> None:
+            side_effects["notification"]["calls"] += 1
+            side_effects["notification"]["lock_held"] = assert_lock_held(benchmark.id)
+
+        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+            return "test-log-group"
+
+        def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
+            return DaytonaProviderConfig(
+                DAYTONA_API_KEY="test-key",
+                DAYTONA_API_URL="https://example.com",
+                DAYTONA_TARGET="test-target",
+            )
+
+        async def final_score(*_args: Any, **_kwargs: Any) -> FinalScoreResponse:
+            return FinalScoreResponse(tasks_evaluated=[task.task_id], final_score=1.0, metadata={})
+
+        monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
+        monkeypatch.setattr(run_orchestration_module, "create_benchmark_log_group", skip_log_group)
+        monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", provider_config)
+        monkeypatch.setattr(run_orchestration_module, "upload_final_view", assert_upload_lock_held)
+        monkeypatch.setattr(run_orchestration_module, "invoke_lambda", assert_lambda_lock_held)
+        monkeypatch.setattr(SlackNotifier, "send_terminal_notification", assert_notification_lock_held)
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", final_score)
+        # Release the fixture connection so separate probe sessions can contend for the row lock.
+        postgres_session.close()
+
+        await process_benchmark(
+            start_benchmark_request_json=request.model_dump(),
+            benchmark_id_str=str(benchmark.id),
+            verified_task_ids=[],
+            **authority_kwargs,
+        )
+
+        assert side_effects == {
+            "upload": {"calls": 1, "lock_held": True},
+            "lambda": {"calls": 1, "lock_held": True},
+            "notification": {"calls": 1, "lock_held": True},
+        }
+        assert lambda_configs[0].read_timeout == 60
+        assert lambda_configs[0].retries == {"total_max_attempts": 1}
+        assert lambda_thread_ids[0] != get_ident()
 
     async def test_all_error_finalization_returns_distinct_representatives(
         self,

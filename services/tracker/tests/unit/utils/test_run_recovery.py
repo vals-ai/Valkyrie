@@ -542,7 +542,12 @@ class TestRunRecovery:
         ]
         captured_lambda_payloads: list[dict[str, Any]] = []
 
-        def _capture_lambda_payload(_client: Any, _function_name: str, payload: dict[str, Any]) -> None:
+        def _capture_lambda_payload(
+            _client: Any,
+            _function_name: str,
+            payload: dict[str, Any],
+            **_kwargs: Any,
+        ) -> None:
             captured_lambda_payloads.append(payload)
 
         monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", _capture_lambda_payload)

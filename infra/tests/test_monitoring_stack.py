@@ -815,7 +815,6 @@ class MonitoringStackTest(unittest.TestCase):
                 service_templates(PROD)
 
     def test_dev_sentry_secret_is_injected(self) -> None:
-
         custom_sentry_secret_name = "custom/dev-sentry-dsn"
         sentry_environment = {
             **TEST_DEV_ENV,
