@@ -82,9 +82,90 @@ Removing a field that is not present is safe. The Region and bucket remain in th
 Tracker stores the AWS execution mode when a run starts. Retrying or resuming the run uses that stored mode rather than selecting a new mode from the current local config.
 
 - A managed run continues to use the deployment task roles.
-- An access-key run still requires a complete access-key configuration. If the credential fields were removed, restore the configuration used for that run before retrying or resuming it.
+- An access-key run still requires the complete access-key configuration that can reach its AWS resources.
 
 Adding or removing local credential fields does not convert an existing run to a different AWS execution mode.
+
+#### Keep an access-key config during the managed AWS rollout
+
+Keep managed AWS as the normal config while historical access-key runs still need maintenance. These steps are CLI-only because Valkyrie selects a local config file before contacting Tracker; there is no web-console setting that selects a local fallback file.
+
+1. Before running managed setup, copy the current complete access-key config to a restricted fallback file.
+
+   **Why** -- Managed setup removes static credentials from the normal environment config. The copy preserves the credentials and resource settings required by existing access-key runs.
+
+   For dev:
+
+   ```bash
+   install -m 600 ~/.config/valkyrie/dev.yaml ~/.config/valkyrie/dev-access-key.yaml
+   ```
+
+   For prod:
+
+   ```bash
+   install -m 600 ~/.config/valkyrie/valkyrie.yaml ~/.config/valkyrie/prod-access-key.yaml
+   ```
+
+   **Done when** -- The fallback file contains the Vals API key, both AWS access-key fields, Region, S3 bucket, log group, and log retention policy used by the historical runs. Include `AWS_SESSION_TOKEN` when the credentials require one.
+
+2. Initialize the normal environment config for managed AWS.
+
+   **Why** -- New runs should use managed AWS by default without sending static credentials to Tracker.
+
+   For dev:
+
+   ```bash
+   VALKYRIE_ENV=dev valkyrie config init
+   ```
+
+   For prod:
+
+   ```bash
+   VALKYRIE_ENV=prod valkyrie config init
+   ```
+
+   Do not set `VALKYRIE_CONFIG_PATH` for this step. Setup should update the normal environment config, not the fallback copy.
+
+   **Done when** -- Setup reports that managed AWS execution is enabled and the normal environment config no longer contains `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, or `AWS_SESSION_TOKEN`.
+
+3. Select the fallback file only when retrying or resuming a historical access-key run.
+
+   **Why** -- `VALKYRIE_ENV` selects the Tracker environment. `VALKYRIE_CONFIG_PATH` supplies the credentials and AWS resource settings stored for the run.
+
+   For dev:
+
+   ```bash
+   VALKYRIE_ENV=dev \
+   VALKYRIE_CONFIG_PATH=~/.config/valkyrie/dev-access-key.yaml \
+   valkyrie run resume <run-id>
+   ```
+
+   For prod:
+
+   ```bash
+   VALKYRIE_ENV=prod \
+   VALKYRIE_CONFIG_PATH=~/.config/valkyrie/prod-access-key.yaml \
+   valkyrie run resume <run-id>
+   ```
+
+   Use `valkyrie run retry <run-id>` with the same environment variables when retrying instead.
+
+   **Done when** -- The command starts recovery for the intended access-key run using the fallback file. Commands without `VALKYRIE_CONFIG_PATH` continue to use the normal managed config.
+
+4. Remove the fallback after every historical access-key run has finished and no longer needs retry or resume.
+
+   **Why** -- The fallback contains long-lived static credentials and should exist only while it has an operational use.
+
+   ```bash
+   rm ~/.config/valkyrie/dev-access-key.yaml  # dev
+   rm ~/.config/valkyrie/prod-access-key.yaml # prod
+   ```
+
+   If the access key is no longer used elsewhere, disable or delete it through your organization's AWS credential-management process. The AWS console path for an IAM user is **IAM > Users > the user > Security credentials > Access keys**.
+
+   **Done when** -- The fallback file is absent and any otherwise-unused access key has been disabled or deleted.
+
+This fallback does not enable cross-mode takeover. A managed config cannot supply credentials for an access-key run, and selecting an access-key config does not change a managed run to access-key execution.
 
 You can also set the API key manually:
 
