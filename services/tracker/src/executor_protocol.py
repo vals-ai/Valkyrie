@@ -19,6 +19,11 @@ class ExecutorDispatchStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class ExecutorTelemetryContext(TypedDict):
+    request_id: str
+    trace_headers: dict[str, str]
+
+
 class ExecutorPayload(TypedDict):
     # Exactly one execution shape is set: access-key runs carry the first three
     # fields; managed runs carry only execution_context_json. Dispatch fields
@@ -27,6 +32,7 @@ class ExecutorPayload(TypedDict):
     benchmark_id_str: NotRequired[str | None]
     verified_task_ids: NotRequired[list[str] | None]
     execution_context_json: NotRequired[dict[str, Any] | None]
+    telemetry_context_json: NotRequired[ExecutorTelemetryContext | None]
     executor_dispatch_id: str
     executor_release_id: str
     executor_artifact_uri: str

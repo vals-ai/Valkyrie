@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from typing import Literal
-from uuid import UUID
-
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import case
 from sqlmodel import Session, col, desc, func, select
 
 from tracker.api.parsing import parse_csv
+from tracker.api.dependencies import TrackedBenchmarkId
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.resolver import resolve_run_metadata_aws_runtime
@@ -46,7 +45,7 @@ _STATUS_SORT_PRIORITY = case(
 
 @router.get("/{benchmark_id}", response_model=SingleBenchmarkResponse)
 def get_single_benchmark(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     request: Request,
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
@@ -103,7 +102,7 @@ def get_single_benchmark(
 
 @router.get("/{benchmark_id}/tasks", response_model=TasksResponse)
 def get_benchmark_tasks(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     status: str = Query(default=""),
     task_id_search: str | None = None,
     sort: Literal["task_id", "started_at", "duration", "status"] = Query(default="started_at"),

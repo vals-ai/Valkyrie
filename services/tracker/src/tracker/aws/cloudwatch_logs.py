@@ -1,4 +1,3 @@
-import re
 import time
 from collections.abc import Callable
 from functools import wraps
@@ -17,15 +16,8 @@ _R = TypeVar("_R")
 
 
 def _sanitize_log_stream_name(task_id: str) -> str:
-    """Make a task_id safe to use as a CloudWatch logStreamName.
-
-    AWS requires log stream names to match the regex ``[^:*]*`` (no ``:`` or
-    ``*``). Some task ids carry these characters (e.g. model-suffixed ids like
-    ``provider/model:fast``), which makes ``CreateLogStream`` raise
-    ``InvalidParameterException`` and silently drops the run's logs. Replace the
-    forbidden characters so logging degrades gracefully instead of failing.
-    """
-    return re.sub(r"[:*]", "_", task_id)
+    """Encode forbidden characters without merging distinct task IDs."""
+    return quote(task_id, safe="/-_.")
 
 
 def handle_cloudwatch_error(message: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:

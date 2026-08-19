@@ -141,6 +141,19 @@ class ExecutorStack(Stack):
             "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="password"),
         }
 
+        sentry_secret_name = os.environ.get("SENTRY_DSN_SECRET_NAME", "")
+        if stage.is_prod and not sentry_secret_name:
+            raise ValueError("Production deployments require SENTRY_DSN_SECRET_NAME.")
+
+        sentry_secrets: dict[str, aws_ecs.Secret] = {}
+        if sentry_secret_name:
+            sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+                self,
+                "ExecutorSentryDsnSecret",
+                sentry_secret_name,
+            )
+            sentry_secrets["SENTRY_DSN"] = aws_ecs.Secret.from_secrets_manager(sentry_secret)
+
         aws_logs.LogGroup(
             self,
             "WorkerLogGroup",
@@ -180,8 +193,9 @@ class ExecutorStack(Stack):
                 "STABLE_QUEUE_NAME": "valkyrie-stable",
                 "EXECUTOR_RELEASE_BUCKET": self.executor_release_bucket.bucket_name,
                 "EXECUTOR_RELEASE_PREFIX": EXECUTOR_RELEASE_PREFIX,
+                "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
             },
-            secrets=db_secrets,
+            secrets={**db_secrets, **sentry_secrets},
             stop_timeout=Duration.seconds(WORKER_STOP_TIMEOUT_SECONDS),
         )
         self.executor_task_role.add_to_policy(

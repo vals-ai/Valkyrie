@@ -50,7 +50,9 @@ whenever `AUTH_REQUIRED` is `true`. The dev Environment holds every dev
 deployment input as an Environment secret except `AWS_REGION`, which stays a
 variable. The production jobs read repository-level secrets; the
 `SANDBOX_CLEANUP_ENABLED` and `SANDBOX_CLEANUP_PROVIDER` toggles stay
-variables.
+variables. The Sentry DSN is injected into both Tracker and ExecutorHost. The
+host propagates each run's trace and request context into its immutable executor
+artifact.
 
 Before production executor activation, configure the protected `prod` GitHub
 Environment used by both production deploy jobs. Both AWS accounts must already

@@ -29,6 +29,7 @@ from tracker.types import HarnessConfig, StartBenchmarkRequest
 client = TestClient(app)
 
 _DISPATCH_TASK_KWARGS = {
+    "telemetry_context_json",
     "executor_dispatch_id",
     "executor_release_id",
     "executor_artifact_uri",

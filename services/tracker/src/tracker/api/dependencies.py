@@ -13,6 +13,19 @@ from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import Benchmark, Org
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
+from tracker.logging import benchmark_id_var
+from opentelemetry import trace
+
+
+def bind_benchmark_id(benchmark_id: UUID) -> UUID:
+    """Bind a route's run identifier to logs, errors, and the active request span."""
+    value = str(benchmark_id)
+    benchmark_id_var.set(value)
+    trace.get_current_span().set_attribute("benchmark_id", value)
+    return benchmark_id
+
+
+TrackedBenchmarkId = Annotated[UUID, Depends(bind_benchmark_id)]
 
 
 def get_agent_library_aws_runtime(
@@ -32,7 +45,7 @@ class RunAWSContext:
 
 
 def get_run_aws_context(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     request: Request,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),

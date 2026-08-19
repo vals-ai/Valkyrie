@@ -109,12 +109,21 @@ class TestSentrySetup:
             },
         )
         monkeypatch.setattr(sentry_module, "get_current_span", lambda: span)
+        monkeypatch.setattr(
+            sentry_module,
+            "get_context_tags",
+            lambda: {"request_id": "request-123", "benchmark_id": "benchmark-123", "task_id": ""},
+        )
 
         result = _before_send_log()(log, {})
 
         assert result is log
         assert log["trace_id"] == trace_id
         assert log["span_id"] == span_id
+        assert log["attributes"] == {
+            "request_id": "request-123",
+            "benchmark_id": "benchmark-123",
+        }
 
     def test_init_sentry_logs_warning_when_initialization_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         warnings: list[tuple[str, tuple[object, ...]]] = []

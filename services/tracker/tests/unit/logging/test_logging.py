@@ -5,7 +5,8 @@ Run: uv run pytest tests/unit/logging/test_logging.py
 
 import json
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
+from uuid import UUID
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -19,6 +20,7 @@ from tracker.logging import (
     request_id_var,
     task_id_var,
 )
+from tracker.api.dependencies import bind_benchmark_id
 from tracker.middleware import LoggingContextMiddleware
 from tracker.types import AWSCredentials, HarnessConfig
 
@@ -140,6 +142,18 @@ class TestContextFilter:
             request_id_var.reset(request_token)
             benchmark_id_var.reset(benchmark_token)
             task_id_var.reset(task_token)
+
+
+def test_bind_benchmark_id_updates_logging_context_and_request_span(monkeypatch: pytest.MonkeyPatch) -> None:
+    span = Mock()
+    monkeypatch.setattr("tracker.api.dependencies.trace.get_current_span", lambda: span)
+
+    benchmark_id = UUID("12345678-1234-5678-9234-567812345678")
+    result = bind_benchmark_id(benchmark_id)
+
+    assert result == benchmark_id
+    assert benchmark_id_var.get() == str(benchmark_id)
+    span.set_attribute.assert_called_once_with("benchmark_id", str(benchmark_id))
 
 
 class TestConfigureLogging:

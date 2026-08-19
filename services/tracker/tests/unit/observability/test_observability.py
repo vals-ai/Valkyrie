@@ -17,6 +17,7 @@ from tenacity import RetryCallState, Retrying
 import tracker.observability.metrics as metrics_module
 import tracker.observability.retry as retry_module
 import tracker.observability.sentry as sentry_module
+import tracker.observability.tracing as tracing_module
 
 
 def _run_orchestration() -> Any:
@@ -312,3 +313,39 @@ def test_retry_callback_logs_attempt_and_emits_retry_metric(monkeypatch: pytest.
             "error_class": "TimeoutError",
         }
     ]
+
+
+def test_sentry_span_processor_drops_noisy_polling_subtrees(monkeypatch: pytest.MonkeyPatch) -> None:
+    delegate = Mock()
+    delegate.force_flush.return_value = True
+    monkeypatch.setattr(tracing_module, "SentrySpanProcessor", Mock(return_value=delegate))
+    processor = tracing_module._FilteredSentrySpanProcessor()  # pyright: ignore[reportPrivateUsage]
+
+    root_context = SimpleNamespace(span_id=1)
+    polling_context = SimpleNamespace(span_id=2)
+    polling_child_context = SimpleNamespace(span_id=3)
+    meaningful_context = SimpleNamespace(span_id=4)
+    root = SimpleNamespace(name="sandbox.exec", parent=None, get_span_context=lambda: root_context)
+    polling = SimpleNamespace(
+        name="AsyncProcess.exec",
+        parent=root_context,
+        get_span_context=lambda: polling_context,
+    )
+    polling_child = SimpleNamespace(
+        name="http.client",
+        parent=polling_context,
+        get_span_context=lambda: polling_child_context,
+    )
+    meaningful = SimpleNamespace(
+        name="upload_output",
+        parent=root_context,
+        get_span_context=lambda: meaningful_context,
+    )
+
+    for span in (root, polling, polling_child, meaningful):
+        processor.on_start(span)
+    for span in (polling_child, polling, meaningful, root):
+        processor.on_end(span)
+
+    assert [call.args[0] for call in delegate.on_start.call_args_list] == [root, meaningful]
+    assert [call.args[0] for call in delegate.on_end.call_args_list] == [meaningful, root]

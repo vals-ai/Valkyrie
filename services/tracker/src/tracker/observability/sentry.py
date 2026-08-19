@@ -44,6 +44,10 @@ def _apply_current_otel_trace_context(telemetry: dict[str, Any]) -> None:
 
 
 def _before_send_log(log: Log, _hint: Hint) -> Log | None:
+    attributes = log.setdefault("attributes", {})
+    for key, value in get_context_tags().items():
+        if value:
+            attributes[key] = value
     _apply_current_otel_trace_context(cast(dict[str, Any], log))
     return log
 
@@ -73,10 +77,10 @@ def init_sentry(service_name: str, environment: str) -> None:
             before_send=_before_send,
             before_send_log=_before_send_log,
             integrations=[
-                # level=None / event_level=None: spans carry context and we capture_exception explicitly,
-                # so we only want LoggingIntegration for shipping log records to Sentry Logs.
+                # INFO records become both searchable logs and breadcrumbs. Explicit exception
+                # capture owns issue creation so an error log cannot create a duplicate issue.
                 LoggingIntegration(
-                    level=None,
+                    level=logging.INFO,
                     event_level=None,
                     sentry_logs_level=logging.INFO,
                 ),

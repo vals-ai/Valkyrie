@@ -818,36 +818,45 @@ class MonitoringStackTest(unittest.TestCase):
         sentry_environment = {
             **TEST_DEV_ENV,
             "SENTRY_DSN_SECRET_NAME": custom_sentry_secret_name,
+            "SENTRY_RELEASE": "deployment-sha",
         }
         with mock.patch.dict(os.environ, sentry_environment, clear=True):
             tracker_template, executor_template, _ = service_templates(DEV)
 
-        tracker_template.has_resource_properties(
-            "AWS::ECS::TaskDefinition",
-            {
-                "ContainerDefinitions": assertions.Match.array_with(
-                    [
-                        assertions.Match.object_like(
-                            {
-                                "Secrets": assertions.Match.array_with(
-                                    [assertions.Match.object_like({"Name": "SENTRY_DSN"})]
-                                )
-                            }
-                        )
-                    ]
-                )
-            },
-        )
+        for template in (tracker_template, executor_template):
+            template.has_resource_properties(
+                "AWS::ECS::TaskDefinition",
+                {
+                    "ContainerDefinitions": assertions.Match.array_with(
+                        [
+                            assertions.Match.object_like(
+                                {
+                                    "Environment": assertions.Match.array_with(
+                                        [
+                                            assertions.Match.object_like(
+                                                {"Name": "SENTRY_RELEASE", "Value": "deployment-sha"}
+                                            )
+                                        ]
+                                    ),
+                                    "Secrets": assertions.Match.array_with(
+                                        [assertions.Match.object_like({"Name": "SENTRY_DSN"})]
+                                    ),
+                                }
+                            )
+                        ]
+                    )
+                },
+            )
         sentry_value_from = [
             secret["ValueFrom"]
-            for task_definition in tracker_template.find_resources("AWS::ECS::TaskDefinition").values()
+            for template in (tracker_template, executor_template)
+            for task_definition in template.find_resources("AWS::ECS::TaskDefinition").values()
             for container in task_definition["Properties"]["ContainerDefinitions"]
             for secret in container.get("Secrets", [])
             if secret["Name"] == "SENTRY_DSN"
         ]
-        self.assertEqual(len(sentry_value_from), 1)
-        self.assertIn(custom_sentry_secret_name, str(sentry_value_from[0]))
-        self.assertNotIn("SENTRY_DSN", str(executor_template.to_json()))
+        self.assertEqual(len(sentry_value_from), 2)
+        self.assertTrue(all(custom_sentry_secret_name in str(value) for value in sentry_value_from))
 
 
 if __name__ == "__main__":

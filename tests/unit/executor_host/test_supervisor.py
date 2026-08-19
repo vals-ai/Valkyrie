@@ -183,7 +183,10 @@ def test_managed_process_payload_is_normalized_once() -> None:
 
     assert payload.benchmark_id == "benchmark-1"
     assert payload.verified_task_ids == ["task-1"]
-    assert payload.arguments == {"execution_context_json": context}
+    assert payload.arguments == {
+        "execution_context_json": context,
+        "telemetry_context_json": {"request_id": "", "trace_headers": {}},
+    }
 
 
 def test_process_payload_rejects_mixed_execution_shapes() -> None:
@@ -433,7 +436,7 @@ async def test_run_forwards_dispatch_authority_to_executor(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    script = b"""import json, os, sys\nfrom pathlib import Path\npayload = json.loads(Path(sys.argv[1]).read_text())\nPath(os.environ[\"EXECUTOR_TEST_MARKER\"]).write_text(json.dumps(payload))\n"""
+    script = b"""import json, os, sys\nfrom pathlib import Path\npayload = json.loads(Path(sys.argv[1]).read_text())\nresult = {\"payload\": payload, \"sentry_release\": os.environ.get(\"SENTRY_RELEASE\")}\nPath(os.environ[\"EXECUTOR_TEST_MARKER\"]).write_text(json.dumps(result))\n"""
     digest = hashlib.sha256(script).hexdigest()
     marker = tmp_path / "marker.json"
     monkeypatch.setenv("EXECUTOR_TEST_MARKER", str(marker))
@@ -452,10 +455,12 @@ async def test_run_forwards_dispatch_authority_to_executor(
         result = json.loads(marker.read_text())
     except (OSError, JSONDecodeError) as error:
         raise AssertionError(f"executor marker was not valid JSON: {error}") from error
-    payload = result
+    payload = result["payload"]
     assert payload["benchmark_id_str"] == "benchmark-1"
     assert payload["verified_task_ids"] == ["task-1"]
     assert payload["executor_dispatch_id"] == "dispatch-1"
+    assert payload["telemetry_context_json"] == {"request_id": "", "trace_headers": {}}
+    assert result["sentry_release"] == "release-v2"
     assert store.authority_checks
     assert store.finished == [store.authority]
     assert (

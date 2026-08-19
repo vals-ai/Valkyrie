@@ -16,6 +16,13 @@ from tracker.logging.context import get_context_tags
 # silently loses long-running parents like process_benchmark / process_task. Bump to 4 hours.
 _sentry_span_processor.SPAN_MAX_TIME_OPEN_MINUTES = 240
 
+_EXCLUDED_SPAN_NAMES = frozenset(
+    {
+        "AsyncProcess.exec",
+        "AsyncSandbox.refresh_data",
+    }
+)
+
 
 class _ContextVarSpanProcessor(SpanProcessor):
     """Attaches request/benchmark/task context vars to every span as attributes."""
@@ -36,6 +43,35 @@ class _ContextVarSpanProcessor(SpanProcessor):
         return True
 
 
+class _FilteredSentrySpanProcessor(SpanProcessor):
+    """Drop low-level polling span subtrees before exporting them to Sentry."""
+
+    def __init__(self) -> None:
+        self._delegate = SentrySpanProcessor()
+        self._excluded_span_ids: set[int] = set()
+
+    def on_start(self, span: Span, parent_context: Context | None = None) -> None:
+        parent_span_id = span.parent.span_id if span.parent is not None else None
+        span_id = span.get_span_context().span_id
+        if span.name in _EXCLUDED_SPAN_NAMES or parent_span_id in self._excluded_span_ids:
+            self._excluded_span_ids.add(span_id)
+            return
+        self._delegate.on_start(span, parent_context)
+
+    def on_end(self, span: ReadableSpan) -> None:
+        span_id = span.get_span_context().span_id
+        if span_id in self._excluded_span_ids:
+            self._excluded_span_ids.discard(span_id)
+            return
+        self._delegate.on_end(span)
+
+    def shutdown(self) -> None:
+        self._delegate.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return self._delegate.force_flush(timeout_millis)
+
+
 def configure_tracing(service_name: str, environment: str) -> None:
     """Configure OTel tracing. Call after init_sentry() and before any instrument_*() hooks."""
     logfire.configure(
@@ -46,7 +82,7 @@ def configure_tracing(service_name: str, environment: str) -> None:
         distributed_tracing=True,
         # configure_logging() owns stdout.
         console=False,
-        additional_span_processors=[_ContextVarSpanProcessor(), SentrySpanProcessor()],
+        additional_span_processors=[_ContextVarSpanProcessor(), _FilteredSentrySpanProcessor()],
     )
     # Composite: inject both W3C traceparent/tracestate (for non-Sentry peers like Daytona /
     # benchmark_service) and Sentry's sentry-trace/baggage. Extract honors whichever headers arrive.

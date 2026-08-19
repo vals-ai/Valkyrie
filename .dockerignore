@@ -5,6 +5,8 @@ services/*
 !services/executor_host/
 services/executor_host/*
 !services/executor_host/Dockerfile
+!services/executor_host/__init__.py
+!services/executor_host/observability.py
 !services/executor_host/requirements.txt
 !services/executor_host/supervisor.py
 !services/tracker/
