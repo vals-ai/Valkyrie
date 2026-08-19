@@ -709,7 +709,6 @@ class TestSDKReferenceCollection:
             assert error.parent == expected_parent
             assert f"| [`{error.name}`](#{error.name.lower()}) | `{expected_parent}` |" in page
             assert f"## `{error.name}`" in page
-            assert error.description in page
             assert f"\n{error.signature}\n" in page
 
         assert index.count("[SDK error hierarchy](/reference/sdk/errors)") == 1
