@@ -44,6 +44,7 @@ from constants import (
     executor_release_launch_parameter,
 )
 from constructs import Construct
+from runtime_iam import create_executor_task_role, managed_runtime_environment
 from stage import Stage
 from stage_config import StageConfig, benchmark_service_base_url, config_for
 
@@ -117,6 +118,7 @@ class ExecutorStack(Stack):
             )
 
         benchmark_service_url = benchmark_service_base_url(stage)
+        bucket = aws_s3.Bucket.from_bucket_name(self, "ManagedRuntimeBucket", bucket_name)
         shared_env = {
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket_name,
@@ -124,6 +126,7 @@ class ExecutorStack(Stack):
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
             **({"BENCHMARK_SERVICE_BASE_URL": benchmark_service_url} if benchmark_service_url else {}),
+            **managed_runtime_environment(self, stage, bucket, stage_config.managed_aws),
         }
 
         db_env = {
@@ -146,13 +149,17 @@ class ExecutorStack(Stack):
             removal_policy=cdk.RemovalPolicy.RETAIN,
         )
 
+        self.executor_task_role = create_executor_task_role(self, stage, bucket, stage_config.managed_aws)
         executor_task_def = aws_ecs.FargateTaskDefinition(
             self,
             "ExecutorHostTaskDef",
             cpu=stage_config.worker.cpu,
             memory_limit_mib=stage_config.worker.memory_mib,
             runtime_platform=_ARM64_PLATFORM,
+            task_role=cast(aws_iam.IRole, self.executor_task_role),
         )
+
+        cdk.CfnOutput(self, "ExecutorTaskRoleArn", value=self.executor_task_role.role_arn)
         executor_task_def.add_container(
             "ExecutorHostContainer",
             image=executor_host_image,
@@ -177,13 +184,13 @@ class ExecutorStack(Stack):
             secrets=db_secrets,
             stop_timeout=Duration.seconds(WORKER_STOP_TIMEOUT_SECONDS),
         )
-        cast(aws_iam.Role, executor_task_def.task_role).add_to_policy(
+        self.executor_task_role.add_to_policy(
             aws_iam.PolicyStatement(
                 actions=["ecs:UpdateTaskProtection"],
                 resources=["*"],
             )
         )
-        cast(aws_iam.Role, executor_task_def.task_role).add_to_policy(
+        self.executor_task_role.add_to_policy(
             aws_iam.PolicyStatement(
                 actions=["s3:GetObject"],
                 resources=[self.executor_release_bucket.arn_for_objects(f"{EXECUTOR_RELEASE_PREFIX}/*")],

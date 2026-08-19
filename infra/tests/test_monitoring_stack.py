@@ -1,7 +1,7 @@
 import json
 import os
 import unittest
-from typing import cast
+from typing import Any, cast
 from unittest import mock
 
 import aws_cdk as cdk
@@ -31,7 +31,7 @@ from monitoring_stack import MonitoringStack
 from shared import SharedStack
 from executor_stack import ExecutorStack
 from stage import DEV, DEV_STACK_PREFIX, PROD, RELEASE_TEST, Stage
-from stage_config import DEV_CONFIG
+from stage_config import DEV_CONFIG, config_for
 from tracker_stack import TrackerStack
 
 TEST_ALERTS_SLACK_ENV = {
@@ -43,7 +43,11 @@ TEST_DEPLOYMENT_SLACK_ENV = {
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV: "CDEPLOYCHANNEL",
 }
 TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME = "example-descope-management-key"
+TEST_MANAGED_ORG_ID = "00000000-0000-0000-0000-000000000001"
+TEST_TRACKER_SECRET_NAME_PREFIX = "test-tracker-secret"
 TEST_DEV_ENV = {
+    "AWS_DEPLOYMENT_ROLE_ORG_IDS": TEST_MANAGED_ORG_ID,
+    "AWS_TRACKER_SECRET_NAME_PREFIXES": TEST_TRACKER_SECRET_NAME_PREFIX,
     "DESCOPE_PROJECT_ID": "dev-project",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
 }
@@ -64,6 +68,7 @@ SHARED_STACK_CONTEXT = {
         "Name": "vals.ai.",
     },
 }
+JsonObject = dict[str, Any]
 
 
 def _has_resource_property(
@@ -152,7 +157,7 @@ def _shared_template(stage_name: str = PROD) -> assertions.Template:
     return assertions.Template.from_stack(shared)
 
 
-def _service_templates(
+def service_templates(
     stage_name: str,
 ) -> tuple[assertions.Template, assertions.Template, assertions.Template]:
     app = cdk.App(context=SHARED_STACK_CONTEXT)
@@ -218,6 +223,27 @@ def _service_templates(
 
 
 class MonitoringStackTest(unittest.TestCase):
+    def test_dev_managed_runtime_requires_deployment_authority(self) -> None:
+        for variable in (
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS",
+            "AWS_TRACKER_SECRET_NAME_PREFIXES",
+        ):
+            with self.subTest(variable=variable):
+                environment = dict(TEST_DEV_ENV)
+                environment.pop(variable)
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    with self.assertRaisesRegex(ValueError, variable):
+                        config_for(Stage(DEV))
+
+    def test_offline_synth_uses_safe_managed_runtime_placeholders(self) -> None:
+        with mock.patch.dict(os.environ, {"DESCOPE_PROJECT_ID": "offline-synth"}, clear=True):
+            managed_aws = config_for(Stage(DEV)).managed_aws
+
+        self.assertEqual(managed_aws.deployment_role_org_ids, (TEST_MANAGED_ORG_ID,))
+        self.assertEqual(managed_aws.tracker_secret_name_prefixes, ("offline-synth",))
+        self.assertEqual(managed_aws.executor_secret_name_prefixes, ())
+        self.assertTrue(managed_aws.executor_all_secret_access)
+
     def test_dev_stack_ids_are_valk_scoped(self) -> None:
         self.assertEqual(Stage(PROD).stack_id("TrackerStack"), "TrackerStack")
         self.assertEqual(Stage(DEV).stack_id("TrackerStack"), f"{DEV_STACK_PREFIX}TrackerStack")
@@ -236,7 +262,7 @@ class MonitoringStackTest(unittest.TestCase):
             (RELEASE_TEST, TEST_RELEASE_TEST_ENV),
         ):
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
-                tracker_templates[stage_name] = _service_templates(stage_name)[0]
+                tracker_templates[stage_name] = service_templates(stage_name)[0]
 
         for stage_name in (PROD, DEV):
             listeners = {
@@ -288,7 +314,7 @@ class MonitoringStackTest(unittest.TestCase):
                 self.assertNotIn("SecurityGroupIngress", redis_security_group["Properties"])
                 self.assertFalse(shared_template.find_resources("AWS::EC2::SecurityGroupIngress"))
 
-                tracker_template, executor_template, _ = _service_templates(stage_name)
+                tracker_template, executor_template, _ = service_templates(stage_name)
                 tracker_security_groups = tracker_template.find_resources("AWS::EC2::SecurityGroup")
                 tracker_security_group_id = next(
                     logical_id
@@ -398,7 +424,7 @@ class MonitoringStackTest(unittest.TestCase):
             with self.subTest(stage=stage):
                 env = TEST_DEV_ENV if stage == DEV else TEST_PROD_ENV
                 with mock.patch.dict(os.environ, env, clear=False):
-                    _, executor_template, _ = _service_templates(stage)
+                    _, executor_template, _ = service_templates(stage)
                 roles = executor_template.find_resources("AWS::IAM::Role")
                 release_role = next(role for role in roles.values() if role["Properties"].get("RoleName") == role_name)
                 trust = json.dumps(release_role["Properties"]["AssumeRolePolicyDocument"])
@@ -407,7 +433,7 @@ class MonitoringStackTest(unittest.TestCase):
                 self.assertNotIn("refs/heads/prod", trust)
 
         with mock.patch.dict(os.environ, TEST_PROD_ENV, clear=False):
-            synthesized = json.dumps(_service_templates(PROD)[1].to_json())
+            synthesized = json.dumps(service_templates(PROD)[1].to_json())
         self.assertIn("tracker.executor.release_entrypoint", synthesized)
         self.assertIn("ecs:UpdateTaskProtection", synthesized)
         self.assertIn("ecs:StopTask", synthesized)
@@ -419,7 +445,7 @@ class MonitoringStackTest(unittest.TestCase):
             TEST_RELEASE_TEST_ENV,
             clear=False,
         ):
-            tracker_template, executor_template, _ = _service_templates(RELEASE_TEST)
+            tracker_template, executor_template, _ = service_templates(RELEASE_TEST)
 
         parameter_names = [
             resource["Properties"]["Name"]
@@ -457,7 +483,7 @@ class MonitoringStackTest(unittest.TestCase):
 
     def test_executor_stack_owns_the_host_and_release_control(self) -> None:
         with mock.patch.dict(os.environ, TEST_PROD_ENV, clear=False):
-            _, executor_template, monitoring_template = _service_templates(PROD)
+            _, executor_template, monitoring_template = service_templates(PROD)
         services = executor_template.find_resources("AWS::ECS::Service")
         task_definitions = executor_template.find_resources("AWS::ECS::TaskDefinition")
         scalable_targets = executor_template.find_resources("AWS::ApplicationAutoScaling::ScalableTarget")
@@ -591,8 +617,8 @@ class MonitoringStackTest(unittest.TestCase):
 
     def test_dev_stage_wires_stage_config_to_resources(self) -> None:
         with mock.patch.dict(os.environ, TEST_DEV_ENV, clear=True):
-            tracker_template, worker_template, _ = _service_templates(DEV)
-        with mock.patch.dict(os.environ, TEST_ALERTS_SLACK_ENV, clear=True):
+            tracker_template, executor_template, _ = service_templates(DEV)
+        with mock.patch.dict(os.environ, {**TEST_DEV_ENV, **TEST_ALERTS_SLACK_ENV}, clear=True):
             monitoring_template = _monitoring_template(DEV)
 
         tracker_template.has_resource_properties(
@@ -607,26 +633,26 @@ class MonitoringStackTest(unittest.TestCase):
             "AWS::ApplicationAutoScaling::ScalableTarget",
             {"MinCapacity": DEV_CONFIG.tracker.min_tasks, "MaxCapacity": DEV_CONFIG.tracker.max_tasks},
         )
-        worker_template.has_resource_properties(
+        executor_template.has_resource_properties(
             "AWS::ECS::Service",
             {"DesiredCount": DEV_CONFIG.worker.min_tasks},
         )
-        worker_template.has_resource_properties(
+        executor_template.has_resource_properties(
             "AWS::ApplicationAutoScaling::ScalableTarget",
             {"MinCapacity": DEV_CONFIG.worker.min_tasks, "MaxCapacity": DEV_CONFIG.worker.max_tasks},
         )
-        worker_template.has_resource_properties(
+        executor_template.has_resource_properties(
             "AWS::Logs::LogGroup",
             {"LogGroupName": f"{WORKER_LOG_GROUP_NAME}-dev", "RetentionInDays": 7},
         )
-        worker_log_group = worker_template.to_json()["Resources"]["WorkerLogGroup31FDBE4A"]
+        worker_log_group = executor_template.to_json()["Resources"]["WorkerLogGroup31FDBE4A"]
         self.assertEqual(worker_log_group["DeletionPolicy"], "Retain")
         self.assertEqual(worker_log_group["UpdateReplacePolicy"], "Retain")
-        worker_policies = worker_template.find_resources("AWS::IAM::Policy")
+        worker_policies = executor_template.find_resources("AWS::IAM::Policy")
         executor_host_policies = [
             policy
             for logical_id, policy in worker_policies.items()
-            if logical_id.startswith("ExecutorHostTaskDefTaskRoleDefaultPolicy")
+            if logical_id.startswith("ExecutorTaskRoleDefaultPolicy")
         ]
         self.assertEqual(len(executor_host_policies), 1)
         executor_host_policy = json.dumps(executor_host_policies[0])
@@ -646,7 +672,7 @@ class MonitoringStackTest(unittest.TestCase):
         ):
             environment = TEST_DEV_ENV if stage_name == DEV else TEST_PROD_ENV
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
-                tracker_template, worker_template, _ = _service_templates(stage_name)
+                tracker_template, executor_template, _ = service_templates(stage_name)
 
                 expected_env = assertions.Match.array_with(
                     [
@@ -663,7 +689,7 @@ class MonitoringStackTest(unittest.TestCase):
                         )
                     },
                 )
-                worker_template.has_resource_properties(
+                executor_template.has_resource_properties(
                     "AWS::ECS::TaskDefinition",
                     {
                         "ContainerDefinitions": assertions.Match.array_with(
@@ -681,21 +707,21 @@ class MonitoringStackTest(unittest.TestCase):
             },
             clear=True,
         ):
-            _, worker_template, _ = _service_templates(DEV)
+            _, executor_template, _ = service_templates(DEV)
 
-        worker_template.resource_count_is("AWS::Scheduler::Schedule", 0)
-        worker_template.resource_count_is("AWS::Lambda::Function", 0)
-        worker_template.resource_count_is("AWS::SQS::Queue", 0)
+        executor_template.resource_count_is("AWS::Scheduler::Schedule", 0)
+        executor_template.resource_count_is("AWS::Lambda::Function", 0)
+        executor_template.resource_count_is("AWS::SQS::Queue", 0)
 
     def test_prod_sandbox_cleanup_is_disabled_and_bounded_by_default(self) -> None:
         with mock.patch.dict(os.environ, TEST_PROD_ENV, clear=True):
-            _, worker_template, _ = _service_templates(PROD)
+            _, executor_template, _ = service_templates(PROD)
 
-        worker_template.resource_count_is("AWS::Scheduler::Schedule", 1)
-        worker_template.resource_count_is("AWS::Lambda::Function", 1)
-        worker_template.resource_count_is("AWS::Lambda::EventInvokeConfig", 1)
-        worker_template.resource_count_is("AWS::SQS::Queue", 1)
-        worker_template.has_resource_properties(
+        executor_template.resource_count_is("AWS::Scheduler::Schedule", 1)
+        executor_template.resource_count_is("AWS::Lambda::Function", 1)
+        executor_template.resource_count_is("AWS::Lambda::EventInvokeConfig", 1)
+        executor_template.resource_count_is("AWS::SQS::Queue", 1)
+        executor_template.has_resource_properties(
             "AWS::Scheduler::Schedule",
             {
                 "Name": SANDBOX_CLEANUP_SCHEDULE_NAME,
@@ -704,7 +730,7 @@ class MonitoringStackTest(unittest.TestCase):
                 "Target": assertions.Match.object_like({"DeadLetterConfig": assertions.Match.any_value()}),
             },
         )
-        worker_template.has_resource_properties(
+        executor_template.has_resource_properties(
             "AWS::Lambda::Function",
             {
                 "FunctionName": SANDBOX_CLEANUP_FUNCTION_NAME,
@@ -720,7 +746,7 @@ class MonitoringStackTest(unittest.TestCase):
                 },
             },
         )
-        worker_template.has_resource_properties(
+        executor_template.has_resource_properties(
             "AWS::Lambda::EventInvokeConfig",
             {
                 "DestinationConfig": {
@@ -728,7 +754,7 @@ class MonitoringStackTest(unittest.TestCase):
                 },
             },
         )
-        worker_template.has_resource_properties(
+        executor_template.has_resource_properties(
             "AWS::SQS::Queue",
             {
                 "QueueName": SANDBOX_CLEANUP_DLQ_NAME,
@@ -737,7 +763,7 @@ class MonitoringStackTest(unittest.TestCase):
         )
         secret_statements = [
             statement
-            for policy in worker_template.find_resources("AWS::IAM::Policy").values()
+            for policy in executor_template.find_resources("AWS::IAM::Policy").values()
             for statement in policy["Properties"]["PolicyDocument"]["Statement"]
             if statement.get("Action") == ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
             and SANDBOX_CLEANUP_SECRET_NAME in str(statement.get("Resource"))
@@ -760,13 +786,13 @@ class MonitoringStackTest(unittest.TestCase):
                     clear=True,
                 ),
             ):
-                _, worker_template, _ = _service_templates(PROD)
+                _, executor_template, _ = service_templates(PROD)
 
-            worker_template.has_resource_properties(
+            executor_template.has_resource_properties(
                 "AWS::Scheduler::Schedule",
                 {"State": expected_state},
             )
-            worker_template.has_resource_properties(
+            executor_template.has_resource_properties(
                 "AWS::Lambda::Function",
                 {
                     "Environment": {
@@ -783,10 +809,10 @@ class MonitoringStackTest(unittest.TestCase):
 
     def test_dev_sentry_secret_is_optional(self) -> None:
         with mock.patch.dict(os.environ, TEST_DEV_ENV, clear=True):
-            tracker_template, worker_template, _ = _service_templates(DEV)
+            tracker_template, executor_template, _ = service_templates(DEV)
 
         self.assertNotIn("SENTRY_DSN", str(tracker_template.to_json()))
-        self.assertNotIn("SENTRY_DSN", str(worker_template.to_json()))
+        self.assertNotIn("SENTRY_DSN", str(executor_template.to_json()))
 
         custom_sentry_secret_name = "custom/dev-sentry-dsn"
         sentry_environment = {
@@ -794,7 +820,7 @@ class MonitoringStackTest(unittest.TestCase):
             "SENTRY_DSN_SECRET_NAME": custom_sentry_secret_name,
         }
         with mock.patch.dict(os.environ, sentry_environment, clear=True):
-            tracker_template, worker_template, _ = _service_templates(DEV)
+            tracker_template, executor_template, _ = service_templates(DEV)
 
         tracker_template.has_resource_properties(
             "AWS::ECS::TaskDefinition",
@@ -821,7 +847,7 @@ class MonitoringStackTest(unittest.TestCase):
         ]
         self.assertEqual(len(sentry_value_from), 1)
         self.assertIn(custom_sentry_secret_name, str(sentry_value_from[0]))
-        self.assertNotIn("SENTRY_DSN", str(worker_template.to_json()))
+        self.assertNotIn("SENTRY_DSN", str(executor_template.to_json()))
 
 
 if __name__ == "__main__":

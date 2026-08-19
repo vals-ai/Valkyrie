@@ -22,6 +22,7 @@ from tests.unit.utils.task_execution_support import (
     run_process_task,
 )
 from tracker.auth import RequestIdentity
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
     ExecutorDispatch,
@@ -53,6 +54,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
     ) -> None:
         contract = contract.model_copy(update={"secrets": {"UNRELATED_SECRET": "secret-name"}})
         run_starter = RequestIdentity(
@@ -92,7 +94,7 @@ class TestProcessTaskEnvironment:
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert len(captured_env_vars) == 1
@@ -116,6 +118,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
@@ -134,7 +137,7 @@ class TestProcessTaskEnvironment:
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert len(captured_env_vars) == 1
@@ -153,6 +156,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
     ) -> None:
         contract = contract.model_copy(update={"secrets": {"LEGACY_API_KEY": "aws-secret"}})
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
@@ -182,7 +186,7 @@ class TestProcessTaskEnvironment:
         monkeypatch.setattr(utils_module, "create_sandbox", _capture_sandbox)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert resolved_inputs == [{"LEGACY_API_KEY": "aws-secret"}]
@@ -197,6 +201,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
@@ -240,7 +245,7 @@ class TestProcessTaskEnvironment:
             start_benchmark_request,
             task_row,
             benchmark_id,
-            harness_config,
+            aws_runtime,
             authority,
         )
 

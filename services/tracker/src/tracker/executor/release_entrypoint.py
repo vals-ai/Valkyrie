@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from executor_protocol import (
     SUPPORTED_PROTOCOL_VERSION,
+    SUPPORTED_PROTOCOL_VERSIONS,
     validate_executor_artifact_uri,
     validate_executor_digest,
 )
@@ -273,7 +274,7 @@ def main() -> None:
             artifact_digest=validate_executor_digest(arguments[14]),
             protocol_version=arguments[15],
         )
-        if release.protocol_version != SUPPORTED_PROTOCOL_VERSION:
+        if release.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
             raise ValueError(f"Unsupported executor protocol version: {release.protocol_version}")
         validate_executor_artifact_uri(release.artifact_uri, task.release_bucket, task.release_prefix)
         _configure_database(task)

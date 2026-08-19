@@ -77,6 +77,29 @@ def test_main_forwards_executor_payload(tmp_path: Path, monkeypatch: MonkeyPatch
         start_benchmark_request_json=payload["start_benchmark_request_json"],
         benchmark_id_str=payload["benchmark_id_str"],
         verified_task_ids=payload["verified_task_ids"],
+        execution_context_json=None,
+        executor_dispatch_id=payload["executor_dispatch_id"],
+    )
+
+
+def test_main_forwards_managed_execution_payload(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    payload = {
+        "execution_context_json": {"benchmark_id": "benchmark-id"},
+        "executor_dispatch_id": "dispatch-id",
+    }
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    process_benchmark = AsyncMock()
+    monkeypatch.setattr(executor_entrypoint, "process_benchmark", process_benchmark)
+    monkeypatch.setattr(sys, "argv", ["executor-entrypoint", str(payload_path)])
+
+    executor_entrypoint.main()
+
+    process_benchmark.assert_awaited_once_with(
+        start_benchmark_request_json=None,
+        benchmark_id_str=None,
+        verified_task_ids=None,
+        execution_context_json=payload["execution_context_json"],
         executor_dispatch_id=payload["executor_dispatch_id"],
     )
 

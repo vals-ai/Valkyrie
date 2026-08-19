@@ -84,6 +84,9 @@ jobs:
             CDK_DEFAULT_REGION=us-east-1 \
             AWS_REGION=us-east-1 \
             STAGE="$stage" \
+            AWS_DEPLOYMENT_ROLE_ORG_IDS=00000000-0000-0000-0000-000000000001 \
+            AWS_TRACKER_SECRET_NAME_PREFIXES=offline-synth \
+            AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth \
             SENTRY_DSN_SECRET_NAME=offline-synth \
             DESCOPE_MANAGEMENT_KEY_SECRET_NAME=offline-synth \
             DESCOPE_PROJECT_ID=offline-synth \
@@ -185,6 +188,9 @@ jobs:
             CDK_DEFAULT_REGION=us-east-1 \
             AWS_REGION=us-east-1 \
             STAGE="$stage" \
+            AWS_DEPLOYMENT_ROLE_ORG_IDS=00000000-0000-0000-0000-000000000001 \
+            AWS_TRACKER_SECRET_NAME_PREFIXES=offline-synth \
+            AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth \
             SENTRY_DSN_SECRET_NAME=offline-synth \
             DESCOPE_MANAGEMENT_KEY_SECRET_NAME=offline-synth \
             DESCOPE_PROJECT_ID=offline-synth \
@@ -220,9 +226,12 @@ jobs:
           retention-days: 1
 
   classify:
-    name: maintenance-classification
+    name: classify-maintenance
     needs: [synthesize-base, synthesize-head]
     runs-on: ubuntu-24.04-arm
+    outputs:
+      classification: ${{ steps.classification.outputs.classification }}
+      target_branch: ${{ steps.template.outputs.target_branch }}
     steps:
       - name: Checkout trusted classifier
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -321,9 +330,11 @@ jobs:
               }:
                   raise SystemExit(f"{label} artifact manifest does not match trusted event identity")
           print(f"expected_stack_id={expected_stack_id}")
+          print(f"target_branch={target_branch}")
           PY
 
       - name: Classify candidate
+        id: classification
         run: |
           set -euo pipefail
           python3 infra/classify_repository_change.py \
@@ -333,13 +344,70 @@ jobs:
             --executor-head-template "$RUNNER_TEMP/worker-template-head/WorkerStack.template.json" \
             --expected-stack-id "${{ steps.template.outputs.expected_stack_id }}" \
             --output maintenance-classification.json
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
 
-      - name: Require force merge for maintenance
+          with open("maintenance-classification.json", encoding="utf-8") as classification_file:
+              payload = json.load(classification_file)
+          classification = payload.get("classification")
+          if classification not in {"safe", "maintenance-required"}:
+              raise SystemExit(f"Unexpected maintenance classification: {classification!r}")
+          if payload.get("base_sha") != os.environ["BASE_SHA"]:
+              raise SystemExit("Maintenance classification base SHA does not match the event")
+          if payload.get("head_sha") != os.environ["HEAD_SHA"]:
+              raise SystemExit("Maintenance classification head SHA does not match the event")
+          print(f"classification={classification}")
+          PY
+
+  approve-maintenance:
+    name: approve-maintenance
+    needs: classify
+    if: needs.classify.outputs.classification == 'maintenance-required'
+    runs-on: ubuntu-24.04-arm
+    permissions: {}
+    environment:
+      name: maintenance-${{ needs.classify.outputs.target_branch }}
+    steps:
+      - name: Record maintenance approval
+        env:
+          APPROVED_SHA: ${{ env.HEAD_SHA }}
+          APPROVED_TARGET: ${{ needs.classify.outputs.target_branch }}
+        run: echo "Maintenance approved for $APPROVED_TARGET at $APPROVED_SHA"
+
+  maintenance-gate:
+    name: maintenance-classification
+    needs: [classify, approve-maintenance]
+    if: always()
+    runs-on: ubuntu-24.04-arm
+    permissions: {}
+    steps:
+      - name: Require a safe or approved maintenance classification
+        env:
+          APPROVAL_RESULT: ${{ needs.approve-maintenance.result }}
+          CLASSIFICATION: ${{ needs.classify.outputs.classification }}
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
         run: |
           set -euo pipefail
-          classification="$(python3 -c 'import json; print(json.load(open("maintenance-classification.json"))["classification"])')"
-          if [[ "$classification" == "safe" ]]; then
-            exit 0
+          if [[ "$CLASSIFY_RESULT" != "success" ]]; then
+            echo "::error::Maintenance classification failed before authorization."
+            exit 1
           fi
-          echo "::error::Maintenance is required. Use an authorized force merge to approve the outage."
-          exit 1
+          case "$CLASSIFICATION" in
+            safe)
+              if [[ "$APPROVAL_RESULT" != "skipped" ]]; then
+                echo "::error::Safe classification produced an unexpected approval result: $APPROVAL_RESULT"
+                exit 1
+              fi
+              ;;
+            maintenance-required)
+              if [[ "$APPROVAL_RESULT" != "success" ]]; then
+                echo "::error::Maintenance approval was not granted."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Unexpected maintenance classification: $CLASSIFICATION"
+              exit 1
+              ;;
+          esac

@@ -1,11 +1,13 @@
 """Shared Tracker-to-ExecutorHost wire contract."""
 
 from enum import Enum
-from typing import Any, TypedDict, Unpack
+from typing import Any, NotRequired, TypedDict, Unpack
 from urllib.parse import urlparse
 
 EXECUTOR_TASK_NAME = "tracker.utils:process_benchmark"
-SUPPORTED_PROTOCOL_VERSION = "1"
+SUPPORTED_PROTOCOL_VERSION = "2"
+SUPPORTED_PROTOCOL_VERSIONS = frozenset({"1", SUPPORTED_PROTOCOL_VERSION})
+MANAGED_EXECUTION_PROTOCOL_VERSION = "2"
 DEFAULT_STABLE_QUEUE_NAME = "valkyrie-stable"
 DEFAULT_EXECUTOR_RELEASE_PREFIX = "releases"
 
@@ -18,9 +20,13 @@ class ExecutorDispatchStatus(str, Enum):
 
 
 class ExecutorPayload(TypedDict):
-    start_benchmark_request_json: dict[str, Any]
-    benchmark_id_str: str
-    verified_task_ids: list[str]
+    # Exactly one execution shape is set: access-key runs carry the first three
+    # fields; managed runs carry only execution_context_json. Dispatch fields
+    # are required for both.
+    start_benchmark_request_json: NotRequired[dict[str, Any] | None]
+    benchmark_id_str: NotRequired[str | None]
+    verified_task_ids: NotRequired[list[str] | None]
+    execution_context_json: NotRequired[dict[str, Any] | None]
     executor_dispatch_id: str
     executor_release_id: str
     executor_artifact_uri: str

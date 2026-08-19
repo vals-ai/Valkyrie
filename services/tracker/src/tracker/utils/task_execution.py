@@ -29,6 +29,7 @@ from sqlmodel import Session, col, select, update
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
 from tracker.aws.cloudwatch_logs import write_benchmark_log_event
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import (
     get_agent_result_s3_key,
 )
@@ -54,11 +55,9 @@ from tracker.exceptions import (
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
-from tracker.observability import elapsed_ms
+from tracker.observability import elapsed_ms, incr
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
-    AWSCredentials,
-    HarnessConfig,
     StartBenchmarkRequest,
 )
 
@@ -83,6 +82,70 @@ def _normalized_attempt_time(value: datetime) -> datetime:
 
 def _exception_message(exc: BaseException) -> str:
     return str(exc).strip() or type(exc).__name__
+
+
+def _record_failure_before_retry(
+    task_row: Task,
+    authority: ExecutionAuthority,
+    exc: SandboxSetupError,
+    failed_attempt_number: int,
+) -> None:
+    """Persist the failure that scheduled the next attempt while this execution owns the task."""
+    with Session(bind=engine) as session:
+        try:
+            lock_execution_authority(session, authority)
+        except ExecutionAuthorityRevoked:
+            session.rollback()
+            return
+        task = session.exec(
+            select(Task)
+            .where(col(Task.id) == task_row.id)
+            .where(col(Task.org_id) == task_row.org_id)
+            .where(col(Task.benchmark) == authority.benchmark_id)
+            .where(col(Task.started_at) == task_row.started_at)
+            .where(
+                col(Task.status).in_(
+                    (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
+                )
+            )
+            .with_for_update()
+        ).one_or_none()
+        if task is None:
+            session.rollback()
+            return
+        session.add(
+            ErrorResult(
+                org_id=task.org_id,
+                task=task.id,
+                error_message=_exception_message(exc),
+                producer="sandbox_provider",
+                operation="setup",
+                error_type=type(exc).__name__,
+                retry_scheduled=True,
+                failed_attempt_number=failed_attempt_number,
+            )
+        )
+        session.commit()
+
+
+_TASK_RETRY_METRIC = "valkyrie.task"
+
+
+def _observe_task_retry(attempt: SandboxRecoveryAttempt, exc: BaseException) -> None:
+    """Emit the retry telemetry the Tenacity before_sleep hook owned before recovery
+    moved into the benchmark-service client."""
+    error_class = type(exc).__name__
+    logger.warning(
+        "retry.before_sleep",
+        extra={
+            "metric": _TASK_RETRY_METRIC,
+            "fn": "_process_task_attempt",
+            "attempt": attempt.number,
+            "idle_for": _SANDBOX_RETRY_DELAY_SECONDS,
+            "error_class": error_class,
+        },
+    )
+    incr(f"{_TASK_RETRY_METRIC}.retry", tags={"error_class": error_class})
 
 
 class TrackedTaskStatus(str, Enum):
@@ -180,6 +243,9 @@ class TrackedTask:
                     task,
                     session,
                     error_message,
+                    producer="sandbox_provider" if isinstance(e, SandboxSetupError) else "tracker",
+                    operation="setup" if isinstance(e, SandboxSetupError) else "process_task",
+                    error_type=type(e).__name__,
                     expected_started_at=task_row.started_at,
                     authority=self._authority,
                 )
@@ -318,7 +384,10 @@ def handle_early_exit(task_row: Task, task_session: Session, authority: Executio
 
 
 def buffer_logs(
-    log_queue: asyncio.Queue[str], stream_key: str, aws: AWSCredentials, log_group: str, force_flush: bool = False
+    log_queue: asyncio.Queue[str],
+    stream_key: str,
+    aws_runtime: AWSRuntime,
+    force_flush: bool = False,
 ) -> None:
     """
     Buffers the logs in the queue and waits till they are full before streaming them to CloudWatch.
@@ -332,7 +401,7 @@ def buffer_logs(
 
     message = "".join(messages)
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, write_benchmark_log_event, stream_key, message, aws, log_group)
+    loop.run_in_executor(None, write_benchmark_log_event, stream_key, message, aws_runtime)
 
 
 def save_eval_resume_state(
@@ -430,14 +499,14 @@ def commit_task_status_transition(
     )
 
 
-@logfire.instrument("process_task")
+@logfire.instrument("process_task", extract_args=("benchmark_id", "task_id"))
 async def process_task(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
     benchmark_service: BenchmarkServiceClient,
     benchmark_id: UUID,
     task_id: str,
-    harness_config: HarnessConfig,
+    aws_runtime: AWSRuntime,
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,
@@ -450,19 +519,24 @@ async def process_task(
         recovery_attempt: SandboxRecoveryAttempt,
     ) -> dict[str, dict[str, Any] | None]:
         return await _process_task_attempt(
-            task_row,
-            start_benchmark_request,
-            benchmark_service,
-            benchmark_id,
-            task_id,
-            harness_config,
-            org,
-            sandbox_provider_config,
-            creation_semaphore,
+            task_row=task_row,
+            start_benchmark_request=start_benchmark_request,
+            benchmark_service=benchmark_service,
+            benchmark_id=benchmark_id,
+            task_id=task_id,
+            aws_runtime=aws_runtime,
+            org=org,
+            sandbox_provider_config=sandbox_provider_config,
+            creation_semaphore=creation_semaphore,
             dependency_setup_recovery=dependency_setup_recovery,
             recovery_attempt=recovery_attempt,
             authority=authority,
         )
+
+    def record_attempt_failure(attempt: SandboxRecoveryAttempt, exc: Exception) -> None:
+        _observe_task_retry(attempt, exc)
+        if isinstance(exc, SandboxSetupError):
+            _record_failure_before_retry(task_row, authority, exc, attempt.number)
 
     return await benchmark_service.run_with_sandbox_recovery(
         task_id=task_id,
@@ -472,6 +546,7 @@ async def process_task(
         retryable_attempt_errors=(SandboxSetupError,),
         default_max_attempts=_PTY_TASK_RETRY_LIMIT + 1,
         retry_delay_s=_SANDBOX_RETRY_DELAY_SECONDS,
+        on_retry=record_attempt_failure,
     )
 
 
@@ -481,7 +556,7 @@ async def _process_task_attempt(
     benchmark_service: BenchmarkServiceClient,
     benchmark_id: UUID,
     task_id: str,
-    harness_config: HarnessConfig,
+    aws_runtime: AWSRuntime,
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,
@@ -509,7 +584,11 @@ async def _process_task_attempt(
 
     requested_attempt_started_at = task_row.started_at
     with Session(bind=engine) as task_session:
-        benchmark_row = fetch_benchmark_row(benchmark_id, task_session, org)
+        try:
+            benchmark_row = lock_execution_authority(task_session, authority)
+        except ExecutionAuthorityRevoked:
+            task_session.rollback()
+            return {task_id: None}
         task_row = fetch_task_row(task_row.id, task_session, org)
 
         if _normalized_attempt_time(task_row.started_at) != _normalized_attempt_time(requested_attempt_started_at):
@@ -535,7 +614,7 @@ async def _process_task_attempt(
         nonlocal last_log_time
         last_log_time = time.monotonic()
         log_queue.put_nowait(data)
-        buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group)
+        buffer_logs(log_queue, stream_key, aws_runtime)
 
     # Auto flush if process takes a while to produce next log
     # If a process pauses without producing anymore logs, the logs we have collected get stuck
@@ -543,7 +622,7 @@ async def _process_task_attempt(
         while True:
             await asyncio.sleep(1)
             if not log_queue.empty() and time.monotonic() - last_log_time >= 10:
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+                buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
 
     flush_task = asyncio.create_task(auto_flush_logs())
 
@@ -564,6 +643,29 @@ async def _process_task_attempt(
 
     def task_is_stopped() -> bool:
         return not execution_is_current()
+
+    def commit_terminal_error(
+        exc: BaseException,
+        error_message: str,
+        *,
+        producer: str,
+        operation: str,
+        cause_code: str | None = None,
+    ) -> dict[str, dict[str, Any] | None]:
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(
+                task,
+                task_session,
+                error_message,
+                producer=producer,
+                operation=operation,
+                error_type=type(exc).__name__,
+                cause_code=cause_code,
+                expected_started_at=attempt_started_at,
+                authority=authority,
+            )
+        return {task_id: None}
 
     try:
         if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
@@ -664,7 +766,7 @@ async def _process_task_attempt(
             identity["email"] = benchmark_started_by_email
 
         env_vars = {
-            **resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
+            **resolve_secrets(start_benchmark_request.contract.secrets, aws_runtime.clients),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             "IDENTITY": json.dumps(identity),
@@ -712,8 +814,7 @@ async def _process_task_attempt(
                     sandbox,
                     start_benchmark_request.contract,
                     str(benchmark_id),
-                    harness_config.aws,
-                    harness_config.s3_bucket,
+                    aws_runtime,
                 )
 
                 # Reset timer to keep the last received message from the benchmarks service accurate
@@ -731,7 +832,7 @@ async def _process_task_attempt(
                 recovery_attempt.mark_replacement_ready()
 
                 # Force flush the logs if anything has been buffered
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+                buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
 
                 # Compute the S3 key for the agent's output archive
                 agent_output_s3_key = None
@@ -746,8 +847,7 @@ async def _process_task_attempt(
                         task_id,
                         log_output,
                         task_data.cwd,
-                        aws=harness_config.aws,
-                        s3_bucket=harness_config.s3_bucket,
+                        aws_runtime=aws_runtime,
                         agent_output_s3_key=agent_output_s3_key,
                         agent_timeout=task_data.agent_timeout,
                         benchmark_id=str(benchmark_id),
@@ -812,7 +912,7 @@ async def _process_task_attempt(
                 task_breakdown.sandbox_run_duration = time.perf_counter() - start_sandbox_run_time
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+                buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
 
                 # Save the evaluation result to the database with the task row
                 # Record the termination reason if the agent did not exit cleanly (timeout / OS kill)
@@ -877,6 +977,9 @@ async def _process_task_attempt(
                 task,
                 task_session,
                 error_message,
+                producer="sandbox_provider",
+                operation="sandbox_recovery",
+                error_type=type(e).__name__,
                 expected_started_at=attempt_started_at,
                 authority=authority,
             )
@@ -888,13 +991,12 @@ async def _process_task_attempt(
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
-            )
-
-        return {task_id: None}
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="output_artifact",
+            operation="upload_output_artifacts",
+        )
     except ConnectionClosedError as e:
         if task_is_stopped():
             return {task_id: None}
@@ -905,13 +1007,13 @@ async def _process_task_attempt(
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
-            )
-
-        return {task_id: None}
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="benchmark_service",
+            operation="websocket",
+            cause_code="websocket_connection_closed",
+        )
     except ValidationError as e:
         if task_is_stopped():
             return {task_id: None}
@@ -921,39 +1023,38 @@ async def _process_task_attempt(
         )
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
-            )
-
-        return {task_id: None}
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="benchmark_service",
+            operation="decode_task_response",
+            cause_code="incompatible_response",
+        )
     except InvalidStatus as e:
         if task_is_stopped():
             return {task_id: None}
         error_message = f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code})"
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
-            )
-
-        return {task_id: None}
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="benchmark_service",
+            operation="websocket_connect",
+            cause_code="websocket_http_rejected",
+        )
     except BenchmarkServiceError as e:
         if task_is_stopped():
             return {task_id: None}
         error_message = _exception_message(e)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
-            )
-
-        return {task_id: None}
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="benchmark_service",
+            operation="request",
+        )
     except Exception as e:
         if task_is_stopped():
             return {task_id: None}
@@ -966,18 +1067,17 @@ async def _process_task_attempt(
         # include the error message
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task, task_session, error_message, expected_started_at=attempt_started_at, authority=authority
-            )
-
-        return {task_id: None}
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="tracker",
+            operation="process_task",
+        )
     finally:
         flush_task.cancel()
         with suppress(asyncio.CancelledError):
             await flush_task
-        buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+        buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
 
 
 def commit_task_error(
@@ -985,10 +1085,24 @@ def commit_task_error(
     session: Session,
     error_message: str,
     *,
+    producer: str,
+    operation: str,
+    error_type: str,
     authority: ExecutionAuthority,
+    cause_code: str | None = None,
     expected_started_at: datetime | None = None,
 ) -> bool:
-    session.add(ErrorResult(org_id=task_row.org_id, task=task_row.id, error_message=error_message))
+    session.add(
+        ErrorResult(
+            org_id=task_row.org_id,
+            task=task_row.id,
+            error_message=error_message,
+            producer=producer,
+            operation=operation,
+            error_type=error_type,
+            cause_code=cause_code,
+        )
+    )
     return _commit_task_status(
         task_row,
         session,

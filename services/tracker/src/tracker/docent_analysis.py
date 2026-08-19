@@ -16,15 +16,14 @@ from uuid import UUID
 from botocore.config import Config
 from sqlmodel import Session
 
-from tracker._lambda import invoke_lambda, lambda_client
+from tracker._lambda import invoke_lambda
+from tracker.aws.clients import AWSClientProvider
 from tracker.database.models import Benchmark, DocentReadingStatus
 from tracker.database.session import engine
-from tracker.types import AWSCredentials
 
 # Analyzer Lambdas can run up to 15 min (AWS Lambda's ceiling); retries
 # disabled because the Lambda is non-idempotent (a retry would re-ingest).
-# Hoisted to a module-level constant so lambda_client's lru_cache actually
-# deduplicates across calls (Config instances aren't equal by value).
+# Reusing one Config instance preserves Lambda client caching across analyzer calls.
 _ANALYZER_CONFIG = Config(read_timeout=905, retries={"max_attempts": 1})
 
 
@@ -33,7 +32,7 @@ def invoke_analyzer(
     benchmark_id: UUID,
     lambda_function: str,
     payload: dict[str, Any],
-    aws: AWSCredentials,
+    clients: AWSClientProvider,
 ) -> dict[str, Any]:
     """Invoke an analyzer Lambda and persist status/URL onto the Benchmark row.
 
@@ -52,7 +51,7 @@ def invoke_analyzer(
         session.commit()
 
         try:
-            result = invoke_lambda(lambda_client(aws, _ANALYZER_CONFIG), lambda_function, payload)
+            result = invoke_lambda(clients, lambda_function, payload, config=_ANALYZER_CONFIG)
             reading_plan_url = result.get("reading_plan_url")
             if reading_plan_url:
                 benchmark.docent_reading_url = str(reading_plan_url)
@@ -71,7 +70,7 @@ async def analyze_event_stream(
     benchmark_id: UUID,
     lambda_function: str,
     payload: dict[str, Any],
-    aws: AWSCredentials,
+    clients: AWSClientProvider,
 ) -> AsyncGenerator[str, None]:
     """SSE event stream: started → heartbeats → done|error."""
     yield f"event: started\ndata: {json.dumps({'lambda_function': lambda_function})}\n\n"
@@ -82,7 +81,7 @@ async def analyze_event_stream(
             benchmark_id=benchmark_id,
             lambda_function=lambda_function,
             payload=payload,
-            aws=aws,
+            clients=clients,
         )
     )
 

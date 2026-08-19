@@ -9,6 +9,10 @@ from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.tracker_client import TrackerService
 
 
+def _format_expiration(seconds: int) -> str:
+    return {3600: "1 hour", 86400: "1 day"}.get(seconds, f"{seconds} seconds")
+
+
 @click.command(
     name="results",
     help=(
@@ -86,7 +90,13 @@ def results(
 
                 download_final_view(path or default_path, results_response)
             else:
-                click.echo(click.style("Download (expires in 1 day):", fg="cyan", bold=True))
+                click.echo(
+                    click.style(
+                        f"Download (expires in {_format_expiration(results_response.expires_in)}):",
+                        fg="cyan",
+                        bold=True,
+                    )
+                )
                 click.echo(f"  {results_response.presigned_url}")
                 click.echo()
                 click.echo(click.style("AWS Console:", fg="cyan", bold=True))

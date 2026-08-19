@@ -4,11 +4,13 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 
+from executor_protocol import MANAGED_EXECUTION_PROTOCOL_VERSION
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
+    ErrorResult,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
@@ -26,6 +28,7 @@ from tracker.executor.dispatch_control import (
 from tracker.exceptions import ExecutionAuthorityRevoked
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.executor.release_control import (
+    ReleaseControlError,
     create_executor_dispatch,
     pin_benchmark_to_release,
     promote_release,
@@ -33,12 +36,12 @@ from tracker.executor.release_control import (
 )
 
 
-def _release(release_id: str) -> ExecutorRelease:
+def _release(release_id: str, *, protocol_version: str = "1") -> ExecutorRelease:
     return ExecutorRelease(
         id=release_id,
         artifact_uri=f"s3://artifacts/{release_id}.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version=protocol_version,
         readiness_verified=True,
         created_at=datetime.now(UTC),
     )
@@ -63,6 +66,42 @@ def test_start_admission_selects_active_release(
     assert example_benchmark_object.current_execution_release_id == "active"
     assert dispatch.id == dispatch_id
     assert dispatch.executor_release_id == "active"
+
+
+def test_managed_start_requires_a_compatible_active_release(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    register_release(database_session, _release("legacy"))
+    promote_release(database_session, "legacy")
+    database_session.commit()
+    example_benchmark_object.aws_managed = True
+
+    with pytest.raises(ReleaseControlError, match="supports managed runs"):
+        admit_start_dispatch(
+            database_session,
+            benchmark=example_benchmark_object,
+            dispatch_id=uuid4(),
+        )
+
+
+def test_managed_start_accepts_the_managed_execution_protocol(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    release = _release("managed", protocol_version=MANAGED_EXECUTION_PROTOCOL_VERSION)
+    register_release(database_session, release)
+    promote_release(database_session, release.id)
+    database_session.commit()
+    example_benchmark_object.aws_managed = True
+
+    dispatch = admit_start_dispatch(
+        database_session,
+        benchmark=example_benchmark_object,
+        dispatch_id=uuid4(),
+    )
+
+    assert dispatch.executor_release_id == release.id
 
 
 def test_in_progress_retry_keeps_release_and_original_dispatch_active(
@@ -135,6 +174,15 @@ def test_enqueue_failure_makes_start_retryable(
     assert example_benchmark_object.status == BenchmarkStatus.ERROR
     assert dispatch.status == ExecutorDispatchStatus.FAILED
     assert task.status == TaskStatus.ERROR
+
+    error_result = database_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).one()
+    assert error_result.error_message == "Executor dispatch enqueue failed"
+    assert error_result.producer == "executor_dispatch"
+    assert error_result.operation == "enqueue"
+    assert error_result.error_type == "ExecutorDispatchEnqueueError"
+    assert error_result.cause_code is None
+    assert error_result.retry_scheduled is False
+    assert error_result.failed_attempt_number is None
 
 
 def test_additive_retry_enqueue_failure_keeps_original_execution_active(
@@ -211,6 +259,13 @@ def test_additive_retry_enqueue_failure_keeps_original_execution_active(
     assert original_task.status == TaskStatus.IN_PROGRESS
     assert stopped_task.status == TaskStatus.STOPPED
     assert newer_retry_task.status == TaskStatus.PENDING
+
+    error_results = database_session.exec(
+        select(ErrorResult).where(col(ErrorResult.task).in_([retry_task.id, stopped_task.id, newer_retry_task.id]))
+    ).all()
+    assert len(error_results) == 1
+    assert error_results[0].task == retry_task.id
+    assert error_results[0].retry_scheduled is False
 
 
 def test_enqueue_failure_does_not_override_claimed_delivery(
@@ -289,6 +344,9 @@ def test_running_dispatch_failure_preserves_active_sibling(
         dispatch_id=failing_dispatch.id,
         task_ids=[retry_task.task_id, newer_retry_task.task_id],
         error_message="retry failed",
+        producer="tracker",
+        operation="process_benchmark",
+        error_type="RuntimeError",
     )
     database_session.commit()
     database_session.refresh(example_benchmark_object)
@@ -302,6 +360,19 @@ def test_running_dispatch_failure_preserves_active_sibling(
     assert sibling_dispatch.status == ExecutorDispatchStatus.RUNNING
     assert retry_task.status == TaskStatus.ERROR
     assert newer_retry_task.status == TaskStatus.PENDING
+
+    error_results = database_session.exec(
+        select(ErrorResult).where(col(ErrorResult.task).in_([retry_task.id, newer_retry_task.id]))
+    ).all()
+    assert len(error_results) == 1
+    error_result = error_results[0]
+    assert error_result.task == retry_task.id
+    assert error_result.error_message == "retry failed"
+    assert error_result.producer == "tracker"
+    assert error_result.operation == "process_benchmark"
+    assert error_result.error_type == "RuntimeError"
+    assert error_result.retry_scheduled is False
+    assert error_result.failed_attempt_number is None
 
 
 def test_terminal_recovery_terminalizes_active_dispatches(

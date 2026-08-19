@@ -35,7 +35,7 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
 
     Test cases:
     - Finished, error, and pending tasks return status-appropriate result fields.
-    - The newest result row wins when a task has retry history.
+    - The newest terminal result wins when a newer scheduled-retry row exists.
     - A benchmark from another organization returns 404.
     """
     now = datetime.now(ZoneInfo("UTC"))
@@ -75,6 +75,16 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
             ),
             make_error_result(error_task, "old failure", now - timedelta(minutes=1)),
             make_error_result(error_task, "latest failure", now),
+            make_error_result(
+                error_task,
+                "scheduled retry",
+                now + timedelta(minutes=1),
+                producer="sandbox_provider",
+                operation="setup",
+                error_type="SandboxSetupError",
+                retry_scheduled=True,
+                failed_attempt_number=1,
+            ),
         ]
     )
 
@@ -109,6 +119,7 @@ def test_task_artifacts_only_presign_existing_output(
     database_session: Session,
     example_benchmark_object: Benchmark,
     monkeypatch: pytest.MonkeyPatch,
+    harness_headers: dict[str, str],
 ) -> None:
     """Artifact detail must return useful links without signing a missing output archive.
 
@@ -128,9 +139,15 @@ def test_task_artifacts_only_presign_existing_output(
     monkeypatch.setattr(single_task_module, "create_presigned_url", create_presigned_url)
     monkeypatch.setattr(single_task_module, "get_benchmark_log_url", get_log_url)
 
-    found_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts")
+    found_response = _client.get(
+        f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts",
+        headers=harness_headers,
+    )
     object_exists.return_value = False
-    missing_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts")
+    missing_response = _client.get(
+        f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts",
+        headers=harness_headers,
+    )
 
     expected_key = f"benchmarks/{benchmark.id}/{task.task_id}/agent_output.tar.gz"
     assert found_response.status_code == 200
@@ -139,15 +156,10 @@ def test_task_artifacts_only_presign_existing_output(
         "agent_output_url": "https://example.test/presigned",
         "agent_output_expires_in": 300,
     }
-    object_exists.assert_awaited_with(
-        expected_key,
-        aws=ANY,
-        s3_bucket="test-bucket",
-    )
+    object_exists.assert_awaited_with(expected_key, ANY)
     create_presigned_url.assert_awaited_once_with(
         s3_key=expected_key,
-        aws=ANY,
-        s3_bucket="test-bucket",
+        runtime=ANY,
         expiration=300,
     )
     assert missing_response.status_code == 200

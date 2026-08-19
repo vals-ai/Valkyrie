@@ -53,29 +53,29 @@ class TestBenchmarkStatusQueries:
         assert response.status_code == 200
         assert response.json() == {"entries": []}
 
-    def test_results_exist_checks_the_benchmark_named_final_view(
+    def test_results_exist_checks_results_key(
         self,
         database_session: Session,
         example_benchmark_object: Benchmark,
         monkeypatch: pytest.MonkeyPatch,
+        harness_headers: dict[str, str],
     ) -> None:
-        """Result existence must check the benchmark-named final-view key.
-
-        Test cases:
-        - The S3 lookup uses the run UUID and persisted benchmark name.
-        """
+        """Result existence must check the canonical results S3 key."""
         example_benchmark_object.id = _RESULTS_RUN_ID
         database_session.add(example_benchmark_object)
         database_session.commit()
         exists_mock = AsyncMock(return_value=True)
         monkeypatch.setattr("main.s3_object_exists", exists_mock)
 
-        response = _client.get(f"/check-results-exist?benchmark_id={_RESULTS_RUN_ID}")
+        response = _client.get(
+            f"/check-results-exist?benchmark_id={_RESULTS_RUN_ID}",
+            headers=harness_headers,
+        )
 
         assert response.status_code == 200
         assert response.json() == {"exists": True}
         assert exists_mock.await_args is not None
-        assert exists_mock.await_args.args[0] == f"benchmarks/{_RESULTS_RUN_ID}/swebench.json"
+        assert exists_mock.await_args.args[0] == f"benchmarks/{_RESULTS_RUN_ID}/{example_benchmark_object.name}.json"
 
     def test_benchmarks_status_counts_all_terminal_tasks(
         self,

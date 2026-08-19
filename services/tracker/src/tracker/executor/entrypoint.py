@@ -16,9 +16,10 @@ from tracker.utils.run_orchestration import process_benchmark
 async def _run_executor(payload: dict[str, Any]) -> None:
     task = asyncio.create_task(
         process_benchmark(
-            start_benchmark_request_json=payload["start_benchmark_request_json"],
-            benchmark_id_str=payload["benchmark_id_str"],
-            verified_task_ids=payload["verified_task_ids"],
+            start_benchmark_request_json=payload.get("start_benchmark_request_json"),
+            benchmark_id_str=payload.get("benchmark_id_str"),
+            verified_task_ids=payload.get("verified_task_ids"),
+            execution_context_json=payload.get("execution_context_json"),
             executor_dispatch_id=payload["executor_dispatch_id"],
         )
     )

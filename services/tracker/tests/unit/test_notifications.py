@@ -12,10 +12,10 @@ import httpx
 import pytest
 
 import tracker.notifications as notifications_module
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import BenchmarkStatus
 from tracker.exceptions import SecretsError
 from tracker.notifications import NotificationContext, SlackNotifier
-from tracker.types import AWSCredentials
 
 _build_progress_message = getattr(notifications_module, "_build_progress_message")
 _build_terminal_message = getattr(notifications_module, "_build_terminal_message")
@@ -36,7 +36,7 @@ def _make_context(**overrides: object) -> NotificationContext:
 
 
 def _make_notifier(
-    aws_credentials: AWSCredentials,
+    aws_runtime: AWSRuntime,
     *,
     secret_name: str = "test/webhook",
     intervals: tuple[int, ...] = (50,),
@@ -44,15 +44,15 @@ def _make_notifier(
     """Build a notifier with deterministic credentials and thresholds."""
     return SlackNotifier(
         secret_name=secret_name,
-        aws=aws_credentials,
+        clients=aws_runtime.clients,
         intervals=list(intervals),
     )
 
 
 @pytest.fixture
-def notifier(aws_credentials: AWSCredentials) -> SlackNotifier:
+def notifier(aws_runtime: AWSRuntime) -> SlackNotifier:
     """Provide a notifier with the progress thresholds used by behavior tests."""
-    return _make_notifier(aws_credentials, intervals=(25, 50, 100))
+    return _make_notifier(aws_runtime, intervals=(25, 50, 100))
 
 
 @pytest.fixture
@@ -204,7 +204,7 @@ class TestSlackNotifierFireAndForget:
     )
     async def test_webhook_delivery_error_does_not_raise(
         self,
-        aws_credentials: AWSCredentials,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         mock_http_client: AsyncMock,
         webhook_error: httpx.HTTPError,
@@ -216,10 +216,10 @@ class TestSlackNotifierFireAndForget:
         - A connection failure is caught after the threshold is crossed.
         """
 
-        def fetch_secret(_secret_name: str, _aws: AWSCredentials) -> str:
+        def fetch_secret(_secret_name: str, _clients: object) -> str:
             return "https://hooks.slack.com/test"
 
-        notifier = _make_notifier(aws_credentials)
+        notifier = _make_notifier(aws_runtime)
         mock_http_client.post = AsyncMock(side_effect=webhook_error)
         monkeypatch.setattr(notifications_module, "fetch_aws_secret", fetch_secret)
 
@@ -231,19 +231,19 @@ class TestSlackNotifierSecretResolution:
 
     async def test_resolves_secret_before_sending(
         self,
-        aws_credentials: AWSCredentials,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         mock_http_client: AsyncMock,
     ) -> None:
         """SlackNotifier calls fetch_aws_secret to resolve the webhook URL."""
-        notifier = _make_notifier(aws_credentials, secret_name="my/webhook/secret")
+        notifier = _make_notifier(aws_runtime, secret_name="my/webhook/secret")
         mock_fetch = MagicMock(return_value="https://hooks.slack.com/resolved")
         mock_http_client.post = AsyncMock(return_value=MagicMock(status_code=200))
         monkeypatch.setattr(notifications_module, "fetch_aws_secret", mock_fetch)
 
         await notifier.check_and_notify(_make_context(finished_tasks=50))
 
-        mock_fetch.assert_called_once_with("my/webhook/secret", aws_credentials)
+        mock_fetch.assert_called_once_with("my/webhook/secret", aws_runtime.clients)
         mock_http_client.post.assert_called_once()
         call_args = mock_http_client.post.call_args
         assert call_args[0][0] == "https://hooks.slack.com/resolved"
@@ -255,7 +255,7 @@ class TestSlackNotifierSecretResolution:
     )
     async def test_skips_notification_when_secret_is_unusable(
         self,
-        aws_credentials: AWSCredentials,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         mock_http_client: AsyncMock,
         secret_result: Exception | dict[str, str],
@@ -266,7 +266,7 @@ class TestSlackNotifierSecretResolution:
         - Secret retrieval raises an expected service error.
         - Secret retrieval returns structured data instead of a URL string.
         """
-        notifier = _make_notifier(aws_credentials, secret_name="invalid/secret")
+        notifier = _make_notifier(aws_runtime, secret_name="invalid/secret")
         fetch_secret = (
             MagicMock(side_effect=secret_result)
             if isinstance(secret_result, Exception)

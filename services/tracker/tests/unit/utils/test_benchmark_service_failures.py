@@ -22,6 +22,7 @@ import tracker.sandbox as sandbox_module
 import tracker.utils.run_orchestration as run_orchestration_module
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, Task, TaskStatus
 from tracker.types import HarnessConfig
 from tracker.utils import (
@@ -33,14 +34,16 @@ from tracker.utils import (
 class TestBenchmarkServiceFailures:
     """Benchmark service disconnect, validation, and task error handling."""
 
-    def _latest_task_error(self, database_session: Session, task_row: Task) -> str:
-        error_message = database_session.exec(
-            select(ErrorResult.error_message)
+    def _latest_task_error_result(self, database_session: Session, task_row: Task) -> ErrorResult:
+        return database_session.exec(
+            select(ErrorResult)
             .where(ErrorResult.task == task_row.id)
             .where(ErrorResult.org_id == task_row.org_id)
             .order_by(desc(ErrorResult.created_at))
         ).one()
-        return error_message
+
+    def _latest_task_error(self, database_session: Session, task_row: Task) -> str:
+        return self._latest_task_error_result(database_session, task_row).error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_connection_closed_after_messages_produces_elapsed_error(
@@ -49,6 +52,7 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
@@ -61,16 +65,22 @@ class TestBenchmarkServiceFailures:
         real_monotonic = time.monotonic
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         assert result == {"task_0": None}
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        error_message = self._latest_task_error(database_session, task_row)
-        assert "Benchmark service WebSocket disconnected: no close frame received or sent" in error_message
-        assert "last application message received" in error_message
-        assert "10s ago" in error_message
+        error_result = self._latest_task_error_result(database_session, task_row)
+        assert "Benchmark service WebSocket disconnected: no close frame received or sent" in error_result.error_message
+        assert "last application message received" in error_result.error_message
+        assert "10s ago" in error_result.error_message
+        assert error_result.producer == "benchmark_service"
+        assert error_result.operation == "websocket"
+        assert error_result.error_type == "ConnectionClosedError"
+        assert error_result.cause_code == "websocket_connection_closed"
+        assert error_result.retry_scheduled is False
+        assert error_result.failed_attempt_number is None
 
     @pytest.mark.parametrize(
         ("code", "reason"),
@@ -88,6 +98,7 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
@@ -98,7 +109,7 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         assert result == {"task_0": None}
 
@@ -116,6 +127,7 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """VALKYRIE-5D: ValidationError from retrieve_task is caught with field names."""
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
@@ -129,7 +141,7 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_invalid)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         assert result == {"task_0": None}
 
@@ -147,6 +159,7 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """VALKYRIE-5A: InvalidStatus from WebSocket rejection is caught with HTTP status."""
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
@@ -158,7 +171,7 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         assert result == {"task_0": None}
 
@@ -175,6 +188,7 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
     ) -> None:
         contract.output_artifacts = ["artifacts/missing.json"]
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
@@ -214,7 +228,7 @@ class TestBenchmarkServiceFailures:
         monkeypatch.setattr(sandbox_module, "_exec", _mock_exec)
         monkeypatch.setattr(utils_module, "write_benchmark_log_event", _mock_write_benchmark_log_event)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
         # Log writes are dispatched to an executor and never awaited, so the flush carrying the
         # error can land after run_process_task returns. Wait for that flush, not just the first.
         await asyncio.wait_for(expected_log_written.wait(), timeout=10)
@@ -223,8 +237,14 @@ class TestBenchmarkServiceFailures:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        error_message = self._latest_task_error(database_session, task_row)
-        assert error_message == expected_error
+        error_result = self._latest_task_error_result(database_session, task_row)
+        assert error_result.error_message == expected_error
+        assert error_result.producer == "output_artifact"
+        assert error_result.operation == "upload_output_artifacts"
+        assert error_result.error_type == "OutputArtifactError"
+        assert error_result.cause_code is None
+        assert error_result.retry_scheduled is False
+        assert error_result.failed_attempt_number is None
         assert any(expected_log in message for message in logged_messages)
 
     @pytest.mark.usefixtures("process_benchmark_env")
@@ -234,6 +254,7 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """VALKYRIE-59: BenchmarkServiceError from setup_task is caught and stored."""
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
@@ -247,7 +268,7 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         assert result == {"task_0": None}
 
@@ -263,6 +284,7 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """Network exceptions with empty strings must still produce visible task errors.
 
@@ -284,7 +306,7 @@ class TestBenchmarkServiceFailures:
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_timeout)
         monkeypatch.setattr(utils_module, "write_benchmark_log_event", _mock_write_benchmark_log_event)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         assert result == {"task_0": None}
 
