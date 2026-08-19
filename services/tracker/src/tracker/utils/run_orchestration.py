@@ -13,6 +13,7 @@ import logfire
 import sentry_sdk
 from benchmark_service import SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
+from botocore.config import Config
 from opentelemetry import trace
 from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
@@ -61,6 +62,8 @@ logger = get_logger(__name__)
 
 _SANDBOX_CREATION_CAP: int = 10
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+# Limit non-idempotent completion callbacks to one attempt and a 60-second read.
+_COMPLETION_CALLBACK_CONFIG = Config(read_timeout=60, retries={"total_max_attempts": 1})
 
 
 def set_benchmark_final_status(
@@ -586,7 +589,12 @@ async def process_benchmark(
 
         if lambda_function and lambda_payload is not None:
             async with hold_dispatch_authority(authority):
-                invoke_lambda(aws_runtime.clients, lambda_function, lambda_payload)
+                invoke_lambda(
+                    aws_runtime.clients,
+                    lambda_function,
+                    lambda_payload,
+                    config=_COMPLETION_CALLBACK_CONFIG,
+                )
 
     except ExecutionAuthorityRevoked:
         finalization_deferred = True
