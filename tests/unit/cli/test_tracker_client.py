@@ -811,6 +811,39 @@ def test_start_benchmark_resolves_provider_configuration(
     assert harness_config["sandbox_provider_secret_name"] == expected_secret
 
 
+def test_start_benchmark_forwards_aws_session_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_client: MockClient,
+) -> None:
+    """SSO and assumed-role credentials must retain their session token in the harness payload."""
+    config_path = _write_valkyrie_config(
+        tmp_path / "valkyrie.yaml",
+        AWS_SESSION_TOKEN="temporary-token",
+        sandbox_providers={"modal": "ModalSecrets"},
+    )
+    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
+
+    tracker = TrackerService(base_url="http://tracker")
+    tracker.start_benchmark(
+        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+        benchmark_name="swebench",
+        concurrency=1,
+        ignore_custom_services=True,
+        task_ids=None,
+        slice_str=None,
+        provider="modal",
+    )
+
+    assert mock_client.json is not None
+    harness_config = mock_client.json["harness_config"]
+    assert isinstance(harness_config, dict)
+    aws_config = harness_config["aws"]
+    assert isinstance(aws_config, dict)
+    assert aws_config["aws_session_token"] == "temporary-token"
+
+
 def test_start_benchmark_without_static_keys_sends_managed_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

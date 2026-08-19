@@ -236,3 +236,15 @@ def test_set_api_key_without_previous_key_preserves_benchmark_auth(config_path: 
     assert config["api_key"] == "new-key"
     assert config["benchmark_auth"] == {"independent-service": "independent-key"}
     assert "Updated benchmark service auth" not in result.output
+
+
+def test_set_aws_session_token_without_printing_value(config_path: Path) -> None:
+    """Temporary AWS credentials can be configured without echoing the token."""
+    config_path.write_text(yaml.safe_dump({"AWS_ACCESS_KEY_ID": "ASIAEXAMPLE"}))
+
+    result = CliRunner().invoke(settings.set, ["AWS_SESSION_TOKEN", "temporary-token"])
+
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load(config_path.read_text())
+    assert config["AWS_SESSION_TOKEN"] == "temporary-token"
+    assert "temporary-token" not in result.output

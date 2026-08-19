@@ -193,6 +193,14 @@ async def reset_to_in_progress_status(
 
         # Allow re-running the end of the benchmark without running any tasks
         if not existing_rows and not new_task_ids:
+            if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+                old_evaluation = benchmark_row.final_evaluation
+                if old_evaluation is not None:
+                    benchmark_row.final_evaluation = None
+                    session.delete(old_evaluation)
+                benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+                benchmark_row.finished_at = None
+                session.add(benchmark_row)
             return []
 
         # Verify the task ids are still valid before priming to resume

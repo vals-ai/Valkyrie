@@ -18,14 +18,14 @@ from zoneinfo import ZoneInfo
 import logfire
 import sentry_sdk
 from benchmark_service import (
+    SandboxNotFoundError,
     SandboxProviderConfig,
+    SandboxRecoveryAttempt,
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from opentelemetry import trace
 from pydantic import ValidationError
 from sqlmodel import Session, col, select, update
-from tenacity import RetryCallState, retry as tenacity_retry
-from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
 from tracker.aws.cloudwatch_logs import write_benchmark_log_event
@@ -55,7 +55,7 @@ from tracker.exceptions import (
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
-from tracker.observability import elapsed_ms, retry_callback
+from tracker.observability import elapsed_ms, incr
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
     StartBenchmarkRequest,
@@ -66,6 +66,7 @@ from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 logger = get_logger(__name__)
 
 _PTY_TASK_RETRY_LIMIT: int = 1
+_SANDBOX_RETRY_DELAY_SECONDS: float = 2
 
 
 @dataclass
@@ -127,20 +128,24 @@ def _record_failure_before_retry(
         session.commit()
 
 
-_process_task_retry_observer = retry_callback("valkyrie.task")
+_TASK_RETRY_METRIC = "valkyrie.task"
 
 
-def _before_process_task_retry(retry_state: RetryCallState) -> None:
-    _process_task_retry_observer(retry_state)
-    exc = retry_state.outcome.exception() if retry_state.outcome is not None else None
-    if not isinstance(exc, SandboxSetupError):
-        return
-    _record_failure_before_retry(
-        cast(Task, retry_state.kwargs["task_row"]),
-        cast(ExecutionAuthority, retry_state.kwargs["authority"]),
-        exc,
-        retry_state.attempt_number,
+def _observe_task_retry(attempt: SandboxRecoveryAttempt, exc: BaseException) -> None:
+    """Emit the retry telemetry the Tenacity before_sleep hook owned before recovery
+    moved into the benchmark-service client."""
+    error_class = type(exc).__name__
+    logger.warning(
+        "retry.before_sleep",
+        extra={
+            "metric": _TASK_RETRY_METRIC,
+            "fn": "_process_task_attempt",
+            "attempt": attempt.number,
+            "idle_for": _SANDBOX_RETRY_DELAY_SECONDS,
+            "error_class": error_class,
+        },
     )
+    incr(f"{_TASK_RETRY_METRIC}.retry", tags={"error_class": error_class})
 
 
 class TrackedTaskStatus(str, Enum):
@@ -508,28 +513,43 @@ async def process_task(
     authority: ExecutionAuthority,
 ) -> dict[str, dict[str, Any] | None]:
     """Process one task while retaining dependency recovery state across sandbox attempts."""
-    return await _process_task_attempt(
-        task_row=task_row,
-        start_benchmark_request=start_benchmark_request,
-        benchmark_service=benchmark_service,
-        benchmark_id=benchmark_id,
+    dependency_setup_recovery = _DependencySetupRecoveryState()
+
+    async def run_attempt(
+        recovery_attempt: SandboxRecoveryAttempt,
+    ) -> dict[str, dict[str, Any] | None]:
+        return await _process_task_attempt(
+            task_row=task_row,
+            start_benchmark_request=start_benchmark_request,
+            benchmark_service=benchmark_service,
+            benchmark_id=benchmark_id,
+            task_id=task_id,
+            aws_runtime=aws_runtime,
+            org=org,
+            sandbox_provider_config=sandbox_provider_config,
+            creation_semaphore=creation_semaphore,
+            dependency_setup_recovery=dependency_setup_recovery,
+            recovery_attempt=recovery_attempt,
+            authority=authority,
+        )
+
+    def record_attempt_failure(attempt: SandboxRecoveryAttempt, exc: Exception) -> None:
+        _observe_task_retry(attempt, exc)
+        if isinstance(exc, SandboxSetupError):
+            _record_failure_before_retry(task_row, authority, exc, attempt.number)
+
+    return await benchmark_service.run_with_sandbox_recovery(
         task_id=task_id,
-        aws_runtime=aws_runtime,
-        org=org,
-        sandbox_provider_config=sandbox_provider_config,
-        creation_semaphore=creation_semaphore,
-        dependency_setup_recovery=_DependencySetupRecoveryState(),
-        authority=authority,
+        run_id=str(benchmark_id),
+        operation=run_attempt,
+        dataset=start_benchmark_request.dataset,
+        retryable_attempt_errors=(SandboxSetupError,),
+        default_max_attempts=_PTY_TASK_RETRY_LIMIT + 1,
+        retry_delay_s=_SANDBOX_RETRY_DELAY_SECONDS,
+        on_retry=record_attempt_failure,
     )
 
 
-@tenacity_retry(
-    retry=retry_if_exception_type(SandboxSetupError),
-    stop=stop_after_attempt(_PTY_TASK_RETRY_LIMIT + 1),
-    wait=wait_fixed(2),
-    before_sleep=_before_process_task_retry,
-    reraise=True,
-)
 async def _process_task_attempt(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
@@ -541,6 +561,7 @@ async def _process_task_attempt(
     sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,
     dependency_setup_recovery: _DependencySetupRecoveryState,
+    recovery_attempt: SandboxRecoveryAttempt,
     authority: ExecutionAuthority,
 ) -> dict[str, dict[str, Any] | None]:
     """
@@ -688,6 +709,22 @@ async def _process_task_attempt(
                         return {task_id: None}
 
                     return {task_id: evaluation_result_row.result}
+            except SandboxNotFoundError:
+                with Session(bind=engine) as task_session:
+                    task = fetch_task_row(task_row.id, task_session, org)
+                    if task.status == TaskStatus.STOPPED:
+                        return {task_id: None}
+                try:
+                    await recovery_attempt.retrieve_task()
+                except Exception:
+                    # Recovery remains disabled when its benchmark policy cannot
+                    # be loaded, but that lookup failure must not hide the
+                    # provider-confirmed sandbox loss that interrupted grading.
+                    logger.warning(
+                        "Failed to load sandbox recovery policy after grading sandbox loss",
+                        exc_info=True,
+                    )
+                raise
             except Exception as e:
                 with Session(bind=engine) as task_session:
                     task = fetch_task_row(task_row.id, task_session, org)
@@ -696,7 +733,7 @@ async def _process_task_attempt(
 
                 raise e from e
 
-        task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
+        task_data = await recovery_attempt.retrieve_task()
         sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
 
         # Labels that show up in the UI we can use to filter sandboxes.
@@ -739,6 +776,7 @@ async def _process_task_attempt(
             "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS": (
                 f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={ENVIRONMENT}"
             ),
+            **recovery_attempt.environment,
         }
 
         # We don't want to track the task until the sandbox is actually created.
@@ -788,6 +826,10 @@ async def _process_task_attempt(
                     dataset=start_benchmark_request.dataset,
                     sandbox_provider=sandbox_provider_config,
                 )
+                # The benchmark has now had an opportunity to persist the
+                # outage metadata in its restored volume. A later loss is a
+                # distinct outage and must receive a new identity.
+                recovery_attempt.mark_replacement_ready()
 
                 # Force flush the logs if anything has been buffered
                 buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
@@ -914,6 +956,34 @@ async def _process_task_attempt(
             return {task_id: None}
         log_output(f"\n[ERROR] {_exception_message(e)}")
         raise
+    except SandboxNotFoundError as e:
+        if task_is_stopped():
+            return {task_id: None}
+        if recovery_attempt.sandbox_loss_retry_available:
+            message = (
+                "Sandbox disappeared; restoring the task from its durable volume "
+                f"(attempt {recovery_attempt.number + 1}/{recovery_attempt.max_attempts})"
+            )
+            logger.warning(message)
+            log_output(f"\n[WARNING] {message}\n")
+            raise
+
+        error_message = _exception_message(e)
+        logger.error(error_message)
+        log_output(f"\n[ERROR] {error_message}")
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(
+                task,
+                task_session,
+                error_message,
+                producer="sandbox_provider",
+                operation="sandbox_recovery",
+                error_type=type(e).__name__,
+                expected_started_at=attempt_started_at,
+                authority=authority,
+            )
+        return {task_id: None}
     except OutputArtifactError as e:
         if task_is_stopped():
             return {task_id: None}

@@ -367,6 +367,13 @@ class TestRunState:
         )
         assert response.status_code == 200
 
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.commit()
+
         # Ensure that we can recreate the environment the benchmark was started in
         original_start_benchmark_request = StartBenchmarkRequest(
             contract=contract,
