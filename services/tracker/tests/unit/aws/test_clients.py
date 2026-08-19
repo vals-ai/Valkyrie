@@ -273,6 +273,17 @@ class TestWriteBenchmarkLogEvent:
         )
         assert client.put_log_events.call_args.kwargs["logStreamName"] == "provider/model%3Afast"
 
+    def test_splits_oversized_utf8_messages_without_losing_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, runtime = self._runtime_with_mock_client(monkeypatch)
+        message = "a" * 1_048_540 + "🙂" * 20
+
+        write_benchmark_log_event("bench123:task-1", message, runtime)
+
+        written = [call.kwargs["logEvents"][0]["message"] for call in client.put_log_events.call_args_list]
+        assert len(written) == 2
+        assert "".join(written) == message
+        assert all(len(chunk.encode("utf-8")) <= 1_048_550 for chunk in written)
+
     def test_create_stream_botocore_error_reports_sanitized_name(
         self,
         monkeypatch: pytest.MonkeyPatch,

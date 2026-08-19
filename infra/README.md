@@ -43,9 +43,9 @@ Managed AWS execution also requires these dev Environment secrets:
 The dev ExecutorHost task role can read every Secrets Manager secret in the dev
 account and Region. Production and release-test do not receive this access.
 
-To enable Sentry in dev, also set the `SENTRY_DSN_SECRET_NAME` secret to the
-name of an account-local Secrets Manager secret containing the DSN. Production
-requires `SENTRY_DSN_SECRET_NAME`, and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`
+Dev and production require `SENTRY_DSN_SECRET_NAME` to name an account-local
+Secrets Manager secret containing the DSN. Production also requires
+`DESCOPE_MANAGEMENT_KEY_SECRET_NAME`
 whenever `AUTH_REQUIRED` is `true`. The dev Environment holds every dev
 deployment input as an Environment secret except `AWS_REGION`, which stays a
 variable. The production jobs read repository-level secrets; the

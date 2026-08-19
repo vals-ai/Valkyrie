@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import json
 import logging
@@ -17,10 +18,12 @@ from typing import Any, cast
 
 import logfire
 import sentry_sdk
-from opentelemetry.propagate import inject
 from sentry_sdk.envelope import Envelope, Item
 
+from services.executor_host import supervisor as host_supervisor
 from services.executor_host import observability as host_observability
+from services.executor_host.supervisor import ExecutorProcessPayload
+from services.tracker import main as tracker_main
 from tracker.executor.entrypoint import _executor_context
 from tracker.logging import benchmark_id_var, configure_logging, request_id_var, task_id_var
 from tracker.observability import configure_observability, incr
@@ -111,9 +114,18 @@ def _run_tracker(dsn: str, context_path: str) -> None:
                 "valkyrie.observability.smoke",
                 tags={"operation": "run", "benchmark_id": _RUN_ID},
             )
-            trace_headers: dict[str, str] = {}
-            inject(trace_headers)
-            Path(context_path).write_text(json.dumps({"request_id": _REQUEST_ID, "trace_headers": trace_headers}))
+            payload = {
+                "start_benchmark_request_json": {},
+                "benchmark_id_str": _RUN_ID,
+                "verified_task_ids": [],
+                "telemetry_context_json": tracker_main._executor_telemetry_context(),  # pyright: ignore[reportPrivateUsage]
+                "executor_dispatch_id": _DISPATCH_ID,
+                "executor_release_id": _RELEASE_ID,
+                "executor_artifact_uri": "s3://artifacts/local-smoke.pex",
+                "executor_artifact_digest": "a" * 64,
+                "executor_protocol_version": "1",
+            }
+            Path(context_path).write_text(json.dumps(payload))
             _capture_test_error("valkyrie-tracker")
     finally:
         for token in reversed(tokens):
@@ -125,16 +137,23 @@ def _run_executor_host(dsn: str, input_path: str, output_path: str) -> None:
     _set_sentry_environment(dsn)
     os.environ["ENVIRONMENT"] = _ENVIRONMENT
     host_observability.configure_observability()
-    telemetry_context = cast(dict[str, Any], json.loads(Path(input_path).read_text()))
-    with host_observability.dispatch_observability_context(
-        _RUN_ID,
-        _DISPATCH_ID,
-        _RELEASE_ID,
-        telemetry_context,
-    ) as child_context:
+    payload = cast(dict[str, Any], json.loads(Path(input_path).read_text()))
+
+    async def capture_dispatch(
+        _executor_supervisor: object,
+        _store: object,
+        *,
+        executor_dispatch_id: str,
+        dispatch: object,
+        process_payload: ExecutorProcessPayload,
+    ) -> None:
+        del _executor_supervisor, _store, executor_dispatch_id, dispatch
         logging.getLogger("executor-host.observability.smoke").info("ExecutorHost dispatched observability smoke run")
-        Path(output_path).write_text(json.dumps(child_context))
+        Path(output_path).write_text(json.dumps(process_payload.arguments["telemetry_context_json"]))
         _capture_test_error("valkyrie-executor-host")
+
+    host_supervisor.run_executor_dispatch = capture_dispatch
+    asyncio.run(host_supervisor.launch_executor.original_func(**payload))
     _flush_telemetry()
 
 

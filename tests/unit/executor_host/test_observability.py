@@ -3,11 +3,23 @@ from __future__ import annotations
 import io
 import json
 import logging
+from unittest.mock import Mock
 
 import pytest
 import sentry_sdk
 
 from services.executor_host import observability
+
+
+def test_invalid_production_sentry_configuration_fails_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SENTRY_DSN", "https://public@example.com/1")
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setattr(sentry_sdk, "init", Mock(side_effect=RuntimeError("bad dsn")))
+
+    with pytest.raises(RuntimeError, match="Check the production DSN secret") as exc_info:
+        observability.configure_observability()
+
+    assert exc_info.value.__cause__ is None
 
 
 def test_dispatch_context_correlates_cloudwatch_logs_and_child_trace(monkeypatch: pytest.MonkeyPatch) -> None:

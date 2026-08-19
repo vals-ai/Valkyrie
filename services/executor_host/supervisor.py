@@ -237,6 +237,21 @@ def _telemetry_context(value: object) -> ExecutorTelemetryContext:
     }
 
 
+def _payload_benchmark_id(payload: Mapping[str, object]) -> str:
+    benchmark_id = payload.get("benchmark_id_str")
+    if benchmark_id:
+        return str(benchmark_id)
+    execution_context = payload.get("execution_context_json")
+    if isinstance(execution_context, Mapping):
+        benchmark_id = cast(Mapping[object, object], execution_context).get("benchmark_id")
+    return str(benchmark_id) if benchmark_id else ""
+
+
+def _payload_string(payload: Mapping[str, object], key: str) -> str:
+    value = payload.get(key)
+    return str(value) if value else ""
+
+
 class ExecutorDispatchStore(Protocol):
     async def claim(
         self,
@@ -799,24 +814,24 @@ async def run_executor_dispatch(
 @broker.task(EXECUTOR_TASK_NAME)
 async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
     raw_payload: dict[str, object] = dict(payload)
-    dispatch_id = _required_string(raw_payload, "executor_dispatch_id")
-    dispatch = ArtifactDispatch.from_payload(raw_payload)
-    process_payload = ExecutorProcessPayload.from_payload(raw_payload)
     with dispatch_observability_context(
-        process_payload.benchmark_id,
-        dispatch_id,
-        dispatch.release_id,
-        process_payload.telemetry_context,
+        _payload_benchmark_id(raw_payload),
+        _payload_string(raw_payload, "executor_dispatch_id"),
+        _payload_string(raw_payload, "executor_release_id"),
+        _telemetry_context(raw_payload.get("telemetry_context_json")),
     ) as child_telemetry_context:
-        process_payload = replace(
-            process_payload,
-            telemetry_context=child_telemetry_context,
-            arguments={
-                **process_payload.arguments,
-                "telemetry_context_json": child_telemetry_context,
-            },
-        )
         try:
+            dispatch_id = _required_string(raw_payload, "executor_dispatch_id")
+            dispatch = ArtifactDispatch.from_payload(raw_payload)
+            process_payload = ExecutorProcessPayload.from_payload(raw_payload)
+            process_payload = replace(
+                process_payload,
+                telemetry_context=child_telemetry_context,
+                arguments={
+                    **process_payload.arguments,
+                    "telemetry_context_json": child_telemetry_context,
+                },
+            )
             await run_executor_dispatch(
                 supervisor,
                 dispatch_store,

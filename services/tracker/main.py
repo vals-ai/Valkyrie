@@ -626,7 +626,7 @@ async def start_benchmark(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         raise TrackerServiceError("Failed to admit benchmark execution") from exc
 
-    bind_benchmark_id(benchmark_row.id)
+    await bind_benchmark_id(benchmark_row.id)
 
     if run_starter.access_key_id is not None and run_starter.email is None:
         logger.warning(

@@ -141,3 +141,12 @@ class TestSentrySetup:
         assert warnings[0][0] == "Failed to initialize Sentry: %s: %s"
         assert warnings[0][1][:1] == ("RuntimeError",)
         assert str(warnings[0][1][1]) == "bad dsn"
+
+    def test_init_sentry_rejects_invalid_production_configuration(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SENTRY_DSN", "https://public@example.com/1")
+        monkeypatch.setattr(sentry_sdk, "init", Mock(side_effect=RuntimeError("bad dsn")))
+
+        with pytest.raises(RuntimeError, match="Check the production DSN secret") as exc_info:
+            sentry_module.init_sentry("valkyrie-worker", environment="production")
+
+        assert exc_info.value.__cause__ is None

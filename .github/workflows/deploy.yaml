@@ -272,6 +272,10 @@ jobs:
             echo "::error::The dev Environment must define DESCOPE_MANAGEMENT_KEY_SECRET_NAME before planning or deploying."
             exit 1
           fi
+          if [[ "$OPERATION" != "credentials-only" && -z "$SENTRY_DSN_SECRET_NAME" ]]; then
+            echo "::error::The dev Environment must define SENTRY_DSN_SECRET_NAME before planning or deploying."
+            exit 1
+          fi
           if [[ "$OPERATION" != "credentials-only" && ( -z "$AWS_DEPLOYMENT_ROLE_ORG_IDS" || -z "$AWS_TRACKER_SECRET_NAME_PREFIXES" ) ]]; then
             echo "::error::The dev Environment must define AWS_DEPLOYMENT_ROLE_ORG_IDS and AWS_TRACKER_SECRET_NAME_PREFIXES before planning or deploying."
             exit 1

@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from functools import partial
 from pathlib import Path
 from typing import cast
+from unittest.mock import Mock
 
 import pytest
 
@@ -581,6 +582,8 @@ async def test_launch_executor_rejects_invalid_dispatch_id_without_side_effects(
     monkeypatch.setattr(supervisor, "run", unexpected_run)
     monkeypatch.setattr(supervisor_module, "supervisor", supervisor)
     monkeypatch.setattr(supervisor_module, "dispatch_store", store)
+    capture_exception = Mock()
+    monkeypatch.setattr(supervisor_module.sentry_sdk, "capture_exception", capture_exception)
 
     with pytest.raises(ValueError, match="executor_dispatch_id is required"):
         await supervisor_module.launch_executor.original_func(
@@ -597,6 +600,7 @@ async def test_launch_executor_rejects_invalid_dispatch_id_without_side_effects(
     assert store.claimed == []
     assert store.finished == []
     assert s3_client.calls == []
+    capture_exception.assert_called_once()
 
 
 @pytest.mark.asyncio

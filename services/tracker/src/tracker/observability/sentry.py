@@ -97,7 +97,9 @@ def init_sentry(service_name: str, environment: str) -> None:
             ],
         )
     except Exception as e:
-        # A malformed SENTRY_DSN or invalid integration shouldn't crash service startup.
+        if environment == "production":
+            raise RuntimeError("Sentry could not start. Check the production DSN secret and deploy again.") from None
+        # Non-production environments stay available for configuration repair.
         logger.warning("Failed to initialize Sentry: %s: %s", type(e).__name__, e)
 
 

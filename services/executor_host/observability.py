@@ -83,6 +83,8 @@ def configure_observability() -> None:
             ],
         )
     except Exception as error:
+        if os.environ.get("ENVIRONMENT") == "production":
+            raise RuntimeError("Sentry could not start. Check the production DSN secret and deploy again.") from None
         logging.getLogger(__name__).warning(
             "Failed to initialize Sentry: %s: %s",
             type(error).__name__,

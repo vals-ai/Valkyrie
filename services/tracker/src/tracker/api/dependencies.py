@@ -5,6 +5,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, Request
+from opentelemetry import trace
 from sqlmodel import Session
 
 from tracker.auth import get_current_org
@@ -14,10 +15,9 @@ from tracker.database.models import Benchmark, Org
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.logging import benchmark_id_var
-from opentelemetry import trace
 
 
-def bind_benchmark_id(benchmark_id: UUID) -> UUID:
+async def bind_benchmark_id(benchmark_id: UUID) -> UUID:
     """Bind a route's run identifier to logs, errors, and the active request span."""
     value = str(benchmark_id)
     benchmark_id_var.set(value)

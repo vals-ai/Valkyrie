@@ -43,6 +43,7 @@ TEST_DEPLOYMENT_SLACK_ENV = {
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV: "CDEPLOYCHANNEL",
 }
 TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME = "example-descope-management-key"
+TEST_SENTRY_DSN_SECRET_NAME = "example/sentry-dsn"
 TEST_MANAGED_ORG_ID = "00000000-0000-0000-0000-000000000001"
 TEST_TRACKER_SECRET_NAME_PREFIX = "test-tracker-secret"
 TEST_DEV_ENV = {
@@ -50,8 +51,9 @@ TEST_DEV_ENV = {
     "AWS_TRACKER_SECRET_NAME_PREFIXES": TEST_TRACKER_SECRET_NAME_PREFIX,
     "DESCOPE_PROJECT_ID": "dev-project",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
+    "SENTRY_DSN_SECRET_NAME": TEST_SENTRY_DSN_SECRET_NAME,
 }
-TEST_PROD_ENV = {"SENTRY_DSN_SECRET_NAME": "example/sentry-dsn"}
+TEST_PROD_ENV = {"SENTRY_DSN_SECRET_NAME": TEST_SENTRY_DSN_SECRET_NAME}
 TEST_RELEASE_TEST_ENV = {
     "DESCOPE_PROJECT_ID": "release-test",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
@@ -807,12 +809,12 @@ class MonitoringStackTest(unittest.TestCase):
                 },
             )
 
-    def test_dev_sentry_secret_is_optional(self) -> None:
-        with mock.patch.dict(os.environ, TEST_DEV_ENV, clear=True):
-            tracker_template, executor_template, _ = service_templates(DEV)
+    def test_production_requires_sentry_secret(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "require SENTRY_DSN_SECRET_NAME"):
+                service_templates(PROD)
 
-        self.assertNotIn("SENTRY_DSN", str(tracker_template.to_json()))
-        self.assertNotIn("SENTRY_DSN", str(executor_template.to_json()))
+    def test_dev_sentry_secret_is_injected(self) -> None:
 
         custom_sentry_secret_name = "custom/dev-sentry-dsn"
         sentry_environment = {

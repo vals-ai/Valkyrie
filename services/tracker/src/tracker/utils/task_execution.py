@@ -634,11 +634,12 @@ async def _process_task_attempt(
             pending_log_writes.discard(completed)
             try:
                 completed.result()
-            except Exception:
+            except Exception as error:
                 logger.exception(
                     "Failed to write task output to CloudWatch",
                     extra={"benchmark_id": str(benchmark_id), "task_id": task_id},
                 )
+                sentry_sdk.capture_exception(error)
 
         write.add_done_callback(handle_completion)
 
@@ -685,6 +686,19 @@ async def _process_task_attempt(
         operation: str,
         cause_code: str | None = None,
     ) -> dict[str, dict[str, Any] | None]:
+        logger.error(
+            "Task execution failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+            extra={
+                "benchmark_id": str(benchmark_id),
+                "task_id": task_id,
+                "producer": producer,
+                "operation": operation,
+                "error_type": type(exc).__name__,
+                "cause_code": cause_code or "",
+            },
+        )
+        sentry_sdk.capture_exception(exc)
         with Session(bind=engine) as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
             commit_task_error(
@@ -1093,9 +1107,6 @@ async def _process_task_attempt(
             return {task_id: None}
         logfire.exception("process_task failed")
         error_message = _exception_message(e)
-        logger.error(error_message, exc_info=True)
-
-        sentry_sdk.capture_exception(e)
 
         # include the error message
         log_output(f"\n[ERROR] {error_message}")
