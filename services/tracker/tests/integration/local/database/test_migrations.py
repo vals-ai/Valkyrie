@@ -11,6 +11,8 @@ from time import monotonic, sleep
 from uuid import uuid4
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlmodel import Session, create_engine
 from testcontainers.postgres import PostgresContainer
@@ -33,6 +35,12 @@ _PREVIOUS_REVISION = "d8e9f0a1b2c3"
 _MAINTENANCE_REVISION = "f0a1b2c3d4e5"
 _ERROR_RESULT_PROVENANCE_REVISION = "a3f4b5c6d7e8"
 _MIGRATION_ADVISORY_LOCK_ID = 0x56414C4B59524945
+
+
+def test_migration_graph_has_single_head() -> None:
+    heads = ScriptDirectory.from_config(Config(str(_ALEMBIC_INI))).get_heads()
+
+    assert len(heads) == 1, f"Expected one Alembic head, found {heads}"
 
 
 @pytest.fixture
