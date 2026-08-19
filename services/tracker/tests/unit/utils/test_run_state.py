@@ -641,7 +641,7 @@ class TestRunState:
         assert error_result.error_type == "RuntimeError"
         assert error_result.cause_code is None
         assert error_result.retry_scheduled is False
-        assert error_result.retry_sequence is None
+        assert error_result.failed_attempt_number is None
         transition_record = next(record for record in span_records if record["message"] == "task.status_transition")
         assert transition_record["from_status"] == TaskStatus.IN_PROGRESS.value
         assert transition_record["to_status"] == TaskStatus.ERROR.value

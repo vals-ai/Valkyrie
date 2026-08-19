@@ -141,7 +141,7 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
                 operation="setup",
                 error_type="SandboxSetupError",
                 retry_scheduled=True,
-                retry_sequence=1,
+                failed_attempt_number=1,
             ),
             make_error_result(other_error, "other failure", now),
         ]

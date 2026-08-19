@@ -80,7 +80,7 @@ class TestBenchmarkServiceFailures:
         assert error_result.error_type == "ConnectionClosedError"
         assert error_result.cause_code == "websocket_connection_closed"
         assert error_result.retry_scheduled is False
-        assert error_result.retry_sequence is None
+        assert error_result.failed_attempt_number is None
 
     @pytest.mark.parametrize(
         ("code", "reason"),
@@ -244,7 +244,7 @@ class TestBenchmarkServiceFailures:
         assert error_result.error_type == "OutputArtifactError"
         assert error_result.cause_code is None
         assert error_result.retry_scheduled is False
-        assert error_result.retry_sequence is None
+        assert error_result.failed_attempt_number is None
         assert any(expected_log in message for message in logged_messages)
 
     @pytest.mark.usefixtures("process_benchmark_env")

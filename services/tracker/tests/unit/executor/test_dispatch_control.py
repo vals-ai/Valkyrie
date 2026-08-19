@@ -182,7 +182,7 @@ def test_enqueue_failure_makes_start_retryable(
     assert error_result.error_type == "ExecutorDispatchEnqueueError"
     assert error_result.cause_code is None
     assert error_result.retry_scheduled is False
-    assert error_result.retry_sequence is None
+    assert error_result.failed_attempt_number is None
 
 
 def test_additive_retry_enqueue_failure_keeps_original_execution_active(
@@ -372,7 +372,7 @@ def test_running_dispatch_failure_preserves_active_sibling(
     assert error_result.operation == "process_benchmark"
     assert error_result.error_type == "RuntimeError"
     assert error_result.retry_scheduled is False
-    assert error_result.retry_sequence is None
+    assert error_result.failed_attempt_number is None
 
 
 def test_terminal_recovery_terminalizes_active_dispatches(

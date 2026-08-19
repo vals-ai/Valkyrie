@@ -25,7 +25,7 @@ def upgrade() -> None:
         "errorresult",
         sa.Column("retry_scheduled", sa.Boolean(), nullable=False, server_default=sa.false()),
     )
-    op.add_column("errorresult", sa.Column("retry_sequence", sa.Integer(), nullable=True))
+    op.add_column("errorresult", sa.Column("failed_attempt_number", sa.Integer(), nullable=True))
     op.create_index(
         "ix_errorresult_org_task_created_at",
         "errorresult",
@@ -35,7 +35,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_errorresult_org_task_created_at", table_name="errorresult")
-    op.drop_column("errorresult", "retry_sequence")
+    op.drop_column("errorresult", "failed_attempt_number")
     op.drop_column("errorresult", "retry_scheduled")
     op.drop_column("errorresult", "cause_code")
     op.drop_column("errorresult", "error_type")

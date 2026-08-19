@@ -604,4 +604,4 @@ class ErrorResult(ResultBase, table=True):
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
     )
-    retry_sequence: int | None = Field(default=None)
+    failed_attempt_number: int | None = Field(default=None)

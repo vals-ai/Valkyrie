@@ -180,7 +180,7 @@ class TestTaskExecutionRetry:
         assert retry_result.operation == "setup"
         assert retry_result.error_type == type(error).__name__
         assert retry_result.cause_code is None
-        assert retry_result.retry_sequence == 1
+        assert retry_result.failed_attempt_number == 1
 
         if expected_status is TaskStatus.ERROR:
             assert second_error is not None
@@ -195,7 +195,7 @@ class TestTaskExecutionRetry:
                 assert terminal_result.operation == "process_task"
             assert terminal_result.error_type == type(second_error).__name__
             assert terminal_result.cause_code is None
-            assert terminal_result.retry_sequence is None
+            assert terminal_result.failed_attempt_number is None
         else:
             assert terminal_results == []
 

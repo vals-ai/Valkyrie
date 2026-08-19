@@ -159,7 +159,7 @@ def test_error_result_provenance_migration_preserves_legacy_rows(
             connection.execute(
                 text(
                     "SELECT id, org_id, task, created_at, error_message, producer, operation, "
-                    "error_type, cause_code, retry_scheduled, retry_sequence "
+                    "error_type, cause_code, retry_scheduled, failed_attempt_number "
                     "FROM errorresult WHERE task = :task ORDER BY created_at"
                 ),
                 {"task": task_id},
@@ -200,7 +200,7 @@ def test_error_result_provenance_migration_preserves_legacy_rows(
         assert migrated["error_message"] == message
         assert migrated["retry_scheduled"] is False
         assert all(
-            migrated[field] is None for field in ("producer", "operation", "error_type", "cause_code", "retry_sequence")
+            migrated[field] is None for field in ("producer", "operation", "error_type", "cause_code", "failed_attempt_number")
         )
 
     assert raw_retry_scheduled is False
@@ -215,7 +215,7 @@ def test_error_result_provenance_migration_preserves_legacy_rows(
         "error_type",
         "cause_code",
         "retry_scheduled",
-        "retry_sequence",
+        "failed_attempt_number",
     }
     assert error_result_columns["retry_scheduled"]["nullable"] is False
     assert error_result_indexes == {

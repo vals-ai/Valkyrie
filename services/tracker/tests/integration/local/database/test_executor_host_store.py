@@ -146,5 +146,5 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     assert error_result.error_type == "ExecutorHostFailure"
     assert error_result.cause_code is None
     assert error_result.retry_scheduled is False
-    assert error_result.retry_sequence is None
+    assert error_result.failed_attempt_number is None
     assert newer_task_errors == []

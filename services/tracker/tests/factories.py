@@ -146,7 +146,7 @@ def make_error_result(
     error_type: str | None = None,
     cause_code: str | None = None,
     retry_scheduled: bool = False,
-    retry_sequence: int | None = None,
+    failed_attempt_number: int | None = None,
 ) -> ErrorResult:
     """Build an error attempt for a task.
 
@@ -159,7 +159,7 @@ def make_error_result(
     - error_type: Optional factual exception or error type.
     - cause_code: Optional producer-owned cause code.
     - retry_scheduled: Whether this error caused a scheduled retry.
-    - retry_sequence: Producer-supplied retry sequence.
+    - failed_attempt_number: 1-indexed failed attempt that scheduled the next attempt.
 
     Returns
     - An error-result row ready to persist.
@@ -174,5 +174,5 @@ def make_error_result(
         error_type=error_type,
         cause_code=cause_code,
         retry_scheduled=retry_scheduled,
-        retry_sequence=retry_sequence,
+        failed_attempt_number=failed_attempt_number,
     )

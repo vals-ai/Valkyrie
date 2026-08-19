@@ -83,13 +83,13 @@ def _exception_message(exc: BaseException) -> str:
     return str(exc).strip() or type(exc).__name__
 
 
-def _record_scheduled_task_retry(
+def _record_failure_before_retry(
     task_row: Task,
     authority: ExecutionAuthority,
     exc: SandboxSetupError,
-    retry_sequence: int,
+    failed_attempt_number: int,
 ) -> None:
-    """Persist one scheduled retry while this task execution still owns the row."""
+    """Persist the failure that scheduled the next attempt while this execution owns the task."""
     with Session(bind=engine) as session:
         try:
             lock_execution_authority(session, authority)
@@ -121,7 +121,7 @@ def _record_scheduled_task_retry(
                 operation="setup",
                 error_type=type(exc).__name__,
                 retry_scheduled=True,
-                retry_sequence=retry_sequence,
+                failed_attempt_number=failed_attempt_number,
             )
         )
         session.commit()
@@ -135,7 +135,7 @@ def _before_process_task_retry(retry_state: RetryCallState) -> None:
     exc = retry_state.outcome.exception() if retry_state.outcome is not None else None
     if not isinstance(exc, SandboxSetupError):
         return
-    _record_scheduled_task_retry(
+    _record_failure_before_retry(
         cast(Task, retry_state.kwargs["task_row"]),
         cast(ExecutionAuthority, retry_state.kwargs["authority"]),
         exc,

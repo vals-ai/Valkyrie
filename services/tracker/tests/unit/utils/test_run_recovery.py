@@ -736,7 +736,7 @@ class TestRunRecovery:
                 operation="setup",
                 error_type="SandboxSetupError",
                 retry_scheduled=True,
-                retry_sequence=1,
+                failed_attempt_number=1,
             ),
             make_evaluation_result(task_result, "previous-task-result", {"score": 0.5}, _created_at(1)),
         ):

@@ -83,7 +83,7 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
                 operation="setup",
                 error_type="SandboxSetupError",
                 retry_scheduled=True,
-                retry_sequence=1,
+                failed_attempt_number=1,
             ),
         ]
     )
