@@ -14,6 +14,7 @@ from httpx._models import Response
 from pydantic import BaseModel, ValidationError
 from tracker.database.models import AgentContractRequest, RetryMode
 from tracker.types import (
+    AWSRuntimeResponse,
     BenchmarkServiceEntry,
     BenchmarkServiceCatalogResponse,
     BenchmarkServicesRequest,
@@ -38,7 +39,7 @@ from tracker.types import (
 from valkyrie.cli.exceptions import TrackerNotFoundError, TrackerServiceError
 from valkyrie.cli.runtime_config import config_location, tracker_service_url
 
-_REQUIRED_CONFIG_KEYS = {
+_REQUIRED_ACCESS_KEY_CONFIG_KEYS = {
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_DEFAULT_REGION",
@@ -107,7 +108,7 @@ def _resolve_sandbox_provider_config(
             raise TrackerServiceError(
                 f"Unknown sandbox provider '{provider}'. Configure it with `{_PROVIDER_SETUP_COMMAND}`."
             )
-        secret_name = config_values.get("DAYTONA_SECRET_NAME")
+        secret_name = config.get("DAYTONA_SECRET_NAME")
         if not secret_name:
             raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
         return "daytona", secret_name
@@ -242,7 +243,7 @@ class TrackerService:
 
     @staticmethod
     def parse_config_keys() -> dict[str, str]:
-        """Parses expected config keys and handles edge cases"""
+        """Build access-key request values when static credentials are configured."""
         config_path = config_location()
         config_keys: dict[str, str] = {}
         if not config_path.exists():
@@ -251,15 +252,29 @@ class TrackerService:
         with open(config_path) as f:
             harness_config: dict[str, Any] = yaml.safe_load(f) or {}
 
-        missing = _REQUIRED_CONFIG_KEYS - harness_config.keys()
+        if not (_sandbox_providers(harness_config) or "DAYTONA_SECRET_NAME" in harness_config):
+            raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
+
+        access_key_fields = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
+        configured_access_key_fields = [field for field in access_key_fields if field in harness_config]
+        if configured_access_key_fields and len(configured_access_key_fields) != len(access_key_fields):
+            raise TrackerServiceError("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together.")
+        if not configured_access_key_fields:
+            if "AWS_SESSION_TOKEN" in harness_config:
+                raise TrackerServiceError("AWS_SESSION_TOKEN requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.")
+            return {}
+        if any(
+            not isinstance(harness_config[field], str) or not harness_config[field].strip()
+            for field in access_key_fields
+        ):
+            raise TrackerServiceError("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must not be blank.")
+
+        missing = _REQUIRED_ACCESS_KEY_CONFIG_KEYS - harness_config.keys()
         if missing:
             raise TrackerServiceError(
                 f"Missing required config keys: {', '.join(sorted(missing))}. "
                 "Run `valkyrie config init` to initialize the Valkyrie config or `valkyrie config set` to update an existing config"
             )
-        if not (_sandbox_providers(harness_config) or "DAYTONA_SECRET_NAME" in harness_config):
-            raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
-
         # Keys that are managed separately and should not be sent as harness headers
         _SKIP_HEADER_KEYS = {"webhook", "api_key", "default_sandbox_provider"}
 
@@ -302,6 +317,7 @@ class TrackerService:
                 "aws_access_key_id": flat["aws_access_key_id"],
                 "aws_secret_access_key": flat["aws_secret_access_key"],
                 "aws_default_region": flat["aws_default_region"],
+                "aws_session_token": flat.get("aws_session_token"),
             },
             "s3_bucket": flat["s3_bucket"],
             "log_group": flat["log_group"],
@@ -387,6 +403,17 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to initialize org: {e}") from e
 
+    @classmethod
+    def aws_runtime_metadata(cls, api_key: str, base_url: str | None = None) -> AWSRuntimeResponse:
+        """Return the AWS mode and resources available to a hosted organization."""
+        tracker_url = _resolve_tracker_url(base_url)
+        try:
+            with httpx.Client(timeout=120, headers={"X-Api-Key": api_key}) as client:
+                response = client.get(f"{tracker_url}/aws-runtime")
+                return _parse_model_response(response, "Failed to resolve AWS runtime", AWSRuntimeResponse)
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to resolve AWS runtime: {e}") from e
+
     def start_benchmark(
         self,
         contract: AgentContractRequest,
@@ -423,6 +450,11 @@ class TrackerService:
         """
         try:
             provider_name, sandbox_provider_secret_name = self.resolve_sandbox_provider(provider)
+            access_key_harness_config = (
+                HarnessConfig.model_validate(self._build_harness_config_payload(sandbox_provider_secret_name))
+                if self._config_values
+                else None
+            )
             payload = StartBenchmarkRequest(
                 contract=contract,
                 benchmark_name=benchmark_name,
@@ -432,14 +464,15 @@ class TrackerService:
                 slice_str=slice_str,
                 lambda_function=lambda_function,
                 dataset=dataset,
-                harness_config=HarnessConfig.model_validate(
-                    self._build_harness_config_payload(sandbox_provider_secret_name)
-                ),
+                harness_config=access_key_harness_config,
                 custom_benchmark_service=self.get_benchmark_service_url(benchmark_name)
                 if not ignore_custom_services
                 else None,
                 service_headers=service_headers or {},
                 sandbox_provider=provider_name,
+                sandbox_provider_secret_name=(
+                    sandbox_provider_secret_name if access_key_harness_config is None else None
+                ),
                 webhook_secret_name=webhook_secret_name,
                 webhook_intervals=webhook_intervals,
             )

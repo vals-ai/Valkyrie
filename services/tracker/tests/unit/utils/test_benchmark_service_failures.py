@@ -30,10 +30,12 @@ from tests.unit.utils.task_execution_support import TEST_ORG, create_task_enviro
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
+    AgentCausedExitReason,
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
     Task,
+    TaskBreakdown,
     TaskStatus,
 )
 from tracker.types import HarnessConfig
@@ -46,14 +48,16 @@ from tracker.utils import (
 class TestBenchmarkServiceFailures:
     """Benchmark service disconnect, validation, and task error handling."""
 
-    def _latest_task_error(self, database_session: Session, task_row: Task) -> str:
-        error_message = database_session.exec(
-            select(ErrorResult.error_message)
+    def _latest_task_error_result(self, database_session: Session, task_row: Task) -> ErrorResult:
+        return database_session.exec(
+            select(ErrorResult)
             .where(ErrorResult.task == task_row.id)
             .where(ErrorResult.org_id == task_row.org_id)
             .order_by(desc(ErrorResult.created_at))
         ).one()
-        return error_message
+
+    def _latest_task_error(self, database_session: Session, task_row: Task) -> str:
+        return self._latest_task_error_result(database_session, task_row).error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_connection_closed_after_messages_produces_elapsed_error(
@@ -81,10 +85,16 @@ class TestBenchmarkServiceFailures:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        error_message = self._latest_task_error(database_session, task_row)
-        assert "Benchmark service WebSocket disconnected: no close frame received or sent" in error_message
-        assert "last application message received" in error_message
-        assert "10s ago" in error_message
+        error_result = self._latest_task_error_result(database_session, task_row)
+        assert "Benchmark service WebSocket disconnected: no close frame received or sent" in error_result.error_message
+        assert "last application message received" in error_result.error_message
+        assert "10s ago" in error_result.error_message
+        assert error_result.producer == "benchmark_service"
+        assert error_result.operation == "websocket"
+        assert error_result.error_type == "ConnectionClosedError"
+        assert error_result.cause_code == "websocket_connection_closed"
+        assert error_result.retry_scheduled is False
+        assert error_result.failed_attempt_number is None
 
     @pytest.mark.parametrize(
         ("code", "reason"),
@@ -165,7 +175,92 @@ class TestBenchmarkServiceFailures:
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.FINISHED
         evaluation = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
-        assert evaluation.instance_id is None
+        assert evaluation.instance_id == "mock-sandbox-id"
+        assert not database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).first()
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_stream_recovery_preserves_sandbox_metadata(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
+
+        async def _mock_run_agent(*_args: Any, **_kwargs: Any) -> tuple[AgentCausedExitReason, float]:
+            return AgentCausedExitReason.TIMEOUT, 12.5
+
+        async def _mock_evaluate_instance(*_args: Any, on_eval_resume_state: Any, **_kwargs: Any) -> dict[str, Any]:
+            on_eval_resume_state(saved_state)
+            raise BenchmarkServiceStreamClosedError(close_code=1011, close_reason="keepalive timeout", idle_s=30.0)
+
+        async def _mock_resume_evaluation(
+            *_args: Any, eval_resume_state: dict[str, Any], **_kwargs: Any
+        ) -> dict[str, Any]:
+            assert eval_resume_state == saved_state
+            return {"status": "success", "score": 1.0}
+
+        monkeypatch.setattr(utils_module, "run_agent", _mock_run_agent)
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        evaluation = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
+        assert evaluation.instance_id == "mock-sandbox-id"
+        assert evaluation.agent_caused_exit_reason == AgentCausedExitReason.TIMEOUT
+        database_session.refresh(task_row)
+        breakdown = database_session.get(TaskBreakdown, task_row.task_breakdown)
+        assert breakdown is not None
+        assert breakdown.evaluation_run_duration is not None
+        assert breakdown.evaluation_run_duration > 0
+        assert breakdown.sandbox_run_duration is not None
+        assert breakdown.sandbox_run_duration > 0
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_durable_resume_without_breakdown_can_recover(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
+        task_row.status = TaskStatus.EVALUATING
+        task_row.eval_resume_state = saved_state
+        database_session.commit()
+        resume_calls = 0
+
+        async def _mock_resume_evaluation(
+            *_args: Any, eval_resume_state: dict[str, Any], **_kwargs: Any
+        ) -> dict[str, Any]:
+            nonlocal resume_calls
+            resume_calls += 1
+            assert eval_resume_state == saved_state
+            if resume_calls == 1:
+                raise BenchmarkServiceStreamClosedError(close_code=1011, close_reason="keepalive timeout", idle_s=30.0)
+            return {"status": "success", "score": 1.0}
+
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        assert resume_calls == 2
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.FINISHED
+        assert task_row.task_breakdown is None
+        assert database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
         assert not database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).first()
 
     @pytest.mark.usefixtures("process_benchmark_env")
@@ -405,6 +500,35 @@ class TestBenchmarkServiceFailures:
         assert "Name or service not known" in error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_retrieve_task_dns_failure_is_not_reported_as_websocket_error(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> Never:
+            raise socket.gaierror(-2, "unrelated DNS failure")
+
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+
+        assert result == {"task_0": None}
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        error_result = self._latest_task_error_result(database_session, task_row)
+        assert "unrelated DNS failure" in error_result.error_message
+        assert "WebSocket" not in error_result.error_message
+        assert error_result.producer == "tracker"
+        assert error_result.operation == "process_task"
+
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_validation_error_produces_human_readable_message(
         self,
         contract: AgentContractRequest,
@@ -521,8 +645,14 @@ class TestBenchmarkServiceFailures:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        error_message = self._latest_task_error(database_session, task_row)
-        assert error_message == expected_error
+        error_result = self._latest_task_error_result(database_session, task_row)
+        assert error_result.error_message == expected_error
+        assert error_result.producer == "output_artifact"
+        assert error_result.operation == "upload_output_artifacts"
+        assert error_result.error_type == "OutputArtifactError"
+        assert error_result.cause_code is None
+        assert error_result.retry_scheduled is False
+        assert error_result.failed_attempt_number is None
         assert any(expected_log in message for message in logged_messages)
 
     @pytest.mark.usefixtures("process_benchmark_env")

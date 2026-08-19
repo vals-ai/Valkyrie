@@ -31,7 +31,7 @@ from monitoring_stack import MonitoringStack
 from shared import SharedStack
 from executor_stack import ExecutorStack
 from stage import DEV, DEV_STACK_PREFIX, PROD, RELEASE_TEST, Stage
-from stage_config import DEV_CONFIG
+from stage_config import DEV_CONFIG, config_for
 from tracker_stack import TrackerStack
 
 TEST_ALERTS_SLACK_ENV = {
@@ -43,7 +43,11 @@ TEST_DEPLOYMENT_SLACK_ENV = {
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV: "CDEPLOYCHANNEL",
 }
 TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME = "example-descope-management-key"
+TEST_MANAGED_ORG_ID = "00000000-0000-0000-0000-000000000001"
+TEST_TRACKER_SECRET_NAME_PREFIX = "test-tracker-secret"
 TEST_DEV_ENV = {
+    "AWS_DEPLOYMENT_ROLE_ORG_IDS": TEST_MANAGED_ORG_ID,
+    "AWS_TRACKER_SECRET_NAME_PREFIXES": TEST_TRACKER_SECRET_NAME_PREFIX,
     "DESCOPE_PROJECT_ID": "dev-project",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
 }
@@ -219,6 +223,27 @@ def service_templates(
 
 
 class MonitoringStackTest(unittest.TestCase):
+    def test_dev_managed_runtime_requires_deployment_authority(self) -> None:
+        for variable in (
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS",
+            "AWS_TRACKER_SECRET_NAME_PREFIXES",
+        ):
+            with self.subTest(variable=variable):
+                environment = dict(TEST_DEV_ENV)
+                environment.pop(variable)
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    with self.assertRaisesRegex(ValueError, variable):
+                        config_for(Stage(DEV))
+
+    def test_offline_synth_uses_safe_managed_runtime_placeholders(self) -> None:
+        with mock.patch.dict(os.environ, {"DESCOPE_PROJECT_ID": "offline-synth"}, clear=True):
+            managed_aws = config_for(Stage(DEV)).managed_aws
+
+        self.assertEqual(managed_aws.deployment_role_org_ids, (TEST_MANAGED_ORG_ID,))
+        self.assertEqual(managed_aws.tracker_secret_name_prefixes, ("offline-synth",))
+        self.assertEqual(managed_aws.executor_secret_name_prefixes, ())
+        self.assertTrue(managed_aws.executor_all_secret_access)
+
     def test_dev_stack_ids_are_valk_scoped(self) -> None:
         self.assertEqual(Stage(PROD).stack_id("TrackerStack"), "TrackerStack")
         self.assertEqual(Stage(DEV).stack_id("TrackerStack"), f"{DEV_STACK_PREFIX}TrackerStack")
@@ -593,7 +618,7 @@ class MonitoringStackTest(unittest.TestCase):
     def test_dev_stage_wires_stage_config_to_resources(self) -> None:
         with mock.patch.dict(os.environ, TEST_DEV_ENV, clear=True):
             tracker_template, executor_template, _ = service_templates(DEV)
-        with mock.patch.dict(os.environ, TEST_ALERTS_SLACK_ENV, clear=True):
+        with mock.patch.dict(os.environ, {**TEST_DEV_ENV, **TEST_ALERTS_SLACK_ENV}, clear=True):
             monitoring_template = _monitoring_template(DEV)
 
         tracker_template.has_resource_properties(

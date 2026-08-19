@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, SerializerFunctionWrapHandler, field_serializer, field_validator, model_serializer
-from sqlalchemy import Connection, Dialect, Index, event, text
+from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
     JSON,
@@ -338,7 +338,12 @@ class Benchmark(SQLModel, table=True):
     def fetch_tasks_with_errors(self, session: Session) -> dict[str, str] | None:
         error_rows = session.exec(
             select(Task.task_id, ErrorResult.error_message)
-            .outerjoin(ErrorResult, col(ErrorResult.task) == col(Task.id))
+            .outerjoin(
+                ErrorResult,
+                (col(ErrorResult.task) == col(Task.id))
+                & (col(ErrorResult.org_id) == self.org_id)
+                & col(ErrorResult.retry_scheduled).is_(False),
+            )
             .where(Task.benchmark == self.id)
             .where(Task.org_id == self.org_id)
             .where(Task.status == TaskStatus.ERROR)
@@ -588,4 +593,15 @@ class EvaluationResult(ResultBase, table=True):
 
 
 class ErrorResult(ResultBase, table=True):
+    __table_args__ = (Index("ix_errorresult_org_task_created_at", "org_id", "task", "created_at"),)
+
     error_message: str = Field(nullable=False)
+    producer: str | None = Field(default=None)
+    operation: str | None = Field(default=None)
+    error_type: str | None = Field(default=None)
+    cause_code: str | None = Field(default=None)
+    retry_scheduled: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+    failed_attempt_number: int | None = Field(default=None)

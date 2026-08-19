@@ -134,6 +134,7 @@ def get_benchmark_tasks(
         select(ErrorResult.error_message)
         .where(ErrorResult.task == Task.id)
         .where(ErrorResult.org_id == org.id)
+        .where(col(ErrorResult.retry_scheduled).is_(False))
         .order_by(desc(ErrorResult.created_at))
         .limit(1)
         .scalar_subquery()

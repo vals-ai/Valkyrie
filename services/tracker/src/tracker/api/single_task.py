@@ -6,7 +6,7 @@ from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, desc, select
+from sqlmodel import Session, col, desc, select
 
 from tracker.api.dependencies import RunAWSDependency
 from tracker.auth import get_current_org
@@ -70,7 +70,7 @@ def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[Evalu
     if task.status == TaskStatus.FINISHED:
         result_select = select(EvaluationResult)
     else:
-        result_select = select(ErrorResult.error_message)
+        result_select = select(ErrorResult.error_message).where(col(ErrorResult.retry_scheduled).is_(False))
 
     result = session.exec(result_select.where(*result_filters).order_by(result_order)).first()
 

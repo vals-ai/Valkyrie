@@ -258,7 +258,15 @@ async def finalize_all_error_run(
             return False
 
         # Mark the run as errored so future fetches return the discovered task errors.
-        commit_benchmark_error(benchmark_row, session, error_message, authority=authority)
+        commit_benchmark_error(
+            benchmark_row,
+            session,
+            error_message,
+            producer="tracker",
+            operation="summarize_task_errors",
+            error_type="AllTasksFailed",
+            authority=authority,
+        )
         return False
 
 
@@ -620,6 +628,10 @@ async def process_benchmark(
                 benchmark_row,
                 session,
                 error_message,
+                producer="benchmark_service",
+                operation="authenticate",
+                error_type=type(e).__name__,
+                cause_code="authentication_failed",
                 authority=authority,
                 task_ids=verified_task_ids,
             )
@@ -631,6 +643,9 @@ async def process_benchmark(
                 benchmark_row,
                 session,
                 error_message,
+                producer="benchmark_service",
+                operation="process_benchmark",
+                error_type=type(e).__name__,
                 authority=authority,
                 task_ids=verified_task_ids,
             )
@@ -644,6 +659,9 @@ async def process_benchmark(
                 benchmark_row,
                 session,
                 error_message,
+                producer="tracker",
+                operation="process_benchmark",
+                error_type=type(e).__name__,
                 authority=authority,
                 task_ids=verified_task_ids,
             )
@@ -693,7 +711,11 @@ def commit_benchmark_error(
     session: Session,
     error_message: str,
     *,
+    producer: str,
+    operation: str,
+    error_type: str,
     authority: ExecutionAuthority,
+    cause_code: str | None = None,
     task_ids: list[str] | None = None,
 ) -> bool:
     try:
@@ -707,6 +729,10 @@ def commit_benchmark_error(
         dispatch_id=authority.dispatch_id,
         task_ids=task_ids or [],
         error_message=error_message,
+        producer=producer,
+        operation=operation,
+        error_type=error_type,
+        cause_code=cause_code,
     )
     session.commit()
     return committed
@@ -769,6 +795,9 @@ def catch_errors_during_cleanup(
         dispatch_id=authority.dispatch_id,
         task_ids=[task.task_id for task in undetected_exit_tasks],
         error_message=error_message,
+        producer="tracker",
+        operation="cleanup",
+        error_type="UndetectedExecutorExit",
     )
     session.commit()
     return committed

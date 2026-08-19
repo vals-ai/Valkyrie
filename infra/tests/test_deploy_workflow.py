@@ -34,6 +34,15 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("database_maintenance_required != 'true'", dev_core)
         self.assertIn("environment: dev", dev_core)
         self.assertIn("SCOPE: ${{ github.event_name == 'push' && 'core' || inputs.scope }}", dev_core)
+        self.assertIn(
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}",
+            dev_core,
+        )
+        self.assertIn(
+            "AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}",
+            dev_core,
+        )
+        self.assertNotIn("AWS_EXECUTOR_SECRET_NAME_PREFIXES", dev_core)
         self.assertIn("Deploy dev core stacks", dev_core)
         self.assertNotIn("services/executor_artifact/build.py", dev_core)
         self.assertNotIn("executor_release/main.py", dev_core)
@@ -95,6 +104,15 @@ class DeployWorkflowTest(unittest.TestCase):
 
         self.assertIn("needs: [classify-deployment, run-dev-operation]", dev_executor)
         self.assertIn("environment: dev", dev_executor)
+        self.assertIn(
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}",
+            dev_executor,
+        )
+        self.assertIn(
+            "AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}",
+            dev_executor,
+        )
+        self.assertNotIn("AWS_EXECUTOR_SECRET_NAME_PREFIXES", dev_executor)
         self.assertIn("needs: [classify-deployment, deploy-production-core]", prod_executor)
         self.assertIn("environment: prod", prod_executor)
         self.assertNotIn("production-executor-approval", workflow)
@@ -249,6 +267,24 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("synthesize-head:", classification_workflow)
         self.assertIn("needs: [synthesize-base, synthesize-head]", classification_workflow)
         self.assertEqual(classification_workflow.count("enable-cache: false"), 2)
+        self.assertEqual(
+            classification_workflow.count("AWS_DEPLOYMENT_ROLE_ORG_IDS=00000000-0000-0000-0000-000000000001"),
+            2,
+        )
+        self.assertEqual(
+            classification_workflow.count("AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth"),
+            2,
+        )
+        self.assertEqual(
+            classification_workflow.count("AWS_TRACKER_SECRET_NAME_PREFIXES=offline-synth"),
+            2,
+        )
+        self.assertIn(
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS=00000000-0000-0000-0000-000000000001",
+            workflow,
+        )
+        self.assertIn("AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth", workflow)
+        self.assertIn("AWS_TRACKER_SECRET_NAME_PREFIXES=offline-synth", workflow)
         self.assertNotIn("id-token: write", classification_workflow)
         trusted_checkout = classification_workflow.split("      - name: Checkout trusted classifier", maxsplit=1)[
             1

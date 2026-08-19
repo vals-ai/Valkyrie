@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import UUID
 
 from aws_cdk import aws_logs
@@ -13,6 +14,8 @@ from stage import DEV, PROD, RELEASE_TEST, Stage
 _SECRET_NAME_PREFIX_PATTERN = re.compile(r"[A-Za-z0-9/_+=.@-]+")
 _LAMBDA_FUNCTION_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\*?")
 _KMS_KEY_ARN_PATTERN = re.compile(r"arn:[^:]+:kms:[^:]+:[0-9]{12}:key/[A-Za-z0-9-]+")
+_OFFLINE_SYNTH_ORG_ID = "00000000-0000-0000-0000-000000000001"
+_OFFLINE_SYNTH_SECRET_PREFIX = "offline-synth"
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,7 @@ class ManagedAWSRuntimeConfig:
     submissions_enabled: bool = False
     tracker_secret_name_prefixes: tuple[str, ...] = ()
     executor_secret_name_prefixes: tuple[str, ...] = ()
+    executor_all_secret_access: bool = False
     tracker_lambda_function_name_patterns: tuple[str, ...] = ()
     executor_lambda_function_name_patterns: tuple[str, ...] = ()
     kms_key_arns: tuple[str, ...] = ()
@@ -59,6 +63,9 @@ class ManagedAWSRuntimeConfig:
         ):
             if any(_SECRET_NAME_PREFIX_PATTERN.fullmatch(prefix) is None for prefix in prefixes):
                 raise ValueError(f"{field_name} must contain literal, non-empty Secrets Manager name prefixes")
+
+        if self.executor_all_secret_access and self.executor_secret_name_prefixes:
+            raise ValueError("executor_all_secret_access cannot be combined with executor_secret_name_prefixes")
 
         for field_name, patterns in (
             ("tracker_lambda_function_name_patterns", self.tracker_lambda_function_name_patterns),
@@ -114,6 +121,8 @@ DEV_CONFIG = StageConfig(
     managed_aws=ManagedAWSRuntimeConfig(
         benchmark_log_group_prefix="/valkyrie/benchmarks",
         benchmark_log_retention_days=7,
+        submissions_enabled=True,
+        executor_all_secret_access=True,
     ),
 )
 
@@ -123,7 +132,10 @@ RELEASE_TEST_CONFIG = StageConfig(
     worker=DEV_CONFIG.worker,
     database=DEV_CONFIG.database,
     service_log_retention=DEV_CONFIG.service_log_retention,
-    managed_aws=DEV_CONFIG.managed_aws,
+    managed_aws=ManagedAWSRuntimeConfig(
+        benchmark_log_group_prefix="/valkyrie/benchmarks",
+        benchmark_log_retention_days=7,
+    ),
 )
 
 RELEASE_TEST_BENCHMARK_SERVICE_BASE_URL = "benchmarks.vals.ai"
@@ -138,9 +150,35 @@ _STAGE_CONFIGS = {
 
 def config_for(stage: Stage) -> StageConfig:
     try:
-        return _STAGE_CONFIGS[stage.name]
+        config = _STAGE_CONFIGS[stage.name]
     except KeyError:
         raise ValueError(f"unknown stage {stage.name!r}; expected {PROD!r}, {DEV!r}, or 'release-test'") from None
+
+    if stage.name != DEV:
+        return config
+
+    deployment_role_org_ids = _csv_environment("AWS_DEPLOYMENT_ROLE_ORG_IDS")
+    tracker_secret_name_prefixes = _csv_environment("AWS_TRACKER_SECRET_NAME_PREFIXES")
+    if os.environ.get("DESCOPE_PROJECT_ID") == _OFFLINE_SYNTH_SECRET_PREFIX:
+        deployment_role_org_ids = deployment_role_org_ids or (_OFFLINE_SYNTH_ORG_ID,)
+        tracker_secret_name_prefixes = tracker_secret_name_prefixes or (_OFFLINE_SYNTH_SECRET_PREFIX,)
+    if config.managed_aws.submissions_enabled:
+        if not deployment_role_org_ids:
+            raise ValueError("Development deployments require AWS_DEPLOYMENT_ROLE_ORG_IDS.")
+        if not tracker_secret_name_prefixes:
+            raise ValueError("Development deployments require AWS_TRACKER_SECRET_NAME_PREFIXES.")
+    return replace(
+        config,
+        managed_aws=replace(
+            config.managed_aws,
+            deployment_role_org_ids=deployment_role_org_ids,
+            tracker_secret_name_prefixes=tracker_secret_name_prefixes,
+        ),
+    )
+
+
+def _csv_environment(name: str) -> tuple[str, ...]:
+    return tuple(value.strip() for value in os.environ.get(name, "").split(",") if value.strip())
 
 
 def benchmark_service_base_url(stage: Stage) -> str | None:
