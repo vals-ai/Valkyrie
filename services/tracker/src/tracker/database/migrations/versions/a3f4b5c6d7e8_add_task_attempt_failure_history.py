@@ -30,6 +30,7 @@ def upgrade() -> None:
         "ix_errorresult_org_task_created_at",
         "errorresult",
         ["org_id", "task", "created_at"],
+        unique=False,
     )
 
 

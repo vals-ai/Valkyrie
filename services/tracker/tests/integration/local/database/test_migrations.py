@@ -188,7 +188,8 @@ def test_error_result_provenance_migration_preserves_legacy_rows(
         inspector = inspect(connection)
         error_result_columns = {column["name"]: column for column in inspector.get_columns("errorresult")}
         error_result_indexes = {
-            (index["name"], tuple(index["column_names"])) for index in inspector.get_indexes("errorresult")
+            (index["name"], tuple(index["column_names"]), index["unique"])
+            for index in inspector.get_indexes("errorresult")
         }
 
     assert len(migrated_rows) == len(legacy_failures)
@@ -226,7 +227,7 @@ def test_error_result_provenance_migration_preserves_legacy_rows(
     }
     assert error_result_columns["retry_scheduled"]["nullable"] is False
     assert error_result_indexes == {
-        ("ix_errorresult_org_task_created_at", ("org_id", "task", "created_at")),
+        ("ix_errorresult_org_task_created_at", ("org_id", "task", "created_at"), False),
     }
 
     downgrade = _run_alembic(migration_database_url, "downgrade", _MAINTENANCE_REVISION)
