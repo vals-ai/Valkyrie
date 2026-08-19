@@ -2,7 +2,7 @@
 
 import importlib
 from collections.abc import Generator
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -15,7 +15,6 @@ import tracker.config as config_module
 from main import app
 from tests.utils import TEST_ORG_ID
 from tracker.auth import get_current_org
-from tracker.aws.clients import AWSClientProvider
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
@@ -46,13 +45,6 @@ def setup_app_dependencies(
     monkeypatch.setitem(app.dependency_overrides, get_session, get_test_session)
     test_org = Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME)
     monkeypatch.setitem(app.dependency_overrides, get_current_org, lambda: test_org)
-    sts = Mock()
-    sts.get_caller_identity.return_value = {"Account": "123456789012"}
-
-    def sts_client(_provider: AWSClientProvider) -> Mock:
-        return sts
-
-    monkeypatch.setattr(AWSClientProvider, "sts_client", sts_client)
 
 
 @pytest.fixture

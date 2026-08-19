@@ -22,7 +22,6 @@ from tracker.utils.run_orchestration import (
 
 _TASK_IDS = ["task-1", "task-2"]
 _RUN_AWS_RESOURCES = RunAWSResources(
-    account_id="123456789012",
     region="us-east-1",
     s3_bucket="test-bucket",
     log_group="test-log-group",
@@ -105,7 +104,7 @@ def test_resource_bound_request_reconstruction_supports_either_aws_authority(
     assert access_key_benchmark.managed_start_benchmark_request().harness_config is None
 
     managed_benchmark.arguments = managed_benchmark.arguments.model_copy(update={"sandbox_provider_secret_name": None})
-    with pytest.raises(ValueError, match="Managed runs require a sandbox provider secret name"):
+    with pytest.raises(ValueError, match="Managed execution requires a stored sandbox provider secret name"):
         managed_benchmark.managed_start_benchmark_request()
 
 

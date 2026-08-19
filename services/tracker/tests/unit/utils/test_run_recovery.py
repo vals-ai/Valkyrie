@@ -1329,7 +1329,6 @@ class TestRunRecovery:
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
         benchmark_row.aws_managed = True
         benchmark_row.run_aws_resources = RunAWSResources(
-            account_id="123456789012",
             region="deployment-region",
             s3_bucket="deployment-bucket",
             log_group="deployment-log-group",

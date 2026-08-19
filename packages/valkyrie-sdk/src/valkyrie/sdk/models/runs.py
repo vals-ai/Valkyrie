@@ -53,9 +53,8 @@ class RetryMode(str, Enum):
 
 
 class RunAWSResources(ResponseModel):
-    """AWS resource namespace and locations permanently bound to a run."""
+    """AWS destinations permanently bound to a run."""
 
-    account_id: str
     region: str
     s3_bucket: str
     log_group: str

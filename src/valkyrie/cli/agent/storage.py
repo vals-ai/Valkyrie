@@ -11,7 +11,7 @@ import click
 import yaml
 from tracker import handle_s3_error
 from tracker.aws.models import RunAWSResources
-from tracker.aws.runtime import bind_runtime_to_run, identify_run_aws_resources
+from tracker.aws.runtime import bind_runtime_to_run
 from tracker.aws.s3 import (
     copy_s3_object,
     delete_from_s3,
@@ -202,9 +202,6 @@ async def update_benchmark_agent_version(
     """Overwrite the frozen benchmark agent copy from agents/<name>.zip in S3."""
     runtime = cli_s3.aws_runtime()
     if run_aws_resources is not None:
-        mismatches = run_aws_resources.mismatched_locations(identify_run_aws_resources(runtime))
-        if mismatches:
-            raise S3Error(f"AWS configuration does not match this run: {', '.join(mismatches)}")
         runtime = bind_runtime_to_run(runtime, run_aws_resources)
     source_key = get_contract_s3_key(agent_name)
     dest_key = get_benchmark_contract_s3_key(benchmark_id, agent_name)

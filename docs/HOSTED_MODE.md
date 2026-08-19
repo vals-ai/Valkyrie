@@ -79,9 +79,16 @@ Removing a field that is not present is safe. The Region and bucket remain in th
 
 ### Retry or resume an existing run
 
-Tracker stores the AWS account, Region, S3 bucket, and CloudWatch log group used by each new run. Retry and resume can use managed AWS or access keys when the selected authority reaches those same resources. Tracker rejects a mismatch before changing the run or queueing work.
+Tracker stores the Region, S3 bucket, CloudWatch log group, and log retention used by each new run. Retry and resume select credentials from the current config, then use the run's stored destinations instead of the config's current resource values:
 
-Runs created before resource binding was deployed do not have stored resource identity. These historical runs remain access-key-only. Keep a separate access-key config until they no longer need retry or resume.
+- A config with both access-key fields uses those credentials.
+- A config without access-key fields uses managed AWS when the organization is eligible.
+
+The selected credentials must have permission to use the stored resources. AWS operations return a permission error when they do not. Adding or removing access-key fields changes the authority used for recovery; it does not redirect the run to different resources.
+
+Runs created before resource binding was deployed do not have stored destinations. These historical runs remain access-key-only. Keep a separate access-key config until they no longer need retry or resume.
+
+Before enabling resource-bound recovery in an existing environment, finish or discard any managed runs created by an earlier deployment. They have no stored destinations and cannot be recovered with managed AWS. No migration can infer their original resources safely.
 
 #### Keep an access-key config for historical runs
 

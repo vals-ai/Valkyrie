@@ -44,7 +44,7 @@ from tracker.aws.resolver import (
     resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
 )
-from tracker.aws.runtime import AWSRuntime, identify_run_aws_resources
+from tracker.aws.runtime import AWSRuntime, capture_run_aws_resources
 from tracker.aws.secrets import resolve_secrets
 from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
@@ -563,7 +563,7 @@ async def start_benchmark(
             detail=f"Agent '{request.contract.name}' is not available in the deployment bucket.",
         )
 
-    run_aws_resources = identify_run_aws_resources(aws_runtime)
+    run_aws_resources = capture_run_aws_resources(aws_runtime)
 
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
@@ -1214,15 +1214,15 @@ async def retry_or_resume_benchmark(
         )
 
         if current_aws_managed:
-            prospective_request = benchmark_row.managed_start_benchmark_request(
-                service_headers=effective_service_headers,
-            )
-            if secrets:
-                prospective_contract = prospective_request.contract.model_copy(
-                    update={"secrets": {**prospective_request.contract.secrets, **secrets}}
-                )
-                prospective_request = prospective_request.model_copy(update={"contract": prospective_contract})
             try:
+                prospective_request = benchmark_row.managed_start_benchmark_request(
+                    service_headers=effective_service_headers,
+                )
+                if secrets:
+                    prospective_contract = prospective_request.contract.model_copy(
+                        update={"secrets": {**prospective_request.contract.secrets, **secrets}}
+                    )
+                    prospective_request = prospective_request.model_copy(update={"contract": prospective_contract})
                 validate_managed_execution_request(prospective_request)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc

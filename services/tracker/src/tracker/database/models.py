@@ -414,7 +414,10 @@ class Benchmark(SQLModel, table=True):
         if self.run_aws_resources is None:
             raise ValueError("Runs without stored AWS resources require access-key execution")
         if not self.arguments.sandbox_provider_secret_name:
-            raise ValueError("Managed runs require a sandbox provider secret name")
+            raise ValueError(
+                "Managed execution requires a stored sandbox provider secret name. "
+                "Resume this run with its access-key configuration."
+            )
 
         return StartBenchmarkRequest(
             contract=self.arguments.contract,

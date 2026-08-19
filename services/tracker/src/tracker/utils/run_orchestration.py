@@ -18,7 +18,7 @@ from sqlmodel import Session, col, desc, func, select
 from tracker._lambda import dry_run_lambda, invoke_lambda
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group
 from tracker.aws.resolver import deployment_aws_runtime
-from tracker.aws.runtime import AWSRuntime, bind_runtime_to_run, identify_run_aws_resources
+from tracker.aws.runtime import AWSRuntime, bind_runtime_to_run
 from tracker.aws.secrets import fetch_aws_secret, resolve_secrets
 from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
@@ -382,10 +382,6 @@ def _runtime_for_queued_execution(
         if execution.aws_managed
         else AWSRuntime.from_harness_config(cast(HarnessConfig, execution.request.harness_config))
     )
-    candidate_resources = identify_run_aws_resources(runtime)
-    mismatches = benchmark.run_aws_resources.mismatched_locations(candidate_resources)
-    if mismatches:
-        raise TrackerServiceError(f"Queued AWS resources do not match this run: {', '.join(mismatches)}")
     return bind_runtime_to_run(runtime, benchmark.run_aws_resources)
 
 

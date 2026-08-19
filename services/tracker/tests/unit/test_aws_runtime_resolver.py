@@ -25,7 +25,6 @@ from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmark
 
 _ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
 _OTHER_ORG_ID = UUID("00000000-0000-0000-0000-000000000002")
-_AWS_ACCOUNT_ID = "123456789012"
 
 _COMPLETE_HARNESS_HEADERS = {
     "x-harness-aws-access-key-id": "header-access-key",
@@ -195,7 +194,6 @@ def test_run_without_resource_binding_omits_metadata_links_without_access_keys(
 
 def test_resource_bound_metadata_uses_stored_locations_without_aws_authority() -> None:
     resources = RunAWSResources(
-        account_id=_AWS_ACCOUNT_ID,
         region="run-region",
         s3_bucket="run-bucket",
         log_group="run-log-group",
@@ -215,7 +213,6 @@ def test_resource_bound_metadata_uses_stored_locations_without_aws_authority() -
 def test_resource_bound_run_can_switch_from_access_keys_to_managed(monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_managed_runtime(monkeypatch, submissions_enabled=False)
     resources = RunAWSResources(
-        account_id=_AWS_ACCOUNT_ID,
         region="deployment-region",
         s3_bucket="deployment-bucket",
         log_group="deployment-log-group",
@@ -236,12 +233,11 @@ def test_resource_bound_run_can_switch_from_managed_to_access_keys(monkeypatch: 
     _configure_managed_runtime(monkeypatch)
     headers = {
         **_COMPLETE_HARNESS_HEADERS,
-        "x-harness-aws-default-region": "deployment-region",
-        "x-harness-s3-bucket": "deployment-bucket",
-        "x-harness-log-group": "deployment-log-group",
+        "x-harness-aws-default-region": "local-region",
+        "x-harness-s3-bucket": "local-bucket",
+        "x-harness-log-group": "local-log-group",
     }
     resources = RunAWSResources(
-        account_id=_AWS_ACCOUNT_ID,
         region="deployment-region",
         s3_bucket="deployment-bucket",
         log_group="deployment-log-group",
@@ -256,27 +252,32 @@ def test_resource_bound_run_can_switch_from_managed_to_access_keys(monkeypatch: 
 
     assert runtime.resources.s3_bucket == "deployment-bucket"
     assert isinstance(runtime.clients, ExplicitCredentialsAWSClientProvider)
+    assert runtime.clients.credentials.aws_default_region == "deployment-region"
 
 
-def test_resource_bound_run_rejects_a_different_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resource_bound_run_uses_stored_locations_with_current_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _configure_managed_runtime(monkeypatch)
     resources = RunAWSResources(
-        account_id=_AWS_ACCOUNT_ID,
-        region="deployment-region",
+        region="run-region",
         s3_bucket="original-bucket",
-        log_group="deployment-log-group",
-        log_retention_days=30,
+        log_group="run-log-group",
+        log_retention_days=14,
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        resolve_run_aws_runtime(
-            _request(),
-            run_aws_resources=resources,
-            org_id=_ORG_ID,
-        )
+    runtime = resolve_run_aws_runtime(
+        _request(),
+        run_aws_resources=resources,
+        org_id=_ORG_ID,
+    )
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail == "AWS configuration does not match this run: s3_bucket"
+    assert runtime.resources.region == "run-region"
+    assert runtime.resources.s3_bucket == "original-bucket"
+    assert runtime.resources.log_group == "run-log-group"
+    assert runtime.resources.log_retention_days == 14
+    assert isinstance(runtime.clients, DefaultChainAWSClientProvider)
+    assert runtime.clients.region == "run-region"
 
 
 @pytest.mark.parametrize(
@@ -403,7 +404,6 @@ def test_managed_results_report_capped_presign_expiry(
     _configure_managed_runtime(monkeypatch, submissions_enabled=False)
     example_benchmark_object.aws_managed = True
     example_benchmark_object.run_aws_resources = RunAWSResources(
-        account_id=_AWS_ACCOUNT_ID,
         region="deployment-region",
         s3_bucket="deployment-bucket",
         log_group="deployment-log-group",

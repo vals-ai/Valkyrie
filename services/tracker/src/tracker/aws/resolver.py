@@ -13,7 +13,6 @@ from tracker.aws.runtime import (
     AWSResources,
     AWSRuntime,
     bind_runtime_to_run,
-    identify_run_aws_resources,
     resources_for_run,
 )
 from tracker.types import AWSCredentials, HarnessConfig
@@ -267,16 +266,21 @@ def _bind_resolution_to_run(
     resolution: AWSRuntimeResolution,
     run_aws_resources: RunAWSResources,
 ) -> AWSRuntimeResolution:
-    candidate_resources = identify_run_aws_resources(resolution.runtime)
-    mismatches = run_aws_resources.mismatched_locations(candidate_resources)
-    if mismatches:
-        raise HTTPException(
-            status_code=409,
-            detail=f"AWS configuration does not match this run: {', '.join(mismatches)}",
+    access_key_harness_config = resolution.access_key_harness_config
+    if access_key_harness_config is not None:
+        access_key_harness_config = access_key_harness_config.model_copy(
+            update={
+                "aws": access_key_harness_config.aws.model_copy(
+                    update={"aws_default_region": run_aws_resources.region}
+                ),
+                "s3_bucket": run_aws_resources.s3_bucket,
+                "log_group": run_aws_resources.log_group,
+                "log_retention_policy": run_aws_resources.log_retention_days,
+            }
         )
     return AWSRuntimeResolution(
         runtime=bind_runtime_to_run(resolution.runtime, run_aws_resources),
-        access_key_harness_config=resolution.access_key_harness_config,
+        access_key_harness_config=access_key_harness_config,
     )
 
 

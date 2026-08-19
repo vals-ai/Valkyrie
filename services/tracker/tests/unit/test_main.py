@@ -2064,7 +2064,6 @@ class TestTrackerAPI:
             started_by_email="alice@vals.ai",
             started_by_id="K2abc",
             run_aws_resources=RunAWSResources(
-                account_id="123456789012",
                 region="us-east-1",
                 s3_bucket="run-bucket",
                 log_group="run-logs",

@@ -39,14 +39,9 @@ class AWSRuntime:
         )
 
 
-def identify_run_aws_resources(runtime: AWSRuntime) -> RunAWSResources:
-    """Resolve the physical AWS namespace and locations selected by a runtime."""
-    response = runtime.clients.sts_client().get_caller_identity()
-    account_id = response.get("Account")
-    if not isinstance(account_id, str):
-        raise ValueError("AWS did not return an account ID for the selected credentials")
+def capture_run_aws_resources(runtime: AWSRuntime) -> RunAWSResources:
+    """Capture the AWS destinations selected when a run starts."""
     return RunAWSResources(
-        account_id=account_id,
         region=runtime.resources.region,
         s3_bucket=runtime.resources.s3_bucket,
         log_group=runtime.resources.log_group,
@@ -56,9 +51,14 @@ def identify_run_aws_resources(runtime: AWSRuntime) -> RunAWSResources:
 
 def bind_runtime_to_run(runtime: AWSRuntime, resources: RunAWSResources) -> AWSRuntime:
     """Use a run's canonical resources with the currently selected AWS clients."""
+    clients = (
+        runtime.clients
+        if runtime.resources.region == resources.region
+        else runtime.clients.for_region(resources.region)
+    )
     return AWSRuntime(
         resources=resources_for_run(resources),
-        clients=runtime.clients,
+        clients=clients,
     )
 
 

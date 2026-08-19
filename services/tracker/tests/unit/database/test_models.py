@@ -90,7 +90,6 @@ def test_create_benchmark_table_row_counts_stopped_tasks_as_finished(database_se
 
 def test_run_aws_resources_cannot_change_after_benchmark_insert(database_session: Session) -> None:
     resources = RunAWSResources(
-        account_id="123456789012",
         region="us-east-1",
         s3_bucket="run-bucket",
         log_group="run-logs",

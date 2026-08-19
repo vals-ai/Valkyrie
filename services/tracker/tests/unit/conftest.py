@@ -32,20 +32,7 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 
 # Import the app after configuring the AWS environment.
 from main import app
-from tracker.aws.clients import AWSClientProvider
 from tracker.aws.runtime import AWSRuntime
-
-
-@pytest.fixture(autouse=True)
-def mock_aws_account_identity(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep run-resource identity checks deterministic in unit tests."""
-    sts = Mock()
-    sts.get_caller_identity.return_value = {"Account": "123456789012"}
-
-    def sts_client(_provider: AWSClientProvider) -> Mock:
-        return sts
-
-    monkeypatch.setattr(AWSClientProvider, "sts_client", sts_client)
 
 
 @pytest.fixture

@@ -77,7 +77,6 @@ def test_resource_bound_start_requires_a_compatible_active_release(
     promote_release(database_session, "legacy")
     database_session.commit()
     example_benchmark_object.run_aws_resources = RunAWSResources(
-        account_id="123456789012",
         region="us-east-1",
         s3_bucket="bucket",
         log_group="logs",
@@ -101,7 +100,6 @@ def test_resource_bound_start_accepts_the_resource_bound_protocol(
     promote_release(database_session, release.id)
     database_session.commit()
     example_benchmark_object.run_aws_resources = RunAWSResources(
-        account_id="123456789012",
         region="us-east-1",
         s3_bucket="bucket",
         log_group="logs",

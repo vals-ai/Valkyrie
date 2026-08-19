@@ -32,6 +32,11 @@ class AWSClientProvider(ABC):
         """Return SDK arguments for this credential source."""
         raise NotImplementedError
 
+    @abstractmethod
+    def for_region(self, region: str) -> AWSClientProvider:
+        """Use this credential source for one AWS Region."""
+        raise NotImplementedError
+
     @lru_cache(maxsize=32)
     def _s3_session(self) -> aioboto3.Session:
         return aioboto3.Session(**self._client_kwargs())
@@ -58,10 +63,6 @@ class AWSClientProvider(ABC):
     def lambda_client(self, config: Config | None = None) -> Any:
         return _boto3_client("lambda", config=config, **self._client_kwargs())
 
-    @lru_cache(maxsize=32)
-    def sts_client(self) -> Any:
-        return _boto3_client("sts", **self._client_kwargs())
-
     def maximum_presign_ttl(self, requested_seconds: int) -> int:
         return requested_seconds
 
@@ -80,6 +81,9 @@ class ExplicitCredentialsAWSClientProvider(AWSClientProvider):
             "region_name": self.credentials.aws_default_region,
         }
 
+    def for_region(self, region: str) -> AWSClientProvider:
+        return ExplicitCredentialsAWSClientProvider(self.credentials.model_copy(update={"aws_default_region": region}))
+
 
 @dataclass(frozen=True)
 class DefaultChainAWSClientProvider(AWSClientProvider):
@@ -89,6 +93,9 @@ class DefaultChainAWSClientProvider(AWSClientProvider):
 
     def _client_kwargs(self) -> dict[str, Any]:
         return {"region_name": self.region}
+
+    def for_region(self, region: str) -> AWSClientProvider:
+        return DefaultChainAWSClientProvider(region)
 
     def maximum_presign_ttl(self, requested_seconds: int) -> int:
         return min(requested_seconds, _DEFAULT_CHAIN_MAXIMUM_PRESIGN_TTL_SECONDS)
