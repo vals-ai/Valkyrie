@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence, cast
 from uuid import UUID
 
+import logfire
 import sentry_sdk
 from benchmark_service import SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
@@ -73,18 +74,26 @@ def _capture_run_error(
     operation: str,
     cause_code: str | None = None,
 ) -> None:
-    logger.error(
-        "Run execution failed",
-        exc_info=(type(exc), exc, exc.__traceback__),
-        extra={
-            "benchmark_id": str(benchmark_id),
-            "producer": producer,
-            "operation": operation,
-            "error_type": type(exc).__name__,
-            "cause_code": cause_code or "",
-        },
-    )
-    sentry_sdk.capture_exception(exc)
+    with logfire.span(
+        "run.error",
+        benchmark_id=str(benchmark_id),
+        producer=producer,
+        operation=operation,
+        error_type=type(exc).__name__,
+        cause_code=cause_code or "",
+    ):
+        logger.error(
+            "Run execution failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+            extra={
+                "benchmark_id": str(benchmark_id),
+                "producer": producer,
+                "operation": operation,
+                "error_type": type(exc).__name__,
+                "cause_code": cause_code or "",
+            },
+        )
+        sentry_sdk.capture_exception(exc)
 
 
 def set_benchmark_final_status(

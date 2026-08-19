@@ -135,17 +135,18 @@ def _observe_task_retry(attempt: SandboxRecoveryAttempt, exc: BaseException) -> 
     """Emit the retry telemetry the Tenacity before_sleep hook owned before recovery
     moved into the benchmark-service client."""
     error_class = type(exc).__name__
-    logger.warning(
-        "retry.before_sleep",
-        extra={
-            "metric": _TASK_RETRY_METRIC,
-            "fn": "_process_task_attempt",
-            "attempt": attempt.number,
-            "idle_for": _SANDBOX_RETRY_DELAY_SECONDS,
-            "error_class": error_class,
-        },
-    )
-    incr(f"{_TASK_RETRY_METRIC}.retry", tags={"error_class": error_class})
+    with logfire.span("task.retry", attempt=attempt.number, error_class=error_class):
+        logger.warning(
+            "retry.before_sleep",
+            extra={
+                "metric": _TASK_RETRY_METRIC,
+                "fn": "_process_task_attempt",
+                "attempt": attempt.number,
+                "idle_for": _SANDBOX_RETRY_DELAY_SECONDS,
+                "error_class": error_class,
+            },
+        )
+        incr(f"{_TASK_RETRY_METRIC}.retry", tags={"error_class": error_class})
 
 
 class TrackedTaskStatus(str, Enum):
@@ -650,11 +651,16 @@ async def _process_task_attempt(
             try:
                 completed.result()
             except Exception as error:
-                logger.exception(
-                    "Failed to write task output to CloudWatch",
-                    extra={"benchmark_id": str(benchmark_id), "task_id": task_id},
-                )
-                sentry_sdk.capture_exception(error)
+                with logfire.span(
+                    "task.output_write.error",
+                    benchmark_id=str(benchmark_id),
+                    task_id=task_id,
+                ):
+                    logger.exception(
+                        "Failed to write task output to CloudWatch",
+                        extra={"benchmark_id": str(benchmark_id), "task_id": task_id},
+                    )
+                    sentry_sdk.capture_exception(error)
 
         write.add_done_callback(handle_completion)
 
@@ -701,19 +707,28 @@ async def _process_task_attempt(
         operation: str,
         cause_code: str | None = None,
     ) -> dict[str, dict[str, Any] | None]:
-        logger.error(
-            "Task execution failed",
-            exc_info=(type(exc), exc, exc.__traceback__),
-            extra={
-                "benchmark_id": str(benchmark_id),
-                "task_id": task_id,
-                "producer": producer,
-                "operation": operation,
-                "error_type": type(exc).__name__,
-                "cause_code": cause_code or "",
-            },
-        )
-        sentry_sdk.capture_exception(exc)
+        with logfire.span(
+            "task.error",
+            benchmark_id=str(benchmark_id),
+            task_id=task_id,
+            producer=producer,
+            operation=operation,
+            error_type=type(exc).__name__,
+            cause_code=cause_code or "",
+        ):
+            logger.error(
+                "Task execution failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+                extra={
+                    "benchmark_id": str(benchmark_id),
+                    "task_id": task_id,
+                    "producer": producer,
+                    "operation": operation,
+                    "error_type": type(exc).__name__,
+                    "cause_code": cause_code or "",
+                },
+            )
+            sentry_sdk.capture_exception(exc)
         with Session(bind=engine) as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
             commit_task_error(
