@@ -191,17 +191,6 @@ async def reset_to_in_progress_status(
         else:
             new_task_ids = [tid for tid in rerun_task_ids if tid not in existing_by_task_id]
 
-        # Allow re-running the end of the benchmark without running any tasks
-        if not existing_rows and not new_task_ids:
-            return []
-
-        # Verify the task ids are still valid before priming to resume
-        # Raises if any task ids are invalid
-        all_requested_task_ids = [task.task_id for task in existing_rows] + new_task_ids
-        verify_response = await benchmark_service.verify_task_ids(
-            task_ids=all_requested_task_ids, slice_str=None, dataset=benchmark_row.arguments.dataset
-        )
-
         old_evaluation = benchmark_row.final_evaluation
         if old_evaluation is not None:
             benchmark_row.final_evaluation = None
@@ -212,6 +201,17 @@ async def reset_to_in_progress_status(
             benchmark_row.status = BenchmarkStatus.IN_PROGRESS
         benchmark_row.finished_at = None
         session.add(benchmark_row)
+
+        # Allow re-running the end of the benchmark without running any tasks
+        if not existing_rows and not new_task_ids:
+            return []
+
+        # Verify the task ids are still valid before priming to resume
+        # Raises if any task ids are invalid
+        all_requested_task_ids = [task.task_id for task in existing_rows] + new_task_ids
+        verify_response = await benchmark_service.verify_task_ids(
+            task_ids=all_requested_task_ids, slice_str=None, dataset=benchmark_row.arguments.dataset
+        )
 
         for task in existing_rows:
             task.status = (

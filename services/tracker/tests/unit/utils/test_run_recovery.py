@@ -816,6 +816,42 @@ class TestRunRecovery:
         }
 
     @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_resume_with_no_runnable_tasks_reactivates_terminal_run(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+    ) -> None:
+        """Re-running only the end of a terminal run must leave it IN_PROGRESS.
+
+        A run whose tasks all FINISHED but whose final score failed has nothing to
+        re-run; clearing finished_at while the status is still terminal violates
+        benchmark_finished_requires_timestamp.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.ERROR
+        benchmark_row.finished_at = datetime.now(ZoneInfo("UTC"))
+        database_session.add(benchmark_row)
+        database_session.add(
+            Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+        )
+        database_session.commit()
+
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=database_session,
+            benchmark_service=benchmark_row.benchmark_service(),
+            retry=False,
+            retry_mode=RetryMode.AUTO,
+            rerun_task_ids=[],
+            org=self._test_org,
+        )
+        database_session.commit()
+
+        assert verified_task_ids == []
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        assert benchmark_row.finished_at is None
+
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_error_retry_with_task_ids_only_resets_requested_tasks(
         self,
         example_benchmark_object: Benchmark,
