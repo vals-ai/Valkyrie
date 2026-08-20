@@ -629,6 +629,44 @@ async def test_broker_payload_dispatch_id_reaches_dispatch_owner(
     assert captured["executor_dispatch_id"] == "dispatch-1"
 
 
+@pytest.mark.asyncio
+async def test_launch_executor_records_cancellation_before_context_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def cancel_dispatch(*_args: object, **_kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    cancellation_context: dict[str, object] = {}
+
+    def record_cancellation(telemetry_context: object) -> None:
+        cancellation_context.update(
+            {
+                "telemetry_context": telemetry_context,
+                "benchmark_id": host_observability.benchmark_id_var.get(),
+                "dispatch_id": host_observability.dispatch_id_var.get(),
+            }
+        )
+
+    monkeypatch.setattr(supervisor_module, "run_executor_dispatch", cancel_dispatch)
+    monkeypatch.setattr(supervisor_module, "record_dispatch_cancellation", record_cancellation)
+
+    with pytest.raises(asyncio.CancelledError):
+        await supervisor_module.launch_executor.original_func(
+            start_benchmark_request_json={},
+            benchmark_id_str="benchmark-1",
+            verified_task_ids=[],
+            executor_dispatch_id="dispatch-1",
+            executor_release_id="release-v2",
+            executor_artifact_uri="s3://artifacts/executors/v2.pex",
+            executor_artifact_digest="0" * 64,
+            executor_protocol_version="1",
+        )
+
+    assert cancellation_context["benchmark_id"] == "benchmark-1"
+    assert cancellation_context["dispatch_id"] == "dispatch-1"
+    assert host_observability.benchmark_id_var.get() == ""
+
+
 async def test_stream_message_is_deleted_only_after_successful_ack(monkeypatch: pytest.MonkeyPatch) -> None:
     commands: list[tuple[object, ...]] = []
     monkeypatch.setattr(

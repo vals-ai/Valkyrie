@@ -36,6 +36,7 @@ from services.executor_host.observability import (
     capture_dispatch_error,
     configure_observability,
     dispatch_observability_context,
+    record_dispatch_cancellation,
     record_dispatch_completion,
 )
 
@@ -842,6 +843,7 @@ async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
             )
             record_dispatch_completion(child_telemetry_context)
         except asyncio.CancelledError:
+            record_dispatch_cancellation(child_telemetry_context)
             raise
         except BaseException as error:
             capture_dispatch_error(error, child_telemetry_context)

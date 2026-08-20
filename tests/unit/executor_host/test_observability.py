@@ -100,3 +100,29 @@ def test_dispatch_context_correlates_cloudwatch_logs_and_child_trace(monkeypatch
             "baggage": "sentry-child-baggage",
         },
     }
+
+
+def test_dispatch_error_logs_before_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+    span = Mock()
+
+    @contextmanager
+    def record_transaction(_transaction: object) -> Generator[Mock, None, None]:
+        yield span
+
+    def record_log(*_args: object, **_kwargs: object) -> None:
+        events.append("logged")
+
+    def record_capture(_error: BaseException) -> None:
+        events.append("captured")
+
+    monkeypatch.setattr(sentry_sdk, "continue_trace", Mock(return_value=Mock()))
+    monkeypatch.setattr(sentry_sdk, "start_transaction", record_transaction)
+    monkeypatch.setattr(observability.logger, "error", record_log)
+    monkeypatch.setattr(sentry_sdk, "capture_exception", record_capture)
+    error = RuntimeError("executor failed")
+
+    observability.capture_dispatch_error(error, {"request_id": "request-abc", "trace_headers": {}})
+
+    span.set_status.assert_called_once_with(observability.SPANSTATUS.INTERNAL_ERROR)
+    assert events == ["logged", "captured"]

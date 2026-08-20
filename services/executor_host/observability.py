@@ -21,6 +21,7 @@ request_id_var = contextvars.ContextVar("request_id", default="")
 benchmark_id_var = contextvars.ContextVar("benchmark_id", default="")
 dispatch_id_var = contextvars.ContextVar("executor_dispatch_id", default="")
 release_id_var = contextvars.ContextVar("executor_release_id", default="")
+logger = logging.getLogger(__name__)
 
 
 def _context_fields() -> dict[str, str]:
@@ -146,6 +147,18 @@ def record_dispatch_completion(telemetry_context: ExecutorTelemetryContext) -> N
         pass
 
 
+def record_dispatch_cancellation(telemetry_context: ExecutorTelemetryContext) -> None:
+    """Record a cancelled host dispatch without creating an error issue."""
+    transaction = sentry_sdk.continue_trace(
+        telemetry_context["trace_headers"],
+        op="queue.process",
+        name="executor_host.dispatch.cancelled",
+    )
+    with sentry_sdk.start_transaction(transaction) as span:
+        span.set_status(SPANSTATUS.CANCELLED)
+        logger.info("Executor dispatch cancelled")
+
+
 def capture_dispatch_error(error: BaseException, telemetry_context: ExecutorTelemetryContext) -> None:
     """Capture a host dispatch error on a bounded trace segment."""
     transaction = sentry_sdk.continue_trace(
@@ -155,4 +168,8 @@ def capture_dispatch_error(error: BaseException, telemetry_context: ExecutorTele
     )
     with sentry_sdk.start_transaction(transaction) as span:
         span.set_status(SPANSTATUS.INTERNAL_ERROR)
+        logger.error(
+            "Executor dispatch failed",
+            exc_info=(type(error), error, error.__traceback__),
+        )
         sentry_sdk.capture_exception(error)
