@@ -53,9 +53,11 @@ class ManagedAWSRuntimeConfig:
 
         for org_id in self.deployment_role_org_ids:
             try:
-                UUID(org_id.strip())
+                parsed_org_id = UUID(org_id.strip())
             except ValueError:
                 raise ValueError(f"deployment_role_org_ids contains an invalid UUID: {org_id!r}") from None
+            if org_id != str(parsed_org_id):
+                raise ValueError(f"deployment_role_org_ids must contain canonical UUIDs: {org_id!r}")
 
         for field_name, prefixes in (
             ("tracker_secret_name_prefixes", self.tracker_secret_name_prefixes),
@@ -104,6 +106,8 @@ PROD_CONFIG = StageConfig(
     managed_aws=ManagedAWSRuntimeConfig(
         benchmark_log_group_prefix="/valkyrie/benchmarks",
         benchmark_log_retention_days=365,
+        submissions_enabled=True,
+        executor_all_secret_access=True,
     ),
 )
 
@@ -154,7 +158,7 @@ def config_for(stage: Stage) -> StageConfig:
     except KeyError:
         raise ValueError(f"unknown stage {stage.name!r}; expected {PROD!r}, {DEV!r}, or 'release-test'") from None
 
-    if stage.name != DEV:
+    if stage.name not in {DEV, PROD}:
         return config
 
     deployment_role_org_ids = _csv_environment("AWS_DEPLOYMENT_ROLE_ORG_IDS")
@@ -164,9 +168,9 @@ def config_for(stage: Stage) -> StageConfig:
         tracker_secret_name_prefixes = tracker_secret_name_prefixes or (_OFFLINE_SYNTH_SECRET_PREFIX,)
     if config.managed_aws.submissions_enabled:
         if not deployment_role_org_ids:
-            raise ValueError("Development deployments require AWS_DEPLOYMENT_ROLE_ORG_IDS.")
+            raise ValueError(f"{stage.name} deployments require AWS_DEPLOYMENT_ROLE_ORG_IDS.")
         if not tracker_secret_name_prefixes:
-            raise ValueError("Development deployments require AWS_TRACKER_SECRET_NAME_PREFIXES.")
+            raise ValueError(f"{stage.name} deployments require AWS_TRACKER_SECRET_NAME_PREFIXES.")
     return replace(
         config,
         managed_aws=replace(
