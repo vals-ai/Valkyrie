@@ -259,11 +259,7 @@ def resolve_run_aws_runtime_and_access_key_config(
     if not header_inspection.present:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "This run was started with access-key AWS and requires its legacy AWS configuration. "
-                "Use the Dashboard Legacy recovery control or an approved recovery agent. "
-                "Do not add static AWS credentials to your managed config."
-            ),
+            detail="This run was started with access-key AWS and requires its legacy AWS configuration.",
         )
     if header_inspection.config is None:
         assert header_inspection.first_missing_key is not None

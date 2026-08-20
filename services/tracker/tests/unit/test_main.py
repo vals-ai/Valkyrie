@@ -2313,9 +2313,5 @@ class TestTrackerAPI:
 
         assert response.status_code == 400
         assert response.json() == {
-            "detail": (
-                "This run was started with access-key AWS and requires its legacy AWS configuration. "
-                "Use the Dashboard Legacy recovery control or an approved recovery agent. "
-                "Do not add static AWS credentials to your managed config."
-            )
+            "detail": "This run was started with access-key AWS and requires its legacy AWS configuration."
         }
