@@ -25,6 +25,15 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("core_maintenance_required != 'true'", production_core)
         self.assertIn("database_maintenance_required != 'true'", production_core)
         self.assertIn("SCOPE=core", production_core)
+        self.assertIn(
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}",
+            production_core,
+        )
+        self.assertIn(
+            "AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}",
+            production_core,
+        )
+        self.assertNotIn("AWS_EXECUTOR_SECRET_NAME_PREFIXES", production_core)
         self.assertNotIn("services/executor_artifact/build.py", production_core)
         self.assertNotIn("executor_release/main.py", production_core)
         self.assertNotIn("maintenance-operation", production_core)
@@ -115,6 +124,15 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertNotIn("AWS_EXECUTOR_SECRET_NAME_PREFIXES", dev_executor)
         self.assertIn("needs: [classify-deployment, deploy-production-core]", prod_executor)
         self.assertIn("environment: prod", prod_executor)
+        self.assertIn(
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}",
+            prod_executor,
+        )
+        self.assertIn(
+            "AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}",
+            prod_executor,
+        )
+        self.assertNotIn("AWS_EXECUTOR_SECRET_NAME_PREFIXES", prod_executor)
         self.assertNotIn("production-executor-approval", workflow)
         self.assertNotIn("production-release", workflow)
         self.assertEqual(
