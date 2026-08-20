@@ -205,15 +205,15 @@ def _task_change_requires_maintenance(base: _HostResource, head: _HostResource) 
     changed_properties = _changed_properties(base.properties, head.properties) - _TASK_ROLLING_PROPERTIES - {"Tags"}
     if changed_properties == {"ContainerDefinitions"}:
         return not _containers_differ_only_in_environment(
-            base.properties.get("ContainerDefinitions"),
-            head.properties.get("ContainerDefinitions"),
+            base.properties["ContainerDefinitions"],
+            head.properties["ContainerDefinitions"],
         )
     return bool(changed_properties)
 
 
 def _containers_differ_only_in_environment(base: object, head: object) -> bool:
-    base_containers = _container_definitions(base, revision="base")
-    head_containers = _container_definitions(head, revision="head")
+    base_containers = _container_definitions(base)
+    head_containers = _container_definitions(head)
     if len(base_containers) != len(head_containers):
         return False
     return all(
@@ -222,11 +222,11 @@ def _containers_differ_only_in_environment(base: object, head: object) -> bool:
     )
 
 
-def _container_definitions(value: object, *, revision: str) -> list[Mapping[str, object]]:
+def _container_definitions(value: object) -> list[Mapping[str, object]]:
     if not isinstance(value, list) or not all(
         isinstance(container, Mapping) for container in cast(list[object], value)
     ):
-        raise TemplateClassificationError(f"{revision} ExecutorHost ContainerDefinitions must be a list of objects")
+        raise TemplateClassificationError("ExecutorHost ContainerDefinitions must be a list of objects")
     return cast(list[Mapping[str, object]], value)
 
 
