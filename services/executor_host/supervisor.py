@@ -307,6 +307,7 @@ class PostgresExecutorDispatchStore:
                   AND dispatch.executor_artifact_digest = %s
                   AND dispatch.executor_protocol_version = %s
                   AND dispatch.status = 'QUEUED'
+                  AND dispatch.claim_deadline_at > CURRENT_TIMESTAMP
                 RETURNING dispatch.id
                 """,
                 (

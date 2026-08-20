@@ -22,6 +22,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.executor.release_control import create_executor_dispatch, pin_benchmark_to_release, register_release
+from tracker.executor.dispatch_control import reconcile_expired_dispatches
 
 
 @pytest.mark.asyncio
@@ -68,6 +69,14 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
         dispatch_id=uuid4(),
     )
     postgres_session.add_all([first_dispatch, sibling_dispatch])
+    expired_dispatch = create_executor_dispatch(
+        benchmark.id,
+        release,
+        ExecutorDispatchKind.RESUME,
+        dispatch_id=uuid4(),
+    )
+    expired_dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(minutes=1)
+    postgres_session.add(expired_dispatch)
     newer_task.started_at = sibling_dispatch.created_at + timedelta(seconds=1)
     postgres_session.commit()
 
@@ -93,6 +102,9 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
         }
     )
 
+    assert await store.claim(str(expired_dispatch.id), str(benchmark.id), artifact) is None
+    assert reconcile_expired_dispatches(postgres_session) == 1
+    postgres_session.commit()
     first_authority = await store.claim(str(first_dispatch.id), str(benchmark.id), artifact)
     assert first_authority is not None
     assert await store.claim(str(first_dispatch.id), str(benchmark.id), artifact) is None

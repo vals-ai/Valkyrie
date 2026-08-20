@@ -313,6 +313,7 @@ async def test_postgres_claim_is_status_fenced_and_returns_authority(
     assert "FROM benchmark" in statement
     assert "benchmark.status = 'IN_PROGRESS'" in statement
     assert "dispatch.status = 'QUEUED'" in statement
+    assert "dispatch.claim_deadline_at > CURRENT_TIMESTAMP" in statement
     assert "SET status = 'RUNNING'" in statement
     assert "started_at = CURRENT_TIMESTAMP" in statement
     assert parameters[1:3] == ("dispatch-1", "benchmark-1")

@@ -213,9 +213,11 @@ def record_dispatch_failure(
     error_type: str,
     cause_code: str | None = None,
     failure_reason: str | None = None,
+    dispatch_status: ExecutorDispatchStatus = ExecutorDispatchStatus.RUNNING,
     only_if_lease_expired: bool = False,
+    only_if_claim_deadline_expired: bool = False,
 ) -> bool:
-    """Record a dispatch failure without overwriting work admitted by a newer dispatch.
+    """Record a dispatch failure without overwriting newer admitted work.
 
     Admission timestamps selected tasks before creating the dispatch, so its creation time
     is the durable upper bound for task executions owned by that dispatch.
@@ -231,10 +233,12 @@ def record_dispatch_failure(
         select(ExecutorDispatch)
         .where(ExecutorDispatch.id == dispatch_id)
         .where(ExecutorDispatch.benchmark_id == benchmark.id)
-        .where(ExecutorDispatch.status == ExecutorDispatchStatus.RUNNING)
+        .where(ExecutorDispatch.status == dispatch_status)
     )
     if only_if_lease_expired:
         dispatch_query = dispatch_query.where(ExecutorDispatch.lease_expires_at <= func.current_timestamp())
+    if only_if_claim_deadline_expired:
+        dispatch_query = dispatch_query.where(ExecutorDispatch.claim_deadline_at <= func.current_timestamp())
     dispatch = session.exec(dispatch_query.with_for_update()).one_or_none()
     if dispatch is None:
         return False
@@ -268,33 +272,47 @@ def record_dispatch_failure(
 
 
 def reconcile_expired_dispatches(session: Session) -> int:
-    """Fail running dispatches whose database-time lease was not renewed."""
-    expired_dispatch_ids = session.exec(
+    """Fail running or queued dispatches whose database-time owner window expired."""
+    expired_running_ids = session.exec(
         select(ExecutorDispatch.id)
         .where(ExecutorDispatch.status == ExecutorDispatchStatus.RUNNING)
         .where(ExecutorDispatch.lease_expires_at <= func.current_timestamp())
         .order_by(col(ExecutorDispatch.lease_expires_at), col(ExecutorDispatch.id))
     ).all()
+    expired_queued_ids = session.exec(
+        select(ExecutorDispatch.id)
+        .where(ExecutorDispatch.status == ExecutorDispatchStatus.QUEUED)
+        .where(ExecutorDispatch.claim_deadline_at <= func.current_timestamp())
+        .order_by(col(ExecutorDispatch.claim_deadline_at), col(ExecutorDispatch.id))
+    ).all()
     recovered_count = 0
-    for dispatch_id in expired_dispatch_ids:
+    for dispatch_id in (*expired_running_ids, *expired_queued_ids):
         dispatch = session.get(ExecutorDispatch, dispatch_id)
         if dispatch is None:
             continue
         benchmark = session.get(Benchmark, dispatch.benchmark_id)
         if benchmark is None:
             continue
+        is_running = dispatch.status == ExecutorDispatchStatus.RUNNING
+        failure_reason = "LEASE_EXPIRED" if is_running else "CLAIM_DEADLINE_EXPIRED"
         if record_dispatch_failure(
             session,
             benchmark=benchmark,
             dispatch_id=dispatch.id,
             task_ids=dispatch.assigned_task_ids or [],
-            error_message="Executor dispatch lease expired",
+            error_message=(
+                "Executor dispatch lease expired"
+                if is_running
+                else "Executor dispatch claim deadline expired"
+            ),
             producer="executor_dispatch",
             operation="dispatch_reconciliation",
             error_type="ExecutorDispatchLeaseExpired",
-            cause_code="LEASE_EXPIRED",
-            failure_reason="LEASE_EXPIRED",
-            only_if_lease_expired=True,
+            cause_code=failure_reason,
+            failure_reason=failure_reason,
+            dispatch_status=dispatch.status,
+            only_if_lease_expired=is_running,
+            only_if_claim_deadline_expired=not is_running,
         ):
             recovered_count += 1
     return recovered_count

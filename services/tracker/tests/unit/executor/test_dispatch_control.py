@@ -454,6 +454,43 @@ def test_fresh_heartbeat_wins_expiry_reconciliation(
     assert dispatch.status == ExecutorDispatchStatus.RUNNING
 
 
+def test_expired_queued_dispatch_is_failed_before_it_can_block_completion(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    release = _release("active")
+    register_release(database_session, release)
+    pin_benchmark_to_release(example_benchmark_object, release)
+    dispatch = create_executor_dispatch(
+        example_benchmark_object.id,
+        release,
+        ExecutorDispatchKind.RETRY,
+        dispatch_id=uuid4(),
+        task_ids=["task-1"],
+    )
+    dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(minutes=1)
+    task = Task(
+        org_id=example_benchmark_object.org_id,
+        benchmark=example_benchmark_object.id,
+        task_id="task-1",
+        status=TaskStatus.PENDING,
+        started_at=dispatch.created_at - timedelta(seconds=1),
+    )
+    database_session.add_all([example_benchmark_object, dispatch, task])
+    database_session.commit()
+
+    assert reconcile_expired_dispatches(database_session) == 1
+    database_session.commit()
+    database_session.refresh(example_benchmark_object)
+    database_session.refresh(dispatch)
+    database_session.refresh(task)
+
+    assert example_benchmark_object.status == BenchmarkStatus.ERROR
+    assert dispatch.status == ExecutorDispatchStatus.FAILED
+    assert dispatch.failure_reason == "CLAIM_DEADLINE_EXPIRED"
+    assert task.status == TaskStatus.ERROR
+
+
 def test_terminal_recovery_terminalizes_active_dispatches(
     database_session: Session,
     example_benchmark_object: Benchmark,
