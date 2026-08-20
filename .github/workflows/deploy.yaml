@@ -167,6 +167,8 @@ jobs:
       contents: read
       id-token: write
     env:
+      AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}
+      AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}
       AWS_REGION: us-east-1
       PRODUCTION_ACCOUNT_ID: "613431292675"
 
@@ -571,6 +573,8 @@ jobs:
       contents: read
       id-token: write
     env:
+      AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}
+      AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}
       AWS_REGION: us-east-1
       EXECUTOR_RELEASE_LAUNCH_PARAMETER: /valkyrie/prod/executor-release/launch-config
       PRODUCTION_ACCOUNT_ID: "613431292675"

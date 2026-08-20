@@ -33,29 +33,33 @@ Environment with the `AWS_REGION=us-east-1` variable and the `DEV_ACCOUNT_ID`,
 `AWS_DEPLOY_ROLE_ARN`, `DESCOPE_PROJECT_ID`, and
 `DESCOPE_MANAGEMENT_KEY_SECRET_NAME` secrets (the last one names an
 account-local Secrets Manager secret holding the Descope management key).
-Managed AWS execution also requires these dev Environment secrets:
+Managed AWS execution also requires these secrets in each enabled stage's
+protected GitHub Environment. The `dev` and `prod` environments hold their own
+values:
 
 - `AWS_DEPLOYMENT_ROLE_ORG_IDS` -- comma-separated organization UUIDs allowed
   to submit managed runs
 - `AWS_TRACKER_SECRET_NAME_PREFIXES` -- comma-separated Secrets Manager name
   prefixes the Tracker may resolve for benchmark-service authentication
 
-The dev ExecutorHost task role can read every Secrets Manager secret in the dev
-account and Region. Production and release-test do not receive this access.
+The ExecutorHost task roles can read every Secrets Manager secret in their own
+account and Region. Release-test does not receive this access.
 
 To enable Sentry in dev, also set the `SENTRY_DSN_SECRET_NAME` secret to the
 name of an account-local Secrets Manager secret containing the DSN. Production
 requires `SENTRY_DSN_SECRET_NAME`, and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`
 whenever `AUTH_REQUIRED` is `true`. The dev Environment holds every dev
 deployment input as an Environment secret except `AWS_REGION`, which stays a
-variable. The production jobs read repository-level secrets; the
-`SANDBOX_CLEANUP_ENABLED` and `SANDBOX_CLEANUP_PROVIDER` toggles stay
-variables.
+variable. Production reads its managed AWS inventory from the `prod`
+Environment and retains the existing repository-level deployment secrets. The
+`SANDBOX_CLEANUP_ENABLED` and `SANDBOX_CLEANUP_PROVIDER` toggles stay variables.
 
-Before production executor activation, configure the protected `prod` GitHub
-Environment used by both production deploy jobs. Both AWS accounts must already
-have the account-owned `token.actions.githubusercontent.com` OIDC provider with
-the `sts.amazonaws.com` audience. The stacks import that provider and create
+Before production activation, configure the protected `prod` GitHub
+Environment with `AWS_DEPLOYMENT_ROLE_ORG_IDS` and
+`AWS_TRACKER_SECRET_NAME_PREFIXES`. Both production deploy jobs use that
+Environment. Both AWS accounts must already have the account-owned
+`token.actions.githubusercontent.com` OIDC provider with the
+`sts.amazonaws.com` audience. The stacks import that provider and create
 separate environment-bound executor release roles; they do not create a fallback
 provider.
 
@@ -111,12 +115,15 @@ export AWS_DEPLOYMENT_ROLE_ORG_IDS="00000000-0000-0000-0000-000000000001"
 export AWS_TRACKER_SECRET_NAME_PREFIXES="benchmark-services/"
 ```
 
-   In GitHub, the corresponding values are under **Settings → Environments →
-   dev → Environment secrets**. GitHub does not reveal stored secret values, so
-   an administrator must obtain the approved values from the deployment owner.
+   Use the target stage's values. Production also requires its existing
+   production deployment inputs, including `SENTRY_DSN_SECRET_NAME`. In GitHub,
+   the managed AWS values are under **Settings → Environments → dev or prod →
+   Environment secrets**. GitHub does not reveal stored secret values, so an
+   administrator must obtain the approved values from the deployment owner.
 
-   **Done when** -- All five variables print as non-empty when checked locally;
-   do not print their values into shared logs.
+   **Done when** -- The target account and every stage-required deployment
+   variable are non-empty when checked locally; do not print their values into
+   shared logs.
 
 2. Plan the intended scope.
 
@@ -127,13 +134,18 @@ export AWS_TRACKER_SECRET_NAME_PREFIXES="benchmark-services/"
 
 make plan STAGE=dev SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
+
+make plan STAGE=prod SCOPE=all AWS_REGION=us-east-1 \
+  PROFILE=vals-prod-admin
 ```
 
    Console alternative: run **Actions → Deploy to AWS → Run workflow** on
-   `dev`, choose `plan`, and select the intended scope.
+   `dev`, choose `plan`, and select the intended scope. Production plans are
+   CLI-only because the manual workflow deliberately accepts only the `dev`
+   branch.
 
-   **Done when** -- The plan targets the expected dev account and contains only
-   the intended stack changes.
+   **Done when** -- The plan targets the expected account and contains only the
+   intended stack changes.
 
 3. Deploy the approved scope only when break-glass access is authorized.
 
@@ -144,6 +156,9 @@ make plan STAGE=dev SCOPE=all AWS_REGION=us-east-1 \
 
 make deploy STAGE=dev SCOPE=shared AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
+
+make deploy STAGE=prod SCOPE=shared AWS_REGION=us-east-1 \
+  PROFILE=vals-prod-admin
 ```
 
    This step is CLI-only because the manual GitHub workflow intentionally does

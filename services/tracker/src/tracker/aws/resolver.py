@@ -254,7 +254,18 @@ def resolve_run_aws_runtime_and_access_key_config(
     """Resolve AWS authority and retain any access-key harness configuration."""
     if aws_managed:
         return AWSRuntimeResolution(_http_deployment_runtime(org_id), None)
-    harness_config = fetch_harness_config(request)
+
+    header_inspection = inspect_harness_headers(request)
+    if not header_inspection.present:
+        raise HTTPException(
+            status_code=400,
+            detail="This run was started with access-key AWS and requires its legacy AWS configuration.",
+        )
+    if header_inspection.config is None:
+        assert header_inspection.first_missing_key is not None
+        _raise_missing_header(header_inspection.first_missing_key)
+
+    harness_config = header_inspection.config
     return AWSRuntimeResolution(AWSRuntime.from_harness_config(harness_config), harness_config)
 
 

@@ -2301,16 +2301,17 @@ class TestTrackerAPI:
         # None of the three cases should have reached Sentry
         assert captured == []
 
-    def test_fetch_benchmark_returns_400_when_harness_headers_missing(
+    def test_fetch_access_key_run_without_headers_explains_legacy_recovery(
         self,
         database_session: Session,
         example_benchmark_object: Benchmark,
     ) -> None:
-        """Missing X-Harness-* headers should return 400, not 500 KeyError."""
         database_session.add(example_benchmark_object)
         database_session.commit()
 
         response = client.get("/fetch-benchmark", params={"benchmark_id": str(example_benchmark_object.id)})
 
         assert response.status_code == 400
-        assert "Missing harness config header" in response.json()["detail"]
+        assert response.json() == {
+            "detail": "This run was started with access-key AWS and requires its legacy AWS configuration."
+        }
