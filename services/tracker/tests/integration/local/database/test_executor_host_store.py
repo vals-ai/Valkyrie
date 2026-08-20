@@ -100,6 +100,13 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     assert sibling_authority is not None
     assert await store.is_current(first_authority)
     assert await store.is_current(sibling_authority)
+    postgres_session.expire_all()
+    claimed_dispatch = postgres_session.get(type(first_dispatch), first_dispatch.id)
+    assert claimed_dispatch is not None
+    assert claimed_dispatch.started_at is not None
+    assert claimed_dispatch.heartbeat_at is not None
+    assert claimed_dispatch.lease_expires_at is not None
+    assert await store.heartbeat(sibling_authority)
 
     assert await store.finish(first_authority)
     assert not await store.is_current(first_authority)
@@ -131,3 +138,4 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     assert persisted_first_dispatch.status == ExecutorDispatchStatus.FINISHED
     assert persisted_sibling_dispatch is not None
     assert persisted_sibling_dispatch.status == ExecutorDispatchStatus.FAILED
+    assert persisted_sibling_dispatch.failure_reason == "EXECUTOR_FAILED"

@@ -5,7 +5,7 @@ from enum import Enum
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import update
+from sqlalchemy import func, update
 from sqlmodel import Session, col, select
 
 from executor_protocol import MANAGED_EXECUTION_PROTOCOL_VERSION
@@ -61,6 +61,7 @@ def admit_start_dispatch(
     *,
     benchmark: Benchmark,
     dispatch_id: UUID,
+    task_ids: list[str] | None = None,
 ) -> ExecutorDispatch:
     """Select the active release and persist one start dispatch."""
     with session.no_autoflush:
@@ -73,6 +74,7 @@ def admit_start_dispatch(
         release,
         ExecutorDispatchKind.START,
         dispatch_id=dispatch_id,
+        task_ids=task_ids,
     )
     session.add(dispatch)
     session.flush()
@@ -86,6 +88,7 @@ def admit_recovery_dispatch(
     pre_action_status: BenchmarkStatus,
     dispatch_id: UUID,
     kind: ExecutorDispatchKind,
+    task_ids: list[str] | None = None,
 ) -> ExecutorDispatch:
     """Persist additive in-progress work or replace a terminal execution."""
     with session.no_autoflush:
@@ -106,6 +109,7 @@ def admit_recovery_dispatch(
         release,
         kind,
         dispatch_id=dispatch_id,
+        task_ids=task_ids,
     )
     session.add(dispatch)
     session.flush()
@@ -208,19 +212,30 @@ def record_dispatch_failure(
     operation: str,
     error_type: str,
     cause_code: str | None = None,
+    failure_reason: str | None = None,
+    only_if_lease_expired: bool = False,
 ) -> bool:
     """Record a dispatch failure without overwriting work admitted by a newer dispatch.
 
     Admission timestamps selected tasks before creating the dispatch, so its creation time
     is the durable upper bound for task executions owned by that dispatch.
     """
-    dispatch = session.exec(
+    benchmark = session.exec(
+        select(Benchmark)
+        .where(Benchmark.id == benchmark.id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    ).one()
+
+    dispatch_query = (
         select(ExecutorDispatch)
         .where(ExecutorDispatch.id == dispatch_id)
         .where(ExecutorDispatch.benchmark_id == benchmark.id)
         .where(ExecutorDispatch.status == ExecutorDispatchStatus.RUNNING)
-        .with_for_update()
-    ).one_or_none()
+    )
+    if only_if_lease_expired:
+        dispatch_query = dispatch_query.where(ExecutorDispatch.lease_expires_at <= func.current_timestamp())
+    dispatch = session.exec(dispatch_query.with_for_update()).one_or_none()
     if dispatch is None:
         return False
 
@@ -239,16 +254,50 @@ def record_dispatch_failure(
         cause_code=cause_code,
         finished_at=now,
     )
-    if sibling_active:
-        dispatch.status = ExecutorDispatchStatus.FAILED
-        dispatch.finished_at = now
-        session.add(dispatch)
-    else:
+    dispatch.status = ExecutorDispatchStatus.FAILED
+    dispatch.finished_at = now
+    if failure_reason is not None:
+        dispatch.failure_reason = failure_reason
+    session.add(dispatch)
+    if not sibling_active and benchmark.status == BenchmarkStatus.IN_PROGRESS:
         benchmark.status = BenchmarkStatus.ERROR
         benchmark.finished_at = now
         benchmark.error_message = error_message
         session.add(benchmark)
     return True
+
+
+def reconcile_expired_dispatches(session: Session) -> int:
+    """Fail running dispatches whose database-time lease was not renewed."""
+    expired_dispatch_ids = session.exec(
+        select(ExecutorDispatch.id)
+        .where(ExecutorDispatch.status == ExecutorDispatchStatus.RUNNING)
+        .where(ExecutorDispatch.lease_expires_at <= func.current_timestamp())
+        .order_by(col(ExecutorDispatch.lease_expires_at), col(ExecutorDispatch.id))
+    ).all()
+    recovered_count = 0
+    for dispatch_id in expired_dispatch_ids:
+        dispatch = session.get(ExecutorDispatch, dispatch_id)
+        if dispatch is None:
+            continue
+        benchmark = session.get(Benchmark, dispatch.benchmark_id)
+        if benchmark is None:
+            continue
+        if record_dispatch_failure(
+            session,
+            benchmark=benchmark,
+            dispatch_id=dispatch.id,
+            task_ids=dispatch.assigned_task_ids or [],
+            error_message="Executor dispatch lease expired",
+            producer="executor_dispatch",
+            operation="dispatch_reconciliation",
+            error_type="ExecutorDispatchLeaseExpired",
+            cause_code="LEASE_EXPIRED",
+            failure_reason="LEASE_EXPIRED",
+            only_if_lease_expired=True,
+        ):
+            recovered_count += 1
+    return recovered_count
 
 
 def resolve_enqueue_failure(

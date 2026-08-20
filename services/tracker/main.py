@@ -98,6 +98,7 @@ from tracker.exceptions import TrackerServiceError
 from executor_protocol import EXECUTOR_TASK_NAME, executor_task_signature
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
+from tracker.executor.dispatch_recovery import AutomaticDispatchRecovery
 from tracker.executor.release_retirement import AutomaticReleaseRetirement
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
@@ -162,10 +163,13 @@ def _operation_id(route: APIRoute) -> str:
 @asynccontextmanager
 async def tracker_lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     retirement = AutomaticReleaseRetirement()
+    dispatch_recovery = AutomaticDispatchRecovery()
     retirement.start()
+    dispatch_recovery.start()
     try:
         yield
     finally:
+        dispatch_recovery.stop()
         retirement.stop()
 
 
@@ -616,6 +620,7 @@ async def start_benchmark(
             session,
             benchmark=benchmark_row,
             dispatch_id=dispatch_id,
+            task_ids=verify_response.task_ids,
         )
         executor_payload = _process_benchmark_kwargs(benchmark_row, request, verify_response.task_ids)
         session.commit()
@@ -1271,6 +1276,7 @@ async def retry_or_resume_benchmark(
             pre_action_status=pre_action_status,
             dispatch_id=dispatch_id,
             kind=dispatch_kind,
+            task_ids=verified_task_ids,
         )
         executor_payload = _process_benchmark_kwargs(benchmark_row, resume_request, verified_task_ids)
         session.commit()

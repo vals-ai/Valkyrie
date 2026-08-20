@@ -11,6 +11,13 @@ MANAGED_EXECUTION_PROTOCOL_VERSION = "2"
 DEFAULT_STABLE_QUEUE_NAME = "valkyrie-stable"
 DEFAULT_EXECUTOR_RELEASE_PREFIX = "releases"
 
+# A dispatch owner renews this lease from the executor host. The Tracker
+# reconciler runs every minute, so a dead host is recovered within roughly six
+# minutes while a healthy dispatch has ample time between heartbeats.
+DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS = 120
+DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS = 300
+DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS = 30
+
 
 class ExecutorDispatchStatus(str, Enum):
     QUEUED = "QUEUED"
