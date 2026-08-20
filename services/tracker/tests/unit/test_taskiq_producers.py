@@ -1,5 +1,5 @@
 import json
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -9,6 +9,7 @@ from benchmark_service.schemas import VerifyTaskIdsResponse
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
+import main
 from main import app
 from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tests.conftest import TEST_ORG_ID
@@ -22,6 +23,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.aws.runtime import AWSRuntime
 from tracker.executor.release_control import promote_release
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 
@@ -190,6 +192,73 @@ def test_managed_start_and_resume_emit_credential_free_v2(
     assert benchmark.status == BenchmarkStatus.STOPPED
     assert reset_to_in_progress.await_count == 1
     assert payloads == []
+
+
+async def test_resolving_a_contract_from_s3_attests_its_inference_settings(
+    contract: AgentContractRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rebuilding from the bundle is what makes the settings trustworthy."""
+    monkeypatch.setattr("main.download_from_s3", AsyncMock(return_value=b"zip-bytes"))
+    monkeypatch.setattr(
+        "main.get_contract_from_zip_bytes",
+        lambda *_args, **_kwargs: contract.model_copy(update={"kwargs": {"variant": "max"}}),
+    )
+
+    resolved = await main._resolve_contract_from_s3(_start_request(contract, None), cast(AWSRuntime, None))
+
+    assert resolved.inference_settings_attested is True
+    assert resolved.kwargs == {"variant": "max"}
+
+
+def test_start_clears_a_caller_asserted_attestation(
+    contract: AgentContractRequest,
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller cannot mark its own inference settings tracker-attested.
+
+    The flag only means "the tracker rebuilt this contract from the published
+    bundle", which happens when no commands are supplied. A caller that sends
+    commands keeps its own kwargs, so the flag must not survive the request.
+    """
+    _configure_managed_runtime(monkeypatch)
+    _promote_test_release(database_session)
+    payloads = _capture_task_payloads(monkeypatch)
+
+    async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+        return VerifyTaskIdsResponse(task_ids=["task-1"])
+
+    async def agent_exists(*_args: Any, **_kwargs: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
+    monkeypatch.setattr("main.s3_object_exists", agent_exists)
+    monkeypatch.setattr("main.copy_agent_to_benchmark", AsyncMock(return_value=True))
+    resolve_from_s3 = AsyncMock()
+    monkeypatch.setattr("main._resolve_contract_from_s3", resolve_from_s3)
+
+    claimed = contract.model_copy(
+        update={
+            "install_cmd": "echo install",
+            "run_cmd": "echo run",
+            "kwargs": {"variant": "caller-variant"},
+            "inference_settings_attested": True,
+        }
+    )
+
+    response = client.post("/start-benchmark", json=_start_request(claimed, None).model_dump(mode="json"))
+
+    assert response.status_code == 200
+    resolve_from_s3.assert_not_awaited()
+    assert len(payloads) == 1
+    started_contract = payloads[0]["execution_context_json"]["start_benchmark_request"]["contract"]
+    assert started_contract["inference_settings_attested"] is False
+    assert started_contract["kwargs"] == {"variant": "caller-variant"}
+
+    benchmark = database_session.get(Benchmark, UUID(response.json()["benchmark_id"]))
+    assert benchmark is not None
+    _stop_benchmark(benchmark, database_session)
 
 
 def test_managed_start_rejects_aws_authority_before_persistence(
