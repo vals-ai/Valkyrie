@@ -61,6 +61,7 @@ class TestProcessTaskEnvironment:
                 "model": "provider/model",
                 "kwargs": {"variant": "xhigh"},
                 "secrets": {"UNRELATED_SECRET": "secret-name"},
+                "inference_settings_attested": True,
             }
         )
         run_starter = RequestIdentity(
@@ -122,6 +123,52 @@ class TestProcessTaskEnvironment:
         assert env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
 
     @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_process_task_withholds_unattested_inference_settings(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        """A caller-supplied contract must not reach setup as trusted settings.
+
+        The tracker only rebuilds a contract from the published bundle when the
+        caller sends no commands. A caller that sends its own commands also
+        chooses its own kwargs, so those values are never exported and a
+        benchmark that requires them fails closed.
+        """
+        contract = contract.model_copy(
+            update={
+                "model": "caller/model",
+                "kwargs": {"variant": "caller-variant"},
+                "install_cmd": "echo install",
+                "run_cmd": "echo run",
+            }
+        )
+        assert contract.inference_settings_attested is False
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        captured_env_vars: list[dict[str, str]] = []
+
+        monkeypatch.setattr(utils_module, "resolve_secrets", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr(
+            utils_module,
+            "create_sandbox",
+            partial(_capture_sandbox_environment, captured_env_vars),
+        )
+
+        await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+
+        assert len(captured_env_vars) == 1
+        env_vars = captured_env_vars[0]
+        assert "VALKYRIE_AGENT_MODEL" not in env_vars
+        assert "VALKYRIE_AGENT_VARIANT" not in env_vars
+
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_task_omits_identity_email_when_unavailable(
         self,
         contract: AgentContractRequest,
@@ -130,6 +177,8 @@ class TestProcessTaskEnvironment:
         harness_config: HarnessConfig,
         aws_runtime: AWSRuntime,
     ) -> None:
+        # Attested, so the empty-model case still covers the exported value.
+        contract = contract.model_copy(update={"inference_settings_attested": True})
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,

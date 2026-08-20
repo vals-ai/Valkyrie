@@ -152,6 +152,11 @@ class AgentContractRequest(BaseModel):
     egress_allowlist: list[str] = []
     secrets: dict[str, str] = {}
     kwargs: dict[str, str] = {}
+    # True only once the tracker has rebuilt this contract from the published
+    # agent bundle, so model/kwargs are validated against the bundle's schema
+    # and match the command it rendered. Callers cannot assert it: the start
+    # endpoint clears whatever arrives on the request.
+    inference_settings_attested: bool = False
 
     @field_validator("output_artifacts")
     @classmethod
