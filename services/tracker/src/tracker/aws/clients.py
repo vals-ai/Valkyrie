@@ -15,6 +15,12 @@ if TYPE_CHECKING:
     from tracker.types import AWSCredentials
 
 _HIGH_CONCURRENCY_CLIENT_CONFIG = Config(max_pool_connections=200)
+_CLOUDWATCH_LOGS_CLIENT_CONFIG = Config(
+    max_pool_connections=200,
+    connect_timeout=5,
+    read_timeout=5,
+    retries={"mode": "standard", "total_max_attempts": 2},
+)
 _S3_CLIENT_CONFIG = Config(max_pool_connections=200, retries={"mode": "standard"})
 _DEFAULT_CHAIN_MAXIMUM_PRESIGN_TTL_SECONDS = 3600
 
@@ -46,7 +52,7 @@ class AWSClientProvider(ABC):
     def cloudwatch_logs_client(self) -> Any:
         return _boto3_client(
             "logs",
-            config=_HIGH_CONCURRENCY_CLIENT_CONFIG,
+            config=_CLOUDWATCH_LOGS_CLIENT_CONFIG,
             **self._client_kwargs(),
         )
 

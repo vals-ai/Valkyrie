@@ -4,6 +4,7 @@ Run: uv run pytest tests/unit/utils/test_benchmark_service_failures.py
 """
 
 import asyncio
+import threading
 import time
 from typing import Any, Never
 from unittest.mock import Mock
@@ -199,6 +200,8 @@ class TestBenchmarkServiceFailures:
         expected_log = f"[ERROR] {expected_error}"
         logged_messages: list[str] = []
         expected_log_written = asyncio.Event()
+        log_write_started = asyncio.Event()
+        release_log_write = threading.Event()
         event_loop = asyncio.get_running_loop()
 
         async def _mock_install_agent_dependencies(*_args: Any, **_kwargs: Any) -> None:
@@ -215,6 +218,8 @@ class TestBenchmarkServiceFailures:
             raise AssertionError(f"unexpected command: {command}")
 
         def _mock_write_benchmark_log_event(_stream_key: str, message: str, *_args: Any, **_kwargs: Any) -> None:
+            event_loop.call_soon_threadsafe(log_write_started.set)
+            assert release_log_write.wait(timeout=5)
             logged_messages.append(message)
             if expected_log in message:
                 event_loop.call_soon_threadsafe(expected_log_written.set)
@@ -229,10 +234,14 @@ class TestBenchmarkServiceFailures:
         monkeypatch.setattr(sandbox_module, "_exec", _mock_exec)
         monkeypatch.setattr(utils_module, "write_benchmark_log_event", _mock_write_benchmark_log_event)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
-        # Log writes are dispatched to an executor and never awaited, so the flush carrying the
-        # error can land after run_process_task returns. Wait for that flush, not just the first.
-        await asyncio.wait_for(expected_log_written.wait(), timeout=10)
+        task = asyncio.create_task(
+            run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        )
+        await asyncio.wait_for(log_write_started.wait(), timeout=5)
+        assert not task.done()
+        release_log_write.set()
+        result = await task
+        assert expected_log_written.is_set()
 
         assert result == {"task_0": None}
 
@@ -315,6 +324,84 @@ class TestBenchmarkServiceFailures:
         assert task_row.status == TaskStatus.ERROR
         assert self._latest_task_error(database_session, task_row) == "ConnectTimeout"
         assert any("[ERROR] ConnectTimeout" in message for message in logged_messages)
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_cloudwatch_write_failure_is_captured_before_task_returns(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        cloudwatch_error = RuntimeError("cloudwatch unavailable")
+        capture_exception = Mock()
+
+        async def _mock_retrieve_task_timeout(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            raise httpx.ConnectTimeout("benchmark unavailable")
+
+        def _fail_write(*_args: Any, **_kwargs: Any) -> None:
+            raise cloudwatch_error
+
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_timeout)
+        monkeypatch.setattr(utils_module, "write_benchmark_log_event", _fail_write)
+        monkeypatch.setattr(utils_module.sentry_sdk, "capture_exception", capture_exception)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+
+        assert result == {"task_0": None}
+        captured_errors = [call.args[0] for call in capture_exception.call_args_list]
+        assert cloudwatch_error in captured_errors
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.parametrize("cancel_during_flush", [False, True])
+    async def test_cloudwatch_write_timeout_does_not_delay_task_completion(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+        cancel_during_flush: bool,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        write_started = threading.Event()
+        release_write = threading.Event()
+        write_completed = threading.Event()
+
+        async def _mock_retrieve_task_timeout(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            raise httpx.ConnectTimeout("benchmark unavailable")
+
+        def _blocked_write(*_args: Any, **_kwargs: Any) -> None:
+            write_started.set()
+            release_write.wait()
+            write_completed.set()
+
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_timeout)
+        monkeypatch.setattr(utils_module, "write_benchmark_log_event", _blocked_write)
+        monkeypatch.setattr(utils_module, "_CLOUDWATCH_LOG_FLUSH_TIMEOUT_SECONDS", 0.01)
+        process_task = asyncio.create_task(
+            run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        )
+
+        try:
+            assert await asyncio.to_thread(write_started.wait, 1)
+
+            if cancel_during_flush:
+                process_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(process_task, timeout=1)
+            else:
+                result = await asyncio.wait_for(process_task, timeout=1)
+                assert result == {"task_0": None}
+            assert not write_completed.is_set()
+        finally:
+            release_write.set()
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_benchmark_blocks_external_internal_custom_destination(

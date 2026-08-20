@@ -17,7 +17,6 @@ from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
 from tracker._lambda import dry_run_lambda, invoke_lambda
-from tracker.aws.cloudwatch_logs import create_benchmark_log_group
 from tracker.aws.resolver import deployment_aws_runtime
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.secrets import fetch_aws_secret, resolve_secrets
@@ -395,7 +394,6 @@ def _preflight_managed_aws(
     runtime: AWSRuntime,
 ) -> SandboxProviderConfig:
     """Verify executor-owned AWS access before starting sandbox work."""
-    create_benchmark_log_group(str(execution.benchmark_id), runtime)
     request = execution.request
     provider_secret_name = request.sandbox_provider_secret_name
     if provider_secret_name is None:
@@ -510,9 +508,6 @@ async def process_benchmark(
                 clients=aws_runtime.clients,
                 intervals=start_benchmark_request.webhook_intervals,
             )
-
-        if not execution.aws_managed:
-            create_benchmark_log_group(str(benchmark_id), aws_runtime)
 
         # Create tasks inside of the database for each task id
         with Session(bind=engine) as session:

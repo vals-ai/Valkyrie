@@ -12,6 +12,8 @@ from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.exceptions import CloudWatchError
 
 _created_streams: set[str] = set()
+_created_log_groups: set[str] = set()
+_MAX_LOG_EVENT_MESSAGE_BYTES = 1_048_576 - 26
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
@@ -26,6 +28,19 @@ def _sanitize_log_stream_name(task_id: str) -> str:
     forbidden characters so logging degrades gracefully instead of failing.
     """
     return re.sub(r"[:*]", "_", task_id)
+
+
+def _split_log_message(message: str) -> list[str]:
+    encoded = message.encode("utf-8")
+    chunks: list[str] = []
+    start = 0
+    while start < len(encoded):
+        end = min(start + _MAX_LOG_EVENT_MESSAGE_BYTES, len(encoded))
+        while end < len(encoded) and encoded[end] & 0b1100_0000 == 0b1000_0000:
+            end -= 1
+        chunks.append(encoded[start:end].decode("utf-8"))
+        start = end
+    return chunks
 
 
 def handle_cloudwatch_error(message: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
@@ -119,6 +134,10 @@ def write_benchmark_log_event(stream_key: str, message: str, runtime: AWSRuntime
     log_group_name = f"{runtime.resources.log_group}/{benchmark_id}"
     stream_name = _sanitize_log_stream_name(task_id)
 
+    if benchmark_id not in _created_log_groups:
+        create_benchmark_log_group(benchmark_id, runtime)
+        _created_log_groups.add(benchmark_id)
+
     if stream_key not in _created_streams:
         try:
             client.create_log_stream(logGroupName=log_group_name, logStreamName=stream_name)  # pyright: ignore[reportUnknownMemberType]
@@ -129,11 +148,12 @@ def write_benchmark_log_event(stream_key: str, message: str, runtime: AWSRuntime
             raise CloudWatchError(f"Failed to create log stream '{stream_name}': {e}") from e
         _created_streams.add(stream_key)
 
-    try:
-        client.put_log_events(  # pyright: ignore[reportUnknownMemberType]
-            logGroupName=log_group_name,
-            logStreamName=stream_name,
-            logEvents=[{"timestamp": int(time.time() * 1000), "message": message}],
-        )
-    except (ClientError, BotoCoreError) as e:
-        raise CloudWatchError(f"Failed to put log event: {e}") from e
+    for chunk in _split_log_message(message):
+        try:
+            client.put_log_events(  # pyright: ignore[reportUnknownMemberType]
+                logGroupName=log_group_name,
+                logStreamName=stream_name,
+                logEvents=[{"timestamp": int(time.time() * 1000), "message": chunk}],
+            )
+        except (ClientError, BotoCoreError) as e:
+            raise CloudWatchError(f"Failed to put log event: {e}") from e
