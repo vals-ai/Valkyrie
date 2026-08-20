@@ -444,8 +444,7 @@ async def _resolve_contract_from_s3(request: StartBenchmarkRequest, aws_runtime:
     resolved = get_contract_from_zip_bytes(request.contract.name, zip_bytes, agent_config)
     if request.contract.secrets:
         resolved.secrets = {**resolved.secrets, **request.contract.secrets}
-    # Rebuilt from the bundle: kwargs were validated against its schema and the
-    # rendered command came from the same values.
+    # Kwargs were validated against the bundle's schema and rendered its command.
     resolved.inference_settings_attested = True
     return resolved
 

@@ -216,12 +216,7 @@ def test_start_clears_a_caller_asserted_attestation(
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A caller cannot mark its own inference settings tracker-attested.
-
-    The flag only means "the tracker rebuilt this contract from the published
-    bundle", which happens when no commands are supplied. A caller that sends
-    commands keeps its own kwargs, so the flag must not survive the request.
-    """
+    """A caller cannot mark its own inference settings tracker-attested."""
     _configure_managed_runtime(monkeypatch)
     _promote_test_release(database_session)
     payloads = _capture_task_payloads(monkeypatch)

@@ -76,21 +76,7 @@ class _DependencySetupRecoveryState:
 
 
 def _attested_inference_settings(contract: AgentContractRequest) -> dict[str, str]:
-    """Return the inference settings trusted benchmark setup may rely on.
-
-    Benchmark setup runs before the agent command and may need the selected
-    model and reasoning variant to authorize an immutable inference
-    configuration, rather than trusting a player-owned adapter to report it.
-    Exporting them separately from the rendered command also spares services
-    from parsing shell text.
-
-    Only a contract the tracker rebuilt from the published agent bundle is
-    exported. That contract's kwargs were validated against the bundle's schema
-    and produced the command that will run, so the two agree. A caller-supplied
-    contract carries caller-chosen values, so nothing is exported and a
-    benchmark that requires these settings fails closed instead of authorizing
-    an unvalidated configuration.
-    """
+    """Settings benchmark setup may trust; empty unless the tracker resolved them."""
     if not contract.inference_settings_attested:
         return {}
     return {

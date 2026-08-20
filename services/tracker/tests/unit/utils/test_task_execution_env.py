@@ -131,13 +131,7 @@ class TestProcessTaskEnvironment:
         harness_config: HarnessConfig,
         aws_runtime: AWSRuntime,
     ) -> None:
-        """A caller-supplied contract must not reach setup as trusted settings.
-
-        The tracker only rebuilds a contract from the published bundle when the
-        caller sends no commands. A caller that sends its own commands also
-        chooses its own kwargs, so those values are never exported and a
-        benchmark that requires them fails closed.
-        """
+        """A caller-supplied contract must not reach setup as trusted settings."""
         contract = contract.model_copy(
             update={
                 "model": "caller/model",
@@ -177,7 +171,6 @@ class TestProcessTaskEnvironment:
         harness_config: HarnessConfig,
         aws_runtime: AWSRuntime,
     ) -> None:
-        # Attested, so the empty-model case still covers the exported value.
         contract = contract.model_copy(update={"inference_settings_attested": True})
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
