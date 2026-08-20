@@ -10,6 +10,7 @@ _TASK_PATH_SUFFIX = "/ExecutorHostTaskDef/Resource"
 _SERVICE_PATH_SUFFIX = "/ExecutorHostService/Service"
 _TASK_TYPE = "AWS::ECS::TaskDefinition"
 _TASK_ROLLING_PROPERTIES = frozenset({"Cpu", "Memory"})
+_CONTAINER_ROLLING_KEYS = frozenset({"Environment"})
 _SERVICE_TYPE = "AWS::ECS::Service"
 _SERVICE_REDEPLOY_PROPERTIES = frozenset(
     {
@@ -202,7 +203,37 @@ def _task_change_requires_maintenance(base: _HostResource, head: _HostResource) 
         for key in base.properties.keys() | head.properties.keys()
         if key != "Tags" and base.properties.get(key) != head.properties.get(key)
     }
+    if "ContainerDefinitions" in changed_properties and _container_change_is_environment_only(
+        base.properties.get("ContainerDefinitions"),
+        head.properties.get("ContainerDefinitions"),
+    ):
+        changed_properties.discard("ContainerDefinitions")
     return bool(changed_properties - _TASK_ROLLING_PROPERTIES)
+
+
+def _container_change_is_environment_only(base: object, head: object) -> bool:
+    """Report whether the same containers differ only in plain environment variables."""
+    if not isinstance(base, list) or not isinstance(head, list):
+        return False
+    base_containers = cast(list[object], base)
+    head_containers = cast(list[object], head)
+    if len(base_containers) != len(head_containers):
+        return False
+    for raw_base_container, raw_head_container in zip(base_containers, head_containers):
+        if not isinstance(raw_base_container, Mapping) or not isinstance(raw_head_container, Mapping):
+            return False
+        base_container = cast(Mapping[str, object], raw_base_container)
+        head_container = cast(Mapping[str, object], raw_head_container)
+        if base_container.get("Name") != head_container.get("Name"):
+            return False
+        changed_keys = {
+            key
+            for key in base_container.keys() | head_container.keys()
+            if base_container.get(key) != head_container.get(key)
+        }
+        if changed_keys - _CONTAINER_ROLLING_KEYS:
+            return False
+    return True
 
 
 def _service_change_reasons(base: _HostResource, head: _HostResource) -> set[str]:
