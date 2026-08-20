@@ -1,3 +1,8 @@
+"""Tests for ExecutorHost dispatch supervision.
+
+Run: uv run pytest tests/unit/executor_host/test_supervisor.py
+"""
+
 from __future__ import annotations
 
 import asyncio

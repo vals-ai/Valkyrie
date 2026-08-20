@@ -135,24 +135,18 @@ class TestSentrySetup:
         monkeypatch.setattr(sentry_sdk, "init", Mock(side_effect=RuntimeError("bad dsn")))
         monkeypatch.setattr(sentry_module.logger, "warning", fake_warning)
 
-        sentry_module.init_sentry("valkyrie-worker", environment="test")
+        sentry_module.init_sentry("valkyrie-worker", environment="production")
 
         assert len(warnings) == 1
         assert warnings[0][0] == "Failed to initialize Sentry: %s: %s"
         assert warnings[0][1][:1] == ("RuntimeError",)
         assert str(warnings[0][1][1]) == "bad dsn"
 
-    def test_init_sentry_rejects_invalid_production_configuration(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("SENTRY_DSN", "https://public@example.com/1")
-        monkeypatch.setattr(sentry_sdk, "init", Mock(side_effect=RuntimeError("bad dsn")))
-
-        with pytest.raises(RuntimeError, match="Check the production DSN secret") as exc_info:
-            sentry_module.init_sentry("valkyrie-worker", environment="production")
-
-        assert exc_info.value.__cause__ is None
-
-    def test_init_sentry_requires_production_dsn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_init_sentry_skips_missing_production_dsn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        init_mock = Mock()
         monkeypatch.delenv("SENTRY_DSN", raising=False)
+        monkeypatch.setattr(sentry_sdk, "init", init_mock)
 
-        with pytest.raises(RuntimeError, match="Check the production DSN secret"):
-            sentry_module.init_sentry("valkyrie-worker", environment="production")
+        sentry_module.init_sentry("valkyrie-worker", environment="production")
+
+        init_mock.assert_not_called()

@@ -357,6 +357,53 @@ class TestBenchmarkServiceFailures:
         assert cloudwatch_error in captured_errors
 
     @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.parametrize("cancel_during_flush", [False, True])
+    async def test_cloudwatch_write_timeout_does_not_delay_task_completion(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+        cancel_during_flush: bool,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        write_started = threading.Event()
+        release_write = threading.Event()
+        write_completed = threading.Event()
+
+        async def _mock_retrieve_task_timeout(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            raise httpx.ConnectTimeout("benchmark unavailable")
+
+        def _blocked_write(*_args: Any, **_kwargs: Any) -> None:
+            write_started.set()
+            release_write.wait()
+            write_completed.set()
+
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_timeout)
+        monkeypatch.setattr(utils_module, "write_benchmark_log_event", _blocked_write)
+        monkeypatch.setattr(utils_module, "_CLOUDWATCH_LOG_FLUSH_TIMEOUT_SECONDS", 0.01)
+        process_task = asyncio.create_task(
+            run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        )
+
+        try:
+            assert await asyncio.to_thread(write_started.wait, 1)
+
+            if cancel_during_flush:
+                process_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(process_task, timeout=1)
+            else:
+                result = await asyncio.wait_for(process_task, timeout=1)
+                assert result == {"task_0": None}
+            assert not write_completed.is_set()
+        finally:
+            release_write.set()
+
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_benchmark_blocks_external_internal_custom_destination(
         self,
         contract: AgentContractRequest,

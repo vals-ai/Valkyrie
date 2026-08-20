@@ -16,6 +16,9 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 from sentry_sdk.integrations.opentelemetry import SentryPropagator, SentrySpanProcessor
 
 from tracker.logging.context import get_context_tags
+from tracker.logging.logger import get_logger
+
+logger = get_logger(__name__)
 
 _EXCLUDED_SPAN_NAMES = frozenset(
     {
@@ -26,12 +29,49 @@ _EXCLUDED_SPAN_NAMES = frozenset(
 
 
 @contextmanager
+def observability_span(name: str, **attributes: Any) -> Generator[None, None, None]:
+    """Create a span without allowing telemetry failures to escape."""
+    span_manager = None
+    span_entered = False
+    try:
+        span_manager = logfire.span(name, **attributes)
+        span_manager.__enter__()
+        span_entered = True
+    except Exception as error:
+        logger.warning("Failed to start observability span %s: %s: %s", name, type(error).__name__, error)
+
+    try:
+        yield
+    except BaseException as error:
+        if span_manager is not None and span_entered:
+            try:
+                span_manager.__exit__(type(error), error, error.__traceback__)
+            except Exception as telemetry_error:
+                logger.warning(
+                    "Failed to finish observability span %s: %s: %s",
+                    name,
+                    type(telemetry_error).__name__,
+                    telemetry_error,
+                )
+        raise
+    else:
+        if span_manager is not None and span_entered:
+            try:
+                span_manager.__exit__(None, None, None)
+            except Exception as error:
+                logger.warning("Failed to finish observability span %s: %s: %s", name, type(error).__name__, error)
+
+
+@contextmanager
 def error_span(name: str, exc: BaseException, **attributes: Any) -> Generator[None, None, None]:
     """Create a bounded error span for a handled exception."""
-    with logfire.span(name, **attributes):
+    with observability_span(name, **attributes):
         span = trace.get_current_span()
-        span.record_exception(exc)
-        span.set_status(Status(StatusCode.ERROR))
+        try:
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR))
+        except Exception as error:
+            logger.warning("Failed to annotate observability span %s: %s: %s", name, type(error).__name__, error)
         yield
 
 

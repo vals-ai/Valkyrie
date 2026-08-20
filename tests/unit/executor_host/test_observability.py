@@ -15,6 +15,7 @@ from unittest.mock import Mock
 import pytest
 import sentry_sdk
 
+from executor_protocol import ExecutorTelemetryContext
 from services.executor_host import observability
 
 
@@ -44,23 +45,82 @@ def test_dispatch_transaction_finishes_before_executor_work(monkeypatch: pytest.
     assert events == ["transaction-started", "transaction-finished", "executor-running"]
 
 
-def test_invalid_production_sentry_configuration_fails_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dispatch_acceptance_telemetry_failure_preserves_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    telemetry_context: ExecutorTelemetryContext = {
+        "request_id": "request-abc",
+        "trace_headers": {"traceparent": "parent-trace"},
+    }
+    monkeypatch.setattr(sentry_sdk, "continue_trace", Mock(side_effect=RuntimeError("sentry unavailable")))
+    monkeypatch.setattr(observability.logger, "warning", Mock())
+
+    with observability.dispatch_observability_context(
+        "benchmark-123",
+        "dispatch-456",
+        "release-789",
+        telemetry_context,
+    ) as child_context:
+        assert observability.benchmark_id_var.get() == "benchmark-123"
+
+    assert child_context == telemetry_context
+
+
+def test_dispatch_scope_is_released_when_tag_binding_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    scope = Mock()
+    scope.set_tags.side_effect = RuntimeError("sentry unavailable")
+    scope_manager = Mock()
+    scope_manager.__enter__ = Mock(return_value=scope)
+    scope_manager.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr(sentry_sdk, "new_scope", Mock(return_value=scope_manager))
+    monkeypatch.setattr(observability.logger, "warning", Mock())
+
+    with observability.dispatch_observability_context(
+        "benchmark-123",
+        "dispatch-456",
+        "release-789",
+        {"request_id": "request-abc", "trace_headers": {}},
+    ):
+        pass
+
+    scope_manager.__exit__.assert_called_once_with(None, None, None)
+
+
+def test_terminal_sentry_failure_does_not_escape(monkeypatch: pytest.MonkeyPatch) -> None:
+    telemetry_context: ExecutorTelemetryContext = {"request_id": "request-abc", "trace_headers": {}}
+    monkeypatch.setattr(sentry_sdk, "new_scope", Mock(side_effect=RuntimeError("sentry unavailable")))
+    monkeypatch.setattr(observability.logger, "info", Mock())
+    monkeypatch.setattr(observability.logger, "error", Mock())
+    warning = Mock()
+    monkeypatch.setattr(observability.logger, "warning", warning)
+
+    observability.record_dispatch_completion(telemetry_context)
+    observability.record_dispatch_cancellation(telemetry_context)
+    observability.capture_dispatch_error(RuntimeError("dispatch failed"), telemetry_context)
+
+    assert warning.call_count == 3
+
+
+def test_invalid_production_sentry_configuration_logs_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    error = RuntimeError("bad dsn")
+    warning = Mock()
     monkeypatch.setenv("SENTRY_DSN", "https://public@example.com/1")
     monkeypatch.setenv("ENVIRONMENT", "production")
-    monkeypatch.setattr(sentry_sdk, "init", Mock(side_effect=RuntimeError("bad dsn")))
+    monkeypatch.setattr(sentry_sdk, "init", Mock(side_effect=error))
+    monkeypatch.setattr(observability.logger, "warning", warning)
 
-    with pytest.raises(RuntimeError, match="Check the production DSN secret") as exc_info:
-        observability.configure_observability()
+    observability.configure_observability()
 
-    assert exc_info.value.__cause__ is None
+    warning.assert_called_once_with("Failed to initialize Sentry: %s: %s", "RuntimeError", error)
 
 
-def test_missing_production_sentry_configuration_fails_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_production_sentry_configuration_skips_sentry(monkeypatch: pytest.MonkeyPatch) -> None:
+    init_mock = Mock()
     monkeypatch.delenv("SENTRY_DSN", raising=False)
     monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setattr(sentry_sdk, "init", init_mock)
 
-    with pytest.raises(RuntimeError, match="Check the production DSN secret"):
-        observability.configure_observability()
+    observability.configure_observability()
+
+    init_mock.assert_not_called()
 
 
 def test_dispatch_context_correlates_cloudwatch_logs_and_child_trace(monkeypatch: pytest.MonkeyPatch) -> None:

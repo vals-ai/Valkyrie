@@ -1,3 +1,8 @@
+"""Tests for the monitoring stack.
+
+Run: cd infra && PYTHONPATH=. uv run python -m unittest tests/test_monitoring_stack.py
+"""
+
 import json
 import os
 import unittest

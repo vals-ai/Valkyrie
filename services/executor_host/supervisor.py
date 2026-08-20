@@ -28,7 +28,8 @@ from executor_protocol import (
     EXECUTOR_TASK_NAME,
     SUPPORTED_PROTOCOL_VERSIONS,
     ExecutorPayload,
-    ExecutorTelemetryContext,
+    executor_payload_benchmark_id,
+    normalize_executor_telemetry_context,
     validate_executor_artifact_uri,
     validate_executor_digest,
 )
@@ -176,12 +177,11 @@ class DispatchAuthority:
 class ExecutorProcessPayload:
     benchmark_id: str
     verified_task_ids: list[str]
-    telemetry_context: ExecutorTelemetryContext
     arguments: dict[str, object]
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> ExecutorProcessPayload:
-        telemetry_context = _telemetry_context(payload.get("telemetry_context_json"))
+        telemetry_context = normalize_executor_telemetry_context(payload.get("telemetry_context_json"))
         execution_context = payload.get("execution_context_json")
         access_key_values = (
             payload.get("start_benchmark_request_json"),
@@ -216,37 +216,8 @@ class ExecutorProcessPayload:
         return cls(
             benchmark_id=benchmark_id,
             verified_task_ids=verified_task_ids,
-            telemetry_context=telemetry_context,
             arguments=arguments,
         )
-
-
-def _telemetry_context(value: object) -> ExecutorTelemetryContext:
-    if not isinstance(value, Mapping):
-        return {"request_id": "", "trace_headers": {}}
-
-    telemetry_context = cast(Mapping[object, object], value)
-    request_id = telemetry_context.get("request_id")
-    raw_trace_headers = telemetry_context.get("trace_headers")
-    trace_headers = (
-        {str(key): str(header) for key, header in cast(Mapping[object, object], raw_trace_headers).items()}
-        if isinstance(raw_trace_headers, Mapping)
-        else {}
-    )
-    return {
-        "request_id": str(request_id) if request_id else "",
-        "trace_headers": trace_headers,
-    }
-
-
-def _payload_benchmark_id(payload: Mapping[str, object]) -> str:
-    benchmark_id = payload.get("benchmark_id_str")
-    if benchmark_id:
-        return str(benchmark_id)
-    execution_context = payload.get("execution_context_json")
-    if isinstance(execution_context, Mapping):
-        benchmark_id = cast(Mapping[object, object], execution_context).get("benchmark_id")
-    return str(benchmark_id) if benchmark_id else ""
 
 
 def _payload_string(payload: Mapping[str, object], key: str) -> str:
@@ -817,10 +788,10 @@ async def run_executor_dispatch(
 async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
     raw_payload: dict[str, object] = dict(payload)
     with dispatch_observability_context(
-        _payload_benchmark_id(raw_payload),
+        executor_payload_benchmark_id(raw_payload),
         _payload_string(raw_payload, "executor_dispatch_id"),
         _payload_string(raw_payload, "executor_release_id"),
-        _telemetry_context(raw_payload.get("telemetry_context_json")),
+        normalize_executor_telemetry_context(raw_payload.get("telemetry_context_json")),
     ) as child_telemetry_context:
         try:
             dispatch_id = _required_string(raw_payload, "executor_dispatch_id")
@@ -828,7 +799,6 @@ async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
             process_payload = ExecutorProcessPayload.from_payload(raw_payload)
             process_payload = replace(
                 process_payload,
-                telemetry_context=child_telemetry_context,
                 arguments={
                     **process_payload.arguments,
                     "telemetry_context_json": child_telemetry_context,

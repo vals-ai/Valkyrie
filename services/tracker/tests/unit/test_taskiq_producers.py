@@ -1,3 +1,8 @@
+"""Tests for Taskiq executor payload producers.
+
+Run: uv run pytest tests/unit/test_taskiq_producers.py
+"""
+
 import json
 from typing import Any
 from unittest.mock import AsyncMock

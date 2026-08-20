@@ -8,7 +8,7 @@ import logging
 import tarfile
 from collections.abc import AsyncIterator
 from datetime import timezone
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -30,7 +30,7 @@ from taskiq.message import BrokerMessage, TaskiqMessage
 
 import main as main_module
 import services.executor_host.supervisor as executor_host  # pyright: ignore[reportMissingImports]
-from executor_protocol import SUPPORTED_PROTOCOL_VERSION
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION, ExecutorTelemetryContext
 from main import app, tracker_service_error_handler
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
@@ -702,7 +702,10 @@ class TestTrackerAPI:
         telemetry_context = taskiq_message.kwargs["telemetry_context_json"]
         assert telemetry_context["request_id"]
         assert isinstance(telemetry_context["trace_headers"], dict)
-        child_telemetry_context = process_payload.telemetry_context
+        child_telemetry_context = cast(
+            ExecutorTelemetryContext,
+            process_payload.arguments["telemetry_context_json"],
+        )
         assert child_telemetry_context["request_id"] == telemetry_context["request_id"]
         assert child_telemetry_context["trace_headers"]
         if aws_managed:

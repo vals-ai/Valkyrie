@@ -53,7 +53,7 @@ def _before_send_log(log: Log, _hint: Hint) -> Log | None:
 
 
 def init_sentry(service_name: str, environment: str) -> None:
-    """Initialize Sentry SDK when configured and require it in production.
+    """Initialize Sentry SDK when configured.
 
     Args:
         service_name: Identifies the process in Sentry (e.g. "valkyrie-tracker").
@@ -61,8 +61,6 @@ def init_sentry(service_name: str, environment: str) -> None:
     """
     dsn = os.environ.get("SENTRY_DSN", "")
     if not dsn:
-        if environment == "production":
-            raise RuntimeError("Sentry could not start. Check the production DSN secret and deploy again.")
         return
 
     try:
@@ -99,10 +97,15 @@ def init_sentry(service_name: str, environment: str) -> None:
             ],
         )
     except Exception as e:
-        if environment == "production":
-            raise RuntimeError("Sentry could not start. Check the production DSN secret and deploy again.") from None
-        # Non-production environments stay available for configuration repair.
         logger.warning("Failed to initialize Sentry: %s: %s", type(e).__name__, e)
+
+
+def capture_exception(error: BaseException) -> None:
+    """Capture an exception without allowing Sentry failures to escape."""
+    try:
+        sentry_sdk.capture_exception(error)
+    except Exception as telemetry_error:
+        logger.warning("Failed to capture exception: %s: %s", type(telemetry_error).__name__, telemetry_error)
 
 
 def set_sandbox_context(sandbox: Any, *, image: str | None = None) -> None:

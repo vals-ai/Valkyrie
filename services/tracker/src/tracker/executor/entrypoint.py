@@ -16,47 +16,30 @@ import sentry_sdk
 from opentelemetry.context import attach, detach
 from opentelemetry.propagate import extract
 
-from executor_protocol import SUPPORTED_PROTOCOL_VERSION
+from executor_protocol import (
+    SUPPORTED_PROTOCOL_VERSION,
+    executor_payload_benchmark_id,
+    normalize_executor_telemetry_context,
+)
 from tracker.config import ENVIRONMENT
 from tracker.logging import benchmark_id_var, request_id_var, task_id_var
 from tracker.observability import configure_observability
+from tracker.observability.sentry import capture_exception
 from tracker.utils.run_orchestration import process_benchmark
 
 logger = logging.getLogger(__name__)
 
 
-def _benchmark_id(payload: Mapping[str, object]) -> str:
-    benchmark_id = payload.get("benchmark_id_str")
-    if benchmark_id:
-        return str(benchmark_id)
-    execution_context = payload.get("execution_context_json")
-    if isinstance(execution_context, Mapping):
-        benchmark_id = cast(Mapping[object, object], execution_context).get("benchmark_id")
-        if benchmark_id:
-            return str(benchmark_id)
-    return ""
-
-
 @contextmanager
 def _executor_context(payload: Mapping[str, object]) -> Generator[None, None, None]:
-    telemetry_context = payload.get("telemetry_context_json")
-    request_id = ""
-    trace_headers: dict[str, str] = {}
-    if isinstance(telemetry_context, Mapping):
-        normalized_context = cast(Mapping[object, object], telemetry_context)
-        raw_request_id = normalized_context.get("request_id")
-        request_id = str(raw_request_id) if raw_request_id else ""
-        raw_trace_headers = normalized_context.get("trace_headers")
-        if isinstance(raw_trace_headers, Mapping):
-            trace_headers = {
-                str(key): str(value) for key, value in cast(Mapping[object, object], raw_trace_headers).items()
-            }
+    telemetry_context = normalize_executor_telemetry_context(payload.get("telemetry_context_json"))
 
     context_tokens = [
-        request_id_var.set(request_id),
-        benchmark_id_var.set(_benchmark_id(payload)),
+        request_id_var.set(telemetry_context["request_id"]),
+        benchmark_id_var.set(executor_payload_benchmark_id(payload)),
         task_id_var.set(""),
     ]
+    trace_headers = telemetry_context["trace_headers"]
     otel_token = attach(extract(trace_headers)) if trace_headers else None
     try:
         yield
@@ -85,7 +68,7 @@ async def _run_executor(payload: dict[str, Any]) -> None:
         except asyncio.CancelledError:
             return
         except Exception as error:
-            sentry_sdk.capture_exception(error)
+            capture_exception(error)
             raise
         finally:
             loop.remove_signal_handler(signal.SIGTERM)

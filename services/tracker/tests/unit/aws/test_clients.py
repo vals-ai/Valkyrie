@@ -184,6 +184,19 @@ class TestS3ClientRetry:
 class TestCloudWatchClient:
     """CloudWatch exception translation at the client boundary."""
 
+    def test_uses_short_failure_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        boto_client_factory = MagicMock()
+        monkeypatch.setattr(aws_clients.boto3, "client", boto_client_factory)
+        provider = DefaultChainAWSClientProvider(region="us-east-1")
+
+        provider.cloudwatch_logs_client()
+
+        config = boto_client_factory.call_args.kwargs["config"]
+        assert config.connect_timeout == 5
+        assert config.read_timeout == 5
+        assert config.retries["total_max_attempts"] == 2
+        assert config.retries["mode"] == "standard"
+
     def test_cloudwatch_error_with_client(self) -> None:
         """Test that ClientError is caught buy the decorator"""
         client_error = ClientError({"Error": {"Code": "404", "Message": "Not found"}}, "CreateLogStream")
@@ -217,13 +230,13 @@ class TestSanitizeLogStreamName:
     """logStreamName must satisfy AWS constraint [^:*]* (no ':' or '*')."""
 
     def test_replaces_colon(self) -> None:
-        assert _sanitize_log_stream_name("provider/model:fast") == "provider/model%3Afast"
+        assert _sanitize_log_stream_name("provider/model:fast") == "provider/model_fast"
 
     def test_replaces_asterisk(self) -> None:
-        assert _sanitize_log_stream_name("task*glob") == "task%2Aglob"
+        assert _sanitize_log_stream_name("task*glob") == "task_glob"
 
     def test_replaces_both_and_multiple(self) -> None:
-        assert _sanitize_log_stream_name("a:b:c*d") == "a%3Ab%3Ac%2Ad"
+        assert _sanitize_log_stream_name("a:b:c*d") == "a_b_c_d"
 
     def test_preserves_clean_name(self) -> None:
         # plain ids and the allowed '/' are left intact
@@ -240,7 +253,7 @@ class TestGetBenchmarkLogUrl:
 
     def test_sanitizes_task_id_in_url(self) -> None:
         url = get_benchmark_log_url("bench123", _AWS_RESOURCES, task_id="provider/model:fast")
-        assert "provider%2Fmodel%253Afast" in url
+        assert "provider%2Fmodel_fast" in url
         assert "model:fast" not in url
 
     def test_no_task_id_omits_log_events(self) -> None:
@@ -256,6 +269,7 @@ class TestWriteBenchmarkLogEvent:
         client_provider = MagicMock(spec=AWSClientProvider)
         client_provider.cloudwatch_logs_client.return_value = client
         monkeypatch.setattr(cloudwatch_logs, "_created_streams", set[str]())
+        monkeypatch.setattr(cloudwatch_logs, "_created_log_groups", set[str]())
         runtime = AWSRuntime(
             resources=_AWS_RESOURCES,
             clients=cast(AWSClientProvider, client_provider),
@@ -264,14 +278,17 @@ class TestWriteBenchmarkLogEvent:
 
     def test_creates_stream_and_puts_event_with_sanitized_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, runtime = self._runtime_with_mock_client(monkeypatch)
+        create_log_group = MagicMock()
+        monkeypatch.setattr(cloudwatch_logs, "create_benchmark_log_group", create_log_group)
 
         # stream_key splits on the first ':' -> task_id keeps its own ':'
         write_benchmark_log_event("bench123:provider/model:fast", "hello", runtime)
 
+        create_log_group.assert_called_once_with("bench123", runtime)
         client.create_log_stream.assert_called_once_with(
-            logGroupName="/valkyrie/worker/bench123", logStreamName="provider/model%3Afast"
+            logGroupName="/valkyrie/worker/bench123", logStreamName="provider/model_fast"
         )
-        assert client.put_log_events.call_args.kwargs["logStreamName"] == "provider/model%3Afast"
+        assert client.put_log_events.call_args.kwargs["logStreamName"] == "provider/model_fast"
 
     def test_splits_oversized_utf8_messages_without_losing_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, runtime = self._runtime_with_mock_client(monkeypatch)
@@ -294,5 +311,18 @@ class TestWriteBenchmarkLogEvent:
         with pytest.raises(CloudWatchError) as exc_info:
             write_benchmark_log_event("bench123:provider/model:fast", "hello", runtime)
 
-        assert "provider/model%3Afast" in str(exc_info.value)
+        assert "provider/model_fast" in str(exc_info.value)
         client.put_log_events.assert_not_called()
+
+    def test_log_group_failure_prevents_only_the_background_write(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, runtime = self._runtime_with_mock_client(monkeypatch)
+        monkeypatch.setattr(
+            cloudwatch_logs,
+            "create_benchmark_log_group",
+            MagicMock(side_effect=CloudWatchError("Failed to create log group")),
+        )
+
+        with pytest.raises(CloudWatchError, match="Failed to create log group"):
+            write_benchmark_log_event("bench123:task-1", "hello", runtime)
+
+        client.create_log_stream.assert_not_called()

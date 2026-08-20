@@ -23,7 +23,6 @@ from benchmark_service import (
     SandboxRecoveryAttempt,
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
-from opentelemetry import trace
 from pydantic import ValidationError
 from sqlmodel import Session, col, select, update
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
@@ -56,6 +55,8 @@ from tracker.executor.execution_authority import ExecutionAuthority, lock_execut
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, error_span, incr
+from tracker.observability.sentry import capture_exception
+from tracker.observability.tracing import observability_span
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
     StartBenchmarkRequest,
@@ -67,6 +68,9 @@ logger = get_logger(__name__)
 
 _PTY_TASK_RETRY_LIMIT: int = 1
 _SANDBOX_RETRY_DELAY_SECONDS: float = 2
+_CLOUDWATCH_LOG_FLUSH_TIMEOUT_SECONDS: float = 10
+_CLOUDWATCH_LOG_WRITE_ATTEMPTS: int = 3
+_CLOUDWATCH_LOG_WRITE_RETRY_DELAY_SECONDS: float = 0.25
 
 
 @dataclass
@@ -135,7 +139,7 @@ def _observe_task_retry(attempt: SandboxRecoveryAttempt, exc: BaseException) -> 
     """Emit the retry telemetry the Tenacity before_sleep hook owned before recovery
     moved into the benchmark-service client."""
     error_class = type(exc).__name__
-    with logfire.span("task.retry", attempt=attempt.number, error_class=error_class):
+    with observability_span("task.retry", attempt=attempt.number, error_class=error_class):
         logger.warning(
             "retry.before_sleep",
             extra={
@@ -237,7 +241,7 @@ class TrackedTask:
             error_message = f"Task error was not handled: {_exception_message(e)}\n{traceback.format_exc()}"
             logger.error(error_message)
             logfire.exception("tracked_task_run failed")
-            sentry_sdk.capture_exception(e)
+            capture_exception(e)
             with Session(bind=engine) as session:
                 task = fetch_task_row(task_row.id, session, self._org)
                 commit_task_error(
@@ -407,7 +411,14 @@ def buffer_logs(
     async def write_in_order() -> None:
         if previous_write is not None:
             await asyncio.gather(previous_write, return_exceptions=True)
-        await loop.run_in_executor(None, write_benchmark_log_event, stream_key, message, aws_runtime)
+        for attempt in range(1, _CLOUDWATCH_LOG_WRITE_ATTEMPTS + 1):
+            try:
+                await loop.run_in_executor(None, write_benchmark_log_event, stream_key, message, aws_runtime)
+                return
+            except Exception:
+                if attempt == _CLOUDWATCH_LOG_WRITE_ATTEMPTS:
+                    raise
+                await asyncio.sleep(_CLOUDWATCH_LOG_WRITE_RETRY_DELAY_SECONDS)
 
     return asyncio.create_task(write_in_order())
 
@@ -461,7 +472,7 @@ def _commit_task_status(
     if error_message is not None:
         span_attributes["has_error_message"] = True
 
-    with logfire.span("task.status_transition", **span_attributes):  # pyright: ignore[reportArgumentType]
+    with observability_span("task.status_transition", **span_attributes):
         try:
             lock_execution_authority(session, authority)
         except ExecutionAuthorityRevoked:
@@ -522,6 +533,15 @@ async def process_task(
     """Process one task while retaining dependency recovery state across sandbox attempts."""
     dependency_setup_recovery = _DependencySetupRecoveryState()
 
+    with observability_span(
+        "task.started",
+        benchmark_id=str(benchmark_id),
+        task_id=task_id,
+        benchmark_name=start_benchmark_request.benchmark_name,
+        agent_name=start_benchmark_request.contract.name,
+    ):
+        pass
+
     async def run_attempt(
         recovery_attempt: SandboxRecoveryAttempt,
     ) -> dict[str, dict[str, Any] | None]:
@@ -545,7 +565,7 @@ async def process_task(
         if isinstance(exc, SandboxSetupError):
             _record_failure_before_retry(task_row, authority, exc, attempt.number)
 
-    return await benchmark_service.run_with_sandbox_recovery(
+    result = await benchmark_service.run_with_sandbox_recovery(
         task_id=task_id,
         run_id=str(benchmark_id),
         operation=run_attempt,
@@ -555,6 +575,16 @@ async def process_task(
         retry_delay_s=_SANDBOX_RETRY_DELAY_SECONDS,
         on_retry=record_attempt_failure,
     )
+
+    if result.get(task_id) is not None:
+        with observability_span(
+            "task.completed",
+            benchmark_id=str(benchmark_id),
+            task_id=task_id,
+        ):
+            pass
+
+    return result
 
 
 async def _process_task_attempt(
@@ -580,14 +610,6 @@ async def _process_task_attempt(
     task_id_var.set(task_id)
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
-    trace.get_current_span().set_attributes(
-        {
-            "task_id": task_id,
-            "benchmark_id": str(benchmark_id),
-            "benchmark_name": start_benchmark_request.benchmark_name,
-            "agent_name": start_benchmark_request.contract.name,
-        }
-    )
 
     requested_attempt_started_at = task_row.started_at
     with Session(bind=engine) as task_session:
@@ -614,7 +636,6 @@ async def _process_task_attempt(
     task_stream_name = f"{task_id}_{stream_suffix}"
     stream_key: str = f"{benchmark_id}:{task_stream_name}"
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
-    pending_log_writes: set[asyncio.Future[None]] = set()
     latest_log_write: asyncio.Future[None] | None = None
 
     logger.info(
@@ -644,12 +665,12 @@ async def _process_task_attempt(
         if write is None:
             return
         latest_log_write = write
-        pending_log_writes.add(write)
 
         def handle_completion(completed: asyncio.Future[None]) -> None:
-            pending_log_writes.discard(completed)
             try:
                 completed.result()
+            except asyncio.CancelledError:
+                return
             except Exception as error:
                 with error_span(
                     "task.output_write.error",
@@ -661,7 +682,7 @@ async def _process_task_attempt(
                         "Failed to write task output to CloudWatch",
                         extra={"benchmark_id": str(benchmark_id), "task_id": task_id},
                     )
-                    sentry_sdk.capture_exception(error)
+                    capture_exception(error)
 
         write.add_done_callback(handle_completion)
 
@@ -730,7 +751,7 @@ async def _process_task_attempt(
                     "cause_code": cause_code or "",
                 },
             )
-            sentry_sdk.capture_exception(exc)
+            capture_exception(exc)
         with Session(bind=engine) as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
             commit_task_error(
@@ -1147,8 +1168,16 @@ async def _process_task_attempt(
         with suppress(asyncio.CancelledError):
             await flush_task
         schedule_log_flush(force=True)
-        if pending_log_writes:
-            await asyncio.gather(*pending_log_writes, return_exceptions=True)
+        if latest_log_write is not None:
+            try:
+                await asyncio.wait_for(latest_log_write, timeout=_CLOUDWATCH_LOG_FLUSH_TIMEOUT_SECONDS)
+            except TimeoutError:
+                logger.warning(
+                    "Timed out waiting for task output to flush to CloudWatch",
+                    extra={"benchmark_id": str(benchmark_id), "task_id": task_id},
+                )
+            except Exception:
+                pass
 
 
 def commit_task_error(

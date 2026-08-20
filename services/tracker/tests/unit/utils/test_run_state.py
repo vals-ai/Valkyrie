@@ -5,7 +5,7 @@ Run: uv run pytest tests/unit/utils/test_run_state.py
 
 from datetime import datetime
 from typing import Any, Sequence
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -612,7 +612,7 @@ class TestRunState:
             return MockSpan(record)
 
         monkeypatch.setattr("tracker.utils.task_execution.logger.info", fake_info)
-        monkeypatch.setattr("tracker.utils.task_execution.logfire.span", fake_span)
+        monkeypatch.setattr("tracker.observability.tracing.logfire.span", fake_span)
 
         database_session.add(example_benchmark_object)
         database_session.commit()
@@ -700,6 +700,7 @@ class TestRunState:
         example_benchmark_object: Benchmark,
         database_session: Session,
         executor_authority: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Tests the end to end flow when stopping and resuming a benchmark
 
@@ -708,6 +709,15 @@ class TestRunState:
             - Benchmark status is set to finished if all tasks are finished
             - Benchmark status is set to stopped if any tasks are stopped
         """
+
+        finalized_statuses: list[str] = []
+
+        def record_span(name: str, **attributes: Any) -> MagicMock:
+            if name == "run.finalized":
+                finalized_statuses.append(attributes["status"])
+            return MagicMock()
+
+        monkeypatch.setattr("tracker.utils.run_orchestration.observability_span", record_span)
 
         # Create benchmark
         benchmark_row = example_benchmark_object
@@ -757,6 +767,7 @@ class TestRunState:
         set_benchmark_final_status(benchmark_row, database_session, self._test_org, authority=authority)
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.STOPPED
+        assert finalized_statuses == ["FINISHED", "STOPPED"]
 
 
 class TestFetchStartedByFilter:

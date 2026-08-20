@@ -1,4 +1,7 @@
-"""Tests for the immutable executor PEX entrypoint."""
+"""Tests for the immutable executor PEX entrypoint.
+
+Run: uv run pytest tests/unit/executor/test_entrypoint.py
+"""
 
 import asyncio
 import json

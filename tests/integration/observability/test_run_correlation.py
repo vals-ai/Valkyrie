@@ -1,4 +1,4 @@
-"""Credential-free end-to-end smoke test for run telemetry correlation.
+"""Credential-free cross-process transport smoke for run telemetry correlation.
 
 Run: uv run pytest tests/integration/observability/test_run_correlation.py
 """

@@ -1,3 +1,8 @@
+"""Tests for managed and access-key executor inputs.
+
+Run: uv run pytest tests/unit/test_managed_execution.py
+"""
+
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -278,11 +283,17 @@ async def test_ineligible_managed_execution_marks_run_error(
 ) -> None:
     request = _managed_request(contract)
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
+    spans: list[tuple[str, dict[str, Any]]] = []
 
     def reject_managed_runtime(_org_id: UUID) -> AWSRuntime:
         raise ManagedAWSEligibilityError("Managed AWS access is not available for this organization")
 
+    def record_span(name: str, **attributes: Any) -> MagicMock:
+        spans.append((name, attributes))
+        return MagicMock()
+
     monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", reject_managed_runtime)
+    monkeypatch.setattr("tracker.utils.run_orchestration.observability_span", record_span)
 
     await process_benchmark(
         execution_context_json=_execution_context(request, benchmark.id),
@@ -292,6 +303,9 @@ async def test_ineligible_managed_execution_marks_run_error(
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
     assert "Managed AWS access is not available for this organization" in (benchmark.error_message or "")
+    finalized_span = next(attributes for name, attributes in spans if name == "run.finalized")
+    assert finalized_span["benchmark_id"] == str(benchmark.id)
+    assert finalized_span["status"] == "ERROR"
 
 
 async def test_managed_execution_completes_with_the_deployment_runtime(
@@ -307,15 +321,11 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     )
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
     calls: list[str] = []
+    spans: list[tuple[str, dict[str, Any]]] = []
     provider_config = cast(SandboxProviderConfig, MagicMock())
 
     def deployment_runtime(_org_id: UUID) -> AWSRuntime:
         return aws_runtime
-
-    def create_log_group(_benchmark_id: str, runtime: AWSRuntime) -> str:
-        assert runtime is aws_runtime
-        calls.append("logs")
-        return "benchmark-log-group"
 
     def fetch_provider(_name: str, clients: object, _provider: str) -> SandboxProviderConfig:
         assert clients is aws_runtime.clients
@@ -340,14 +350,18 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         calls.append("lambda-post-run")
         return {}
 
+    def record_span(name: str, **attributes: Any) -> MagicMock:
+        spans.append((name, attributes))
+        return MagicMock()
+
     monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
-    monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", create_log_group)
     monkeypatch.setattr("tracker.utils.run_orchestration.fetch_sandbox_provider_config", fetch_provider)
     monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
     monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", upload_results)
     monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", invoke_post_run)
+    monkeypatch.setattr("tracker.utils.run_orchestration.observability_span", record_span)
 
     execution_context = _execution_context(request, benchmark.id)
     # A resume may change stored inputs while this job is queued; the queued job must still run.
@@ -359,9 +373,11 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.FINISHED
-    assert calls[:4] == ["logs", "provider-secret", "agent-secrets", "lambda-dry-run"]
+    assert calls[:3] == ["provider-secret", "agent-secrets", "lambda-dry-run"]
     assert calls.count("agent-secrets") >= 2
     assert calls[-2:] == ["s3-final-upload", "lambda-post-run"]
+    finalized_span = next(attributes for name, attributes in spans if name == "run.finalized")
+    assert finalized_span["status"] == "FINISHED"
 
 
 def test_managed_execution_preflight_checks_aws_dependencies_in_order(
@@ -380,10 +396,6 @@ def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     calls: list[str] = []
     provider_config = cast(SandboxProviderConfig, MagicMock())
 
-    def create_log_group(*_args: Any, **_kwargs: Any) -> str:
-        calls.append("logs")
-        return "benchmark-log-group"
-
     def fetch_provider(*_args: Any, **_kwargs: Any) -> SandboxProviderConfig:
         calls.append("sandbox_provider_secret")
         return provider_config
@@ -399,7 +411,6 @@ def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     def dry_run(*_args: Any, **_kwargs: Any) -> None:
         calls.append("lambda")
 
-    monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", create_log_group)
     monkeypatch.setattr("tracker.utils.run_orchestration.fetch_sandbox_provider_config", fetch_provider)
     monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.utils.run_orchestration.fetch_aws_secret", fetch_webhook_secret)
@@ -408,10 +419,10 @@ def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     result = _preflight_managed_aws(execution, aws_runtime)
 
     assert result is provider_config
-    assert calls == ["logs", "sandbox_provider_secret", "agent_secrets", "webhook_secret", "lambda"]
+    assert calls == ["sandbox_provider_secret", "agent_secrets", "webhook_secret", "lambda"]
 
 
-async def test_managed_preflight_failure_happens_before_sandbox(
+async def test_required_managed_preflight_failure_happens_before_sandbox(
     contract: AgentContractRequest,
     aws_runtime: AWSRuntime,
     database_session: Session,
@@ -426,11 +437,11 @@ async def test_managed_preflight_failure_happens_before_sandbox(
     def deployment_runtime(_org_id: UUID) -> AWSRuntime:
         return aws_runtime
 
-    def fail_log_preflight(*_args: Any, **_kwargs: Any) -> str:
-        raise RuntimeError("managed log preflight failed")
+    def fail_provider_preflight(*_args: Any, **_kwargs: Any) -> SandboxProviderConfig:
+        raise RuntimeError("managed provider preflight failed")
 
     monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
-    monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", fail_log_preflight)
+    monkeypatch.setattr("tracker.utils.run_orchestration.fetch_sandbox_provider_config", fail_provider_preflight)
     monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", create_sandbox)
 
     await process_benchmark(
@@ -440,5 +451,5 @@ async def test_managed_preflight_failure_happens_before_sandbox(
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
-    assert "managed log preflight failed" in (benchmark.error_message or "")
+    assert "managed provider preflight failed" in (benchmark.error_message or "")
     create_sandbox.assert_not_awaited()

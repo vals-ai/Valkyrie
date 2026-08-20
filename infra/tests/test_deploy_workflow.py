@@ -1,4 +1,7 @@
-"""Tests for deployment workflow contracts."""
+"""Tests for deployment workflow contracts.
+
+Run: cd infra && PYTHONPATH=. uv run python -m unittest tests/test_deploy_workflow.py
+"""
 
 import unittest
 from pathlib import Path

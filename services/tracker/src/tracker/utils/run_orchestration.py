@@ -13,12 +13,10 @@ import sentry_sdk
 from benchmark_service import SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from botocore.config import Config
-from opentelemetry import trace
 from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
 from tracker._lambda import dry_run_lambda, invoke_lambda
-from tracker.aws.cloudwatch_logs import create_benchmark_log_group
 from tracker.aws.resolver import deployment_aws_runtime
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.secrets import fetch_aws_secret, resolve_secrets
@@ -41,6 +39,8 @@ from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import error_span
+from tracker.observability.sentry import capture_exception
+from tracker.observability.tracing import observability_span
 from tracker.outbound_security import validate_custom_service_destination
 from tracker.types import (
     FinalViewResponse,
@@ -94,7 +94,17 @@ def _capture_run_error(
                 "cause_code": cause_code or "",
             },
         )
-        sentry_sdk.capture_exception(exc)
+        capture_exception(exc)
+
+
+def _record_run_finalized(benchmark_id: UUID, status: BenchmarkStatus, authority: ExecutionAuthority) -> None:
+    with observability_span(
+        "run.finalized",
+        benchmark_id=str(benchmark_id),
+        status=status.value,
+        executor_dispatch_id=str(authority.dispatch_id),
+    ):
+        pass
 
 
 def set_benchmark_final_status(
@@ -146,6 +156,7 @@ def set_benchmark_final_status(
     benchmark_row.error_message = None
     session.add(benchmark_row)
     session.commit()
+    _record_run_finalized(benchmark_row.id, benchmark_status, authority)
 
 
 def create_task_rows(
@@ -383,7 +394,6 @@ def _preflight_managed_aws(
     runtime: AWSRuntime,
 ) -> SandboxProviderConfig:
     """Verify executor-owned AWS access before starting sandbox work."""
-    create_benchmark_log_group(str(execution.benchmark_id), runtime)
     request = execution.request
     provider_secret_name = request.sandbox_provider_secret_name
     if provider_secret_name is None:
@@ -455,15 +465,15 @@ async def process_benchmark(
 
         sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
         sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
-        trace.get_current_span().set_attributes(
-            {
-                "benchmark_id": str(benchmark_id),
-                "benchmark_name": start_benchmark_request.benchmark_name,
-                "agent_name": start_benchmark_request.contract.name,
-                "task_count": len(verified_task_ids),
-                "executor_dispatch_id": executor_dispatch_id,
-            }
-        )
+        with observability_span(
+            "run.started",
+            benchmark_id=str(benchmark_id),
+            benchmark_name=start_benchmark_request.benchmark_name,
+            agent_name=start_benchmark_request.contract.name,
+            task_count=len(verified_task_ids),
+            executor_dispatch_id=executor_dispatch_id,
+        ):
+            pass
 
         if execution.aws_managed != benchmark_row.aws_managed:
             queued_mode = "managed" if execution.aws_managed else "access-key"
@@ -498,9 +508,6 @@ async def process_benchmark(
                 clients=aws_runtime.clients,
                 intervals=start_benchmark_request.webhook_intervals,
             )
-
-        if not execution.aws_managed:
-            create_benchmark_log_group(str(benchmark_id), aws_runtime)
 
         # Create tasks inside of the database for each task id
         with Session(bind=engine) as session:
@@ -759,6 +766,8 @@ def commit_benchmark_error(
         cause_code=cause_code,
     )
     session.commit()
+    if committed and benchmark_row.status == BenchmarkStatus.ERROR:
+        _record_run_finalized(benchmark_row.id, BenchmarkStatus.ERROR, authority)
     return committed
 
 
@@ -824,4 +833,6 @@ def catch_errors_during_cleanup(
         error_type="UndetectedExecutorExit",
     )
     session.commit()
+    if committed and benchmark_row.status == BenchmarkStatus.ERROR:
+        _record_run_finalized(benchmark_id, BenchmarkStatus.ERROR, authority)
     return committed

@@ -41,6 +41,7 @@ async def test_buffered_cloudwatch_write_exposes_failure(monkeypatch: pytest.Mon
         raise RuntimeError("cloudwatch unavailable")
 
     monkeypatch.setattr(task_execution_module, "write_benchmark_log_event", fail_write)
+    monkeypatch.setattr(task_execution_module, "_CLOUDWATCH_LOG_WRITE_RETRY_DELAY_SECONDS", 0)
     queue = task_execution_module.asyncio.Queue[str]()
     queue.put_nowait("task output")
 
@@ -54,6 +55,31 @@ async def test_buffered_cloudwatch_write_exposes_failure(monkeypatch: pytest.Mon
     assert write is not None
     with pytest.raises(RuntimeError, match="cloudwatch unavailable"):
         await write
+
+
+async def test_buffered_cloudwatch_write_retries_the_same_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = []
+
+    def transient_write(_stream_key: str, message: str, _runtime: AWSRuntime) -> None:
+        messages.append(message)
+        if len(messages) == 1:
+            raise RuntimeError("cloudwatch unavailable")
+
+    monkeypatch.setattr(task_execution_module, "write_benchmark_log_event", transient_write)
+    monkeypatch.setattr(task_execution_module, "_CLOUDWATCH_LOG_WRITE_RETRY_DELAY_SECONDS", 0)
+    queue = task_execution_module.asyncio.Queue[str]()
+    queue.put_nowait("task output")
+
+    write = task_execution_module.buffer_logs(
+        queue,
+        "benchmark-123:task-456",
+        cast(AWSRuntime, Mock(spec=AWSRuntime)),
+        force_flush=True,
+    )
+
+    assert write is not None
+    await write
+    assert messages == ["task output", "task output"]
 
 
 async def test_buffered_cloudwatch_writes_stay_ordered(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -565,13 +591,16 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr("tracker.utils.task_execution.upload_agent_artifacts", _mock_upload_agent_artifacts)
         monkeypatch.setattr("tracker.utils.task_execution.run_agent", _mock_run_agent)
         monkeypatch.setattr("tracker.utils.task_execution.logger.info", _mock_logger_info)
-        monkeypatch.setattr("tracker.utils.task_execution.logfire.span", _mock_span)
+        monkeypatch.setattr("tracker.observability.tracing.logfire.span", _mock_span)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
         await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         transition_records = [record for record in span_records if record["message"] == "task.status_transition"]
+        lifecycle_records = [
+            record for record in span_records if record["message"] in {"task.started", "task.completed"}
+        ]
 
         assert [(record["from_status"], record["to_status"]) for record in transition_records] == [
             (TaskStatus.PENDING.value, TaskStatus.BUILDING.value),
@@ -582,6 +611,9 @@ class TestTaskExecutionRetry:
         assert all(record["task_id"] == "task_0" for record in transition_records)
         assert all(record["benchmark_id"] == str(benchmark_id) for record in transition_records)
         assert all(record["entered"] and record["exited"] for record in transition_records)
+        assert [record["message"] for record in lifecycle_records] == ["task.started", "task.completed"]
+        assert all(record["task_id"] == "task_0" for record in lifecycle_records)
+        assert all(record["benchmark_id"] == str(benchmark_id) for record in lifecycle_records)
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
         assert run_agent_kwargs["benchmark_id"] == str(benchmark_id)
         assert create_sandbox_kwargs["labels"]["run-id"] == str(benchmark_id)

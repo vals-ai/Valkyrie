@@ -20,10 +20,31 @@ import tracker.observability.metrics as metrics_module
 import tracker.observability.retry as retry_module
 import tracker.observability.sentry as sentry_module
 import tracker.observability.tracing as tracing_module
+import tracker.observability as observability_module
 
 
 def _run_orchestration() -> Any:
     return importlib.import_module("tracker.utils.run_orchestration")
+
+
+@pytest.mark.parametrize("failing_component", ["sentry", "tracing"])
+def test_observability_initialization_failure_does_not_escape(
+    monkeypatch: pytest.MonkeyPatch,
+    failing_component: str,
+) -> None:
+    error = RuntimeError(f"{failing_component} unavailable")
+    initialize_sentry = Mock(side_effect=error if failing_component == "sentry" else None)
+    initialize_tracing = Mock(side_effect=error if failing_component == "tracing" else None)
+    warning = Mock()
+    monkeypatch.setattr(observability_module, "init_sentry", initialize_sentry)
+    monkeypatch.setattr(observability_module, "configure_tracing", initialize_tracing)
+    monkeypatch.setattr(observability_module.logger, "warning", warning)
+
+    observability_module.configure_observability("valkyrie-test", "production")
+
+    initialize_sentry.assert_called_once_with("valkyrie-test", environment="production")
+    initialize_tracing.assert_called_once_with("valkyrie-test", environment="production")
+    assert error in warning.call_args.args
 
 
 def test_invalid_queued_request_does_not_expose_aws_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -370,3 +391,16 @@ def test_handled_error_span_records_exception_and_error_status(monkeypatch: pyte
     span.record_exception.assert_called_once_with(error)
     status = span.set_status.call_args.args[0]
     assert status.status_code is StatusCode.ERROR
+
+
+def test_observability_span_failure_does_not_skip_wrapped_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tracing_module.logfire, "span", Mock(side_effect=RuntimeError("tracing unavailable")))
+    warning = Mock()
+    monkeypatch.setattr(tracing_module.logger, "warning", warning)
+    completed: list[bool] = []
+
+    with tracing_module.observability_span("task.status_transition"):
+        completed.append(True)
+
+    assert completed == [True]
+    warning.assert_called_once()

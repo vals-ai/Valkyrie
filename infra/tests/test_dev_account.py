@@ -1,4 +1,7 @@
-"""Tests for the development account infrastructure boundary."""
+"""Tests for the development account infrastructure boundary.
+
+Run: cd infra && PYTHONPATH=. uv run python -m unittest tests/test_dev_account.py
+"""
 
 import json
 import os

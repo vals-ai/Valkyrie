@@ -1,3 +1,4 @@
+import re
 import time
 from collections.abc import Callable
 from functools import wraps
@@ -11,14 +12,15 @@ from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.exceptions import CloudWatchError
 
 _created_streams: set[str] = set()
+_created_log_groups: set[str] = set()
 _MAX_LOG_EVENT_MESSAGE_BYTES = 1_048_576 - 26
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
 
 def _sanitize_log_stream_name(task_id: str) -> str:
-    """Encode forbidden characters without merging distinct task IDs."""
-    return quote(task_id, safe="/-_.")
+    """Replace characters CloudWatch forbids in log stream names."""
+    return re.sub(r"[:*]", "_", task_id)
 
 
 def _split_log_message(message: str) -> list[str]:
@@ -124,6 +126,10 @@ def write_benchmark_log_event(stream_key: str, message: str, runtime: AWSRuntime
     client = runtime.clients.cloudwatch_logs_client()
     log_group_name = f"{runtime.resources.log_group}/{benchmark_id}"
     stream_name = _sanitize_log_stream_name(task_id)
+
+    if benchmark_id not in _created_log_groups:
+        create_benchmark_log_group(benchmark_id, runtime)
+        _created_log_groups.add(benchmark_id)
 
     if stream_key not in _created_streams:
         try:
