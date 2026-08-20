@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 from opentelemetry.trace import StatusCode
@@ -403,4 +403,30 @@ def test_observability_span_failure_does_not_skip_wrapped_work(monkeypatch: pyte
         completed.append(True)
 
     assert completed == [True]
+    warning.assert_called_once()
+
+
+@pytest.mark.parametrize("work_error", [None, RuntimeError("work failed")], ids=["success", "error"])
+def test_observability_span_close_failure_preserves_work_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    work_error: RuntimeError | None,
+) -> None:
+    span_manager = MagicMock()
+    span_manager.__exit__.side_effect = RuntimeError("tracing unavailable")
+    monkeypatch.setattr(tracing_module.logfire, "span", Mock(return_value=span_manager))
+    warning = Mock()
+    monkeypatch.setattr(tracing_module.logger, "warning", warning)
+    completed: list[bool] = []
+
+    if work_error is None:
+        with tracing_module.observability_span("task.status_transition"):
+            completed.append(True)
+        assert completed == [True]
+    else:
+        with pytest.raises(RuntimeError, match="work failed") as exc_info:
+            with tracing_module.observability_span("task.status_transition"):
+                raise work_error
+        assert exc_info.value is work_error
+        assert completed == []
+
     warning.assert_called_once()
