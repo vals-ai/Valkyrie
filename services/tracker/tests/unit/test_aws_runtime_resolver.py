@@ -175,6 +175,18 @@ def test_run_runtime_uses_stored_mode(
     assert isinstance(runtime.clients, expected_provider)
 
 
+def test_access_key_run_reports_incomplete_legacy_config() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_run_aws_runtime(
+            _request({"x-harness-aws-access-key-id": "partial-access-key"}),
+            aws_managed=False,
+            org_id=_ORG_ID,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Missing harness config header 'x-harness-aws-secret-access-key'"
+
+
 def test_managed_run_ignores_partial_access_key_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_managed_runtime(monkeypatch)
 
