@@ -25,7 +25,7 @@ import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, Task, TaskStatus
-from tracker.types import HarnessConfig
+from tracker.types import HarnessConfig, access_key_executor_execution
 from tracker.utils import (
     fetch_benchmark_row,
     process_benchmark,
@@ -338,9 +338,7 @@ class TestBenchmarkServiceFailures:
         )
 
         await process_benchmark(
-            start_benchmark_request_json=start_benchmark_request.model_dump(),
-            benchmark_id_str=str(benchmark_id),
-            verified_task_ids=["task_0"],
+            access_key_executor_execution(start_benchmark_request, benchmark_id, ["task_0"]),
             executor_dispatch_id=str(authority.dispatch_id),
         )
 
@@ -378,9 +376,7 @@ class TestBenchmarkServiceFailures:
         authority_kwargs = executor_authority_kwargs(benchmark_row)
 
         await process_benchmark(
-            start_benchmark_request_json=start_benchmark_request.model_dump(),
-            benchmark_id_str=str(benchmark_id),
-            verified_task_ids=["task_0"],
+            access_key_executor_execution(start_benchmark_request, benchmark_id, ["task_0"]),
             **authority_kwargs,
         )
 

@@ -54,6 +54,7 @@ from tracker.utils import (
 _parse_log_retention_policy = getattr(harness_config_module, "_parse_log_retention_policy")
 
 client = TestClient(app)
+_EXECUTOR_DIGEST = "0" * 64
 
 
 @pytest.fixture
@@ -62,7 +63,7 @@ def example_benchmark_object(contract: AgentContractRequest, database_session: S
     release = ExecutorRelease(
         id="test-release",
         artifact_uri="s3://artifacts/test-release.pex",
-        artifact_digest="digest-test-release",
+        artifact_digest=_EXECUTOR_DIGEST,
         protocol_version="1",
         readiness_verified=True,
     )

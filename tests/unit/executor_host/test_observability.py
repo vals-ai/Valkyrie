@@ -38,7 +38,7 @@ def test_dispatch_transaction_finishes_before_executor_work(monkeypatch: pytest.
         "benchmark-123",
         "dispatch-456",
         "release-789",
-        {"request_id": "request-abc", "trace_headers": {}},
+        ExecutorTelemetryContext(request_id="request-abc"),
     ):
         events.append("executor-running")
 
@@ -46,10 +46,10 @@ def test_dispatch_transaction_finishes_before_executor_work(monkeypatch: pytest.
 
 
 def test_dispatch_acceptance_telemetry_failure_preserves_context(monkeypatch: pytest.MonkeyPatch) -> None:
-    telemetry_context: ExecutorTelemetryContext = {
-        "request_id": "request-abc",
-        "trace_headers": {"traceparent": "parent-trace"},
-    }
+    telemetry_context = ExecutorTelemetryContext(
+        request_id="request-abc",
+        trace_headers={"traceparent": "parent-trace"},
+    )
     monkeypatch.setattr(sentry_sdk, "continue_trace", Mock(side_effect=RuntimeError("sentry unavailable")))
     monkeypatch.setattr(observability.logger, "warning", Mock())
 
@@ -77,7 +77,7 @@ def test_dispatch_scope_is_released_when_tag_binding_fails(monkeypatch: pytest.M
         "benchmark-123",
         "dispatch-456",
         "release-789",
-        {"request_id": "request-abc", "trace_headers": {}},
+        ExecutorTelemetryContext(request_id="request-abc"),
     ):
         pass
 
@@ -85,7 +85,7 @@ def test_dispatch_scope_is_released_when_tag_binding_fails(monkeypatch: pytest.M
 
 
 def test_terminal_sentry_failure_does_not_escape(monkeypatch: pytest.MonkeyPatch) -> None:
-    telemetry_context: ExecutorTelemetryContext = {"request_id": "request-abc", "trace_headers": {}}
+    telemetry_context = ExecutorTelemetryContext(request_id="request-abc")
     monkeypatch.setattr(sentry_sdk, "new_scope", Mock(side_effect=RuntimeError("sentry unavailable")))
     monkeypatch.setattr(observability.logger, "info", Mock())
     monkeypatch.setattr(observability.logger, "error", Mock())
@@ -137,13 +137,13 @@ def test_dispatch_context_correlates_cloudwatch_logs_and_child_trace(monkeypatch
         "benchmark-123",
         "dispatch-456",
         "release-789",
-        {
-            "request_id": "request-abc",
-            "trace_headers": {
+        ExecutorTelemetryContext(
+            request_id="request-abc",
+            trace_headers={
                 "traceparent": "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01",
                 "tracestate": "vendor=value",
             },
-        },
+        ),
     ) as child_context:
         logger.info("Launching executor")
 
@@ -158,13 +158,13 @@ def test_dispatch_context_correlates_cloudwatch_logs_and_child_trace(monkeypatch
         "executor_dispatch_id": "dispatch-456",
         "executor_release_id": "release-789",
     }
-    assert child_context == {
-        "request_id": "request-abc",
-        "trace_headers": {
+    assert child_context == ExecutorTelemetryContext(
+        request_id="request-abc",
+        trace_headers={
             "sentry-trace": "sentry-child-trace",
             "baggage": "sentry-child-baggage",
         },
-    }
+    )
 
 
 def test_dispatch_error_logs_before_capture(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -187,7 +187,7 @@ def test_dispatch_error_logs_before_capture(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(sentry_sdk, "capture_exception", record_capture)
     error = RuntimeError("executor failed")
 
-    observability.capture_dispatch_error(error, {"request_id": "request-abc", "trace_headers": {}})
+    observability.capture_dispatch_error(error, ExecutorTelemetryContext(request_id="request-abc"))
 
     span.set_status.assert_called_once_with(observability.SPANSTATUS.INTERNAL_ERROR)
     assert events == ["logged", "captured"]

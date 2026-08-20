@@ -96,7 +96,11 @@ from tracker.docent_analysis import (
     analyze_event_stream,
 )
 from tracker.exceptions import TrackerServiceError
-from executor_protocol import EXECUTOR_TASK_NAME, ExecutorTelemetryContext, executor_task_signature
+from executor_protocol import (
+    EXECUTOR_TASK_NAME,
+    ExecutorTelemetryContext,
+    executor_task_signature,
+)
 from tracker.logging import configure_logging, get_logger, request_id_var
 from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
 from tracker.executor.release_retirement import AutomaticReleaseRetirement
@@ -112,6 +116,9 @@ from tracker.types import (
     FetchBenchmarksResponse,
     FetchBenchmarkTasksRequest,
     HarnessConfig,
+    ExecutorExecution,
+    ExecutorProcessPayload,
+    ExecutorTaskPayload,
     ManagedExecutionContext,
     Order,
     RetrieveResultsResponse,
@@ -122,6 +129,8 @@ from tracker.types import (
     StopBenchmarkResponse,
     UpdateBenchmarkConcurrencyRequest,
     UpdateBenchmarkConcurrencyResponse,
+    access_key_executor_execution,
+    managed_executor_execution,
     validate_managed_execution_request,
 )
 from tracker.utils import (
@@ -197,60 +206,56 @@ def _executor_telemetry_context() -> ExecutorTelemetryContext:
     """Capture request and distributed trace context for the executor process."""
     trace_headers: dict[str, str] = {}
     inject(trace_headers)
-    return {
-        "request_id": request_id_var.get(),
-        "trace_headers": trace_headers,
-    }
+    return ExecutorTelemetryContext(
+        request_id=request_id_var.get(),
+        trace_headers=trace_headers,
+    )
 
 
-def _process_benchmark_kwargs(
+def _executor_execution(
     benchmark_row: Benchmark,
     request: StartBenchmarkRequest,
     verified_task_ids: list[str],
-) -> dict[str, Any]:
+) -> ExecutorExecution:
     if benchmark_row.aws_managed:
-        return {
-            "execution_context_json": ManagedExecutionContext(
+        return managed_executor_execution(
+            ManagedExecutionContext(
                 version=2,
                 benchmark_id=benchmark_row.id,
                 verified_task_ids=verified_task_ids,
                 start_benchmark_request=request,
-            ).model_dump(mode="json")
-        }
-    return {
-        "start_benchmark_request_json": request.model_dump(),
-        "benchmark_id_str": str(benchmark_row.id),
-        "verified_task_ids": verified_task_ids,
-    }
+            )
+        )
+    return access_key_executor_execution(request, benchmark_row.id, verified_task_ids)
 
 
 async def _enqueue_executor_dispatch(
     dispatch: ExecutorDispatch,
     *,
     session: Session,
-    payload: dict[str, Any],
+    execution: ExecutorExecution,
     verified_task_ids: list[str],
 ) -> None:
     telemetry_context = _executor_telemetry_context()
     taskiq_labels = {
-        "request_id": telemetry_context["request_id"],
-        **telemetry_context["trace_headers"],
+        "request_id": telemetry_context.request_id,
+        "benchmark_id": str(execution.benchmark_id),
+        **telemetry_context.trace_headers,
     }
+    task_payload = ExecutorTaskPayload(
+        process=ExecutorProcessPayload(
+            execution=execution,
+            telemetry_context=telemetry_context,
+            executor_dispatch_id=str(dispatch.id),
+        ),
+        executor_release_id=dispatch.executor_release_id,
+        executor_artifact_uri=dispatch.executor_artifact_uri,
+        executor_artifact_digest=dispatch.executor_artifact_digest,
+        executor_protocol_version=dispatch.executor_protocol_version,
+    )
     for attempt in range(3):
         try:
-            await (
-                process_benchmark.kicker()
-                .with_labels(**taskiq_labels)
-                .kiq(
-                    **payload,
-                    telemetry_context_json=telemetry_context,
-                    executor_dispatch_id=str(dispatch.id),
-                    executor_release_id=dispatch.executor_release_id,
-                    executor_artifact_uri=dispatch.executor_artifact_uri,
-                    executor_artifact_digest=dispatch.executor_artifact_digest,
-                    executor_protocol_version=dispatch.executor_protocol_version,
-                )
-            )
+            await process_benchmark.kicker().with_labels(**taskiq_labels).kiq(**task_payload.to_wire())
             return
         except Exception as exc:
             if attempt < 2:
@@ -611,7 +616,7 @@ async def start_benchmark(
             benchmark=benchmark_row,
             dispatch_id=dispatch_id,
         )
-        executor_payload = _process_benchmark_kwargs(benchmark_row, request, verify_response.task_ids)
+        executor_execution = _executor_execution(benchmark_row, request, verify_response.task_ids)
         session.commit()
     except Exception as exc:
         await _rollback_failed_start_admission(
@@ -637,7 +642,7 @@ async def start_benchmark(
     await _enqueue_executor_dispatch(
         executor_dispatch,
         session=session,
-        payload=executor_payload,
+        execution=executor_execution,
         verified_task_ids=verify_response.task_ids,
     )
 
@@ -1266,7 +1271,7 @@ async def retry_or_resume_benchmark(
             dispatch_id=dispatch_id,
             kind=dispatch_kind,
         )
-        executor_payload = _process_benchmark_kwargs(benchmark_row, resume_request, verified_task_ids)
+        executor_execution = _executor_execution(benchmark_row, resume_request, verified_task_ids)
         session.commit()
     except ReleaseControlError as exc:
         session.rollback()
@@ -1283,7 +1288,7 @@ async def retry_or_resume_benchmark(
     await _enqueue_executor_dispatch(
         executor_dispatch,
         session=session,
-        payload=executor_payload,
+        execution=executor_execution,
         verified_task_ids=verified_task_ids,
     )
     return RetryOrResumeBenchmarkResponse(status="success")

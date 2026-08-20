@@ -12,9 +12,9 @@ import sys
 import tempfile
 import urllib.request
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol, Unpack, cast
+from typing import Protocol, cast
 
 import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
@@ -26,12 +26,11 @@ from executor_protocol import (
     DEFAULT_EXECUTOR_RELEASE_PREFIX,
     DEFAULT_STABLE_QUEUE_NAME,
     EXECUTOR_TASK_NAME,
-    SUPPORTED_PROTOCOL_VERSIONS,
-    ExecutorPayload,
-    executor_payload_benchmark_id,
-    normalize_executor_telemetry_context,
+    ExecutorJsonObject,
+    ExecutorProcessPayload as SharedExecutorProcessPayload,
+    ExecutorTaskPayloadValidationError,
+    ExecutorTaskPayload as SharedExecutorTaskPayload,
     validate_executor_artifact_uri,
-    validate_executor_digest,
 )
 from services.executor_host.observability import (
     capture_dispatch_error,
@@ -42,6 +41,9 @@ from services.executor_host.observability import (
 )
 
 logger = logging.getLogger(__name__)
+
+ExecutorProcessPayload = SharedExecutorProcessPayload[ExecutorJsonObject, ExecutorJsonObject]
+ExecutorTaskPayload = SharedExecutorTaskPayload[ExecutorJsonObject, ExecutorJsonObject]
 
 DEFAULT_CACHE_DIR = "/var/cache/valkyrie-executors"
 ECS_AGENT_URI = os.environ.get("ECS_AGENT_URI")
@@ -154,16 +156,12 @@ class ArtifactDispatch:
     protocol_version: str
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, object]) -> ArtifactDispatch:
-        digest = validate_executor_digest(_required_string(payload, "executor_artifact_digest"))
-        protocol_version = _required_string(payload, "executor_protocol_version")
-        if protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
-            raise ValueError(f"Unsupported executor protocol version: {protocol_version}")
+    def from_task_payload(cls, payload: ExecutorTaskPayload) -> ArtifactDispatch:
         return cls(
-            release_id=_required_string(payload, "executor_release_id"),
-            artifact_uri=_required_string(payload, "executor_artifact_uri"),
-            artifact_digest=digest,
-            protocol_version=protocol_version,
+            release_id=payload.executor_release_id,
+            artifact_uri=payload.executor_artifact_uri,
+            artifact_digest=payload.executor_artifact_digest,
+            protocol_version=payload.executor_protocol_version,
         )
 
 
@@ -171,58 +169,6 @@ class ArtifactDispatch:
 class DispatchAuthority:
     dispatch_id: str
     benchmark_id: str
-
-
-@dataclass(frozen=True)
-class ExecutorProcessPayload:
-    benchmark_id: str
-    verified_task_ids: list[str]
-    arguments: dict[str, object]
-
-    @classmethod
-    def from_payload(cls, payload: Mapping[str, object]) -> ExecutorProcessPayload:
-        telemetry_context = normalize_executor_telemetry_context(payload.get("telemetry_context_json"))
-        execution_context = payload.get("execution_context_json")
-        access_key_values = (
-            payload.get("start_benchmark_request_json"),
-            payload.get("benchmark_id_str"),
-            payload.get("verified_task_ids"),
-        )
-        if execution_context is not None:
-            if any(value is not None for value in access_key_values):
-                raise ValueError("Executor payload mixes access-key and managed execution inputs")
-            if not isinstance(execution_context, Mapping):
-                raise ValueError("Executor payload has no valid managed execution context")
-            execution_context_mapping = cast(Mapping[str, object], execution_context)
-            benchmark_id = execution_context_mapping.get("benchmark_id")
-            raw_task_ids = execution_context_mapping.get("verified_task_ids")
-            arguments: dict[str, object] = {"execution_context_json": dict(execution_context_mapping)}
-        else:
-            request, benchmark_id, raw_task_ids = access_key_values
-            if not isinstance(request, Mapping):
-                raise ValueError("Executor payload has no valid access-key benchmark request")
-            request_mapping = cast(Mapping[str, object], request)
-            arguments = {
-                "start_benchmark_request_json": dict(request_mapping),
-                "benchmark_id_str": benchmark_id,
-                "verified_task_ids": raw_task_ids,
-            }
-        arguments["telemetry_context_json"] = telemetry_context
-        if not isinstance(benchmark_id, str) or not benchmark_id:
-            raise ValueError("Executor payload has no valid benchmark ID")
-        verified_task_ids = (
-            [str(task_id) for task_id in cast(list[object], raw_task_ids)] if isinstance(raw_task_ids, list) else []
-        )
-        return cls(
-            benchmark_id=benchmark_id,
-            verified_task_ids=verified_task_ids,
-            arguments=arguments,
-        )
-
-
-def _payload_string(payload: Mapping[str, object], key: str) -> str:
-    value = payload.get(key)
-    return str(value) if value else ""
 
 
 class ExecutorDispatchStore(Protocol):
@@ -483,13 +429,6 @@ class PostgresExecutorDispatchStore:
             return True
 
 
-def _required_string(payload: Mapping[str, object], key: str) -> str:
-    value = payload.get(key)
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{key} is required")
-    return value
-
-
 def verify_file_digest(path: Path, expected_digest: str) -> None:
     digest = hashlib.sha256()
     with path.open("rb") as artifact:
@@ -578,10 +517,9 @@ class ExecutorSupervisor:
     ) -> None:
         if not await is_current():
             raise DispatchAuthorityLostError(f"Executor dispatch {authority.dispatch_id} was superseded before spawn")
-        payload = {**process_payload.arguments, "executor_dispatch_id": authority.dispatch_id}
         with tempfile.TemporaryDirectory(dir=self.cache_dir, prefix=".dispatch-") as temporary_directory:
             payload_path = Path(temporary_directory) / "payload.json"
-            payload_path.write_text(json.dumps(payload))
+            payload_path.write_text(json.dumps(process_payload.to_wire()))
             logger.info(
                 "Launching benchmark %s dispatch_id=%s release=%s digest=%s protocol=%s",
                 authority.benchmark_id,
@@ -740,7 +678,7 @@ async def run_executor_dispatch(
         claim_task = asyncio.create_task(
             store.claim(
                 executor_dispatch_id,
-                process_payload.benchmark_id,
+                str(process_payload.benchmark_id),
                 dispatch,
             )
         )
@@ -785,29 +723,32 @@ async def run_executor_dispatch(
 
 
 @broker.task(EXECUTOR_TASK_NAME)
-async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
-    raw_payload: dict[str, object] = dict(payload)
+async def launch_executor(**payload: object) -> None:
+    try:
+        task_payload = ExecutorTaskPayload.from_wire(payload)
+    except ExecutorTaskPayloadValidationError as error:
+        with dispatch_observability_context(
+            error.benchmark_id,
+            error.dispatch_id,
+            error.release_id,
+            error.telemetry_context,
+        ) as child_telemetry_context:
+            capture_dispatch_error(error, child_telemetry_context)
+        raise
+    process_payload = task_payload.process
     with dispatch_observability_context(
-        executor_payload_benchmark_id(raw_payload),
-        _payload_string(raw_payload, "executor_dispatch_id"),
-        _payload_string(raw_payload, "executor_release_id"),
-        normalize_executor_telemetry_context(raw_payload.get("telemetry_context_json")),
+        str(process_payload.benchmark_id),
+        process_payload.executor_dispatch_id,
+        task_payload.executor_release_id,
+        process_payload.telemetry_context,
     ) as child_telemetry_context:
         try:
-            dispatch_id = _required_string(raw_payload, "executor_dispatch_id")
-            dispatch = ArtifactDispatch.from_payload(raw_payload)
-            process_payload = ExecutorProcessPayload.from_payload(raw_payload)
-            process_payload = replace(
-                process_payload,
-                arguments={
-                    **process_payload.arguments,
-                    "telemetry_context_json": child_telemetry_context,
-                },
-            )
+            dispatch = ArtifactDispatch.from_task_payload(task_payload)
+            process_payload = process_payload.model_copy(update={"telemetry_context": child_telemetry_context})
             await run_executor_dispatch(
                 supervisor,
                 dispatch_store,
-                executor_dispatch_id=dispatch_id,
+                executor_dispatch_id=process_payload.executor_dispatch_id,
                 dispatch=dispatch,
                 process_payload=process_payload,
             )

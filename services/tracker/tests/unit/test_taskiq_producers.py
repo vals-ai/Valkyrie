@@ -356,7 +356,7 @@ def test_managed_resume_payload_failure_rolls_back_recovery_state(
         raise RuntimeError("payload validation failed")
 
     monkeypatch.setattr("main.reset_to_in_progress_status", mutate_recovery_state)
-    monkeypatch.setattr("main._process_benchmark_kwargs", fail_payload_build)
+    monkeypatch.setattr("main._executor_execution", fail_payload_build)
 
     response = TestClient(app, raise_server_exceptions=False).post(f"/retry-or-resume-benchmark/{benchmark_id}")
 

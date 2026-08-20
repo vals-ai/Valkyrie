@@ -125,7 +125,9 @@ def _run_tracker(dsn: str, context_path: str) -> None:
                 "start_benchmark_request_json": {},
                 "benchmark_id_str": _RUN_ID,
                 "verified_task_ids": [],
-                "telemetry_context_json": tracker_main._executor_telemetry_context(),  # pyright: ignore[reportPrivateUsage]
+                "telemetry_context_json": tracker_main._executor_telemetry_context().model_dump(  # pyright: ignore[reportPrivateUsage]
+                    mode="json"
+                ),
                 "executor_dispatch_id": _DISPATCH_ID,
                 "executor_release_id": _RELEASE_ID,
                 "executor_artifact_uri": "s3://artifacts/local-smoke.pex",
@@ -156,7 +158,7 @@ def _run_executor_host(dsn: str, input_path: str, output_path: str) -> None:
     ) -> None:
         del _executor_supervisor, _store, executor_dispatch_id, dispatch
         logging.getLogger("executor-host.observability.smoke").info("ExecutorHost dispatched observability smoke run")
-        Path(output_path).write_text(json.dumps(process_payload.arguments["telemetry_context_json"]))
+        Path(output_path).write_text(json.dumps(process_payload.telemetry_context.model_dump(mode="json")))
         _capture_test_error("valkyrie-executor-host")
 
     host_supervisor.run_executor_dispatch = capture_dispatch
@@ -169,13 +171,17 @@ def _run_executor(dsn: str, context_path: str) -> None:
     os.environ["ENVIRONMENT"] = "development"
     configure_logging()
     configure_observability("valkyrie-executor", environment=_ENVIRONMENT)
-    telemetry_context = cast(dict[str, Any], json.loads(Path(context_path).read_text()))
-    with _executor_context(
+    telemetry_context = json.loads(Path(context_path).read_text())
+    process_payload = ExecutorProcessPayload.from_wire(
         {
+            "start_benchmark_request_json": {},
             "benchmark_id_str": _RUN_ID,
+            "verified_task_ids": [],
             "telemetry_context_json": telemetry_context,
+            "executor_dispatch_id": _DISPATCH_ID,
         }
-    ):
+    )
+    with _executor_context(process_payload):
         with logfire.span("observability.smoke.executor"):
             logging.getLogger("tracker.executor.observability.smoke").info("Executor processed observability smoke run")
             _capture_test_error("valkyrie-executor")

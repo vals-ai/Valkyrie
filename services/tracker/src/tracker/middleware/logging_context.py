@@ -4,7 +4,6 @@ from typing import Any
 
 from taskiq import TaskiqMessage, TaskiqMiddleware, TaskiqResult
 
-from executor_protocol import executor_payload_benchmark_id
 from tracker.logging import benchmark_id_var, request_id_var, task_id_var
 
 
@@ -16,7 +15,8 @@ class LoggingContextMiddleware(TaskiqMiddleware):
         benchmark_id_var.set("")
         task_id_var.set("")
 
-        benchmark_id = executor_payload_benchmark_id(message.kwargs)
+        # Labels are optional logging hints; executor authorization uses the validated payload.
+        benchmark_id = message.labels.get("benchmark_id", "")
         if benchmark_id:
             benchmark_id_var.set(benchmark_id)
 

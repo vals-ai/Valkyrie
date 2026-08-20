@@ -3,7 +3,6 @@
 Run: uv run pytest tests/unit/observability/test_observability.py
 """
 
-import importlib
 import logging
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -21,10 +20,7 @@ import tracker.observability.retry as retry_module
 import tracker.observability.sentry as sentry_module
 import tracker.observability.tracing as tracing_module
 import tracker.observability as observability_module
-
-
-def _run_orchestration() -> Any:
-    return importlib.import_module("tracker.utils.run_orchestration")
+from tracker.types import ExecutorProcessPayload
 
 
 @pytest.mark.parametrize("failing_component", ["sentry", "tracing"])
@@ -47,7 +43,7 @@ def test_observability_initialization_failure_does_not_escape(
     assert error in warning.call_args.args
 
 
-def test_invalid_queued_request_does_not_expose_aws_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_invalid_queued_request_does_not_expose_aws_credentials() -> None:
     sentinels = (
         "AKIA_QUEUE_SENTINEL",
         "secret-queue-sentinel",
@@ -63,22 +59,21 @@ def test_invalid_queued_request_does_not_expose_aws_credentials(monkeypatch: pyt
         }
     }
 
-    run_orchestration = _run_orchestration()
-    warnings: list[str] = []
-    monkeypatch.setattr(run_orchestration.logger, "warning", lambda message, *args: warnings.append(message))
-
-    with pytest.raises(ValueError, match="Queued benchmark request is invalid") as exc_info:
-        run_orchestration._parse_start_benchmark_request(payload)
+    with pytest.raises(ValueError, match="Executor process payload is invalid") as exc_info:
+        ExecutorProcessPayload.from_wire(
+            {
+                "start_benchmark_request_json": payload,
+                "benchmark_id_str": "00000000-0000-0000-0000-000000000001",
+                "verified_task_ids": [],
+                "executor_dispatch_id": "dispatch-id",
+            }
+        )
 
     rendered_error = f"{exc_info.value!r} {exc_info.value}"
     assert all(sentinel not in rendered_error for sentinel in sentinels)
     assert exc_info.value.__context__ is None
 
-    validation_warnings = [message for message in warnings if "validation" in message]
-    assert validation_warnings, "expected a sanitized validation warning naming the failing fields"
-    rendered_warnings = " ".join(validation_warnings)
-    assert "aws_default_region" in rendered_warnings
-    assert all(sentinel not in rendered_warnings for sentinel in sentinels)
+    assert "aws_default_region" in rendered_error
 
 
 class TestMetrics:

@@ -4,11 +4,14 @@ Run: uv run pytest tests/unit/test_main.py
 """
 
 import io
+import json
 import logging
+import sys
 import tarfile
 from collections.abc import AsyncIterator
 from datetime import timezone
-from typing import Any, cast
+from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -30,7 +33,7 @@ from taskiq.message import BrokerMessage, TaskiqMessage
 
 import main as main_module
 import services.executor_host.supervisor as executor_host  # pyright: ignore[reportMissingImports]
-from executor_protocol import SUPPORTED_PROTOCOL_VERSION, ExecutorTelemetryContext
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from main import app, tracker_service_error_handler
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
@@ -67,6 +70,7 @@ from tracker.types import (
 from tracker.utils import update_benchmark_concurrency
 
 client = TestClient(app)
+_EXECUTOR_DIGEST = "0" * 64
 
 
 @pytest.fixture(autouse=True)
@@ -75,7 +79,7 @@ def active_executor_release(database_session: Session) -> None:
     release = ExecutorRelease(
         id="test-release",
         artifact_uri="s3://artifacts/test-release.pex",
-        artifact_digest="digest-test-release",
+        artifact_digest=_EXECUTOR_DIGEST,
         protocol_version=SUPPORTED_PROTOCOL_VERSION,
         status=ExecutorReleaseStatus.ACTIVE,
         readiness_verified=True,
@@ -545,7 +549,7 @@ class TestTrackerAPI:
         assert benchmark_row.executor_release_id == "test-release"
         assert benchmark_row.current_execution_release_id == "test-release"
         assert benchmark_row.executor_artifact_uri == "s3://artifacts/test-release.pex"
-        assert benchmark_row.executor_artifact_digest == "digest-test-release"
+        assert benchmark_row.executor_artifact_digest == _EXECUTOR_DIGEST
         assert benchmark_row.executor_protocol_version == SUPPORTED_PROTOCOL_VERSION
         queued_call = mock_kicker.queued_calls[0]
         dispatch_id = UUID(queued_call["executor_dispatch_id"])
@@ -556,7 +560,7 @@ class TestTrackerAPI:
         assert dispatch.status == ExecutorDispatchStatus.QUEUED
         assert dispatch.executor_release_id == "test-release"
         assert dispatch.executor_artifact_uri == "s3://artifacts/test-release.pex"
-        assert dispatch.executor_artifact_digest == "digest-test-release"
+        assert dispatch.executor_artifact_digest == _EXECUTOR_DIGEST
         assert dispatch.executor_protocol_version == SUPPORTED_PROTOCOL_VERSION
         assert queued_call["verified_task_ids"] == [f"task_{i}" for i in range(500)]
         task_rows = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
@@ -568,7 +572,7 @@ class TestTrackerAPI:
         assert json_response["agent_name"] == request.contract.name
         assert json_response["executor_release_id"] == "test-release"
         assert json_response["current_execution_release_id"] == "test-release"
-        assert json_response["executor_artifact_digest"] == "digest-test-release"
+        assert json_response["executor_artifact_digest"] == _EXECUTOR_DIGEST
         assert json_response["executor_protocol_version"] == SUPPORTED_PROTOCOL_VERSION
         assert json_response["concurrency"] == request.concurrency
 
@@ -583,6 +587,7 @@ class TestTrackerAPI:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
+        tmp_path: Path,
         protocol_version: str,
         aws_managed: bool,
     ) -> None:
@@ -693,39 +698,88 @@ class TestTrackerAPI:
 
         assert taskiq_message.task_name == executor_host.launch_executor.task_name
         assert STABLE_QUEUE_NAME == executor_host.QUEUE_NAME
+        assert taskiq_message.labels["benchmark_id"] == str(benchmark.id)
         assert taskiq_message.kwargs["executor_protocol_version"] == protocol_version
         assert observed_host["executor_dispatch_id"] == str(dispatch.id)
         process_payload = observed_host["process_payload"]
         assert isinstance(process_payload, executor_host.ExecutorProcessPayload)
-        assert process_payload.benchmark_id == str(benchmark.id)
+        assert process_payload.benchmark_id == benchmark.id
         assert process_payload.verified_task_ids == ["task_0"]
         telemetry_context = taskiq_message.kwargs["telemetry_context_json"]
         assert telemetry_context["request_id"]
+        assert taskiq_message.labels["request_id"] == telemetry_context["request_id"]
         assert isinstance(telemetry_context["trace_headers"], dict)
-        child_telemetry_context = cast(
-            ExecutorTelemetryContext,
-            process_payload.arguments["telemetry_context_json"],
-        )
-        assert child_telemetry_context["request_id"] == telemetry_context["request_id"]
-        assert child_telemetry_context["trace_headers"]
-        if aws_managed:
-            assert process_payload.arguments == {
-                "execution_context_json": taskiq_message.kwargs["execution_context_json"],
-                "telemetry_context_json": child_telemetry_context,
-            }
-        else:
-            assert process_payload.arguments == {
-                "start_benchmark_request_json": request.model_dump(),
-                "benchmark_id_str": str(benchmark.id),
-                "verified_task_ids": ["task_0"],
-                "telemetry_context_json": child_telemetry_context,
-            }
+        host_task_payload = executor_host.ExecutorTaskPayload.from_wire(taskiq_message.kwargs)
+        assert host_task_payload.process.telemetry_context.model_dump(mode="json") == telemetry_context
+        child_telemetry_context = process_payload.telemetry_context
+        assert child_telemetry_context.request_id == telemetry_context["request_id"]
+        assert child_telemetry_context.trace_headers
         host_dispatch = observed_host["dispatch"]
         assert isinstance(host_dispatch, executor_host.ArtifactDispatch)
         assert host_dispatch.release_id == dispatch.executor_release_id
         assert host_dispatch.artifact_uri == dispatch.executor_artifact_uri
         assert host_dispatch.artifact_digest == dispatch.executor_artifact_digest
         assert host_dispatch.protocol_version == dispatch.executor_protocol_version
+
+        marker = tmp_path / "executor-result.json"
+        executor_script = tmp_path / "executor.py"
+        executor_script.write_text(
+            """import json, os
+from pathlib import Path
+from opentelemetry.context import Context
+from tracker.executor import entrypoint
+
+trace_headers = {}
+
+def capture_trace_headers(headers):
+    trace_headers.update(headers)
+    return Context()
+
+async def observe(execution, *, executor_dispatch_id):
+    result = {
+        "mode": execution.mode,
+        "benchmark_id": str(execution.benchmark_id),
+        "verified_task_ids": execution.verified_task_ids,
+        "request": execution.request.model_dump(mode="json"),
+        "executor_dispatch_id": executor_dispatch_id,
+        "request_id": entrypoint.request_id_var.get(),
+        "trace_headers": trace_headers,
+    }
+    Path(os.environ["EXECUTOR_TEST_MARKER"]).write_text(json.dumps(result))
+
+entrypoint.extract = capture_trace_headers
+entrypoint.process_benchmark = observe
+entrypoint.main()
+"""
+        )
+        monkeypatch.setenv("EXECUTOR_TEST_MARKER", str(marker))
+
+        async def current_dispatch() -> bool:
+            return True
+
+        await executor_host.ExecutorSupervisor(
+            cache_dir=tmp_path,
+            python_executable=sys.executable,
+        ).run(
+            executor_script,
+            host_dispatch,
+            process_payload=process_payload,
+            authority=executor_host.DispatchAuthority(
+                dispatch_id=str(dispatch.id),
+                benchmark_id=str(benchmark.id),
+            ),
+            is_current=current_dispatch,
+        )
+
+        assert json.loads(marker.read_text()) == {
+            "mode": "managed" if aws_managed else "access_key",
+            "benchmark_id": str(benchmark.id),
+            "verified_task_ids": ["task_0"],
+            "request": request.model_dump(mode="json"),
+            "executor_dispatch_id": str(dispatch.id),
+            "request_id": child_telemetry_context.request_id,
+            "trace_headers": child_telemetry_context.trace_headers,
+        }
 
     async def test_start_benchmark_enqueue_failure_is_retryable(
         self,
@@ -825,7 +879,7 @@ class TestTrackerAPI:
 
         monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent)
         monkeypatch.setattr(main_module, "delete_from_s3", delete_agent_copy)
-        monkeypatch.setattr(main_module, "_process_benchmark_kwargs", fail_payload_build)
+        monkeypatch.setattr(main_module, "_executor_execution", fail_payload_build)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
         request = StartBenchmarkRequest(
             contract=contract,
@@ -2289,7 +2343,7 @@ class TestTrackerAPI:
             status=BenchmarkStatus.ERROR,
             executor_release_id="test-release",
             executor_artifact_uri="s3://artifacts/test-release.pex",
-            executor_artifact_digest="digest-test-release",
+            executor_artifact_digest=_EXECUTOR_DIGEST,
             executor_protocol_version="1",
             arguments=BenchmarkArguments(contract=contract, concurrency=1),
         )

@@ -5,7 +5,6 @@ import traceback
 from asyncio import Semaphore, gather
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from typing import Any, Sequence, cast
 from uuid import UUID
 
@@ -13,7 +12,6 @@ import sentry_sdk
 from benchmark_service import SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from botocore.config import Config
-from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
 from tracker._lambda import dry_run_lambda, invoke_lambda
@@ -36,7 +34,7 @@ from tracker.database.session import engine
 from tracker.executor.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
 from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
-from executor_protocol import EXECUTOR_TASK_NAME
+from executor_protocol import EXECUTOR_TASK_NAME, ManagedExecutorExecution
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import error_span
@@ -44,10 +42,10 @@ from tracker.observability.sentry import capture_exception
 from tracker.observability.tracing import observability_span
 from tracker.outbound_security import validate_custom_service_destination
 from tracker.types import (
+    ExecutorExecution,
+    ExecutorTaskPayload,
     FinalViewResponse,
-    HarnessConfig,
-    ManagedExecutionContext,
-    StartBenchmarkRequest,
+    ManagedExecutionRequest,
 )
 
 from tracker.utils.resources import (
@@ -318,80 +316,8 @@ async def finalize_all_error_run(
         return False
 
 
-def _parse_start_benchmark_request(payload: dict[str, Any]) -> StartBenchmarkRequest:
-    """Validate a queued request without serializing credential-bearing input in errors."""
-    request: StartBenchmarkRequest | None
-    try:
-        request = StartBenchmarkRequest.model_validate(payload)
-    except ValidationError as exc:
-        # Log field locations only; rendering the full error would expose input
-        # values, which include AWS credentials on this payload.
-        logger.warning(
-            f"Queued benchmark request failed validation: {exc.errors(include_url=False, include_input=False)}"
-        )
-        request = None
-
-    if request is None:
-        raise ValueError("Queued benchmark request is invalid and cannot be processed.")
-    return request
-
-
-@dataclass(frozen=True)
-class _QueuedExecution:
-    request: StartBenchmarkRequest
-    benchmark_id: UUID
-    verified_task_ids: list[str]
-    aws_managed: bool
-
-
-def _parse_queued_execution(
-    start_benchmark_request_json: dict[str, Any] | None,
-    benchmark_id_str: str | None,
-    verified_task_ids: list[str] | None,
-    execution_context_json: dict[str, Any] | None,
-) -> _QueuedExecution:
-    if execution_context_json is None:
-        if start_benchmark_request_json is None or benchmark_id_str is None or verified_task_ids is None:
-            raise ValueError("Queued benchmark request is incomplete and cannot be processed.")
-        request = _parse_start_benchmark_request(start_benchmark_request_json)
-        if request.harness_config is None:
-            raise ValueError("Queued access-key benchmark request has no AWS configuration.")
-        return _QueuedExecution(
-            request=request,
-            benchmark_id=UUID(benchmark_id_str),
-            verified_task_ids=verified_task_ids,
-            aws_managed=False,
-        )
-
-    if start_benchmark_request_json is not None or benchmark_id_str is not None or verified_task_ids is not None:
-        raise ValueError("Queued benchmark request mixes access-key and managed execution inputs.")
-    try:
-        context = ManagedExecutionContext.model_validate(execution_context_json)
-    except ValidationError:
-        raise ValueError("Queued managed execution context is invalid and cannot be processed.") from None
-    return _QueuedExecution(
-        request=context.start_benchmark_request,
-        benchmark_id=context.benchmark_id,
-        verified_task_ids=context.verified_task_ids,
-        aws_managed=True,
-    )
-
-
-def _queued_benchmark_id(
-    benchmark_id_str: str | None,
-    execution_context_json: dict[str, Any] | None,
-) -> UUID:
-    raw_benchmark_id = (
-        execution_context_json.get("benchmark_id") if execution_context_json is not None else benchmark_id_str
-    )
-    try:
-        return UUID(str(raw_benchmark_id))
-    except (TypeError, ValueError):
-        raise ValueError("Queued benchmark request has no valid benchmark ID.") from None
-
-
 def _preflight_managed_aws(
-    execution: _QueuedExecution,
+    execution: ManagedExecutorExecution[ManagedExecutionRequest],
     runtime: AWSRuntime,
 ) -> SandboxProviderConfig:
     """Verify executor-owned AWS access before starting sandbox work."""
@@ -423,20 +349,19 @@ async def hold_dispatch_authority(
         yield session, benchmark
 
 
-# Keep the Tracker producer and ExecutorHost on one stable Taskiq wire name.
 @broker.task(EXECUTOR_TASK_NAME)
-async def process_benchmark(
-    start_benchmark_request_json: dict[str, Any] | None = None,
-    benchmark_id_str: str | None = None,
-    verified_task_ids: list[str] | None = None,
-    execution_context_json: dict[str, Any] | None = None,
-    *,
-    executor_dispatch_id: str,
-) -> None:
-    benchmark_id = _queued_benchmark_id(
-        benchmark_id_str,
-        execution_context_json,
+async def process_benchmark_task(**payload: object) -> None:
+    """Validate the deployed Taskiq shape before running executor behavior."""
+    task_payload = ExecutorTaskPayload.from_wire(payload)
+    await process_benchmark(
+        task_payload.process.execution,
+        executor_dispatch_id=task_payload.process.executor_dispatch_id,
     )
+
+
+async def process_benchmark(execution: ExecutorExecution, *, executor_dispatch_id: str) -> None:
+    """Process one runtime-validated executor execution."""
+    benchmark_id = execution.benchmark_id
     try:
         authority = ExecutionAuthority(
             benchmark_id=benchmark_id,
@@ -456,12 +381,6 @@ async def process_benchmark(
     benchmark_service: BenchmarkServiceClient | None = None
     notifier: SlackNotifier | None = None
     try:
-        execution = _parse_queued_execution(
-            start_benchmark_request_json,
-            benchmark_id_str,
-            verified_task_ids,
-            execution_context_json,
-        )
         start_benchmark_request = execution.request
         verified_task_ids = execution.verified_task_ids
 
@@ -477,8 +396,9 @@ async def process_benchmark(
         ):
             pass
 
-        if execution.aws_managed != benchmark_row.aws_managed:
-            queued_mode = "managed" if execution.aws_managed else "access-key"
+        aws_managed = isinstance(execution, ManagedExecutorExecution)
+        if aws_managed != benchmark_row.aws_managed:
+            queued_mode = "managed" if aws_managed else "access-key"
             stored_mode = "managed" if benchmark_row.aws_managed else "access-key"
             raise TrackerServiceError(
                 f"Queued {queued_mode} execution does not match the stored {stored_mode} run mode"
@@ -491,11 +411,11 @@ async def process_benchmark(
                 auth_required=AUTH_REQUIRED,
             )
 
-        if execution.aws_managed:
+        if aws_managed:
             aws_runtime = deployment_aws_runtime(org.id)
             sandbox_provider_config = _preflight_managed_aws(execution, aws_runtime)
         else:
-            harness_config = cast(HarnessConfig, start_benchmark_request.harness_config)
+            harness_config = execution.request.harness_config
             aws_runtime = AWSRuntime.from_harness_config(harness_config)
             sandbox_provider_config = fetch_sandbox_provider_config(
                 harness_config.sandbox_provider_secret_name,
@@ -511,7 +431,7 @@ async def process_benchmark(
                 intervals=start_benchmark_request.webhook_intervals,
             )
 
-        if not execution.aws_managed:
+        if not aws_managed:
             create_benchmark_log_group(str(benchmark_id), aws_runtime)
 
         # Create tasks inside of the database for each task id

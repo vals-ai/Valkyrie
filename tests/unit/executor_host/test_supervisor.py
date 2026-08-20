@@ -28,11 +28,14 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     DeleteAfterAckRedisStreamBroker,
     ExecutorProcessPayload,
     ExecutorSupervisor,
+    ExecutorTaskPayload,
     PostgresExecutorDispatchStore,
     run_executor_dispatch,
     verify_file_digest,
 )
 from executor_protocol import validate_executor_artifact_uri
+
+_BENCHMARK_ID = "00000000-0000-0000-0000-000000000001"
 
 
 class FakeDispatchStore:
@@ -154,58 +157,109 @@ class MockRedis:
 
 
 def _dispatch(*, digest: str) -> ArtifactDispatch:
-    return ArtifactDispatch.from_payload(
+    task_payload = ExecutorTaskPayload.from_wire(
         {
+            "start_benchmark_request_json": {},
+            "benchmark_id_str": _BENCHMARK_ID,
+            "verified_task_ids": [],
+            "executor_dispatch_id": "dispatch-1",
             "executor_release_id": "release-v2",
             "executor_artifact_uri": "s3://artifacts/executors/v2.pex",
             "executor_artifact_digest": digest,
             "executor_protocol_version": "1",
         }
     )
+    return ArtifactDispatch.from_task_payload(task_payload)
 
 
 def _process_payload(
     request: dict[str, object] | None = None,
     *,
-    benchmark_id: str = "benchmark-1",
+    benchmark_id: str = _BENCHMARK_ID,
     task_ids: list[str] | None = None,
 ) -> ExecutorProcessPayload:
-    return ExecutorProcessPayload.from_payload(
+    return ExecutorProcessPayload.from_wire(
         {
             "start_benchmark_request_json": request or {},
             "benchmark_id_str": benchmark_id,
             "verified_task_ids": task_ids or [],
+            "executor_dispatch_id": "dispatch-1",
         }
     )
 
 
 def test_managed_process_payload_is_normalized_once() -> None:
     context: dict[str, object] = {
-        "benchmark_id": "benchmark-1",
+        "version": 2,
+        "benchmark_id": _BENCHMARK_ID,
         "verified_task_ids": ["task-1"],
         "start_benchmark_request": {},
     }
 
-    payload = ExecutorProcessPayload.from_payload({"execution_context_json": context})
+    payload = ExecutorProcessPayload.from_wire(
+        {
+            "execution_context_json": context,
+            "executor_dispatch_id": "dispatch-1",
+        }
+    )
 
-    assert payload.benchmark_id == "benchmark-1"
+    assert str(payload.benchmark_id) == _BENCHMARK_ID
     assert payload.verified_task_ids == ["task-1"]
-    assert payload.arguments == {
+    assert payload.to_wire() == {
         "execution_context_json": context,
         "telemetry_context_json": {"request_id": "", "trace_headers": {}},
+        "executor_dispatch_id": "dispatch-1",
     }
 
 
-def test_process_payload_rejects_mixed_execution_shapes() -> None:
+async def test_process_payload_rejects_mixed_execution_shapes(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def unexpected_dispatch(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("mixed executor input must fail before dispatch launch")
+
+    monkeypatch.setattr(supervisor_module, "run_executor_dispatch", unexpected_dispatch)
+
     with pytest.raises(ValueError, match="mixes access-key and managed"):
-        ExecutorProcessPayload.from_payload(
-            {
-                "execution_context_json": {
-                    "benchmark_id": "benchmark-1",
-                    "verified_task_ids": [],
-                },
-                "start_benchmark_request_json": {},
-            }
+        await supervisor_module.launch_executor.original_func(
+            execution_context_json={
+                "version": 2,
+                "benchmark_id": _BENCHMARK_ID,
+                "verified_task_ids": [],
+                "start_benchmark_request": {},
+            },
+            start_benchmark_request_json={},
+            executor_dispatch_id="dispatch-1",
+            executor_release_id="release-v2",
+            executor_artifact_uri="s3://artifacts/executors/v2.pex",
+            executor_artifact_digest="0" * 64,
+            executor_protocol_version="2",
+        )
+
+    with pytest.raises(ValueError, match="Managed execution requires executor protocol 2"):
+        await supervisor_module.launch_executor.original_func(
+            execution_context_json={
+                "version": 2,
+                "benchmark_id": _BENCHMARK_ID,
+                "verified_task_ids": [],
+                "start_benchmark_request": {},
+            },
+            executor_dispatch_id="dispatch-1",
+            executor_release_id="release-v2",
+            executor_artifact_uri="s3://artifacts/executors/v2.pex",
+            executor_artifact_digest="0" * 64,
+            executor_protocol_version="1",
+        )
+
+    with pytest.raises(ValueError, match="unexpected fields: arguments"):
+        await supervisor_module.launch_executor.original_func(
+            start_benchmark_request_json={},
+            benchmark_id_str=_BENCHMARK_ID,
+            verified_task_ids=[],
+            executor_dispatch_id="dispatch-1",
+            executor_release_id="release-v2",
+            executor_artifact_uri="s3://artifacts/executors/v2.pex",
+            executor_artifact_digest="0" * 64,
+            executor_protocol_version="1",
+            arguments={},
         )
 
 
@@ -227,8 +281,12 @@ def _supervisor(
 
 def test_dispatch_rejects_missing_or_invalid_identity() -> None:
     with pytest.raises(ValueError, match="executor_artifact_digest"):
-        ArtifactDispatch.from_payload(
+        ExecutorTaskPayload.from_wire(
             {
+                "start_benchmark_request_json": {},
+                "benchmark_id_str": _BENCHMARK_ID,
+                "verified_task_ids": [],
+                "executor_dispatch_id": "dispatch-1",
                 "executor_release_id": "release-v2",
                 "executor_artifact_uri": "s3://artifacts/v2.pex",
                 "executor_protocol_version": "1",
@@ -463,7 +521,7 @@ async def test_run_forwards_dispatch_authority_to_executor(
     except (OSError, JSONDecodeError) as error:
         raise AssertionError(f"executor marker was not valid JSON: {error}") from error
     payload = result["payload"]
-    assert payload["benchmark_id_str"] == "benchmark-1"
+    assert payload["benchmark_id_str"] == _BENCHMARK_ID
     assert payload["verified_task_ids"] == ["task-1"]
     assert payload["executor_dispatch_id"] == "dispatch-1"
     assert payload["telemetry_context_json"] == {"request_id": "", "trace_headers": {}}
@@ -471,7 +529,7 @@ async def test_run_forwards_dispatch_authority_to_executor(
     assert store.authority_checks
     assert store.finished == [store.authority]
     assert (
-        f"Launching benchmark benchmark-1 dispatch_id=dispatch-1 release=release-v2 digest={digest} protocol=1"
+        f"Launching benchmark {_BENCHMARK_ID} dispatch_id=dispatch-1 release=release-v2 digest={digest} protocol=1"
     ) in caplog.messages
 
 
@@ -594,7 +652,7 @@ async def test_launch_executor_rejects_invalid_dispatch_id_without_side_effects(
     with pytest.raises(ValueError, match="executor_dispatch_id is required"):
         await supervisor_module.launch_executor.original_func(
             start_benchmark_request_json={},
-            benchmark_id_str="benchmark-1",
+            benchmark_id_str=_BENCHMARK_ID,
             verified_task_ids=[],
             executor_dispatch_id=cast(str, executor_dispatch_id),
             executor_release_id="release-v2",
@@ -609,29 +667,66 @@ async def test_launch_executor_rejects_invalid_dispatch_id_without_side_effects(
     capture_exception.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_broker_payload_dispatch_id_reaches_dispatch_owner(
+async def test_queued_payload_without_telemetry_reaches_executor_with_empty_context(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: dict[str, object] = {}
+    marker = tmp_path / "executor-result.json"
+    script = b"""import json, os
+from pathlib import Path
+from tracker.executor import entrypoint
 
-    async def capture_dispatch(*args: object, **kwargs: object) -> None:
-        captured.update(kwargs)
+def reject_trace_headers(_headers):
+    raise AssertionError("telemetry-free payload attempted to restore trace context")
 
-    monkeypatch.setattr(supervisor_module, "run_executor_dispatch", capture_dispatch)
+async def observe(execution, *, executor_dispatch_id):
+    result = {
+        "benchmark_id": str(execution.benchmark_id),
+        "executor_dispatch_id": executor_dispatch_id,
+        "request_id": entrypoint.request_id_var.get(),
+    }
+    Path(os.environ["EXECUTOR_TEST_MARKER"]).write_text(json.dumps(result))
+
+entrypoint.extract = reject_trace_headers
+entrypoint.process_benchmark = observe
+entrypoint.main()
+"""
+    digest = hashlib.sha256(script).hexdigest()
+    store = FakeDispatchStore()
+    monkeypatch.setenv("EXECUTOR_TEST_MARKER", str(marker))
+    monkeypatch.setattr(supervisor_module, "supervisor", _supervisor(tmp_path, content=script))
+    monkeypatch.setattr(supervisor_module, "dispatch_store", store)
 
     await supervisor_module.launch_executor.original_func(
-        start_benchmark_request_json={},
-        benchmark_id_str="benchmark-1",
+        start_benchmark_request_json={
+            "contract": {"name": "agent"},
+            "benchmark_name": "swebench",
+            "harness_config": {
+                "aws": {
+                    "aws_access_key_id": "access-key",
+                    "aws_secret_access_key": "secret-key",
+                    "aws_default_region": "us-east-1",
+                },
+                "s3_bucket": "bucket",
+                "log_group": "log-group",
+                "log_retention_policy": 30,
+                "sandbox_provider_secret_name": "provider-secret",
+            },
+        },
+        benchmark_id_str=_BENCHMARK_ID,
         verified_task_ids=[],
         executor_dispatch_id="dispatch-1",
         executor_release_id="release-v2",
         executor_artifact_uri="s3://artifacts/executors/v2.pex",
-        executor_artifact_digest="0" * 64,
+        executor_artifact_digest=digest,
         executor_protocol_version="1",
     )
 
-    assert captured["executor_dispatch_id"] == "dispatch-1"
+    assert json.loads(marker.read_text()) == {
+        "benchmark_id": _BENCHMARK_ID,
+        "executor_dispatch_id": "dispatch-1",
+        "request_id": "",
+    }
 
 
 @pytest.mark.asyncio
@@ -658,7 +753,7 @@ async def test_launch_executor_records_cancellation_before_context_cleanup(
     with pytest.raises(asyncio.CancelledError):
         await supervisor_module.launch_executor.original_func(
             start_benchmark_request_json={},
-            benchmark_id_str="benchmark-1",
+            benchmark_id_str=_BENCHMARK_ID,
             verified_task_ids=[],
             executor_dispatch_id="dispatch-1",
             executor_release_id="release-v2",
@@ -667,7 +762,7 @@ async def test_launch_executor_records_cancellation_before_context_cleanup(
             executor_protocol_version="1",
         )
 
-    assert cancellation_context["benchmark_id"] == "benchmark-1"
+    assert cancellation_context["benchmark_id"] == _BENCHMARK_ID
     assert cancellation_context["dispatch_id"] == "dispatch-1"
     assert host_observability.benchmark_id_var.get() == ""
 

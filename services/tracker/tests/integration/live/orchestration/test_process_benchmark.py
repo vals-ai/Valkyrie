@@ -29,7 +29,7 @@ from tracker.database.models import (
     TaskBreakdown,
     TaskStatus,
 )
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.types import HarnessConfig, StartBenchmarkRequest, access_key_executor_execution
 from tracker.utils import start_benchmark_request_to_benchmark
 
 process_benchmark = getattr(tracker_utils, "process_benchmark")
@@ -130,7 +130,10 @@ class TestProcessBenchmark:
         )
 
         authority_kwargs = executor_authority_kwargs(benchmark)
-        await process_benchmark(request.model_dump(), str(benchmark.id), _TASK_IDS, **authority_kwargs)
+        await process_benchmark(
+            access_key_executor_execution(request, benchmark.id, _TASK_IDS),
+            **authority_kwargs,
+        )
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.FINISHED
@@ -189,7 +192,10 @@ class TestProcessBenchmark:
         authority_kwargs = executor_authority_kwargs(benchmark)
         monkeypatch.setattr(Session, "commit", failing_commit)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID], **authority_kwargs)
+        await process_benchmark(
+            access_key_executor_execution(request, benchmark.id, [_TASK_ID]),
+            **authority_kwargs,
+        )
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.ERROR
@@ -248,7 +254,10 @@ class TestProcessBenchmark:
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", setup_task_with_failure)
         authority_kwargs = executor_authority_kwargs(benchmark)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs)
+        await process_benchmark(
+            access_key_executor_execution(request, benchmark.id, task_ids),
+            **authority_kwargs,
+        )
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.FINISHED, benchmark.error_message
@@ -300,7 +309,10 @@ class TestProcessBenchmark:
         )
         authority_kwargs = executor_authority_kwargs(benchmark)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID], **authority_kwargs)
+        await process_benchmark(
+            access_key_executor_execution(request, benchmark.id, [_TASK_ID]),
+            **authority_kwargs,
+        )
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.ERROR
@@ -350,12 +362,14 @@ class TestProcessBenchmark:
         await gather(
             *[
                 process_benchmark(
-                    benchmark.access_key_start_benchmark_request(
-                        harness_config,
-                        service_headers=service_headers,
-                    ).model_dump(),
-                    str(benchmark.id),
-                    [_TASK_ID],
+                    access_key_executor_execution(
+                        benchmark.access_key_start_benchmark_request(
+                            harness_config,
+                            service_headers=service_headers,
+                        ),
+                        benchmark.id,
+                        [_TASK_ID],
+                    ),
                     **authority_by_benchmark[benchmark.id],
                 )
                 for benchmark, request in benchmark_requests

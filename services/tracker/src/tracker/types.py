@@ -4,11 +4,19 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, TypeAlias, cast
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, Field, field_serializer, field_validator
+
+from executor_protocol import (
+    AccessKeyExecutorExecution,
+    ExecutorManagedExecutionContext,
+    ExecutorProcessPayload as SharedExecutorProcessPayload,
+    ExecutorTaskPayload as SharedExecutorTaskPayload,
+    ManagedExecutorExecution,
+)
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -95,6 +103,12 @@ class StartBenchmarkRequest(BaseModel):
             url=benchmark_service_url,
             service_headers=self.service_headers,
         )
+
+
+class AccessKeyExecutionRequest(StartBenchmarkRequest):
+    """Benchmark request whose access-key AWS configuration is present."""
+
+    harness_config: HarnessConfig
 
 
 class FetchBenchmarkTasksRequest(BaseModel):
@@ -210,18 +224,41 @@ def validate_managed_execution_request(request: StartBenchmarkRequest) -> None:
         raise ValueError("Managed execution requires a sandbox provider and provider secret name")
 
 
-class ManagedExecutionContext(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+def _validated_managed_execution_request(request: StartBenchmarkRequest) -> StartBenchmarkRequest:
+    validate_managed_execution_request(request)
+    return request
 
-    version: Literal[2]
-    benchmark_id: UUID
-    verified_task_ids: list[str]
-    start_benchmark_request: StartBenchmarkRequest
 
-    @model_validator(mode="after")
-    def validate_credential_free_request(self) -> "ManagedExecutionContext":
-        validate_managed_execution_request(self.start_benchmark_request)
-        return self
+ManagedExecutionRequest: TypeAlias = Annotated[
+    StartBenchmarkRequest,
+    AfterValidator(_validated_managed_execution_request),
+]
+ManagedExecutionContext: TypeAlias = ExecutorManagedExecutionContext[ManagedExecutionRequest]
+ExecutorExecution: TypeAlias = (
+    AccessKeyExecutorExecution[AccessKeyExecutionRequest] | ManagedExecutorExecution[ManagedExecutionRequest]
+)
+ExecutorProcessPayload: TypeAlias = SharedExecutorProcessPayload[AccessKeyExecutionRequest, ManagedExecutionRequest]
+ExecutorTaskPayload: TypeAlias = SharedExecutorTaskPayload[AccessKeyExecutionRequest, ManagedExecutionRequest]
+
+
+def access_key_executor_execution(
+    request: StartBenchmarkRequest,
+    benchmark_id: UUID,
+    verified_task_ids: list[str],
+) -> AccessKeyExecutorExecution[AccessKeyExecutionRequest]:
+    """Build validated access-key executor input before serialization."""
+    return AccessKeyExecutorExecution(
+        request=AccessKeyExecutionRequest.model_validate(request.model_dump()),
+        benchmark_id=benchmark_id,
+        verified_task_ids=verified_task_ids,
+    )
+
+
+def managed_executor_execution(
+    context: ManagedExecutionContext,
+) -> ManagedExecutorExecution[ManagedExecutionRequest]:
+    """Build validated managed executor input before serialization."""
+    return ManagedExecutorExecution(context=context)
 
 
 class AWSRuntimeResponse(BaseModel):
