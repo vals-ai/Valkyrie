@@ -254,6 +254,9 @@ class TestRunFinalization:
         async def skip_cloud_operation(*_args: Any, **_kwargs: Any) -> None:
             return None
 
+        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+            return "test-log-group"
+
         def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
             return DaytonaProviderConfig(
                 DAYTONA_API_KEY="test-key",
@@ -305,6 +308,7 @@ class TestRunFinalization:
             return FinalScoreResponse(tasks_evaluated=[scored_task.task_id], final_score=0.25, metadata={})
 
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
+        monkeypatch.setattr(run_orchestration_module, "create_benchmark_log_group", skip_log_group)
         monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", provider_config)
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", skip_cloud_operation)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_retry_task)
@@ -387,6 +391,9 @@ class TestRunFinalization:
             upload_calls += 1
             return None
 
+        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+            return "test-log-group"
+
         def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
             return DaytonaProviderConfig(
                 DAYTONA_API_KEY="test-key",
@@ -414,6 +421,7 @@ class TestRunFinalization:
             await both_monitors_arrived.wait()
 
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
+        monkeypatch.setattr(run_orchestration_module, "create_benchmark_log_group", skip_log_group)
         monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", provider_config)
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", skip_cloud_operation)
         monkeypatch.setattr(TaskMonitor, "track_tasks", synchronized_track_tasks)
@@ -528,6 +536,9 @@ class TestRunFinalization:
             side_effects["notification"]["calls"] += 1
             side_effects["notification"]["lock_held"] = assert_lock_held(benchmark.id)
 
+        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+            return "test-log-group"
+
         def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
             return DaytonaProviderConfig(
                 DAYTONA_API_KEY="test-key",
@@ -539,6 +550,7 @@ class TestRunFinalization:
             return FinalScoreResponse(tasks_evaluated=[task.task_id], final_score=1.0, metadata={})
 
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
+        monkeypatch.setattr(run_orchestration_module, "create_benchmark_log_group", skip_log_group)
         monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", provider_config)
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", assert_upload_lock_held)
         monkeypatch.setattr(run_orchestration_module, "invoke_lambda", assert_lambda_lock_held)
@@ -626,6 +638,9 @@ class TestRunFinalization:
             benchmarks.append((benchmark, expected_summary))
         postgres_session.commit()
 
+        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+            return "test-log-group"
+
         def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
             return DaytonaProviderConfig(
                 DAYTONA_API_KEY="test-key",
@@ -635,6 +650,7 @@ class TestRunFinalization:
 
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
 
+        monkeypatch.setattr(run_orchestration_module, "create_benchmark_log_group", skip_log_group)
         monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", provider_config)
 
         for benchmark, expected_summary in benchmarks:

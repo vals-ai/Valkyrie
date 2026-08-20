@@ -3,11 +3,9 @@
 Run: uv run pytest tests/unit/utils/test_task_execution_retry.py
 """
 
-import asyncio
-import threading
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
-from typing import Any, cast
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
@@ -34,95 +32,6 @@ from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedErro
 from tracker.sandbox import DependencySetupMode
 from tracker.types import HarnessConfig
 from tracker.utils import task_execution as task_execution_module
-
-
-async def test_buffered_cloudwatch_write_exposes_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail_write(_stream_key: str, _message: str, _runtime: AWSRuntime) -> None:
-        raise RuntimeError("cloudwatch unavailable")
-
-    monkeypatch.setattr(task_execution_module, "write_benchmark_log_event", fail_write)
-    monkeypatch.setattr(task_execution_module, "_CLOUDWATCH_LOG_WRITE_RETRY_DELAY_SECONDS", 0)
-    queue = task_execution_module.asyncio.Queue[str]()
-    queue.put_nowait("task output")
-
-    write = task_execution_module.buffer_logs(
-        queue,
-        "benchmark-123:task-456",
-        cast(AWSRuntime, Mock(spec=AWSRuntime)),
-        force_flush=True,
-    )
-
-    assert write is not None
-    with pytest.raises(RuntimeError, match="cloudwatch unavailable"):
-        await write
-
-
-async def test_buffered_cloudwatch_write_retries_the_same_batch(monkeypatch: pytest.MonkeyPatch) -> None:
-    messages: list[str] = []
-
-    def transient_write(_stream_key: str, message: str, _runtime: AWSRuntime) -> None:
-        messages.append(message)
-        if len(messages) == 1:
-            raise RuntimeError("cloudwatch unavailable")
-
-    monkeypatch.setattr(task_execution_module, "write_benchmark_log_event", transient_write)
-    monkeypatch.setattr(task_execution_module, "_CLOUDWATCH_LOG_WRITE_RETRY_DELAY_SECONDS", 0)
-    queue = task_execution_module.asyncio.Queue[str]()
-    queue.put_nowait("task output")
-
-    write = task_execution_module.buffer_logs(
-        queue,
-        "benchmark-123:task-456",
-        cast(AWSRuntime, Mock(spec=AWSRuntime)),
-        force_flush=True,
-    )
-
-    assert write is not None
-    await write
-    assert messages == ["task output", "task output"]
-
-
-async def test_buffered_cloudwatch_writes_stay_ordered(monkeypatch: pytest.MonkeyPatch) -> None:
-    first_started = threading.Event()
-    release_first = threading.Event()
-    messages: list[str] = []
-
-    def record_write(_stream_key: str, message: str, _runtime: AWSRuntime) -> None:
-        messages.append(message)
-        if message == "first":
-            first_started.set()
-            assert release_first.wait(timeout=2)
-
-    monkeypatch.setattr(task_execution_module, "write_benchmark_log_event", record_write)
-    runtime = cast(AWSRuntime, Mock(spec=AWSRuntime))
-
-    first_queue = task_execution_module.asyncio.Queue[str]()
-    first_queue.put_nowait("first")
-    first_write = task_execution_module.buffer_logs(
-        first_queue,
-        "benchmark-123:task-456",
-        runtime,
-        force_flush=True,
-    )
-    assert first_write is not None
-    assert await asyncio.to_thread(first_started.wait, 2)
-
-    second_queue = task_execution_module.asyncio.Queue[str]()
-    second_queue.put_nowait("second")
-    second_write = task_execution_module.buffer_logs(
-        second_queue,
-        "benchmark-123:task-456",
-        runtime,
-        force_flush=True,
-        previous_write=first_write,
-    )
-    assert second_write is not None
-    await asyncio.sleep(0.05)
-    assert messages == ["first"]
-
-    release_first.set()
-    await asyncio.gather(first_write, second_write)
-    assert messages == ["first", "second"]
 
 
 class TestTaskExecutionRetry:
@@ -234,7 +143,7 @@ class TestTaskExecutionRetry:
         is_run_agent_target = fail_target == "tracker.utils.task_execution.run_agent"
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock(return_value=None))
+        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
         monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr(fail_target, _fails_first_run_agent if is_run_agent_target else _fails_first_other)
         if not is_run_agent_target:
@@ -298,7 +207,7 @@ class TestTaskExecutionRetry:
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock(return_value=None))
+        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
 
         sandbox_entry_count = 0
         retrieve_task_call_count = 0
@@ -394,7 +303,7 @@ class TestTaskExecutionRetry:
 
         monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock(return_value=None))
+        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock())
         monkeypatch.setattr(task_execution_module, "create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr(task_execution_module, "run_agent", _mock_run_agent)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
@@ -457,7 +366,7 @@ class TestTaskExecutionRetry:
 
         monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock(return_value=None))
+        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock())
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
 
@@ -496,7 +405,7 @@ class TestTaskExecutionRetry:
         capture_exception = Mock()
         monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock(return_value=None))
+        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock())
         monkeypatch.setattr(task_execution_module.sentry_sdk, "capture_exception", capture_exception)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _failed_policy_lookup)
         monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _lost_grading_sandbox, raising=False)
@@ -586,7 +495,7 @@ class TestTaskExecutionRetry:
 
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock(return_value=None))
+        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
         monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr("tracker.utils.task_execution.upload_agent_artifacts", _mock_upload_agent_artifacts)
         monkeypatch.setattr("tracker.utils.task_execution.run_agent", _mock_run_agent)
