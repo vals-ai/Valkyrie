@@ -176,6 +176,16 @@ class ExecutorTemplateClassifierTest(unittest.TestCase):
         self.assertTrue(effect.redeploy_required)
         self.assertEqual(effect.reasons, ("executor-host-task-definition-changed",))
 
+    def test_malformed_container_definitions_are_rejected(self) -> None:
+        for containers in ("ExecutorHost", ["ExecutorHost"]):
+            with self.subTest(containers=containers):
+                base = _template()
+                head = copy.deepcopy(base)
+                _properties(head, _TASK_ID)["ContainerDefinitions"] = containers
+
+                with self.assertRaisesRegex(TemplateClassificationError, "ContainerDefinitions"):
+                    self._classify(base, head)
+
     def test_task_definition_tags_do_not_require_redeploy(self) -> None:
         base = _template()
         head = copy.deepcopy(base)

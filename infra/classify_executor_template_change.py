@@ -10,7 +10,7 @@ _TASK_PATH_SUFFIX = "/ExecutorHostTaskDef/Resource"
 _SERVICE_PATH_SUFFIX = "/ExecutorHostService/Service"
 _TASK_TYPE = "AWS::ECS::TaskDefinition"
 _TASK_ROLLING_PROPERTIES = frozenset({"Cpu", "Memory"})
-_CONTAINER_ROLLING_KEYS = frozenset({"Environment"})
+_CONTAINER_ROLLING_PROPERTIES = frozenset({"Environment"})
 _SERVICE_TYPE = "AWS::ECS::Service"
 _SERVICE_REDEPLOY_PROPERTIES = frozenset(
     {
@@ -197,51 +197,41 @@ def _resource_identity_changed(base: _HostResource, head: _HostResource) -> bool
     return base.logical_id != head.logical_id or base.resource_type != head.resource_type
 
 
+def _changed_properties(base: Mapping[str, object], head: Mapping[str, object]) -> set[str]:
+    return {key for key in base.keys() | head.keys() if base.get(key) != head.get(key)}
+
+
 def _task_change_requires_maintenance(base: _HostResource, head: _HostResource) -> bool:
-    changed_properties = {
-        key
-        for key in base.properties.keys() | head.properties.keys()
-        if key != "Tags" and base.properties.get(key) != head.properties.get(key)
-    }
-    if "ContainerDefinitions" in changed_properties and _container_change_is_environment_only(
-        base.properties.get("ContainerDefinitions"),
-        head.properties.get("ContainerDefinitions"),
-    ):
-        changed_properties.discard("ContainerDefinitions")
-    return bool(changed_properties - _TASK_ROLLING_PROPERTIES)
+    changed_properties = _changed_properties(base.properties, head.properties) - _TASK_ROLLING_PROPERTIES - {"Tags"}
+    if changed_properties == {"ContainerDefinitions"}:
+        return not _containers_differ_only_in_environment(
+            base.properties.get("ContainerDefinitions"),
+            head.properties.get("ContainerDefinitions"),
+        )
+    return bool(changed_properties)
 
 
-def _container_change_is_environment_only(base: object, head: object) -> bool:
-    """Report whether the same containers differ only in plain environment variables."""
-    if not isinstance(base, list) or not isinstance(head, list):
-        return False
-    base_containers = cast(list[object], base)
-    head_containers = cast(list[object], head)
+def _containers_differ_only_in_environment(base: object, head: object) -> bool:
+    base_containers = _container_definitions(base, revision="base")
+    head_containers = _container_definitions(head, revision="head")
     if len(base_containers) != len(head_containers):
         return False
-    for raw_base_container, raw_head_container in zip(base_containers, head_containers):
-        if not isinstance(raw_base_container, Mapping) or not isinstance(raw_head_container, Mapping):
-            return False
-        base_container = cast(Mapping[str, object], raw_base_container)
-        head_container = cast(Mapping[str, object], raw_head_container)
-        if base_container.get("Name") != head_container.get("Name"):
-            return False
-        changed_keys = {
-            key
-            for key in base_container.keys() | head_container.keys()
-            if base_container.get(key) != head_container.get(key)
-        }
-        if changed_keys - _CONTAINER_ROLLING_KEYS:
-            return False
-    return True
+    return all(
+        not _changed_properties(base_container, head_container) - _CONTAINER_ROLLING_PROPERTIES
+        for base_container, head_container in zip(base_containers, head_containers)
+    )
+
+
+def _container_definitions(value: object, *, revision: str) -> list[Mapping[str, object]]:
+    if not isinstance(value, list) or not all(
+        isinstance(container, Mapping) for container in cast(list[object], value)
+    ):
+        raise TemplateClassificationError(f"{revision} ExecutorHost ContainerDefinitions must be a list of objects")
+    return cast(list[Mapping[str, object]], value)
 
 
 def _service_change_reasons(base: _HostResource, head: _HostResource) -> set[str]:
-    changed_properties = {
-        key
-        for key in base.properties.keys() | head.properties.keys()
-        if base.properties.get(key) != head.properties.get(key)
-    }
+    changed_properties = _changed_properties(base.properties, head.properties)
     reasons: set[str] = set()
     for property_name in changed_properties:
         if property_name in _SERVICE_REDEPLOY_PROPERTIES:
