@@ -66,6 +66,11 @@ class AgentContractRequest(BaseModel):
     egress_allowlist: list[str] = Field(default_factory=list)
     secrets: dict[str, str] = Field(default_factory=dict)
     kwargs: dict[str, str] = Field(default_factory=dict)
+    # Tracker-owned: the start endpoint clears whatever a caller sends and sets
+    # it only after rebuilding the contract from the published agent bundle.
+    # Mirrors the tracker model, which the wire-contract tests compare field for
+    # field.
+    inference_settings_attested: bool = False
 
     @field_validator("output_artifacts")
     @classmethod
