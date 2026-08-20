@@ -35,6 +35,7 @@ from tracker.aws.s3 import (
 from tracker.aws.secrets import resolve_secrets
 from tracker.config import ENVIRONMENT
 from tracker.database.models import (
+    AgentContractRequest,
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
@@ -73,6 +74,16 @@ _SANDBOX_RETRY_DELAY_SECONDS: float = 2
 @dataclass
 class _DependencySetupRecoveryState:
     mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES
+
+
+def _attested_inference_settings(contract: AgentContractRequest) -> dict[str, str]:
+    """Settings benchmark setup may trust; empty unless the tracker resolved them."""
+    if not contract.inference_settings_attested:
+        return {}
+    return {
+        "VALKYRIE_AGENT_MODEL": contract.model or "",
+        "VALKYRIE_AGENT_VARIANT": contract.kwargs.get("variant", ""),
+    }
 
 
 def _normalized_attempt_time(value: datetime) -> datetime:
@@ -818,6 +829,7 @@ async def _process_task_attempt(
             **resolve_secrets(start_benchmark_request.contract.secrets, aws_runtime.clients),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
+            **_attested_inference_settings(start_benchmark_request.contract),
             "IDENTITY": json.dumps(identity),
             # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
             # are filterable per benchmark run and separable from other environments sharing the
