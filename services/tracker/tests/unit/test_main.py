@@ -735,9 +735,6 @@ class TestTrackerAPI:
         harness_config: HarnessConfig,
     ) -> None:
         class FailingKicker:
-            def with_labels(self, **_labels: str) -> "FailingKicker":
-                return self
-
             async def kiq(self, **_kwargs: Any) -> None:
                 raise RuntimeError("redis unavailable")
 

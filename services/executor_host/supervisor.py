@@ -12,7 +12,7 @@ import sys
 import tempfile
 import urllib.request
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Protocol, Unpack, cast
 
@@ -28,6 +28,7 @@ from executor_protocol import (
     EXECUTOR_TASK_NAME,
     SUPPORTED_PROTOCOL_VERSIONS,
     ExecutorPayload,
+    ExecutorTelemetryContext,
     executor_payload_benchmark_id,
     normalize_executor_telemetry_context,
     validate_executor_artifact_uri,
@@ -180,8 +181,12 @@ class ExecutorProcessPayload:
     arguments: dict[str, object]
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, object]) -> ExecutorProcessPayload:
-        telemetry_context = normalize_executor_telemetry_context(payload.get("telemetry_context_json"))
+    def from_payload(
+        cls,
+        payload: Mapping[str, object],
+        *,
+        telemetry_context: ExecutorTelemetryContext,
+    ) -> ExecutorProcessPayload:
         execution_context = payload.get("execution_context_json")
         access_key_values = (
             payload.get("start_benchmark_request_json"),
@@ -796,13 +801,9 @@ async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
         try:
             dispatch_id = _required_string(raw_payload, "executor_dispatch_id")
             dispatch = ArtifactDispatch.from_payload(raw_payload)
-            process_payload = ExecutorProcessPayload.from_payload(raw_payload)
-            process_payload = replace(
-                process_payload,
-                arguments={
-                    **process_payload.arguments,
-                    "telemetry_context_json": child_telemetry_context,
-                },
+            process_payload = ExecutorProcessPayload.from_payload(
+                raw_payload,
+                telemetry_context=child_telemetry_context,
             )
             await run_executor_dispatch(
                 supervisor,

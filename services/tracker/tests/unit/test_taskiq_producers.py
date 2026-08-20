@@ -72,9 +72,6 @@ def _capture_task_payloads(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, An
     payloads: list[dict[str, Any]] = []
 
     class CapturingKicker:
-        def with_labels(self, **_kwargs: Any) -> "CapturingKicker":
-            return self
-
         async def kiq(self, **kwargs: Any) -> None:
             payloads.append(kwargs)
 

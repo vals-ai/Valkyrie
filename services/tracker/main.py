@@ -232,24 +232,16 @@ async def _enqueue_executor_dispatch(
     verified_task_ids: list[str],
 ) -> None:
     telemetry_context = _executor_telemetry_context()
-    taskiq_labels = {
-        "request_id": telemetry_context["request_id"],
-        **telemetry_context["trace_headers"],
-    }
     for attempt in range(3):
         try:
-            await (
-                process_benchmark.kicker()
-                .with_labels(**taskiq_labels)
-                .kiq(
-                    **payload,
-                    telemetry_context_json=telemetry_context,
-                    executor_dispatch_id=str(dispatch.id),
-                    executor_release_id=dispatch.executor_release_id,
-                    executor_artifact_uri=dispatch.executor_artifact_uri,
-                    executor_artifact_digest=dispatch.executor_artifact_digest,
-                    executor_protocol_version=dispatch.executor_protocol_version,
-                )
+            await process_benchmark.kicker().kiq(
+                **payload,
+                telemetry_context_json=telemetry_context,
+                executor_dispatch_id=str(dispatch.id),
+                executor_release_id=dispatch.executor_release_id,
+                executor_artifact_uri=dispatch.executor_artifact_uri,
+                executor_artifact_digest=dispatch.executor_artifact_digest,
+                executor_protocol_version=dispatch.executor_protocol_version,
             )
             return
         except Exception as exc:

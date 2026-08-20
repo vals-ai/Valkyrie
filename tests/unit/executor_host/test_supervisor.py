@@ -32,7 +32,7 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     run_executor_dispatch,
     verify_file_digest,
 )
-from executor_protocol import validate_executor_artifact_uri
+from executor_protocol import ExecutorTelemetryContext, validate_executor_artifact_uri
 
 
 class FakeDispatchStore:
@@ -175,24 +175,32 @@ def _process_payload(
             "start_benchmark_request_json": request or {},
             "benchmark_id_str": benchmark_id,
             "verified_task_ids": task_ids or [],
-        }
+        },
+        telemetry_context={"request_id": "", "trace_headers": {}},
     )
 
 
-def test_managed_process_payload_is_normalized_once() -> None:
+def test_managed_process_payload_includes_child_telemetry_context() -> None:
     context: dict[str, object] = {
         "benchmark_id": "benchmark-1",
         "verified_task_ids": ["task-1"],
         "start_benchmark_request": {},
     }
+    telemetry_context: ExecutorTelemetryContext = {
+        "request_id": "request-1",
+        "trace_headers": {"sentry-trace": "trace-header"},
+    }
 
-    payload = ExecutorProcessPayload.from_payload({"execution_context_json": context})
+    payload = ExecutorProcessPayload.from_payload(
+        {"execution_context_json": context},
+        telemetry_context=telemetry_context,
+    )
 
     assert payload.benchmark_id == "benchmark-1"
     assert payload.verified_task_ids == ["task-1"]
     assert payload.arguments == {
         "execution_context_json": context,
-        "telemetry_context_json": {"request_id": "", "trace_headers": {}},
+        "telemetry_context_json": telemetry_context,
     }
 
 
@@ -205,7 +213,8 @@ def test_process_payload_rejects_mixed_execution_shapes() -> None:
                     "verified_task_ids": [],
                 },
                 "start_benchmark_request_json": {},
-            }
+            },
+            telemetry_context={"request_id": "", "trace_headers": {}},
         )
 
 
