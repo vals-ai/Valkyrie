@@ -1,3 +1,8 @@
+"""Tests for ExecutorHost structured logging and Sentry correlation.
+
+Run: uv run pytest tests/unit/executor_host/test_observability.py
+"""
+
 from __future__ import annotations
 
 from collections.abc import Generator
