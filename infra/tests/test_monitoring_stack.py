@@ -51,7 +51,11 @@ TEST_DEV_ENV = {
     "DESCOPE_PROJECT_ID": "dev-project",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
 }
-TEST_PROD_ENV = {"SENTRY_DSN_SECRET_NAME": "example/sentry-dsn"}
+TEST_PROD_ENV = {
+    "AWS_DEPLOYMENT_ROLE_ORG_IDS": TEST_MANAGED_ORG_ID,
+    "AWS_TRACKER_SECRET_NAME_PREFIXES": TEST_TRACKER_SECRET_NAME_PREFIX,
+    "SENTRY_DSN_SECRET_NAME": "example/sentry-dsn",
+}
 TEST_RELEASE_TEST_ENV = {
     "DESCOPE_PROJECT_ID": "release-test",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
@@ -128,18 +132,20 @@ def _monitoring_template(stage_name: str = PROD) -> assertions.Template:
         engine="redis",
         num_cache_nodes=1,
     )
-    monitoring = MonitoringStack(
-        app,
-        "MonitoringStack",
-        stage=stage,
-        cluster=cluster,
-        tracker_service=tracker_service,
-        load_balancer=load_balancer,
-        target_group=target_group,
-        database=database,
-        redis_cluster=redis_cluster,
-        env=cdk.Environment(account="123456789012", region="us-west-2"),
-    )
+    stage_environment = TEST_DEV_ENV if stage_name == DEV else TEST_PROD_ENV
+    with mock.patch.dict(os.environ, stage_environment, clear=False):
+        monitoring = MonitoringStack(
+            app,
+            "MonitoringStack",
+            stage=stage,
+            cluster=cluster,
+            tracker_service=tracker_service,
+            load_balancer=load_balancer,
+            target_group=target_group,
+            database=database,
+            redis_cluster=redis_cluster,
+            env=cdk.Environment(account="123456789012", region="us-west-2"),
+        )
 
     return assertions.Template.from_stack(monitoring)
 
@@ -223,26 +229,29 @@ def service_templates(
 
 
 class MonitoringStackTest(unittest.TestCase):
-    def test_dev_managed_runtime_requires_deployment_authority(self) -> None:
-        for variable in (
-            "AWS_DEPLOYMENT_ROLE_ORG_IDS",
-            "AWS_TRACKER_SECRET_NAME_PREFIXES",
-        ):
-            with self.subTest(variable=variable):
-                environment = dict(TEST_DEV_ENV)
-                environment.pop(variable)
-                with mock.patch.dict(os.environ, environment, clear=True):
-                    with self.assertRaisesRegex(ValueError, variable):
-                        config_for(Stage(DEV))
+    def test_hosted_managed_runtime_requires_deployment_authority(self) -> None:
+        for stage_name, stage_environment in ((DEV, TEST_DEV_ENV), (PROD, TEST_PROD_ENV)):
+            for variable in (
+                "AWS_DEPLOYMENT_ROLE_ORG_IDS",
+                "AWS_TRACKER_SECRET_NAME_PREFIXES",
+            ):
+                with self.subTest(stage=stage_name, variable=variable):
+                    environment = dict(stage_environment)
+                    environment.pop(variable)
+                    with mock.patch.dict(os.environ, environment, clear=True):
+                        with self.assertRaisesRegex(ValueError, variable):
+                            config_for(Stage(stage_name))
 
     def test_offline_synth_uses_safe_managed_runtime_placeholders(self) -> None:
-        with mock.patch.dict(os.environ, {"DESCOPE_PROJECT_ID": "offline-synth"}, clear=True):
-            managed_aws = config_for(Stage(DEV)).managed_aws
+        for stage_name in (DEV, PROD):
+            with self.subTest(stage=stage_name):
+                with mock.patch.dict(os.environ, {"DESCOPE_PROJECT_ID": "offline-synth"}, clear=True):
+                    managed_aws = config_for(Stage(stage_name)).managed_aws
 
-        self.assertEqual(managed_aws.deployment_role_org_ids, (TEST_MANAGED_ORG_ID,))
-        self.assertEqual(managed_aws.tracker_secret_name_prefixes, ("offline-synth",))
-        self.assertEqual(managed_aws.executor_secret_name_prefixes, ())
-        self.assertTrue(managed_aws.executor_all_secret_access)
+                self.assertEqual(managed_aws.deployment_role_org_ids, (TEST_MANAGED_ORG_ID,))
+                self.assertEqual(managed_aws.tracker_secret_name_prefixes, ("offline-synth",))
+                self.assertEqual(managed_aws.executor_secret_name_prefixes, ())
+                self.assertTrue(managed_aws.executor_all_secret_access)
 
     def test_dev_stack_ids_are_valk_scoped(self) -> None:
         self.assertEqual(Stage(PROD).stack_id("TrackerStack"), "TrackerStack")
