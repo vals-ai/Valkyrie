@@ -301,9 +301,7 @@ def reconcile_expired_dispatches(session: Session) -> int:
             dispatch_id=dispatch.id,
             task_ids=dispatch.assigned_task_ids or [],
             error_message=(
-                "Executor dispatch lease expired"
-                if is_running
-                else "Executor dispatch claim deadline expired"
+                "Executor dispatch lease expired" if is_running else "Executor dispatch claim deadline expired"
             ),
             producer="executor_dispatch",
             operation="dispatch_reconciliation",
