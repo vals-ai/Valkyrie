@@ -326,7 +326,7 @@ class TestBenchmarkServiceFailures:
         assert any("[ERROR] ConnectTimeout" in message for message in logged_messages)
 
     @pytest.mark.usefixtures("process_benchmark_env")
-    async def test_cloudwatch_write_failure_is_captured_before_task_returns(
+    async def test_cloudwatch_write_failure_does_not_change_successful_task_result(
         self,
         contract: AgentContractRequest,
         database_session: Session,
@@ -340,19 +340,17 @@ class TestBenchmarkServiceFailures:
         cloudwatch_error = RuntimeError("cloudwatch unavailable")
         capture_exception = Mock()
 
-        async def _mock_retrieve_task_timeout(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
-            raise httpx.ConnectTimeout("benchmark unavailable")
-
         def _fail_write(*_args: Any, **_kwargs: Any) -> None:
             raise cloudwatch_error
 
-        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_timeout)
         monkeypatch.setattr(utils_module, "write_benchmark_log_event", _fail_write)
         monkeypatch.setattr(utils_module.sentry_sdk, "capture_exception", capture_exception)
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
-        assert result == {"task_0": None}
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.FINISHED
         captured_errors = [call.args[0] for call in capture_exception.call_args_list]
         assert cloudwatch_error in captured_errors
 

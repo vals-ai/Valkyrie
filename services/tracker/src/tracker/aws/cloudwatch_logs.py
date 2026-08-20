@@ -99,13 +99,14 @@ def create_benchmark_log_group(benchmark_id: str, runtime: AWSRuntime) -> str:
 
     try:
         client.create_log_group(logGroupName=log_group_name)  # pyright: ignore[reportUnknownMemberType]
-        client.put_retention_policy(  # pyright: ignore[reportUnknownMemberType]
-            logGroupName=log_group_name,
-            retentionInDays=runtime.resources.log_retention_days,
-        )
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
             raise
+
+    client.put_retention_policy(  # pyright: ignore[reportUnknownMemberType]
+        logGroupName=log_group_name,
+        retentionInDays=runtime.resources.log_retention_days,
+    )
 
     return log_group_name
 

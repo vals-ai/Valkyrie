@@ -18,6 +18,7 @@ from tracker.aws.clients import (
     ExplicitCredentialsAWSClientProvider,
 )
 from tracker.aws.cloudwatch_logs import (
+    create_benchmark_log_group,
     get_benchmark_log_url,
     handle_cloudwatch_error,
     write_benchmark_log_event,
@@ -259,6 +260,27 @@ class TestGetBenchmarkLogUrl:
     def test_no_task_id_omits_log_events(self) -> None:
         url = get_benchmark_log_url("bench123", _AWS_RESOURCES)
         assert "log-events" not in url
+
+
+class TestCreateBenchmarkLogGroup:
+    """CloudWatch benchmark log group setup."""
+
+    def test_applies_retention_when_another_writer_created_the_group(self) -> None:
+        client = MagicMock()
+        client.create_log_group.side_effect = ClientError(
+            {"Error": {"Code": "ResourceAlreadyExistsException", "Message": "Already exists"}},
+            "CreateLogGroup",
+        )
+        client_provider = MagicMock(spec=AWSClientProvider)
+        client_provider.cloudwatch_logs_client.return_value = client
+        runtime = AWSRuntime(resources=_AWS_RESOURCES, clients=cast(AWSClientProvider, client_provider))
+
+        create_benchmark_log_group("bench123", runtime)
+
+        client.put_retention_policy.assert_called_once_with(
+            logGroupName="/valkyrie/worker/bench123",
+            retentionInDays=30,
+        )
 
 
 class TestWriteBenchmarkLogEvent:

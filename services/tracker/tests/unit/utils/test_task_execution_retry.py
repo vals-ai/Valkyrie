@@ -6,6 +6,7 @@ Run: uv run pytest tests/unit/utils/test_task_execution_retry.py
 import asyncio
 import threading
 from collections.abc import AsyncGenerator, Generator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
@@ -82,9 +83,47 @@ async def test_buffered_cloudwatch_write_retries_the_same_batch(monkeypatch: pyt
     assert messages == ["task output", "task output"]
 
 
+async def test_buffered_cloudwatch_write_does_not_wait_for_default_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    default_worker_started = threading.Event()
+    release_default_worker = threading.Event()
+
+    def block_default_worker() -> None:
+        default_worker_started.set()
+        assert release_default_worker.wait(timeout=2)
+
+    monkeypatch.setattr(task_execution_module, "write_benchmark_log_event", Mock())
+    loop = asyncio.get_running_loop()
+    default_executor = ThreadPoolExecutor(max_workers=1)
+    loop.set_default_executor(default_executor)
+    blocked_work = loop.run_in_executor(None, block_default_worker)
+
+    try:
+        while not default_worker_started.is_set():
+            await asyncio.sleep(0)
+        queue = task_execution_module.asyncio.Queue[str]()
+        queue.put_nowait("task output")
+
+        write = task_execution_module.buffer_logs(
+            queue,
+            "benchmark-123:task-456",
+            cast(AWSRuntime, Mock(spec=AWSRuntime)),
+            force_flush=True,
+        )
+
+        assert write is not None
+        await asyncio.wait_for(write, timeout=0.5)
+    finally:
+        release_default_worker.set()
+        await blocked_work
+        default_executor.shutdown(wait=True)
+
+
 async def test_buffered_cloudwatch_writes_stay_ordered(monkeypatch: pytest.MonkeyPatch) -> None:
     first_started = threading.Event()
     release_first = threading.Event()
+    second_waiting = asyncio.Event()
     messages: list[str] = []
 
     def record_write(_stream_key: str, message: str, _runtime: AWSRuntime) -> None:
@@ -107,6 +146,15 @@ async def test_buffered_cloudwatch_writes_stay_ordered(monkeypatch: pytest.Monke
     assert first_write is not None
     assert await asyncio.to_thread(first_started.wait, 2)
 
+    original_gather = asyncio.gather
+
+    async def record_ordering_wait(*futures: Any, **kwargs: Any) -> Any:
+        if first_write in futures:
+            second_waiting.set()
+        return await original_gather(*futures, **kwargs)
+
+    monkeypatch.setattr(task_execution_module.asyncio, "gather", record_ordering_wait)
+
     second_queue = task_execution_module.asyncio.Queue[str]()
     second_queue.put_nowait("second")
     second_write = task_execution_module.buffer_logs(
@@ -117,11 +165,11 @@ async def test_buffered_cloudwatch_writes_stay_ordered(monkeypatch: pytest.Monke
         previous_write=first_write,
     )
     assert second_write is not None
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(second_waiting.wait(), timeout=1)
     assert messages == ["first"]
 
     release_first.set()
-    await asyncio.gather(first_write, second_write)
+    await original_gather(first_write, second_write)
     assert messages == ["first", "second"]
 
 
