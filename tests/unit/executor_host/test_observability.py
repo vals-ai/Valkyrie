@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import contextmanager
 import io
 import json
 import logging
@@ -9,6 +11,32 @@ import pytest
 import sentry_sdk
 
 from services.executor_host import observability
+
+
+def test_dispatch_transaction_finishes_before_executor_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+    transaction = Mock()
+
+    @contextmanager
+    def record_transaction(_transaction: object) -> Generator[Mock, None, None]:
+        events.append("transaction-started")
+        yield transaction
+        events.append("transaction-finished")
+
+    monkeypatch.setattr(sentry_sdk, "continue_trace", Mock(return_value=transaction))
+    monkeypatch.setattr(sentry_sdk, "start_transaction", record_transaction)
+    monkeypatch.setattr(sentry_sdk, "get_traceparent", lambda: "child-trace")
+    monkeypatch.setattr(sentry_sdk, "get_baggage", lambda: None)
+
+    with observability.dispatch_observability_context(
+        "benchmark-123",
+        "dispatch-456",
+        "release-789",
+        {"request_id": "request-abc", "trace_headers": {}},
+    ):
+        events.append("executor-running")
+
+    assert events == ["transaction-started", "transaction-finished", "executor-running"]
 
 
 def test_invalid_production_sentry_configuration_fails_startup(monkeypatch: pytest.MonkeyPatch) -> None:

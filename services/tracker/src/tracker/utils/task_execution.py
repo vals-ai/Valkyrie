@@ -55,7 +55,7 @@ from tracker.exceptions import (
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
-from tracker.observability import elapsed_ms, incr
+from tracker.observability import elapsed_ms, error_span, incr
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
     StartBenchmarkRequest,
@@ -651,8 +651,9 @@ async def _process_task_attempt(
             try:
                 completed.result()
             except Exception as error:
-                with logfire.span(
+                with error_span(
                     "task.output_write.error",
+                    error,
                     benchmark_id=str(benchmark_id),
                     task_id=task_id,
                 ):
@@ -707,8 +708,9 @@ async def _process_task_attempt(
         operation: str,
         cause_code: str | None = None,
     ) -> dict[str, dict[str, Any] | None]:
-        with logfire.span(
+        with error_span(
             "task.error",
+            exc,
             benchmark_id=str(benchmark_id),
             task_id=task_id,
             producer=producer,

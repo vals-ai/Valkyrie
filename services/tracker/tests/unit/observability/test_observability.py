@@ -6,11 +6,13 @@ Run: uv run pytest tests/unit/observability/test_observability.py
 import importlib
 import logging
 from collections.abc import Mapping
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from opentelemetry.trace import StatusCode
 from sentry_sdk import metrics as sentry_metrics
 from tenacity import RetryCallState, Retrying
 
@@ -349,3 +351,22 @@ def test_sentry_span_processor_drops_noisy_polling_subtrees(monkeypatch: pytest.
 
     assert [call.args[0] for call in delegate.on_start.call_args_list] == [root, meaningful]
     assert [call.args[0] for call in delegate.on_end.call_args_list] == [meaningful, root]
+
+
+def test_handled_error_span_records_exception_and_error_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    span = Mock()
+    error = RuntimeError("handled failure")
+
+    @contextmanager
+    def span_context(*_args: object, **_kwargs: object) -> Any:
+        yield
+
+    monkeypatch.setattr(tracing_module.logfire, "span", span_context)
+    monkeypatch.setattr(tracing_module.trace, "get_current_span", Mock(return_value=span))
+
+    with tracing_module.error_span("task.error", error, benchmark_id="benchmark-123"):
+        pass
+
+    span.record_exception.assert_called_once_with(error)
+    status = span.set_status.call_args.args[0]
+    assert status.status_code is StatusCode.ERROR

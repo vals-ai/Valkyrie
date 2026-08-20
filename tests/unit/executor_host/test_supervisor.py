@@ -14,6 +14,7 @@ from unittest.mock import Mock
 
 import pytest
 
+import services.executor_host.observability as host_observability
 import services.executor_host.supervisor as supervisor_module
 from services.executor_host.supervisor import (  # pyright: ignore[reportMissingImports]
     ArtifactDispatch,
@@ -583,7 +584,7 @@ async def test_launch_executor_rejects_invalid_dispatch_id_without_side_effects(
     monkeypatch.setattr(supervisor_module, "supervisor", supervisor)
     monkeypatch.setattr(supervisor_module, "dispatch_store", store)
     capture_exception = Mock()
-    monkeypatch.setattr(supervisor_module.sentry_sdk, "capture_exception", capture_exception)
+    monkeypatch.setattr(host_observability.sentry_sdk, "capture_exception", capture_exception)
 
     with pytest.raises(ValueError, match="executor_dispatch_id is required"):
         await supervisor_module.launch_executor.original_func(

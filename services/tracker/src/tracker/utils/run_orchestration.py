@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Any, Sequence, cast
 from uuid import UUID
 
-import logfire
 import sentry_sdk
 from benchmark_service import SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
@@ -41,6 +40,7 @@ from tracker.executor.execution_authority import ExecutionAuthority, lock_execut
 from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
+from tracker.observability import error_span
 from tracker.outbound_security import validate_custom_service_destination
 from tracker.types import (
     FinalViewResponse,
@@ -74,8 +74,9 @@ def _capture_run_error(
     operation: str,
     cause_code: str | None = None,
 ) -> None:
-    with logfire.span(
+    with error_span(
         "run.error",
+        exc,
         benchmark_id=str(benchmark_id),
         producer=producer,
         operation=operation,

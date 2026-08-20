@@ -5,7 +5,7 @@ import time
 from tracker.observability.metrics import distribution, gauge, incr
 from tracker.observability.retry import retry_callback
 from tracker.observability.sentry import init_sentry, set_sandbox_context
-from tracker.observability.tracing import configure_tracing
+from tracker.observability.tracing import configure_tracing, error_span
 
 
 def configure_observability(service_name: str, environment: str) -> None:
@@ -24,6 +24,7 @@ __all__ = [
     "configure_tracing",
     "distribution",
     "elapsed_ms",
+    "error_span",
     "gauge",
     "incr",
     "init_sentry",

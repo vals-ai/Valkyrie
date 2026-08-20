@@ -26,7 +26,7 @@ from services.executor_host.supervisor import ExecutorProcessPayload
 from services.tracker import main as tracker_main
 from tracker.executor.entrypoint import _executor_context
 from tracker.logging import benchmark_id_var, configure_logging, request_id_var, task_id_var
-from tracker.observability import configure_observability, incr
+from tracker.observability import configure_observability, error_span, incr
 
 _RUN_ID = "00000000-0000-4000-8000-000000000123"
 _REQUEST_ID = "observability-smoke-request"
@@ -84,11 +84,15 @@ def _set_sentry_environment(dsn: str) -> None:
     os.environ["LOG_LEVEL"] = "INFO"
 
 
-def _capture_test_error(service_name: str) -> None:
+def _capture_test_error(service_name: str, *, span_name: str | None = None) -> None:
     try:
         raise RuntimeError(f"{service_name} observability smoke error")
     except RuntimeError as error:
-        sentry_sdk.capture_exception(error)
+        if span_name is None:
+            sentry_sdk.capture_exception(error)
+            return
+        with error_span(span_name, error, benchmark_id=_RUN_ID):
+            sentry_sdk.capture_exception(error)
 
 
 def _flush_telemetry() -> None:
@@ -126,7 +130,7 @@ def _run_tracker(dsn: str, context_path: str) -> None:
                 "executor_protocol_version": "1",
             }
             Path(context_path).write_text(json.dumps(payload))
-            _capture_test_error("valkyrie-tracker")
+            _capture_test_error("valkyrie-tracker", span_name="run.error")
     finally:
         for token in reversed(tokens):
             token.var.reset(token)
@@ -282,6 +286,15 @@ def test_run_id_correlates_logs_errors_and_traces_across_processes(tmp_path: Pat
     }
 
     assert len(transactions) >= 3
+    tracker_error_spans = [
+        span
+        for transaction in transactions
+        if transaction.get("transaction") == "observability.smoke.tracker"
+        for span in transaction.get("spans", [])
+        if span.get("op") == "run.error"
+    ]
+    assert len(tracker_error_spans) == 1
+    assert tracker_error_spans[0]["status"] == "internal_error"
     event_trace_ids = [cast(str, event["contexts"]["trace"]["trace_id"]) for event in events]
     transaction_trace_ids = [cast(str, transaction["contexts"]["trace"]["trace_id"]) for transaction in transactions]
     log_trace_ids = [cast(str, entry["trace_id"]) for entry in correlated_logs]

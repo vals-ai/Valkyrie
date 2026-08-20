@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Generator
 
 import sentry_sdk
+from sentry_sdk.consts import SPANSTATUS
 from sentry_sdk.integrations.logging import LoggingIntegration
 
 from executor_protocol import ExecutorTelemetryContext
@@ -101,7 +102,7 @@ def dispatch_observability_context(
     release_id: str,
     telemetry_context: ExecutorTelemetryContext,
 ) -> Generator[ExecutorTelemetryContext, None, None]:
-    """Bind one dispatch and continue its trace into the executor artifact."""
+    """Bind one dispatch and create the child executor trace context."""
     tokens = [
         request_id_var.set(telemetry_context["request_id"]),
         benchmark_id_var.set(benchmark_id),
@@ -114,7 +115,7 @@ def dispatch_observability_context(
             transaction = sentry_sdk.continue_trace(
                 telemetry_context["trace_headers"],
                 op="queue.process",
-                name="executor_host.dispatch",
+                name="executor_host.dispatch.accepted",
             )
             with sentry_sdk.start_transaction(transaction):
                 trace_headers = dict(telemetry_context["trace_headers"])
@@ -124,10 +125,34 @@ def dispatch_observability_context(
                     trace_headers["sentry-trace"] = sentry_trace
                 if baggage := sentry_sdk.get_baggage():
                     trace_headers["baggage"] = baggage
-                yield {
+                child_context: ExecutorTelemetryContext = {
                     "request_id": telemetry_context["request_id"],
                     "trace_headers": trace_headers,
                 }
+            yield child_context
     finally:
         for token in reversed(tokens):
             token.var.reset(token)
+
+
+def record_dispatch_completion(telemetry_context: ExecutorTelemetryContext) -> None:
+    """Record the terminal host signal without holding a transaction across execution."""
+    transaction = sentry_sdk.continue_trace(
+        telemetry_context["trace_headers"],
+        op="queue.process",
+        name="executor_host.dispatch.completed",
+    )
+    with sentry_sdk.start_transaction(transaction):
+        pass
+
+
+def capture_dispatch_error(error: BaseException, telemetry_context: ExecutorTelemetryContext) -> None:
+    """Capture a host dispatch error on a bounded trace segment."""
+    transaction = sentry_sdk.continue_trace(
+        telemetry_context["trace_headers"],
+        op="queue.process",
+        name="executor_host.dispatch.failed",
+    )
+    with sentry_sdk.start_transaction(transaction) as span:
+        span.set_status(SPANSTATUS.INTERNAL_ERROR)
+        sentry_sdk.capture_exception(error)

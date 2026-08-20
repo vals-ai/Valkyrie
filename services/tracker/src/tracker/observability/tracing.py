@@ -1,11 +1,17 @@
 """Tracing configuration: OTel instrumentation (via logfire) with Sentry as the backend."""
 
+from collections.abc import Generator
+from contextlib import contextmanager
+from typing import Any
+
 import logfire
+from opentelemetry import trace
 from opentelemetry.baggage.propagation import W3CBaggagePropagator
 from opentelemetry.context import Context
 from opentelemetry.propagate import set_global_textmap
 from opentelemetry.propagators.composite import CompositePropagator
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
+from opentelemetry.trace import Status, StatusCode
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from sentry_sdk.integrations.opentelemetry import SentryPropagator, SentrySpanProcessor
 
@@ -17,6 +23,16 @@ _EXCLUDED_SPAN_NAMES = frozenset(
         "AsyncSandbox.refresh_data",
     }
 )
+
+
+@contextmanager
+def error_span(name: str, exc: BaseException, **attributes: Any) -> Generator[None, None, None]:
+    """Create a bounded error span for a handled exception."""
+    with logfire.span(name, **attributes):
+        span = trace.get_current_span()
+        span.record_exception(exc)
+        span.set_status(Status(StatusCode.ERROR))
+        yield
 
 
 class _ContextVarSpanProcessor(SpanProcessor):

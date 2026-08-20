@@ -18,7 +18,6 @@ from typing import Mapping, Protocol, Unpack, cast
 
 import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
-import sentry_sdk
 from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
 from redis.asyncio import Redis
 from taskiq import TaskiqEvents
@@ -34,8 +33,10 @@ from executor_protocol import (
     validate_executor_digest,
 )
 from services.executor_host.observability import (
+    capture_dispatch_error,
     configure_observability,
     dispatch_observability_context,
+    record_dispatch_completion,
 )
 
 logger = logging.getLogger(__name__)
@@ -839,8 +840,9 @@ async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
                 dispatch=dispatch,
                 process_payload=process_payload,
             )
+            record_dispatch_completion(child_telemetry_context)
         except asyncio.CancelledError:
             raise
         except BaseException as error:
-            sentry_sdk.capture_exception(error)
+            capture_dispatch_error(error, child_telemetry_context)
             raise
