@@ -8,6 +8,7 @@ from asyncio import Semaphore
 from collections.abc import Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
+from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -415,8 +416,10 @@ def buffer_logs(
             await asyncio.gather(previous_write, return_exceptions=True)
         for attempt in range(1, _CLOUDWATCH_LOG_WRITE_ATTEMPTS + 1):
             try:
+                write_context = copy_context()
                 await loop.run_in_executor(
                     _CLOUDWATCH_LOG_EXECUTOR,
+                    write_context.run,
                     write_benchmark_log_event,
                     stream_key,
                     message,

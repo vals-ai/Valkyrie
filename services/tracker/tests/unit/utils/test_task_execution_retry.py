@@ -32,6 +32,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
+from tracker.logging import benchmark_id_var
 from tracker.sandbox import DependencySetupMode
 from tracker.types import HarnessConfig
 from tracker.utils import task_execution as task_execution_module
@@ -88,12 +89,16 @@ async def test_buffered_cloudwatch_write_does_not_wait_for_default_executor(
 ) -> None:
     default_worker_started = threading.Event()
     release_default_worker = threading.Event()
+    observed_benchmark_ids: list[str] = []
 
     def block_default_worker() -> None:
         default_worker_started.set()
         assert release_default_worker.wait(timeout=2)
 
-    monkeypatch.setattr(task_execution_module, "write_benchmark_log_event", Mock())
+    def record_write_context(*_args: Any, **_kwargs: Any) -> None:
+        observed_benchmark_ids.append(benchmark_id_var.get())
+
+    monkeypatch.setattr(task_execution_module, "write_benchmark_log_event", record_write_context)
     loop = asyncio.get_running_loop()
     default_executor = ThreadPoolExecutor(max_workers=1)
     loop.set_default_executor(default_executor)
@@ -105,15 +110,20 @@ async def test_buffered_cloudwatch_write_does_not_wait_for_default_executor(
         queue = task_execution_module.asyncio.Queue[str]()
         queue.put_nowait("task output")
 
-        write = task_execution_module.buffer_logs(
-            queue,
-            "benchmark-123:task-456",
-            cast(AWSRuntime, Mock(spec=AWSRuntime)),
-            force_flush=True,
-        )
+        benchmark_id_token = benchmark_id_var.set("benchmark-123")
+        try:
+            write = task_execution_module.buffer_logs(
+                queue,
+                "benchmark-123:task-456",
+                cast(AWSRuntime, Mock(spec=AWSRuntime)),
+                force_flush=True,
+            )
+        finally:
+            benchmark_id_var.reset(benchmark_id_token)
 
         assert write is not None
         await asyncio.wait_for(write, timeout=0.5)
+        assert observed_benchmark_ids == ["benchmark-123"]
     finally:
         release_default_worker.set()
         await blocked_work
