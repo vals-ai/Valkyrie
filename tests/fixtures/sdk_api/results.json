@@ -21,7 +21,8 @@
         ],
         "egress_allowlist": [],
         "secrets": {},
-        "kwargs": {}
+        "kwargs": {},
+        "inference_settings_attested": false
       },
       "concurrency": 2,
       "task_ids": [

@@ -152,6 +152,8 @@ class AgentContractRequest(BaseModel):
     egress_allowlist: list[str] = []
     secrets: dict[str, str] = {}
     kwargs: dict[str, str] = {}
+    # Set only by the tracker, after rebuilding this contract from the bundle.
+    inference_settings_attested: bool = False
 
     @field_validator("output_artifacts")
     @classmethod

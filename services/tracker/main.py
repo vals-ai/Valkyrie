@@ -444,6 +444,8 @@ async def _resolve_contract_from_s3(request: StartBenchmarkRequest, aws_runtime:
     resolved = get_contract_from_zip_bytes(request.contract.name, zip_bytes, agent_config)
     if request.contract.secrets:
         resolved.secrets = {**resolved.secrets, **request.contract.secrets}
+    # Kwargs were validated against the bundle's schema and rendered its command.
+    resolved.inference_settings_attested = True
     return resolved
 
 
@@ -545,6 +547,11 @@ async def start_benchmark(
             validate_managed_execution_request(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # A caller cannot declare its own inference settings trusted.
+    request = request.model_copy(
+        update={"contract": request.contract.model_copy(update={"inference_settings_attested": False})}
+    )
 
     if not request.contract.install_cmd and not request.contract.run_cmd:
         request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request, aws_runtime)})
