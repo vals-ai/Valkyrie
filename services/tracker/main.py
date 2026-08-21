@@ -129,6 +129,7 @@ configure_logging()
 configure_observability("valkyrie-tracker", environment=ENVIRONMENT)
 
 logger = get_logger(__name__)
+MANAGED_SECRET_KEYS = {"MODEL_GATEWAY_URL", "MODEL_GATEWAY_API_KEY"}
 
 
 def _operation_id(route: APIRoute) -> str:
@@ -318,7 +319,8 @@ async def start_benchmark(
     else:
         if run_starter.user_id is None:
             raise HTTPException(status_code=400, detail="The personal API key must be linked to a user")
-        if body.contract.secrets or body.service_auth_secret_name or body.webhook_secret_name:
+        has_secret_refs = set(body.contract.secrets) - MANAGED_SECRET_KEYS
+        if has_secret_refs or body.service_auth_secret_name or body.webhook_secret_name:
             raise HTTPException(status_code=400, detail="Managed runtime does not accept AWS secret references")
         if body.custom_benchmark_service:
             raise HTTPException(status_code=400, detail="Managed runtime does not accept custom benchmark services")
@@ -351,7 +353,7 @@ async def start_benchmark(
 
     if not request.contract.install_cmd and not request.contract.run_cmd:
         request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request)})
-    if not isinstance(runtime, LegacyRuntime) and request.contract.secrets:
+    if not isinstance(runtime, LegacyRuntime) and set(request.contract.secrets) - MANAGED_SECRET_KEYS:
         raise HTTPException(status_code=400, detail="Managed runtime does not accept AWS secret references")
 
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
