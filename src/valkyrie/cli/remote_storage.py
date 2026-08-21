@@ -22,13 +22,14 @@ from tracker.storage_types import (
     AgentUploadURLResponse,
     BenchmarkOutputKeysResponse,
     BenchmarkOutputURLsResponse,
+    OUTPUT_URL_BATCH_SIZE,
     OutputURLsRequest,
     OutputURLEntry,
 )
 
 from valkyrie.cli import s3_config
 from valkyrie.cli.display import create_progress_bar
-from valkyrie.cli.downloads import DOWNLOAD_CONCURRENCY, gather_in_batches, resolve_download_destination
+from valkyrie.cli.downloads import gather_in_batches, resolve_download_destination
 from valkyrie.cli.runtime_config import tracker_service_url
 
 _TRANSFER_TIMEOUT_SECONDS = 300
@@ -255,7 +256,7 @@ async def download_outputs_remote(benchmark_id: str, subpath: str, output_dir: P
             action = f"Downloading '{entry.key}'"
             await _download_to_file(transfer, entry.download_url, destination, action)
 
-        for key_batch in batched(keys_response.keys, DOWNLOAD_CONCURRENCY):
+        for key_batch in batched(keys_response.keys, OUTPUT_URL_BATCH_SIZE):
             response = await _send(
                 client.post(
                     f"/benchmarks/{benchmark_id}/output-urls",

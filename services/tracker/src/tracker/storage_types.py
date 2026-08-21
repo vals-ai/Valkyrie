@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, Field
 
+OUTPUT_URL_BATCH_SIZE = 8
+
 
 class AgentEntry(BaseModel):
     name: str
@@ -35,7 +37,7 @@ class BenchmarkOutputKeysResponse(BaseModel):
 
 
 class OutputURLsRequest(BaseModel):
-    keys: list[str] = Field(min_length=1, max_length=8)
+    keys: list[str] = Field(min_length=1, max_length=OUTPUT_URL_BATCH_SIZE)
 
 
 class BenchmarkOutputURLsResponse(BaseModel):

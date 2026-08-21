@@ -412,7 +412,7 @@ async def test_download_outputs_requests_urls_immediately_before_each_batch(
     backend: MockStorageBackend,
     tmp_path: Path,
 ) -> None:
-    for index in range(remote_storage.DOWNLOAD_CONCURRENCY + 1):
+    for index in range(remote_storage.OUTPUT_URL_BATCH_SIZE + 1):
         backend.objects[f"benchmarks/run-1/{index}.json"] = b"{}"
 
     await remote_storage.download_outputs_remote("run-1", "", tmp_path)
