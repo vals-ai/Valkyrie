@@ -318,6 +318,13 @@ def classify_repository_change(
     )
 
 
+def combine_executor_effects(*effects: ExecutorHostTemplateEffect) -> ExecutorHostTemplateEffect:
+    return ExecutorHostTemplateEffect(
+        redeploy_required=any(effect.redeploy_required for effect in effects),
+        reasons=tuple(sorted({reason for effect in effects for reason in effect.reasons})),
+    )
+
+
 def _parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-sha", required=True)
@@ -326,6 +333,9 @@ def _parse_arguments() -> argparse.Namespace:
     parser.add_argument("--executor-base-template", type=Path, required=True)
     parser.add_argument("--executor-head-template", type=Path, required=True)
     parser.add_argument("--expected-stack-id", required=True)
+    parser.add_argument("--secondary-executor-base-template", type=Path)
+    parser.add_argument("--secondary-executor-head-template", type=Path)
+    parser.add_argument("--secondary-expected-stack-id")
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 
@@ -342,6 +352,24 @@ def main() -> None:
             cast(dict[str, object], head_template),
             expected_stack_id=arguments.expected_stack_id,
         )
+        secondary_inputs = (
+            arguments.secondary_executor_base_template,
+            arguments.secondary_executor_head_template,
+            arguments.secondary_expected_stack_id,
+        )
+        if any(secondary_inputs) and not all(secondary_inputs):
+            raise ValueError("Secondary WorkerStack classification requires both templates and the stack ID")
+        if all(secondary_inputs):
+            secondary_base_template = json.loads(arguments.secondary_executor_base_template.read_text(encoding="utf-8"))
+            secondary_head_template = json.loads(arguments.secondary_executor_head_template.read_text(encoding="utf-8"))
+            if not isinstance(secondary_base_template, dict) or not isinstance(secondary_head_template, dict):
+                raise ValueError("Secondary WorkerStack templates must be JSON objects")
+            secondary_effect = classify_executor_host_template_change(
+                cast(dict[str, object], secondary_base_template),
+                cast(dict[str, object], secondary_head_template),
+                expected_stack_id=arguments.secondary_expected_stack_id,
+            )
+            executor_effect = combine_executor_effects(executor_effect, secondary_effect)
         payload: dict[str, object] = asdict(
             classify_repository_change(
                 arguments.repository_root.resolve(),

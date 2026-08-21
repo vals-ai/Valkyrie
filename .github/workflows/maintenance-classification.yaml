@@ -31,6 +31,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 1
+          path: trusted
           persist-credentials: false
           ref: ${{ env.BASE_SHA }}
 
@@ -54,46 +55,16 @@ jobs:
           SOURCE_SHA: ${{ env.BASE_SHA }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C trusted rev-parse HEAD)" = "$SOURCE_SHA"
           target_branch="${TARGET_BRANCH#refs/heads/}"
-          case "$target_branch" in
-            dev)
-              stage=dev
-              stack_id=ValkDevWorkerStack
-              account_id=111111111111
-              ;;
-            prod)
-              stage=prod
-              stack_id=WorkerStack
-              account_id=613431292675
-              ;;
-            *)
-              echo "::error::Unsupported target branch '$target_branch'."
-              exit 1
-              ;;
-          esac
           npm install -g aws-cdk@2.1132.0
           artifact="$RUNNER_TEMP/worker-template-base"
-          assembly="$RUNNER_TEMP/cdk-base"
-          mkdir -p "$artifact"
-          (
-            cd infra
-            PRODUCTION_ACCOUNT_ID=613431292675 \
-            DEV_ACCOUNT_ID=111111111111 \
-            CDK_DEFAULT_ACCOUNT="$account_id" \
-            CDK_DEFAULT_REGION=us-east-1 \
-            AWS_REGION=us-east-1 \
-            STAGE="$stage" \
-            AWS_DEPLOYMENT_ROLE_ORG_IDS=00000000-0000-0000-0000-000000000001 \
-            AWS_TRACKER_SECRET_NAME_PREFIXES=offline-synth \
-            AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth \
-            SENTRY_DSN_SECRET_NAME=offline-synth \
-            DESCOPE_MANAGEMENT_KEY_SECRET_NAME=offline-synth \
-            DESCOPE_PROJECT_ID=offline-synth \
-              uv run --frozen cdk synth "$stack_id" -c stage="$stage" --output "$assembly"
-          )
-          cp "$assembly/$stack_id.template.json" "$artifact/WorkerStack.template.json"
-          SOURCE_SHA="$SOURCE_SHA" TARGET_BRANCH="$target_branch" STACK_ID="$stack_id" \
+          bash trusted/.github/scripts/synthesize-worker-templates.sh \
+            "$SOURCE_SHA" "$target_branch" base "$artifact" trusted
+          mapfile -t stack_ids < "$artifact/stack-ids.txt"
+          rm "$artifact/stack-ids.txt"
+          STACK_IDS="$(IFS=,; echo "${stack_ids[*]}")" \
+            SOURCE_SHA="$SOURCE_SHA" TARGET_BRANCH="$target_branch" \
             python3 - <<'PY'
           import json
           import os
@@ -104,7 +75,7 @@ jobs:
               "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
               "run_id": os.environ["GITHUB_RUN_ID"],
               "source_sha": os.environ["SOURCE_SHA"],
-              "stack_id": os.environ["STACK_ID"],
+              "stack_ids": os.environ["STACK_IDS"].split(","),
               "target_branch": os.environ["TARGET_BRANCH"],
           }
           (artifact / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
@@ -117,7 +88,7 @@ jobs:
           name: worker-template-base-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/worker-template-base/manifest.json
-            ${{ runner.temp }}/worker-template-base/WorkerStack.template.json
+            ${{ runner.temp }}/worker-template-base/*.template.json
           if-no-files-found: error
           retention-days: 1
 
@@ -131,10 +102,19 @@ jobs:
         id: identity
         run: echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout trusted synthesis helper
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          path: trusted
+          persist-credentials: false
+          ref: ${{ env.BASE_SHA }}
+
       - name: Checkout exact candidate revision
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 1
+          path: candidate
           persist-credentials: false
           ref: ${{ env.HEAD_SHA }}
 
@@ -158,46 +138,17 @@ jobs:
           SOURCE_SHA: ${{ env.HEAD_SHA }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C trusted rev-parse HEAD)" = "$BASE_SHA"
+          test "$(git -C candidate rev-parse HEAD)" = "$SOURCE_SHA"
           target_branch="${TARGET_BRANCH#refs/heads/}"
-          case "$target_branch" in
-            dev)
-              stage=dev
-              stack_id=ValkDevWorkerStack
-              account_id=111111111111
-              ;;
-            prod)
-              stage=prod
-              stack_id=WorkerStack
-              account_id=613431292675
-              ;;
-            *)
-              echo "::error::Unsupported target branch '$target_branch'."
-              exit 1
-              ;;
-          esac
           npm install -g aws-cdk@2.1132.0
           artifact="$RUNNER_TEMP/worker-template-head"
-          assembly="$RUNNER_TEMP/cdk-head"
-          mkdir -p "$artifact"
-          (
-            cd infra
-            PRODUCTION_ACCOUNT_ID=613431292675 \
-            DEV_ACCOUNT_ID=111111111111 \
-            CDK_DEFAULT_ACCOUNT="$account_id" \
-            CDK_DEFAULT_REGION=us-east-1 \
-            AWS_REGION=us-east-1 \
-            STAGE="$stage" \
-            AWS_DEPLOYMENT_ROLE_ORG_IDS=00000000-0000-0000-0000-000000000001 \
-            AWS_TRACKER_SECRET_NAME_PREFIXES=offline-synth \
-            AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth \
-            SENTRY_DSN_SECRET_NAME=offline-synth \
-            DESCOPE_MANAGEMENT_KEY_SECRET_NAME=offline-synth \
-            DESCOPE_PROJECT_ID=offline-synth \
-              uv run --frozen cdk synth "$stack_id" -c stage="$stage" --output "$assembly"
-          )
-          cp "$assembly/$stack_id.template.json" "$artifact/WorkerStack.template.json"
-          SOURCE_SHA="$SOURCE_SHA" TARGET_BRANCH="$target_branch" STACK_ID="$stack_id" \
+          bash trusted/.github/scripts/synthesize-worker-templates.sh \
+            "$SOURCE_SHA" "$target_branch" head "$artifact" candidate
+          mapfile -t stack_ids < "$artifact/stack-ids.txt"
+          rm "$artifact/stack-ids.txt"
+          STACK_IDS="$(IFS=,; echo "${stack_ids[*]}")" \
+            SOURCE_SHA="$SOURCE_SHA" TARGET_BRANCH="$target_branch" \
             python3 - <<'PY'
           import json
           import os
@@ -208,7 +159,7 @@ jobs:
               "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
               "run_id": os.environ["GITHUB_RUN_ID"],
               "source_sha": os.environ["SOURCE_SHA"],
-              "stack_id": os.environ["STACK_ID"],
+              "stack_ids": os.environ["STACK_IDS"].split(","),
               "target_branch": os.environ["TARGET_BRANCH"],
           }
           (artifact / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
@@ -221,7 +172,7 @@ jobs:
           name: worker-template-head-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/worker-template-head/manifest.json
-            ${{ runner.temp }}/worker-template-head/WorkerStack.template.json
+            ${{ runner.temp }}/worker-template-head/*.template.json
           if-no-files-found: error
           retention-days: 1
 
@@ -284,9 +235,12 @@ jobs:
           from pathlib import Path
 
           target_branch = os.environ["TARGET_BRANCH"].removeprefix("refs/heads/")
-          stack_ids = {"dev": "ValkDevWorkerStack", "prod": "WorkerStack"}
+          stack_ids = {
+              "dev": ["ValkDevWorkerStack"],
+              "prod": ["WorkerStack", "ValkProdWorkerStack"],
+          }
           try:
-              expected_stack_id = stack_ids[target_branch]
+              expected_stack_ids = stack_ids[target_branch]
           except KeyError as error:
               raise SystemExit(f"Unsupported target branch {target_branch!r}") from error
 
@@ -306,30 +260,33 @@ jobs:
               if not artifact_id.isdecimal() or not artifact_run_attempt.isdecimal():
                   raise SystemExit(f"{label} artifact job outputs are not numeric")
               directory = Path(os.environ["RUNNER_TEMP"]) / f"worker-template-{label}"
-              expected_names = {"manifest.json", "WorkerStack.template.json"}
+              expected_names = {"manifest.json", *(f"{stack_id}.template.json" for stack_id in expected_stack_ids)}
               entries = list(directory.iterdir())
               names = {path.name for path in entries}
               if names != expected_names or any(not path.is_file() for path in entries):
                   raise SystemExit(f"Unexpected {label} artifact entries: {sorted(names)!r}")
-              template = directory / "WorkerStack.template.json"
               manifest_path = directory / "manifest.json"
-              if template.stat().st_size > 2_000_000:
-                  raise SystemExit(f"{label} WorkerStack template exceeds 2 MB")
               if manifest_path.stat().st_size > 10_000:
                   raise SystemExit(f"{label} manifest exceeds 10 KB")
-              template_payload = json.loads(template.read_text(encoding="utf-8"))
-              if not isinstance(template_payload, dict):
-                  raise SystemExit(f"{label} WorkerStack template must be a JSON object")
+              for stack_id in expected_stack_ids:
+                  template = directory / f"{stack_id}.template.json"
+                  if template.stat().st_size > 2_000_000:
+                      raise SystemExit(f"{label} {stack_id} template exceeds 2 MB")
+                  template_payload = json.loads(template.read_text(encoding="utf-8"))
+                  if not isinstance(template_payload, dict):
+                      raise SystemExit(f"{label} {stack_id} template must be a JSON object")
               manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
               if manifest != {
                   "run_attempt": int(artifact_run_attempt),
                   "run_id": os.environ["GITHUB_RUN_ID"],
                   "source_sha": source_sha,
-                  "stack_id": expected_stack_id,
+                  "stack_ids": expected_stack_ids,
                   "target_branch": target_branch,
               }:
                   raise SystemExit(f"{label} artifact manifest does not match trusted event identity")
-          print(f"expected_stack_id={expected_stack_id}")
+          print(f"expected_stack_id={expected_stack_ids[0]}")
+          if len(expected_stack_ids) > 1:
+              print(f"secondary_expected_stack_id={expected_stack_ids[1]}")
           print(f"target_branch={target_branch}")
           PY
 
@@ -337,13 +294,24 @@ jobs:
         id: classification
         run: |
           set -euo pipefail
-          python3 infra/classify_repository_change.py \
-            --base-sha "$BASE_SHA" \
-            --head-sha "$HEAD_SHA" \
-            --executor-base-template "$RUNNER_TEMP/worker-template-base/WorkerStack.template.json" \
-            --executor-head-template "$RUNNER_TEMP/worker-template-head/WorkerStack.template.json" \
-            --expected-stack-id "${{ steps.template.outputs.expected_stack_id }}" \
+          primary_stack_id="${{ steps.template.outputs.expected_stack_id }}"
+          secondary_stack_id="${{ steps.template.outputs.secondary_expected_stack_id }}"
+          arguments=(
+            --base-sha "$BASE_SHA"
+            --head-sha "$HEAD_SHA"
+            --executor-base-template "$RUNNER_TEMP/worker-template-base/$primary_stack_id.template.json"
+            --executor-head-template "$RUNNER_TEMP/worker-template-head/$primary_stack_id.template.json"
+            --expected-stack-id "$primary_stack_id"
             --output maintenance-classification.json
+          )
+          if [[ -n "$secondary_stack_id" ]]; then
+            arguments+=(
+              --secondary-executor-base-template "$RUNNER_TEMP/worker-template-base/$secondary_stack_id.template.json"
+              --secondary-executor-head-template "$RUNNER_TEMP/worker-template-head/$secondary_stack_id.template.json"
+              --secondary-expected-stack-id "$secondary_stack_id"
+            )
+          fi
+          python3 infra/classify_repository_change.py "${arguments[@]}"
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           import os
