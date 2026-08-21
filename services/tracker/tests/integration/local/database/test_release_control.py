@@ -15,6 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
+from tracker.aws.executor_artifacts import S3ExecutorArtifactReader
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -157,7 +158,7 @@ def test_concurrent_first_activation_serializes_create_or_match(
             _activation_candidate(),
             expected_bucket="artifacts",
             expected_prefix="releases",
-            s3_client=_S3Client(),
+            artifact_reader=S3ExecutorArtifactReader(_S3Client()),
         )
 
     outcomes = _run_while_first_transaction_holds_locks(
