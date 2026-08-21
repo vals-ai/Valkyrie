@@ -38,7 +38,7 @@ from tracker.auth import (
     get_current_starter,
     resolve_descope_identity,
 )
-from tracker.aws.cloudwatch_logs import get_benchmark_log_url
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.aws.resolver import (
     resolve_aws_runtime_metadata,
     resolve_run_aws_runtime,
@@ -644,7 +644,7 @@ async def start_benchmark(
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,
         task_count=len(verify_response.task_ids),
-        cloudwatch_url=get_benchmark_log_url(str(benchmark_row.id), aws_runtime.resources),
+        cloudwatch_url=CloudWatchBenchmarkLogLocations(aws_runtime.resources).benchmark_location(str(benchmark_row.id)),
         s3_bucket_url=create_benchmark_url(str(benchmark_row.id), aws_runtime.resources),
         executor_release_id=benchmark_row.executor_release_id,
         current_execution_release_id=benchmark_row.current_execution_release_id,

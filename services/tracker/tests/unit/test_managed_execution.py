@@ -13,6 +13,7 @@ from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.resolver import ManagedAWSEligibilityError
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org
@@ -327,10 +328,9 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     def deployment_runtime(_org_id: UUID) -> AWSRuntime:
         return aws_runtime
 
-    def create_log_group(_benchmark_id: str, runtime: AWSRuntime) -> str:
-        assert runtime is aws_runtime
+    def create_log_group(_self: object, _benchmark_id: str, *, retention_days: int) -> None:
+        assert retention_days == aws_runtime.resources.log_retention_days
         calls.append("logs")
-        return "benchmark-log-group"
 
     def fetch_provider(_name: str, secret_store: object, _provider: str) -> SandboxProviderConfig:
         assert secret_store is not aws_runtime.clients
@@ -360,7 +360,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         return MagicMock()
 
     monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
-    monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", create_log_group)
+    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
     monkeypatch.setattr("tracker.utils.run_orchestration.fetch_sandbox_provider_config", fetch_provider)
     monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", resolve_agent_secrets)
@@ -421,7 +421,7 @@ def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     def dry_run(*_args: Any, **_kwargs: Any) -> None:
         calls.append("lambda")
 
-    monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", create_log_group)
+    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
     monkeypatch.setattr("tracker.utils.run_orchestration.fetch_sandbox_provider_config", fetch_provider)
     monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get_webhook_secret)
@@ -452,7 +452,7 @@ async def test_managed_preflight_failure_happens_before_sandbox(
         raise RuntimeError("managed log preflight failed")
 
     monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
-    monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", fail_log_preflight)
+    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", fail_log_preflight)
     monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", create_sandbox)
 
     await process_benchmark(

@@ -3,7 +3,8 @@
 import os
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
-from typing import Any
+from types import ModuleType
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 from benchmark_service.client import BenchmarkServiceClient
@@ -164,20 +165,23 @@ def mock_benchmark_service(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _mock_create_benchmark_log_group(*_args: Any, **_kwargs: Any) -> str:
-        return "mock-group"
+def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
+    if cast(ModuleType, request.module).__name__ == "tests.unit.aws.test_clients":
+        return
 
-    def _mock_write_benchmark_log_event(*_args: Any, **_kwargs: Any) -> None:
+    def _mock_create_benchmark(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def _mock_write(*_args: Any, **_kwargs: Any) -> None:
         return None
 
     async def _mock_upload_final_view(*_args: Any, **_kwargs: Any) -> None:
         return None
 
-    monkeypatch.setattr("tracker.aws.cloudwatch_logs.create_benchmark_log_group", _mock_create_benchmark_log_group)
-    monkeypatch.setattr("tracker.aws.cloudwatch_logs.write_benchmark_log_event", _mock_write_benchmark_log_event)
-    monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", _mock_create_benchmark_log_group)
-    monkeypatch.setattr("tracker.utils.task_execution.write_benchmark_log_event", _mock_write_benchmark_log_event)
+    monkeypatch.setattr(
+        "tracker.aws.cloudwatch_logs.CloudWatchBenchmarkLogSink.create_benchmark", _mock_create_benchmark
+    )
+    monkeypatch.setattr("tracker.aws.cloudwatch_logs.CloudWatchBenchmarkLogSink.write", _mock_write)
     monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", _mock_upload_final_view)
 
 
