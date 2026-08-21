@@ -6,9 +6,11 @@ Covers the keyless data path: presigned upload/download round trips, metadata
 operations, run-output downloads, and credential hygiene on presigned requests.
 """
 
+import asyncio
 import io
 import json
 import zipfile
+from collections.abc import AsyncIterator
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +27,31 @@ _TRACKER_URL = "http://tracker.test"
 _S3_URL = "https://bucket.s3.test"
 
 
+class BlockingDownloadStream(httpx.AsyncByteStream):
+    def __init__(self, started: asyncio.Event, cancelled: asyncio.Event) -> None:
+        self.started = started
+        self.cancelled = cancelled
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        yield b"unreachable"
+
+
+class FailingDownloadStream(httpx.AsyncByteStream):
+    def __init__(self, blocked_download_started: asyncio.Event) -> None:
+        self.blocked_download_started = blocked_download_started
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        await self.blocked_download_started.wait()
+        raise httpx.ReadError("stream failed")
+        yield b"unreachable"
+
+
 class MockStorageBackend:
     """Emulate the tracker storage endpoints and presigned S3 URLs in one transport."""
 
@@ -35,6 +62,10 @@ class MockStorageBackend:
         self.output_prefix: str | None = None
         self.fail_s3_transfers = False
         self.fail_transport = False
+        self.blocking_download_key: str | None = None
+        self.failing_download_key: str | None = None
+        self.blocked_download_started = asyncio.Event()
+        self.blocked_download_cancelled = asyncio.Event()
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self._handle)
@@ -55,6 +86,16 @@ class MockStorageBackend:
                 return httpx.Response(200)
             if key not in self.objects:
                 return httpx.Response(404)
+            if key == self.blocking_download_key:
+                return httpx.Response(
+                    200,
+                    stream=BlockingDownloadStream(
+                        self.blocked_download_started,
+                        self.blocked_download_cancelled,
+                    ),
+                )
+            if key == self.failing_download_key:
+                return httpx.Response(200, stream=FailingDownloadStream(self.blocked_download_started))
             return httpx.Response(200, content=self.objects[key])
 
         if request.method == "POST" and path.endswith("/upload-url"):
@@ -357,6 +398,24 @@ async def test_download_outputs_subpath_scopes_the_listing(
     assert count == 1
     assert (tmp_path / "output.json").exists()
     assert not (tmp_path / "task-b").exists()
+
+
+async def test_download_failure_cancels_siblings_and_removes_partial_files(
+    backend: MockStorageBackend,
+    tmp_path: Path,
+) -> None:
+    blocking_key = "benchmarks/run-1/blocking.bin"
+    failing_key = "benchmarks/run-1/failing.bin"
+    backend.objects[blocking_key] = b"unused"
+    backend.objects[failing_key] = b"unused"
+    backend.blocking_download_key = blocking_key
+    backend.failing_download_key = failing_key
+
+    with pytest.raises(S3Error, match="stream failed"):
+        await remote_storage.download_outputs_remote("run-1", "", tmp_path)
+
+    assert backend.blocked_download_cancelled.is_set()
+    assert list(tmp_path.iterdir()) == []
 
 
 async def test_download_outputs_rejects_keys_escaping_output_dir(

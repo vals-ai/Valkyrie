@@ -17,11 +17,9 @@ from tracker.database.models import (
     FinalEvaluation,
     OutputArtifact,
 )
+from tracker.storage_types import AgentDownloadURLResponse, AgentEntry, AgentsResponse
 from tracker.types import (
     AWSCredentials,
-    AgentDownloadURLResponse,
-    AgentEntry,
-    AgentsResponse,
     AnalyzeBenchmarkRequest,
     AverageTaskBreakdown,
     BenchmarkDetails,

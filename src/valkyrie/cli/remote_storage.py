@@ -8,6 +8,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import datetime
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import BinaryIO, TypeVar, cast
 
 import click
@@ -117,9 +118,20 @@ Item = TypeVar("Item")
 
 async def gather_in_batches(items: Sequence[Item], worker: Callable[[Item], Awaitable[None]]) -> None:
     """Run `worker` over `items`, at most _DOWNLOAD_CONCURRENCY at a time."""
+
+    async def run_worker(item: Item) -> None:
+        await worker(item)
+
     for start in range(0, len(items), _DOWNLOAD_CONCURRENCY):
         batch = items[start : start + _DOWNLOAD_CONCURRENCY]
-        await asyncio.gather(*(worker(item) for item in batch))
+        tasks = [asyncio.create_task(run_worker(item)) for item in batch]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
 
 def resolve_download_destination(key: str, prefix: str, output_dir: Path) -> Path:
@@ -144,6 +156,31 @@ async def _stream_with_progress(file_stream: BinaryIO, file_size: int) -> AsyncI
         yield chunk
         bytes_sent += len(chunk)
         _echo_progress("Uploading agent ", bytes_sent, file_size)
+
+
+async def _download_to_file(
+    client: httpx.AsyncClient,
+    url: str,
+    destination: Path,
+    action: str,
+) -> None:
+    """Stream one download to an atomic temporary file."""
+    temporary_path: Path | None = None
+    try:
+        async with client.stream("GET", url) as response:
+            if response.status_code >= 400:
+                await response.aread()
+            _raise_for_status(response, action)
+            with NamedTemporaryFile(dir=destination.parent, delete=False) as temporary_file:
+                temporary_path = Path(temporary_file.name)
+                async for chunk in response.aiter_bytes():
+                    temporary_file.write(chunk)
+        temporary_path.replace(destination)
+    except httpx.HTTPError as exc:
+        raise S3Error(f"{action} failed: {exc}. Check your connection and try again.") from exc
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 async def push_agent_remote(agent_name: str, agent_path: Path) -> None:
@@ -247,11 +284,8 @@ async def download_outputs_remote(benchmark_id: str, subpath: str, output_dir: P
 
         async def download_file(entry: OutputURLEntry) -> None:
             destination = resolve_download_destination(entry.key, payload.prefix, output_dir)
-
             action = f"Downloading '{entry.key}'"
-            file_response = await _send(transfer.get(entry.download_url), action)
-            _raise_for_status(file_response, action)
-            destination.write_bytes(file_response.content)
+            await _download_to_file(transfer, entry.download_url, destination, action)
 
         await gather_in_batches(payload.files, download_file)
 

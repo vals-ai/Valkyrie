@@ -211,8 +211,7 @@ class RuntimeIamTest(unittest.TestCase):
                     agent_mutation_statement = next(
                         statement
                         for statement in statements
-                        if _statement_actions(statement)
-                        == {"s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"}
+                        if _statement_actions(statement) == {"s3:PutObject", "s3:DeleteObject"}
                     )
                     self.assertIn("agents/*", json.dumps(agent_mutation_statement["Resource"]))
                     self.assertNotIn("benchmarks/*", json.dumps(agent_mutation_statement["Resource"]))

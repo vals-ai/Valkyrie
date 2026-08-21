@@ -48,7 +48,7 @@ def create_tracker_task_role(
     )
     role.add_to_policy(
         aws_iam.PolicyStatement(
-            actions=["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"],
+            actions=["s3:PutObject", "s3:DeleteObject"],
             resources=[bucket.arn_for_objects("agents/*")],
         )
     )
