@@ -332,13 +332,13 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         calls.append("logs")
         return "benchmark-log-group"
 
-    def fetch_provider(_name: str, clients: object, _provider: str) -> SandboxProviderConfig:
-        assert clients is aws_runtime.clients
+    def fetch_provider(_name: str, secret_store: object, _provider: str) -> SandboxProviderConfig:
+        assert secret_store is not aws_runtime.clients
         calls.append("provider-secret")
         return provider_config
 
-    def resolve_agent_secrets(_secrets: object, clients: object) -> dict[str, str]:
-        assert clients is aws_runtime.clients
+    def resolve_agent_secrets(_secrets: object, secret_store: object) -> dict[str, str]:
+        assert secret_store is not aws_runtime.clients
         calls.append("agent-secrets")
         return {"MODEL_API_KEY": "resolved"}
 
@@ -414,7 +414,7 @@ def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         calls.append("agent_secrets")
         return {"AGENT_TOKEN": "resolved"}
 
-    def fetch_webhook_secret(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+    def get_webhook_secret(_store: object, _name: str) -> dict[str, str]:
         calls.append("webhook_secret")
         return {"url": "https://example.com"}
 
@@ -424,7 +424,7 @@ def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", create_log_group)
     monkeypatch.setattr("tracker.utils.run_orchestration.fetch_sandbox_provider_config", fetch_provider)
     monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", resolve_agent_secrets)
-    monkeypatch.setattr("tracker.utils.run_orchestration.fetch_aws_secret", fetch_webhook_secret)
+    monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get_webhook_secret)
     monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
 
     result = _preflight_managed_aws(execution, aws_runtime)

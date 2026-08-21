@@ -174,16 +174,19 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_upload_final_view(*_args: Any, **_kwargs: Any) -> None:
         return None
 
-    def _mock_fetch_aws_secret(*_args: Any, **_kwargs: Any) -> dict[str, str]:
-        return {"DAYTONA_API_KEY": "test-key", "DAYTONA_API_URL": "http://localhost:8001", "DAYTONA_TARGET": "us"}
-
     monkeypatch.setattr("tracker.aws.cloudwatch_logs.create_benchmark_log_group", _mock_create_benchmark_log_group)
     monkeypatch.setattr("tracker.aws.cloudwatch_logs.write_benchmark_log_event", _mock_write_benchmark_log_event)
     monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", _mock_create_benchmark_log_group)
     monkeypatch.setattr("tracker.utils.task_execution.write_benchmark_log_event", _mock_write_benchmark_log_event)
     monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", _mock_upload_final_view)
-    monkeypatch.setattr("tracker.aws.secrets.fetch_aws_secret", _mock_fetch_aws_secret)
-    monkeypatch.setattr("tracker.utils.resources.fetch_aws_secret", _mock_fetch_aws_secret)
+
+
+@pytest.fixture(autouse=True)
+def mock_secret_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    def get(_self: object, _name: str) -> dict[str, str]:
+        return {"DAYTONA_API_KEY": "test-key", "DAYTONA_API_URL": "http://localhost:8001", "DAYTONA_TARGET": "us"}
+
+    monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get)
 
 
 @pytest.fixture(autouse=True)

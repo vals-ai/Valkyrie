@@ -20,7 +20,8 @@ from tracker._lambda import dry_run_lambda, invoke_lambda
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group
 from tracker.aws.resolver import deployment_aws_runtime
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.secrets import fetch_aws_secret, resolve_secrets
+from tracker.aws.secrets import SecretsManagerStore
+from tracker.runtime.secrets import resolve_secrets
 from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
     Benchmark,
@@ -400,14 +401,15 @@ def _preflight_managed_aws(
     provider_secret_name = request.sandbox_provider_secret_name
     if provider_secret_name is None:
         raise ValueError("Queued managed benchmark request has no sandbox provider secret name.")
+    secret_store = SecretsManagerStore(runtime.clients)
     sandbox_provider_config = fetch_sandbox_provider_config(
         provider_secret_name,
-        runtime.clients,
+        secret_store,
         request.sandbox_provider,
     )
-    resolve_secrets(request.contract.secrets, runtime.clients)
+    resolve_secrets(request.contract.secrets, secret_store)
     if request.webhook_secret_name and request.webhook_intervals:
-        fetch_aws_secret(request.webhook_secret_name, runtime.clients)
+        secret_store.get(request.webhook_secret_name)
     if request.lambda_function:
         dry_run_lambda(runtime.clients, request.lambda_function)
     return sandbox_provider_config
@@ -499,7 +501,7 @@ async def process_benchmark(
             aws_runtime = AWSRuntime.from_harness_config(harness_config)
             sandbox_provider_config = fetch_sandbox_provider_config(
                 harness_config.sandbox_provider_secret_name,
-                aws_runtime.clients,
+                SecretsManagerStore(aws_runtime.clients),
                 start_benchmark_request.sandbox_provider,
             )
 
@@ -507,7 +509,7 @@ async def process_benchmark(
         if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
             notifier = SlackNotifier(
                 secret_name=start_benchmark_request.webhook_secret_name,
-                clients=aws_runtime.clients,
+                secret_store=SecretsManagerStore(aws_runtime.clients),
                 intervals=start_benchmark_request.webhook_intervals,
             )
 

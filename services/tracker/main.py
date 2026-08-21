@@ -45,7 +45,7 @@ from tracker.aws.resolver import (
     resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
 )
-from tracker.aws.secrets import resolve_secrets
+from tracker.aws.secrets import SecretsManagerStore
 from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
@@ -61,6 +61,7 @@ from tracker.runtime.artifacts import (
     benchmark_prefix as benchmark_artifact_prefix,
     copy_agent_to_benchmark,
 )
+from tracker.runtime.secrets import resolve_secrets
 from tracker.runtime.storage import ObjectStore, StoredObjectCopy
 from tracker.agent.schemas import AgentConfig
 from tracker.config import (
@@ -513,7 +514,7 @@ async def start_benchmark(
     if request.service_auth_header_name and request.service_auth_secret_name:
         resolved = resolve_secrets(
             {request.service_auth_header_name: request.service_auth_secret_name},
-            aws_runtime.clients,
+            SecretsManagerStore(aws_runtime.clients),
         )
         service_headers.update(resolved)
 

@@ -32,7 +32,8 @@ from tracker.aws.cloudwatch_logs import get_benchmark_log_url, write_benchmark_l
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3ObjectStore
 from tracker.runtime.artifacts import task_artifact_key
-from tracker.aws.secrets import resolve_secrets
+from tracker.aws.secrets import SecretsManagerStore
+from tracker.runtime.secrets import resolve_secrets
 from tracker.config import ENVIRONMENT
 from tracker.database.models import (
     AgentCausedExitReason,
@@ -933,7 +934,7 @@ async def _process_task_attempt(
             identity["email"] = benchmark_started_by_email
 
         env_vars = {
-            **resolve_secrets(start_benchmark_request.contract.secrets, aws_runtime.clients),
+            **resolve_secrets(start_benchmark_request.contract.secrets, SecretsManagerStore(aws_runtime.clients)),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             **_attested_inference_settings(start_benchmark_request.contract),
