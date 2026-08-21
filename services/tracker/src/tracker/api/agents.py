@@ -1,4 +1,4 @@
-"""GET /agents — list agents from S3 under the org's bucket."""
+"""Agent-library storage routes: list, presigned download/upload URLs, delete."""
 
 from __future__ import annotations
 
@@ -6,13 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from tracker.api.dependencies import get_agent_library_aws_runtime
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import (
-    create_presigned_upload_url,
-    create_presigned_url,
-    delete_from_s3,
-    list_agents,
-    s3_object_exists,
-)
+from tracker.aws.s3 import create_presigned_url, delete_from_s3, list_agents, s3_object_exists
 from tracker.types import AgentDownloadURLResponse, AgentEntry, AgentsResponse, AgentUploadURLResponse
 
 PRESIGNED_URL_EXPIRES_SECONDS = 300
@@ -61,7 +55,7 @@ async def get_agent_upload_url(
     """Return a presigned single-part PUT URL for agents/<name>.zip."""
     key = f"agents/{name}.zip"
     expires_in = aws_runtime.clients.maximum_presign_ttl(PRESIGNED_URL_EXPIRES_SECONDS)
-    url = await create_presigned_upload_url(key, aws_runtime, expiration=expires_in)
+    url = await create_presigned_url(key, aws_runtime, expiration=expires_in, client_method="put_object")
     return AgentUploadURLResponse(name=name, upload_url=url, expires_in=expires_in)
 
 

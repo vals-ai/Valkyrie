@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Body, HTTPException
 
 from tracker.api.dependencies import RunAWSDependency
@@ -9,7 +11,7 @@ from tracker.agent.schemas import validate_agent_name
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     copy_s3_object,
-    create_presigned_url,
+    create_presigned_urls,
     get_benchmark_contract_s3_key,
     get_contract_s3_key,
     list_s3_objects,
@@ -17,7 +19,7 @@ from tracker.aws.s3 import (
 )
 from tracker.types import BenchmarkOutputURLsResponse, OutputURLEntry
 
-PRESIGNED_URL_EXPIRES_SECONDS = 300
+OUTPUT_URL_EXPIRES_SECONDS = 3600
 
 router = APIRouter(prefix="/benchmarks")
 
@@ -32,16 +34,19 @@ async def get_benchmark_output_urls(
     if subpath:
         prefix = f"{prefix}/{subpath.strip('/')}"
 
+    # A suffix-bearing subpath targets one exact object; anything else is a directory,
+    # slash-terminated so sibling prefixes (task-1 vs task-10) never over-match.
+    if not Path(prefix).suffix:
+        prefix = f"{prefix}/"
+
     aws_runtime = run_context.aws_runtime
     keys = [key async for key in list_s3_objects(prefix, aws_runtime)]
     if not keys:
         raise HTTPException(status_code=404, detail=f"No files found under '{prefix}'")
 
-    expires_in = aws_runtime.clients.maximum_presign_ttl(PRESIGNED_URL_EXPIRES_SECONDS)
-    files = [
-        OutputURLEntry(key=key, download_url=await create_presigned_url(key, aws_runtime, expiration=expires_in))
-        for key in keys
-    ]
+    expires_in = aws_runtime.clients.maximum_presign_ttl(OUTPUT_URL_EXPIRES_SECONDS)
+    urls = await create_presigned_urls(keys, aws_runtime, expiration=expires_in)
+    files = [OutputURLEntry(key=key, download_url=url) for key, url in zip(keys, urls)]
 
     return BenchmarkOutputURLsResponse(prefix=prefix, files=files, expires_in=expires_in)
 
@@ -56,6 +61,7 @@ async def update_benchmark_agent_version(
         agent_name = validate_agent_name(agent_name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     source_key = get_contract_s3_key(agent_name)
     if not await s3_object_exists(source_key, run_context.aws_runtime):
         raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found in S3")

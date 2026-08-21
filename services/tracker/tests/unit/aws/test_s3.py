@@ -13,7 +13,13 @@ from botocore.exceptions import ClientError
 from tracker.aws import s3 as s3_module
 from tracker.aws.clients import DefaultChainAWSClientProvider
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import copy_s3_object, create_presigned_url, delete_from_s3, upload_stream_to_s3
+from tracker.aws.s3 import (
+    copy_s3_object,
+    create_presigned_url,
+    create_presigned_urls,
+    delete_from_s3,
+    upload_stream_to_s3,
+)
 from tracker.exceptions import S3Error
 
 
@@ -51,12 +57,14 @@ class MockS3Client:
 
 
 class TestCreatePresignedUrl:
-    """Presigned URL lifetime behavior."""
+    """Presigned URL lifetime, method selection, and client reuse."""
 
-    async def test_default_chain_ttl_is_applied_to_s3(
+    @pytest.mark.parametrize("client_method", ["get_object", "put_object"])
+    async def test_default_chain_ttl_and_method_are_applied_to_s3(
         self,
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
+        client_method: str,
     ) -> None:
         client = AsyncMock()
         client.generate_presigned_url.return_value = "https://example.test/presigned"
@@ -72,14 +80,42 @@ class TestCreatePresignedUrl:
             clients=DefaultChainAWSClientProvider(region=aws_runtime.resources.region),
         )
 
-        result = await create_presigned_url("agents/demo.zip", runtime, expiration=86_400)
+        result = await create_presigned_url("agents/demo.zip", runtime, expiration=86_400, client_method=client_method)
 
         assert result == "https://example.test/presigned"
         client.generate_presigned_url.assert_awaited_once_with(
-            "get_object",
+            client_method,
             Params={"Bucket": "test-bucket", "Key": "agents/demo.zip"},
             ExpiresIn=3_600,
         )
+
+    async def test_bulk_urls_share_one_client(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        """Signing many keys must open the S3 client once, not once per key."""
+        client = AsyncMock()
+        client.generate_presigned_url.side_effect = ["https://example.test/a", "https://example.test/b"]
+        client_context = AsyncMock()
+        client_context.__aenter__.return_value = client
+        opened_clients: list[AsyncMock] = []
+
+        def s3_client(_provider: DefaultChainAWSClientProvider) -> AsyncMock:
+            opened_clients.append(client_context)
+            return client_context
+
+        monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", s3_client)
+        runtime = AWSRuntime(
+            resources=aws_runtime.resources,
+            clients=DefaultChainAWSClientProvider(region=aws_runtime.resources.region),
+        )
+
+        urls = await create_presigned_urls(["benchmarks/run/a", "benchmarks/run/b"], runtime, expiration=300)
+
+        assert urls == ["https://example.test/a", "https://example.test/b"]
+        assert len(opened_clients) == 1
+        assert client.generate_presigned_url.await_count == 2
 
 
 async def test_versioned_copy_can_be_deleted_exactly(

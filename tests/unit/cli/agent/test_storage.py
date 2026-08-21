@@ -167,7 +167,13 @@ async def test_keyless_config_routes_storage_through_tracker(
     assert await storage.list_agents() == []
     await storage.update_benchmark_agent_version("demo", "benchmark-1")
 
-    assert [name for name, _ in remote_calls] == ["push", "download", "remove", "list", "promote"]
+    assert remote_calls == [
+        ("push", ("demo", Path("/unused"))),
+        ("download", ("demo",)),
+        ("remove", ("demo",)),
+        ("list", ()),
+        ("promote", ("demo", "benchmark-1")),
+    ]
 
 
 def _forbid_aws_runtime() -> Any:

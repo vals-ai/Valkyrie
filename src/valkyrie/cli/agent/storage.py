@@ -26,7 +26,7 @@ from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
 
 from valkyrie.cli import s3_config as cli_s3
-from valkyrie.cli.agent.remote_storage import (
+from valkyrie.cli.remote_storage import (
     download_agent_zip_remote,
     list_agents_remote,
     push_agent_remote,

@@ -130,7 +130,7 @@ async def test_download_s3_path_rejects_keys_outside_output_directory(
     output_dir = tmp_path / "output"
     patch_s3(monkeypatch, payloads, tracker, "benchmarks/run-1/")
 
-    with pytest.raises(S3Error, match="Requested path is not relative the output directory"):
+    with pytest.raises(S3Error, match="Requested path is not relative to the output directory"):
         await download_s3_path("benchmarks/run-1", output_dir)
 
     assert not (tmp_path / "escaped.txt").exists()

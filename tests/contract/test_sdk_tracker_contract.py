@@ -179,8 +179,12 @@ MODEL_PAIRS = (
     (FetchBenchmarkMetadataResponse, SDKFetchBenchmarkMetadataResponse),
 )
 INTERNAL_ROUTES = {
+    ("/agents/{name}", "delete"),
+    ("/agents/{name}/upload-url", "post"),
     ("/aws-runtime", "get"),
+    ("/benchmarks/{benchmark_id}/agent-version", "post"),
     ("/benchmarks/{benchmark_id}/concurrency", "patch"),
+    ("/benchmarks/{benchmark_id}/output-urls", "get"),
     ("/benchmarks/filter-options", "get"),
     ("/health", "get"),
     ("/init", "post"),

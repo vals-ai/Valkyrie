@@ -83,7 +83,7 @@ class TestAgentRoutes:
         - The route signs agents/<name>.zip and reports the configured expiration.
         """
         presigned_upload_url = AsyncMock(return_value="https://example.test/agent-a.zip?put")
-        monkeypatch.setattr(agents_api, "create_presigned_upload_url", presigned_upload_url)
+        monkeypatch.setattr(agents_api, "create_presigned_url", presigned_upload_url)
 
         response = _client.post("/agents/agent-a/upload-url", headers=harness_headers)
 
@@ -97,6 +97,7 @@ class TestAgentRoutes:
             "agents/agent-a.zip",
             aws_runtime,
             expiration=agents_api.PRESIGNED_URL_EXPIRES_SECONDS,
+            client_method="put_object",
         )
 
     def test_agent_delete_removes_existing_and_rejects_missing(

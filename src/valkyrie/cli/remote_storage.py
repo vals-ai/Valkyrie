@@ -31,6 +31,7 @@ def use_tracker_storage() -> bool:
 
 
 def _client() -> httpx.AsyncClient:
+    """Open a client for Tracker endpoints, carrying the hosted API key."""
     headers: dict[str, str] = {}
     api_key = s3_config.load_config().get("api_key")
     if api_key:
@@ -38,21 +39,42 @@ def _client() -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=tracker_service_url(), headers=headers, timeout=_TRANSFER_TIMEOUT_SECONDS)
 
 
+def _transfer_client() -> httpx.AsyncClient:
+    """Open a bare client for presigned S3 transfers; it must carry no Tracker credentials."""
+    return httpx.AsyncClient(timeout=_TRANSFER_TIMEOUT_SECONDS)
+
+
+def _error_detail(response: httpx.Response) -> str:
+    detail: Any = response.text
+    try:
+        detail = response.json().get("detail", detail)
+    except ValueError:
+        pass
+
+    return str(detail)
+
+
 def _raise_for_status(response: httpx.Response, action: str) -> None:
     if response.status_code >= 400:
-        detail: Any = response.text
-        try:
-            detail = response.json().get("detail", detail)
-        except ValueError:
-            pass
-        raise S3Error(f"{action} failed ({response.status_code}): {detail}")
+        raise S3Error(f"{action} failed ({response.status_code}): {_error_detail(response)}")
+
+
+def resolve_download_destination(key: str, prefix: str, output_dir: Path) -> Path:
+    """Map an S3 key under `prefix` to a created path inside `output_dir`, rejecting escapes."""
+    relative = key.removeprefix(prefix).lstrip("/")
+    destination = (output_dir / relative if relative else output_dir / Path(key).name).resolve()
+    if not destination.is_relative_to(output_dir):
+        raise S3Error(f"Requested path is not relative to the output directory '{key}'")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    return destination
 
 
 def _echo_progress(label: str, completed: int, total: int) -> None:
-    progress_pct = (completed / total * 100) if total > 0 else 0
-    bar_width = 30
-    filled_width = int(bar_width * progress_pct / 100)
-    bar = "█" * filled_width + "░" * (bar_width - filled_width)
+    # Imported here to break an import cycle: run/__init__ imports outputs, which imports this module.
+    from valkyrie.cli.run.progress import BenchmarkFormatter
+
+    bar, progress_pct = BenchmarkFormatter.create_progress_bar(completed, total)
     click.echo(f"\r{label} [{bar}]  {progress_pct:.1f}%", nl=False)
 
 
@@ -66,25 +88,26 @@ async def _stream_with_progress(file_stream: BinaryIO, file_size: int) -> AsyncI
 
 async def push_agent_remote(agent_name: str, agent_path: Path) -> None:
     """Zip an agent and upload it through a Tracker-issued presigned PUT URL."""
-    async with _client() as client:
-        response = await client.post(f"/agents/{agent_name}/upload-url")
-        _raise_for_status(response, "Requesting upload URL")
-        upload_url = response.json()["upload_url"]
+    with get_agent_zip_stream(agent_name=agent_name, agent_path=agent_path) as file_stream:
+        file_stream.seek(0, 2)
+        file_size = file_stream.tell()
+        file_stream.seek(0)
+        if file_size > _MAX_SINGLE_PUT_BYTES:
+            raise S3Error(f"Agent zip is {file_size} bytes, above the {_MAX_SINGLE_PUT_BYTES}-byte upload limit.")
 
-        with get_agent_zip_stream(agent_name=agent_name, agent_path=agent_path) as file_stream:
-            file_stream.seek(0, 2)
-            file_size = file_stream.tell()
-            file_stream.seek(0)
-            if file_size > _MAX_SINGLE_PUT_BYTES:
-                raise S3Error(f"Agent zip is {file_size} bytes, above the {_MAX_SINGLE_PUT_BYTES}-byte upload limit.")
+        async with _client() as client:
+            response = await client.post(f"/agents/{agent_name}/upload-url")
+            _raise_for_status(response, "Requesting upload URL")
+            upload_url = response.json()["upload_url"]
 
-            put_response = await client.put(
+        async with _transfer_client() as transfer:
+            put_response = await transfer.put(
                 upload_url,
                 content=_stream_with_progress(file_stream, file_size),
                 headers={"Content-Length": str(file_size)},
             )
-        click.echo()
-        _raise_for_status(put_response, "Uploading agent")
+    click.echo()
+    _raise_for_status(put_response, "Uploading agent")
 
 
 async def download_agent_zip_remote(agent_name: str) -> bytes:
@@ -92,10 +115,11 @@ async def download_agent_zip_remote(agent_name: str) -> bytes:
     async with _client() as client:
         response = await client.get(f"/agents/{agent_name}/download-url")
         if response.status_code == 404:
-            raise S3Error(f"Agent '{agent_name}' not found in S3.")
+            raise S3Error(_error_detail(response) or f"Agent '{agent_name}' not found in S3.")
         _raise_for_status(response, "Requesting download URL")
 
-        download_response = await client.get(response.json()["download_url"])
+    async with _transfer_client() as transfer:
+        download_response = await transfer.get(response.json()["download_url"])
         _raise_for_status(download_response, "Downloading agent")
 
         return download_response.content
@@ -120,7 +144,7 @@ async def remove_agent_remote(agent_name: str) -> None:
     async with _client() as client:
         response = await client.delete(f"/agents/{agent_name}")
         if response.status_code == 404:
-            raise S3Error(f"Agent '{agent_name}' could not be found.")
+            raise S3Error(_error_detail(response) or f"Agent '{agent_name}' could not be found.")
         _raise_for_status(response, "Removing agent")
 
 
@@ -128,8 +152,6 @@ async def update_benchmark_agent_version_remote(agent_name: str, benchmark_id: s
     """Promote the latest pushed agent onto a run's frozen copy through Tracker."""
     async with _client() as client:
         response = await client.post(f"/benchmarks/{benchmark_id}/agent-version", json={"agent_name": agent_name})
-        if response.status_code == 404:
-            raise S3Error(f"Agent '{agent_name}.zip' not found in S3.")
         _raise_for_status(response, "Updating benchmark agent version")
 
 
@@ -141,18 +163,16 @@ async def download_outputs_remote(benchmark_id: str, subpath: str, output_dir: P
         _raise_for_status(response, "Requesting output download URLs")
         payload = response.json()
 
-        prefix = payload["prefix"].rstrip("/") + "/"
-        output_dir = output_dir.resolve()
-        output_dir.mkdir(parents=True, exist_ok=True)
+    prefix = payload["prefix"]
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    async with _transfer_client() as transfer:
 
         async def download_file(entry: dict[str, str]) -> None:
-            relative = entry["key"].removeprefix(prefix).lstrip("/")
-            destination = (output_dir / relative if relative else output_dir / Path(entry["key"]).name).resolve()
-            if not destination.is_relative_to(output_dir):
-                raise S3Error(f"Requested path is not relative the output directory '{entry['key']}'")
-            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination = resolve_download_destination(entry["key"], prefix, output_dir)
 
-            file_response = await client.get(entry["download_url"])
+            file_response = await transfer.get(entry["download_url"])
             _raise_for_status(file_response, f"Downloading '{entry['key']}'")
             destination.write_bytes(file_response.content)
 
@@ -161,4 +181,4 @@ async def download_outputs_remote(benchmark_id: str, subpath: str, output_dir: P
             batch = files[start : start + _DOWNLOAD_CONCURRENCY]
             await asyncio.gather(*(download_file(entry) for entry in batch))
 
-        return len(files)
+    return len(files)

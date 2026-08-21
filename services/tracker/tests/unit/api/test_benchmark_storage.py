@@ -44,39 +44,42 @@ def _mock_listing(monkeypatch: pytest.MonkeyPatch, keys: list[str]) -> list[str]
 class TestOutputURLs:
     """Presigned output-download listing for one run."""
 
-    def test_signs_every_listed_key_under_the_run_prefix(
+    @pytest.mark.parametrize(
+        ("subpath", "expected_prefix_suffix"),
+        [
+            ("", "/"),
+            ("task-a/", "/task-a/"),
+            ("summary.json", "/summary.json"),
+        ],
+    )
+    def test_prefix_is_slash_bounded_for_directories_and_exact_for_files(
         self,
         monkeypatch: pytest.MonkeyPatch,
         stored_benchmark: Benchmark,
         harness_headers: dict[str, str],
+        subpath: str,
+        expected_prefix_suffix: str,
     ) -> None:
-        """Output URLs must cover exactly the run's listed keys, honoring the subpath filter.
-
-        Test cases:
-        - Every listed key receives a presigned URL under the run's prefix.
-        - A subpath narrows the listed prefix.
-        - An empty listing returns 404 instead of an empty map.
-        """
+        """Directory subpaths list a slash-terminated prefix; file subpaths list the exact key."""
+        expected_prefix = f"benchmarks/{stored_benchmark.id}{expected_prefix_suffix}"
         key = f"benchmarks/{stored_benchmark.id}/task-a/output.json"
         requested_prefixes = _mock_listing(monkeypatch, [key])
-        presign = AsyncMock(return_value="https://example.test/file")
-        monkeypatch.setattr(benchmark_storage_module, "create_presigned_url", presign)
+        presign = AsyncMock(return_value=["https://example.test/file"])
+        monkeypatch.setattr(benchmark_storage_module, "create_presigned_urls", presign)
 
-        response = _client.get(f"/benchmarks/{stored_benchmark.id}/output-urls", headers=harness_headers)
-
-        assert response.status_code == 200
-
-        payload = response.json()
-        assert payload["prefix"] == f"benchmarks/{stored_benchmark.id}"
-        assert payload["files"] == [{"key": key, "download_url": "https://example.test/file"}]
-
-        subpath_response = _client.get(
+        params = {"subpath": subpath} if subpath else {}
+        response = _client.get(
             f"/benchmarks/{stored_benchmark.id}/output-urls",
-            params={"subpath": "task-a/"},
+            params=params,
             headers=harness_headers,
         )
-        assert subpath_response.status_code == 200
-        assert requested_prefixes[-1] == f"benchmarks/{stored_benchmark.id}/task-a"
+
+        assert response.status_code == 200
+        assert requested_prefixes == [expected_prefix]
+
+        payload = response.json()
+        assert payload["prefix"] == expected_prefix
+        assert payload["files"] == [{"key": key, "download_url": "https://example.test/file"}]
 
     def test_empty_listing_returns_not_found(
         self,
@@ -101,13 +104,6 @@ class TestAgentVersionPromotion:
         stored_benchmark: Benchmark,
         harness_headers: dict[str, str],
     ) -> None:
-        """Promotion must copy agents/<name>.zip to the run's frozen key.
-
-        Test cases:
-        - An existing agent is copied to the run-scoped destination key.
-        - A missing source agent returns 404 without copying.
-        - An invalid agent name is rejected before storage work.
-        """
         exists = AsyncMock(return_value=True)
         copy = AsyncMock(return_value=None)
         monkeypatch.setattr(benchmark_storage_module, "s3_object_exists", exists)

@@ -8,7 +8,7 @@ import click
 from httpx import Response
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
 
-from valkyrie.cli.agent.remote_storage import download_outputs_remote, use_tracker_storage
+from valkyrie.cli.remote_storage import download_outputs_remote, use_tracker_storage
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.artifacts import download_s3_path
 from valkyrie.cli.run.task_ids import resolve_task_ids
