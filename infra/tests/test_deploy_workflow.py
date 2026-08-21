@@ -9,6 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "deploy.yaml"
 EXECUTOR_BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "executor-build.yaml"
+EXECUTOR_ARTIFACT_BUILD_COMMAND = (
+    "uv run --project services/executor_artifact --frozen python services/executor_artifact/build.py"
+)
 
 
 class DeployWorkflowTest(unittest.TestCase):
@@ -92,7 +95,7 @@ class DeployWorkflowTest(unittest.TestCase):
                 self.assertIn("core_maintenance_required", executor_job)
                 self.assertIn("database_maintenance_required", executor_job)
                 self.assertIn(
-                    "uv run --project services/executor_artifact --frozen python services/executor_artifact/build.py",
+                    EXECUTOR_ARTIFACT_BUILD_COMMAND,
                     executor_job,
                 )
                 self.assertIn("--maintenance-operation begin", executor_job)
@@ -139,7 +142,7 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertNotIn("production-executor-approval", workflow)
         self.assertNotIn("production-release", workflow)
         self.assertEqual(
-            workflow.count("uv run --project services/executor_artifact --frozen python services/executor_artifact/build.py"),
+            workflow.count(EXECUTOR_ARTIFACT_BUILD_COMMAND),
             2,
         )
         self.assertEqual(workflow.count("--maintenance-operation begin"), 2)
@@ -389,7 +392,7 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn('"services/executor_host/**"', workflow)
         self.assertIn('"services/tracker/**"', workflow)
         self.assertIn('".dockerignore"', workflow)
-        self.assertIn("uv run --project services/executor_artifact --frozen python services/executor_artifact/build.py", workflow)
+        self.assertIn(EXECUTOR_ARTIFACT_BUILD_COMMAND, workflow)
         self.assertIn("uv run pytest", workflow)
         for test_path in (
             "tests/unit/executor_host",
