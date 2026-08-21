@@ -5,12 +5,14 @@ Exercise run-scoped storage routes through the real app, database, and auth stac
 
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session
 
 from tests.factories import make_benchmark
+from tracker.database.models import Org
 
 _HARNESS_HEADERS = {
     "X-Harness-AWS-Access-Key-Id": "test-access-key",
@@ -76,3 +78,26 @@ def test_output_keys_unauth_401(client: TestClient, database_session: Session) -
     response = client.get(f"/benchmarks/{benchmark.id}/output-keys")
 
     assert response.status_code == 401
+
+
+def test_run_storage_hides_foreign_runs_before_signing(
+    access_key_client: TestClient,
+    database_session: Session,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    foreign_org_id = uuid4()
+    database_session.add(Org(id=foreign_org_id, name="foreign-org"))
+    foreign_benchmark = make_benchmark(org_id=foreign_org_id)
+    database_session.add(foreign_benchmark)
+    database_session.commit()
+    presign = AsyncMock(return_value=["https://example.test/file"])
+    monkeypatch.setattr("tracker.api.benchmark_storage.create_presigned_urls", presign)
+
+    response = access_key_client.post(
+        f"/benchmarks/{foreign_benchmark.id}/output-urls",
+        json={"keys": [f"benchmarks/{foreign_benchmark.id}/output.json"]},
+        headers={"x-api-key": "fake-key", **_HARNESS_HEADERS},
+    )
+
+    assert response.status_code == 404
+    presign.assert_not_awaited()
