@@ -305,7 +305,7 @@ def reconcile_expired_dispatches(session: Session) -> int:
             ),
             producer="executor_dispatch",
             operation="dispatch_reconciliation",
-            error_type="ExecutorDispatchLeaseExpired",
+            error_type=("ExecutorDispatchLeaseExpired" if is_running else "ExecutorDispatchClaimDeadlineExpired"),
             cause_code=failure_reason,
             failure_reason=failure_reason,
             dispatch_status=dispatch.status,

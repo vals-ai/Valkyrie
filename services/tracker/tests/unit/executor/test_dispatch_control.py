@@ -490,6 +490,9 @@ def test_expired_queued_dispatch_is_failed_before_it_can_block_completion(
     assert dispatch.failure_reason == "CLAIM_DEADLINE_EXPIRED"
     assert task.status == TaskStatus.ERROR
 
+    error_result = database_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).one()
+    assert error_result.error_type == "ExecutorDispatchClaimDeadlineExpired"
+
 
 def test_terminal_recovery_terminalizes_active_dispatches(
     database_session: Session,
