@@ -14,7 +14,6 @@ on:
         options:
           - credentials-only
           - plan
-          - deploy
       scope:
         description: Infrastructure component
         required: true
@@ -23,86 +22,241 @@ on:
         options:
           - shared
           - tracker
-          - worker
+          - driver
+          - executor
           - monitoring
+          - core
           - all
 
 permissions:
   contents: read
-  id-token: write
-
-concurrency:
-  group: valkyrie-${{ github.ref_name }}-deploy
-  cancel-in-progress: false
 
 jobs:
-  deploy-production:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/prod'
+  classify-deployment:
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04-arm
+    outputs:
+      classification: ${{ steps.result.outputs.classification }}
+      executor_stack_deploy_required: ${{ steps.result.outputs.executor_stack_deploy_required }}
+      executor_host_redeploy_required: ${{ steps.result.outputs.executor_host_redeploy_required }}
+      executor_release_required: ${{ steps.result.outputs.executor_release_required }}
+      core_maintenance_required: ${{ steps.result.outputs.core_maintenance_required }}
+      database_maintenance_required: ${{ steps.result.outputs.database_maintenance_required }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          role-to-assume: arn:aws:iam::613431292675:role/github-actions-valkyrie-deploy
-          aws-region: us-east-1
-          allowed-account-ids: "613431292675"
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv without cache
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+        with:
+          enable-cache: false
+
+      - name: Synthesize exact base and head WorkerStack templates
+        env:
+          BASE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF_NAME" in
+            dev)
+              stage=dev
+              stack_id=ValkDevWorkerStack
+              account_id=111111111111
+              ;;
+            prod)
+              stage=prod
+              stack_id=WorkerStack
+              account_id=613431292675
+              ;;
+            *)
+              echo "::error::Unsupported deployment branch '$GITHUB_REF_NAME'."
+              exit 1
+              ;;
+          esac
+          npm install -g aws-cdk@2.1132.0
+
+          synth_revision() {
+            local revision="$1"
+            local label="$2"
+            local source="$RUNNER_TEMP/source-$label"
+            local assembly="$RUNNER_TEMP/cdk-$label"
+            local artifact="$RUNNER_TEMP/worker-template-$label"
+            mkdir -p "$source" "$artifact"
+            if [[ "$revision" =~ ^0+$ ]]; then
+              printf '{"Resources": {}}\n' > "$artifact/WorkerStack.template.json"
+              return
+            fi
+            git archive "$revision" | tar -x -C "$source"
+            (
+              cd "$source/infra"
+              PRODUCTION_ACCOUNT_ID=613431292675 \
+              DEV_ACCOUNT_ID=111111111111 \
+              CDK_DEFAULT_ACCOUNT="$account_id" \
+              CDK_DEFAULT_REGION=us-east-1 \
+              AWS_REGION=us-east-1 \
+              STAGE="$stage" \
+              AWS_DEPLOYMENT_ROLE_ORG_IDS=00000000-0000-0000-0000-000000000001 \
+              AWS_TRACKER_SECRET_NAME_PREFIXES=offline-synth \
+              AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth \
+              SENTRY_DSN_SECRET_NAME=offline-synth \
+              DESCOPE_MANAGEMENT_KEY_SECRET_NAME=offline-synth \
+              DESCOPE_PROJECT_ID=offline-synth \
+                uv run --frozen cdk synth "$stack_id" -c stage="$stage" --output "$assembly"
+            )
+            cp "$assembly/$stack_id.template.json" "$artifact/WorkerStack.template.json"
+          }
+
+          synth_revision "$BASE_SHA" base
+          synth_revision "$HEAD_SHA" head
+          echo "STACK_ID=$stack_id" >> "$GITHUB_ENV"
+
+      - name: Classify deployment
+        run: >-
+          python3 infra/classify_repository_change.py
+          --base-sha "${{ github.event.before }}"
+          --head-sha "$GITHUB_SHA"
+          --executor-base-template "$RUNNER_TEMP/worker-template-base/WorkerStack.template.json"
+          --executor-head-template "$RUNNER_TEMP/worker-template-head/WorkerStack.template.json"
+          --expected-stack-id "$STACK_ID"
+          --output maintenance-classification.json
+
+      - name: Read classification
+        id: result
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+
+          result = json.load(open("maintenance-classification.json"))
+          for key in (
+              "classification",
+              "executor_stack_deploy_required",
+              "executor_host_redeploy_required",
+              "executor_release_required",
+              "core_maintenance_required",
+              "database_maintenance_required",
+          ):
+              print(f"{key}={str(result[key]).lower()}")
+          PY
+
+  deploy-production-core:
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/prod' &&
+      needs.classify-deployment.outputs.core_maintenance_required != 'true' &&
+      needs.classify-deployment.outputs.database_maintenance_required != 'true'
+    needs: classify-deployment
+    concurrency:
+      group: valkyrie-prod-deploy
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04-arm
+    environment: prod
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}
+      AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}
+      AWS_REGION: us-east-1
+      PRODUCTION_ACCOUNT_ID: "613431292675"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::613431292675:role/github-actions-valkyrie-deploy
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.PRODUCTION_ACCOUNT_ID }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
         with:
           enable-cache: true
           cache-dependency-glob: "infra/uv.lock"
 
-      - name: Install CDK
-        run: npm install -g aws-cdk
-
-      - name: Install infra dependencies
+      - name: Install CDK and infrastructure dependencies
         run: |
-          cd infra
-          uv sync
+          npm install -g aws-cdk@2.1132.0
+          uv sync --frozen --python 3.12 --project infra
 
-      - name: Deploy all stacks with Slack notifications
+      - name: Deploy production core stacks
         env:
           SLACK_WORKSPACE_ID: ${{ secrets.SLACK_WORKSPACE_ID }}
           VALKYRIE_ALERTS_SLACK_CHANNEL_ID: ${{ secrets.VALKYRIE_ALERTS_SLACK_CHANNEL_ID }}
           DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID: ${{ secrets.DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID }}
           AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
           BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
+          DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
-        run: |
-          cd infra
-          uv run cdk deploy --all -c stage=prod --require-approval never
+          SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
+          SENTRY_RELEASE: ${{ github.sha }}
+        working-directory: infra
+        run: >-
+          make deploy
+          STAGE=prod
+          SCOPE=core
+          AWS_REGION="$AWS_REGION"
 
   run-dev-operation:
-    if: github.ref == 'refs/heads/dev' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: >-
+      always() && github.ref == 'refs/heads/dev' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' &&
+        needs.classify-deployment.result == 'success' &&
+        needs.classify-deployment.outputs.core_maintenance_required != 'true' &&
+        needs.classify-deployment.outputs.database_maintenance_required != 'true'))
+    needs: classify-deployment
+    concurrency:
+      group: valkyrie-dev-${{ github.event_name == 'push' && 'deploy' || github.run_id }}
+      cancel-in-progress: false
     runs-on: ubuntu-24.04-arm
     environment: dev
+    permissions:
+      contents: read
+      id-token: write
     env:
-      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}
+      AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
-      CDK_DEFAULT_ACCOUNT: ${{ vars.DEV_ACCOUNT_ID }}
+      CDK_DEFAULT_ACCOUNT: ${{ secrets.DEV_ACCOUNT_ID }}
       CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
-      DESCOPE_PROJECT_ID: ${{ vars.DESCOPE_PROJECT_ID }}
-      DEV_ACCOUNT_ID: ${{ vars.DEV_ACCOUNT_ID }}
+      DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
+      DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+      DEV_ACCOUNT_ID: ${{ secrets.DEV_ACCOUNT_ID }}
       OPERATION: ${{ github.event_name == 'push' && 'deploy' || inputs.operation }}
       PRODUCTION_ACCOUNT_ID: "613431292675"
-      SCOPE: ${{ github.event_name == 'push' && 'all' || inputs.scope }}
-      SENTRY_DSN_SECRET_NAME: ${{ vars.SENTRY_DSN_SECRET_NAME }}
+      SCOPE: ${{ github.event_name == 'push' && 'core' || inputs.scope }}
+      SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
+      SENTRY_RELEASE: ${{ github.sha }}
 
     steps:
       - name: Validate dev configuration
@@ -114,6 +268,18 @@ jobs:
           fi
           if [[ "$OPERATION" != "credentials-only" && -z "$DESCOPE_PROJECT_ID" ]]; then
             echo "::error::The dev Environment must define DESCOPE_PROJECT_ID before planning or deploying."
+            exit 1
+          fi
+          if [[ "$OPERATION" != "credentials-only" && -z "$DESCOPE_MANAGEMENT_KEY_SECRET_NAME" ]]; then
+            echo "::error::The dev Environment must define DESCOPE_MANAGEMENT_KEY_SECRET_NAME before planning or deploying."
+            exit 1
+          fi
+          if [[ "$OPERATION" != "credentials-only" && -z "$SENTRY_DSN_SECRET_NAME" ]]; then
+            echo "::error::The dev Environment must define SENTRY_DSN_SECRET_NAME before planning or deploying."
+            exit 1
+          fi
+          if [[ "$OPERATION" != "credentials-only" && ( -z "$AWS_DEPLOYMENT_ROLE_ORG_IDS" || -z "$AWS_TRACKER_SECRET_NAME_PREFIXES" ) ]]; then
+            echo "::error::The dev Environment must define AWS_DEPLOYMENT_ROLE_ORG_IDS and AWS_TRACKER_SECRET_NAME_PREFIXES before planning or deploying."
             exit 1
           fi
           if [[ ! "$DEV_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
@@ -130,7 +296,7 @@ jobs:
           fi
 
       - name: Configure dev AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -149,42 +315,462 @@ jobs:
 
       - name: Checkout code
         if: env.OPERATION != 'credentials-only'
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         if: env.OPERATION != 'credentials-only'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
 
       - name: Setup Python
         if: env.OPERATION != 'credentials-only'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
       - name: Install uv
         if: env.OPERATION != 'credentials-only'
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
         with:
           enable-cache: true
           cache-dependency-glob: "infra/uv.lock"
 
-      - name: Install CDK
+      - name: Install CDK and infrastructure dependencies
         if: env.OPERATION != 'credentials-only'
-        run: npm install -g aws-cdk@2.1132.0
-
-      - name: Install infra dependencies
-        if: env.OPERATION != 'credentials-only'
-        working-directory: infra
-        run: make install
+        run: |
+          npm install -g aws-cdk@2.1132.0
+          uv sync --frozen --python 3.12 --project infra
 
       - name: Plan dev infrastructure
         if: env.OPERATION == 'plan'
         working-directory: infra
         run: make plan STAGE=dev SCOPE="$SCOPE" DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION="$AWS_REGION"
 
-      - name: Deploy dev infrastructure
+      - name: Deploy dev core stacks
         if: env.OPERATION == 'deploy'
         working-directory: infra
-        run: make deploy STAGE=dev SCOPE="$SCOPE" DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION="$AWS_REGION"
+        run: make deploy STAGE=dev SCOPE=core DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION="$AWS_REGION"
+
+  executor-development:
+    if: >-
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/dev' &&
+      needs.classify-deployment.result == 'success' &&
+      (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+       needs.classify-deployment.outputs.executor_release_required == 'true' ||
+       needs.classify-deployment.outputs.database_maintenance_required == 'true') &&
+      (needs.classify-deployment.outputs.core_maintenance_required == 'true' ||
+       needs.classify-deployment.outputs.database_maintenance_required == 'true' ||
+       needs.run-dev-operation.result == 'success')
+    needs: [classify-deployment, run-dev-operation]
+    concurrency:
+      group: valkyrie-dev-deploy
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04-arm
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+      AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}
+      AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+      CDK_DEFAULT_ACCOUNT: ${{ secrets.DEV_ACCOUNT_ID }}
+      CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+      DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
+      DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+      DEV_ACCOUNT_ID: ${{ secrets.DEV_ACCOUNT_ID }}
+      EXECUTOR_RELEASE_LAUNCH_PARAMETER: /valkyrie/dev/executor-release/launch-config
+      SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
+
+    steps:
+      - name: Verify current dev executor revision
+        id: freshness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)"
+          if [[ "$current_sha" == "$GITHUB_SHA" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping stale executor revision $GITHUB_SHA; current $GITHUB_REF_NAME is $current_sha."
+          fi
+
+      - name: Checkout code
+        if: steps.freshness.outputs.current == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        if: steps.freshness.outputs.current == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        if: steps.freshness.outputs.current == 'true'
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            infra/executor_release/uv.lock
+            infra/uv.lock
+            services/executor_artifact/uv.lock
+
+      - name: Build immutable executor artifact
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_release_required == 'true'
+        run: |
+          PYTHONPATH=services/tracker/src python services/executor_artifact/build.py \
+            --output-directory "$GITHUB_WORKSPACE/executor-release" \
+            --source-revision "$GITHUB_SHA"
+
+      - name: Configure dev release preflight credentials
+        if: steps.freshness.outputs.current == 'true'
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::${{ env.DEV_ACCOUNT_ID }}:role/ValkyrieExecutorRelease-dev
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.DEV_ACCOUNT_ID }}
+          role-session-name: valkyrie-dev-release-preflight-${{ github.run_id }}
+          unset-current-credentials: true
+
+      - name: Require deployed dev release control
+        if: steps.freshness.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          error_file="$(mktemp)"
+          if aws ssm get-parameter --name "$EXECUTOR_RELEASE_LAUNCH_PARAMETER" >/dev/null 2>"$error_file"; then
+            exit 0
+          fi
+          if grep -q "ParameterNotFound" "$error_file"; then
+            echo "::error::Executor release control is not deployed. Complete the documented Monitoring pre-deploy, legacy drain, and separately authorized physical WorkerStack bootstrap, then rerun this workflow."
+          else
+            cat "$error_file" >&2
+          fi
+          exit 1
+
+      - name: Begin dev maintenance
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        working-directory: infra
+        run: >-
+          PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py
+          --account-id "$DEV_ACCOUNT_ID"
+          --maintenance-operation begin
+          --region "$AWS_REGION"
+          --stage dev
+          --target-sha "$GITHUB_SHA"
+
+      - name: Restore dev deployment credentials
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.DEV_ACCOUNT_ID }}
+          role-session-name: valkyrie-dev-executor-deploy-${{ github.run_id }}
+          unset-current-credentials: true
+
+      - name: Setup Node.js
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Install CDK and infrastructure dependencies
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        run: |
+          npm install -g aws-cdk@2.1132.0
+          uv sync --frozen --python 3.12 --project infra
+
+      - name: Deploy dev core stacks under maintenance
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.core_maintenance_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        working-directory: infra
+        run: make deploy STAGE=dev SCOPE=core DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION="$AWS_REGION"
+
+      - name: Deploy dev executor stack
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_stack_deploy_required == 'true'
+        working-directory: infra
+        run: make deploy STAGE=dev SCOPE=executor DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION="$AWS_REGION"
+
+      - name: Configure dev release credentials
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_release_required == 'true' ||
+           needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::${{ env.DEV_ACCOUNT_ID }}:role/ValkyrieExecutorRelease-dev
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.DEV_ACCOUNT_ID }}
+          role-session-name: valkyrie-dev-executor-release-${{ github.run_id }}
+          unset-current-credentials: true
+
+      - name: Publish and activate dev executor release
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_release_required == 'true'
+        working-directory: infra
+        run: >-
+          PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py
+          --account-id "$DEV_ACCOUNT_ID"
+          --artifact "$GITHUB_WORKSPACE/executor-release/executor.pex"
+          --manifest "$GITHUB_WORKSPACE/executor-release/manifest.json"
+          --region "$AWS_REGION"
+          --stage dev
+
+      - name: Finish dev maintenance
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        working-directory: infra
+        run: >-
+          PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py
+          --account-id "$DEV_ACCOUNT_ID"
+          --maintenance-operation finish
+          --region "$AWS_REGION"
+          --stage dev
+          --target-sha "$GITHUB_SHA"
+
+  executor-production:
+    if: >-
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/prod' &&
+      needs.classify-deployment.result == 'success' &&
+      (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+       needs.classify-deployment.outputs.executor_release_required == 'true' ||
+       needs.classify-deployment.outputs.database_maintenance_required == 'true') &&
+      (needs.classify-deployment.outputs.core_maintenance_required == 'true' ||
+       needs.classify-deployment.outputs.database_maintenance_required == 'true' ||
+       needs.deploy-production-core.result == 'success')
+    needs: [classify-deployment, deploy-production-core]
+    concurrency:
+      group: valkyrie-prod-deploy
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04-arm
+    environment: prod
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}
+      AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}
+      AWS_REGION: us-east-1
+      EXECUTOR_RELEASE_LAUNCH_PARAMETER: /valkyrie/prod/executor-release/launch-config
+      PRODUCTION_ACCOUNT_ID: "613431292675"
+
+    steps:
+      - name: Verify current production executor revision
+        id: freshness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)"
+          if [[ "$current_sha" == "$GITHUB_SHA" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping stale executor revision $GITHUB_SHA; current $GITHUB_REF_NAME is $current_sha."
+          fi
+
+      - name: Checkout code
+        if: steps.freshness.outputs.current == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        if: steps.freshness.outputs.current == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        if: steps.freshness.outputs.current == 'true'
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            infra/executor_release/uv.lock
+            infra/uv.lock
+            services/executor_artifact/uv.lock
+
+      - name: Build immutable executor artifact
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_release_required == 'true'
+        run: |
+          PYTHONPATH=services/tracker/src python services/executor_artifact/build.py \
+            --output-directory "$GITHUB_WORKSPACE/executor-release" \
+            --source-revision "$GITHUB_SHA"
+
+      - name: Configure production release preflight credentials
+        if: steps.freshness.outputs.current == 'true'
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::613431292675:role/ValkyrieExecutorRelease
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.PRODUCTION_ACCOUNT_ID }}
+          role-session-name: valkyrie-prod-release-preflight-${{ github.run_id }}
+          unset-current-credentials: true
+
+      - name: Require deployed production release control
+        if: steps.freshness.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          error_file="$(mktemp)"
+          if aws ssm get-parameter --name "$EXECUTOR_RELEASE_LAUNCH_PARAMETER" >/dev/null 2>"$error_file"; then
+            exit 0
+          fi
+          if grep -q "ParameterNotFound" "$error_file"; then
+            echo "::error::Executor release control is not deployed. Complete the documented Monitoring pre-deploy, legacy drain, and separately authorized physical WorkerStack bootstrap, then rerun this workflow."
+          else
+            cat "$error_file" >&2
+          fi
+          exit 1
+
+      - name: Begin production maintenance
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        working-directory: infra
+        run: >-
+          PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py
+          --account-id "$PRODUCTION_ACCOUNT_ID"
+          --maintenance-operation begin
+          --region "$AWS_REGION"
+          --stage prod
+          --target-sha "$GITHUB_SHA"
+
+      - name: Restore production deployment credentials
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::613431292675:role/github-actions-valkyrie-deploy
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.PRODUCTION_ACCOUNT_ID }}
+          role-session-name: valkyrie-prod-executor-deploy-${{ github.run_id }}
+          unset-current-credentials: true
+
+      - name: Setup Node.js
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Install CDK and infrastructure dependencies
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        run: |
+          npm install -g aws-cdk@2.1132.0
+          uv sync --frozen --python 3.12 --project infra
+
+      - name: Deploy production core stacks under maintenance
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.core_maintenance_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        env:
+          SLACK_WORKSPACE_ID: ${{ secrets.SLACK_WORKSPACE_ID }}
+          VALKYRIE_ALERTS_SLACK_CHANNEL_ID: ${{ secrets.VALKYRIE_ALERTS_SLACK_CHANNEL_ID }}
+          DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID: ${{ secrets.DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID }}
+          AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
+          BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
+          DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
+          DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
+          SENTRY_RELEASE: ${{ github.sha }}
+        working-directory: infra
+        run: make deploy STAGE=prod SCOPE=core AWS_REGION="$AWS_REGION"
+
+      - name: Deploy production executor stack
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_stack_deploy_required == 'true'
+        env:
+          AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
+          DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
+          DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
+          SANDBOX_CLEANUP_ENABLED: ${{ vars.SANDBOX_CLEANUP_ENABLED }}
+          SANDBOX_CLEANUP_PROVIDER: ${{ vars.SANDBOX_CLEANUP_PROVIDER }}
+          SANDBOX_CLEANUP_SECRET_NAME: ${{ secrets.SANDBOX_CLEANUP_SECRET_NAME }}
+        working-directory: infra
+        run: make deploy STAGE=prod SCOPE=executor AWS_REGION="$AWS_REGION"
+
+      - name: Configure production release credentials
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_release_required == 'true' ||
+           needs.classify-deployment.outputs.executor_stack_deploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::613431292675:role/ValkyrieExecutorRelease
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.PRODUCTION_ACCOUNT_ID }}
+          role-session-name: valkyrie-prod-executor-release-${{ github.run_id }}
+          unset-current-credentials: true
+
+      - name: Publish and activate production executor release
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_release_required == 'true'
+        working-directory: infra
+        run: >-
+          PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py
+          --account-id "$PRODUCTION_ACCOUNT_ID"
+          --artifact "$GITHUB_WORKSPACE/executor-release/executor.pex"
+          --manifest "$GITHUB_WORKSPACE/executor-release/manifest.json"
+          --region "$AWS_REGION"
+          --stage prod
+
+      - name: Finish production maintenance
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+           needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        working-directory: infra
+        run: >-
+          PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py
+          --account-id "$PRODUCTION_ACCOUNT_ID"
+          --maintenance-operation finish
+          --region "$AWS_REGION"
+          --stage prod
+          --target-sha "$GITHUB_SHA"

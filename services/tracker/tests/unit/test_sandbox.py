@@ -6,7 +6,8 @@ Run: pytest services/tracker/tests/unit/test_sandbox.py
 import asyncio
 import shlex
 from collections import deque
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import suppress
 from typing import Any, Never, cast
 from unittest.mock import AsyncMock, Mock, call
 
@@ -21,11 +22,13 @@ from benchmark_service import (
     SandboxSource,
     SnapshotSource,
     TargetedSnapshotSource,
+    VolumeMount,
 )
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
 from tracker import sandbox as sandbox_module
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentCausedExitReason,
     AgentContractRequest,
@@ -35,6 +38,7 @@ from tracker.database.models import (
 from tracker.exceptions import (
     AgentRunFailedError,
     DependencySetupExhaustedError,
+    InvalidSandboxConfigurationError,
     OutputArtifactError,
     SSLConnectionError,
     SandboxError,
@@ -47,7 +51,6 @@ from tracker.sandbox import (
     upload_agent_artifacts,
     upload_output_artifacts,
 )
-from tracker.types import AWSCredentials
 
 
 def _ignore_output(_message: str) -> None:
@@ -71,7 +74,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_downloads_file_without_exec_output(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """
         Verify artifact contents use the sandbox file-transfer API instead of command output.
@@ -91,7 +94,7 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output=str(len(artifact_content)))
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -107,16 +110,51 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            harness_config.s3_bucket,
+            aws_runtime,
         )
 
         assert uploaded == [(artifact_content, "benchmarks/benchmark-123/task_0/artifacts/turns.jsonl")]
 
+    async def test_upload_output_artifacts_rechecks_authority_after_download(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        artifact = "artifacts/turns.jsonl"
+        authority_checks = iter([True, False])
+        uploaded: list[bytes] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command == "test -f /tmp/valkyrie/artifacts/turns.jsonl":
+                return ExecResult(exit_code=0, output="")
+            if command == "stat -c%s /tmp/valkyrie/artifacts/turns.jsonl":
+                return ExecResult(exit_code=0, output="3")
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fake_upload_to_s3(file_content: bytes, *_args: Any, **_kwargs: Any) -> None:
+            uploaded.append(file_content)
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "upload_to_s3", fake_upload_to_s3)
+        mock_sandbox = Mock()
+        mock_sandbox.download_file = AsyncMock(return_value=b"old")
+
+        await upload_output_artifacts(
+            mock_sandbox,
+            [artifact],
+            "benchmark-123",
+            "task_0",
+            aws_runtime,
+            execution_is_current=lambda: next(authority_checks),
+        )
+
+        mock_sandbox.download_file.assert_awaited_once()
+        assert uploaded == []
+
     async def test_upload_output_artifacts_can_upload_explicit_glob_sources(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         uploaded: list[tuple[bytes, str]] = []
 
@@ -131,7 +169,7 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="13")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -150,8 +188,7 @@ class TestOutputArtifacts:
             ],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            harness_config.s3_bucket,
+            aws_runtime,
         )
 
         assert uploaded == [
@@ -162,7 +199,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_uses_result_paired_with_model_library_config(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         uploaded: list[tuple[bytes, str]] = []
 
@@ -173,7 +210,7 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="13")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -189,8 +226,7 @@ class TestOutputArtifacts:
             [OutputArtifact(path="artifacts/result.json", source="/logs/model-library-run/result.json")],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            harness_config.s3_bucket,
+            aws_runtime,
         )
 
         assert uploaded == [(b'{"turns":[]}\n', "benchmarks/benchmark-123/task_0/artifacts/result.json")]
@@ -198,7 +234,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_fails_when_declared_file_is_missing(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         artifact = "artifacts/missing.json"
 
@@ -209,12 +245,12 @@ class TestOutputArtifacts:
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
 
         with pytest.raises(OutputArtifactError, match="Required output artifact missing"):
-            await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
+            await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", aws_runtime)
 
     async def test_upload_output_artifacts_skips_missing_optional_model_patch(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         artifact = OutputArtifact(
             path="artifacts/model.patch",
@@ -233,8 +269,7 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            "bucket",
+            aws_runtime,
         )
 
         exec_mock.assert_awaited_once_with(
@@ -251,7 +286,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_handles_non_glob_symlinks_by_requiredness(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
         required: bool,
         expected_uploads: list[bytes],
     ) -> None:
@@ -267,7 +302,7 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="6")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, _s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+        async def fake_upload_to_s3(file_content: bytes, _s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append(file_content)
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -284,8 +319,7 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            "bucket",
+            aws_runtime,
         )
 
         assert uploaded == expected_uploads
@@ -293,7 +327,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_prioritizes_required_artifacts_for_total_size_limit(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         optional_source = "/logs/optional.json"
         required_source = "/logs/required.json"
@@ -314,7 +348,7 @@ class TestOutputArtifacts:
         async def fake_download_file(path: str) -> bytes:
             return path.encode()
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -333,8 +367,7 @@ class TestOutputArtifacts:
             ],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            "bucket",
+            aws_runtime,
         )
 
         assert uploaded == [
@@ -347,7 +380,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_fails_when_file_exceeds_tracker_limit(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         artifact = "artifacts/large.json"
 
@@ -363,7 +396,7 @@ class TestOutputArtifacts:
         monkeypatch.setattr(sandbox_module, "upload_to_s3", upload_mock)
 
         with pytest.raises(OutputArtifactError, match="too large"):
-            await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
+            await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", aws_runtime)
 
         upload_mock.assert_not_awaited()
 
@@ -382,7 +415,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifact_rejects_invalid_sizes(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
         stat_result: ExecResult,
         total_bytes: int,
         error: str,
@@ -403,8 +436,7 @@ class TestOutputArtifacts:
                 "artifacts/result.json",
                 "benchmark-123",
                 "task_0",
-                harness_config.aws,
-                "bucket",
+                aws_runtime,
                 total_bytes,
             )
 
@@ -413,7 +445,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_skips_invalid_optional_file(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         artifact = OutputArtifact(
             path="atif/trajectory.json",
@@ -437,8 +469,7 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            "bucket",
+            aws_runtime,
         )
 
         assert exec_mock.await_args_list == [
@@ -457,7 +488,7 @@ class TestArchiveAndUploadOutput:
     async def test_archive_and_upload_output_streams_archive_to_s3(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """
         Test cases:
@@ -471,7 +502,12 @@ class TestArchiveAndUploadOutput:
             exec_commands.append(command)
             return ExecResult(exit_code=0, output="")
 
-        async def fake_upload_stream_to_s3(chunks: Any, s3_key: str, _aws: Any, _s3_bucket: str) -> int:
+        async def fake_upload_stream_to_s3(
+            chunks: Any,
+            s3_key: str,
+            _aws_runtime: AWSRuntime,
+            should_continue: Any = None,
+        ) -> int:
             data = b"".join([chunk async for chunk in chunks])
             uploaded.append((data, s3_key))
             return len(data)
@@ -497,8 +533,7 @@ class TestArchiveAndUploadOutput:
             mock_sandbox,
             "/logs",
             "benchmarks/benchmark-123/task_0/output.tar.gz",
-            harness_config.aws,
-            harness_config.s3_bucket,
+            aws_runtime,
         )
 
         assert uploaded == [(b"chunk-1chunk-2", "benchmarks/benchmark-123/task_0/output.tar.gz")]
@@ -512,7 +547,7 @@ class TestRunAgent:
     async def test_run_agent_uploads_declared_output_artifacts(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         contract = AgentContractRequest(
             name="test-agent",
@@ -536,8 +571,8 @@ class TestRunAgent:
             artifacts: list[str],
             benchmark_id: str,
             task_id: str,
-            _aws: Any,
-            _s3_bucket: str,
+            _aws_runtime: AWSRuntime,
+            _execution_is_current: Any,
         ) -> None:
             artifact_calls.append(f"{benchmark_id}:{task_id}:{artifacts[0]}")
 
@@ -556,8 +591,7 @@ class TestRunAgent:
             "task_0",
             lambda _msg: None,
             "/testbed",
-            aws=harness_config.aws,
-            s3_bucket=harness_config.s3_bucket,
+            aws_runtime=aws_runtime,
             benchmark_id="benchmark-123",
         )
 
@@ -566,7 +600,7 @@ class TestRunAgent:
     async def test_run_agent_threads_benchmark_id_to_archive_and_upload(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         contract = AgentContractRequest(
             name="test-agent",
@@ -588,11 +622,11 @@ class TestRunAgent:
             _sandbox: Any,
             output_path: str,
             _s3_key: str,
-            _aws: Any,
-            _s3_bucket: str,
+            _aws_runtime: AWSRuntime,
             *,
             benchmark_id: str | None = None,
             task_id: str | None = None,
+            execution_is_current: Callable[[], bool] | None = None,
         ) -> None:
             archive_calls.append(f"{benchmark_id}:{task_id}:{output_path}")
 
@@ -611,18 +645,32 @@ class TestRunAgent:
             "task_0",
             lambda _msg: None,
             "/testbed",
-            aws=harness_config.aws,
-            s3_bucket=harness_config.s3_bucket,
+            aws_runtime=aws_runtime,
             agent_output_s3_key="benchmarks/run/task/agent_output.tar.gz",
             benchmark_id="benchmark-123",
         )
 
         assert archive_calls == ["benchmark-123:task_0:/tmp/agent_output"]
 
+        archive_calls.clear()
+        await run_agent(
+            mock_sandbox,
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            lambda _msg: None,
+            "/testbed",
+            aws_runtime=aws_runtime,
+            agent_output_s3_key="benchmarks/run/task/agent_output.tar.gz",
+            benchmark_id="benchmark-123",
+            execution_is_current=lambda: False,
+        )
+        assert archive_calls == []
+
     async def test_run_agent_wraps_compose_runtime_source(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """Compose runtime sources should route agent setup and execution through the wrapper.
 
@@ -661,8 +709,7 @@ class TestRunAgent:
             "task_0",
             lambda _msg: None,
             "/workspace",
-            aws=harness_config.aws,
-            s3_bucket=harness_config.s3_bucket,
+            aws_runtime=aws_runtime,
             runtime_source=ComposeSource(
                 outer=ImageSource(image="docker:28.3.3-dind"),
                 compose_command="docker compose -f /harbor/compose.yaml",
@@ -675,7 +722,7 @@ class TestRunAgent:
     async def test_run_agent_shell_wraps_agent_timeout_command(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """Task timeouts should apply to the full shell-form agent command.
 
@@ -712,8 +759,7 @@ class TestRunAgent:
             "task_0",
             lambda _msg: None,
             "/workspace",
-            aws=harness_config.aws,
-            s3_bucket=harness_config.s3_bucket,
+            aws_runtime=aws_runtime,
             agent_timeout=2.5,
         )
 
@@ -924,11 +970,23 @@ class TestSandboxLifecycle:
         provider.create_sandbox = AsyncMock(return_value=mock_sandbox)
 
         resources = Resources(vcpu=2, memory=4, disk=5)
+        volumes = [
+            VolumeMount(
+                name="shared-fixtures",
+                mount_path="/fixtures",
+                read_only=True,
+                subpath="{run_id}",
+            )
+        ]
+        sandbox_secrets = {"TAVILY_API_KEY": "daytona-tavily"}
         sandbox = await _create_sandbox(
             provider,
             "task-alias",
             ImageSource(image="ghcr.io/vals/swebench:latest"),
             resources,
+            labels={"run-id": "run-123"},
+            sandbox_secrets=sandbox_secrets,
+            volumes=volumes,
         )
 
         assert sandbox is mock_sandbox
@@ -936,8 +994,26 @@ class TestSandboxLifecycle:
         request = provider.create_sandbox.await_args.args[0]
         assert request.name == "task-alias"
         assert request.resources == resources
+        assert request.labels == {"run-id": "run-123"}
+        assert request.sandbox_secrets == sandbox_secrets
+        assert request.volumes == volumes
         assert request.auto_stop_interval == sandbox_module.SANDBOX_AUTO_STOP_INTERVAL
         assert request.create_timeout == sandbox_module.SANDBOX_CREATE_TIMEOUT
+
+    async def test_create_sandbox_rejects_plaintext_and_secret_environment_collision(self) -> None:
+        provider = AsyncMock()
+
+        with pytest.raises(InvalidSandboxConfigurationError, match="TAVILY_API_KEY"):
+            await _create_sandbox(
+                provider,
+                "task-alias",
+                ImageSource(image="ghcr.io/vals/swebench:latest"),
+                Resources(vcpu=1, memory=2, disk=3),
+                env_vars={"TAVILY_API_KEY": "plaintext-value"},
+                sandbox_secrets={"TAVILY_API_KEY": "daytona-tavily"},
+            )
+
+        provider.create_sandbox.assert_not_awaited()
 
     async def test_create_sandbox_unwraps_compose_source_before_provider_create(
         self, monkeypatch: pytest.MonkeyPatch
@@ -976,12 +1052,13 @@ class TestSandboxLifecycle:
         mock_sandbox = AsyncMock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
+        mock_sandbox.labels = None
 
         provider = AsyncMock()
         provider.delete_sandbox = AsyncMock(side_effect=ProviderSandboxError("state change"))
 
         with pytest.raises(ProviderSandboxError, match="state change"):
-            await _delete_sandbox(mock_sandbox, provider)
+            await _delete_sandbox(mock_sandbox, provider, initiated_by="force_stop")
 
         provider.delete_sandbox.assert_awaited_once_with("sandbox-123")
 
@@ -1047,6 +1124,7 @@ class TestSandboxLifecycle:
         mock_sandbox = AsyncMock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
+        mock_sandbox.labels = None
         provider = AsyncMock()
         provider.create_sandbox.return_value = mock_sandbox
         distribution = Mock()
@@ -1127,8 +1205,11 @@ class TestSandboxLifecycle:
 
             return await asyncio.shield(remote_creation_task)
 
-        async def mock_delete_sandbox(sandbox: AsyncMock, _provider: Any) -> None:
+        deletion_initiators: list[Any] = []
+
+        async def mock_delete_sandbox(sandbox: AsyncMock, _provider: Any, **kwargs: Any) -> None:
             active_sandbox_ids.remove(sandbox.id)
+            deletion_initiators.append(kwargs.get("initiated_by"))
 
         monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
         monkeypatch.setattr(sandbox_module, "delete_sandbox", mock_delete_sandbox)
@@ -1155,6 +1236,280 @@ class TestSandboxLifecycle:
         assert remote_creation_task is not None
         await remote_creation_task
         assert active_sandbox_ids == set()
+        assert deletion_initiators == ["create_cancelled"]
+
+    async def test_create_sandbox_teardown_names_initiator(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Normal context-manager exit attributes the deletion to task_teardown in the audit trail."""
+        mock_sandbox = Mock()
+
+        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> Mock:
+            return mock_sandbox
+
+        delete_mock = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "delete_sandbox", delete_mock)
+        monkeypatch.setattr(sandbox_module, "distribution", Mock())
+        monkeypatch.setattr(sandbox_module, "set_sandbox_context", Mock())
+
+        provider = Mock()
+        async with create_sandbox(
+            provider=provider,
+            sandbox_name="task-alias",
+            source=ImageSource(image="ghcr.io/vals/swebench:latest"),
+            resources=Resources(vcpu=2, memory=4, disk=5),
+            creation_semaphore=asyncio.Semaphore(1),
+        ):
+            pass
+
+        delete_mock.assert_awaited_once_with(mock_sandbox, provider, initiated_by="task_teardown")
+
+    async def test_create_sandbox_preserves_success_when_task_teardown_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.labels = {"Benchmark": "swebench", "Id": "bench-1", "Task": "task_0"}
+
+        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> Mock:
+            return mock_sandbox
+
+        provider = Mock()
+        provider.delete_sandbox = AsyncMock(side_effect=ProviderSandboxError("cleanup failed"))
+        logger_mock = Mock()
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "distribution", Mock())
+        monkeypatch.setattr(sandbox_module, "set_sandbox_context", Mock())
+        monkeypatch.setattr(sandbox_module, "logger", logger_mock)
+
+        async with create_sandbox(
+            provider=provider,
+            sandbox_name="task-alias",
+            source=ImageSource(image="ghcr.io/vals/swebench:latest"),
+            resources=Resources(vcpu=2, memory=4, disk=5),
+            creation_semaphore=asyncio.Semaphore(1),
+        ):
+            pass
+
+        audit_call = logger_mock.info.call_args_list[-1]
+        assert audit_call.args == ("sandbox.delete",)
+        assert audit_call.kwargs["extra"] == {
+            "sandbox_id": "sandbox-123",
+            "sandbox_name": "task-alias",
+            "benchmark_id": "bench-1",
+            "benchmark_name": "swebench",
+            "task_id": "task_0",
+            "org_id": None,
+            "initiated_by": "task_teardown",
+            "outcome": "failed",
+            "error": "SandboxError: cleanup failed",
+        }
+
+    async def test_create_sandbox_preserves_body_failure_when_task_teardown_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.labels = None
+
+        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> Mock:
+            return mock_sandbox
+
+        provider = Mock()
+        provider.delete_sandbox = AsyncMock(side_effect=ProviderSandboxError("cleanup failed"))
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "distribution", Mock())
+        monkeypatch.setattr(sandbox_module, "set_sandbox_context", Mock())
+
+        primary_error = RuntimeError("primary failure")
+        with pytest.raises(RuntimeError) as exc_info:
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="task-alias",
+                source=ImageSource(image="ghcr.io/vals/swebench:latest"),
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                creation_semaphore=asyncio.Semaphore(1),
+            ):
+                raise primary_error
+
+        assert exc_info.value is primary_error
+
+    async def test_create_sandbox_propagates_provider_error_during_cancelled_creation_cleanup(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.labels = None
+        creation_started = asyncio.Event()
+        release_creation = asyncio.Event()
+
+        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> Mock:
+            creation_started.set()
+            await release_creation.wait()
+            return mock_sandbox
+
+        provider = Mock()
+        provider.delete_sandbox = AsyncMock(side_effect=ProviderSandboxError("cleanup failed"))
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
+
+        async def use_sandbox() -> None:
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="task-alias",
+                source=ImageSource(image="ghcr.io/vals/swebench:latest"),
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                creation_semaphore=asyncio.Semaphore(1),
+            ):
+                pass
+
+        context_task = asyncio.create_task(use_sandbox())
+        await creation_started.wait()
+        context_task.cancel()
+        release_creation.set()
+
+        with pytest.raises(ProviderSandboxError, match="cleanup failed"):
+            await context_task
+
+    async def test_create_sandbox_propagates_cancelled_task_teardown_and_audits(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.labels = {"Benchmark": "swebench", "Id": "bench-1", "Task": "task_0"}
+
+        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> Mock:
+            return mock_sandbox
+
+        provider = Mock()
+        provider.delete_sandbox = AsyncMock(side_effect=asyncio.CancelledError())
+        logger_mock = Mock()
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "distribution", Mock())
+        monkeypatch.setattr(sandbox_module, "set_sandbox_context", Mock())
+        monkeypatch.setattr(sandbox_module, "logger", logger_mock)
+
+        with pytest.raises(asyncio.CancelledError):
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="task-alias",
+                source=ImageSource(image="ghcr.io/vals/swebench:latest"),
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                creation_semaphore=asyncio.Semaphore(1),
+            ):
+                pass
+
+        audit_call = logger_mock.info.call_args_list[-1]
+        assert audit_call.args == ("sandbox.delete",)
+        assert audit_call.kwargs["extra"] == {
+            "sandbox_id": "sandbox-123",
+            "sandbox_name": "task-alias",
+            "benchmark_id": "bench-1",
+            "benchmark_name": "swebench",
+            "task_id": "task_0",
+            "org_id": None,
+            "initiated_by": "task_teardown",
+            "outcome": "cancelled",
+            "error": None,
+        }
+
+
+class TestDeleteSandboxAudit:
+    """Structured `sandbox.delete` audit records."""
+
+    @staticmethod
+    def _sandbox() -> AsyncMock:
+        sandbox = AsyncMock()
+        sandbox.id = "sandbox-123"
+        sandbox.name = "task-alias"
+        sandbox.labels = {"Benchmark": "swebench", "Id": "bench-1", "Task": "task_0"}
+        return sandbox
+
+    @pytest.mark.parametrize(
+        ("provider_error", "outcome", "error"),
+        [
+            (None, "deleted", None),
+            (SandboxNotFoundError("gone"), "already_gone", None),
+            (ProviderSandboxError("state change"), "failed", "SandboxError: state change"),
+            (RuntimeError("boom"), "failed", "RuntimeError: boom"),
+        ],
+        ids=["deleted", "already-gone", "provider-error", "unexpected-error"],
+    )
+    async def test_delete_sandbox_audits_every_outcome(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        provider_error: Exception | None,
+        outcome: str,
+        error: str | None,
+    ) -> None:
+        """Every attempt emits one record naming the initiator, the sandbox, and what happened to it."""
+        logger_mock = Mock()
+        monkeypatch.setattr(sandbox_module, "logger", logger_mock)
+        provider = AsyncMock()
+        provider.delete_sandbox = AsyncMock(side_effect=provider_error)
+
+        # Of these outcomes only ProviderSandboxError propagates; test_delete_sandbox_raises_provider_errors pins that.
+        with suppress(ProviderSandboxError):
+            await _delete_sandbox(self._sandbox(), provider, initiated_by="force_stop", org_id="org-1")
+
+        logger_mock.info.assert_called_once_with(
+            "sandbox.delete",
+            extra={
+                "sandbox_id": "sandbox-123",
+                "sandbox_name": "task-alias",
+                "benchmark_id": "bench-1",
+                "benchmark_name": "swebench",
+                "task_id": "task_0",
+                "org_id": "org-1",
+                "initiated_by": "force_stop",
+                "outcome": outcome,
+                "error": error,
+            },
+        )
+
+    async def test_delete_sandbox_audits_unlabelled_sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Unlabelled sandboxes still audit; the other fields are pinned by the `deleted` case above."""
+        logger_mock = Mock()
+        monkeypatch.setattr(sandbox_module, "logger", logger_mock)
+        sandbox = self._sandbox()
+        sandbox.labels = None
+
+        await _delete_sandbox(sandbox, AsyncMock(), initiated_by="task_teardown")
+
+        logger_mock.info.assert_called_once()
+        extra = logger_mock.info.call_args.kwargs["extra"]
+        assert (extra["benchmark_id"], extra["benchmark_name"], extra["task_id"]) == (None, None, None)
+
+    async def test_delete_sandbox_audits_cancelled_delete(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A delete cancelled mid-flight still leaves a record: the provider may have acted on it."""
+        logger_mock = Mock()
+        monkeypatch.setattr(sandbox_module, "logger", logger_mock)
+        provider = AsyncMock()
+        provider.delete_sandbox = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with pytest.raises(asyncio.CancelledError):
+            await _delete_sandbox(self._sandbox(), provider, initiated_by="task_teardown")
+
+        logger_mock.info.assert_called_once_with(
+            "sandbox.delete",
+            extra={
+                "sandbox_id": "sandbox-123",
+                "sandbox_name": "task-alias",
+                "benchmark_id": "bench-1",
+                "benchmark_name": "swebench",
+                "task_id": "task_0",
+                "org_id": None,
+                "initiated_by": "task_teardown",
+                "outcome": "cancelled",
+                "error": None,
+            },
+        )
 
 
 class TestUploadAgentArtifacts:
@@ -1173,7 +1528,7 @@ class TestUploadAgentArtifacts:
         self,
         contract: AgentContractRequest,
         monkeypatch: pytest.MonkeyPatch,
-        aws_credentials: AWSCredentials,
+        aws_runtime: AWSRuntime,
         exit_code: int,
         retryable: bool,
     ) -> None:
@@ -1200,13 +1555,7 @@ class TestUploadAgentArtifacts:
 
         expected = SSLConnectionError if retryable else SandboxError
         with pytest.raises(expected) as exc_info:
-            await upload_agent_artifacts(
-                mock_sandbox,
-                contract,
-                "bench-123",
-                aws_credentials,
-                "test-bucket",
-            )
+            await upload_agent_artifacts(mock_sandbox, contract, "bench-123", aws_runtime)
 
         if not retryable:
             assert not isinstance(exc_info.value, SandboxSetupError)

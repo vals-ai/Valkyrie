@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Any, AsyncGenerator, assert_never
+from typing import Any, AsyncGenerator, Literal, assert_never
 
 import logfire
 import sentry_sdk
@@ -26,6 +26,7 @@ from benchmark_service import (
     SandboxSource,
     SnapshotSource,
     TargetedSnapshotSource,
+    VolumeMount,
 )
 from benchmark_service import (
     Resources as TrackerResources,
@@ -43,6 +44,7 @@ from tenacity import (
     wait_none,
 )
 
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import (
     create_presigned_url,
     get_agent_result_s3_key,
@@ -59,6 +61,7 @@ from tracker.database.models import (
 from tracker.exceptions import (
     AgentRunFailedError,
     DependencySetupExhaustedError,
+    InvalidSandboxConfigurationError,
     OutputArtifactError,
     SandboxError,
     SandboxSetupError,
@@ -72,7 +75,6 @@ from tracker.observability import (
     retry_callback,
     set_sandbox_context,
 )
-from tracker.types import AWSCredentials
 
 logger = get_logger(__name__)
 
@@ -107,16 +109,61 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
     return bundle_path / contract_name
 
 
-async def delete_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> None:
+SandboxDeleteInitiator = Literal["create_cancelled", "force_stop", "orphan_cleanup", "task_teardown"]
+SandboxDeleteOutcome = Literal["deleted", "already_gone", "cancelled", "failed"]
+
+
+def audit_sandbox_delete(
+    sandbox: Sandbox,
+    initiated_by: SandboxDeleteInitiator,
+    org_id: str | None,
+    outcome: SandboxDeleteOutcome,
+    error: str | None = None,
+) -> None:
+    # Labels attached at sandbox creation (utils/task_execution.py):
+    # {"Benchmark": name, "Id": benchmark id, "Task": task id}.
+    labels = sandbox.labels or {}
+    logger.info(
+        "sandbox.delete",
+        extra={
+            "sandbox_id": sandbox.id,
+            "sandbox_name": sandbox.name,
+            "benchmark_id": labels.get("Id"),
+            "benchmark_name": labels.get("Benchmark"),
+            "task_id": labels.get("Task"),
+            "org_id": org_id,
+            "initiated_by": initiated_by,
+            "outcome": outcome,
+            "error": error,
+        },
+    )
+
+
+async def delete_sandbox(
+    sandbox: Sandbox,
+    provider: SandboxProvider,
+    *,
+    initiated_by: SandboxDeleteInitiator,
+    org_id: str | None = None,
+) -> None:
     """Delete sandbox through its provider."""
     try:
         await provider.delete_sandbox(sandbox.id)
     except SandboxNotFoundError:
+        audit_sandbox_delete(sandbox, initiated_by, org_id, "already_gone")
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
-    except ProviderSandboxError:
+    except ProviderSandboxError as e:
+        audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", f"{type(e).__name__}: {e}")
+        raise
+    except asyncio.CancelledError:
+        # Caught only to audit: a cancelled delete may still have reached the provider.
+        audit_sandbox_delete(sandbox, initiated_by, org_id, "cancelled")
         raise
     except Exception as e:
+        audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", f"{type(e).__name__}: {e}")
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
+    else:
+        audit_sandbox_delete(sandbox, initiated_by, org_id, "deleted")
 
 
 def _source_name(source: SandboxSource) -> str:
@@ -177,6 +224,18 @@ def _set_sandbox_span_attributes(sandbox: Sandbox) -> None:
     span.set_attribute("valkyrie.sandbox_state", sandbox.state)
 
 
+def _reject_plaintext_secret_collisions(
+    env_vars: dict[str, str] | None,
+    sandbox_secrets: dict[str, str] | None,
+) -> None:
+    overlapping_env_names = sorted(set(env_vars or {}) & set(sandbox_secrets or {}))
+    if overlapping_env_names:
+        raise InvalidSandboxConfigurationError(
+            "Sandbox environment variables cannot be both plaintext and provider-managed secrets: "
+            f"{', '.join(overlapping_env_names)}"
+        )
+
+
 @logfire.instrument("sandbox.create", extract_args=False)
 async def _create_sandbox(
     provider: SandboxProvider,
@@ -185,8 +244,11 @@ async def _create_sandbox(
     resources: TrackerResources,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
+    volumes: list[VolumeMount] | None = None,
+    sandbox_secrets: dict[str, str] | None = None,
 ) -> Sandbox:
     """Create a sandbox through its provider."""
+    _reject_plaintext_secret_collisions(env_vars, sandbox_secrets)
     provider_source = _provider_source(source)
     _set_sandbox_create_span_attributes(sandbox_name, provider_source, resources)
     return await provider.create_sandbox(
@@ -196,6 +258,8 @@ async def _create_sandbox(
             name=sandbox_name,
             labels=labels or {},
             env_vars=env_vars or {},
+            sandbox_secrets=sandbox_secrets or {},
+            volumes=volumes or [],
             auto_stop_interval=SANDBOX_AUTO_STOP_INTERVAL,
             create_timeout=SANDBOX_CREATE_TIMEOUT,
         )
@@ -211,6 +275,8 @@ async def create_sandbox(
     creation_semaphore: Semaphore,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
+    volumes: list[VolumeMount] | None = None,
+    sandbox_secrets: dict[str, str] | None = None,
 ) -> AsyncGenerator[Sandbox, Any]:
     """
     Yeild a sandbox to be used within a context manager.
@@ -222,6 +288,8 @@ async def create_sandbox(
         resources: The resources to use for the sandbox
         labels: The labels to use for the sandbox
         env_vars: The environment variables to use for the sandbox
+        volumes: Persistent volumes to mount in the sandbox
+        sandbox_secrets: Provider-managed secret references keyed by environment variable name
         creation_semaphore: Per-benchmark semaphore to limit concurrent sandbox creation.
 
     Returns:
@@ -237,13 +305,22 @@ async def create_sandbox(
         async with creation_semaphore:
             start = time.monotonic()
             creation_task = asyncio.create_task(
-                _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars)
+                _create_sandbox(
+                    provider,
+                    sandbox_name,
+                    source,
+                    resources,
+                    labels=labels,
+                    env_vars=env_vars,
+                    volumes=volumes,
+                    sandbox_secrets=sandbox_secrets,
+                )
             )
             try:
                 sandbox = await asyncio.shield(creation_task)
             except asyncio.CancelledError:
                 sandbox = await creation_task
-                await delete_sandbox(sandbox, provider)
+                await delete_sandbox(sandbox, provider, initiated_by="create_cancelled")
                 raise
     except Exception as e:
         incr("valkyrie.sandbox.create.errors", tags={"error_class": type(e).__name__})
@@ -262,21 +339,25 @@ async def create_sandbox(
         logger.error(f"Error during sandbox execution {sandbox.name}: {e}")
         raise
     finally:
-        await delete_sandbox(sandbox, provider)
+        try:
+            await delete_sandbox(sandbox, provider, initiated_by="task_teardown")
+        except ProviderSandboxError:
+            # The failed delete is audited by delete_sandbox and must not replace the task outcome.
+            pass
 
 
 @retry(
     retry=retry_if_exception_type(SandboxError) & retry_if_not_exception_type(SandboxSetupError),
     reraise=True,
     stop=stop_after_attempt(3),
+    wait=wait_chain(wait_none(), wait_fixed(30)),
     before_sleep=retry_callback("valkyrie.sandbox.upload"),
 )
 async def upload_agent_artifacts(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     benchmark_id: str,
-    aws: AWSCredentials,
-    s3_bucket: str,
+    aws_runtime: AWSRuntime,
 ) -> None:
     """
     Download and extract the agent contract zip directly inside the sandbox. We generate a presigned S3 URL and have the sandbox curl + unzip it directly.
@@ -287,8 +368,7 @@ async def upload_agent_artifacts(
         sandbox: The sandbox to download and extract files in
         contract: The agent contract configuration
         benchmark_id: The benchmark run id, used to locate the agent
-        aws: AWS credentials for presigned URL generation
-        s3_bucket: S3 bucket name
+        aws_runtime: AWS resources and client provider
 
     Raises:
         SandboxError: If download or extraction fails inside the sandbox
@@ -297,7 +377,9 @@ async def upload_agent_artifacts(
 
     contract_s3_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
     presigned_url = await create_presigned_url(
-        contract_s3_key, aws, s3_bucket, expiration=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS
+        contract_s3_key,
+        aws_runtime,
+        expiration=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS,
     )
 
     zip_path = shlex.quote(f"/tmp/{contract.name}.zip")
@@ -601,11 +683,11 @@ async def archive_and_upload_output(
     sandbox: Sandbox,
     output_path: str,
     agent_output_s3_key: str,
-    aws: AWSCredentials,
-    s3_bucket: str,
+    aws_runtime: AWSRuntime,
     *,
     benchmark_id: str | None = None,
     task_id: str | None = None,
+    execution_is_current: Callable[[], bool] | None = None,
 ) -> None:
     """Compress a file in the sandbox into a tar.gz and upload it to S3"""
     archive_path = f"/tmp/{uuid.uuid4().hex}.tar.gz"
@@ -617,7 +699,10 @@ async def archive_and_upload_output(
 
     try:
         archive_bytes = await upload_stream_to_s3(
-            sandbox.stream_download(archive_path), agent_output_s3_key, aws, s3_bucket
+            sandbox.stream_download(archive_path),
+            agent_output_s3_key,
+            aws_runtime,
+            should_continue=execution_is_current,
         )
 
         logger.info(
@@ -642,7 +727,7 @@ async def archive_and_upload_output(
 
 
 OUTPUT_ARTIFACTS_SANDBOX_ROOT = PurePosixPath("/tmp/valkyrie")
-OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES = 50 * 1024 * 1024
+OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES = 100 * 1024 * 1024
 
 
 def _output_artifact_path(artifact: OutputArtifactSpec) -> str:
@@ -703,8 +788,8 @@ async def upload_output_artifacts(
     artifacts: list[OutputArtifactSpec],
     benchmark_id: str,
     task_id: str,
-    aws: AWSCredentials,
-    s3_bucket: str,
+    aws_runtime: AWSRuntime,
+    execution_is_current: Callable[[], bool] | None = None,
 ) -> None:
     """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
     total_bytes = 0
@@ -714,15 +799,18 @@ async def upload_output_artifacts(
     for artifact in [*required_artifacts, *optional_artifacts]:
         artifact_path = _output_artifact_path(artifact)
         try:
-            total_bytes = await _upload_output_artifact(
+            updated_total_bytes = await _upload_output_artifact(
                 sandbox,
                 artifact,
                 benchmark_id,
                 task_id,
-                aws,
-                s3_bucket,
+                aws_runtime,
                 total_bytes,
+                execution_is_current,
             )
+            if updated_total_bytes is None:
+                return
+            total_bytes = updated_total_bytes
         except Exception:
             if _output_artifact_is_required(artifact):
                 raise
@@ -744,10 +832,10 @@ async def _upload_output_artifact(
     artifact: OutputArtifactSpec,
     benchmark_id: str,
     task_id: str,
-    aws: AWSCredentials,
-    s3_bucket: str,
+    aws_runtime: AWSRuntime,
     total_bytes: int,
-) -> int:
+    execution_is_current: Callable[[], bool] | None = None,
+) -> int | None:
     artifact_path = _output_artifact_path(artifact)
     sandbox_path = await _resolve_output_artifact_sandbox_path(sandbox, artifact, task_id)
     quoted_path = shlex.quote(sandbox_path)
@@ -774,9 +862,14 @@ async def _upload_output_artifact(
             f"Output artifacts are too large: {new_total_bytes} bytes > {OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES} bytes"
         )
 
+    if execution_is_current is not None and not execution_is_current():
+        return None
+
     s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path)
     file_content = await sandbox.download_file(sandbox_path)
-    await upload_to_s3(file_content, s3_key, aws, s3_bucket)
+    if execution_is_current is not None and not execution_is_current():
+        return None
+    await upload_to_s3(file_content, s3_key, aws_runtime)
 
     logger.info(
         "output_artifact.upload.complete",
@@ -800,13 +893,13 @@ async def run_agent(
     task_id: str,
     log_output: Callable[[str], None],
     cwd: str,
-    aws: AWSCredentials,
-    s3_bucket: str,
+    aws_runtime: AWSRuntime,
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
     runtime_source: SandboxSource | None = None,
     dependency_setup_mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
+    execution_is_current: Callable[[], bool] | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
@@ -820,6 +913,7 @@ async def run_agent(
         agent_output_s3_key: S3 key to where we will upload the final output archive to
         agent_timeout: Optional timeout in seconds to enforce on the agent command
         runtime_source: Optional source used to adapt agent commands to the task runtime
+        execution_is_current: Optional execution-authority check before output uploads
 
     Returns:
         AgentCausedExitReason if the agent was terminated abnormally but recoverably
@@ -866,15 +960,19 @@ async def run_agent(
     # Upload any output from the agent to S3
     if contract.final_output:
         result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
-        if result.exit_code == _SUCCESS_EXIT_CODE and agent_output_s3_key:
+        if (
+            result.exit_code == _SUCCESS_EXIT_CODE
+            and agent_output_s3_key
+            and (execution_is_current is None or execution_is_current())
+        ):
             await archive_and_upload_output(
                 sandbox,
                 contract.final_output,
                 agent_output_s3_key,
-                aws,
-                s3_bucket,
+                aws_runtime,
                 benchmark_id=benchmark_id,
                 task_id=task_id,
+                execution_is_current=execution_is_current,
             )
 
     if contract.output_artifacts:
@@ -885,8 +983,8 @@ async def run_agent(
             contract.output_artifacts,
             benchmark_id,
             task_id,
-            aws,
-            s3_bucket,
+            aws_runtime,
+            execution_is_current,
         )
 
     # Return why the agent terminated abnormally, or None on clean exit

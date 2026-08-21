@@ -5,12 +5,24 @@ on:
     branches: [dev, prod]
     paths:
       - "infra/**"
+      - "services/tracker/.dockerignore"
+      - "services/tracker/Dockerfile.lambda"
+      - "services/tracker/pyproject.toml"
+      - "services/tracker/uv.lock"
+      - "services/tracker/src/tracker/**"
       - ".github/workflows/deploy.yaml"
+      - ".github/workflows/executor-build.yaml"
       - ".github/workflows/infra-ci.yaml"
   pull_request:
     paths:
       - "infra/**"
+      - "services/tracker/.dockerignore"
+      - "services/tracker/Dockerfile.lambda"
+      - "services/tracker/pyproject.toml"
+      - "services/tracker/uv.lock"
+      - "services/tracker/src/tracker/**"
       - ".github/workflows/deploy.yaml"
+      - ".github/workflows/executor-build.yaml"
       - ".github/workflows/infra-ci.yaml"
 
 permissions:
@@ -21,14 +33,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
         with:
           enable-cache: true
           cache-dependency-glob: "infra/uv.lock"
@@ -48,3 +62,28 @@ jobs:
       - name: Run infrastructure type check
         working-directory: infra
         run: make typecheck
+
+      - name: Enable ARM64 container builds
+        uses: docker/setup-qemu-action@v4
+
+      - name: Configure Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build the cleanup Lambda image
+        working-directory: services/tracker
+        run: >-
+          docker buildx build
+          --platform linux/arm64
+          --file Dockerfile.lambda
+          --load
+          --tag valkyrie-sandbox-cleanup:test
+          .
+
+      - name: Import the handler from the cleanup Lambda image
+        working-directory: services/tracker
+        run: >-
+          docker run --rm
+          --platform linux/arm64
+          --entrypoint /var/lang/bin/python3.12
+          valkyrie-sandbox-cleanup:test
+          -c "from tracker.sandbox_cleanup import lambda_handler; assert callable(lambda_handler)"

@@ -46,6 +46,7 @@ venvPath="."
 venv=".venv"
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
+extraPaths = ["services/tracker/src"]
 
 reportExplicitAny = false
 reportAny = false
@@ -56,7 +57,13 @@ reportGeneralTypeIssues = false
 reportTypedDictNotRequiredAccess = false
 enableTypeIgnoreComments = true
 
-include = ["src", "packages/valkyrie-sdk/src"]
+include = [
+  "src",
+  "packages/valkyrie-sdk/src",
+  "services/executor_artifact",
+  "services/executor_host",
+  "tests/unit/executor_host",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -71,7 +78,7 @@ packages = ["src/valkyrie"]
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "services/tracker/src"]
 
 # Async test configuration
 asyncio_mode = "auto"

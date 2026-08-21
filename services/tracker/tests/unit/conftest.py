@@ -23,7 +23,7 @@ from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.database.models import Org
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import TaskMonitor, fetch_harness_config
+from tracker.utils import TaskMonitor
 
 # Set the default AWS credentials before importing modules that create clients.
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
@@ -32,6 +32,7 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 
 # Import the app after configuring the AWS environment.
 from main import app
+from tracker.aws.runtime import AWSRuntime
 
 
 @pytest.fixture
@@ -43,6 +44,28 @@ def harness_config(aws_credentials: AWSCredentials) -> HarnessConfig:
         log_retention_policy=30,
         sandbox_provider_secret_name="test-daytona-secret",
     )
+
+
+@pytest.fixture
+def harness_headers(harness_config: HarnessConfig) -> dict[str, str]:
+    """Provide complete access-key request headers."""
+    headers = {
+        "X-Harness-AWS-Access-Key-Id": harness_config.aws.aws_access_key_id,
+        "X-Harness-AWS-Secret-Access-Key": harness_config.aws.aws_secret_access_key,
+        "X-Harness-AWS-Default-Region": harness_config.aws.aws_default_region,
+        "X-Harness-S3-Bucket": harness_config.s3_bucket,
+        "X-Harness-Log-Group": harness_config.log_group,
+        "X-Harness-Log-Retention-Policy": str(harness_config.log_retention_policy),
+        "X-Harness-Sandbox-Provider-Secret-Name": harness_config.sandbox_provider_secret_name,
+    }
+    if harness_config.aws.aws_session_token:
+        headers["X-Harness-AWS-Session-Token"] = harness_config.aws.aws_session_token
+    return headers
+
+
+@pytest.fixture
+def aws_runtime(harness_config: HarnessConfig) -> AWSRuntime:
+    return AWSRuntime.from_harness_config(harness_config)
 
 
 @pytest.fixture
@@ -79,7 +102,6 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tracker.aws.s3.get_contract_s3_key", _mock_get_contract_s3_key)
     monkeypatch.setattr("tracker.utils.reporting.upload_to_s3", _mock_upload_to_s3)
     monkeypatch.setattr("main.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
-    monkeypatch.setattr("tracker.utils.run_orchestration.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
 
 
 @pytest.fixture(autouse=True)
@@ -117,16 +139,6 @@ def override_starter(monkeypatch: pytest.MonkeyPatch) -> None:
             name=None,
         ),
     )
-
-
-@pytest.fixture(autouse=True)
-def override_harness_config(harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Provide harness configuration without requiring request headers."""
-
-    def get_test_harness_config() -> HarnessConfig:
-        return harness_config
-
-    monkeypatch.setitem(app.dependency_overrides, fetch_harness_config, get_test_harness_config)
 
 
 @pytest.fixture(autouse=True)
@@ -193,7 +205,6 @@ def mock_kicker(monkeypatch: pytest.MonkeyPatch) -> MockKicker:
     """Record queued benchmark work without starting the broker."""
     kicker = MockKicker()
     monkeypatch.setattr("main.process_benchmark.kicker", lambda: kicker)
-
     return kicker
 
 

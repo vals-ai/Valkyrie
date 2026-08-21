@@ -5,12 +5,14 @@ Run: uv run pytest tests/unit/test_docent_analysis.py
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from sqlmodel import Session
 
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import Benchmark, BenchmarkStatus, DocentReadingStatus
 from tracker.docent_analysis import invoke_analyzer
-from tracker.types import AWSCredentials
 from tracker.utils import catch_errors_during_cleanup
 
 
@@ -28,7 +30,7 @@ class TestInvokeAnalyzer:
         monkeypatch: pytest.MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
-        aws_credentials: AWSCredentials,
+        aws_runtime: AWSRuntime,
     ) -> None:
         database_session.add(example_benchmark_object)
         database_session.commit()
@@ -44,7 +46,7 @@ class TestInvokeAnalyzer:
             benchmark_id=example_benchmark_object.id,
             lambda_function="analysis-foo",
             payload={"benchmark_id": "x"},
-            aws=aws_credentials,
+            clients=aws_runtime.clients,
         )
 
         database_session.refresh(example_benchmark_object)
@@ -57,7 +59,7 @@ class TestInvokeAnalyzer:
         monkeypatch: pytest.MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
-        aws_credentials: AWSCredentials,
+        aws_runtime: AWSRuntime,
     ) -> None:
         database_session.add(example_benchmark_object)
         database_session.commit()
@@ -72,7 +74,7 @@ class TestInvokeAnalyzer:
                 benchmark_id=example_benchmark_object.id,
                 lambda_function="analysis-foo",
                 payload={"benchmark_id": "x"},
-                aws=aws_credentials,
+                clients=aws_runtime.clients,
             )
 
         database_session.refresh(example_benchmark_object)
@@ -84,7 +86,7 @@ class TestInvokeAnalyzer:
         monkeypatch: pytest.MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
-        aws_credentials: AWSCredentials,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """Lambda returned successfully but no reading_plan_url — still DONE; URL remains untouched."""
         database_session.add(example_benchmark_object)
@@ -99,7 +101,7 @@ class TestInvokeAnalyzer:
             benchmark_id=example_benchmark_object.id,
             lambda_function="analysis-foo",
             payload={},
-            aws=aws_credentials,
+            clients=aws_runtime.clients,
         )
 
         database_session.refresh(example_benchmark_object)
@@ -110,6 +112,7 @@ class TestInvokeAnalyzer:
 def test_cleanup_sweeps_running_docent_status_to_error(
     database_session: Session,
     example_benchmark_object: Benchmark,
+    executor_authority: Any,
 ) -> None:
     """A benchmark stuck at IN_PROGRESS with docent_reading_status=RUNNING is
     swept to ERROR (both the benchmark itself and the analyzer status).
@@ -124,8 +127,14 @@ def test_cleanup_sweeps_running_docent_status_to_error(
 
     org = database_session.get(Org, TEST_ORG_ID)
     assert org is not None
+    authority = executor_authority(example_benchmark_object, session=database_session)
 
-    catch_errors_during_cleanup(example_benchmark_object.id, database_session, org)
+    catch_errors_during_cleanup(
+        example_benchmark_object.id,
+        database_session,
+        org,
+        authority=authority,
+    )
 
     database_session.refresh(example_benchmark_object)
     assert example_benchmark_object.docent_reading_status == DocentReadingStatus.ERROR

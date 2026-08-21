@@ -1,20 +1,23 @@
 """Tracker service stack - public-facing API with ALB and shared RDS database."""
 
 import os
+from pathlib import Path
 from typing import Any, cast
 
 import aws_cdk as cdk
 from aws_cdk import (
     Duration,
     Stack,
-    aws_certificatemanager,
     aws_ec2,
+    aws_ecr,
     aws_ecs,
     aws_ecs_patterns,
     aws_elasticloadbalancingv2,
+    aws_iam,
     aws_logs,
     aws_rds,
     aws_route53,
+    aws_s3,
     aws_secretsmanager,
     aws_servicediscovery,
     aws_ssm,
@@ -29,21 +32,24 @@ from constants import (
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
     CONTAINER_HEALTH_TIMEOUT_SECONDS,
     DEV_TRACKER_ALB_DNS_PARAMETER,
-    DEV_TRACKER_CERTIFICATE_ARN_PARAMETER,
     DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER,
     DEV_TRACKER_SECURITY_GROUP_PARAMETER,
+    DOCKER_ASSET_EXCLUDES,
     POSTGRES_DB,
     POSTGRES_PORT,
     POSTGRES_USER,
+    REDIS_PORT,
     TRACKER_DOMAIN,
     TRACKER_LOG_GROUP_NAME,
     TRACKER_PORT,
     TRACKER_SCALING_CPU_PERCENT,
     VPC_CIDR,
+    stage_parameter_name,
 )
 from constructs import Construct
+from runtime_iam import create_tracker_task_role, managed_runtime_environment
 from stage import Stage
-from stage_config import config_for
+from stage_config import benchmark_service_base_url, config_for
 
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
@@ -52,12 +58,10 @@ _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
 
 
 class TrackerStack(Stack):
-    """Tracker stack: public-facing API behind an ALB, plus the shared RDS
-    database used by both the tracker and the worker.
+    """Tracker stack: public API behind an ALB and the shared RDS database.
 
-    Exposes ``database``, ``db_credentials``, and ``tracker_fargate_service``
-    so that :class:`WorkerStack` can wire up cross-stack network rules and
-    environment variables.
+    Exposes its image, database, credentials, and service so ExecutorStack can
+    consume the shared runtime contracts without owning Tracker resources.
     """
 
     def __init__(
@@ -71,25 +75,41 @@ class TrackerStack(Stack):
         hosted_zone: aws_route53.IHostedZone | None,
         bucket_name: str,
         redis_url: str,
+        redis_security_group: aws_ec2.ISecurityGroup,
+        tracker_repository: aws_ecr.IRepository | None = None,
+        image_tag: str | None = None,
         **kwargs: Any,
     ):
         super().__init__(scope, id, **kwargs)
         stage_config = config_for(stage)
+        bucket = aws_s3.Bucket.from_bucket_name(self, "ManagedRuntimeBucket", bucket_name)
 
-        # Docker image for the tracker API
-        tracker_image = aws_ecs.ContainerImage.from_asset(
-            "../services/tracker",
-            file="Dockerfile",
-            platform=Platform.LINUX_ARM64,
-        )
+        # Release-test writes images only to its stage-qualified repository;
+        # other stages retain the established CDK asset path.
+        if stage.is_release_test:
+            if tracker_repository is None or image_tag is None:
+                raise ValueError("Release-test Tracker requires a repository and immutable image tag")
+            tracker_image = aws_ecs.ContainerImage.from_ecr_repository(tracker_repository, image_tag)
+        else:
+            tracker_image = aws_ecs.ContainerImage.from_asset(
+                str(Path(__file__).resolve().parent.parent / "services" / "tracker"),
+                file="Dockerfile",
+                platform=Platform.LINUX_ARM64,
+                exclude=list(DOCKER_ASSET_EXCLUDES),
+                ignore_mode=cdk.IgnoreMode.DOCKER,
+            )
+        self.tracker_image = tracker_image
 
         # Shared environment variables
+        benchmark_service_url = benchmark_service_base_url(stage)
         shared_env = {
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
+            **({"BENCHMARK_SERVICE_BASE_URL": benchmark_service_url} if benchmark_service_url else {}),
+            **managed_runtime_environment(self, stage, bucket, stage_config.managed_aws),
         }
 
         # ── RDS ──────────────────────────────────────────────────────────
@@ -139,7 +159,10 @@ class TrackerStack(Stack):
             "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="password"),
         }
 
-        sentry_secret_name = "valkyrie/sentry-dsn" if stage.is_prod else os.environ.get("SENTRY_DSN_SECRET_NAME", "")
+        sentry_secret_name = os.environ.get("SENTRY_DSN_SECRET_NAME", "")
+        if not stage.is_release_test and not sentry_secret_name:
+            raise ValueError("Dev and production deployments require SENTRY_DSN_SECRET_NAME.")
+
         sentry_secrets: dict[str, aws_ecs.Secret] = {}
         if sentry_secret_name:
             sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(
@@ -158,10 +181,13 @@ class TrackerStack(Stack):
 
         descope_secrets: dict[str, aws_ecs.Secret] = {}
         if auth_required.lower() == "true":
+            descope_management_key_secret_name = os.environ.get("DESCOPE_MANAGEMENT_KEY_SECRET_NAME", "")
+            if not descope_management_key_secret_name:
+                raise ValueError("Authenticated deployments require DESCOPE_MANAGEMENT_KEY_SECRET_NAME.")
             descope_management_key_secret = aws_secretsmanager.Secret.from_secret_name_v2(
                 self,
                 "DescopeManagementKeySecret",
-                "devEvalInfraDescopeManagementKey",
+                descope_management_key_secret_name,
             )
             descope_secrets["DESCOPE_MANAGEMENT_KEY"] = aws_ecs.Secret.from_secrets_manager(
                 descope_management_key_secret,
@@ -169,13 +195,17 @@ class TrackerStack(Stack):
 
         # ── Tracker API service ──────────────────────────────────────────
 
+        self.tracker_task_role = create_tracker_task_role(self, stage, bucket, stage_config.managed_aws)
         tracker_task_def = aws_ecs.FargateTaskDefinition(
             self,
             "TrackerTaskDef",
             cpu=stage_config.tracker.cpu,
             memory_limit_mib=stage_config.tracker.memory_mib,
             runtime_platform=_ARM64_PLATFORM,
+            task_role=cast(aws_iam.IRole, self.tracker_task_role),
         )
+
+        cdk.CfnOutput(self, "TrackerTaskRoleArn", value=self.tracker_task_role.role_arn)
 
         tracker_task_def.add_container(
             "TrackerContainer",
@@ -215,13 +245,15 @@ class TrackerStack(Stack):
             ),
         )
 
-        tracker_domain = stage.domain(TRACKER_DOMAIN)
-        certificate: aws_certificatemanager.ICertificate | None = None
+        tracker_domain: str | None = None
+        tracker_hosted_zone: aws_route53.IHostedZone | None = None
         if stage.is_prod:
             if hosted_zone is None:
                 raise ValueError("Production requires the vals.ai hosted zone")
+            tracker_domain = TRACKER_DOMAIN
             tracker_hosted_zone = hosted_zone
-        else:
+        elif not stage.is_release_test:
+            tracker_domain = stage.domain(TRACKER_DOMAIN)
             tracker_hosted_zone = aws_route53.HostedZone.from_hosted_zone_attributes(
                 self,
                 "DevTrackerHostedZone",
@@ -231,14 +263,7 @@ class TrackerStack(Stack):
                 ),
                 zone_name=tracker_domain,
             )
-            certificate = aws_certificatemanager.Certificate.from_certificate_arn(
-                self,
-                "DevTrackerCertificate",
-                aws_ssm.StringParameter.value_for_string_parameter(
-                    self,
-                    DEV_TRACKER_CERTIFICATE_ARN_PARAMETER,
-                ),
-            )
+        tls_enabled = not stage.is_release_test
 
         self.service = aws_ecs_patterns.ApplicationLoadBalancedFargateService(
             self,
@@ -250,15 +275,18 @@ class TrackerStack(Stack):
             circuit_breaker=aws_ecs.DeploymentCircuitBreaker(rollback=True),
             domain_name=tracker_domain,
             domain_zone=tracker_hosted_zone,
-            certificate=certificate,
-            protocol=aws_elasticloadbalancingv2.ApplicationProtocol.HTTPS,
-            redirect_http=True,
+            protocol=(
+                aws_elasticloadbalancingv2.ApplicationProtocol.HTTPS
+                if tls_enabled
+                else aws_elasticloadbalancingv2.ApplicationProtocol.HTTP
+            ),
+            redirect_http=tls_enabled,
             open_listener=False,
             assign_public_ip=True,
-            public_load_balancer=True,
+            public_load_balancer=not stage.is_release_test,
         )
 
-        # Expose the inner FargateService for cross-stack security group rules
+        # Expose the inner FargateService for cross-stack security group rules.
         self.tracker_fargate_service = self.service.service
 
         # Cloud Map registration for internal access.
@@ -279,20 +307,27 @@ class TrackerStack(Stack):
         # Request timeout
         self.service.load_balancer.set_attribute("idle_timeout.timeout_seconds", str(ALB_IDLE_TIMEOUT_SECONDS))
 
-        # Allow HTTP -> HTTPS redirect
-        self.service.load_balancer.connections.allow_from(
-            aws_ec2.Peer.any_ipv4(),
-            aws_ec2.Port.tcp(80),
-            description="Allow HTTP from anywhere (redirects to HTTPS)",
-        )
-
-        # Allow HTTPS from whitelisted IPs only
-        for ip, desc in ALLOWED_IPS:
+        if stage.is_release_test:
             self.service.load_balancer.connections.allow_from(
-                aws_ec2.Peer.ipv4(ip),
-                aws_ec2.Port.tcp(443),
-                description=f"Allow HTTPS from {desc}",
+                aws_ec2.Peer.ipv4(VPC_CIDR),
+                aws_ec2.Port.tcp(80),
+                description="Allow release-test Tracker access from the VPC",
             )
+        else:
+            # Allow HTTP -> HTTPS redirect
+            self.service.load_balancer.connections.allow_from(
+                aws_ec2.Peer.any_ipv4(),
+                aws_ec2.Port.tcp(80),
+                description="Allow HTTP from anywhere (redirects to HTTPS)",
+            )
+
+            # Allow HTTPS from whitelisted IPs only
+            for ip, desc in ALLOWED_IPS:
+                self.service.load_balancer.connections.allow_from(
+                    aws_ec2.Peer.ipv4(ip),
+                    aws_ec2.Port.tcp(443),
+                    description=f"Allow HTTPS from {desc}",
+                )
 
         # Tracker auto-scaling
         tracker_scaling = self.service.service.auto_scale_task_count(
@@ -306,7 +341,19 @@ class TrackerStack(Stack):
 
         # ── Network access ───────────────────────────────────────────────
 
-        # Allow VPC services (tracker + worker) to reach RDS.
+        tracker_security_group = self.tracker_fargate_service.connections.security_groups[0]
+        aws_ec2.CfnSecurityGroupIngress(
+            self,
+            "TrackerToRedisIngress",
+            group_id=redis_security_group.security_group_id,
+            source_security_group_id=tracker_security_group.security_group_id,
+            ip_protocol="tcp",
+            from_port=REDIS_PORT,
+            to_port=REDIS_PORT,
+            description="Allow Tracker and ExecutorHost to connect to Redis",
+        )
+
+        # Allow VPC services (Tracker and ExecutorHost) to reach RDS.
         db_security_group.add_ingress_rule(
             peer=aws_ec2.Peer.ipv4(VPC_CIDR),
             connection=aws_ec2.Port.tcp(POSTGRES_PORT),
@@ -317,12 +364,12 @@ class TrackerStack(Stack):
             aws_ssm.StringParameter(
                 self,
                 "TrackerSecurityGroupParameter",
-                parameter_name=DEV_TRACKER_SECURITY_GROUP_PARAMETER,
-                string_value=self.service.service.connections.security_groups[0].security_group_id,
+                parameter_name=stage_parameter_name(DEV_TRACKER_SECURITY_GROUP_PARAMETER, stage.name),
+                string_value=tracker_security_group.security_group_id,
             )
             aws_ssm.StringParameter(
                 self,
                 "TrackerAlbDnsParameter",
-                parameter_name=DEV_TRACKER_ALB_DNS_PARAMETER,
+                parameter_name=stage_parameter_name(DEV_TRACKER_ALB_DNS_PARAMETER, stage.name),
                 string_value=self.service.load_balancer.load_balancer_dns_name,
             )

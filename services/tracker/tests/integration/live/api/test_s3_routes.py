@@ -4,7 +4,6 @@ Run: uv run pytest tests/integration/live/api/test_s3_routes.py
 """
 
 from io import BytesIO
-from typing import Any, cast
 from uuid import uuid4
 from zipfile import ZipFile
 
@@ -13,6 +12,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import delete_from_s3, upload_to_s3
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, Task
 from tracker.types import HarnessConfig
@@ -21,6 +21,7 @@ from tracker.types import HarnessConfig
 async def test_agent_catalog_and_download_url_round_trip_real_s3(
     live_api_client: TestClient,
     seeded_test_agent_artifact: str,
+    harness_headers: dict[str, str],
 ) -> None:
     """Agent listing and download signing must agree on the seeded S3 object.
 
@@ -29,7 +30,7 @@ async def test_agent_catalog_and_download_url_round_trip_real_s3(
     - The route's five-minute presigned URL downloads that valid agent archive.
     - A name absent from the real bucket returns 404.
     """
-    catalog_response = live_api_client.get("/agents")
+    catalog_response = live_api_client.get("/agents", headers=harness_headers)
 
     assert catalog_response.status_code == 200
     selected_agent = next(
@@ -37,7 +38,10 @@ async def test_agent_catalog_and_download_url_round_trip_real_s3(
     )
     assert selected_agent["last_modified"] is not None
 
-    download_response = live_api_client.get(f"/agents/{selected_agent['name']}/download-url")
+    download_response = live_api_client.get(
+        f"/agents/{selected_agent['name']}/download-url",
+        headers=harness_headers,
+    )
     assert download_response.status_code == 200
     assert download_response.json()["expires_in"] == 300
 
@@ -49,7 +53,10 @@ async def test_agent_catalog_and_download_url_round_trip_real_s3(
         assert archive.namelist()
         assert archive.testzip() is None
 
-    missing_response = live_api_client.get(f"/agents/missing-{uuid4()}/download-url")
+    missing_response = live_api_client.get(
+        f"/agents/missing-{uuid4()}/download-url",
+        headers=harness_headers,
+    )
     assert missing_response.status_code == 404
 
 
@@ -57,6 +64,7 @@ async def test_task_artifact_route_round_trips_real_s3_and_handles_missing_outpu
     live_api_client: TestClient,
     database_session: Session,
     harness_config: HarnessConfig,
+    harness_headers: dict[str, str],
 ) -> None:
     """Task artifact signing must expose existing output and suppress missing output.
 
@@ -78,15 +86,18 @@ async def test_task_artifact_route_round_trips_real_s3_and_handles_missing_outpu
 
     object_key = f"benchmarks/{benchmark.id}/{task.task_id}/agent_output.tar.gz"
     expected_content = b"live tracker output artifact"
-    await cast(Any, upload_to_s3)(
+    aws_runtime = AWSRuntime.from_harness_config(harness_config)
+    await upload_to_s3(
         file_content=expected_content,
         s3_key=object_key,
-        aws=harness_config.aws,
-        s3_bucket=harness_config.s3_bucket,
+        runtime=aws_runtime,
     )
 
     try:
-        artifact_response = live_api_client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts")
+        artifact_response = live_api_client.get(
+            f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts",
+            headers=harness_headers,
+        )
         assert artifact_response.status_code == 200
         assert artifact_response.json()["agent_output_expires_in"] == 300
         assert artifact_response.json()["cloudwatch_url"] is not None
@@ -97,13 +108,15 @@ async def test_task_artifact_route_round_trips_real_s3_and_handles_missing_outpu
         assert download_response.status_code == 200
         assert download_response.content == expected_content
     finally:
-        await cast(Any, delete_from_s3)(
+        await delete_from_s3(
             s3_key=object_key,
-            aws=harness_config.aws,
-            s3_bucket=harness_config.s3_bucket,
+            runtime=aws_runtime,
         )
 
-    missing_response = live_api_client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts")
+    missing_response = live_api_client.get(
+        f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts",
+        headers=harness_headers,
+    )
     assert missing_response.status_code == 200
     assert missing_response.json()["agent_output_url"] is None
     assert missing_response.json()["agent_output_expires_in"] is None

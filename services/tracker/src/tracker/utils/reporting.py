@@ -1,7 +1,9 @@
 """Read-only queries that fetch and shape run data for API responses and listings."""
 
 import asyncio
+from asyncio import CancelledError
 import base64
+import binascii
 import io
 import json
 from collections.abc import AsyncGenerator, Buffer
@@ -14,6 +16,7 @@ from sqlalchemy import JSON, literal, tuple_, type_coerce
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, asc, case, col, desc, func, or_, select
 
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     create_benchmark_url,
@@ -38,7 +41,6 @@ from tracker.types import (
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FinalViewResponse,
-    HarnessConfig,
     Order,
 )
 
@@ -159,6 +161,7 @@ def _fetch_result_histories(
         select(ErrorResult.task, ErrorResult.created_at, ErrorResult.error_message)
         .where(col(ErrorResult.task).in_(task_row_ids))
         .where(col(ErrorResult.org_id) == org_id)
+        .where(col(ErrorResult.retry_scheduled).is_(False))
     ).all()
 
     # Create a mapping of the task row, time stamp of when the result for the row was created, and the resulting row
@@ -253,7 +256,7 @@ def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: U
 
 
 async def stream_benchmark_results(
-    benchmark_id: UUID, session: Session, harness_config: HarnessConfig, org: Org
+    benchmark_id: UUID, session: Session, aws_runtime: AWSRuntime, org: Org
 ) -> AsyncGenerator[str]:
     """
     Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
@@ -286,10 +289,12 @@ async def stream_benchmark_results(
                     benchmark_name=fresh_benchmark.name,
                     benchmark_id=fresh_benchmark.id,
                     details=benchmark_context.benchmark_details,
-                    s3_bucket_url=create_benchmark_url(
-                        str(fresh_benchmark.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
-                    ),
+                    s3_bucket_url=create_benchmark_url(str(fresh_benchmark.id), aws_runtime.resources),
                     label=fresh_benchmark.label,
+                    executor_release_id=fresh_benchmark.executor_release_id,
+                    current_execution_release_id=fresh_benchmark.current_execution_release_id,
+                    executor_artifact_digest=fresh_benchmark.executor_artifact_digest,
+                    executor_protocol_version=fresh_benchmark.executor_protocol_version,
                     final_score=fresh_benchmark.final_evaluation.final_score
                     if fresh_benchmark.final_evaluation
                     else None,
@@ -306,7 +311,7 @@ async def stream_benchmark_results(
 
             await asyncio.sleep(PULL_INTERVAL)
 
-    except asyncio.CancelledError:
+    except CancelledError:
         logger.info(f"Client disconnected from benchmark {benchmark_id} stream")
         yield DISCONNECT
 
@@ -320,8 +325,11 @@ def encode_cursor(started_at: datetime, row_id: UUID) -> str:
 def decode_cursor(cursor: str) -> tuple[datetime, UUID]:
     """Decode a keyset pagination cursor into a started_at timestamp and row id."""
     padded = cursor + "=" * (-len(cursor) % 4)
-    payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
-    return datetime.fromisoformat(payload["started_at"]), UUID(payload["id"])
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+        return datetime.fromisoformat(payload["started_at"]), UUID(payload["id"])
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Invalid benchmark cursor") from exc
 
 
 def fetch_filtered_benchmark_rows(
@@ -468,6 +476,11 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
                 label=b.label,
                 model=b.arguments.contract.model,
                 dataset=b.arguments.dataset or "default",
+                executor_release_id=b.executor_release_id,
+                current_execution_release_id=b.current_execution_release_id,
+                executor_artifact_digest=b.executor_artifact_digest,
+                executor_protocol_version=b.executor_protocol_version,
+                error_message=b.error_message if b.status == BenchmarkStatus.ERROR else None,
                 started_by_email=b.started_by_email,
                 started_at=b.started_at,
                 finished_at=b.finished_at,
@@ -540,16 +553,13 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
     return final_view
 
 
-async def upload_final_view(
-    benchmark_row: Benchmark, final_view: FinalViewResponse, harness_config: HarnessConfig
-) -> str:
+async def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse, aws_runtime: AWSRuntime) -> str:
     """Uploads the final view to the root of the benchmark folder and returns the s3 key"""
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/{benchmark_row.name}.json"
     await upload_to_s3(
         final_view.model_dump_json(indent=4, exclude_none=True).encode(),
         s3_key,
-        harness_config.aws,
-        harness_config.s3_bucket,
+        aws_runtime,
     )
 
     return s3_key

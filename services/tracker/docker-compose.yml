@@ -35,41 +35,12 @@ services:
     networks:
       - tracker-network
 
-  worker:
-    image: tracker-service
-    container_name: tracker-worker-container
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: ["uv", "run", "--no-sync", "taskiq", "worker", "tracker.config:broker", "tracker.utils"]
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgresql://tracker:tracker@postgres:5432/tracker
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - AUTH_REQUIRED=${AUTH_REQUIRED:-false}
-      - SENTRY_DSN=${SENTRY_DSN:-}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
-      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
-      - AWS_REGION
-      - BENCHMARK_SERVICE_BASE_URL=${BENCHMARK_SERVICE_BASE_URL:-benchmarks.vals.ai}
-      - BENCHMARK_CATALOG_URL=${BENCHMARK_CATALOG_URL:-}
-      - DAYTONA_HAPPY_EYEBALLS_DELAY=none
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - tracker-network
-
   tracker:
     image: tracker-service
     container_name: tracker-service-container
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: services/tracker/Dockerfile
     command: ["uv", "run", "--no-sync", "python", "-m", "tracker.serve"]
     ports:
       - "8000:8000"
@@ -94,8 +65,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      worker:
-        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s

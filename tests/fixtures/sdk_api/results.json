@@ -21,7 +21,8 @@
         ],
         "egress_allowlist": [],
         "secrets": {},
-        "kwargs": {}
+        "kwargs": {},
+        "inference_settings_attested": false
       },
       "concurrency": 2,
       "task_ids": [
@@ -60,6 +61,7 @@
   "s3": {
     "s3_url": "s3://runs-bucket/results.json",
     "presigned_url": "https://download.test/results.json",
-    "console_url": "https://console.aws.test/results.json"
+    "console_url": "https://console.aws.test/results.json",
+    "expires_in": 86400
   }
 }

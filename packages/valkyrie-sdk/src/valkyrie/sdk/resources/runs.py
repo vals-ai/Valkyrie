@@ -68,6 +68,11 @@ class RunsResource:
         provider_name, provider_secret_name = self._sdk.config.resolve_sandbox_provider(provider)
         intervals = self._resolve_webhook_intervals(webhook_intervals)
         effective_service_headers = self._service_headers(benchmark, service_headers)
+        access_key_harness_config = (
+            self._sdk.config.harness_config(provider_secret_name)
+            if self._sdk.config.aws_access_key_id is not None
+            else None
+        )
 
         payload = StartBenchmarkRequest(
             contract=contract,
@@ -78,12 +83,13 @@ class RunsResource:
             dataset=dataset,
             label=label,
             lambda_function=lambda_function,
-            harness_config=self._sdk.config.harness_config(provider_secret_name),
+            harness_config=access_key_harness_config,
             custom_benchmark_service=(
                 None if ignore_custom_services else self._sdk.config.custom_benchmark_services.get(benchmark)
             ),
             service_headers=effective_service_headers,
             sandbox_provider=provider_name,
+            sandbox_provider_secret_name=(provider_secret_name if access_key_harness_config is None else None),
             webhook_secret_name=self._sdk.config.webhook if intervals else None,
             webhook_intervals=intervals,
         )
@@ -299,6 +305,7 @@ class RunsResource:
         secrets: Mapping[str, str] | None = None,
         service_headers: Mapping[str, str] | None = None,
         from_scratch: bool = False,
+        benchmark_url: str | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
         """Resume unfinished work for a run."""
         return await self._retry_or_resume(
@@ -309,6 +316,7 @@ class RunsResource:
             secrets=secrets,
             service_headers=service_headers,
             from_scratch=from_scratch,
+            benchmark_url=benchmark_url,
         )
 
     async def retry(
@@ -320,6 +328,7 @@ class RunsResource:
         secrets: Mapping[str, str] | None = None,
         service_headers: Mapping[str, str] | None = None,
         from_scratch: bool = False,
+        benchmark_url: str | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
         """Retry failed or selected work for a run."""
         return await self._retry_or_resume(
@@ -330,6 +339,7 @@ class RunsResource:
             secrets=secrets,
             service_headers=service_headers,
             from_scratch=from_scratch,
+            benchmark_url=benchmark_url,
         )
 
     async def _retry_or_resume(
@@ -342,6 +352,7 @@ class RunsResource:
         secrets: Mapping[str, str] | None,
         service_headers: Mapping[str, str] | None,
         from_scratch: bool,
+        benchmark_url: str | None,
     ) -> RetryOrResumeBenchmarkResponse:
         """Send a retry or resume request."""
         if concurrency is not None and concurrency < 1:
@@ -356,16 +367,20 @@ class RunsResource:
         if concurrency is not None:
             params["concurrency"] = concurrency
 
+        body: dict[str, Any] = {
+            "task_ids": list(task_ids or []),
+            "service_headers": effective_headers,
+            "secrets": dict(secrets or {}),
+        }
+        if benchmark_url is not None:
+            body["benchmark_url"] = benchmark_url
+
         return await self._sdk.request_model(
             "POST",
             f"/retry-or-resume-benchmark/{run_id}",
             RetryOrResumeBenchmarkResponse,
             params=params,
-            json={
-                "task_ids": list(task_ids or []),
-                "service_headers": effective_headers,
-                "secrets": dict(secrets or {}),
-            },
+            json=body,
         )
 
     def _service_headers(self, benchmark: str, explicit_headers: Mapping[str, str] | None) -> dict[str, str]:

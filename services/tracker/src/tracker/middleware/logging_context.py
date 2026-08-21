@@ -1,23 +1,24 @@
-"""Taskiq middleware that sets logging context vars for worker jobs."""
+"""Taskiq middleware that sets logging context vars for executor jobs."""
 
 from typing import Any
 
 from taskiq import TaskiqMessage, TaskiqMiddleware, TaskiqResult
 
+from executor_protocol import executor_payload_benchmark_id
 from tracker.logging import benchmark_id_var, request_id_var, task_id_var
 
 
 class LoggingContextMiddleware(TaskiqMiddleware):
-    """Sets logging context vars for Taskiq worker jobs."""
+    """Set logging context variables during Taskiq task execution."""
 
     async def pre_execute(self, message: TaskiqMessage) -> TaskiqMessage:
         request_id_var.set("")
         benchmark_id_var.set("")
         task_id_var.set("")
 
-        benchmark_id_str = message.kwargs.get("benchmark_id_str", "")
-        if benchmark_id_str:
-            benchmark_id_var.set(benchmark_id_str)
+        benchmark_id = executor_payload_benchmark_id(message.kwargs)
+        if benchmark_id:
+            benchmark_id_var.set(benchmark_id)
 
         request_id = message.labels.get("request_id", "")
         if request_id:

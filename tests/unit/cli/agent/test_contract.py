@@ -357,6 +357,7 @@ class TestParseYamlContract:
         assert isinstance(result, AgentContractRequest)
         assert "--temp 0.7" in result.run_cmd
         assert "{problem_statement_path}" in result.run_cmd
+        assert result.kwargs == {"temperature": "0.7"}
 
     def test_cli_kwargs_override_defaults(self, tmp_path: Path) -> None:
         """
@@ -382,6 +383,7 @@ class TestParseYamlContract:
         result = _parse_yaml_contract(path, AgentConfig(kwargs={"temperature": 1.0}))
 
         assert "--temp 1.0" in result.run_cmd
+        assert result.kwargs == {"temperature": "1.0"}
 
     def test_required_kwarg_missing_raises(self, tmp_path: Path) -> None:
         """

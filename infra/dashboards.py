@@ -27,7 +27,6 @@ def create_overview_dashboard(
     *,
     stage: Stage,
     tracker_service: aws_ecs.FargateService,
-    worker_service: aws_ecs.FargateService,
     load_balancer: aws_elb.ApplicationLoadBalancer,
     target_group: aws_elb.ApplicationTargetGroup,
     database: aws_rds.DatabaseInstance,
@@ -65,25 +64,7 @@ def create_overview_dashboard(
                     statistic="Minimum",
                 )
             ],
-            width=6,
-            height=_SINGLE_VALUE_HEIGHT,
-            sparkline=True,
-        ),
-        aws_cloudwatch.SingleValueWidget(
-            title="Worker Running Tasks",
-            metrics=[
-                aws_cloudwatch.Metric(
-                    namespace="ECS/ContainerInsights",
-                    metric_name="RunningTaskCount",
-                    dimensions_map={
-                        "ClusterName": worker_service.cluster.cluster_name,
-                        "ServiceName": worker_service.service_name,
-                    },
-                    statistic="Maximum",
-                    period=cdk.Duration.minutes(1),
-                )
-            ],
-            width=6,
+            width=8,
             height=_SINGLE_VALUE_HEIGHT,
             sparkline=True,
         ),
@@ -95,7 +76,7 @@ def create_overview_dashboard(
                     statistic="p99",
                 )
             ],
-            width=6,
+            width=8,
             height=_SINGLE_VALUE_HEIGHT,
             sparkline=True,
         ),
@@ -108,7 +89,7 @@ def create_overview_dashboard(
                     statistic="Sum",
                 )
             ],
-            width=6,
+            width=8,
             height=_SINGLE_VALUE_HEIGHT,
             sparkline=True,
         ),
@@ -124,7 +105,7 @@ def create_overview_dashboard(
                     statistic="Sum",
                 )
             ],
-            width=8,
+            width=12,
             height=_WIDGET_HEIGHT,
         ),
         aws_cloudwatch.GraphWidget(
@@ -141,24 +122,7 @@ def create_overview_dashboard(
                     statistic="Average",
                 )
             ],
-            width=8,
-            height=_WIDGET_HEIGHT,
-        ),
-        aws_cloudwatch.GraphWidget(
-            title="Worker CPU / Memory (%)",
-            left=[
-                worker_service.metric_cpu_utilization(
-                    period=cdk.Duration.minutes(1),
-                    statistic="Average",
-                )
-            ],
-            right=[
-                worker_service.metric_memory_utilization(
-                    period=cdk.Duration.minutes(1),
-                    statistic="Average",
-                )
-            ],
-            width=8,
+            width=12,
             height=_WIDGET_HEIGHT,
         ),
     )
@@ -241,9 +205,8 @@ def create_ecs_dashboard(
     *,
     stage: Stage,
     tracker_service: aws_ecs.FargateService,
-    worker_service: aws_ecs.FargateService,
 ) -> aws_cloudwatch.Dashboard:
-    """`Valkyrie-ECS` -- detailed Tracker + Worker metrics."""
+    """`Valkyrie-ECS` -- detailed service metrics."""
     dashboard = aws_cloudwatch.Dashboard(
         scope,
         "ValkyrieEcsDashboard",
@@ -252,7 +215,7 @@ def create_ecs_dashboard(
         period_override=aws_cloudwatch.PeriodOverride.AUTO,
     )
 
-    for service, name in ((tracker_service, "Tracker"), (worker_service, "Worker")):
+    for service, name in ((tracker_service, "Tracker"),):
         dashboard.add_widgets(
             aws_cloudwatch.TextWidget(
                 markdown=f"## {name} Service",

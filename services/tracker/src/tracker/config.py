@@ -1,15 +1,18 @@
 """Configuration for the tracker service."""
 
+from enum import Enum
 import os
 from typing import Any
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
+from executor_protocol import DEFAULT_STABLE_QUEUE_NAME
 from taskiq import InMemoryBroker, TaskiqEvents
 from taskiq_redis import RedisStreamBroker
 from taskiq_redis.redis_backend import RedisAsyncResultBackend
 
 from tracker.logging import configure_logging
-from tracker.middleware import LoggingContextMiddleware, TaskProtectionMiddleware, TracingContextMiddleware
+from tracker.middleware import LoggingContextMiddleware, TracingContextMiddleware
 from tracker.observability import configure_observability
 from tracker.outbound_security import validate_benchmark_name
 
@@ -21,6 +24,13 @@ _BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE: str = os.environ.get("BENCHMARK_SERVICE_C
 _CLOUDMAP_PORT = 8001
 _BENCHMARK_SERVICE_BASE_URL: str | None = os.environ.get("BENCHMARK_SERVICE_BASE_URL")
 BENCHMARK_CATALOG_URL = os.environ.get("BENCHMARK_CATALOG_URL", "").rstrip("/")
+
+
+class BenchmarkServiceDestination(Enum):
+    """Trust classification for benchmark-service credential forwarding."""
+
+    HOSTED = "hosted"
+    CUSTOM = "custom"
 
 
 def create_benchmark_service_url(benchmark_name: str) -> str:
@@ -38,10 +48,43 @@ def create_benchmark_service_url(benchmark_name: str) -> str:
     return f"http://{benchmark_name}.{_BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE}:{_CLOUDMAP_PORT}"
 
 
+def _normalized_origin(url: str) -> tuple[str, str, int]:
+    parsed = urlsplit(url)
+    assert parsed.hostname is not None
+    default_port = 443 if parsed.scheme == "https" else 80
+    port = parsed.port if parsed.port is not None else default_port
+    return parsed.scheme, parsed.hostname.lower(), port
+
+
+def classify_benchmark_service_destination(
+    benchmark_name: str,
+    service_url: str | None,
+) -> BenchmarkServiceDestination:
+    """Trust only the exact origin derived for a hosted benchmark service."""
+    try:
+        hosted_url = create_benchmark_service_url(benchmark_name)
+    except ValueError:
+        # Persisted custom-service runs can predate benchmark-name validation.
+        if service_url is not None:
+            return BenchmarkServiceDestination.CUSTOM
+        raise
+    effective_url = service_url or hosted_url
+    if _normalized_origin(effective_url) == _normalized_origin(hosted_url):
+        return BenchmarkServiceDestination.HOSTED
+    return BenchmarkServiceDestination.CUSTOM
+
+
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
+AWS_DEPLOYMENT_ROLE_ORG_IDS = os.environ.get("AWS_DEPLOYMENT_ROLE_ORG_IDS", "")
+AWS_DEPLOYMENT_REGION = os.environ.get("AWS_DEPLOYMENT_REGION") or os.environ.get("AWS_REGION")
+AWS_DEPLOYMENT_S3_BUCKET = os.environ.get("AWS_DEPLOYMENT_S3_BUCKET")
+AWS_DEPLOYMENT_LOG_GROUP = os.environ.get("AWS_DEPLOYMENT_LOG_GROUP")
+AWS_DEPLOYMENT_LOG_RETENTION_DAYS = os.environ.get("AWS_DEPLOYMENT_LOG_RETENTION_DAYS")
+AWS_MANAGED_SUBMISSIONS_ENABLED = os.environ.get("AWS_MANAGED_SUBMISSIONS_ENABLED", "false").lower() == "true"
 BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+STABLE_QUEUE_NAME = os.environ.get("STABLE_QUEUE_NAME", DEFAULT_STABLE_QUEUE_NAME)
 
 
 def _build_database_url() -> str:
@@ -65,13 +108,15 @@ result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
 
 # Tracing precedes Logging so that anything emitted after (logs, child spans
 # from middlewares or the task body) is captured under the propagated parent trace.
-_BROKER_MIDDLEWARES = (TaskProtectionMiddleware(), TracingContextMiddleware(), LoggingContextMiddleware())
+_BROKER_MIDDLEWARES = (TracingContextMiddleware(), LoggingContextMiddleware())
 
 broker = (
     InMemoryBroker().with_middlewares(*_BROKER_MIDDLEWARES)
     if BROKER_ENVIRONMENT == "testing"
     else RedisStreamBroker(
         url=REDIS_URL,
+        queue_name=STABLE_QUEUE_NAME,
+        consumer_group_name=STABLE_QUEUE_NAME,
         idle_timeout=86400000,  # 24 hours
     )
     .with_result_backend(result_backend)

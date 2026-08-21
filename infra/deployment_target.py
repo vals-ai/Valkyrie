@@ -35,8 +35,8 @@ class StsClient(Protocol):
 def target_from_environment(environment: Mapping[str, str]) -> DeploymentTarget:
     """Build and validate a deployment target without calling AWS."""
     stage = _required(environment, "STAGE")
-    if stage not in ("dev", "prod"):
-        raise DeploymentTargetError("STAGE must be 'dev' or 'prod'.")
+    if stage not in ("dev", "release-test", "prod"):
+        raise DeploymentTargetError("STAGE must be 'dev', 'release-test', or 'prod'.")
 
     region = _required(environment, "AWS_REGION")
     if region != DEPLOYMENT_REGION:
@@ -46,11 +46,11 @@ def target_from_environment(environment: Mapping[str, str]) -> DeploymentTarget:
     if not _ACCOUNT_ID_PATTERN.fullmatch(production_account_id):
         raise DeploymentTargetError("PRODUCTION_ACCOUNT_ID must be a 12-digit AWS account ID.")
 
-    if stage == "dev":
+    if stage in ("dev", "release-test"):
         account_id = _required(environment, "DEV_ACCOUNT_ID")
         if not _ACCOUNT_ID_PATTERN.fullmatch(account_id):
             raise DeploymentTargetError("DEV_ACCOUNT_ID must be a 12-digit AWS account ID.")
-        if account_id == production_account_id:
+        if stage == "dev" and account_id == production_account_id:
             raise DeploymentTargetError("DEV_ACCOUNT_ID must not be the production AWS account.")
     else:
         account_id = production_account_id

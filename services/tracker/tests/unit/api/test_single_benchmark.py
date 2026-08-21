@@ -100,7 +100,7 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
     Test cases:
     - Status sorting places errors before finished tasks.
     - Percent and underscore search characters are treated literally.
-    - The newest error from retry history is returned.
+    - The newest terminal error is returned when a newer scheduled-retry row exists.
     """
     now = datetime.now(ZoneInfo("UTC"))
     benchmark = example_benchmark_object
@@ -133,6 +133,16 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
         [
             make_error_result(literal_task, "old failure", now - timedelta(minutes=1)),
             make_error_result(literal_task, "latest failure", now),
+            make_error_result(
+                literal_task,
+                "scheduled retry",
+                now + timedelta(minutes=1),
+                producer="sandbox_provider",
+                operation="setup",
+                error_type="SandboxSetupError",
+                retry_scheduled=True,
+                failed_attempt_number=1,
+            ),
             make_error_result(other_error, "other failure", now),
         ]
     )

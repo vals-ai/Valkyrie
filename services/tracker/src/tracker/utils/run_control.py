@@ -1,6 +1,6 @@
 """Operations that stop, resume, or retry a run and tear down its sandboxes."""
 
-import traceback
+import asyncio
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any
@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 
 from benchmark_service import (
     Sandbox,
-    SandboxNotFoundError,
     SandboxProvider,
     SandboxQuery,
 )
@@ -23,16 +22,62 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.executor.dispatch_control import terminalize_active_dispatches
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.sandbox import delete_sandbox
-from tracker.types import (
-    AWSCredentials,
-)
+from tracker.aws.runtime import AWSRuntime
 
 from tracker.utils.resources import fetch_benchmark_row, fetch_sandbox_provider_config
 
 logger = get_logger(__name__)
+
+
+def apply_stop_benchmark(
+    benchmark_row: Benchmark,
+    session: Session,
+    force: bool,
+    org: Org,
+    task_ids: list[str] | None = None,
+) -> None:
+    """Apply the Stop state transition without committing the transaction."""
+    # Stop and recovery both update the benchmark and its tasks. Lock the benchmark
+    # first so every lifecycle transition uses the same lock order.
+    fetch_benchmark_row(benchmark_row.id, session, org, for_update=True)
+
+    stoppable_statuses = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]
+    if force:
+        stoppable_statuses.append(TaskStatus.IN_PROGRESS)
+
+    task_update = (
+        update(Task)
+        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.org_id) == org.id)
+        .where(col(Task.status).in_(stoppable_statuses))
+    )
+    if task_ids:
+        task_update = task_update.where(col(Task.task_id).in_(task_ids))
+
+    result = session.exec(task_update.values(status=TaskStatus.STOPPED))
+
+    if force:
+        active_tasks = session.exec(
+            select(func.count(col(Task.id)))
+            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.org_id) == org.id)
+            .where(
+                col(Task.status).in_(
+                    [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+                )
+            )
+        ).one()
+        if active_tasks == 0:
+            benchmark_row.status = BenchmarkStatus.STOPPED
+            terminalize_active_dispatches(session, benchmark_row.id)
+            session.add(benchmark_row)
+    elif task_ids is None and result.rowcount > 0:
+        benchmark_row.status = BenchmarkStatus.STOPPING
+        session.add(benchmark_row)
 
 
 async def initiate_stop_benchmark(
@@ -42,45 +87,19 @@ async def initiate_stop_benchmark(
     org: Org,
     task_ids: list[str] | None = None,
 ) -> None:
-    """
-    Sets the flags to initiate the stopping process for a benchmark.
-
-    Benchmark - Stopping status
-    Tasks - Stopped status
-
-    NOTE: Tasks that have already started will continue to run and finish.
-    """
+    """Initiate Stop without interrupting work that already started unless forced."""
     try:
-        # Update all rows where tasks are pending or building to stopped
-        task_update = (
-            update(Task)
-            .where(col(Task.benchmark) == benchmark_row.id)
-            .where(col(Task.org_id) == org.id)
-            .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]))
-        )
-        if task_ids:
-            task_update = task_update.where(col(Task.task_id).in_(task_ids))
-
-        result = session.exec(task_update.values(status=TaskStatus.STOPPED))
+        apply_stop_benchmark(benchmark_row, session, force, org, task_ids)
         session.commit()
-
-        if task_ids is None and (result.rowcount > 0 or force):
-            benchmark_row.status = BenchmarkStatus.STOPPING
-            session.add(benchmark_row)
-            session.commit()
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error stopping run {benchmark_row.id}: {str(e)}") from e
 
 
-async def stop_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> str | None:
+async def stop_sandbox(sandbox: Sandbox, provider: SandboxProvider, org: Org) -> None:
     try:
-        await delete_sandbox(sandbox, provider)
-        return None
-    except SandboxNotFoundError:
-        logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
-        return None
-    except Exception as e:
-        return f"{str(e)}: {traceback.format_exc()}"
+        await delete_sandbox(sandbox, provider, initiated_by="force_stop", org_id=str(org.id))
+    except Exception:
+        logger.exception("Failed to send force-stop signal for sandbox %s", sandbox.name)
 
 
 async def sandbox_generator(
@@ -108,68 +127,27 @@ async def sandbox_generator(
 
 async def force_stop_sandboxes(
     benchmark_row: Benchmark,
-    session: Session,
     sandbox_provider_secret_name: str,
-    aws: AWSCredentials,
+    aws_runtime: AWSRuntime,
     org: Org,
     sandbox_provider: str = "daytona",
     task_ids: list[str] | None = None,
 ) -> None:
-    """
-    Stops and deletes all sandboxes which are in progress or evaluating.
-    NOTE: If task is not in progress but sandbox exists, we kill it and leave the task status as is.
-
-    Raises:
-        TrackerServiceError: If there are any errors stopping the sandboxes
-    """
+    """Send provider kill signals without coupling provider teardown to DB state."""
     benchmark_service = benchmark_row.benchmark_service()
-    provider = benchmark_service.get_sandbox_provider(
-        fetch_sandbox_provider_config(sandbox_provider_secret_name, aws, sandbox_provider)
-    )
-
-    # Update all tasks being processed to stopped
-    task_update = (
-        update(Task)
-        .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.org_id) == org.id)
-        .where(col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]))
-    )
-    if task_ids:
-        task_update = task_update.where(col(Task.task_id).in_(task_ids))
-
-    session.exec(task_update.values(status=TaskStatus.STOPPED))
-
-    session.commit()
-
-    # Iterate through each running sandbox and stop it, collecting error messages
-    results: dict[str, str | None] = {}
     try:
-        async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids):
-            result = await stop_sandbox(sandbox, provider)
-            results[sandbox.name] = result
+        provider = benchmark_service.get_sandbox_provider(
+            fetch_sandbox_provider_config(sandbox_provider_secret_name, aws_runtime.clients, sandbox_provider)
+        )
+        sandboxes = [sandbox async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids)]
+        await asyncio.gather(*(stop_sandbox(sandbox, provider, org) for sandbox in sandboxes))
+    except Exception:
+        logger.exception("Unable to send force-stop signals for benchmark %s", benchmark_row.id)
     finally:
-        await benchmark_service.close()
-
-    error_message: str = "\n".join(
-        f"{task_alias}: {error_message}" for task_alias, error_message in results.items() if error_message
-    )
-
-    # If all tasks are already in a stopped state, we need to update the final status here since the worker has exited
-    finished_statuses: list[TaskStatus] = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
-    tasks_still_running: int = session.exec(
-        select(func.count(col(Task.id)))
-        .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.org_id) == org.id)
-        .where(col(Task.status).notin_(finished_statuses))
-    ).one()
-
-    if not tasks_still_running:
-        benchmark_row.status = BenchmarkStatus.STOPPED
-        session.add(benchmark_row)
-        session.commit()
-
-    if error_message:
-        raise TrackerServiceError(f"Unexpected errors stopping sandboxes:\n{error_message}")
+        try:
+            await benchmark_service.close()
+        except Exception:
+            logger.exception("Unable to close provider client for benchmark %s", benchmark_row.id)
 
 
 async def reset_to_in_progress_status(
@@ -215,7 +193,14 @@ async def reset_to_in_progress_status(
 
         # Allow re-running the end of the benchmark without running any tasks
         if not existing_rows and not new_task_ids:
-            session.commit()
+            if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+                old_evaluation = benchmark_row.final_evaluation
+                if old_evaluation is not None:
+                    benchmark_row.final_evaluation = None
+                    session.delete(old_evaluation)
+                benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+                benchmark_row.finished_at = None
+                session.add(benchmark_row)
             return []
 
         # Verify the task ids are still valid before priming to resume
@@ -225,13 +210,16 @@ async def reset_to_in_progress_status(
             task_ids=all_requested_task_ids, slice_str=None, dataset=benchmark_row.arguments.dataset
         )
 
-        if benchmark_row.final_evaluation:
-            session.delete(benchmark_row.final_evaluation)
+        old_evaluation = benchmark_row.final_evaluation
+        if old_evaluation is not None:
+            benchmark_row.final_evaluation = None
+            session.delete(old_evaluation)
 
-        # Can already be in progress when retrying errored tasks while the run is ongoing.
+        # Retry/resume always starts a new active execution.
         if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
             benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-            session.add(benchmark_row)
+        benchmark_row.finished_at = None
+        session.add(benchmark_row)
 
         for task in existing_rows:
             task.status = (
@@ -247,8 +235,6 @@ async def reset_to_in_progress_status(
 
         for task_id in new_task_ids:
             session.add(Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING))
-
-        session.commit()
 
         return verify_response.task_ids
     except (TrackerServiceError, BenchmarkServiceError):

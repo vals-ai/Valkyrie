@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import TypeVar, cast
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
 
 from valkyrie.sdk.errors import ValkyrieConfigError
 from valkyrie.sdk.models import AWSCredentials, HarnessConfig
@@ -19,8 +19,8 @@ class ValkyrieConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     api_key: SecretStr | None = Field(default=None, repr=False)
-    aws_access_key_id: SecretStr = Field(alias="AWS_ACCESS_KEY_ID", repr=False)
-    aws_secret_access_key: SecretStr = Field(alias="AWS_SECRET_ACCESS_KEY", repr=False)
+    aws_access_key_id: SecretStr | None = Field(default=None, alias="AWS_ACCESS_KEY_ID", repr=False)
+    aws_secret_access_key: SecretStr | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY", repr=False)
     aws_default_region: str = Field(alias="AWS_DEFAULT_REGION")
     aws_session_token: SecretStr | None = Field(default=None, alias="AWS_SESSION_TOKEN", repr=False)
     s3_bucket: str = Field(alias="S3_BUCKET")
@@ -46,11 +46,20 @@ class ValkyrieConfig(BaseModel):
 
     @field_validator("aws_access_key_id", "aws_secret_access_key")
     @classmethod
-    def reject_blank_required_secrets(cls, value: SecretStr) -> SecretStr:
+    def reject_blank_required_secrets(cls, value: SecretStr | None) -> SecretStr | None:
         """Reject blank required secret values."""
-        if not value.get_secret_value().strip():
+        if value is not None and not value.get_secret_value().strip():
             raise ValueError("must not be blank")
         return value
+
+    @model_validator(mode="after")
+    def validate_access_key_configuration(self) -> "ValkyrieConfig":
+        """Require a complete static credential set or none at all."""
+        if (self.aws_access_key_id is None) != (self.aws_secret_access_key is None):
+            raise ValueError("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together")
+        if self.aws_access_key_id is None and self.aws_session_token is not None:
+            raise ValueError("AWS_SESSION_TOKEN requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
+        return self
 
     @field_validator("custom_benchmark_services")
     @classmethod
@@ -89,6 +98,8 @@ class ValkyrieConfig(BaseModel):
 
     def harness_config(self, provider_secret_name: str) -> HarnessConfig:
         """Build the nested harness config expected by the tracker."""
+        if self.aws_access_key_id is None or self.aws_secret_access_key is None:
+            raise ValkyrieConfigError("Static AWS access keys are not configured")
         return HarnessConfig(
             aws=AWSCredentials(
                 aws_access_key_id=self.aws_access_key_id.get_secret_value(),
@@ -104,18 +115,24 @@ class ValkyrieConfig(BaseModel):
 
     def request_headers(self) -> dict[str, str]:
         """Build API-key and harness headers for tracker requests."""
-        values: dict[str, str | None] = {
-            "AWS_ACCESS_KEY_ID": self.aws_access_key_id.get_secret_value(),
-            "AWS_SECRET_ACCESS_KEY": self.aws_secret_access_key.get_secret_value(),
-            "AWS_DEFAULT_REGION": self.aws_default_region,
-            "AWS_SESSION_TOKEN": self.aws_session_token.get_secret_value() if self.aws_session_token else None,
-            "S3_BUCKET": self.s3_bucket,
-            "LOG_GROUP": self.log_group,
-            "LOG_RETENTION_POLICY": str(self.log_retention_policy),
-        }
-        headers = {
-            f"X-Harness-{key.replace('_', '-').title()}": value for key, value in values.items() if value is not None
-        }
+        headers: dict[str, str] = {}
+        if self.aws_access_key_id is not None and self.aws_secret_access_key is not None:
+            values: dict[str, str | None] = {
+                "AWS_ACCESS_KEY_ID": self.aws_access_key_id.get_secret_value(),
+                "AWS_SECRET_ACCESS_KEY": self.aws_secret_access_key.get_secret_value(),
+                "AWS_DEFAULT_REGION": self.aws_default_region,
+                "AWS_SESSION_TOKEN": self.aws_session_token.get_secret_value() if self.aws_session_token else None,
+                "S3_BUCKET": self.s3_bucket,
+                "LOG_GROUP": self.log_group,
+                "LOG_RETENTION_POLICY": str(self.log_retention_policy),
+            }
+            headers.update(
+                {
+                    f"X-Harness-{key.replace('_', '-').title()}": value
+                    for key, value in values.items()
+                    if value is not None
+                }
+            )
         if self.api_key and (api_key := self.api_key.get_secret_value()):
             headers["X-Api-Key"] = api_key
         return headers
