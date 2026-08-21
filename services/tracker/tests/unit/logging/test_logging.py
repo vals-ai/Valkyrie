@@ -5,9 +5,11 @@ Run: uv run pytest tests/unit/logging/test_logging.py
 
 import json
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
+from uuid import UUID
 
 import pytest
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from main import app
@@ -19,6 +21,7 @@ from tracker.logging import (
     request_id_var,
     task_id_var,
 )
+from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
 from tracker.middleware import LoggingContextMiddleware
 from tracker.types import AWSCredentials, HarnessConfig
 
@@ -140,6 +143,36 @@ class TestContextFilter:
             request_id_var.reset(request_token)
             benchmark_id_var.reset(benchmark_token)
             task_id_var.reset(task_token)
+
+
+async def test_bind_benchmark_id_updates_logging_context_and_request_span(monkeypatch: pytest.MonkeyPatch) -> None:
+    span = Mock()
+    monkeypatch.setattr("tracker.api.dependencies.trace.get_current_span", lambda: span)
+
+    benchmark_id = UUID("12345678-1234-5678-9234-567812345678")
+    result = await bind_benchmark_id(benchmark_id)
+
+    assert result == benchmark_id
+    assert benchmark_id_var.get() == str(benchmark_id)
+    span.set_attribute.assert_called_once_with("benchmark_id", str(benchmark_id))
+
+
+async def test_bind_benchmark_id_survives_fastapi_dependency_resolution() -> None:
+    test_app = FastAPI()
+    observed_benchmark_ids: list[str] = []
+
+    async def endpoint(benchmark_id: TrackedBenchmarkId) -> dict[str, str]:
+        observed_benchmark_ids.append(benchmark_id_var.get())
+        return {"benchmark_id": str(benchmark_id)}
+
+    test_app.add_api_route("/runs/{benchmark_id}", endpoint)
+    benchmark_id = UUID("12345678-1234-5678-9234-567812345678")
+
+    async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+        response = await client.get(f"/runs/{benchmark_id}")
+
+    assert response.status_code == 200
+    assert observed_benchmark_ids == [str(benchmark_id)]
 
 
 class TestConfigureLogging:

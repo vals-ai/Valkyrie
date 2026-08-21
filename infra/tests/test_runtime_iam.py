@@ -57,6 +57,19 @@ def _statement_actions(statement: JsonObject) -> set[str]:
     return set(actions) if isinstance(actions, list) else {actions}
 
 
+def _lambda_function_resource(function_name: str) -> JsonObject:
+    return {
+        "Fn::Join": [
+            "",
+            [
+                "arn:",
+                {"Ref": "AWS::Partition"},
+                f":lambda:{TEST_AWS_REGION}:{TEST_AWS_ACCOUNT}:function:{function_name}",
+            ],
+        ]
+    }
+
+
 class RuntimeIamTest(unittest.TestCase):
     def test_managed_runtime_rejects_invalid_authority_configuration(self) -> None:
         config = ManagedAWSRuntimeConfig(
@@ -146,6 +159,7 @@ class RuntimeIamTest(unittest.TestCase):
                     "logs:CreateLogStream",
                     "logs:PutLogEvents",
                     "ecs:UpdateTaskProtection",
+                    "lambda:InvokeFunction",
                 },
             ),
         ):
@@ -246,6 +260,12 @@ class RuntimeIamTest(unittest.TestCase):
                     )
                     self.assertIn("/valkyrie/benchmarks-dev/*", json.dumps(log_statement["Resource"]))
                     self.assertNotIn(":log-stream:", json.dumps(log_statement["Resource"]))
+                    lambda_statement = next(
+                        statement
+                        for statement in statements
+                        if _statement_actions(statement) == {"lambda:InvokeFunction"}
+                    )
+                    self.assertEqual(lambda_statement["Resource"], _lambda_function_resource("vals-format-lambda"))
                 else:
                     secret_resources = json.dumps(secret_statement["Resource"])
                     self.assertIn("secretsmanager", secret_resources)
@@ -291,8 +311,24 @@ class RuntimeIamTest(unittest.TestCase):
                 if role_name.startswith("ValkyrieExecutor"):
                     self.assertIn("secret:*", secret_resources)
                     self.assertNotIn(TEST_TRACKER_SECRET_NAME_PREFIX, secret_resources)
+                    lambda_statements = [
+                        statement
+                        for statement in _role_policy_statements(template, role_logical_id)
+                        if _statement_actions(statement) == {"lambda:InvokeFunction"}
+                    ]
+                    self.assertEqual(len(lambda_statements), 1)
+                    self.assertEqual(
+                        lambda_statements[0]["Resource"],
+                        _lambda_function_resource("vals-format-lambda"),
+                    )
                 else:
                     self.assertIn(f"secret:{TEST_TRACKER_SECRET_NAME_PREFIX}*", secret_resources)
+                    self.assertFalse(
+                        any(
+                            _statement_actions(statement) == {"lambda:InvokeFunction"}
+                            for statement in _role_policy_statements(template, role_logical_id)
+                        )
+                    )
 
     def test_release_test_managed_runtime_remains_closed(self) -> None:
         with mock.patch.dict(os.environ, TEST_RELEASE_TEST_ENV, clear=True):

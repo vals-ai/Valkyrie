@@ -1,4 +1,7 @@
-"""Tests for deployment workflow contracts."""
+"""Tests for deployment workflow contracts.
+
+Run: cd infra && PYTHONPATH=. uv run python -m unittest tests/test_deploy_workflow.py
+"""
 
 import unittest
 from pathlib import Path
@@ -387,7 +390,13 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn('"services/tracker/**"', workflow)
         self.assertIn('".dockerignore"', workflow)
         self.assertIn("PYTHONPATH=services/tracker/src python services/executor_artifact/build.py", workflow)
-        self.assertIn("uv run pytest tests/unit/executor_host services/executor_artifact/tests", workflow)
+        self.assertIn("uv run pytest", workflow)
+        for test_path in (
+            "tests/unit/executor_host",
+            "tests/integration/observability",
+            "services/executor_artifact/tests",
+        ):
+            self.assertIn(test_path, workflow)
         self.assertIn(
             "docker build --platform linux/arm64 -t valkyrie-tracker:ci services/tracker",
             workflow,

@@ -8,7 +8,7 @@ import logging
 import tarfile
 from collections.abc import AsyncIterator
 from datetime import timezone
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -30,7 +30,7 @@ from taskiq.message import BrokerMessage, TaskiqMessage
 
 import main as main_module
 import services.executor_host.supervisor as executor_host  # pyright: ignore[reportMissingImports]
-from executor_protocol import SUPPORTED_PROTOCOL_VERSION
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION, ExecutorTelemetryContext
 from main import app, tracker_service_error_handler
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
@@ -664,6 +664,7 @@ class TestTrackerAPI:
             else {"start_benchmark_request_json", "benchmark_id_str", "verified_task_ids"}
         )
         assert set(taskiq_message.kwargs) == execution_kwargs | {
+            "telemetry_context_json",
             "executor_dispatch_id",
             "executor_release_id",
             "executor_artifact_uri",
@@ -698,15 +699,26 @@ class TestTrackerAPI:
         assert isinstance(process_payload, executor_host.ExecutorProcessPayload)
         assert process_payload.benchmark_id == str(benchmark.id)
         assert process_payload.verified_task_ids == ["task_0"]
+        telemetry_context = taskiq_message.kwargs["telemetry_context_json"]
+        assert telemetry_context["request_id"]
+        assert isinstance(telemetry_context["trace_headers"], dict)
+        child_telemetry_context = cast(
+            ExecutorTelemetryContext,
+            process_payload.arguments["telemetry_context_json"],
+        )
+        assert child_telemetry_context["request_id"] == telemetry_context["request_id"]
+        assert child_telemetry_context["trace_headers"]
         if aws_managed:
             assert process_payload.arguments == {
-                "execution_context_json": taskiq_message.kwargs["execution_context_json"]
+                "execution_context_json": taskiq_message.kwargs["execution_context_json"],
+                "telemetry_context_json": child_telemetry_context,
             }
         else:
             assert process_payload.arguments == {
                 "start_benchmark_request_json": request.model_dump(),
                 "benchmark_id_str": str(benchmark.id),
                 "verified_task_ids": ["task_0"],
+                "telemetry_context_json": child_telemetry_context,
             }
         host_dispatch = observed_host["dispatch"]
         assert isinstance(host_dispatch, executor_host.ArtifactDispatch)
@@ -723,9 +735,6 @@ class TestTrackerAPI:
         harness_config: HarnessConfig,
     ) -> None:
         class FailingKicker:
-            def with_labels(self, **_labels: str) -> "FailingKicker":
-                return self
-
             async def kiq(self, **_kwargs: Any) -> None:
                 raise RuntimeError("redis unavailable")
 

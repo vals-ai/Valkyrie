@@ -1,3 +1,8 @@
+"""Tests for managed and access-key executor inputs.
+
+Run: uv run pytest tests/unit/test_managed_execution.py
+"""
+
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -278,11 +283,17 @@ async def test_ineligible_managed_execution_marks_run_error(
 ) -> None:
     request = _managed_request(contract)
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
+    spans: list[tuple[str, dict[str, Any]]] = []
 
     def reject_managed_runtime(_org_id: UUID) -> AWSRuntime:
         raise ManagedAWSEligibilityError("Managed AWS access is not available for this organization")
 
+    def record_span(name: str, **attributes: Any) -> MagicMock:
+        spans.append((name, attributes))
+        return MagicMock()
+
     monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", reject_managed_runtime)
+    monkeypatch.setattr("tracker.utils.run_orchestration.observability_span", record_span)
 
     await process_benchmark(
         execution_context_json=_execution_context(request, benchmark.id),
@@ -292,6 +303,9 @@ async def test_ineligible_managed_execution_marks_run_error(
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
     assert "Managed AWS access is not available for this organization" in (benchmark.error_message or "")
+    finalized_span = next(attributes for name, attributes in spans if name == "run.finalized")
+    assert finalized_span["benchmark_id"] == str(benchmark.id)
+    assert finalized_span["status"] == "ERROR"
 
 
 async def test_managed_execution_completes_with_the_deployment_runtime(
@@ -307,6 +321,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     )
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
     calls: list[str] = []
+    spans: list[tuple[str, dict[str, Any]]] = []
     provider_config = cast(SandboxProviderConfig, MagicMock())
 
     def deployment_runtime(_org_id: UUID) -> AWSRuntime:
@@ -340,6 +355,10 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         calls.append("lambda-post-run")
         return {}
 
+    def record_span(name: str, **attributes: Any) -> MagicMock:
+        spans.append((name, attributes))
+        return MagicMock()
+
     monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
     monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", create_log_group)
     monkeypatch.setattr("tracker.utils.run_orchestration.fetch_sandbox_provider_config", fetch_provider)
@@ -348,6 +367,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
     monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", upload_results)
     monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", invoke_post_run)
+    monkeypatch.setattr("tracker.utils.run_orchestration.observability_span", record_span)
 
     execution_context = _execution_context(request, benchmark.id)
     # A resume may change stored inputs while this job is queued; the queued job must still run.
@@ -362,6 +382,8 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     assert calls[:4] == ["logs", "provider-secret", "agent-secrets", "lambda-dry-run"]
     assert calls.count("agent-secrets") >= 2
     assert calls[-2:] == ["s3-final-upload", "lambda-post-run"]
+    finalized_span = next(attributes for name, attributes in spans if name == "run.finalized")
+    assert finalized_span["status"] == "FINISHED"
 
 
 def test_managed_execution_preflight_checks_aws_dependencies_in_order(

@@ -6,6 +6,7 @@ requires-python = "==3.12.*"
 dependencies = [
   "boto3==1.43.0",
   "psycopg2-binary==2.9.11",
+  "sentry-sdk==2.58.0",
   "taskiq==0.12.1",
   "taskiq-redis==1.2.2",
 ]

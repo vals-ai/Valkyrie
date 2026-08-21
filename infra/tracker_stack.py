@@ -160,8 +160,8 @@ class TrackerStack(Stack):
         }
 
         sentry_secret_name = os.environ.get("SENTRY_DSN_SECRET_NAME", "")
-        if stage.is_prod and not sentry_secret_name:
-            raise ValueError("Production deployments require SENTRY_DSN_SECRET_NAME.")
+        if not stage.is_release_test and not sentry_secret_name:
+            raise ValueError("Dev and production deployments require SENTRY_DSN_SECRET_NAME.")
 
         sentry_secrets: dict[str, aws_ecs.Secret] = {}
         if sentry_secret_name:

@@ -216,6 +216,7 @@ jobs:
           DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
           SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
+          SENTRY_RELEASE: ${{ github.sha }}
         working-directory: infra
         run: >-
           make deploy
@@ -255,6 +256,7 @@ jobs:
       PRODUCTION_ACCOUNT_ID: "613431292675"
       SCOPE: ${{ github.event_name == 'push' && 'core' || inputs.scope }}
       SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
+      SENTRY_RELEASE: ${{ github.sha }}
 
     steps:
       - name: Validate dev configuration
@@ -270,6 +272,10 @@ jobs:
           fi
           if [[ "$OPERATION" != "credentials-only" && -z "$DESCOPE_MANAGEMENT_KEY_SECRET_NAME" ]]; then
             echo "::error::The dev Environment must define DESCOPE_MANAGEMENT_KEY_SECRET_NAME before planning or deploying."
+            exit 1
+          fi
+          if [[ "$OPERATION" != "credentials-only" && -z "$SENTRY_DSN_SECRET_NAME" ]]; then
+            echo "::error::The dev Environment must define SENTRY_DSN_SECRET_NAME before planning or deploying."
             exit 1
           fi
           if [[ "$OPERATION" != "credentials-only" && ( -z "$AWS_DEPLOYMENT_ROLE_ORG_IDS" || -z "$AWS_TRACKER_SECRET_NAME_PREFIXES" ) ]]; then
@@ -709,6 +715,7 @@ jobs:
           DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
           SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
+          SENTRY_RELEASE: ${{ github.sha }}
         working-directory: infra
         run: make deploy STAGE=prod SCOPE=core AWS_REGION="$AWS_REGION"
 

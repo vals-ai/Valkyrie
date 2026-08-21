@@ -1,3 +1,8 @@
+"""Tests for Taskiq executor payload producers.
+
+Run: uv run pytest tests/unit/test_taskiq_producers.py
+"""
+
 import json
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -31,6 +36,7 @@ from tracker.types import HarnessConfig, StartBenchmarkRequest
 client = TestClient(app)
 
 _DISPATCH_TASK_KWARGS = {
+    "telemetry_context_json",
     "executor_dispatch_id",
     "executor_release_id",
     "executor_artifact_uri",
@@ -66,9 +72,6 @@ def _capture_task_payloads(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, An
     payloads: list[dict[str, Any]] = []
 
     class CapturingKicker:
-        def with_labels(self, **_kwargs: Any) -> "CapturingKicker":
-            return self
-
         async def kiq(self, **kwargs: Any) -> None:
             payloads.append(kwargs)
 

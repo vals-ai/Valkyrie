@@ -1,6 +1,6 @@
-"""Run with `uv run pytest tests/integration/local/database/test_run_finalization.py`.
+"""Exercise run-finalization concurrency against disposable Postgres.
 
-Exercise run-finalization concurrency against disposable Postgres.
+Run: uv run pytest tests/integration/local/database/test_run_finalization.py
 """
 
 import asyncio

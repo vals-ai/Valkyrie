@@ -240,8 +240,7 @@ class TestGetBenchmarkLogUrl:
 
     def test_sanitizes_task_id_in_url(self) -> None:
         url = get_benchmark_log_url("bench123", _AWS_RESOURCES, task_id="provider/model:fast")
-        # task id is sanitized before being url-quoted into the log-events path
-        assert "model_fast" in url
+        assert "provider%2Fmodel_fast" in url
         assert "model:fast" not in url
 
     def test_no_task_id_omits_log_events(self) -> None:

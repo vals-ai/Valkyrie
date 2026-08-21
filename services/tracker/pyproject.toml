@@ -77,7 +77,7 @@ venvPath = "."
 venv = ".venv"
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
-extraPaths = ["../.."]
+extraPaths = ["src", "../.."]
 
 reportExplicitAny = false
 reportAny = false
@@ -89,7 +89,7 @@ exclude = ["src/tracker/database/migrations/versions"]
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
 asyncio_mode = "auto"
-pythonpath = [".", "../.."]
+pythonpath = [".", "src", "../.."]
 env = ["BROKER_ENVIRONMENT=testing"]
 [tool.coverage.run]
 source = ["src/tracker", "main"]

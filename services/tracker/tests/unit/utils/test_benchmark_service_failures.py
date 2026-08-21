@@ -7,6 +7,7 @@ import asyncio
 import socket
 import time
 from typing import Any, Never
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -779,6 +780,8 @@ class TestBenchmarkServiceFailures:
             raise BenchmarkServiceError(html_error)
 
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
+        capture_exception = Mock()
+        monkeypatch.setattr(run_orchestration_module.sentry_sdk, "capture_exception", capture_exception)
         benchmark_row = fetch_benchmark_row(benchmark_id, database_session, TEST_ORG)
         authority_kwargs = executor_authority_kwargs(benchmark_row)
 
@@ -794,3 +797,5 @@ class TestBenchmarkServiceFailures:
             assert benchmark_row.status == BenchmarkStatus.ERROR
             assert benchmark_row.error_message is not None
             assert "Final score failed with status code 404" in benchmark_row.error_message
+        captured_error = capture_exception.call_args.args[0]
+        assert isinstance(captured_error, BenchmarkServiceError)

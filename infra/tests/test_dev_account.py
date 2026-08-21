@@ -1,4 +1,7 @@
-"""Tests for the development account infrastructure boundary."""
+"""Tests for the development account infrastructure boundary.
+
+Run: cd infra && PYTHONPATH=. uv run python -m unittest tests/test_dev_account.py
+"""
 
 import json
 import os
@@ -62,11 +65,13 @@ DEV_TRACKER_CONTRACT_PARAMETERS = {
 }
 EXECUTOR_CONTRACT_PARAMETERS = {executor_release_launch_parameter(DEV)}
 DESCOPE_MANAGEMENT_KEY_SECRET_NAME = "example-descope-management-key"
+SENTRY_DSN_SECRET_NAME = "example/sentry-dsn"
 DEV_AUTH_ENV = {
     "AWS_DEPLOYMENT_ROLE_ORG_IDS": "00000000-0000-0000-0000-000000000001",
     "AWS_TRACKER_SECRET_NAME_PREFIXES": "test-tracker-secret",
     "DESCOPE_PROJECT_ID": "dev-project",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
+    "SENTRY_DSN_SECRET_NAME": SENTRY_DSN_SECRET_NAME,
 }
 
 
@@ -87,36 +92,37 @@ def dev_shared_stack() -> tuple[cdk.App, SharedStack]:
 
 
 def dev_service_templates() -> tuple[assertions.Template, assertions.Template]:
-    app, shared = dev_shared_stack()
-    stage = Stage(DEV)
-    tracker = TrackerStack(
-        app,
-        stage.stack_id("TrackerStack"),
-        stage=stage,
-        vpc=shared.vpc,
-        cluster=shared.cluster,
-        namespace=shared.namespace,
-        hosted_zone=shared.hosted_zone,
-        bucket_name=shared.bucket_name,
-        redis_url=shared.redis_url,
-        redis_security_group=shared.redis_security_group,
-        env=TEST_ENV,
-    )
-    executor = ExecutorStack(
-        app,
-        stage.stack_id("WorkerStack"),
-        stage=stage,
-        vpc=shared.vpc,
-        cluster=shared.cluster,
-        namespace=shared.namespace,
-        redis_url=shared.redis_url,
-        bucket_name=shared.bucket_name,
-        database=tracker.database,
-        db_credentials=tracker.db_credentials,
-        tracker_service=tracker.tracker_fargate_service,
-        tracker_image=tracker.tracker_image,
-        env=TEST_ENV,
-    )
+    with mock.patch.dict(os.environ, {"SENTRY_DSN_SECRET_NAME": SENTRY_DSN_SECRET_NAME}, clear=False):
+        app, shared = dev_shared_stack()
+        stage = Stage(DEV)
+        tracker = TrackerStack(
+            app,
+            stage.stack_id("TrackerStack"),
+            stage=stage,
+            vpc=shared.vpc,
+            cluster=shared.cluster,
+            namespace=shared.namespace,
+            hosted_zone=shared.hosted_zone,
+            bucket_name=shared.bucket_name,
+            redis_url=shared.redis_url,
+            redis_security_group=shared.redis_security_group,
+            env=TEST_ENV,
+        )
+        executor = ExecutorStack(
+            app,
+            stage.stack_id("WorkerStack"),
+            stage=stage,
+            vpc=shared.vpc,
+            cluster=shared.cluster,
+            namespace=shared.namespace,
+            redis_url=shared.redis_url,
+            bucket_name=shared.bucket_name,
+            database=tracker.database,
+            db_credentials=tracker.db_credentials,
+            tracker_service=tracker.tracker_fargate_service,
+            tracker_image=tracker.tracker_image,
+            env=TEST_ENV,
+        )
     return assertions.Template.from_stack(tracker), assertions.Template.from_stack(executor)
 
 
@@ -236,7 +242,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         self.assertNotIn("agents/*", json.dumps(delete_statements[0]["Resource"]))
         self.assertIn(DESCOPE_MANAGEMENT_KEY_SECRET_NAME, rendered)
         self.assertNotIn("/vals/dev/descope/project-id", rendered)
-        self.assertNotIn("SENTRY_DSN", rendered)
+        self.assertIn("SENTRY_DSN", rendered)
         self.assertNotIn("/valkyrie/dev/dns/tracker/certificate-arn", rendered)
         certificates = tracker_template.find_resources("AWS::CertificateManager::Certificate")
         self.assertEqual(len(certificates), 1)

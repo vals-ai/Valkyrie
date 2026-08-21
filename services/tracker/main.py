@@ -5,7 +5,7 @@ import tarfile
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Annotated, Any, cast
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -24,6 +24,7 @@ from sqlmodel import Session, col, select
 from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
+from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
 from tracker.api.dependencies import RunAWSDependency
 from tracker.api.filter_options import router as filter_options_router
 from tracker.api.single_benchmark import router as single_benchmark_router
@@ -95,8 +96,8 @@ from tracker.docent_analysis import (
     analyze_event_stream,
 )
 from tracker.exceptions import TrackerServiceError
-from executor_protocol import EXECUTOR_TASK_NAME, executor_task_signature
-from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
+from executor_protocol import EXECUTOR_TASK_NAME, ExecutorTelemetryContext, executor_task_signature
+from tracker.logging import configure_logging, get_logger, request_id_var
 from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
 from tracker.executor.release_retirement import AutomaticReleaseRetirement
 from tracker.middleware import RequestContextMiddleware
@@ -192,20 +193,14 @@ class HealthCheckFilter(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 
 
-def bind_benchmark_id(benchmark_id: UUID) -> UUID:
-    """Dependency that binds benchmark_id to the logging context."""
-    benchmark_id_var.set(str(benchmark_id))
-    return benchmark_id
-
-
-TrackedBenchmarkId = Annotated[UUID, Depends(bind_benchmark_id)]
-
-
-def _taskiq_labels() -> dict[str, str]:
-    """Labels attached to a kicked task: current request id + injected OTel trace context."""
-    trace_context: dict[str, str] = {}
-    inject(trace_context)
-    return {"request_id": request_id_var.get(), **trace_context}
+def _executor_telemetry_context() -> ExecutorTelemetryContext:
+    """Capture request and distributed trace context for the executor process."""
+    trace_headers: dict[str, str] = {}
+    inject(trace_headers)
+    return {
+        "request_id": request_id_var.get(),
+        "trace_headers": trace_headers,
+    }
 
 
 def _process_benchmark_kwargs(
@@ -236,19 +231,17 @@ async def _enqueue_executor_dispatch(
     payload: dict[str, Any],
     verified_task_ids: list[str],
 ) -> None:
+    telemetry_context = _executor_telemetry_context()
     for attempt in range(3):
         try:
-            await (
-                process_benchmark.kicker()
-                .with_labels(**_taskiq_labels())
-                .kiq(
-                    **payload,
-                    executor_dispatch_id=str(dispatch.id),
-                    executor_release_id=dispatch.executor_release_id,
-                    executor_artifact_uri=dispatch.executor_artifact_uri,
-                    executor_artifact_digest=dispatch.executor_artifact_digest,
-                    executor_protocol_version=dispatch.executor_protocol_version,
-                )
+            await process_benchmark.kicker().kiq(
+                **payload,
+                telemetry_context_json=telemetry_context,
+                executor_dispatch_id=str(dispatch.id),
+                executor_release_id=dispatch.executor_release_id,
+                executor_artifact_uri=dispatch.executor_artifact_uri,
+                executor_artifact_digest=dispatch.executor_artifact_digest,
+                executor_protocol_version=dispatch.executor_protocol_version,
             )
             return
         except Exception as exc:
@@ -632,7 +625,7 @@ async def start_benchmark(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         raise TrackerServiceError("Failed to admit benchmark execution") from exc
 
-    benchmark_id_var.set(str(benchmark_row.id))
+    await bind_benchmark_id(benchmark_row.id)
 
     if run_starter.access_key_id is not None and run_starter.email is None:
         logger.warning(
