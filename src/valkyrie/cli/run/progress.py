@@ -7,7 +7,7 @@ import click
 from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
 from tracker.types import BenchmarkDetails, FetchBenchmarkMetadataResponse, FetchBenchmarkResponse
 
-from valkyrie.cli.display import local_time, terminal_safe
+from valkyrie.cli.display import create_progress_bar, local_time, terminal_safe
 from valkyrie.cli.run.snapshot import fetch_run_metadata, format_run_snapshot_json
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -27,10 +27,7 @@ class BenchmarkFormatter:
     @staticmethod
     def create_progress_bar(finished_tasks: int, total_tasks: int, bar_width: int = 30) -> tuple[str, float]:
         """Create a progress bar string and percentage."""
-        progress_pct = (finished_tasks / total_tasks * 100) if total_tasks > 0 else 0
-        filled_width = int(bar_width * progress_pct / 100)
-        bar = "█" * filled_width + "░" * (bar_width - filled_width)
-        return bar, progress_pct
+        return create_progress_bar(finished_tasks, total_tasks, bar_width)
 
     @staticmethod
     def format_task_breakdown(task_breakdown: dict[TaskStatus, int]) -> str:

@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 import pytest
+from click import ClickException
 from tracker.exceptions import S3Error
 
 from valkyrie.cli import remote_storage
@@ -33,12 +34,16 @@ class MockStorageBackend:
         self.requests: list[httpx.Request] = []
         self.output_prefix: str | None = None
         self.fail_s3_transfers = False
+        self.fail_transport = False
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self._handle)
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if self.fail_transport:
+            raise httpx.ConnectError("connection failed", request=request)
+
         path = request.url.path
 
         if str(request.url).startswith(_S3_URL):
@@ -146,6 +151,42 @@ def _mock_zip_stream(monkeypatch: pytest.MonkeyPatch, archive: bytes) -> None:
     monkeypatch.setattr(remote_storage, "get_agent_zip_stream", zip_stream)
 
 
+@pytest.mark.parametrize(
+    ("config", "expected_tracker_storage", "expected_error"),
+    [
+        ({"api_key": "key"}, True, None),
+        (
+            {"AWS_ACCESS_KEY_ID": "access", "AWS_SECRET_ACCESS_KEY": "secret"},
+            False,
+            None,
+        ),
+        ({"AWS_ACCESS_KEY_ID": "access"}, None, "must be configured together"),
+        ({"AWS_SECRET_ACCESS_KEY": "secret"}, None, "must be configured together"),
+        ({"AWS_SESSION_TOKEN": "token"}, None, "requires AWS_ACCESS_KEY_ID"),
+        (
+            {"AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": ""},
+            None,
+            "must not be blank",
+        ),
+    ],
+)
+def test_storage_mode_fails_closed_for_partial_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    config: dict[str, str],
+    expected_tracker_storage: bool | None,
+    expected_error: str | None,
+) -> None:
+    monkeypatch.setattr(remote_storage.s3_config, "load_config", lambda: config)
+
+    if expected_error is not None:
+        with pytest.raises(ClickException, match=expected_error):
+            remote_storage.use_tracker_storage()
+
+        return
+
+    assert remote_storage.use_tracker_storage() is expected_tracker_storage
+
+
 async def test_push_uploads_zip_and_keeps_credentials_off_s3(
     backend: MockStorageBackend,
     monkeypatch: pytest.MonkeyPatch,
@@ -223,6 +264,13 @@ async def test_presigned_transfer_failures_surface_as_s3_error(
 
     with pytest.raises(S3Error, match=r"Downloading 'benchmarks/run-1/summary.json' failed \(403\)"):
         await remote_storage.download_outputs_remote("run-1", "", tmp_path)
+
+
+async def test_transport_failures_surface_as_s3_error(backend: MockStorageBackend) -> None:
+    backend.fail_transport = True
+
+    with pytest.raises(S3Error, match="Listing agents failed: connection failed.*Check your connection"):
+        await remote_storage.list_agents_remote()
 
 
 async def test_download_returns_stored_zip_and_missing_raises(backend: MockStorageBackend) -> None:

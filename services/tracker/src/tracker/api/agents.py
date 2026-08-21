@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from tracker.api.dependencies import get_agent_library_aws_runtime, validated_agent_name
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import create_presigned_url, delete_from_s3, list_agents, s3_object_exists
-from tracker.types import AgentDownloadURLResponse, AgentEntry, AgentsResponse, AgentUploadURLResponse
+from tracker.storage_types import AgentDownloadURLResponse, AgentEntry, AgentsResponse, AgentUploadURLResponse
 
 PRESIGNED_URL_EXPIRES_SECONDS = 300
 

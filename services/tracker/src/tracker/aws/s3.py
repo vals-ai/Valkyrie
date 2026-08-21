@@ -5,6 +5,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
+from pathlib import PurePosixPath
 from typing import Any, ParamSpec, TypeVar
 
 import logfire
@@ -46,6 +47,12 @@ def get_benchmark_contract_s3_key(benchmark_id: str, contract_name: str) -> str:
 def get_agent_result_s3_key(benchmark_id: str, task_id: str, output_name: str) -> str:
     """Get the S3 key for a run output archive."""
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/{output_name}"
+
+
+def normalize_s3_download_prefix(s3_path: str) -> str:
+    """Slash-bound directories while preserving suffix-bearing S3 prefixes."""
+    normalized_path = s3_path.rstrip("/")
+    return normalized_path if PurePosixPath(normalized_path).suffix else f"{normalized_path}/"
 
 
 def handle_s3_error(message: str) -> Callable[[Callable[_P, Awaitable[_R]]], Callable[_P, Coroutine[Any, Any, _R]]]:

@@ -9,6 +9,14 @@ import click
 Page = TypeVar("Page")
 
 
+def create_progress_bar(completed: int, total: int, bar_width: int = 30) -> tuple[str, float]:
+    """Create a progress bar string and percentage."""
+    progress_percentage = (completed / total * 100) if total > 0 else 0
+    filled_width = int(bar_width * progress_percentage / 100)
+    bar = "█" * filled_width + "░" * (bar_width - filled_width)
+    return bar, progress_percentage
+
+
 def terminal_safe(value: str, *, preserve_newlines: bool) -> str:
     """Escape terminal control characters in user-controlled text."""
     escaped: list[str] = []

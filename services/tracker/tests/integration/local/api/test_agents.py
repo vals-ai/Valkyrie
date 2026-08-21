@@ -51,7 +51,7 @@ def test_agent_upload_url_and_delete_accept_api_key_auth(
     access_key_client: TestClient,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """The keyless CLI's api-key auth mode must reach the new agent storage routes.
+    """Hosted API-key authentication must reach the new agent storage routes.
 
     Test cases:
     - upload-url returns a signed URL for an api-key-authenticated caller.

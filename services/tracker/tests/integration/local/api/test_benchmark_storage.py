@@ -25,7 +25,7 @@ def test_output_urls_and_agent_version_accept_api_key_auth(
     database_session: Session,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """The keyless CLI's api-key auth mode must reach the run-scoped storage routes.
+    """Hosted API-key auth with an access-key runtime must reach the run-scoped routes.
 
     Test cases:
     - output-urls returns the signed listing for the caller's own run.

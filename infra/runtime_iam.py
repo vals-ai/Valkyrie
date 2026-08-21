@@ -46,6 +46,12 @@ def create_tracker_task_role(
             resources=[bucket.arn_for_objects("benchmarks/*")],
         )
     )
+    role.add_to_policy(
+        aws_iam.PolicyStatement(
+            actions=["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"],
+            resources=[bucket.arn_for_objects("agents/*")],
+        )
+    )
     _add_secret_access(role, config.tracker_secret_name_prefixes)
     _add_lambda_access(role, config.tracker_lambda_function_name_patterns)
     _add_kms_access(role, config.kms_key_arns)

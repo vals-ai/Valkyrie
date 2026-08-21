@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import cast
 
 from tracker import handle_s3_error
+from tracker.aws.s3 import normalize_s3_download_prefix
 from tracker.exceptions import S3Error
 
 from valkyrie.cli import s3_config as cli_s3
@@ -12,7 +13,7 @@ from valkyrie.cli.remote_storage import gather_in_batches, resolve_download_dest
 async def download_s3_path(s3_path: str, output_dir: Path) -> int:
     """Download all objects under an S3 path prefix into output_dir. Returns count of files downloaded."""
     bucket_name = cli_s3.fetch_bucket_name()
-    prefix = s3_path.rstrip("/") + "/" if not Path(s3_path).suffix else s3_path
+    prefix = normalize_s3_download_prefix(s3_path)
 
     async with cli_s3.s3_client() as client:
         paginator = client.get_paginator("list_objects_v2")

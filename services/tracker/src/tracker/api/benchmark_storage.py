@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import APIRouter, Body, HTTPException
 
 from tracker.api.dependencies import RunAWSDependency, validated_agent_name
@@ -14,9 +12,10 @@ from tracker.aws.s3 import (
     get_benchmark_contract_s3_key,
     get_contract_s3_key,
     list_s3_objects,
+    normalize_s3_download_prefix,
     s3_object_exists,
 )
-from tracker.types import BenchmarkOutputURLsResponse, OutputURLEntry
+from tracker.storage_types import BenchmarkOutputURLsResponse, OutputURLEntry
 
 OUTPUT_URL_EXPIRES_SECONDS = 3600
 
@@ -33,10 +32,7 @@ async def get_benchmark_output_urls(
     if subpath:
         prefix = f"{prefix}/{subpath.strip('/')}"
 
-    # A suffix-bearing subpath targets one exact object; anything else is a directory,
-    # slash-terminated so sibling prefixes (task-1 vs task-10) never over-match.
-    if not Path(prefix).suffix:
-        prefix = f"{prefix}/"
+    prefix = normalize_s3_download_prefix(prefix)
 
     aws_runtime = run_context.aws_runtime
     keys = [key async for key in list_s3_objects(prefix, aws_runtime)]

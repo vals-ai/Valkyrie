@@ -207,6 +207,15 @@ class RuntimeIamTest(unittest.TestCase):
                     self.assertEqual(len(delete_statements), 1)
                     self.assertIn("benchmarks/*", json.dumps(delete_statements[0]["Resource"]))
                     self.assertNotIn("agents/*", json.dumps(delete_statements[0]["Resource"]))
+
+                    agent_mutation_statement = next(
+                        statement
+                        for statement in statements
+                        if _statement_actions(statement)
+                        == {"s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"}
+                    )
+                    self.assertIn("agents/*", json.dumps(agent_mutation_statement["Resource"]))
+                    self.assertNotIn("benchmarks/*", json.dumps(agent_mutation_statement["Resource"]))
                 else:
                     self.assertEqual(delete_statements, [])
 

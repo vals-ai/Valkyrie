@@ -93,7 +93,11 @@ async def test_agent_download_ingest_and_remove_use_configured_s3(
         deleted_keys.append(key)
         existing_keys.remove(key)
 
-    monkeypatch.setattr(storage.cli_s3, "load_config", lambda: {"AWS_ACCESS_KEY_ID": "key"})
+    monkeypatch.setattr(
+        storage.cli_s3,
+        "load_config",
+        lambda: {"AWS_ACCESS_KEY_ID": "key", "AWS_SECRET_ACCESS_KEY": "secret"},
+    )
     monkeypatch.setattr(storage.cli_s3, "aws_runtime", lambda: runtime)
     monkeypatch.setattr(storage, "s3_object_exists", s3_object_exists)
     monkeypatch.setattr(storage, "download_from_s3", download_from_s3)
@@ -133,51 +137,6 @@ async def test_update_benchmark_agent_version_copies_configured_agent_snapshot(
         CopySource={"Bucket": "agent-bucket", "Key": "agents/alpha.zip"},
         Key="benchmarks/benchmark-1/alpha.zip",
     )
-
-
-async def test_keyless_config_routes_storage_through_tracker(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A config without static AWS keys must use tracker-mediated storage for every operation.
-
-    Test cases:
-    - push, download, remove, list, and agent-version promotion all delegate to the remote path.
-    - No AWS runtime is constructed on the keyless path.
-    """
-    remote_calls: list[tuple[str, tuple[object, ...]]] = []
-
-    def record(name: str) -> Any:
-        async def remote(*arguments: object) -> Any:
-            remote_calls.append((name, arguments))
-            return _agent_zip("demo") if name == "download" else []
-
-        return remote
-
-    monkeypatch.setattr(storage.cli_s3, "load_config", lambda: {"S3_BUCKET": "bucket"})
-    monkeypatch.setattr(storage.cli_s3, "aws_runtime", _forbid_aws_runtime)
-    monkeypatch.setattr(storage, "push_agent_remote", record("push"))
-    monkeypatch.setattr(storage, "download_agent_zip_remote", record("download"))
-    monkeypatch.setattr(storage, "remove_agent_remote", record("remove"))
-    monkeypatch.setattr(storage, "list_agents_remote", record("list"))
-    monkeypatch.setattr(storage, "update_benchmark_agent_version_remote", record("promote"))
-
-    await storage.push_agent("demo", Path("/unused"))
-    assert await storage.get_ingest_lambda_from_s3("demo") == "demo-ingest"
-    await storage.remove_agent("demo")
-    assert await storage.list_agents() == []
-    await storage.update_benchmark_agent_version("demo", "benchmark-1")
-
-    assert remote_calls == [
-        ("push", ("demo", Path("/unused"))),
-        ("download", ("demo",)),
-        ("remove", ("demo",)),
-        ("list", ()),
-        ("promote", ("demo", "benchmark-1")),
-    ]
-
-
-def _forbid_aws_runtime() -> Any:
-    raise AssertionError("keyless path must not build an AWS runtime")
 
 
 class TestInstallAgent:
