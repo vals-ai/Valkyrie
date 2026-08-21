@@ -18,11 +18,11 @@ from tracker.aws.clients import (
     ExplicitCredentialsAWSClientProvider,
 )
 from tracker.aws.cloudwatch_logs import (
-    get_benchmark_log_url,
+    CloudWatchBenchmarkLogLocations,
+    CloudWatchBenchmarkLogSink,
     handle_cloudwatch_error,
-    write_benchmark_log_event,
 )
-from tracker.aws.runtime import AWSResources, AWSRuntime
+from tracker.aws.runtime import AWSResources
 from tracker.aws.s3 import handle_s3_error
 from tracker.exceptions import CloudWatchError, S3Error
 from tracker.types import AWSCredentials
@@ -239,34 +239,41 @@ class TestGetBenchmarkLogUrl:
     """CloudWatch benchmark log URL construction."""
 
     def test_sanitizes_task_id_in_url(self) -> None:
-        url = get_benchmark_log_url("bench123", _AWS_RESOURCES, task_id="provider/model:fast")
+        url = CloudWatchBenchmarkLogLocations(_AWS_RESOURCES).task_location("bench123", "provider/model:fast")
+        # task id is sanitized before being URL-quoted into the log-events path.
         assert "provider%2Fmodel_fast" in url
         assert "model:fast" not in url
 
     def test_no_task_id_omits_log_events(self) -> None:
-        url = get_benchmark_log_url("bench123", _AWS_RESOURCES)
+        url = CloudWatchBenchmarkLogLocations(_AWS_RESOURCES).benchmark_location("bench123")
         assert "log-events" not in url
 
 
 class TestWriteBenchmarkLogEvent:
     """CloudWatch stream creation and benchmark log writes."""
 
-    def _runtime_with_mock_client(self, monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, AWSRuntime]:
+    def _sink_with_mock_client(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[MagicMock, MagicMock, CloudWatchBenchmarkLogSink]:
         client = MagicMock()
         client_provider = MagicMock(spec=AWSClientProvider)
         client_provider.cloudwatch_logs_client.return_value = client
         monkeypatch.setattr(cloudwatch_logs, "_created_streams", set[str]())
-        runtime = AWSRuntime(
-            resources=_AWS_RESOURCES,
-            clients=cast(AWSClientProvider, client_provider),
+        return (
+            client,
+            client_provider,
+            CloudWatchBenchmarkLogSink(
+                cast(AWSClientProvider, client_provider),
+                _AWS_RESOURCES.log_group,
+            ),
         )
-        return client, runtime
 
     def test_creates_stream_and_puts_event_with_sanitized_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        client, runtime = self._runtime_with_mock_client(monkeypatch)
+        client, _, sink = self._sink_with_mock_client(monkeypatch)
 
         # stream_key splits on the first ':' -> task_id keeps its own ':'
-        write_benchmark_log_event("bench123:provider/model:fast", "hello", runtime)
+        sink.write("bench123:provider/model:fast", "hello")
 
         client.create_log_stream.assert_called_once_with(
             logGroupName="/valkyrie/worker/bench123", logStreamName="provider/model_fast"
@@ -277,11 +284,91 @@ class TestWriteBenchmarkLogEvent:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        client, runtime = self._runtime_with_mock_client(monkeypatch)
+        client, _, sink = self._sink_with_mock_client(monkeypatch)
         client.create_log_stream.side_effect = BotoCoreError()
 
         with pytest.raises(CloudWatchError) as exc_info:
-            write_benchmark_log_event("bench123:provider/model:fast", "hello", runtime)
+            sink.write("bench123:provider/model:fast", "hello")
 
         assert "provider/model_fast" in str(exc_info.value)
         client.put_log_events.assert_not_called()
+
+    def test_create_benchmark_configures_group_retention(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, _, sink = self._sink_with_mock_client(monkeypatch)
+
+        sink.create_benchmark("bench123", retention_days=30)
+
+        client.create_log_group.assert_called_once_with(logGroupName="/valkyrie/worker/bench123")
+        client.put_retention_policy.assert_called_once_with(
+            logGroupName="/valkyrie/worker/bench123",
+            retentionInDays=30,
+        )
+
+    def test_create_benchmark_ignores_existing_group(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, _, sink = self._sink_with_mock_client(monkeypatch)
+        client.create_log_group.side_effect = ClientError(
+            {"Error": {"Code": "ResourceAlreadyExistsException"}},
+            "CreateLogGroup",
+        )
+
+        sink.create_benchmark("bench123", retention_days=30)
+
+        client.put_retention_policy.assert_not_called()
+
+    def test_create_benchmark_translates_non_existing_group_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, _, sink = self._sink_with_mock_client(monkeypatch)
+        client.create_log_group.side_effect = ClientError(
+            {"Error": {"Code": "AccessDeniedException"}},
+            "CreateLogGroup",
+        )
+
+        with pytest.raises(CloudWatchError, match="Failed to create log group"):
+            sink.create_benchmark("bench123", retention_days=30)
+
+    def test_blank_message_does_not_create_client_or_stream(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, client_provider, sink = self._sink_with_mock_client(monkeypatch)
+
+        sink.write("bench123:task", " \n\t")
+
+        client_provider.cloudwatch_logs_client.assert_not_called()
+        client.assert_not_called()
+
+    def test_invalid_stream_key_is_rejected_before_client_access(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, client_provider, sink = self._sink_with_mock_client(monkeypatch)
+
+        with pytest.raises(CloudWatchError, match="Invalid stream key"):
+            sink.write("bench123:", "message")
+
+        client_provider.cloudwatch_logs_client.assert_not_called()
+        client.assert_not_called()
+
+    def test_reuses_created_stream_and_tolerates_existing_aws_stream(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, _, sink = self._sink_with_mock_client(monkeypatch)
+        client.create_log_stream.side_effect = ClientError(
+            {"Error": {"Code": "ResourceAlreadyExistsException"}},
+            "CreateLogStream",
+        )
+
+        sink.write("bench123:task", "first")
+        sink.write("bench123:task", "second")
+
+        client.create_log_stream.assert_called_once_with(
+            logGroupName="/valkyrie/worker/bench123",
+            logStreamName="task",
+        )
+        assert client.put_log_events.call_count == 2
+
+    def test_non_existing_stream_error_and_put_error_are_translated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client, _, sink = self._sink_with_mock_client(monkeypatch)
+        client.create_log_stream.side_effect = ClientError(
+            {"Error": {"Code": "AccessDeniedException"}},
+            "CreateLogStream",
+        )
+
+        with pytest.raises(CloudWatchError, match="Failed to create cloudwatch stream"):
+            sink.write("bench123:task", "message")
+
+        client.create_log_stream.side_effect = None
+        client.put_log_events.side_effect = BotoCoreError()
+        with pytest.raises(CloudWatchError, match="Failed to put log event"):
+            sink.write("bench123:other-task", "message")

@@ -12,6 +12,7 @@ from benchmark_service import ComposeSource, ImageSource, Sandbox, SandboxProvid
 from benchmark_service.schemas import RetrieveTaskResponse
 
 from tracker.aws.runtime import AWSRuntime
+from tracker.aws.s3 import S3ObjectStore
 from tracker.database.models import AgentContractRequest
 from tracker.sandbox import create_sandbox, run_agent, runtime_sandbox
 from tracker.types import AWSCredentials, HarnessConfig
@@ -222,7 +223,7 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
         _COMPOSE_TASK_ID,
         logs.append,
         task_data.cwd,
-        aws_runtime=aws_runtime,
+        S3ObjectStore(aws_runtime),
         runtime_source=task_data.source,
     )
 

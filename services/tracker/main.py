@@ -38,31 +38,31 @@ from tracker.auth import (
     get_current_starter,
     resolve_descope_identity,
 )
-from tracker.aws.cloudwatch_logs import get_benchmark_log_url
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.aws.resolver import (
     resolve_aws_runtime_metadata,
     resolve_run_aws_runtime,
     resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
 )
-from tracker.aws.runtime import AWSRuntime
-from tracker.aws.secrets import resolve_secrets
+from tracker.aws.secrets import SecretsManagerStore
 from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
-    S3ObjectCopy,
-    copy_agent_to_benchmark,
+    S3ObjectStore,
     create_benchmark_url,
-    delete_from_s3,
     create_console_url,
     create_presigned_url,
-    download_from_s3,
-    download_many_from_s3,
-    get_benchmark_contract_s3_key,
-    get_contract_s3_key,
-    list_s3_objects,
     s3_object_exists,
 )
+from tracker.runtime.artifacts import (
+    agent_bundle_key,
+    benchmark_agent_bundle_key,
+    benchmark_prefix as benchmark_artifact_prefix,
+    copy_agent_to_benchmark,
+)
+from tracker.runtime.secrets import resolve_secrets
+from tracker.runtime.storage import ObjectStore, StoredObjectCopy
 from tracker.agent.schemas import AgentConfig
 from tracker.config import (
     AUTH_REQUIRED,
@@ -290,18 +290,17 @@ async def _enqueue_executor_dispatch(
 
 async def _delete_uncommitted_agent_copy(
     *,
-    created_copy: S3ObjectCopy | None,
+    created_copy: StoredObjectCopy | None,
     benchmark_id: UUID,
     request: StartBenchmarkRequest,
-    aws_runtime: AWSRuntime,
+    object_store: ObjectStore,
 ) -> None:
     if created_copy is None:
         return
     try:
-        await delete_from_s3(
-            get_benchmark_contract_s3_key(str(benchmark_id), request.contract.name),
-            aws_runtime,
-            version_id=created_copy.version_id,
+        await object_store.delete(
+            benchmark_agent_bundle_key(str(benchmark_id), request.contract.name),
+            deletion_token=created_copy.deletion_token,
         )
     except Exception:
         logger.exception(
@@ -335,9 +334,9 @@ async def _rollback_failed_start_admission(
     *,
     benchmark_id: UUID,
     dispatch_id: UUID,
-    created_copy: S3ObjectCopy | None,
+    created_copy: StoredObjectCopy | None,
     request: StartBenchmarkRequest,
-    aws_runtime: AWSRuntime,
+    object_store: ObjectStore,
 ) -> None:
     try:
         session.rollback()
@@ -357,7 +356,7 @@ async def _rollback_failed_start_admission(
         created_copy=created_copy,
         benchmark_id=benchmark_id,
         request=request,
-        aws_runtime=aws_runtime,
+        object_store=object_store,
     )
 
 
@@ -440,16 +439,15 @@ def init_org(
     return {"org_name": org.name, "created": created, "email_claim_missing": identity.email is None}
 
 
-async def _resolve_contract_from_s3(request: StartBenchmarkRequest, aws_runtime: AWSRuntime) -> AgentContractRequest:
+async def _resolve_contract_from_s3(request: StartBenchmarkRequest, object_store: ObjectStore) -> AgentContractRequest:
     """Resolve install_cmd/run_cmd/etc by parsing the agent's contract file inside its S3 zip."""
-    zip_bytes = await download_from_s3(
-        get_contract_s3_key(request.contract.name),
-        aws_runtime,
-    )
+    zip_bytes = await object_store.get_bytes(agent_bundle_key(request.contract.name))
     agent_config = AgentConfig(model=request.contract.model, kwargs=dict(request.contract.kwargs))
     resolved = get_contract_from_zip_bytes(request.contract.name, zip_bytes, agent_config)
     if request.contract.secrets:
         resolved.secrets = {**resolved.secrets, **request.contract.secrets}
+    # Kwargs were validated against the bundle's schema and rendered its command.
+    resolved.inference_settings_attested = True
     return resolved
 
 
@@ -492,6 +490,7 @@ async def start_benchmark(
 
     runtime_resolution = resolve_start_aws_runtime(http_request, request.harness_config, run_starter.org.id)
     aws_runtime = runtime_resolution.runtime
+    object_store = S3ObjectStore(aws_runtime)
     effective_harness_config = runtime_resolution.access_key_harness_config
     aws_managed = runtime_resolution.aws_managed
 
@@ -528,7 +527,7 @@ async def start_benchmark(
     if request.service_auth_header_name and request.service_auth_secret_name:
         resolved = resolve_secrets(
             {request.service_auth_header_name: request.service_auth_secret_name},
-            aws_runtime.clients,
+            SecretsManagerStore(aws_runtime.clients),
         )
         service_headers.update(resolved)
 
@@ -552,14 +551,19 @@ async def start_benchmark(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # A caller cannot declare its own inference settings trusted.
+    request = request.model_copy(
+        update={"contract": request.contract.model_copy(update={"inference_settings_attested": False})}
+    )
+
     if not request.contract.install_cmd and not request.contract.run_cmd:
-        request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request, aws_runtime)})
+        request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request, object_store)})
         if aws_managed:
             try:
                 validate_managed_execution_request(request)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-    elif aws_managed and not await s3_object_exists(get_contract_s3_key(request.contract.name), aws_runtime):
+    elif aws_managed and not await object_store.exists(agent_bundle_key(request.contract.name)):
         raise HTTPException(
             status_code=404,
             detail=f"Agent '{request.contract.name}' is not available in the deployment bucket.",
@@ -602,12 +606,12 @@ async def start_benchmark(
         aws_managed=aws_managed,
     )
     dispatch_id = uuid4()
-    created_agent_copy: S3ObjectCopy | None = None
+    created_agent_copy: StoredObjectCopy | None = None
     try:
         created_agent_copy = await copy_agent_to_benchmark(
+            object_store,
             str(benchmark_row.id),
             request.contract.name,
-            aws_runtime,
         )
         for task_id in verify_response.task_ids:
             session.add(Task(org_id=benchmark_row.org_id, benchmark=benchmark_row.id, task_id=task_id))
@@ -625,7 +629,7 @@ async def start_benchmark(
             dispatch_id=dispatch_id,
             created_copy=created_agent_copy,
             request=request,
-            aws_runtime=aws_runtime,
+            object_store=object_store,
         )
         if isinstance(exc, ReleaseControlError):
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -653,7 +657,7 @@ async def start_benchmark(
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,
         task_count=len(verify_response.task_ids),
-        cloudwatch_url=get_benchmark_log_url(str(benchmark_row.id), aws_runtime.resources),
+        cloudwatch_url=CloudWatchBenchmarkLogLocations(aws_runtime.resources).benchmark_location(str(benchmark_row.id)),
         s3_bucket_url=create_benchmark_url(str(benchmark_row.id), aws_runtime.resources),
         executor_release_id=benchmark_row.executor_release_id,
         current_execution_release_id=benchmark_row.current_execution_release_id,
@@ -1387,16 +1391,16 @@ def _safe_output_tar_member(s3_key: str, benchmark_prefix: str) -> str | None:
 async def _output_keys(
     benchmark_prefix: str,
     task_ids: list[str] | None,
-    aws_runtime: AWSRuntime,
+    object_store: ObjectStore,
     benchmark_id: TrackedBenchmarkId,
 ) -> AsyncIterator[str]:
     prefixes = [f"{benchmark_prefix}{task_id}/" for task_id in task_ids] if task_ids else [benchmark_prefix]
     for prefix in prefixes:
-        async for key in list_s3_objects(prefix, aws_runtime):
-            if _safe_output_tar_member(key, benchmark_prefix) is None:
+        async for stored_object in object_store.list_objects(prefix):
+            if _safe_output_tar_member(stored_object.key, benchmark_prefix) is None:
                 logger.warning("Skipping unsafe output archive member for benchmark %s", benchmark_id)
                 continue
-            yield key
+            yield stored_object.key
 
 
 async def _output_keys_with_first(first_key: str, keys: AsyncIterator[str]) -> AsyncIterator[str]:
@@ -1408,14 +1412,14 @@ async def _output_keys_with_first(first_key: str, keys: AsyncIterator[str]) -> A
 async def _tar_output_stream(
     keys: AsyncIterator[str],
     benchmark_prefix: str,
-    aws_runtime: AWSRuntime,
+    object_store: ObjectStore,
 ) -> AsyncIterator[bytes]:
     writer: YieldingWriter = YieldingWriter()
 
-    # download_many_from_s3 reuses a single client/connection pool across all keys,
+    # ObjectStore.get_many reuses a provider-owned resource scope across all keys,
     # and reads one object into memory at a time (bounded by the largest object).
     with tarfile.open(fileobj=writer, mode="w|") as tar:
-        async for s3_key, data in download_many_from_s3(keys, aws_runtime):
+        async for s3_key, data in object_store.get_many(keys):
             relative_path = s3_key.removeprefix(benchmark_prefix)
             tarinfo = tarfile.TarInfo(name=relative_path)
             tarinfo.size = len(data)
@@ -1447,18 +1451,18 @@ async def fetch_run_outputs(
     Returns:
         StreamingResponse
     """
-    aws_runtime = run_context.aws_runtime
+    object_store = S3ObjectStore(run_context.aws_runtime)
 
-    benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
+    benchmark_prefix = benchmark_artifact_prefix(str(benchmark_id))
 
     # Peek a single key so an empty result still returns 404 before the stream starts.
-    keys = _output_keys(benchmark_prefix, task_ids, aws_runtime, benchmark_id)
+    keys = _output_keys(benchmark_prefix, task_ids, object_store, benchmark_id)
     first_key = await anext(keys, None)
     if first_key is None:
         raise HTTPException(status_code=404, detail=f"No outputs found for run '{benchmark_id}'")
 
     return StreamingResponse(
-        _tar_output_stream(_output_keys_with_first(first_key, keys), benchmark_prefix, aws_runtime),
+        _tar_output_stream(_output_keys_with_first(first_key, keys), benchmark_prefix, object_store),
         media_type="application/x-tar",
         headers={"Content-Disposition": f"attachment; filename=benchmark_{benchmark_id}_outputs.tar"},
     )

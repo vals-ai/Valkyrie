@@ -38,7 +38,7 @@ from main import app, tracker_service_error_handler
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import S3ObjectCopy
+from tracker.runtime.storage import StoredObject, StoredObjectCopy
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -625,7 +625,7 @@ class TestTrackerAPI:
             monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group")
             monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30")
             monkeypatch.setattr("tracker.config.AWS_MANAGED_SUBMISSIONS_ENABLED", True)
-            monkeypatch.setattr(main_module, "s3_object_exists", AsyncMock(return_value=True))
+            monkeypatch.setattr(main_module.S3ObjectStore, "exists", AsyncMock(return_value=True))
             request = StartBenchmarkRequest(
                 contract=contract,
                 benchmark_name="swebench",
@@ -789,9 +789,6 @@ entrypoint.main()
         harness_config: HarnessConfig,
     ) -> None:
         class FailingKicker:
-            def with_labels(self, **_labels: str) -> "FailingKicker":
-                return self
-
             async def kiq(self, **_kwargs: Any) -> None:
                 raise RuntimeError("redis unavailable")
 
@@ -833,11 +830,11 @@ entrypoint.main()
         assert admission is not None
         database_session.delete(admission)
         database_session.commit()
-        created_copy = S3ObjectCopy(version_id="copy-version") if agent_copy_created else None
+        created_copy = StoredObjectCopy(deletion_token="copy-version") if agent_copy_created else None
         copy_agent = AsyncMock(return_value=created_copy)
         delete_agent_copy = AsyncMock()
         monkeypatch.setattr("main.copy_agent_to_benchmark", copy_agent)
-        monkeypatch.setattr("main.delete_from_s3", delete_agent_copy)
+        monkeypatch.setattr(main_module.S3ObjectStore, "delete", delete_agent_copy)
 
         request = StartBenchmarkRequest(
             contract=contract,
@@ -855,11 +852,10 @@ entrypoint.main()
         if agent_copy_created:
             copy_call = copy_agent.await_args
             assert copy_call is not None
-            copied_benchmark_id = copy_call.args[0]
+            copied_benchmark_id = copy_call.args[1]
             delete_agent_copy.assert_awaited_once_with(
                 f"benchmarks/{copied_benchmark_id}/{contract.name}.zip",
-                AWSRuntime.from_harness_config(harness_config),
-                version_id="copy-version",
+                deletion_token="copy-version",
             )
         else:
             delete_agent_copy.assert_not_awaited()
@@ -871,14 +867,14 @@ entrypoint.main()
         harness_config: HarnessConfig,
         monkeypatch: MonkeyPatch,
     ) -> None:
-        copy_agent = AsyncMock(return_value=S3ObjectCopy(version_id="copy-version"))
+        copy_agent = AsyncMock(return_value=StoredObjectCopy(deletion_token="copy-version"))
         delete_agent_copy = AsyncMock()
 
         def fail_payload_build(*_args: Any, **_kwargs: Any) -> None:
             raise RuntimeError("payload validation failed")
 
         monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent)
-        monkeypatch.setattr(main_module, "delete_from_s3", delete_agent_copy)
+        monkeypatch.setattr(main_module.S3ObjectStore, "delete", delete_agent_copy)
         monkeypatch.setattr(main_module, "_executor_execution", fail_payload_build)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
         request = StartBenchmarkRequest(
@@ -900,11 +896,10 @@ entrypoint.main()
         assert database_session.exec(select(ExecutorDispatch)).all() == []
         copy_call = copy_agent.await_args
         assert copy_call is not None
-        copied_benchmark_id = copy_call.args[0]
+        copied_benchmark_id = copy_call.args[1]
         delete_agent_copy.assert_awaited_once_with(
             f"benchmarks/{copied_benchmark_id}/{contract.name}.zip",
-            AWSRuntime.from_harness_config(harness_config),
-            version_id="copy-version",
+            deletion_token="copy-version",
         )
 
     async def test_start_commit_acknowledgement_failure_retains_durable_copy(
@@ -914,7 +909,7 @@ entrypoint.main()
         harness_config: HarnessConfig,
         monkeypatch: MonkeyPatch,
     ) -> None:
-        copy_agent = AsyncMock(return_value=S3ObjectCopy(version_id="copy-version"))
+        copy_agent = AsyncMock(return_value=StoredObjectCopy(deletion_token="copy-version"))
         delete_agent_copy = AsyncMock()
         commit = database_session.commit
 
@@ -923,7 +918,7 @@ entrypoint.main()
             raise RuntimeError("commit acknowledgement lost")
 
         monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent)
-        monkeypatch.setattr(main_module, "delete_from_s3", delete_agent_copy)
+        monkeypatch.setattr(main_module.S3ObjectStore, "delete", delete_agent_copy)
         monkeypatch.setattr(database_session, "commit", commit_then_fail)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
         request = StartBenchmarkRequest(
@@ -958,19 +953,19 @@ entrypoint.main()
         delete_agent_copy = AsyncMock()
         monkeypatch.setattr(database_session, "rollback", rollback)
         monkeypatch.setattr(main_module, "_start_admission_is_absent", verify_absent)
-        monkeypatch.setattr(main_module, "delete_from_s3", delete_agent_copy)
+        monkeypatch.setattr(main_module.S3ObjectStore, "delete", delete_agent_copy)
 
-        await main_module._rollback_failed_start_admission(
+        await getattr(main_module, "_rollback_failed_start_admission")(
             database_session,
             benchmark_id=uuid4(),
             dispatch_id=uuid4(),
-            created_copy=S3ObjectCopy(version_id="copy-version"),
+            created_copy=StoredObjectCopy(deletion_token="copy-version"),
             request=StartBenchmarkRequest(
                 contract=contract,
                 benchmark_name="swebench",
                 harness_config=harness_config,
             ),
-            aws_runtime=AWSRuntime.from_harness_config(harness_config),
+            object_store=main_module.S3ObjectStore(AWSRuntime.from_harness_config(harness_config)),
         )
 
         rollback.assert_called_once_with()
@@ -2161,18 +2156,16 @@ entrypoint.main()
 
         observed_prefixes: list[str] = []
 
-        async def _mock_list_s3_objects(prefix: str, *_args: Any, **_kwargs: Any) -> AsyncIterator[str]:
+        async def _mock_list_objects(_store: object, prefix: str) -> AsyncIterator[StoredObject]:
             observed_prefixes.append(prefix)
-            yield f"{prefix}output.txt"
+            yield StoredObject(key=f"{prefix}output.txt")
 
-        async def _mock_download_many_from_s3(
-            keys: AsyncIterator[str], *_args: Any, **_kwargs: Any
-        ) -> AsyncIterator[tuple[str, bytes]]:
+        async def _mock_get_many(_store: object, keys: AsyncIterator[str]) -> AsyncIterator[tuple[str, bytes]]:
             async for key in keys:
                 yield key, b"output contents"
 
-        monkeypatch.setattr("main.list_s3_objects", _mock_list_s3_objects)
-        monkeypatch.setattr("main.download_many_from_s3", _mock_download_many_from_s3)
+        monkeypatch.setattr(main_module.S3ObjectStore, "list_objects", _mock_list_objects)
+        monkeypatch.setattr(main_module.S3ObjectStore, "get_many", _mock_get_many)
 
         response = client.get(
             f"/fetch-run-outputs/{example_benchmark_object.id}",
@@ -2207,22 +2200,20 @@ entrypoint.main()
         database_session.add(example_benchmark_object)
         database_session.commit()
 
-        async def _mock_list_s3_objects(prefix: str, *_args: Any, **_kwargs: Any) -> AsyncIterator[str]:
-            yield f"{prefix}task/../../outside.txt"
-            yield f"{prefix}task/..\\outside.txt"
-            yield f"{prefix}C:/outside.txt"
-            yield f"{prefix}task//outside.txt"
-            yield f"{prefix}task/hidden\x00.txt"
-            yield f"{prefix}task/output.txt"
+        async def _mock_list_objects(_store: object, prefix: str) -> AsyncIterator[StoredObject]:
+            yield StoredObject(key=f"{prefix}task/../../outside.txt")
+            yield StoredObject(key=f"{prefix}task/..\\outside.txt")
+            yield StoredObject(key=f"{prefix}C:/outside.txt")
+            yield StoredObject(key=f"{prefix}task//outside.txt")
+            yield StoredObject(key=f"{prefix}task/hidden\x00.txt")
+            yield StoredObject(key=f"{prefix}task/output.txt")
 
-        async def _mock_download_many_from_s3(
-            keys: AsyncIterator[str], *_args: Any, **_kwargs: Any
-        ) -> AsyncIterator[tuple[str, bytes]]:
+        async def _mock_get_many(_store: object, keys: AsyncIterator[str]) -> AsyncIterator[tuple[str, bytes]]:
             async for key in keys:
                 yield key, b"output contents"
 
-        monkeypatch.setattr("main.list_s3_objects", _mock_list_s3_objects)
-        monkeypatch.setattr("main.download_many_from_s3", _mock_download_many_from_s3)
+        monkeypatch.setattr(main_module.S3ObjectStore, "list_objects", _mock_list_objects)
+        monkeypatch.setattr(main_module.S3ObjectStore, "get_many", _mock_get_many)
 
         response = client.get(
             f"/fetch-run-outputs/{example_benchmark_object.id}",
@@ -2244,13 +2235,13 @@ entrypoint.main()
         database_session.add(example_benchmark_object)
         database_session.commit()
 
-        async def _mock_list_s3_objects(prefix: str, *_args: Any, **_kwargs: Any) -> AsyncIterator[str]:
-            yield f"{prefix}task/../../outside.txt"
-            yield f"{prefix}task/hidden\x00.txt"
+        async def _mock_list_objects(_store: object, prefix: str) -> AsyncIterator[StoredObject]:
+            yield StoredObject(key=f"{prefix}task/../../outside.txt")
+            yield StoredObject(key=f"{prefix}task/hidden\x00.txt")
 
-        download_many_from_s3 = MagicMock()
-        monkeypatch.setattr("main.list_s3_objects", _mock_list_s3_objects)
-        monkeypatch.setattr("main.download_many_from_s3", download_many_from_s3)
+        get_many = MagicMock()
+        monkeypatch.setattr(main_module.S3ObjectStore, "list_objects", _mock_list_objects)
+        monkeypatch.setattr(main_module.S3ObjectStore, "get_many", get_many)
 
         response = client.get(
             f"/fetch-run-outputs/{example_benchmark_object.id}",
@@ -2259,7 +2250,7 @@ entrypoint.main()
 
         assert response.status_code == 404
         assert response.json() == {"detail": f"No outputs found for run '{example_benchmark_object.id}'"}
-        download_many_from_s3.assert_not_called()
+        get_many.assert_not_called()
 
     async def test_fetch_run_outputs_returns_404_when_empty(
         self,
@@ -2271,10 +2262,10 @@ entrypoint.main()
         database_session.add(example_benchmark_object)
         database_session.commit()
 
-        def _mock_list_s3_objects(*_args: Any, **_kwargs: Any) -> AsyncIterator[str]:
+        def _mock_list_objects(_store: object, _prefix: str) -> AsyncIterator[StoredObject]:
             return async_iterator(())
 
-        monkeypatch.setattr("main.list_s3_objects", _mock_list_s3_objects)
+        monkeypatch.setattr(main_module.S3ObjectStore, "list_objects", _mock_list_objects)
 
         response = client.get(
             f"/fetch-run-outputs/{example_benchmark_object.id}",

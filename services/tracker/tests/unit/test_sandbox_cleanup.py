@@ -245,6 +245,7 @@ def test_lambda_handler_fails_for_each_unsuccessful_outcome(monkeypatch: pytest.
 
     monkeypatch.setenv("SANDBOX_CLEANUP_SECRET_NAME", "cleanup-secret")
     monkeypatch.setenv("SANDBOX_CLEANUP_PROVIDER", "daytona")
+    monkeypatch.setattr(cleanup_module, "AWS_DEPLOYMENT_REGION", "us-east-1")
     monkeypatch.setattr(cleanup_module, "configure_logging", lambda: None)
     monkeypatch.setattr(cleanup_module, "fetch_sandbox_provider_config", fake_fetch_config)
     monkeypatch.setattr(cleanup_module, "run_cleanup", fake_run_cleanup)
@@ -254,10 +255,39 @@ def test_lambda_handler_fails_for_each_unsuccessful_outcome(monkeypatch: pytest.
             cleanup_module.lambda_handler({}, FakeLambdaContext(840_000))
 
 
+def test_load_provider_config_builds_the_cleanup_default_chain_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected_provider = object()
+    expected_store = object()
+    expected_config = cast(SandboxProviderConfig, object())
+
+    def build_default_chain_provider(region: str) -> object:
+        assert region == "us-west-2"
+        return expected_provider
+
+    def build_secret_store(provider: object) -> object:
+        assert provider is expected_provider
+        return expected_store
+
+    def fetch_provider_config(secret_name: str, secret_store: object, provider_type: str) -> SandboxProviderConfig:
+        assert secret_name == "cleanup-secret"
+        assert secret_store is expected_store
+        assert provider_type == "daytona"
+        return expected_config
+
+    monkeypatch.setattr(cleanup_module, "AWS_DEPLOYMENT_REGION", "us-west-2")
+    monkeypatch.setattr(cleanup_module, "DefaultChainAWSClientProvider", build_default_chain_provider)
+    monkeypatch.setattr(cleanup_module, "SecretsManagerStore", build_secret_store)
+    monkeypatch.setattr(cleanup_module, "fetch_sandbox_provider_config", fetch_provider_config)
+
+    load_provider_config = getattr(cleanup_module, "_load_provider_config")
+    assert load_provider_config("cleanup-secret", "daytona") is expected_config
+
+
 def test_lambda_handler_preserves_shutdown_margin_around_config_loading(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cleanup_module, "configure_logging", lambda: None)
     monkeypatch.setenv("SANDBOX_CLEANUP_SECRET_NAME", "cleanup-secret")
     monkeypatch.setenv("SANDBOX_CLEANUP_PROVIDER", "daytona")
+    monkeypatch.setattr(cleanup_module, "AWS_DEPLOYMENT_REGION", "us-east-1")
     load_calls = 0
 
     def fake_fetch_config(*_args: object, **_kwargs: object) -> SandboxProviderConfig:

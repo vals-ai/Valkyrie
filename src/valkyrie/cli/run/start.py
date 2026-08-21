@@ -6,6 +6,7 @@ from uuid import UUID
 import click
 from tracker.agent.contract import get_contract
 from tracker.agent.schemas import AgentConfig
+from tracker.database.models import AgentContractRequest
 from tracker.types import StartBenchmarkResponse
 
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
@@ -345,6 +346,7 @@ def start(
 
         config_kwargs["kwargs"] = {key: value for key, value in kwargs}
         agent_config = AgentConfig(**config_kwargs)
+        managed_execution = not TrackerService.parse_config_keys()
 
         agent_path = Path(agent)
 
@@ -360,6 +362,18 @@ def start(
             )
             contract = get_contract(contract_file, agent_config)
             asyncio.run(push_agent(contract.name, agent_path))
+            if managed_execution:
+                contract = AgentContractRequest(
+                    name=contract.name,
+                    model=agent_config.model,
+                    kwargs={key: str(value) for key, value in agent_config.kwargs.items()},
+                )
+        elif managed_execution:
+            contract = AgentContractRequest(
+                name=agent,
+                model=agent_config.model,
+                kwargs={key: str(value) for key, value in agent_config.kwargs.items()},
+            )
         else:
             contract = asyncio.run(get_contract_from_s3(agent, agent_config))
             contract.name = agent
