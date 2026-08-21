@@ -52,11 +52,12 @@ class TestAWSClientProviders:
         monkeypatch: pytest.MonkeyPatch,
         session_token: str | None,
     ) -> None:
-        session = MagicMock()
-        session_factory = MagicMock(return_value=session)
-        boto_client_factory = MagicMock()
-        monkeypatch.setattr(aws_clients.aioboto3, "Session", session_factory)
-        monkeypatch.setattr(aws_clients.boto3, "client", boto_client_factory)
+        async_session = MagicMock()
+        async_session_factory = MagicMock(return_value=async_session)
+        sync_session = MagicMock()
+        sync_session_factory = MagicMock(return_value=sync_session)
+        monkeypatch.setattr(aws_clients.aioboto3, "Session", async_session_factory)
+        monkeypatch.setattr(aws_clients.boto3, "Session", sync_session_factory)
 
         credentials = AWSCredentials(
             aws_access_key_id=f"test-key-{session_token or 'none'}",
@@ -71,50 +72,55 @@ class TestAWSClientProviders:
         provider.secretsmanager_client()
         provider.lambda_client()
 
-        session_factory.assert_called_once_with(
-            aws_access_key_id=credentials.aws_access_key_id,
-            aws_secret_access_key=credentials.aws_secret_access_key,
-            aws_session_token=session_token,
-            region_name=credentials.aws_default_region,
-        )
-        session.client.assert_called_once_with("s3", config=ANY)
-        assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
+        expected_session_kwargs = {
+            "aws_access_key_id": credentials.aws_access_key_id,
+            "aws_secret_access_key": credentials.aws_secret_access_key,
+            "aws_session_token": session_token,
+            "region_name": credentials.aws_default_region,
+        }
+        async_session_factory.assert_called_once_with(**expected_session_kwargs)
+        sync_session_factory.assert_called_once_with(**expected_session_kwargs)
+
+        async_session.client.assert_called_once_with("s3", config=ANY)
+        assert {constructed.args[0] for constructed in sync_session.client.call_args_list} == {
             "logs",
             "secretsmanager",
             "lambda",
         }
-        for constructed in boto_client_factory.call_args_list:
-            assert constructed.kwargs["aws_access_key_id"] == credentials.aws_access_key_id
-            assert constructed.kwargs["aws_secret_access_key"] == credentials.aws_secret_access_key
-            assert constructed.kwargs["aws_session_token"] == session_token
-            assert constructed.kwargs["region_name"] == credentials.aws_default_region
 
-    def test_default_chain_provider_omits_explicit_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        session = MagicMock()
-        session_factory = MagicMock(return_value=session)
-        boto_client_factory = MagicMock()
-        monkeypatch.setattr(aws_clients.aioboto3, "Session", session_factory)
-        monkeypatch.setattr(aws_clients.boto3, "client", boto_client_factory)
+    @pytest.mark.parametrize("profile_name", [None, "test-profile"])
+    def test_default_chain_provider_omits_explicit_credentials(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        profile_name: str | None,
+    ) -> None:
+        async_session = MagicMock()
+        async_session_factory = MagicMock(return_value=async_session)
+        sync_session = MagicMock()
+        sync_session_factory = MagicMock(return_value=sync_session)
+        monkeypatch.setattr(aws_clients.aioboto3, "Session", async_session_factory)
+        monkeypatch.setattr(aws_clients.boto3, "Session", sync_session_factory)
 
-        region = "test-default-chain-region"
-        provider = DefaultChainAWSClientProvider(region=region)
+        region = f"test-default-chain-region-{profile_name or 'no-profile'}"
+        provider = DefaultChainAWSClientProvider(region=region, profile_name=profile_name)
 
         provider.s3_client()
         provider.cloudwatch_logs_client()
         provider.secretsmanager_client()
         provider.lambda_client()
 
-        session_factory.assert_called_once_with(region_name=region)
-        session.client.assert_called_once_with("s3", config=ANY)
-        assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
+        expected_session_kwargs: dict[str, str] = {"region_name": region}
+        if profile_name is not None:
+            expected_session_kwargs["profile_name"] = profile_name
+        async_session_factory.assert_called_once_with(**expected_session_kwargs)
+        sync_session_factory.assert_called_once_with(**expected_session_kwargs)
+
+        async_session.client.assert_called_once_with("s3", config=ANY)
+        assert {constructed.args[0] for constructed in sync_session.client.call_args_list} == {
             "logs",
             "secretsmanager",
             "lambda",
         }
-        credential_arguments = {"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}
-        for constructed in boto_client_factory.call_args_list:
-            assert constructed.kwargs["region_name"] == region
-            assert credential_arguments.isdisjoint(constructed.kwargs)
 
     @pytest.mark.parametrize(
         ("provider", "requested_seconds", "expected_seconds"),

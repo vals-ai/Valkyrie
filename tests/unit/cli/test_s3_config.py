@@ -42,15 +42,39 @@ def test_aws_runtime_uses_configured_credentials(
     assert runtime.clients.credentials.aws_session_token == session_token
 
 
+@pytest.mark.parametrize("profile_name", [None, "vals-dev"])
 def test_aws_runtime_uses_sdk_credential_chain_without_configured_keys(
     monkeypatch: pytest.MonkeyPatch,
+    profile_name: str | None,
 ) -> None:
-    monkeypatch.setattr(s3_config, "load_config", lambda: dict(_BASE_CONFIG))
+    config = dict(_BASE_CONFIG)
+    if profile_name is not None:
+        config["AWS_PROFILE"] = profile_name
+    monkeypatch.setattr(s3_config, "load_config", lambda: config)
 
     runtime = s3_config.aws_runtime()
 
     assert isinstance(runtime.clients, DefaultChainAWSClientProvider)
     assert runtime.clients.region == "us-east-1"
+    assert runtime.clients.profile_name == profile_name
+
+
+def test_aws_runtime_rejects_profile_combined_with_static_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = {
+        **_BASE_CONFIG,
+        "AWS_ACCESS_KEY_ID": "ASIAEXAMPLE",
+        "AWS_SECRET_ACCESS_KEY": "secret",
+        "AWS_PROFILE": "vals-dev",
+    }
+    monkeypatch.setattr(s3_config, "load_config", lambda: config)
+
+    with pytest.raises(
+        click.ClickException,
+        match="AWS_PROFILE and static AWS credentials are both configured",
+    ):
+        s3_config.aws_runtime()
 
 
 def test_aws_runtime_names_missing_region_configuration(monkeypatch: pytest.MonkeyPatch) -> None:

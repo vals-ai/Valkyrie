@@ -30,13 +30,14 @@ def _aws_runtime(
     access_key_id: str | None,
     secret_access_key: str | None,
     session_token: str | None,
+    profile_name: str | None,
     region: str,
     s3_bucket: str,
     log_group: str,
     log_retention_days: int,
 ) -> AWSRuntime:
     if access_key_id is None:
-        clients = DefaultChainAWSClientProvider(region)
+        clients = DefaultChainAWSClientProvider(region, profile_name=profile_name)
     else:
         if secret_access_key is None:
             raise click.ClickException("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together.")
@@ -68,10 +69,18 @@ def aws_runtime() -> AWSRuntime:
     if (access_key_id is None) != (secret_access_key is None):
         raise click.ClickException("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together.")
 
+    profile_name = str(config.get("AWS_PROFILE") or "") or None
+    if profile_name and access_key_id:
+        raise click.ClickException(
+            "AWS_PROFILE and static AWS credentials are both configured, so it is unclear which identity "
+            "to use. Remove one, e.g. 'valkyrie config remove AWS_PROFILE'."
+        )
+
     return _aws_runtime(
         access_key_id=access_key_id,
         secret_access_key=secret_access_key,
         session_token=str(config.get("AWS_SESSION_TOKEN") or "") or None,
+        profile_name=profile_name,
         region=_region(config),
         s3_bucket=_bucket_name(config),
         log_group=str(config.get("LOG_GROUP") or ""),

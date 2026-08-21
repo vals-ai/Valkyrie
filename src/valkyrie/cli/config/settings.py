@@ -104,6 +104,7 @@ def init() -> None:
             }
             click.echo(
                 "Managed AWS execution is enabled. Local AWS operations will use the AWS SDK credential chain.\n"
+                "To pin an AWS profile for this environment, run 'valkyrie config set AWS_PROFILE <profile-name>'.\n"
             )
             if removed_static_credentials:
                 click.echo(

@@ -19,8 +19,8 @@ _S3_CLIENT_CONFIG = Config(max_pool_connections=200, retries={"mode": "standard"
 _DEFAULT_CHAIN_MAXIMUM_PRESIGN_TTL_SECONDS = 3600
 
 
-def _boto3_client(service_name: str, **kwargs: Any) -> Any:
-    client_factory = cast(Any, boto3.client)  # pyright: ignore[reportUnknownMemberType]
+def _session_client(session: boto3.Session, service_name: str, **kwargs: Any) -> Any:
+    client_factory = cast(Any, session.client)  # pyright: ignore[reportUnknownMemberType]
     return client_factory(service_name, **kwargs)
 
 
@@ -36,6 +36,12 @@ class AWSClientProvider(ABC):
     def _s3_session(self) -> aioboto3.Session:
         return aioboto3.Session(**self._client_kwargs())
 
+    # profile_name is a Session argument the client() call does not accept, so
+    # synchronous clients must be built from a Session rather than boto3.client().
+    @lru_cache(maxsize=32)
+    def _sync_session(self) -> boto3.Session:
+        return boto3.Session(**self._client_kwargs())
+
     def s3_client(self) -> Any:
         return self._s3_session().client(  # pyright: ignore[reportUnknownMemberType]
             "s3",
@@ -44,19 +50,15 @@ class AWSClientProvider(ABC):
 
     @lru_cache(maxsize=32)
     def cloudwatch_logs_client(self) -> Any:
-        return _boto3_client(
-            "logs",
-            config=_HIGH_CONCURRENCY_CLIENT_CONFIG,
-            **self._client_kwargs(),
-        )
+        return _session_client(self._sync_session(), "logs", config=_HIGH_CONCURRENCY_CLIENT_CONFIG)
 
     @lru_cache(maxsize=32)
     def secretsmanager_client(self) -> Any:
-        return _boto3_client("secretsmanager", **self._client_kwargs())
+        return _session_client(self._sync_session(), "secretsmanager")
 
     @lru_cache(maxsize=32)
     def lambda_client(self, config: Config | None = None) -> Any:
-        return _boto3_client("lambda", config=config, **self._client_kwargs())
+        return _session_client(self._sync_session(), "lambda", config=config)
 
     def maximum_presign_ttl(self, requested_seconds: int) -> int:
         return requested_seconds
@@ -82,9 +84,14 @@ class DefaultChainAWSClientProvider(AWSClientProvider):
     """Construct AWS clients through the SDK default credential chain."""
 
     region: str
+    profile_name: str | None = None
 
     def _client_kwargs(self) -> dict[str, Any]:
-        return {"region_name": self.region}
+        kwargs: dict[str, Any] = {"region_name": self.region}
+        if self.profile_name:
+            kwargs["profile_name"] = self.profile_name
+
+        return kwargs
 
     def maximum_presign_ttl(self, requested_seconds: int) -> int:
         return min(requested_seconds, _DEFAULT_CHAIN_MAXIMUM_PRESIGN_TTL_SECONDS)
