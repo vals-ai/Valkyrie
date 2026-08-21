@@ -192,6 +192,12 @@ async def push_agent(agent_name: str, agent_path: Path):
                 raise
 
 
+async def agent_exists(agent_name: str) -> bool:
+    """Return whether the shared agent alias already exists in the selected environment."""
+    runtime = cli_s3.aws_runtime()
+    return await s3_object_exists(get_contract_s3_key(agent_name), runtime)
+
+
 async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> None:
     """Overwrite the frozen benchmark agent copy from agents/<name>.zip in S3."""
     runtime = cli_s3.aws_runtime()

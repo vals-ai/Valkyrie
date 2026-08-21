@@ -62,6 +62,7 @@ class StartTestbed:
         self.resolve_remote = AsyncMock(
             return_value=AgentContractRequest(name="remote-agent", install_cmd="echo install", run_cmd="echo run")
         )
+        self.agent_exists = AsyncMock(return_value=False)
         self.resolve_tasks = MagicMock(return_value=None)
         self.resolve_headers = MagicMock(return_value={})
         self.stream_status = MagicMock()
@@ -74,6 +75,7 @@ class StartTestbed:
             self.resolve_tasks,
             self.resolve_headers,
             self.stream_status,
+            self.agent_exists,
         ):
             boundary.reset_mock()
         self.tracker.start_benchmark.side_effect = responses
@@ -107,6 +109,7 @@ def start_testbed(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> Sta
     monkeypatch.setattr(start_module, "resolve_task_ids", testbed.resolve_tasks)
     monkeypatch.setattr(start_module, "benchmark_service_headers", testbed.resolve_headers)
     monkeypatch.setattr(start_module, "stream_benchmark_status", testbed.stream_status)
+    monkeypatch.setattr(start_module, "agent_exists", testbed.agent_exists)
     testbed.set_responses([_start_response(_FIRST_RUN_ID)])
 
     return testbed
@@ -330,6 +333,44 @@ class TestCountedStarts:
             model="anthropic/claude-opus-5",
             kwargs={"variant": "max"},
         )
+
+    def test_local_start_refuses_to_overwrite_published_agent(
+        self,
+        start_testbed: StartTestbed,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        local_agent = tmp_path / "local-agent"
+        local_agent.mkdir()
+        (local_agent / "contract.yaml").write_text(
+            "name: local-agent\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            start_module,
+            "get_contract",
+            MagicMock(
+                return_value=AgentContractRequest(
+                    name="local-agent",
+                    install_cmd="echo install",
+                    run_cmd="echo run",
+                )
+            ),
+        )
+        push_agent = AsyncMock()
+        monkeypatch.setattr(start_module, "push_agent", push_agent)
+        start_testbed.agent_exists.return_value = True
+
+        result = start_testbed.cli_runner.invoke(
+            start_command,
+            ["--agent", str(local_agent), "--benchmark", "swebench"],
+        )
+
+        assert result.exit_code == 2
+        assert "Refusing to overwrite it as a side effect of run start" in result.output
+        assert "Use --agent local-agent" in result.output
+        push_agent.assert_not_awaited()
+        start_testbed.tracker.start_benchmark.assert_not_called()
 
     def test_invalid_options_precede_side_effects(self, start_testbed: StartTestbed) -> None:
         """

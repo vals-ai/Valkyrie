@@ -98,6 +98,8 @@ async def test_agent_download_ingest_and_remove_use_configured_s3(
     monkeypatch.setattr(storage, "download_from_s3", download_from_s3)
     monkeypatch.setattr(storage, "delete_from_s3", delete_from_s3)
 
+    assert await storage.agent_exists("demo") is True
+    assert await storage.agent_exists("missing") is False
     await storage.download_agent("demo", tmp_path)
     assert (tmp_path / "demo" / "contract.yaml").exists()
     assert await storage.get_ingest_lambda_from_s3("demo") == "demo-ingest"
