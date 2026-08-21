@@ -92,7 +92,7 @@ class DeployWorkflowTest(unittest.TestCase):
                 self.assertIn("core_maintenance_required", executor_job)
                 self.assertIn("database_maintenance_required", executor_job)
                 self.assertIn(
-                    "PYTHONPATH=services/tracker/src python services/executor_artifact/build.py",
+                    "uv run --project services/executor_artifact --frozen python services/executor_artifact/build.py",
                     executor_job,
                 )
                 self.assertIn("--maintenance-operation begin", executor_job)
@@ -139,7 +139,7 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertNotIn("production-executor-approval", workflow)
         self.assertNotIn("production-release", workflow)
         self.assertEqual(
-            workflow.count("PYTHONPATH=services/tracker/src python services/executor_artifact/build.py"),
+            workflow.count("uv run --project services/executor_artifact --frozen python services/executor_artifact/build.py"),
             2,
         )
         self.assertEqual(workflow.count("--maintenance-operation begin"), 2)
@@ -389,7 +389,7 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn('"services/executor_host/**"', workflow)
         self.assertIn('"services/tracker/**"', workflow)
         self.assertIn('".dockerignore"', workflow)
-        self.assertIn("PYTHONPATH=services/tracker/src python services/executor_artifact/build.py", workflow)
+        self.assertIn("uv run --project services/executor_artifact --frozen python services/executor_artifact/build.py", workflow)
         self.assertIn("uv run pytest", workflow)
         for test_path in (
             "tests/unit/executor_host",
