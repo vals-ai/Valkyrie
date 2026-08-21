@@ -6,8 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Body, HTTPException
 
-from tracker.api.dependencies import RunAWSDependency
-from tracker.agent.schemas import validate_agent_name
+from tracker.api.dependencies import RunAWSDependency, validated_agent_name
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     copy_s3_object,
@@ -57,11 +56,7 @@ async def update_benchmark_agent_version(
     agent_name: str = Body(embed=True),
 ) -> None:
     """Overwrite the run's frozen agent copy from the latest agents/<name>.zip."""
-    try:
-        agent_name = validate_agent_name(agent_name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
+    agent_name = validated_agent_name(agent_name)
     source_key = get_contract_s3_key(agent_name)
     if not await s3_object_exists(source_key, run_context.aws_runtime):
         raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found in S3")

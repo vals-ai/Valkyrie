@@ -1,4 +1,3 @@
-import asyncio
 from pathlib import Path
 from typing import cast
 
@@ -6,9 +5,7 @@ from tracker import handle_s3_error
 from tracker.exceptions import S3Error
 
 from valkyrie.cli import s3_config as cli_s3
-from valkyrie.cli.remote_storage import resolve_download_destination
-
-_S3_DOWNLOAD_CONCURRENCY = 8
+from valkyrie.cli.remote_storage import gather_in_batches, resolve_download_destination
 
 
 @handle_s3_error(message="Failed to download from S3")
@@ -36,8 +33,6 @@ async def download_s3_path(s3_path: str, output_dir: Path) -> int:
             response = await client.get_object(Bucket=bucket_name, Key=key)
             destination.write_bytes(cast(bytes, await response["Body"].read()))
 
-        for start in range(0, len(keys), _S3_DOWNLOAD_CONCURRENCY):
-            batch = keys[start : start + _S3_DOWNLOAD_CONCURRENCY]
-            await asyncio.gather(*(download_object(key) for key in batch))
+        await gather_in_batches(keys, download_object)
 
         return len(keys)

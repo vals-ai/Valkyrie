@@ -31,6 +31,8 @@ class MockStorageBackend:
         self.objects: dict[str, bytes] = {}
         self.promoted: list[dict[str, str]] = []
         self.requests: list[httpx.Request] = []
+        self.output_prefix: str | None = None
+        self.fail_s3_transfers = False
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self._handle)
@@ -40,6 +42,8 @@ class MockStorageBackend:
         path = request.url.path
 
         if str(request.url).startswith(_S3_URL):
+            if self.fail_s3_transfers:
+                return httpx.Response(403, text="<Error>Request has expired</Error>")
             key = path.lstrip("/")
             if request.method == "PUT":
                 self.objects[key] = request.read()
@@ -84,12 +88,10 @@ class MockStorageBackend:
             return httpx.Response(204)
         if request.method == "GET" and path.endswith("/output-urls"):
             benchmark_id = path.split("/")[2]
-            prefix = f"benchmarks/{benchmark_id}"
-            subpath = request.url.params.get("subpath")
-            if subpath:
-                prefix = f"{prefix}/{subpath.strip('/')}"
-            if not Path(prefix).suffix:
-                prefix = f"{prefix}/"
+
+            # The prefix rule itself is server behavior with its own tests; here the
+            # test supplies the intended prefix instead of re-deriving the rule.
+            prefix = self.output_prefix if self.output_prefix is not None else f"benchmarks/{benchmark_id}/"
             keys = [key for key in sorted(self.objects) if key.startswith(prefix)]
             if not keys:
                 return httpx.Response(404, json={"detail": f"No files found under '{prefix}'"})
@@ -171,17 +173,20 @@ async def test_push_uploads_zip_and_keeps_credentials_off_s3(
     assert "x-api-key" not in put_request.headers
 
 
+class MockOversizedStream:
+    """Report a size above the single-PUT cap without allocating real data."""
+
+    def seek(self, _offset: int, _whence: int = 0) -> None:
+        return None
+
+    def tell(self) -> int:
+        return remote_storage._MAX_SINGLE_PUT_BYTES + 1
+
+
 async def test_push_rejects_zip_above_single_put_limit(
     backend: MockStorageBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class MockOversizedStream:
-        def seek(self, _offset: int, _whence: int = 0) -> None:
-            return None
-
-        def tell(self) -> int:
-            return remote_storage._MAX_SINGLE_PUT_BYTES + 1
-
     def zip_stream(**_kwargs: Any) -> nullcontext[MockOversizedStream]:
         return nullcontext(MockOversizedStream())
 
@@ -191,6 +196,33 @@ async def test_push_rejects_zip_above_single_put_limit(
         await remote_storage.push_agent_remote("demo", Path("/unused"))
 
     assert backend.requests == []
+
+
+async def test_presigned_transfer_failures_surface_as_s3_error(
+    backend: MockStorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failed presigned S3 transfer must surface as a clean S3Error.
+
+    Test cases:
+    - Upload PUT failure after a valid upload URL was issued.
+    - Agent download GET failure after a valid download URL was issued.
+    - Per-file GET failure during a run-output download batch.
+    """
+    backend.objects["agents/demo.zip"] = b"zip-bytes"
+    backend.objects["benchmarks/run-1/summary.json"] = b"[]"
+    backend.fail_s3_transfers = True
+    _mock_zip_stream(monkeypatch, _agent_zip_bytes("demo"))
+
+    with pytest.raises(S3Error, match=r"Uploading agent failed \(403\)"):
+        await remote_storage.push_agent_remote("demo", Path("/unused"))
+
+    with pytest.raises(S3Error, match=r"Downloading agent failed \(403\)"):
+        await remote_storage.download_agent_zip_remote("demo")
+
+    with pytest.raises(S3Error, match=r"Downloading 'benchmarks/run-1/summary.json' failed \(403\)"):
+        await remote_storage.download_outputs_remote("run-1", "", tmp_path)
 
 
 async def test_download_returns_stored_zip_and_missing_raises(backend: MockStorageBackend) -> None:
@@ -256,6 +288,7 @@ async def test_download_outputs_single_file_subpath_lands_flat(
 ) -> None:
     """A suffix-bearing subpath must write the file directly into the output directory."""
     backend.objects["benchmarks/run-1/summary.json"] = b"[]"
+    backend.output_prefix = "benchmarks/run-1/summary.json"
 
     count = await remote_storage.download_outputs_remote("run-1", "summary.json", tmp_path)
 
@@ -269,6 +302,7 @@ async def test_download_outputs_subpath_scopes_the_listing(
 ) -> None:
     backend.objects["benchmarks/run-1/task-a/output.json"] = b"{}"
     backend.objects["benchmarks/run-1/task-b/output.json"] = b"{}"
+    backend.output_prefix = "benchmarks/run-1/task-a/"
 
     count = await remote_storage.download_outputs_remote("run-1", "task-a", tmp_path)
 

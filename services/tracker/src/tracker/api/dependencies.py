@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 from opentelemetry import trace
 from sqlmodel import Session
 
+from tracker.agent.schemas import validate_agent_name
 from tracker.auth import get_current_org
 from tracker.aws.resolver import resolve_agent_library_aws_runtime, resolve_run_aws_runtime
 from tracker.aws.runtime import AWSRuntime
@@ -15,6 +16,14 @@ from tracker.database.models import Benchmark, Org
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.logging import benchmark_id_var
+
+
+def validated_agent_name(name: str) -> str:
+    """Validate an agent name from request input, rejecting invalid names with 400."""
+    try:
+        return validate_agent_name(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 async def bind_benchmark_id(benchmark_id: UUID) -> UUID:

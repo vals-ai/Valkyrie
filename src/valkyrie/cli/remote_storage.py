@@ -5,10 +5,10 @@ presigned S3 URLs, so a keyless CLI process never constructs an AWS client.
 """
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import BinaryIO, TypeVar, cast
 
 import click
 import httpx
@@ -45,18 +45,31 @@ def _transfer_client() -> httpx.AsyncClient:
 
 
 def _error_detail(response: httpx.Response) -> str:
-    detail: Any = response.text
     try:
-        detail = response.json().get("detail", detail)
+        payload: object = response.json()
     except ValueError:
-        pass
+        return response.text
+    if isinstance(payload, dict):
+        return str(cast(dict[str, object], payload).get("detail", response.text))
 
-    return str(detail)
+    return response.text
 
 
 def _raise_for_status(response: httpx.Response, action: str) -> None:
     if response.status_code >= 400:
-        raise S3Error(f"{action} failed ({response.status_code}): {_error_detail(response)}")
+        message = f"{action} failed ({response.status_code})"
+        detail = _error_detail(response)
+        raise S3Error(f"{message}: {detail}" if detail else message)
+
+
+Item = TypeVar("Item")
+
+
+async def gather_in_batches(items: Sequence[Item], worker: Callable[[Item], Awaitable[None]]) -> None:
+    """Run `worker` over `items`, at most _DOWNLOAD_CONCURRENCY at a time."""
+    for start in range(0, len(items), _DOWNLOAD_CONCURRENCY):
+        batch = items[start : start + _DOWNLOAD_CONCURRENCY]
+        await asyncio.gather(*(worker(item) for item in batch))
 
 
 def resolve_download_destination(key: str, prefix: str, output_dir: Path) -> Path:
@@ -177,8 +190,6 @@ async def download_outputs_remote(benchmark_id: str, subpath: str, output_dir: P
             destination.write_bytes(file_response.content)
 
         files = payload["files"]
-        for start in range(0, len(files), _DOWNLOAD_CONCURRENCY):
-            batch = files[start : start + _DOWNLOAD_CONCURRENCY]
-            await asyncio.gather(*(download_file(entry) for entry in batch))
+        await gather_in_batches(files, download_file)
 
     return len(files)

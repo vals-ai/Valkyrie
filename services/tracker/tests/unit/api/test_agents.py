@@ -1,6 +1,6 @@
 """Run with `uv run pytest tests/unit/api/test_agents.py`.
 
-Cover agent listing and download-link routes.
+Cover agent listing, download/upload-link, and delete routes.
 """
 
 from datetime import datetime, timezone
@@ -99,6 +99,14 @@ class TestAgentRoutes:
             expiration=agents_api.PRESIGNED_URL_EXPIRES_SECONDS,
             client_method="put_object",
         )
+
+    def test_agent_upload_url_rejects_invalid_agent_name(
+        self,
+        harness_headers: dict[str, str],
+    ) -> None:
+        response = _client.post("/agents/bad%20name/upload-url", headers=harness_headers)
+
+        assert response.status_code == 400
 
     def test_agent_delete_removes_existing_and_rejects_missing(
         self,
