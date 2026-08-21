@@ -11,9 +11,10 @@ import pytest
 from benchmark_service import ComposeSource, ImageSource, Sandbox, SandboxProvider
 from benchmark_service.schemas import RetrieveTaskResponse
 
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest
 from tracker.sandbox import create_sandbox, run_agent, runtime_sandbox
-from tracker.types import AWSCredentials
+from tracker.types import AWSCredentials, HarnessConfig
 
 _DIND_IMAGE = "docker:28.3.3-dind"
 _COMPOSE_SERVICE_IMAGE = "alpine:3.20"
@@ -131,7 +132,6 @@ async def compose_sandbox(
 
 async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
     compose_sandbox: tuple[Sandbox, Sandbox, RetrieveTaskResponse],
-    aws_credentials: AWSCredentials,
 ) -> None:
     """Compose sandbox methods should work through the Daytona-created outer sandbox.
 
@@ -201,6 +201,20 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
             'case "$IDENTITY" in *compose-agent*) true;; *) exit 1;; esac'
         ),
     )
+    aws_runtime = AWSRuntime.from_harness_config(
+        HarnessConfig(
+            aws=AWSCredentials(
+                aws_access_key_id="test",
+                aws_secret_access_key="test",
+                aws_default_region="us-east-1",
+            ),
+            s3_bucket="unused",
+            log_group="unused",
+            log_retention_policy=1,
+            sandbox_provider_secret_name="unused",
+        )
+    )
+
     exit_reason, agent_run_time = await run_agent(
         outer_sandbox,
         contract,
@@ -208,8 +222,7 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
         _COMPOSE_TASK_ID,
         logs.append,
         task_data.cwd,
-        aws=aws_credentials,
-        s3_bucket="unused",
+        aws_runtime=aws_runtime,
         runtime_source=task_data.source,
     )
 

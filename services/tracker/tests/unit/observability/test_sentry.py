@@ -109,12 +109,21 @@ class TestSentrySetup:
             },
         )
         monkeypatch.setattr(sentry_module, "get_current_span", lambda: span)
+        monkeypatch.setattr(
+            sentry_module,
+            "get_context_tags",
+            lambda: {"request_id": "request-123", "benchmark_id": "benchmark-123", "task_id": ""},
+        )
 
         result = _before_send_log()(log, {})
 
         assert result is log
         assert log["trace_id"] == trace_id
         assert log["span_id"] == span_id
+        assert log["attributes"] == {
+            "request_id": "request-123",
+            "benchmark_id": "benchmark-123",
+        }
 
     def test_init_sentry_logs_warning_when_initialization_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         warnings: list[tuple[str, tuple[object, ...]]] = []
@@ -126,9 +135,18 @@ class TestSentrySetup:
         monkeypatch.setattr(sentry_sdk, "init", Mock(side_effect=RuntimeError("bad dsn")))
         monkeypatch.setattr(sentry_module.logger, "warning", fake_warning)
 
-        sentry_module.init_sentry("valkyrie-worker", environment="test")
+        sentry_module.init_sentry("valkyrie-worker", environment="production")
 
         assert len(warnings) == 1
         assert warnings[0][0] == "Failed to initialize Sentry: %s: %s"
         assert warnings[0][1][:1] == ("RuntimeError",)
         assert str(warnings[0][1][1]) == "bad dsn"
+
+    def test_init_sentry_skips_missing_production_dsn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        init_mock = Mock()
+        monkeypatch.delenv("SENTRY_DSN", raising=False)
+        monkeypatch.setattr(sentry_sdk, "init", init_mock)
+
+        sentry_module.init_sentry("valkyrie-worker", environment="production")
+
+        init_mock.assert_not_called()

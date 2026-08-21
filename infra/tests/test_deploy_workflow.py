@@ -1,4 +1,7 @@
-"""Tests for deployment workflow contracts."""
+"""Tests for deployment workflow contracts.
+
+Run: cd infra && PYTHONPATH=. uv run python -m unittest tests/test_deploy_workflow.py
+"""
 
 import unittest
 from pathlib import Path
@@ -25,6 +28,15 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("core_maintenance_required != 'true'", production_core)
         self.assertIn("database_maintenance_required != 'true'", production_core)
         self.assertIn("SCOPE=core", production_core)
+        self.assertIn(
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}",
+            production_core,
+        )
+        self.assertIn(
+            "AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}",
+            production_core,
+        )
+        self.assertNotIn("AWS_EXECUTOR_SECRET_NAME_PREFIXES", production_core)
         self.assertNotIn("services/executor_artifact/build.py", production_core)
         self.assertNotIn("executor_release/main.py", production_core)
         self.assertNotIn("maintenance-operation", production_core)
@@ -34,6 +46,15 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("database_maintenance_required != 'true'", dev_core)
         self.assertIn("environment: dev", dev_core)
         self.assertIn("SCOPE: ${{ github.event_name == 'push' && 'core' || inputs.scope }}", dev_core)
+        self.assertIn(
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}",
+            dev_core,
+        )
+        self.assertIn(
+            "AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}",
+            dev_core,
+        )
+        self.assertNotIn("AWS_EXECUTOR_SECRET_NAME_PREFIXES", dev_core)
         self.assertIn("Deploy dev core stacks", dev_core)
         self.assertNotIn("services/executor_artifact/build.py", dev_core)
         self.assertNotIn("executor_release/main.py", dev_core)
@@ -95,8 +116,26 @@ class DeployWorkflowTest(unittest.TestCase):
 
         self.assertIn("needs: [classify-deployment, run-dev-operation]", dev_executor)
         self.assertIn("environment: dev", dev_executor)
+        self.assertIn(
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}",
+            dev_executor,
+        )
+        self.assertIn(
+            "AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}",
+            dev_executor,
+        )
+        self.assertNotIn("AWS_EXECUTOR_SECRET_NAME_PREFIXES", dev_executor)
         self.assertIn("needs: [classify-deployment, deploy-production-core]", prod_executor)
         self.assertIn("environment: prod", prod_executor)
+        self.assertIn(
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}",
+            prod_executor,
+        )
+        self.assertIn(
+            "AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}",
+            prod_executor,
+        )
+        self.assertNotIn("AWS_EXECUTOR_SECRET_NAME_PREFIXES", prod_executor)
         self.assertNotIn("production-executor-approval", workflow)
         self.assertNotIn("production-release", workflow)
         self.assertEqual(
@@ -249,6 +288,24 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("synthesize-head:", classification_workflow)
         self.assertIn("needs: [synthesize-base, synthesize-head]", classification_workflow)
         self.assertEqual(classification_workflow.count("enable-cache: false"), 2)
+        self.assertEqual(
+            classification_workflow.count("AWS_DEPLOYMENT_ROLE_ORG_IDS=00000000-0000-0000-0000-000000000001"),
+            2,
+        )
+        self.assertEqual(
+            classification_workflow.count("AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth"),
+            2,
+        )
+        self.assertEqual(
+            classification_workflow.count("AWS_TRACKER_SECRET_NAME_PREFIXES=offline-synth"),
+            2,
+        )
+        self.assertIn(
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS=00000000-0000-0000-0000-000000000001",
+            workflow,
+        )
+        self.assertIn("AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth", workflow)
+        self.assertIn("AWS_TRACKER_SECRET_NAME_PREFIXES=offline-synth", workflow)
         self.assertNotIn("id-token: write", classification_workflow)
         trusted_checkout = classification_workflow.split("      - name: Checkout trusted classifier", maxsplit=1)[
             1
@@ -301,6 +358,28 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertNotIn("checks: write", classification_workflow)
         self.assertNotIn("actions/github-script", classification_workflow)
 
+    def test_maintenance_classification_waits_for_environment_approval(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "maintenance-classification.yaml").read_text(encoding="utf-8")
+        classifier = workflow.split("  classify:", maxsplit=1)[1].split("  approve-maintenance:", maxsplit=1)[0]
+        approval = workflow.split("  approve-maintenance:", maxsplit=1)[1].split("  maintenance-gate:", maxsplit=1)[0]
+        gate = workflow.split("  maintenance-gate:", maxsplit=1)[1]
+
+        self.assertIn("classification: ${{ steps.classification.outputs.classification }}", classifier)
+        self.assertIn("target_branch: ${{ steps.template.outputs.target_branch }}", classifier)
+        self.assertIn('classification not in {"safe", "maintenance-required"}', classifier)
+        self.assertIn('payload.get("base_sha") != os.environ["BASE_SHA"]', classifier)
+        self.assertIn('payload.get("head_sha") != os.environ["HEAD_SHA"]', classifier)
+        self.assertIn("if: needs.classify.outputs.classification == 'maintenance-required'", approval)
+        self.assertIn("name: maintenance-${{ needs.classify.outputs.target_branch }}", approval)
+        self.assertIn("permissions: {}", approval)
+        self.assertIn("name: maintenance-classification", gate)
+        self.assertIn("needs: [classify, approve-maintenance]", gate)
+        self.assertIn("if: always()", gate)
+        self.assertIn('if [[ "$CLASSIFY_RESULT" != "success" ]]', gate)
+        self.assertIn("maintenance-required)", gate)
+        self.assertIn('if [[ "$APPROVAL_RESULT" != "success" ]]', gate)
+        self.assertNotIn("force merge", workflow.lower())
+
     def test_executor_build_check_covers_real_arm_images_and_pex(self) -> None:
         workflow = EXECUTOR_BUILD_WORKFLOW.read_text(encoding="utf-8")
 
@@ -311,7 +390,13 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn('"services/tracker/**"', workflow)
         self.assertIn('".dockerignore"', workflow)
         self.assertIn("PYTHONPATH=services/tracker/src python services/executor_artifact/build.py", workflow)
-        self.assertIn("uv run pytest tests/unit/executor_host services/executor_artifact/tests", workflow)
+        self.assertIn("uv run pytest", workflow)
+        for test_path in (
+            "tests/unit/executor_host",
+            "tests/integration/observability",
+            "services/executor_artifact/tests",
+        ):
+            self.assertIn(test_path, workflow)
         self.assertIn(
             "docker build --platform linux/arm64 -t valkyrie-tracker:ci services/tracker",
             workflow,

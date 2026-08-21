@@ -30,7 +30,14 @@ def _template(
         resources[_TASK_ID] = {
             "Type": "AWS::ECS::TaskDefinition",
             "Properties": {
-                "ContainerDefinitions": [{"Name": "ExecutorHost", "Image": "image:base"}],
+                "ContainerDefinitions": [
+                    {
+                        "Name": "ExecutorHost",
+                        "Image": "image:base",
+                        "Environment": [{"Name": "AWS_MANAGED_SUBMISSIONS_ENABLED", "Value": "false"}],
+                        "Secrets": [{"Name": "DATABASE_URL", "ValueFrom": "arn:secret:base"}],
+                    }
+                ],
                 "Cpu": "4096",
                 "Memory": "8192",
                 "NetworkMode": "awsvpc",
@@ -120,6 +127,64 @@ class ExecutorTemplateClassifierTest(unittest.TestCase):
 
         self.assertTrue(effect.redeploy_required)
         self.assertEqual(effect.reasons, ("executor-host-task-definition-changed",))
+
+    def test_container_environment_only_change_does_not_require_maintenance(self) -> None:
+        base = _template()
+        head = copy.deepcopy(base)
+        containers = _properties(head, _TASK_ID)["ContainerDefinitions"]
+        assert isinstance(containers, list)
+        container = cast(dict[str, object], containers[0])
+        container["Environment"] = [
+            {"Name": "AWS_MANAGED_SUBMISSIONS_ENABLED", "Value": "true"},
+            {"Name": "AWS_DEPLOYMENT_ROLE_ORG_IDS", "Value": "org"},
+        ]
+
+        effect = self._classify(base, head)
+
+        self.assertFalse(effect.redeploy_required)
+        self.assertEqual(effect.reasons, ())
+
+    def test_container_change_beyond_environment_requires_maintenance(self) -> None:
+        for key, value in (
+            ("Image", "image:changed"),
+            ("Secrets", [{"Name": "DATABASE_URL", "ValueFrom": "arn:secret:changed"}]),
+            ("Name", "RenamedExecutorHost"),
+        ):
+            with self.subTest(key=key):
+                base = _template()
+                head = copy.deepcopy(base)
+                containers = _properties(head, _TASK_ID)["ContainerDefinitions"]
+                assert isinstance(containers, list)
+                container = cast(dict[str, object], containers[0])
+                container["Environment"] = [{"Name": "AWS_MANAGED_SUBMISSIONS_ENABLED", "Value": "true"}]
+                container[key] = value
+
+                effect = self._classify(base, head)
+
+                self.assertTrue(effect.redeploy_required)
+                self.assertEqual(effect.reasons, ("executor-host-task-definition-changed",))
+
+    def test_added_container_requires_maintenance(self) -> None:
+        base = _template()
+        head = copy.deepcopy(base)
+        containers = _properties(head, _TASK_ID)["ContainerDefinitions"]
+        assert isinstance(containers, list)
+        cast(list[object], containers).append({"Name": "Sidecar", "Image": "image:sidecar"})
+
+        effect = self._classify(base, head)
+
+        self.assertTrue(effect.redeploy_required)
+        self.assertEqual(effect.reasons, ("executor-host-task-definition-changed",))
+
+    def test_malformed_container_definitions_are_rejected(self) -> None:
+        for containers in ("ExecutorHost", ["ExecutorHost"]):
+            with self.subTest(containers=containers):
+                base = _template()
+                head = copy.deepcopy(base)
+                _properties(head, _TASK_ID)["ContainerDefinitions"] = containers
+
+                with self.assertRaisesRegex(TemplateClassificationError, "ContainerDefinitions"):
+                    self._classify(base, head)
 
     def test_task_definition_tags_do_not_require_redeploy(self) -> None:
         base = _template()

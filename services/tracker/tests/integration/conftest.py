@@ -18,6 +18,7 @@ from tests.integration.seed_agent_artifacts import (
     seed_test_agent_artifact,
 )
 from tests.utils import TEST_ORG_ID
+from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
 from tracker.aws.s3 import get_contract_s3_key
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import DEFAULT_ORG_NAME, AgentContractRequest, Org
@@ -35,7 +36,6 @@ def tracker_database(
     """Connect tracker background work to the per-test SQLite database."""
     monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
     monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-
     existing = database_session.get(Org, TEST_ORG_ID)
     if not existing:
         database_session.add(Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME))
@@ -166,7 +166,11 @@ def sandbox_provider_config(
     live_aws_credentials: AWSCredentials,
 ) -> SandboxProviderConfig:
     """Return the real provider configuration used by live service calls."""
-    return fetch_sandbox_provider_config(daytona_secret_name, live_aws_credentials, "daytona")
+    return fetch_sandbox_provider_config(
+        daytona_secret_name,
+        ExplicitCredentialsAWSClientProvider(live_aws_credentials),
+        "daytona",
+    )
 
 
 @pytest.fixture

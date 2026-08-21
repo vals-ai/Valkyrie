@@ -284,7 +284,7 @@ def test_verify_release_artifact_rejects_digest_mismatch(database_session: Sessi
 
 def test_register_release_rejects_unsupported_protocol(database_session: Session) -> None:
     release = _release("unsupported")
-    release.protocol_version = "2"
+    release.protocol_version = "3"
 
     with pytest.raises(ReleaseControlError, match="Unsupported executor protocol version"):
         register_release(database_session, release)

@@ -10,10 +10,11 @@ import boto3
 from benchmark_service import ImageSource, Resources, SandboxProvider
 
 from tests.utils import random_task_id
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.database.models import AgentContractRequest
 from tracker.sandbox import create_sandbox, upload_agent_artifacts
-from tracker.types import AWSCredentials, HarnessConfig
+from tracker.types import HarnessConfig
 
 # Images covering the major package families
 _IMAGES = [
@@ -47,7 +48,6 @@ class TestUploadArtifactsAcrossImages:
         sandbox_provider: SandboxProvider,
         test_resources: Resources,
         contract: AgentContractRequest,
-        live_aws_credentials: AWSCredentials,
         harness_config: HarnessConfig,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
@@ -59,20 +59,22 @@ class TestUploadArtifactsAcrossImages:
         """
 
         benchmark_id = f"test-benchmark-{uuid4().hex[:5]}"
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        aws_credentials = harness_config.aws
 
         # Stage the per-benchmark frozen copy that upload_agent_artifacts will now read from.
         s3 = boto3.client(  # type: ignore
             "s3",
-            region_name=live_aws_credentials.aws_default_region,
-            aws_access_key_id=live_aws_credentials.aws_access_key_id,
-            aws_secret_access_key=live_aws_credentials.aws_secret_access_key,
-            aws_session_token=live_aws_credentials.aws_session_token,
+            region_name=aws_credentials.aws_default_region,
+            aws_access_key_id=aws_credentials.aws_access_key_id,
+            aws_secret_access_key=aws_credentials.aws_secret_access_key,
+            aws_session_token=aws_credentials.aws_session_token,
         )
         agent_key = get_contract_s3_key(contract.name)
         frozen_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
         s3.copy_object(
-            Bucket=harness_config.s3_bucket,
-            CopySource={"Bucket": harness_config.s3_bucket, "Key": agent_key},
+            Bucket=aws_runtime.resources.s3_bucket,
+            CopySource={"Bucket": aws_runtime.resources.s3_bucket, "Key": agent_key},
             Key=frozen_key,
         )
 
@@ -89,13 +91,7 @@ class TestUploadArtifactsAcrossImages:
                     creation_semaphore,
                 ) as sandbox,
             ):
-                await upload_agent_artifacts(
-                    sandbox,
-                    contract,
-                    benchmark_id,
-                    live_aws_credentials,
-                    harness_config.s3_bucket,
-                )
+                await upload_agent_artifacts(sandbox, contract, benchmark_id, aws_runtime)
 
                 dir_check = await sandbox.exec(f"test -d /bundle/{contract.name}")
                 assert dir_check.exit_code == 0, f"[{label}] contract dir /bundle/{contract.name} should exist"

@@ -233,8 +233,12 @@ The `maintenance-classification` job runs the same classifier used by deployment
 New tables, explicitly nullable default-free columns, changes that make an existing
 column nullable, and explicitly non-unique indexes are safe. ExecutorStack and
 release-control changes require executor maintenance. Other migration operations
-require database maintenance. The required check deliberately fails for those
-changes, so an authorized force merge is the maintenance approval.
+require database maintenance. Safe changes pass immediately. Maintenance changes
+wait for a required reviewer on the secretless `maintenance-dev` or
+`maintenance-prod` GitHub Environment; approval makes the required check pass so
+the pull request uses the normal merge path. Rejection keeps the check failed, and
+synthesis, artifact-validation, or classifier infrastructure errors cannot be
+approved.
 
 For an approved maintenance deployment, the existing sealed release task closes
 admission, marks active benchmarks and tasks `STOPPED`, fails queued or running

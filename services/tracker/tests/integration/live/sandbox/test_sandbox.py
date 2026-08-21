@@ -18,6 +18,7 @@ import pytest
 from benchmark_service import ImageSource, Resources, Sandbox, SandboxNotFoundError, SandboxProvider
 
 from tests.utils import random_task_id
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
@@ -155,6 +156,7 @@ class TestSandboxOperations:
             install_cmd="bash setup.sh",
             run_cmd="echo hello",
         )
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
         agent_file = f"{contract_name}/{contract_name}/file.txt"
         setup_file = f"{contract_name}/setup.sh"
@@ -189,13 +191,7 @@ class TestSandboxOperations:
         )
 
         try:
-            await upload_agent_artifacts(
-                test_sandbox,
-                contract,
-                benchmark_id,
-                live_aws_credentials,
-                harness_config.s3_bucket,
-            )
+            await upload_agent_artifacts(test_sandbox, contract, benchmark_id, aws_runtime)
 
             # Verify files exist in sandbox
             result = await test_sandbox.exec(f"cat /bundle/{setup_file}")
@@ -242,7 +238,6 @@ class TestSandboxOperations:
     async def test_run_agent(
         self,
         test_sandbox: Sandbox,
-        live_aws_credentials: AWSCredentials,
         harness_config: HarnessConfig,
     ) -> None:
         """Verify run_agent streams output while executing a contract command.
@@ -264,6 +259,7 @@ class TestSandboxOperations:
             run_cmd=run_cmd,
             final_output="/tmp/agent_output.json",
         )
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
         # Expecting bundle directory to exist
         await test_sandbox.exec("mkdir -p /bundle/test_agent")
@@ -275,8 +271,7 @@ class TestSandboxOperations:
             task_id=random_task_id(),
             log_output=log_callback,
             cwd="/",
-            aws=live_aws_credentials,
-            s3_bucket=harness_config.s3_bucket,
+            aws_runtime=aws_runtime,
         )
 
         output = "\n".join(logged_messages)
@@ -287,7 +282,6 @@ class TestSandboxOperations:
     async def test_run_agent_applies_egress_allowlist_and_restores_egress(
         self,
         test_sandbox: Sandbox,
-        live_aws_credentials: AWSCredentials,
         harness_config: HarnessConfig,
         egress_allowlist_probe_command: str,
         restored_egress_probe_command: str,
@@ -311,6 +305,7 @@ class TestSandboxOperations:
         )
 
         await test_sandbox.exec("mkdir -p /bundle/test_agent")
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
         await run_agent(
             test_sandbox,
@@ -319,8 +314,7 @@ class TestSandboxOperations:
             task_id=random_task_id(),
             log_output=log_callback,
             cwd="/",
-            aws=live_aws_credentials,
-            s3_bucket=harness_config.s3_bucket,
+            aws_runtime=aws_runtime,
         )
 
         output = "\n".join(logged_messages)

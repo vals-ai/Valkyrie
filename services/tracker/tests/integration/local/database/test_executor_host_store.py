@@ -1,6 +1,6 @@
 """ExecutorHost dispatch-store integration against disposable PostgreSQL."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -52,7 +52,8 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     postgres_session.add(benchmark)
     postgres_session.flush()
     task = make_task(benchmark, "task-0", status=TaskStatus.IN_PROGRESS)
-    postgres_session.add(task)
+    newer_task = make_task(benchmark, "newer-task", status=TaskStatus.IN_PROGRESS)
+    postgres_session.add_all([task, newer_task])
     postgres_session.flush()
     first_dispatch = create_executor_dispatch(
         benchmark.id,
@@ -67,6 +68,7 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
         dispatch_id=uuid4(),
     )
     postgres_session.add_all([first_dispatch, sibling_dispatch])
+    newer_task.started_at = sibling_dispatch.created_at + timedelta(seconds=1)
     postgres_session.commit()
 
     url = postgres_engine.url
@@ -104,19 +106,27 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     assert await store.is_current(sibling_authority)
     postgres_session.expire_all()
     persisted_benchmark = postgres_session.get(type(benchmark), benchmark.id)
+    persisted_task = postgres_session.get(type(task), task.id)
     assert persisted_benchmark is not None
     assert persisted_benchmark.status == BenchmarkStatus.IN_PROGRESS
+    assert persisted_task is not None
+    assert persisted_task.status == TaskStatus.IN_PROGRESS
 
-    assert await store.terminalize(sibling_authority, [task.task_id])
+    assert await store.terminalize(sibling_authority, [task.task_id, newer_task.task_id])
     postgres_session.expire_all()
     persisted_benchmark = postgres_session.get(type(benchmark), benchmark.id)
     persisted_task = postgres_session.get(type(task), task.id)
+    persisted_newer_task = postgres_session.get(type(newer_task), newer_task.id)
     persisted_first_dispatch = postgres_session.get(type(first_dispatch), first_dispatch.id)
     persisted_sibling_dispatch = postgres_session.get(type(sibling_dispatch), sibling_dispatch.id)
+
     assert persisted_benchmark is not None
     assert persisted_benchmark.status == BenchmarkStatus.ERROR
+    assert persisted_benchmark.error_message == "Executor host failed"
     assert persisted_task is not None
     assert persisted_task.status == TaskStatus.ERROR
+    assert persisted_newer_task is not None
+    assert persisted_newer_task.status == TaskStatus.IN_PROGRESS
     assert persisted_first_dispatch is not None
     assert persisted_first_dispatch.status == ExecutorDispatchStatus.FINISHED
     assert persisted_sibling_dispatch is not None

@@ -600,7 +600,7 @@ def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
         lambda session: retry(session, stop_first.id),
         postgres_engine,
     )
-    assert sorted(outcomes) == ["first-committed", "second-rejected"]
+    assert sorted(outcomes) == ["first-committed", "second-committed"]
 
     retry_first = add_error_benchmark("retry-first")
     outcomes = _run_while_first_transaction_holds_locks(
@@ -612,7 +612,7 @@ def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
     postgres_session.expire_all()
     stored_retry_first = postgres_session.get(Benchmark, retry_first.id)
     assert stored_retry_first is not None
-    assert stored_retry_first.status == BenchmarkStatus.STOPPING
+    assert stored_retry_first.status == BenchmarkStatus.STOPPED
 
 
 def test_maintenance_commit_rejects_start_waiting_on_admission_lock(

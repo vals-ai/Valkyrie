@@ -13,7 +13,7 @@ from pydantic import (
     field_validator,
     model_serializer,
 )
-from sqlalchemy import Connection, Dialect, Index, event, text
+from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
     JSON,
@@ -159,6 +159,8 @@ class AgentContractRequest(BaseModel):
     egress_allowlist: list[str] = []
     secrets: dict[str, str] = {}
     kwargs: dict[str, str] = {}
+    # Set only by the tracker, after rebuilding this contract from the bundle.
+    inference_settings_attested: bool = False
 
     @field_validator("output_artifacts")
     @classmethod
@@ -323,6 +325,7 @@ class Benchmark(SQLModel, table=True):
     finished_at: datetime | None = None
     status: BenchmarkStatus = Field(default=BenchmarkStatus.IN_PROGRESS)
     label: str | None = Field(default=None, index=True)
+    aws_managed: bool = Field(default=False, nullable=False)
     executor_release_id: str | None = Field(default=None, foreign_key="executorrelease.id", index=True)
     current_execution_release_id: str | None = Field(default=None, foreign_key="executorrelease.id", index=True)
     executor_artifact_uri: str | None = None
@@ -352,7 +355,12 @@ class Benchmark(SQLModel, table=True):
     def fetch_tasks_with_errors(self, session: Session) -> dict[str, str] | None:
         error_rows = session.exec(
             select(Task.task_id, ErrorResult.error_message)
-            .outerjoin(ErrorResult, col(ErrorResult.task) == col(Task.id))
+            .outerjoin(
+                ErrorResult,
+                (col(ErrorResult.task) == col(Task.id))
+                & (col(ErrorResult.org_id) == self.org_id)
+                & col(ErrorResult.retry_scheduled).is_(False),
+            )
             .where(Task.benchmark == self.id)
             .where(Task.org_id == self.org_id)
             .where(Task.status == TaskStatus.ERROR)
@@ -368,12 +376,15 @@ class Benchmark(SQLModel, table=True):
 
         return errors_by_task_id
 
-    def start_benchmark_request(
+    def access_key_start_benchmark_request(
         self, harness_config: "HarnessConfig", service_headers: dict[str, str] | None = None
     ) -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
 
-        # TODO: Remove this fallback after legacy benchmark rows have been migrated for a few weeks.
+        if self.aws_managed:
+            raise ValueError("Managed runs cannot create access-key execution requests")
+
+        # Older rows may persist the provider secret only in benchmark arguments.
         if self.arguments.sandbox_provider_secret_name:
             harness_config = harness_config.model_copy(
                 update={"sandbox_provider_secret_name": self.arguments.sandbox_provider_secret_name}
@@ -389,6 +400,32 @@ class Benchmark(SQLModel, table=True):
             dataset=self.arguments.dataset,
             harness_config=harness_config,
             sandbox_provider=self.arguments.sandbox_provider,
+            custom_benchmark_service=self.custom_benchmark_service,
+            webhook_secret_name=self.webhook_secret_name,
+            webhook_intervals=self.webhook_intervals,
+            service_headers=service_headers or {},
+        )
+
+    def managed_start_benchmark_request(self, service_headers: dict[str, str] | None = None) -> "StartBenchmarkRequest":
+        from tracker.types import StartBenchmarkRequest
+
+        if not self.aws_managed:
+            raise ValueError("Access-key runs cannot create managed execution requests")
+        if not self.arguments.sandbox_provider_secret_name:
+            raise ValueError("Managed runs require a sandbox provider secret name")
+
+        return StartBenchmarkRequest(
+            contract=self.arguments.contract,
+            benchmark_name=self.name,
+            concurrency=self.arguments.concurrency,
+            label=self.label,
+            task_ids=self.arguments.task_ids,
+            slice_str=self.arguments.slice_str,
+            lambda_function=self.arguments.lambda_function,
+            dataset=self.arguments.dataset,
+            harness_config=None,
+            sandbox_provider=self.arguments.sandbox_provider,
+            sandbox_provider_secret_name=self.arguments.sandbox_provider_secret_name,
             custom_benchmark_service=self.custom_benchmark_service,
             webhook_secret_name=self.webhook_secret_name,
             webhook_intervals=self.webhook_intervals,
@@ -573,4 +610,15 @@ class EvaluationResult(ResultBase, table=True):
 
 
 class ErrorResult(ResultBase, table=True):
+    __table_args__ = (Index("ix_errorresult_org_task_created_at", "org_id", "task", "created_at"),)
+
     error_message: str = Field(nullable=False)
+    producer: str | None = Field(default=None)
+    operation: str | None = Field(default=None)
+    error_type: str | None = Field(default=None)
+    cause_code: str | None = Field(default=None)
+    retry_scheduled: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+    failed_attempt_number: int | None = Field(default=None)

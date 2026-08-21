@@ -9,6 +9,7 @@ from uuid import UUID
 import httpx
 from pydantic import BaseModel
 
+from tracker.aws.clients import AWSClientProvider
 from tracker.aws.secrets import fetch_aws_secret
 from tracker.database.models import BenchmarkStatus
 from tracker.exceptions import SecretsError
@@ -17,7 +18,6 @@ from tracker.logging import get_logger
 if TYPE_CHECKING:
     from tracker.database.models import Benchmark, Org
     from sqlmodel import Session
-    from tracker.types import AWSCredentials
 
 logger = get_logger(__name__)
 
@@ -117,16 +117,16 @@ def _build_terminal_message(
 
 
 class SlackNotifier:
-    def __init__(self, secret_name: str, aws: AWSCredentials, intervals: list[int]):
+    def __init__(self, secret_name: str, clients: AWSClientProvider, intervals: list[int]):
         self._secret_name = secret_name
-        self._aws = aws
+        self._clients = clients
         self._intervals = set(intervals)
         self._fired: set[int] = set()
 
     async def _send_webhook(self, text: str) -> None:
         """Fire and forget — exceptions are caught and logged, never raised."""
         try:
-            secret_value = fetch_aws_secret(self._secret_name, self._aws)
+            secret_value = fetch_aws_secret(self._secret_name, self._clients)
             if not isinstance(secret_value, str):
                 logger.warning(
                     f"Webhook secret '{self._secret_name}' returned a dict, expected a plain string URL. Skipping notification."

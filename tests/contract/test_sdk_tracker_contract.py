@@ -179,6 +179,7 @@ MODEL_PAIRS = (
     (FetchBenchmarkMetadataResponse, SDKFetchBenchmarkMetadataResponse),
 )
 INTERNAL_ROUTES = {
+    ("/aws-runtime", "get"),
     ("/benchmarks/{benchmark_id}/concurrency", "patch"),
     ("/benchmarks/filter-options", "get"),
     ("/health", "get"),

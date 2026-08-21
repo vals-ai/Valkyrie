@@ -5,7 +5,7 @@ from typing import cast
 from tracker import handle_s3_error
 from tracker.exceptions import S3Error
 
-from valkyrie.cli.s3_config import fetch_bucket_name, s3_client
+from valkyrie.cli import s3_config as cli_s3
 
 _S3_DOWNLOAD_CONCURRENCY = 8
 
@@ -13,10 +13,10 @@ _S3_DOWNLOAD_CONCURRENCY = 8
 @handle_s3_error(message="Failed to download from S3")
 async def download_s3_path(s3_path: str, output_dir: Path) -> int:
     """Download all objects under an S3 path prefix into output_dir. Returns count of files downloaded."""
-    bucket_name = fetch_bucket_name()
+    bucket_name = cli_s3.fetch_bucket_name()
     prefix = s3_path.rstrip("/") + "/" if not Path(s3_path).suffix else s3_path
 
-    async with s3_client() as client:
+    async with cli_s3.s3_client() as client:
         paginator = client.get_paginator("list_objects_v2")
         keys: list[str] = []
         async for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):

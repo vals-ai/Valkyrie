@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import update
 from sqlmodel import Session, col, select
 
+from executor_protocol import MANAGED_EXECUTION_PROTOCOL_VERSION
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -15,10 +16,12 @@ from tracker.database.models import (
     ExecutorDispatch,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
+    ExecutorRelease,
     Task,
     TaskStatus,
 )
 from tracker.executor.release_control import (
+    ReleaseControlError,
     create_executor_dispatch,
     lock_executor_admission,
     pin_benchmark_to_release,
@@ -38,6 +41,21 @@ class EnqueueFailureResolution(str, Enum):
     SUPERSEDED = "SUPERSEDED"
 
 
+def _require_managed_execution_release(release: ExecutorRelease) -> None:
+    if release.protocol_version != MANAGED_EXECUTION_PROTOCOL_VERSION:
+        raise ReleaseControlError("Activate an executor release that supports managed runs")
+
+
+def _require_compatible_release(benchmark: Benchmark, release: ExecutorRelease) -> None:
+    if benchmark.aws_managed:
+        _require_managed_execution_release(release)
+
+
+def validate_managed_execution_release(session: Session) -> None:
+    """Reject managed work unless the active executor can consume its queue payload."""
+    _require_managed_execution_release(select_active_release(session))
+
+
 def admit_start_dispatch(
     session: Session,
     *,
@@ -47,6 +65,7 @@ def admit_start_dispatch(
     """Select the active release and persist one start dispatch."""
     with session.no_autoflush:
         release = select_active_release(session, for_update=True)
+    _require_compatible_release(benchmark, release)
     session.add(benchmark)
     pin_benchmark_to_release(benchmark, release)
     dispatch = create_executor_dispatch(
@@ -75,6 +94,7 @@ def admit_recovery_dispatch(
             release = resolve_current_execution_release(session, benchmark, for_update=True)
         else:
             release = select_active_release(session, for_update=True)
+    _require_compatible_release(benchmark, release)
     if pre_action_status != BenchmarkStatus.IN_PROGRESS:
         benchmark.current_execution_release_id = release.id
         benchmark.finished_at = None
@@ -134,6 +154,49 @@ def active_dispatch_exists(
     return session.exec(dispatches).first() is not None
 
 
+def _terminalize_dispatch_tasks(
+    session: Session,
+    *,
+    benchmark: Benchmark,
+    dispatch: ExecutorDispatch,
+    task_ids: list[str],
+    error_message: str,
+    producer: str,
+    operation: str,
+    error_type: str,
+    cause_code: str | None,
+    finished_at: datetime,
+) -> None:
+    tasks = session.exec(
+        select(Task)
+        .where(col(Task.benchmark) == benchmark.id)
+        .where(col(Task.org_id) == benchmark.org_id)
+        .where(col(Task.task_id).in_(task_ids))
+        .where(col(Task.started_at) <= dispatch.created_at)
+        .where(
+            col(Task.status).in_(
+                (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
+            )
+        )
+        .with_for_update()
+    ).all()
+    for task in tasks:
+        session.add(
+            ErrorResult(
+                org_id=task.org_id,
+                task=task.id,
+                error_message=error_message,
+                producer=producer,
+                operation=operation,
+                error_type=error_type,
+                cause_code=cause_code,
+            )
+        )
+        task.status = TaskStatus.ERROR
+        task.finished_at = finished_at
+        session.add(task)
+
+
 def record_dispatch_failure(
     session: Session,
     *,
@@ -141,11 +204,15 @@ def record_dispatch_failure(
     dispatch_id: UUID,
     task_ids: list[str],
     error_message: str,
+    producer: str,
+    operation: str,
+    error_type: str,
+    cause_code: str | None = None,
 ) -> bool:
-    """Record a dispatch failure without overwriting attempts admitted by a newer dispatch.
+    """Record a dispatch failure without overwriting work admitted by a newer dispatch.
 
     Admission timestamps selected tasks before creating the dispatch, so its creation time
-    is the durable upper bound for task attempts owned by that dispatch.
+    is the durable upper bound for task executions owned by that dispatch.
     """
     dispatch = session.exec(
         select(ExecutorDispatch)
@@ -160,22 +227,18 @@ def record_dispatch_failure(
     now = datetime.now(ZoneInfo("UTC"))
     sibling_active = active_dispatch_exists(session, benchmark.id, except_dispatch_id=dispatch_id)
 
-    tasks = session.exec(
-        select(Task)
-        .where(col(Task.benchmark) == benchmark.id)
-        .where(col(Task.task_id).in_(task_ids))
-        .where(col(Task.started_at) <= dispatch.created_at)
-        .where(
-            col(Task.status).in_(
-                (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
-            )
-        )
-    ).all()
-    for task in tasks:
-        session.add(ErrorResult(org_id=task.org_id, task=task.id, error_message=error_message))
-        task.status = TaskStatus.ERROR
-        task.finished_at = now
-        session.add(task)
+    _terminalize_dispatch_tasks(
+        session,
+        benchmark=benchmark,
+        dispatch=dispatch,
+        task_ids=task_ids,
+        error_message=error_message,
+        producer=producer,
+        operation=operation,
+        error_type=error_type,
+        cause_code=cause_code,
+        finished_at=now,
+    )
     if sibling_active:
         dispatch.status = ExecutorDispatchStatus.FAILED
         dispatch.finished_at = now
@@ -220,6 +283,7 @@ def resolve_enqueue_failure(
         return resolution
 
     now = datetime.now(ZoneInfo("UTC"))
+    error_message = "Executor dispatch enqueue failed"
     dispatch.status = ExecutorDispatchStatus.FAILED
     dispatch.finished_at = now
     session.add(dispatch)
@@ -228,23 +292,20 @@ def resolve_enqueue_failure(
     if benchmark.status == BenchmarkStatus.IN_PROGRESS and not active_dispatch_exists(session, benchmark_id):
         benchmark.status = BenchmarkStatus.ERROR
         benchmark.finished_at = now
-        benchmark.error_message = "Executor dispatch enqueue failed"
+        benchmark.error_message = error_message
         session.add(benchmark)
 
-    tasks = session.exec(
-        select(Task)
-        .where(col(Task.benchmark) == benchmark_id)
-        .where(col(Task.task_id).in_(task_ids))
-        .where(col(Task.started_at) <= dispatch.created_at)
-        .where(
-            col(Task.status).in_(
-                (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
-            )
-        )
-    ).all()
-    for task in tasks:
-        task.status = TaskStatus.ERROR
-        task.finished_at = now
-        session.add(task)
+    _terminalize_dispatch_tasks(
+        session,
+        benchmark=benchmark,
+        dispatch=dispatch,
+        task_ids=task_ids,
+        error_message=error_message,
+        producer="executor_dispatch",
+        operation="enqueue",
+        error_type="ExecutorDispatchEnqueueError",
+        cause_code=None,
+        finished_at=now,
+    )
     session.commit()
     return EnqueueFailureResolution.FAILED

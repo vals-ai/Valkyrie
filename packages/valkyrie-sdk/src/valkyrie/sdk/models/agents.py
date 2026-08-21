@@ -66,6 +66,8 @@ class AgentContractRequest(BaseModel):
     egress_allowlist: list[str] = Field(default_factory=list)
     secrets: dict[str, str] = Field(default_factory=dict)
     kwargs: dict[str, str] = Field(default_factory=dict)
+    # Tracker-owned; cleared on every incoming request.
+    inference_settings_attested: bool = False
 
     @field_validator("output_artifacts")
     @classmethod

@@ -5,9 +5,11 @@ Run: uv run pytest tests/unit/logging/test_logging.py
 
 import json
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
+from uuid import UUID
 
 import pytest
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from main import app
@@ -19,7 +21,9 @@ from tracker.logging import (
     request_id_var,
     task_id_var,
 )
+from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
 from tracker.middleware import LoggingContextMiddleware
+from tracker.types import AWSCredentials, HarnessConfig
 
 
 class ContextLogRecord(logging.LogRecord):
@@ -51,6 +55,39 @@ def _configure_test_logging(monkeypatch: pytest.MonkeyPatch, environment: str) -
     monkeypatch.setenv("ENVIRONMENT", environment)
     monkeypatch.setenv("LOG_LEVEL", "INFO")
     configure_logging()
+
+
+def test_aws_credentials_are_excluded_from_log_repr() -> None:
+    credentials = AWSCredentials(
+        aws_access_key_id="AKIA_REPR_SENTINEL",
+        aws_secret_access_key="secret-repr-sentinel",
+        aws_session_token="session-repr-sentinel",
+        aws_default_region="us-east-1",
+    )
+    harness_config = HarnessConfig(
+        aws=credentials,
+        s3_bucket="test-bucket",
+        log_group="test-log-group",
+        log_retention_policy=30,
+        sandbox_provider_secret_name="test-provider-secret",
+    )
+    formatter = logging.Formatter("%(message)s")
+
+    for value in (credentials, harness_config):
+        record = logging.LogRecord(
+            name="tracker.test_credentials",
+            level=logging.ERROR,
+            pathname="",
+            lineno=0,
+            msg="AWS request failed: %r",
+            args=(value,),
+            exc_info=None,
+        )
+        output = formatter.format(record)
+
+        assert "AKIA_REPR_SENTINEL" not in output
+        assert "secret-repr-sentinel" not in output
+        assert "session-repr-sentinel" not in output
 
 
 class TestContextFilter:
@@ -106,6 +143,36 @@ class TestContextFilter:
             request_id_var.reset(request_token)
             benchmark_id_var.reset(benchmark_token)
             task_id_var.reset(task_token)
+
+
+async def test_bind_benchmark_id_updates_logging_context_and_request_span(monkeypatch: pytest.MonkeyPatch) -> None:
+    span = Mock()
+    monkeypatch.setattr("tracker.api.dependencies.trace.get_current_span", lambda: span)
+
+    benchmark_id = UUID("12345678-1234-5678-9234-567812345678")
+    result = await bind_benchmark_id(benchmark_id)
+
+    assert result == benchmark_id
+    assert benchmark_id_var.get() == str(benchmark_id)
+    span.set_attribute.assert_called_once_with("benchmark_id", str(benchmark_id))
+
+
+async def test_bind_benchmark_id_survives_fastapi_dependency_resolution() -> None:
+    test_app = FastAPI()
+    observed_benchmark_ids: list[str] = []
+
+    async def endpoint(benchmark_id: TrackedBenchmarkId) -> dict[str, str]:
+        observed_benchmark_ids.append(benchmark_id_var.get())
+        return {"benchmark_id": str(benchmark_id)}
+
+    test_app.add_api_route("/runs/{benchmark_id}", endpoint)
+    benchmark_id = UUID("12345678-1234-5678-9234-567812345678")
+
+    async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+        response = await client.get(f"/runs/{benchmark_id}")
+
+    assert response.status_code == 200
+    assert observed_benchmark_ids == [str(benchmark_id)]
 
 
 class TestConfigureLogging:
@@ -221,6 +288,27 @@ class TestLoggingContextMiddleware:
 
         assert benchmark_id_var.get() == "bench-123"
         assert request_id_var.get() == "req-456"
+        assert result is message
+
+    async def test_logging_context_middleware_reads_v2_benchmark_id(self) -> None:
+        """Taskiq middleware binds the benchmark ID nested in a V2 execution context."""
+        middleware = LoggingContextMiddleware()
+
+        message = MagicMock()
+        message.kwargs = {
+            "execution_context_json": {
+                "version": 2,
+                "benchmark_id": "bench-v2",
+                "verified_task_ids": ["task-1"],
+                "start_benchmark_request": {},
+            }
+        }
+        message.labels = {"request_id": "req-v2"}
+
+        result = await middleware.pre_execute(message)
+
+        assert benchmark_id_var.get() == "bench-v2"
+        assert request_id_var.get() == "req-v2"
         assert result is message
 
     async def test_logging_context_middleware_post_execute_clears(self) -> None:

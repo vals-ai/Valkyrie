@@ -32,20 +32,37 @@ so CDK DNS validation can complete. Configure the protected `dev` GitHub
 Environment with the `AWS_REGION=us-east-1` variable and the `DEV_ACCOUNT_ID`,
 `AWS_DEPLOY_ROLE_ARN`, `DESCOPE_PROJECT_ID`, and
 `DESCOPE_MANAGEMENT_KEY_SECRET_NAME` secrets (the last one names an
-account-local Secrets Manager secret holding the Descope management key). To
-enable Sentry in dev, also set the `SENTRY_DSN_SECRET_NAME` secret to the name
-of an account-local Secrets Manager secret containing the DSN. Production
-requires `SENTRY_DSN_SECRET_NAME`, and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`
+account-local Secrets Manager secret holding the Descope management key).
+Managed AWS execution also requires these secrets in each enabled stage's
+protected GitHub Environment. The `dev` and `prod` environments hold their own
+values:
+
+- `AWS_DEPLOYMENT_ROLE_ORG_IDS` -- comma-separated organization UUIDs allowed
+  to submit managed runs
+- `AWS_TRACKER_SECRET_NAME_PREFIXES` -- comma-separated Secrets Manager name
+  prefixes the Tracker may resolve for benchmark-service authentication
+
+The ExecutorHost task roles can read every Secrets Manager secret in their own
+account and Region. Release-test does not receive this access.
+
+Dev and production require `SENTRY_DSN_SECRET_NAME` to name an account-local
+Secrets Manager secret containing the DSN. Production also requires
+`DESCOPE_MANAGEMENT_KEY_SECRET_NAME`
 whenever `AUTH_REQUIRED` is `true`. The dev Environment holds every dev
 deployment input as an Environment secret except `AWS_REGION`, which stays a
-variable. The production jobs read repository-level secrets; the
-`SANDBOX_CLEANUP_ENABLED` and `SANDBOX_CLEANUP_PROVIDER` toggles stay
-variables.
+variable. Production reads its managed AWS inventory from the `prod`
+Environment and retains the existing repository-level deployment secrets. The
+`SANDBOX_CLEANUP_ENABLED` and `SANDBOX_CLEANUP_PROVIDER` toggles stay variables.
+The Sentry DSN is injected into both Tracker and ExecutorHost. The host
+propagates each run's trace and request context into its immutable executor
+artifact.
 
-Before production executor activation, configure the protected `prod` GitHub
-Environment used by both production deploy jobs. Both AWS accounts must already
-have the account-owned `token.actions.githubusercontent.com` OIDC provider with
-the `sts.amazonaws.com` audience. The stacks import that provider and create
+Before production activation, configure the protected `prod` GitHub
+Environment with `AWS_DEPLOYMENT_ROLE_ORG_IDS` and
+`AWS_TRACKER_SECRET_NAME_PREFIXES`. Both production deploy jobs use that
+Environment. Both AWS accounts must already have the account-owned
+`token.actions.githubusercontent.com` OIDC provider with the
+`sts.amazonaws.com` audience. The stacks import that provider and create
 separate environment-bound executor release roles; they do not create a fallback
 provider.
 
@@ -85,20 +102,73 @@ executor work fails closed until the bootstrap publishes the stage's sealed
 release-control SSM parameter. Later workflow deployments keep existing
 executions pinned while previous releases drain normally.
 
-For a local plan or an administrator break-glass deployment, pass the target
-explicitly. The preflight rejects the wrong account, Region, or STS identity.
+For a local plan or an administrator break-glass deployment, follow these
+steps. The preflight rejects the wrong account, Region, or STS identity.
+
+1. Export the target account and deployment-owned managed AWS inventory.
+
+   **Why** -- Local CDK commands cannot read GitHub Environment secrets. The
+   deployment must receive the same organization and secret namespaces as CI.
 
 ```bash
 export DEV_ACCOUNT_ID=123456789012
 export DESCOPE_PROJECT_ID="dev-project-id"
 export DESCOPE_MANAGEMENT_KEY_SECRET_NAME="dev-descope-management-key-secret"
+export AWS_DEPLOYMENT_ROLE_ORG_IDS="00000000-0000-0000-0000-000000000001"
+export AWS_TRACKER_SECRET_NAME_PREFIXES="benchmark-services/"
+```
+
+   Use the target stage's values. Production also requires its existing
+   production deployment inputs, including `SENTRY_DSN_SECRET_NAME`. In GitHub,
+   the managed AWS values are under **Settings → Environments → dev or prod →
+   Environment secrets**. GitHub does not reveal stored secret values, so an
+   administrator must obtain the approved values from the deployment owner.
+
+   **Done when** -- The target account and every stage-required deployment
+   variable are non-empty when checked locally; do not print their values into
+   shared logs.
+
+2. Plan the intended scope.
+
+   **Why** -- The plan verifies the account boundary and shows the exact
+   CloudFormation changes before any resource is modified.
+
+```bash
 
 make plan STAGE=dev SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
 
+make plan STAGE=prod SCOPE=all AWS_REGION=us-east-1 \
+  PROFILE=vals-prod-admin
+```
+
+   Console alternative: run **Actions → Deploy to AWS → Run workflow** on
+   `dev`, choose `plan`, and select the intended scope. Production plans are
+   CLI-only because the manual workflow deliberately accepts only the `dev`
+   branch.
+
+   **Done when** -- The plan targets the expected account and contains only the
+   intended stack changes.
+
+3. Deploy the approved scope only when break-glass access is authorized.
+
+   **Why** -- Direct deployment bypasses the normal branch-push workflow and is
+   reserved for recovery operations.
+
+```bash
+
 make deploy STAGE=dev SCOPE=shared AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
+
+make deploy STAGE=prod SCOPE=shared AWS_REGION=us-east-1 \
+  PROFILE=vals-prod-admin
 ```
+
+   This step is CLI-only because the manual GitHub workflow intentionally does
+   not offer deployment. Normal deployments come from a merge to `dev`.
+
+   **Done when** -- CDK reports the selected stack deployed in the expected dev
+   account and its CloudFormation events contain no failed resources.
 
 `release-test` is an isolated, dev-sized deployment in the account selected by
 `DEV_ACCOUNT_ID`. It uses `-release-test` resource names and

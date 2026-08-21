@@ -1,42 +1,23 @@
 """AWS Secrets Manager utilities."""
 
 import json
-from functools import lru_cache
-from typing import Any, cast
+from typing import Any
 
-import boto3
 from botocore.exceptions import ClientError
 
+from tracker.aws.clients import AWSClientProvider
 from tracker.exceptions import SecretsError
 from tracker.logging import get_logger
-from tracker.types import AWSCredentials
 
 logger = get_logger(__name__)
 
 
-@lru_cache(maxsize=32)
-def _secretsmanager_client(aws: AWSCredentials | None) -> Any:
-    """Cached Secrets Manager client, shared per credential tuple."""
-    if aws is None:
-        return cast(Any, boto3.client("secretsmanager"))  # pyright: ignore[reportUnknownMemberType]
-    return cast(
-        Any,
-        boto3.client(  # pyright: ignore[reportUnknownMemberType]
-            "secretsmanager",
-            aws_access_key_id=aws.aws_access_key_id,
-            aws_secret_access_key=aws.aws_secret_access_key,
-            aws_session_token=aws.aws_session_token,
-            region_name=aws.aws_default_region,
-        ),
-    )
-
-
-def fetch_aws_secret(secret_name: str, aws: AWSCredentials | None = None) -> dict[str, Any] | str:
+def fetch_aws_secret(secret_name: str, client_provider: AWSClientProvider) -> dict[str, Any] | str:
     """Fetch a JSON secret from AWS Secrets Manager by name.
 
     Args:
         secret_name: The name of the secret to retrieve.
-        aws: AWS credentials, or ``None`` to use the ambient credential chain.
+        client_provider: AWS clients for the operation.
 
     Returns:
         Parsed JSON contents of the secret as a dict or the string value
@@ -44,7 +25,7 @@ def fetch_aws_secret(secret_name: str, aws: AWSCredentials | None = None) -> dic
     Raises:
         SecretsError: If the secret does not exist or cannot be retrieved.
     """
-    client = _secretsmanager_client(aws)  # pyright: ignore[reportUnknownVariableType]
+    client = client_provider.secretsmanager_client()
     try:
         response: dict[str, Any] = client.get_secret_value(SecretId=secret_name)  # pyright: ignore[reportUnknownMemberType]
     except ClientError as e:
@@ -63,12 +44,12 @@ def fetch_aws_secret(secret_name: str, aws: AWSCredentials | None = None) -> dic
         return secret_string
 
 
-def resolve_secrets(secrets: dict[str, str], aws: AWSCredentials) -> dict[str, str]:
+def resolve_secrets(secrets: dict[str, str], client_provider: AWSClientProvider) -> dict[str, str]:
     """Resolve AWS secret references to actual values
 
     Args:
         secrets: Mapping of {ENV_VAR_NAME: aws_secret_name}.
-        aws: User's AWS credentials for accessing Secrets Manager.
+        client_provider: AWS clients for the operation.
 
     Returns:
         Mapping of {ENV_VAR_NAME: actual_secret_value}.
@@ -82,7 +63,7 @@ def resolve_secrets(secrets: dict[str, str], aws: AWSCredentials) -> dict[str, s
     resolved: dict[str, str] = {}
 
     for env_name, secret_name in secrets.items():
-        secret_value = fetch_aws_secret(secret_name, aws)
+        secret_value = fetch_aws_secret(secret_name, client_provider)
 
         if isinstance(secret_value, dict):
             if env_name not in secret_value:
