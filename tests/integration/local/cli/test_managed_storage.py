@@ -114,10 +114,16 @@ def managed_storage(
         assert runtime.resources.s3_bucket == "test-bucket"
         del storage.objects[s3_key]
 
+    async def copy_object(source_key: str, destination_key: str, runtime: AWSRuntime) -> None:
+        assert runtime.resources.s3_bucket == "test-bucket"
+        storage.objects[destination_key] = storage.objects[source_key]
+
     monkeypatch.setattr(agents_api, "list_agents", list_agents)
     monkeypatch.setattr(agents_api, "s3_object_exists", object_exists)
     monkeypatch.setattr(agents_api, "create_presigned_url", presigned_url)
     monkeypatch.setattr(agents_api, "delete_from_s3", delete_object)
+    monkeypatch.setattr(benchmark_storage_api, "s3_object_exists", object_exists)
+    monkeypatch.setattr(benchmark_storage_api, "copy_s3_object", copy_object)
 
     def forbid_local_aws_runtime() -> AWSRuntime:
         raise AssertionError("keyless CLI storage must not construct a local AWS runtime")
@@ -125,6 +131,27 @@ def managed_storage(
     monkeypatch.setattr(s3_config, "aws_runtime", forbid_local_aws_runtime)
 
     return storage
+
+
+def test_keyless_resume_updates_frozen_agent(
+    cli_runner: CliRunner,
+    managed_storage: MockManagedStorage,
+    seeded_runs: tuple[Benchmark, Benchmark],
+    database_session: Session,
+) -> None:
+    """Resume --update-agent copies the current agent through Tracker without local AWS."""
+    benchmark, _finished = seeded_runs
+    benchmark.aws_managed = True
+    database_session.add(benchmark)
+    database_session.commit()
+    source_key = "agents/cli-agent.zip"
+    destination_key = f"benchmarks/{benchmark.id}/cli-agent.zip"
+    managed_storage.objects[source_key] = b"current-agent"
+
+    result = cli_runner.invoke(cli, ["run", "resume", str(benchmark.id), "--update-agent"])
+
+    assert result.exit_code == 0, result.output
+    assert managed_storage.objects[destination_key] == b"current-agent"
 
 
 def test_keyless_agent_storage_crosses_cli_and_tracker(

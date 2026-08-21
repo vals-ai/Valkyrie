@@ -3,7 +3,7 @@ from uuid import UUID
 import click
 from tracker.types import BenchmarkStatusEntry
 
-from valkyrie.cli.display import format_table
+from valkyrie.cli.display import create_progress_bar, format_table
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.progress import BenchmarkFormatter
 from valkyrie.cli.run.snapshot import format_run_status_json
@@ -96,7 +96,7 @@ def format_status_table(entries: list[BenchmarkStatusEntry]) -> None:
     """Render lightweight multi-run status for humans."""
     rows: list[dict[str, str]] = []
     for entry in entries:
-        _, progress_percent = BenchmarkFormatter.create_progress_bar(entry.finished_tasks, entry.total_tasks)
+        _, progress_percent = create_progress_bar(entry.finished_tasks, entry.total_tasks)
         rows.append(
             {
                 "ID": str(entry.id),

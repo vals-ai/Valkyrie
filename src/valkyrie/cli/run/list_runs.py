@@ -2,8 +2,8 @@ import click
 from tracker.database.models import BenchmarkStatus
 from tracker.types import BenchmarkTableRow, FetchBenchmarksRequest, FetchBenchmarksResponse, Order
 
+from valkyrie.cli.display import create_progress_bar, format_table, paginate_cli_pages, short_local_time
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.display import format_table, paginate_cli_pages, short_local_time
 from valkyrie.cli.run.progress import BenchmarkFormatter
 from valkyrie.cli.run.snapshot import format_run_list_json
 from valkyrie.cli.tracker_client import TrackerService
@@ -205,7 +205,7 @@ def format_fetch_benchmarks_response(
 
     rows: list[dict[str, str]] = []
     for benchmark in benchmarks:
-        _, progress_percentage = BenchmarkFormatter.create_progress_bar(benchmark.finished_tasks, benchmark.total_tasks)
+        _, progress_percentage = create_progress_bar(benchmark.finished_tasks, benchmark.total_tasks)
 
         rows.append(
             {

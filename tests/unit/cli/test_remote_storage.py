@@ -62,6 +62,7 @@ class MockStorageBackend:
         self.output_prefix: str | None = None
         self.fail_s3_transfers = False
         self.fail_transport = False
+        self.invalid_agents_response = False
         self.blocking_download_key: str | None = None
         self.failing_download_key: str | None = None
         self.blocked_download_started = asyncio.Event()
@@ -113,6 +114,8 @@ class MockStorageBackend:
                 json={"name": name, "download_url": f"{_S3_URL}/agents/{name}.zip", "expires_in": 300},
             )
         if request.method == "GET" and path == "/agents":
+            if self.invalid_agents_response:
+                return httpx.Response(200, json={})
             return httpx.Response(
                 200,
                 json={
@@ -212,14 +215,11 @@ def _mock_zip_stream(monkeypatch: pytest.MonkeyPatch, archive: bytes) -> None:
         ({"AWS_ACCESS_KEY_ID": "access"}, None, "must be configured together"),
         ({"AWS_SECRET_ACCESS_KEY": "secret"}, None, "must be configured together"),
         ({"AWS_SESSION_TOKEN": "token"}, None, "requires AWS_ACCESS_KEY_ID"),
-        (
-            {"AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": ""},
-            None,
-            "must not be blank",
-        ),
+        ({"AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": ""}, True, None),
+        ({"AWS_SESSION_TOKEN": ""}, True, None),
     ],
 )
-def test_storage_mode_fails_closed_for_partial_credentials(
+def test_storage_mode_resolves_credentials_consistently(
     monkeypatch: pytest.MonkeyPatch,
     config: dict[str, str],
     expected_tracker_storage: bool | None,
@@ -319,6 +319,13 @@ async def test_transport_failures_surface_as_s3_error(backend: MockStorageBacken
     backend.fail_transport = True
 
     with pytest.raises(S3Error, match="Listing agents failed: connection failed.*Check your connection"):
+        await remote_storage.list_agents_remote()
+
+
+async def test_tracker_response_version_mismatch_names_the_invalid_field(backend: MockStorageBackend) -> None:
+    backend.invalid_agents_response = True
+
+    with pytest.raises(S3Error, match="incompatible response at 'agents'.*Update Valkyrie"):
         await remote_storage.list_agents_remote()
 
 

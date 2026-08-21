@@ -36,6 +36,7 @@ from tracker.types import (
     UpdateBenchmarkConcurrencyResponse,
 )
 
+from valkyrie.cli.aws_credentials import resolve_static_aws_credentials
 from valkyrie.cli.exceptions import TrackerNotFoundError, TrackerServiceError
 from valkyrie.cli.runtime_config import config_location, tracker_service_url
 
@@ -255,19 +256,12 @@ class TrackerService:
         if not (_sandbox_providers(harness_config) or "DAYTONA_SECRET_NAME" in harness_config):
             raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
 
-        access_key_fields = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
-        configured_access_key_fields = [field for field in access_key_fields if field in harness_config]
-        if configured_access_key_fields and len(configured_access_key_fields) != len(access_key_fields):
-            raise TrackerServiceError("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together.")
-        if not configured_access_key_fields:
-            if "AWS_SESSION_TOKEN" in harness_config:
-                raise TrackerServiceError("AWS_SESSION_TOKEN requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.")
+        try:
+            credentials = resolve_static_aws_credentials(harness_config)
+        except ValueError as exc:
+            raise TrackerServiceError(str(exc)) from exc
+        if credentials is None:
             return {}
-        if any(
-            not isinstance(harness_config[field], str) or not harness_config[field].strip()
-            for field in access_key_fields
-        ):
-            raise TrackerServiceError("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must not be blank.")
 
         missing = _REQUIRED_ACCESS_KEY_CONFIG_KEYS - harness_config.keys()
         if missing:
@@ -278,12 +272,17 @@ class TrackerService:
         # Keys that are managed separately and should not be sent as harness headers
         _SKIP_HEADER_KEYS = {"webhook", "api_key", "default_sandbox_provider"}
 
-        # Skip custom_benchmark_services to avoid adding them inside of the header
+        credential_fields = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}
         for key, value in harness_config.items():
-            if isinstance(value, dict) or key in _SKIP_HEADER_KEYS:
+            if isinstance(value, dict) or key in _SKIP_HEADER_KEYS or key in credential_fields:
                 continue
 
             config_keys[key] = str(value)
+
+        config_keys["AWS_ACCESS_KEY_ID"] = credentials.access_key_id
+        config_keys["AWS_SECRET_ACCESS_KEY"] = credentials.secret_access_key
+        if credentials.session_token is not None:
+            config_keys["AWS_SESSION_TOKEN"] = credentials.session_token
 
         return config_keys
 

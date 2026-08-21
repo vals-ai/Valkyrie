@@ -25,11 +25,6 @@ class BenchmarkFormatter:
     }
 
     @staticmethod
-    def create_progress_bar(finished_tasks: int, total_tasks: int, bar_width: int = 30) -> tuple[str, float]:
-        """Create a progress bar string and percentage."""
-        return create_progress_bar(finished_tasks, total_tasks, bar_width)
-
-    @staticmethod
     def format_task_breakdown(task_breakdown: dict[TaskStatus, int]) -> str:
         """Format task breakdown with colored status counts."""
         status_order = [
@@ -72,7 +67,7 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     """Format and display run status in a box with a progress bar."""
     details = benchmark_response.details
 
-    bar, progress_pct = BenchmarkFormatter.create_progress_bar(details.finished_tasks, details.total_tasks)
+    bar, progress_pct = create_progress_bar(details.finished_tasks, details.total_tasks)
     status_color = BenchmarkFormatter.STATUS_COLORS[details.status.value]
     status_text = click.style(details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
     progress_line = f"[{bar}] {details.finished_tasks}/{details.total_tasks} ({progress_pct:.1f}%) • {status_text}"
@@ -183,9 +178,7 @@ def stream_benchmark_status(
         click.echo(click.style("Streaming run updates (Ctrl+C to stop)...", fg="cyan"))
 
         initial_details = initial.details
-        bar, progress_pct = BenchmarkFormatter.create_progress_bar(
-            initial_details.finished_tasks, initial_details.total_tasks
-        )
+        bar, progress_pct = create_progress_bar(initial_details.finished_tasks, initial_details.total_tasks)
         status_color = BenchmarkFormatter.STATUS_COLORS[initial_details.status.value]
         status_text = click.style(initial_details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
         click.echo(
@@ -210,7 +203,7 @@ def stream_benchmark_status(
 
                 details = response.details
 
-                bar, progress_pct = BenchmarkFormatter.create_progress_bar(details.finished_tasks, details.total_tasks)
+                bar, progress_pct = create_progress_bar(details.finished_tasks, details.total_tasks)
                 status_color = BenchmarkFormatter.STATUS_COLORS[details.status.value]
                 status_text = click.style(details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
 

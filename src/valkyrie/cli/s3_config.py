@@ -6,6 +6,7 @@ from tracker.aws.clients import DefaultChainAWSClientProvider, ExplicitCredentia
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.types import AWSCredentials
 
+from valkyrie.cli.aws_credentials import resolve_static_aws_credentials
 from valkyrie.cli.config.state import load_config
 
 
@@ -63,15 +64,15 @@ def _aws_runtime(
 def aws_runtime() -> AWSRuntime:
     """Build the AWS runtime configured for local CLI operations."""
     config = load_config()
-    access_key_id = str(config.get("AWS_ACCESS_KEY_ID") or "") or None
-    secret_access_key = str(config.get("AWS_SECRET_ACCESS_KEY") or "") or None
-    if (access_key_id is None) != (secret_access_key is None):
-        raise click.ClickException("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together.")
+    try:
+        credentials = resolve_static_aws_credentials(config)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     return _aws_runtime(
-        access_key_id=access_key_id,
-        secret_access_key=secret_access_key,
-        session_token=str(config.get("AWS_SESSION_TOKEN") or "") or None,
+        access_key_id=credentials.access_key_id if credentials else None,
+        secret_access_key=credentials.secret_access_key if credentials else None,
+        session_token=credentials.session_token if credentials else None,
         region=_region(config),
         s3_bucket=_bucket_name(config),
         log_group=str(config.get("LOG_GROUP") or ""),

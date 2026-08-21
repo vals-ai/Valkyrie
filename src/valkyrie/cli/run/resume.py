@@ -5,10 +5,10 @@ import click
 from tracker.database.models import RetryMode
 from tracker.exceptions import S3Error
 
+from valkyrie.cli.agent.storage import update_benchmark_agent_version
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
-from valkyrie.cli.agent.storage import update_benchmark_agent_version
 from valkyrie.cli.service_headers import benchmark_service_headers
 from valkyrie.cli.tracker_client import TrackerService
 

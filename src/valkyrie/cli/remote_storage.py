@@ -13,7 +13,7 @@ from typing import BinaryIO, TypeVar, cast
 
 import click
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from tracker.agent.bundler import get_agent_zip_stream
 from tracker.exceptions import S3Error
 from tracker.storage_types import (
@@ -28,6 +28,7 @@ from tracker.storage_types import (
 )
 
 from valkyrie.cli import s3_config
+from valkyrie.cli.aws_credentials import resolve_static_aws_credentials
 from valkyrie.cli.display import create_progress_bar
 from valkyrie.cli.downloads import gather_in_batches, resolve_download_destination
 from valkyrie.cli.runtime_config import tracker_service_url
@@ -40,25 +41,10 @@ _MAX_SINGLE_PUT_BYTES = 5 * 1024**3
 
 def use_tracker_storage() -> bool:
     """True when the selected config has no static AWS keys (managed mode)."""
-    config = s3_config.load_config()
-    access_key_configured = "AWS_ACCESS_KEY_ID" in config
-    secret_key_configured = "AWS_SECRET_ACCESS_KEY" in config
-    if access_key_configured != secret_key_configured:
-        raise click.ClickException("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together.")
-    if access_key_configured:
-        access_key = config["AWS_ACCESS_KEY_ID"]
-        secret_key = config["AWS_SECRET_ACCESS_KEY"]
-        if (
-            not isinstance(access_key, str)
-            or not access_key.strip()
-            or not isinstance(secret_key, str)
-            or not secret_key.strip()
-        ):
-            raise click.ClickException("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must not be blank.")
-        return False
-    if "AWS_SESSION_TOKEN" in config:
-        raise click.ClickException("AWS_SESSION_TOKEN requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.")
-    return True
+    try:
+        return resolve_static_aws_credentials(s3_config.load_config()) is None
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def _client() -> httpx.AsyncClient:
@@ -98,7 +84,11 @@ async def _send(request: Awaitable[httpx.Response], action: str) -> httpx.Respon
     try:
         return await request
     except httpx.HTTPError as exc:
-        raise S3Error(f"{action} failed: {exc}. Check your connection and try again.") from exc
+        raise _transport_error(action, exc) from exc
+
+
+def _transport_error(action: str, error: httpx.HTTPError) -> S3Error:
+    return S3Error(f"{action} failed: {error}. Check your connection and try again.")
 
 
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
@@ -112,6 +102,13 @@ def _parse_tracker_response(
     """Validate a successful Tracker response before using it."""
     try:
         return response_model.model_validate(response.json())
+    except ValidationError as exc:
+        error = exc.errors(include_url=False)[0]
+        location = ".".join(str(part) for part in error["loc"]) or "response"
+        raise S3Error(
+            f"{action} failed: Tracker returned an incompatible response at '{location}' ({error['msg']}). "
+            "Update Valkyrie and try again."
+        ) from exc
     except ValueError as exc:
         raise S3Error(f"{action} failed: Tracker returned an invalid response.") from exc
 
@@ -142,13 +139,15 @@ async def _download_to_file(
             if response.status_code >= 400:
                 await response.aread()
             _raise_for_status(response, action)
-            with NamedTemporaryFile(dir=destination.parent, delete=False) as temporary_file:
+            with NamedTemporaryFile(
+                dir=destination.parent, prefix=".valkyrie-download-", delete=False
+            ) as temporary_file:
                 temporary_path = Path(temporary_file.name)
                 async for chunk in response.aiter_bytes():
                     temporary_file.write(chunk)
         temporary_path.replace(destination)
     except httpx.HTTPError as exc:
-        raise S3Error(f"{action} failed: {exc}. Check your connection and try again.") from exc
+        raise _transport_error(action, exc) from exc
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
