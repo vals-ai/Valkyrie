@@ -93,6 +93,7 @@ class TestOutputsCommands:
         """
         mock_download = AsyncMock(return_value=2)
         monkeypatch.setattr(outputs_module, "download_s3_path", mock_download)
+        monkeypatch.setattr(outputs_module, "use_tracker_storage", lambda: False)
 
         result = cli_runner.invoke(output_path, [str(_RUN_ID), "/task-a/", "--output-dir", "/tmp/output"])
 

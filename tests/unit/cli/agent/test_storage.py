@@ -93,6 +93,11 @@ async def test_agent_download_ingest_and_remove_use_configured_s3(
         deleted_keys.append(key)
         existing_keys.remove(key)
 
+    monkeypatch.setattr(
+        storage.cli_s3,
+        "load_config",
+        lambda: {"AWS_ACCESS_KEY_ID": "key", "AWS_SECRET_ACCESS_KEY": "secret"},
+    )
     monkeypatch.setattr(storage.cli_s3, "aws_runtime", lambda: runtime)
     monkeypatch.setattr(storage, "s3_object_exists", s3_object_exists)
     monkeypatch.setattr(storage, "download_from_s3", download_from_s3)

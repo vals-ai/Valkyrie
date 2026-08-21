@@ -848,17 +848,24 @@ def test_start_benchmark_forwards_aws_session_token(
     assert aws_config["aws_session_token"] == "temporary-token"
 
 
-def test_start_benchmark_without_static_keys_sends_managed_request(
+@pytest.mark.parametrize(
+    "credential_overrides",
+    [
+        {"AWS_ACCESS_KEY_ID": None, "AWS_SECRET_ACCESS_KEY": None},
+        {"AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": "", "AWS_SESSION_TOKEN": ""},
+    ],
+)
+def test_start_benchmark_without_static_credentials_sends_managed_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    credential_overrides: dict[str, object],
 ) -> None:
-    """A config without static keys must send an API-key-only managed start."""
+    """Missing or blank static credentials must send an API-key-only managed start."""
     config_path = _write_valkyrie_config(
         tmp_path / "valkyrie.yaml",
-        AWS_ACCESS_KEY_ID=None,
-        AWS_SECRET_ACCESS_KEY=None,
         api_key="vals-key",
         sandbox_providers={"daytona": "DaytonaSecrets"},
+        **credential_overrides,
     )
     requests: list[httpx.Request] = []
 
@@ -910,10 +917,7 @@ def test_start_benchmark_without_static_keys_sends_managed_request(
             "AWS_SECRET_ACCESS_KEY": None,
             "AWS_SESSION_TOKEN": "orphan-session-token",
         },
-        {
-            "AWS_ACCESS_KEY_ID": " ",
-            "AWS_SECRET_ACCESS_KEY": "",
-        },
+        {"AWS_ACCESS_KEY_ID": " ", "AWS_SECRET_ACCESS_KEY": "secret"},
     ],
 )
 def test_tracker_client_rejects_incomplete_static_credentials(

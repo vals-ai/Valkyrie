@@ -1,6 +1,6 @@
 """Run with `uv run pytest tests/unit/api/test_agents.py`.
 
-Cover agent listing and download-link routes.
+Cover agent listing, download/upload-link, and delete routes.
 """
 
 from datetime import datetime, timezone
@@ -70,6 +70,68 @@ class TestAgentRoutes:
             aws_runtime,
             expiration=agents_api.PRESIGNED_URL_EXPIRES_SECONDS,
         )
+
+    def test_agent_upload_url_signs_put_for_agent_key(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+        harness_headers: dict[str, str],
+    ) -> None:
+        """Upload links must sign a PUT for the agent's zip key with the route's TTL.
+
+        Test cases:
+        - The route signs agents/<name>.zip and reports the configured expiration.
+        """
+        presigned_upload_url = AsyncMock(return_value="https://example.test/agent-a.zip?put")
+        monkeypatch.setattr(agents_api, "create_presigned_url", presigned_upload_url)
+
+        response = _client.post("/agents/agent-a/upload-url", headers=harness_headers)
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "name": "agent-a",
+            "upload_url": "https://example.test/agent-a.zip?put",
+            "expires_in": agents_api.PRESIGNED_URL_EXPIRES_SECONDS,
+        }
+        presigned_upload_url.assert_awaited_once_with(
+            "agents/agent-a.zip",
+            aws_runtime,
+            expiration=agents_api.PRESIGNED_URL_EXPIRES_SECONDS,
+            client_method="put_object",
+        )
+
+    def test_agent_upload_url_rejects_invalid_agent_name(
+        self,
+        harness_headers: dict[str, str],
+    ) -> None:
+        response = _client.post("/agents/bad%20name/upload-url", headers=harness_headers)
+
+        assert response.status_code == 400
+
+    def test_agent_delete_removes_existing_and_rejects_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+        harness_headers: dict[str, str],
+    ) -> None:
+        """Deletion must remove an existing agent zip and 404 for a missing one.
+
+        Test cases:
+        - An existing agent is deleted from storage.
+        - A missing agent returns 404 without a delete call.
+        """
+        exists = AsyncMock(side_effect=[True, False])
+        delete = AsyncMock(return_value=None)
+        monkeypatch.setattr(agents_api, "s3_object_exists", exists)
+        monkeypatch.setattr(agents_api, "delete_from_s3", delete)
+
+        response = _client.delete("/agents/agent-a", headers=harness_headers)
+        assert response.status_code == 204
+        delete.assert_awaited_once_with("agents/agent-a.zip", aws_runtime)
+
+        missing_response = _client.delete("/agents/missing", headers=harness_headers)
+        assert missing_response.status_code == 404
+        delete.assert_awaited_once()
 
     def test_agent_download_url_returns_not_found_for_missing_agent(
         self,

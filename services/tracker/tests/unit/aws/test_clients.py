@@ -176,9 +176,10 @@ class TestS3ClientRetry:
             pytest.param(DefaultChainAWSClientProvider("us-east-1"), id="default-chain"),
         ],
     )
-    async def test_uses_standard_retry_mode(self, provider: AWSClientProvider) -> None:
+    async def test_uses_standard_retry_mode_and_sigv4(self, provider: AWSClientProvider) -> None:
         async with provider.s3_client() as client:
             assert client.meta.config.retries["mode"] == "standard"
+            assert client.meta.config.signature_version == "s3v4"
 
 
 class TestCloudWatchClient:

@@ -42,10 +42,19 @@ def test_aws_runtime_uses_configured_credentials(
     assert runtime.clients.credentials.aws_session_token == session_token
 
 
-def test_aws_runtime_uses_sdk_credential_chain_without_configured_keys(
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        {},
+        {"AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": ""},
+        {"AWS_SESSION_TOKEN": ""},
+    ],
+)
+def test_aws_runtime_uses_sdk_credential_chain_without_configured_credentials(
     monkeypatch: pytest.MonkeyPatch,
+    credentials: dict[str, str],
 ) -> None:
-    monkeypatch.setattr(s3_config, "load_config", lambda: dict(_BASE_CONFIG))
+    monkeypatch.setattr(s3_config, "load_config", lambda: {**_BASE_CONFIG, **credentials})
 
     runtime = s3_config.aws_runtime()
 

@@ -26,6 +26,14 @@ from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
 
 from valkyrie.cli import s3_config as cli_s3
+from valkyrie.cli.remote_storage import (
+    download_agent_zip_remote,
+    list_agents_remote,
+    push_agent_remote,
+    remove_agent_remote,
+    update_benchmark_agent_version_remote,
+    use_tracker_storage,
+)
 
 
 async def _run_git_command(repo_path: Path | None, *args: str) -> None:
@@ -120,6 +128,9 @@ async def install_agent(agent_name: str | None, github_url: str) -> str:
 @handle_s3_error(message="Failed to push agent to S3")
 async def push_agent(agent_name: str, agent_path: Path):
     """Zip and push an agent to S3 at agents/{agent_name}.zip"""
+    if use_tracker_storage():
+        await push_agent_remote(agent_name, agent_path)
+        return
 
     # fetch bucket name from config
     bucket_name = cli_s3.fetch_bucket_name()
@@ -194,6 +205,10 @@ async def push_agent(agent_name: str, agent_path: Path):
 
 async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> None:
     """Overwrite the frozen benchmark agent copy from agents/<name>.zip in S3."""
+    if use_tracker_storage():
+        await update_benchmark_agent_version_remote(agent_name, benchmark_id)
+        return
+
     runtime = cli_s3.aws_runtime()
     source_key = get_contract_s3_key(agent_name)
     dest_key = get_benchmark_contract_s3_key(benchmark_id, agent_name)
@@ -205,6 +220,9 @@ async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> 
 
 
 async def _download_agent_zip(agent_name: str) -> bytes:
+    if use_tracker_storage():
+        return await download_agent_zip_remote(agent_name)
+
     runtime = cli_s3.aws_runtime()
     key = get_contract_s3_key(agent_name)
 
@@ -217,6 +235,10 @@ async def _download_agent_zip(agent_name: str) -> bytes:
 @handle_s3_error(message="Failed to remove agent from S3")
 async def remove_agent(agent_name: str):
     """Remove an agent from S3. Raises an error if the agent doesn't exist"""
+    if use_tracker_storage():
+        await remove_agent_remote(agent_name)
+        return
+
     runtime = cli_s3.aws_runtime()
     key = get_contract_s3_key(agent_name)
 
@@ -228,6 +250,10 @@ async def remove_agent(agent_name: str):
 
 async def list_agents() -> list[tuple[str, datetime | None]]:
     """List all agents in the S3 bucket's agents/ folder with the dates that they were added."""
+    if use_tracker_storage():
+        click.echo("\r\033[KListing agents via tracker...", nl=False)
+        return await list_agents_remote()
+
     runtime = cli_s3.aws_runtime()
 
     click.echo(f"\r\033[KListing agents from bucket '{runtime.resources.s3_bucket}'...", nl=False)

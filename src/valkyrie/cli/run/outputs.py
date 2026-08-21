@@ -8,6 +8,7 @@ import click
 from httpx import Response
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
 
+from valkyrie.cli.remote_storage import download_outputs_remote, use_tracker_storage
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.artifacts import download_s3_path
 from valkyrie.cli.run.task_ids import resolve_task_ids
@@ -92,7 +93,10 @@ def output_path(benchmark_id: UUID, subpath: str, output_dir: Path | None):
             output_dir = Path(str(benchmark_id))
 
         click.echo(f"\r\033[KDownloading from s3://{path}...", nl=False)
-        count = asyncio.run(download_s3_path(path, output_dir))
+        if use_tracker_storage():
+            count = asyncio.run(download_outputs_remote(str(benchmark_id), subpath, output_dir))
+        else:
+            count = asyncio.run(download_s3_path(path, output_dir))
         click.echo(click.style(f"\r\033[K✓ {count} file(s) downloaded to: {output_dir}", fg="green"))
     except Exception as e:
         click.echo(click.style(f"✗ Error: {e}", fg="red"), err=True)

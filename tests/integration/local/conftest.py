@@ -39,6 +39,12 @@ TEST_ORG_ID = UUID("c15649d2-6ec4-4b4a-974a-cc00ea80bbf7")
 
 
 @pytest.fixture
+def test_org_id() -> UUID:
+    """Return the organization owned by the local tracker test app."""
+    return TEST_ORG_ID
+
+
+@pytest.fixture
 def cli_runner() -> CliRunner:
     """Provide an isolated Click command runner."""
     return CliRunner()

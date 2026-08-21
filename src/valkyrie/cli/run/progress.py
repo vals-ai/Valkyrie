@@ -7,7 +7,7 @@ import click
 from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
 from tracker.types import BenchmarkDetails, FetchBenchmarkMetadataResponse, FetchBenchmarkResponse
 
-from valkyrie.cli.display import local_time, terminal_safe
+from valkyrie.cli.display import create_progress_bar, local_time, terminal_safe
 from valkyrie.cli.run.snapshot import fetch_run_metadata, format_run_snapshot_json
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -23,14 +23,6 @@ class BenchmarkFormatter:
         "FINISHED": "green",
         "ERROR": "red",
     }
-
-    @staticmethod
-    def create_progress_bar(finished_tasks: int, total_tasks: int, bar_width: int = 30) -> tuple[str, float]:
-        """Create a progress bar string and percentage."""
-        progress_pct = (finished_tasks / total_tasks * 100) if total_tasks > 0 else 0
-        filled_width = int(bar_width * progress_pct / 100)
-        bar = "█" * filled_width + "░" * (bar_width - filled_width)
-        return bar, progress_pct
 
     @staticmethod
     def format_task_breakdown(task_breakdown: dict[TaskStatus, int]) -> str:
@@ -75,7 +67,7 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     """Format and display run status in a box with a progress bar."""
     details = benchmark_response.details
 
-    bar, progress_pct = BenchmarkFormatter.create_progress_bar(details.finished_tasks, details.total_tasks)
+    bar, progress_pct = create_progress_bar(details.finished_tasks, details.total_tasks)
     status_color = BenchmarkFormatter.STATUS_COLORS[details.status.value]
     status_text = click.style(details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
     progress_line = f"[{bar}] {details.finished_tasks}/{details.total_tasks} ({progress_pct:.1f}%) • {status_text}"
@@ -186,9 +178,7 @@ def stream_benchmark_status(
         click.echo(click.style("Streaming run updates (Ctrl+C to stop)...", fg="cyan"))
 
         initial_details = initial.details
-        bar, progress_pct = BenchmarkFormatter.create_progress_bar(
-            initial_details.finished_tasks, initial_details.total_tasks
-        )
+        bar, progress_pct = create_progress_bar(initial_details.finished_tasks, initial_details.total_tasks)
         status_color = BenchmarkFormatter.STATUS_COLORS[initial_details.status.value]
         status_text = click.style(initial_details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
         click.echo(
@@ -213,7 +203,7 @@ def stream_benchmark_status(
 
                 details = response.details
 
-                bar, progress_pct = BenchmarkFormatter.create_progress_bar(details.finished_tasks, details.total_tasks)
+                bar, progress_pct = create_progress_bar(details.finished_tasks, details.total_tasks)
                 status_color = BenchmarkFormatter.STATUS_COLORS[details.status.value]
                 status_text = click.style(details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
 

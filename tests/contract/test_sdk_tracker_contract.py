@@ -17,11 +17,9 @@ from tracker.database.models import (
     FinalEvaluation,
     OutputArtifact,
 )
+from tracker.storage_types import AgentDownloadURLResponse, AgentEntry, AgentsResponse
 from tracker.types import (
     AWSCredentials,
-    AgentDownloadURLResponse,
-    AgentEntry,
-    AgentsResponse,
     AnalyzeBenchmarkRequest,
     AverageTaskBreakdown,
     BenchmarkDetails,
@@ -179,8 +177,13 @@ MODEL_PAIRS = (
     (FetchBenchmarkMetadataResponse, SDKFetchBenchmarkMetadataResponse),
 )
 INTERNAL_ROUTES = {
+    ("/agents/{name}", "delete"),
+    ("/agents/{name}/upload-url", "post"),
     ("/aws-runtime", "get"),
+    ("/benchmarks/{benchmark_id}/agent-version", "post"),
     ("/benchmarks/{benchmark_id}/concurrency", "patch"),
+    ("/benchmarks/{benchmark_id}/output-keys", "get"),
+    ("/benchmarks/{benchmark_id}/output-urls", "post"),
     ("/benchmarks/filter-options", "get"),
     ("/health", "get"),
     ("/init", "post"),
