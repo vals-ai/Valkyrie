@@ -369,9 +369,6 @@ def start(
                     kwargs={key: str(value) for key, value in agent_config.kwargs.items()},
                 )
         elif managed_execution:
-            # Tracker must rebuild hosted contracts from the frozen S3 bundle
-            # before their model and variant can be marked trusted. Sending a
-            # caller-expanded run command would correctly clear attestation.
             contract = AgentContractRequest(
                 name=agent,
                 model=agent_config.model,
