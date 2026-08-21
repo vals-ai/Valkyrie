@@ -20,6 +20,7 @@ from benchmark_service.client import (
     BenchmarkServiceUnauthenticatedError,
 )
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
+from botocore.exceptions import ClientError
 from dateutil.parser import isoparse
 from descope.descope_client import DescopeClient
 from fastapi import HTTPException
@@ -56,7 +57,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.config import STABLE_QUEUE_NAME
-from tracker.exceptions import TrackerServiceError
+from tracker.exceptions import S3Error, TrackerServiceError
 from tracker.types import (
     BenchmarkTableRow,
     FetchBenchmarksRequest,
@@ -2226,6 +2227,60 @@ class TestTrackerAPI:
 
         assert response.status_code == 404
         assert response.json() == {"detail": f"No outputs found for run '{example_benchmark_object.id}'"}
+
+    @pytest.mark.parametrize(
+        ("aws_managed", "expected_status", "expected_detail"),
+        [
+            pytest.param(
+                False,
+                403,
+                (
+                    "The AWS credentials supplied for this run cannot access its S3 bucket. "
+                    "Check the run's AWS configuration and permissions, then try again."
+                ),
+                id="access-key",
+            ),
+            pytest.param(True, 500, "Tracker service operation failed", id="managed"),
+        ],
+    )
+    async def test_fetch_run_outputs_classifies_s3_access_denied_by_aws_mode(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        harness_headers: dict[str, str],
+        aws_managed: bool,
+        expected_status: int,
+        expected_detail: str,
+    ) -> None:
+        example_benchmark_object.aws_managed = aws_managed
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        if aws_managed:
+            monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+            monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_REGION", "deployment-region")
+            monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket")
+            monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group")
+            monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30")
+
+        async def _denied_list_s3_objects(*_args: Any, **_kwargs: Any) -> AsyncIterator[str]:
+            client_error = ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "denied"}},
+                "ListObjectsV2",
+            )
+            raise S3Error("Failed to list objects from S3") from client_error
+            yield
+
+        monkeypatch.setattr("main.list_s3_objects", _denied_list_s3_objects)
+
+        response = client.get(
+            f"/fetch-run-outputs/{example_benchmark_object.id}",
+            headers={} if aws_managed else harness_headers,
+        )
+
+        assert response.status_code == expected_status
+        assert response.json() == {"detail": expected_detail}
 
     async def test_benchmark_service_unauthenticated_error_returns(
         self,

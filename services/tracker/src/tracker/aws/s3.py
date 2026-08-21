@@ -48,6 +48,14 @@ def get_agent_result_s3_key(benchmark_id: str, task_id: str, output_name: str) -
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/{output_name}"
 
 
+def is_s3_access_denied(error: S3Error) -> bool:
+    """Return whether an S3 operation failed because AWS denied access."""
+    cause = error.__cause__
+    if not isinstance(cause, ClientError):
+        return False
+    return cause.response.get("Error", {}).get("Code") in {"AccessDenied", "AccessDeniedException"}
+
+
 def handle_s3_error(message: str) -> Callable[[Callable[_P, Awaitable[_R]]], Callable[_P, Coroutine[Any, Any, _R]]]:
     """Wrap AWS errors raised by an async S3 helper as S3Error."""
 

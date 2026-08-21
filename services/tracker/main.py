@@ -60,6 +60,7 @@ from tracker.aws.s3 import (
     download_many_from_s3,
     get_benchmark_contract_s3_key,
     get_contract_s3_key,
+    is_s3_access_denied,
     list_s3_objects,
     s3_object_exists,
 )
@@ -95,7 +96,7 @@ from tracker.database.session import check_database_connection, get_session
 from tracker.docent_analysis import (
     analyze_event_stream,
 )
-from tracker.exceptions import TrackerServiceError
+from tracker.exceptions import S3Error, TrackerServiceError
 from executor_protocol import EXECUTOR_TASK_NAME, ExecutorTelemetryContext, executor_task_signature
 from tracker.logging import configure_logging, get_logger, request_id_var
 from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
@@ -1447,7 +1448,18 @@ async def fetch_run_outputs(
 
     # Peek a single key so an empty result still returns 404 before the stream starts.
     keys = _output_keys(benchmark_prefix, task_ids, aws_runtime, benchmark_id)
-    first_key = await anext(keys, None)
+    try:
+        first_key = await anext(keys, None)
+    except S3Error as exc:
+        if not run_context.benchmark.aws_managed and is_s3_access_denied(exc):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "The AWS credentials supplied for this run cannot access its S3 bucket. "
+                    "Check the run's AWS configuration and permissions, then try again."
+                ),
+            ) from exc
+        raise
     if first_key is None:
         raise HTTPException(status_code=404, detail=f"No outputs found for run '{benchmark_id}'")
 
