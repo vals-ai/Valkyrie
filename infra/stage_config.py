@@ -128,6 +128,7 @@ DEV_CONFIG = StageConfig(
         benchmark_log_retention_days=7,
         submissions_enabled=True,
         executor_all_secret_access=True,
+        executor_lambda_function_name_patterns=("vals-format-lambda",),
     ),
 )
 
