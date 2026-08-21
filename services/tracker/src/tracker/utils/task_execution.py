@@ -59,6 +59,7 @@ from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 logger = get_logger(__name__)
 
 _PTY_TASK_RETRY_LIMIT: int = 1
+MANAGED_SECRET_KEYS = {"MODEL_GATEWAY_URL", "MODEL_GATEWAY_API_KEY"}
 
 
 class TrackedTaskStatus(str, Enum):
@@ -408,7 +409,7 @@ async def process_task(
             identity["email"] = benchmark_started_by_email
 
         if isinstance(harness_config.aws, TaskRoleAWSConfig):
-            if start_benchmark_request.contract.secrets:
+            if set(start_benchmark_request.contract.secrets) - MANAGED_SECRET_KEYS:
                 raise TrackerServiceError("Managed runtime does not accept AWS secret references")
             if benchmark_started_by_id is None:
                 raise TrackerServiceError("Managed run is missing its starter identity")

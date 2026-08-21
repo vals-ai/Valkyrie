@@ -105,7 +105,15 @@ def test_hosted_start_uses_managed_payload_and_legacy_headers_only_for_existing_
 
     tracker = TrackerService(base_url="http://tracker")
     tracker.start_benchmark(
-        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+        contract=AgentContractRequest(
+            name="agent",
+            install_cmd="echo install",
+            run_cmd="echo run",
+            secrets={
+                "MODEL_GATEWAY_URL": "devModelGatewayClientConfig",
+                "MODEL_GATEWAY_API_KEY": "devModelGatewayClientConfig",
+            },
+        ),
         benchmark_name="swebench",
         concurrency=1,
         ignore_custom_services=False,

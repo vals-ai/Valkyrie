@@ -212,6 +212,14 @@ class TestFastapiServer:
         monkeypatch.setattr("main.copy_agent_to_benchmark", copy_agent)
         monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
 
+        contract = contract.model_copy(
+            update={
+                "secrets": {
+                    "MODEL_GATEWAY_URL": "devModelGatewayClientConfig",
+                    "MODEL_GATEWAY_API_KEY": "devModelGatewayClientConfig",
+                }
+            }
+        )
         response = client.post(
             "/start-benchmark",
             json={

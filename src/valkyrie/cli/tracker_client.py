@@ -49,6 +49,7 @@ _REQUIRED_CONFIG_KEYS = {
     "AWS_DEFAULT_REGION",
     "S3_BUCKET",
 }
+_MANAGED_SECRET_KEYS = {"MODEL_GATEWAY_URL", "MODEL_GATEWAY_API_KEY"}
 _PROVIDER_SETUP_COMMAND = "valkyrie config provider set <provider> <secret-name>"
 
 
@@ -459,7 +460,7 @@ class TrackerService:
             TrackerServiceError: If start run fails
         """
         try:
-            if self._api_key and (contract.secrets or webhook_secret_name):
+            if self._api_key and ((set(contract.secrets) - _MANAGED_SECRET_KEYS) or webhook_secret_name):
                 raise TrackerServiceError("Hosted mode does not accept AWS secret references")
 
             provider_name, provider_secret_name = self.resolve_sandbox_provider(provider)
