@@ -1,6 +1,6 @@
 """Wire models for Tracker-mediated storage operations."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AgentEntry(BaseModel):
@@ -29,7 +29,15 @@ class OutputURLEntry(BaseModel):
     download_url: str
 
 
-class BenchmarkOutputURLsResponse(BaseModel):
+class BenchmarkOutputKeysResponse(BaseModel):
     prefix: str
+    keys: list[str]
+
+
+class OutputURLsRequest(BaseModel):
+    keys: list[str] = Field(min_length=1, max_length=8)
+
+
+class BenchmarkOutputURLsResponse(BaseModel):
     files: list[OutputURLEntry]
     expires_in: int

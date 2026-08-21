@@ -15,19 +15,24 @@ from tracker.aws.s3 import (
     normalize_s3_download_prefix,
     s3_object_exists,
 )
-from tracker.storage_types import BenchmarkOutputURLsResponse, OutputURLEntry
+from tracker.storage_types import (
+    BenchmarkOutputKeysResponse,
+    BenchmarkOutputURLsResponse,
+    OutputURLEntry,
+    OutputURLsRequest,
+)
 
 OUTPUT_URL_EXPIRES_SECONDS = 3600
 
 router = APIRouter(prefix="/benchmarks")
 
 
-@router.get("/{benchmark_id}/output-urls", response_model=BenchmarkOutputURLsResponse)
-async def get_benchmark_output_urls(
+@router.get("/{benchmark_id}/output-keys", response_model=BenchmarkOutputKeysResponse)
+async def get_benchmark_output_keys(
     run_context: RunAWSDependency,
     subpath: str = "",
-) -> BenchmarkOutputURLsResponse:
-    """Return presigned GET URLs for every object under the run's output prefix."""
+) -> BenchmarkOutputKeysResponse:
+    """Return the storage keys under one run-owned output prefix."""
     prefix = f"{S3_BENCHMARKS_PREFIX}/{run_context.benchmark.id}"
     if subpath:
         prefix = f"{prefix}/{subpath.strip('/')}"
@@ -39,11 +44,25 @@ async def get_benchmark_output_urls(
     if not keys:
         raise HTTPException(status_code=404, detail=f"No files found under '{prefix}'")
 
-    expires_in = aws_runtime.clients.maximum_presign_ttl(OUTPUT_URL_EXPIRES_SECONDS)
-    urls = await create_presigned_urls(keys, aws_runtime, expiration=expires_in)
-    files = [OutputURLEntry(key=key, download_url=url) for key, url in zip(keys, urls)]
+    return BenchmarkOutputKeysResponse(prefix=prefix, keys=keys)
 
-    return BenchmarkOutputURLsResponse(prefix=prefix, files=files, expires_in=expires_in)
+
+@router.post("/{benchmark_id}/output-urls", response_model=BenchmarkOutputURLsResponse)
+async def create_benchmark_output_urls(
+    run_context: RunAWSDependency,
+    request: OutputURLsRequest,
+) -> BenchmarkOutputURLsResponse:
+    """Sign one batch of run-owned output keys immediately before download."""
+    run_prefix = f"{S3_BENCHMARKS_PREFIX}/{run_context.benchmark.id}/"
+    if any(not key.startswith(run_prefix) for key in request.keys):
+        raise HTTPException(status_code=400, detail="Output keys must belong to the requested run")
+
+    aws_runtime = run_context.aws_runtime
+    expires_in = aws_runtime.clients.maximum_presign_ttl(OUTPUT_URL_EXPIRES_SECONDS)
+    urls = await create_presigned_urls(request.keys, aws_runtime, expiration=expires_in)
+    files = [OutputURLEntry(key=key, download_url=url) for key, url in zip(request.keys, urls)]
+
+    return BenchmarkOutputURLsResponse(files=files, expires_in=expires_in)
 
 
 @router.post("/{benchmark_id}/agent-version", status_code=204)

@@ -6,7 +6,7 @@ from tracker.aws.s3 import normalize_s3_download_prefix
 from tracker.exceptions import S3Error
 
 from valkyrie.cli import s3_config as cli_s3
-from valkyrie.cli.remote_storage import gather_in_batches, resolve_download_destination
+from valkyrie.cli.downloads import gather_in_batches, resolve_download_destination
 
 
 @handle_s3_error(message="Failed to download from S3")

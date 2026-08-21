@@ -4,9 +4,9 @@ Metadata operations go through Tracker endpoints and bulk data moves over
 presigned S3 URLs, so a keyless CLI process never constructs an AWS client.
 """
 
-import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable
 from datetime import datetime
+from itertools import batched
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import BinaryIO, TypeVar, cast
@@ -20,16 +20,18 @@ from tracker.storage_types import (
     AgentDownloadURLResponse,
     AgentsResponse,
     AgentUploadURLResponse,
+    BenchmarkOutputKeysResponse,
     BenchmarkOutputURLsResponse,
+    OutputURLsRequest,
     OutputURLEntry,
 )
 
 from valkyrie.cli import s3_config
 from valkyrie.cli.display import create_progress_bar
+from valkyrie.cli.downloads import DOWNLOAD_CONCURRENCY, gather_in_batches, resolve_download_destination
 from valkyrie.cli.runtime_config import tracker_service_url
 
 _TRANSFER_TIMEOUT_SECONDS = 300
-_DOWNLOAD_CONCURRENCY = 8
 _UPLOAD_CHUNK_BYTES = 5 * 1024 * 1024
 # Presigned single-part PUT; S3 caps one part at 5 GiB.
 _MAX_SINGLE_PUT_BYTES = 5 * 1024**3
@@ -111,38 +113,6 @@ def _parse_tracker_response(
         return response_model.model_validate(response.json())
     except ValueError as exc:
         raise S3Error(f"{action} failed: Tracker returned an invalid response.") from exc
-
-
-Item = TypeVar("Item")
-
-
-async def gather_in_batches(items: Sequence[Item], worker: Callable[[Item], Awaitable[None]]) -> None:
-    """Run `worker` over `items`, at most _DOWNLOAD_CONCURRENCY at a time."""
-
-    async def run_worker(item: Item) -> None:
-        await worker(item)
-
-    for start in range(0, len(items), _DOWNLOAD_CONCURRENCY):
-        batch = items[start : start + _DOWNLOAD_CONCURRENCY]
-        tasks = [asyncio.create_task(run_worker(item)) for item in batch]
-        try:
-            await asyncio.gather(*tasks)
-        except BaseException:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            raise
-
-
-def resolve_download_destination(key: str, prefix: str, output_dir: Path) -> Path:
-    """Map an S3 key under `prefix` to a created path inside `output_dir`, rejecting escapes."""
-    relative = key.removeprefix(prefix).lstrip("/")
-    destination = (output_dir / relative if relative else output_dir / Path(key).name).resolve()
-    if not destination.is_relative_to(output_dir):
-        raise S3Error(f"Requested path is not relative to the output directory '{key}'")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-
-    return destination
 
 
 def _echo_progress(label: str, completed: int, total: int) -> None:
@@ -264,29 +234,41 @@ async def update_benchmark_agent_version_remote(agent_name: str, benchmark_id: s
 
 async def download_outputs_remote(benchmark_id: str, subpath: str, output_dir: Path) -> int:
     """Download a run's output files via Tracker-issued presigned URLs. Returns file count."""
-    async with _client() as client:
-        params = {"subpath": subpath} if subpath else {}
-        response = await _send(
-            client.get(f"/benchmarks/{benchmark_id}/output-urls", params=params),
-            "Requesting output download URLs",
-        )
-        _raise_for_status(response, "Requesting output download URLs")
-        payload = _parse_tracker_response(
-            response,
-            BenchmarkOutputURLsResponse,
-            "Requesting output download URLs",
-        )
-
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    async with _transfer_client() as transfer:
+    async with _client() as client, _transfer_client() as transfer:
+        params = {"subpath": subpath} if subpath else {}
+        response = await _send(
+            client.get(f"/benchmarks/{benchmark_id}/output-keys", params=params),
+            "Listing output files",
+        )
+        _raise_for_status(response, "Listing output files")
+        keys_response = _parse_tracker_response(
+            response,
+            BenchmarkOutputKeysResponse,
+            "Listing output files",
+        )
 
         async def download_file(entry: OutputURLEntry) -> None:
-            destination = resolve_download_destination(entry.key, payload.prefix, output_dir)
+            destination = resolve_download_destination(entry.key, keys_response.prefix, output_dir)
             action = f"Downloading '{entry.key}'"
             await _download_to_file(transfer, entry.download_url, destination, action)
 
-        await gather_in_batches(payload.files, download_file)
+        for key_batch in batched(keys_response.keys, DOWNLOAD_CONCURRENCY):
+            response = await _send(
+                client.post(
+                    f"/benchmarks/{benchmark_id}/output-urls",
+                    json=OutputURLsRequest(keys=list(key_batch)).model_dump(),
+                ),
+                "Requesting output download URLs",
+            )
+            _raise_for_status(response, "Requesting output download URLs")
+            urls_response = _parse_tracker_response(
+                response,
+                BenchmarkOutputURLsResponse,
+                "Requesting output download URLs",
+            )
+            await gather_in_batches(urls_response.files, download_file)
 
-    return len(payload.files)
+    return len(keys_response.keys)

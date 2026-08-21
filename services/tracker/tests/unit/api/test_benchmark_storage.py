@@ -41,8 +41,8 @@ def _mock_listing(monkeypatch: pytest.MonkeyPatch, keys: list[str]) -> list[str]
     return requested_prefixes
 
 
-class TestOutputURLs:
-    """Presigned output-download listing for one run."""
+class TestOutputStorage:
+    """Output-key listing and just-in-time URL signing for one run."""
 
     @pytest.mark.parametrize(
         ("subpath", "expected_prefix_suffix"),
@@ -64,12 +64,9 @@ class TestOutputURLs:
         expected_prefix = f"benchmarks/{stored_benchmark.id}{expected_prefix_suffix}"
         key = f"benchmarks/{stored_benchmark.id}/task-a/output.json"
         requested_prefixes = _mock_listing(monkeypatch, [key])
-        presign = AsyncMock(return_value=["https://example.test/file"])
-        monkeypatch.setattr(benchmark_storage_module, "create_presigned_urls", presign)
-
         params = {"subpath": subpath} if subpath else {}
         response = _client.get(
-            f"/benchmarks/{stored_benchmark.id}/output-urls",
+            f"/benchmarks/{stored_benchmark.id}/output-keys",
             params=params,
             headers=harness_headers,
         )
@@ -79,7 +76,7 @@ class TestOutputURLs:
 
         payload = response.json()
         assert payload["prefix"] == expected_prefix
-        assert payload["files"] == [{"key": key, "download_url": "https://example.test/file"}]
+        assert payload["keys"] == [key]
 
     def test_empty_listing_returns_not_found(
         self,
@@ -89,10 +86,37 @@ class TestOutputURLs:
     ) -> None:
         _mock_listing(monkeypatch, [])
 
-        response = _client.get(f"/benchmarks/{stored_benchmark.id}/output-urls", headers=harness_headers)
+        response = _client.get(f"/benchmarks/{stored_benchmark.id}/output-keys", headers=harness_headers)
 
         assert response.status_code == 404
         assert "No files found" in response.json()["detail"]
+
+    def test_signs_only_keys_owned_by_the_requested_run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        stored_benchmark: Benchmark,
+        harness_headers: dict[str, str],
+    ) -> None:
+        key = f"benchmarks/{stored_benchmark.id}/task-a/output.json"
+        presign = AsyncMock(return_value=["https://example.test/file"])
+        monkeypatch.setattr(benchmark_storage_module, "create_presigned_urls", presign)
+
+        response = _client.post(
+            f"/benchmarks/{stored_benchmark.id}/output-urls",
+            json={"keys": [key]},
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["files"] == [{"key": key, "download_url": "https://example.test/file"}]
+
+        rejected_response = _client.post(
+            f"/benchmarks/{stored_benchmark.id}/output-urls",
+            json={"keys": ["benchmarks/another-run/output.json"]},
+            headers=harness_headers,
+        )
+        assert rejected_response.status_code == 400
+        presign.assert_awaited_once()
 
 
 class TestAgentVersionPromotion:

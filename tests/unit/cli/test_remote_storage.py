@@ -132,7 +132,7 @@ class MockStorageBackend:
         if request.method == "POST" and path.endswith("/agent-version"):
             self.promoted.append({"benchmark_id": path.split("/")[2], "body": request.read().decode()})
             return httpx.Response(204)
-        if request.method == "GET" and path.endswith("/output-urls"):
+        if request.method == "GET" and path.endswith("/output-keys"):
             benchmark_id = path.split("/")[2]
 
             # The prefix rule itself is server behavior with its own tests; here the
@@ -145,6 +145,14 @@ class MockStorageBackend:
                 200,
                 json={
                     "prefix": prefix,
+                    "keys": keys,
+                },
+            )
+        if request.method == "POST" and path.endswith("/output-urls"):
+            keys = json.loads(request.read())["keys"]
+            return httpx.Response(
+                200,
+                json={
                     "files": [{"key": key, "download_url": f"{_S3_URL}/{key}"} for key in keys],
                     "expires_in": 3600,
                 },
@@ -398,6 +406,27 @@ async def test_download_outputs_subpath_scopes_the_listing(
     assert count == 1
     assert (tmp_path / "output.json").exists()
     assert not (tmp_path / "task-b").exists()
+
+
+async def test_download_outputs_requests_urls_immediately_before_each_batch(
+    backend: MockStorageBackend,
+    tmp_path: Path,
+) -> None:
+    for index in range(remote_storage.DOWNLOAD_CONCURRENCY + 1):
+        backend.objects[f"benchmarks/run-1/{index}.json"] = b"{}"
+
+    await remote_storage.download_outputs_remote("run-1", "", tmp_path)
+
+    storage_requests = [
+        (request.method, request.url.path)
+        for request in backend.requests
+        if request.url.path.endswith(("output-keys", "output-urls")) or str(request.url).startswith(_S3_URL)
+    ]
+    assert storage_requests[0] == ("GET", "/benchmarks/run-1/output-keys")
+    assert storage_requests[1] == ("POST", "/benchmarks/run-1/output-urls")
+    assert all(method == "GET" and path.startswith("/benchmarks/run-1/") for method, path in storage_requests[2:10])
+    assert storage_requests[10] == ("POST", "/benchmarks/run-1/output-urls")
+    assert storage_requests[11][0] == "GET"
 
 
 async def test_download_failure_cancels_siblings_and_removes_partial_files(

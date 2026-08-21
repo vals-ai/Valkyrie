@@ -28,7 +28,7 @@ def test_output_urls_and_agent_version_accept_api_key_auth(
     """Hosted API-key auth with an access-key runtime must reach the run-scoped routes.
 
     Test cases:
-    - output-urls returns the signed listing for the caller's own run.
+    - output-keys lists the caller's own run and output-urls signs that batch.
     - agent-version promotes an existing agent for the same caller.
     """
     benchmark = make_benchmark(session=database_session)
@@ -48,9 +48,17 @@ def test_output_urls_and_agent_version_accept_api_key_auth(
     monkeypatch.setattr("tracker.api.benchmark_storage.copy_s3_object", AsyncMock(return_value=None))
     headers = {"x-api-key": "fake-key", **_HARNESS_HEADERS}
 
-    output_response = access_key_client.get(f"/benchmarks/{benchmark.id}/output-urls", headers=headers)
-    assert output_response.status_code == 200, output_response.text
-    assert output_response.json()["files"] == [{"key": key, "download_url": "https://example.test/file"}]
+    keys_response = access_key_client.get(f"/benchmarks/{benchmark.id}/output-keys", headers=headers)
+    assert keys_response.status_code == 200, keys_response.text
+    assert keys_response.json()["keys"] == [key]
+
+    urls_response = access_key_client.post(
+        f"/benchmarks/{benchmark.id}/output-urls",
+        json={"keys": [key]},
+        headers=headers,
+    )
+    assert urls_response.status_code == 200, urls_response.text
+    assert urls_response.json()["files"] == [{"key": key, "download_url": "https://example.test/file"}]
 
     promote_response = access_key_client.post(
         f"/benchmarks/{benchmark.id}/agent-version",
@@ -60,11 +68,11 @@ def test_output_urls_and_agent_version_accept_api_key_auth(
     assert promote_response.status_code == 204, promote_response.text
 
 
-def test_output_urls_unauth_401(client: TestClient, database_session: Session) -> None:
+def test_output_keys_unauth_401(client: TestClient, database_session: Session) -> None:
     benchmark = make_benchmark(session=database_session)
     database_session.add(benchmark)
     database_session.commit()
 
-    response = client.get(f"/benchmarks/{benchmark.id}/output-urls")
+    response = client.get(f"/benchmarks/{benchmark.id}/output-keys")
 
     assert response.status_code == 401
