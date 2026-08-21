@@ -6,21 +6,45 @@ Run: uv run pytest tests/unit/observability/test_observability.py
 import importlib
 import logging
 from collections.abc import Mapping
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
+from opentelemetry.trace import StatusCode
 from sentry_sdk import metrics as sentry_metrics
 from tenacity import RetryCallState, Retrying
 
 import tracker.observability.metrics as metrics_module
 import tracker.observability.retry as retry_module
 import tracker.observability.sentry as sentry_module
+import tracker.observability.tracing as tracing_module
+import tracker.observability as observability_module
 
 
 def _run_orchestration() -> Any:
     return importlib.import_module("tracker.utils.run_orchestration")
+
+
+@pytest.mark.parametrize("failing_component", ["sentry", "tracing"])
+def test_observability_initialization_failure_does_not_escape(
+    monkeypatch: pytest.MonkeyPatch,
+    failing_component: str,
+) -> None:
+    error = RuntimeError(f"{failing_component} unavailable")
+    initialize_sentry = Mock(side_effect=error if failing_component == "sentry" else None)
+    initialize_tracing = Mock(side_effect=error if failing_component == "tracing" else None)
+    warning = Mock()
+    monkeypatch.setattr(observability_module, "init_sentry", initialize_sentry)
+    monkeypatch.setattr(observability_module, "configure_tracing", initialize_tracing)
+    monkeypatch.setattr(observability_module.logger, "warning", warning)
+
+    observability_module.configure_observability("valkyrie-test", "production")
+
+    initialize_sentry.assert_called_once_with("valkyrie-test", environment="production")
+    initialize_tracing.assert_called_once_with("valkyrie-test", environment="production")
+    assert error in warning.call_args.args
 
 
 def test_invalid_queued_request_does_not_expose_aws_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -312,3 +336,97 @@ def test_retry_callback_logs_attempt_and_emits_retry_metric(monkeypatch: pytest.
             "error_class": "TimeoutError",
         }
     ]
+
+
+def test_sentry_span_processor_drops_noisy_polling_subtrees(monkeypatch: pytest.MonkeyPatch) -> None:
+    delegate = Mock()
+    delegate.force_flush.return_value = True
+    monkeypatch.setattr(tracing_module, "SentrySpanProcessor", Mock(return_value=delegate))
+    processor = tracing_module._FilteredSentrySpanProcessor()  # pyright: ignore[reportPrivateUsage]
+
+    root_context = SimpleNamespace(span_id=1)
+    polling_context = SimpleNamespace(span_id=2)
+    polling_child_context = SimpleNamespace(span_id=3)
+    meaningful_context = SimpleNamespace(span_id=4)
+    root = SimpleNamespace(name="sandbox.exec", parent=None, get_span_context=lambda: root_context)
+    polling = SimpleNamespace(
+        name="AsyncProcess.exec",
+        parent=root_context,
+        get_span_context=lambda: polling_context,
+    )
+    polling_child = SimpleNamespace(
+        name="http.client",
+        parent=polling_context,
+        get_span_context=lambda: polling_child_context,
+    )
+    meaningful = SimpleNamespace(
+        name="upload_output",
+        parent=root_context,
+        get_span_context=lambda: meaningful_context,
+    )
+
+    for span in (root, polling, polling_child, meaningful):
+        processor.on_start(span)
+    for span in (polling_child, polling, meaningful, root):
+        processor.on_end(span)
+
+    assert [call.args[0] for call in delegate.on_start.call_args_list] == [root, meaningful]
+    assert [call.args[0] for call in delegate.on_end.call_args_list] == [meaningful, root]
+
+
+def test_handled_error_span_records_exception_and_error_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    span = Mock()
+    error = RuntimeError("handled failure")
+
+    @contextmanager
+    def span_context(*_args: object, **_kwargs: object) -> Any:
+        yield
+
+    monkeypatch.setattr(tracing_module.logfire, "span", span_context)
+    monkeypatch.setattr(tracing_module.trace, "get_current_span", Mock(return_value=span))
+
+    with tracing_module.error_span("task.error", error, benchmark_id="benchmark-123"):
+        pass
+
+    span.record_exception.assert_called_once_with(error)
+    status = span.set_status.call_args.args[0]
+    assert status.status_code is StatusCode.ERROR
+
+
+def test_observability_span_failure_does_not_skip_wrapped_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tracing_module.logfire, "span", Mock(side_effect=RuntimeError("tracing unavailable")))
+    warning = Mock()
+    monkeypatch.setattr(tracing_module.logger, "warning", warning)
+    completed: list[bool] = []
+
+    with tracing_module.observability_span("task.status_transition"):
+        completed.append(True)
+
+    assert completed == [True]
+    warning.assert_called_once()
+
+
+@pytest.mark.parametrize("work_error", [None, RuntimeError("work failed")], ids=["success", "error"])
+def test_observability_span_close_failure_preserves_work_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    work_error: RuntimeError | None,
+) -> None:
+    span_manager = MagicMock()
+    span_manager.__exit__.side_effect = RuntimeError("tracing unavailable")
+    monkeypatch.setattr(tracing_module.logfire, "span", Mock(return_value=span_manager))
+    warning = Mock()
+    monkeypatch.setattr(tracing_module.logger, "warning", warning)
+    completed: list[bool] = []
+
+    if work_error is None:
+        with tracing_module.observability_span("task.status_transition"):
+            completed.append(True)
+        assert completed == [True]
+    else:
+        with pytest.raises(RuntimeError, match="work failed") as exc_info:
+            with tracing_module.observability_span("task.status_transition"):
+                raise work_error
+        assert exc_info.value is work_error
+        assert completed == []
+
+    warning.assert_called_once()

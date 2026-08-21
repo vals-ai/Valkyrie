@@ -8,9 +8,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, col, desc, select
 
-from tracker.api.dependencies import RunAWSDependency
+from tracker.api.dependencies import RunAWSDependency, TrackedBenchmarkId
 from tracker.auth import get_current_org
-from tracker.aws.cloudwatch_logs import get_benchmark_log_url
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, create_presigned_url, s3_object_exists
 from tracker.database.models import (
     Benchmark,
@@ -85,7 +85,7 @@ def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[Evalu
     response_model=SingleTaskResponse,
 )
 def get_single_task(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     task_id: str,
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
@@ -114,7 +114,7 @@ def get_single_task(
     response_model=TaskArtifactsResponse,
 )
 async def get_task_artifacts(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     task_id: str,
     run_context: RunAWSDependency,
     org: Org = Depends(get_current_org),
@@ -127,10 +127,9 @@ async def get_task_artifacts(
     cloudwatch_url: str | None = None
     if aws_runtime.resources.log_group and aws_runtime.resources.region:
         log_stream_suffix = f"{int(task.started_at.timestamp() * 1_000_000):x}"
-        cloudwatch_url = get_benchmark_log_url(
-            benchmark_id=str(benchmark_id),
-            resources=aws_runtime.resources,
-            task_id=f"{task.task_id}_{log_stream_suffix}",
+        cloudwatch_url = CloudWatchBenchmarkLogLocations(aws_runtime.resources).task_location(
+            str(benchmark_id),
+            f"{task.task_id}_{log_stream_suffix}",
         )
 
     agent_output_url: str | None = None

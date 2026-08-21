@@ -11,8 +11,7 @@ from benchmark_service.client import BenchmarkServiceClient
 from sqlmodel import Session, select
 
 from tracker.auth import RequestIdentity
-from tracker.aws.clients import AWSClientProvider
-from tracker.aws.secrets import fetch_aws_secret
+from tracker.runtime.secrets import SecretStore
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     Benchmark,
@@ -37,11 +36,11 @@ class BenchmarkConcurrencyUpdate:
 
 def fetch_sandbox_provider_config(
     secret_name: str,
-    clients: AWSClientProvider,
+    secret_store: SecretStore,
     provider_type: str,
 ) -> SandboxProviderConfig:
     """Resolve sandbox provider config from the selected provider type and secret."""
-    secret = fetch_aws_secret(secret_name, clients)
+    secret = secret_store.get(secret_name)
     if not isinstance(secret, dict):
         raise TrackerServiceError("Expected sandbox provider secret to be a JSON object")
 

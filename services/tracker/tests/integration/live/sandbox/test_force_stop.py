@@ -15,6 +15,7 @@ from sqlmodel import Session, col, select
 import tracker.utils as tracker_utils
 from tests.utils import TEST_ORG_ID, random_task_id
 from tracker.aws.runtime import AWSRuntime
+from tracker.aws.secrets import SecretsManagerStore
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.logging import get_logger
 from tracker.sandbox import create_sandbox
@@ -137,7 +138,9 @@ class TestForceStop:
             org=Org(id=TEST_ORG_ID, name="default"),
         )
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        provider_config = fetch_sandbox_provider_config(daytona_secret_name, aws_runtime.clients, "daytona")
+        provider_config = fetch_sandbox_provider_config(
+            daytona_secret_name, SecretsManagerStore(aws_runtime.clients), "daytona"
+        )
         provider = benchmark_service.get_sandbox_provider(provider_config)
         labels = {
             "Benchmark": example_benchmark_object.name,
@@ -217,7 +220,9 @@ class TestForceStop:
         database_session.add(example_benchmark_object)
         database_session.commit()
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        provider_config = fetch_sandbox_provider_config(daytona_secret_name, aws_runtime.clients, "daytona")
+        provider_config = fetch_sandbox_provider_config(
+            daytona_secret_name, SecretsManagerStore(aws_runtime.clients), "daytona"
+        )
         provider = benchmark_service.get_sandbox_provider(provider_config)
 
         labels = {"Benchmark": example_benchmark_object.name, "Id": str(example_benchmark_object.id)}
@@ -344,7 +349,9 @@ class TestForceStop:
                 )
             )
 
-            provider_config = fetch_sandbox_provider_config(daytona_secret_name, aws_runtime.clients, "daytona")
+            provider_config = fetch_sandbox_provider_config(
+                daytona_secret_name, SecretsManagerStore(aws_runtime.clients), "daytona"
+            )
             provider = benchmark_service.get_sandbox_provider(provider_config)
             await _wait_for_running_benchmark(example_benchmark_object, database_session, provider)
 

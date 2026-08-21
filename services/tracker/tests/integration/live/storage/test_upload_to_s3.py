@@ -11,7 +11,7 @@ from benchmark_service import ImageSource, Resources, SandboxProvider
 
 from tests.utils import random_task_id
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import delete_from_s3, download_from_s3, get_agent_result_s3_key
+from tracker.aws.s3 import S3ObjectStore, delete_from_s3, download_from_s3, get_agent_result_s3_key
 from tracker.database.models import Benchmark
 from tracker.sandbox import archive_and_upload_output, create_sandbox
 from tracker.types import HarnessConfig
@@ -59,6 +59,7 @@ class TestUploadToS3:
         dir_path = "/tmp/test_output_dir"
         task_id = random_task_id()
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        object_store = S3ObjectStore(aws_runtime)
         file_s3_key = get_agent_result_s3_key(str(example_benchmark_object.id), task_id, "test_output.json")
         dir_s3_key = get_agent_result_s3_key(str(example_benchmark_object.id), task_id, "test_output_dir")
 
@@ -71,13 +72,13 @@ class TestUploadToS3:
                 creation_semaphore=creation_semaphore,
             ) as sandbox:
                 await sandbox.exec(f"echo '{file_content}' > {file_path}")
-                await archive_and_upload_output(sandbox, file_path, file_s3_key, aws_runtime)
+                await archive_and_upload_output(sandbox, file_path, file_s3_key, object_store)
 
                 await sandbox.exec(f"mkdir -p {dir_path}/nested")
                 await sandbox.exec(f"echo 'file1 content' > {dir_path}/file1.txt")
                 await sandbox.exec(f"echo 'file2 content' > {dir_path}/file2.txt")
                 await sandbox.exec(f"echo 'nested content' > {dir_path}/nested/file3.txt")
-                await archive_and_upload_output(sandbox, dir_path, dir_s3_key, aws_runtime)
+                await archive_and_upload_output(sandbox, dir_path, dir_s3_key, object_store)
 
                 file_members = _archive_members(await download_from_s3(file_s3_key, aws_runtime))
                 dir_members = _archive_members(await download_from_s3(dir_s3_key, aws_runtime))

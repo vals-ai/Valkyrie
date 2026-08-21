@@ -9,20 +9,19 @@ from dataclasses import dataclass
 from typing import Any, Sequence, cast
 from uuid import UUID
 
-import logfire
 import sentry_sdk
 from benchmark_service import SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from botocore.config import Config
-from opentelemetry import trace
 from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
 from tracker._lambda import dry_run_lambda, invoke_lambda
-from tracker.aws.cloudwatch_logs import create_benchmark_log_group
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.resolver import deployment_aws_runtime
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.secrets import fetch_aws_secret, resolve_secrets
+from tracker.aws.secrets import SecretsManagerStore
+from tracker.runtime.secrets import resolve_secrets
 from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
     Benchmark,
@@ -41,6 +40,9 @@ from tracker.executor.execution_authority import ExecutionAuthority, lock_execut
 from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
+from tracker.observability import error_span
+from tracker.observability.sentry import capture_exception
+from tracker.observability.tracing import observability_span
 from tracker.outbound_security import validate_custom_service_destination
 from tracker.types import (
     FinalViewResponse,
@@ -64,6 +66,47 @@ _SANDBOX_CREATION_CAP: int = 10
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 # Limit non-idempotent completion callbacks to one attempt and a 60-second read.
 _COMPLETION_CALLBACK_CONFIG = Config(read_timeout=60, retries={"total_max_attempts": 1})
+
+
+def _capture_run_error(
+    exc: BaseException,
+    benchmark_id: UUID,
+    *,
+    producer: str,
+    operation: str,
+    cause_code: str | None = None,
+) -> None:
+    with error_span(
+        "run.error",
+        exc,
+        benchmark_id=str(benchmark_id),
+        producer=producer,
+        operation=operation,
+        error_type=type(exc).__name__,
+        cause_code=cause_code or "",
+    ):
+        logger.error(
+            "Run execution failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+            extra={
+                "benchmark_id": str(benchmark_id),
+                "producer": producer,
+                "operation": operation,
+                "error_type": type(exc).__name__,
+                "cause_code": cause_code or "",
+            },
+        )
+        capture_exception(exc)
+
+
+def _record_run_finalized(benchmark_id: UUID, status: BenchmarkStatus, authority: ExecutionAuthority) -> None:
+    with observability_span(
+        "run.finalized",
+        benchmark_id=str(benchmark_id),
+        status=status.value,
+        executor_dispatch_id=str(authority.dispatch_id),
+    ):
+        pass
 
 
 def set_benchmark_final_status(
@@ -115,6 +158,7 @@ def set_benchmark_final_status(
     benchmark_row.error_message = None
     session.add(benchmark_row)
     session.commit()
+    _record_run_finalized(benchmark_row.id, benchmark_status, authority)
 
 
 def create_task_rows(
@@ -352,19 +396,23 @@ def _preflight_managed_aws(
     runtime: AWSRuntime,
 ) -> SandboxProviderConfig:
     """Verify executor-owned AWS access before starting sandbox work."""
-    create_benchmark_log_group(str(execution.benchmark_id), runtime)
+    CloudWatchBenchmarkLogSink(runtime.clients, runtime.resources.log_group).create_benchmark(
+        str(execution.benchmark_id),
+        retention_days=runtime.resources.log_retention_days,
+    )
     request = execution.request
     provider_secret_name = request.sandbox_provider_secret_name
     if provider_secret_name is None:
         raise ValueError("Queued managed benchmark request has no sandbox provider secret name.")
+    secret_store = SecretsManagerStore(runtime.clients)
     sandbox_provider_config = fetch_sandbox_provider_config(
         provider_secret_name,
-        runtime.clients,
+        secret_store,
         request.sandbox_provider,
     )
-    resolve_secrets(request.contract.secrets, runtime.clients)
+    resolve_secrets(request.contract.secrets, secret_store)
     if request.webhook_secret_name and request.webhook_intervals:
-        fetch_aws_secret(request.webhook_secret_name, runtime.clients)
+        secret_store.get(request.webhook_secret_name)
     if request.lambda_function:
         dry_run_lambda(runtime.clients, request.lambda_function)
     return sandbox_provider_config
@@ -382,7 +430,6 @@ async def hold_dispatch_authority(
 
 # Keep the Tracker producer and ExecutorHost on one stable Taskiq wire name.
 @broker.task(EXECUTOR_TASK_NAME)
-@logfire.instrument("process_benchmark", extract_args=("benchmark_id_str", "verified_task_ids"))
 async def process_benchmark(
     start_benchmark_request_json: dict[str, Any] | None = None,
     benchmark_id_str: str | None = None,
@@ -425,15 +472,15 @@ async def process_benchmark(
 
         sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
         sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
-        trace.get_current_span().set_attributes(
-            {
-                "benchmark_id": str(benchmark_id),
-                "benchmark_name": start_benchmark_request.benchmark_name,
-                "agent_name": start_benchmark_request.contract.name,
-                "task_count": len(verified_task_ids),
-                "executor_dispatch_id": executor_dispatch_id,
-            }
-        )
+        with observability_span(
+            "run.started",
+            benchmark_id=str(benchmark_id),
+            benchmark_name=start_benchmark_request.benchmark_name,
+            agent_name=start_benchmark_request.contract.name,
+            task_count=len(verified_task_ids),
+            executor_dispatch_id=executor_dispatch_id,
+        ):
+            pass
 
         if execution.aws_managed != benchmark_row.aws_managed:
             queued_mode = "managed" if execution.aws_managed else "access-key"
@@ -457,7 +504,7 @@ async def process_benchmark(
             aws_runtime = AWSRuntime.from_harness_config(harness_config)
             sandbox_provider_config = fetch_sandbox_provider_config(
                 harness_config.sandbox_provider_secret_name,
-                aws_runtime.clients,
+                SecretsManagerStore(aws_runtime.clients),
                 start_benchmark_request.sandbox_provider,
             )
 
@@ -465,12 +512,15 @@ async def process_benchmark(
         if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
             notifier = SlackNotifier(
                 secret_name=start_benchmark_request.webhook_secret_name,
-                clients=aws_runtime.clients,
+                secret_store=SecretsManagerStore(aws_runtime.clients),
                 intervals=start_benchmark_request.webhook_intervals,
             )
 
         if not execution.aws_managed:
-            create_benchmark_log_group(str(benchmark_id), aws_runtime)
+            CloudWatchBenchmarkLogSink(aws_runtime.clients, aws_runtime.resources.log_group).create_benchmark(
+                str(benchmark_id),
+                retention_days=aws_runtime.resources.log_retention_days,
+            )
 
         # Create tasks inside of the database for each task id
         with Session(bind=engine) as session:
@@ -608,7 +658,13 @@ async def process_benchmark(
     except ExecutionAuthorityRevoked:
         finalization_deferred = True
     except BenchmarkServiceUnauthenticatedError as e:
-        logfire.warn("process_benchmark failed due to benchmark service auth error")
+        _capture_run_error(
+            e,
+            benchmark_id,
+            producer="benchmark_service",
+            operation="authenticate",
+            cause_code="authentication_failed",
+        )
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = f"{str(e)}\n{traceback.format_exc()}"
@@ -625,6 +681,12 @@ async def process_benchmark(
                 task_ids=verified_task_ids,
             )
     except BenchmarkServiceError as e:
+        _capture_run_error(
+            e,
+            benchmark_id,
+            producer="benchmark_service",
+            operation="process_benchmark",
+        )
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = str(e)
@@ -639,8 +701,7 @@ async def process_benchmark(
                 task_ids=verified_task_ids,
             )
     except Exception as e:
-        logfire.exception("process_benchmark failed")
-        sentry_sdk.capture_exception(e)
+        _capture_run_error(e, benchmark_id, producer="tracker", operation="process_benchmark")
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = f"{str(e)}\n{traceback.format_exc()}"
@@ -718,6 +779,8 @@ def commit_benchmark_error(
         cause_code=cause_code,
     )
     session.commit()
+    if committed and benchmark_row.status == BenchmarkStatus.ERROR:
+        _record_run_finalized(benchmark_row.id, BenchmarkStatus.ERROR, authority)
     return committed
 
 
@@ -783,4 +846,6 @@ def catch_errors_during_cleanup(
         error_type="UndetectedExecutorExit",
     )
     session.commit()
+    if committed and benchmark_row.status == BenchmarkStatus.ERROR:
+        _record_run_finalized(benchmark_id, BenchmarkStatus.ERROR, authority)
     return committed

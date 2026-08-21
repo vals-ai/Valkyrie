@@ -45,14 +45,17 @@ values:
 The ExecutorHost task roles can read every Secrets Manager secret in their own
 account and Region. Release-test does not receive this access.
 
-To enable Sentry in dev, also set the `SENTRY_DSN_SECRET_NAME` secret to the
-name of an account-local Secrets Manager secret containing the DSN. Production
-requires `SENTRY_DSN_SECRET_NAME`, and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`
+Dev and production require `SENTRY_DSN_SECRET_NAME` to name an account-local
+Secrets Manager secret containing the DSN. Production also requires
+`DESCOPE_MANAGEMENT_KEY_SECRET_NAME`
 whenever `AUTH_REQUIRED` is `true`. The dev Environment holds every dev
 deployment input as an Environment secret except `AWS_REGION`, which stays a
 variable. Production reads its managed AWS inventory from the `prod`
 Environment and retains the existing repository-level deployment secrets. The
 `SANDBOX_CLEANUP_ENABLED` and `SANDBOX_CLEANUP_PROVIDER` toggles stay variables.
+The Sentry DSN is injected into both Tracker and ExecutorHost. The host
+propagates each run's trace and request context into its immutable executor
+artifact.
 
 Before production activation, configure the protected `prod` GitHub
 Environment with `AWS_DEPLOYMENT_ROLE_ORG_IDS` and

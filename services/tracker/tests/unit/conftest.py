@@ -3,7 +3,8 @@
 import os
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
-from typing import Any
+from types import ModuleType
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 from benchmark_service.client import BenchmarkServiceClient
@@ -86,7 +87,7 @@ def empty_database_session() -> Generator[Session, None, None]:
 def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace S3 operations with deterministic in-process behavior."""
 
-    async def _mock_download_from_s3(*_args: Any, **_kwargs: Any) -> bytes:
+    async def _mock_get_bytes(*_args: Any, **_kwargs: Any) -> bytes:
         return b"mock-contract-content"
 
     def _mock_get_contract_s3_key(contract_name: str) -> str:
@@ -98,7 +99,7 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_copy_agent_to_benchmark(*_args: Any, **_kwargs: Any) -> None:
         return None
 
-    monkeypatch.setattr("tracker.aws.s3.download_from_s3", _mock_download_from_s3)
+    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.get_bytes", _mock_get_bytes)
     monkeypatch.setattr("tracker.aws.s3.get_contract_s3_key", _mock_get_contract_s3_key)
     monkeypatch.setattr("tracker.utils.reporting.upload_to_s3", _mock_upload_to_s3)
     monkeypatch.setattr("main.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
@@ -164,26 +165,32 @@ def mock_benchmark_service(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _mock_create_benchmark_log_group(*_args: Any, **_kwargs: Any) -> str:
-        return "mock-group"
+def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
+    if cast(ModuleType, request.module).__name__ == "tests.unit.aws.test_clients":
+        return
 
-    def _mock_write_benchmark_log_event(*_args: Any, **_kwargs: Any) -> None:
+    def _mock_create_benchmark(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def _mock_write(*_args: Any, **_kwargs: Any) -> None:
         return None
 
     async def _mock_upload_final_view(*_args: Any, **_kwargs: Any) -> None:
         return None
 
-    def _mock_fetch_aws_secret(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+    monkeypatch.setattr(
+        "tracker.aws.cloudwatch_logs.CloudWatchBenchmarkLogSink.create_benchmark", _mock_create_benchmark
+    )
+    monkeypatch.setattr("tracker.aws.cloudwatch_logs.CloudWatchBenchmarkLogSink.write", _mock_write)
+    monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", _mock_upload_final_view)
+
+
+@pytest.fixture(autouse=True)
+def mock_secret_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    def get(_self: object, _name: str) -> dict[str, str]:
         return {"DAYTONA_API_KEY": "test-key", "DAYTONA_API_URL": "http://localhost:8001", "DAYTONA_TARGET": "us"}
 
-    monkeypatch.setattr("tracker.aws.cloudwatch_logs.create_benchmark_log_group", _mock_create_benchmark_log_group)
-    monkeypatch.setattr("tracker.aws.cloudwatch_logs.write_benchmark_log_event", _mock_write_benchmark_log_event)
-    monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", _mock_create_benchmark_log_group)
-    monkeypatch.setattr("tracker.utils.task_execution.write_benchmark_log_event", _mock_write_benchmark_log_event)
-    monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", _mock_upload_final_view)
-    monkeypatch.setattr("tracker.aws.secrets.fetch_aws_secret", _mock_fetch_aws_secret)
-    monkeypatch.setattr("tracker.utils.resources.fetch_aws_secret", _mock_fetch_aws_secret)
+    monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get)
 
 
 @pytest.fixture(autouse=True)

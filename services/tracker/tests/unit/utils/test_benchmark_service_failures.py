@@ -7,6 +7,7 @@ import asyncio
 import socket
 import time
 from typing import Any, Never
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -25,6 +26,7 @@ from websockets.http11 import Response
 
 import tracker.sandbox as sandbox_module
 import tracker.utils.run_orchestration as run_orchestration_module
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
 from tracker.aws.runtime import AWSRuntime
@@ -621,7 +623,7 @@ class TestBenchmarkServiceFailures:
                 return ExecResult(exit_code=1, output="")
             raise AssertionError(f"unexpected command: {command}")
 
-        def _mock_write_benchmark_log_event(_stream_key: str, message: str, *_args: Any, **_kwargs: Any) -> None:
+        def _mock_write_benchmark_log_event(_self: Any, _stream_key: str, message: str) -> None:
             logged_messages.append(message)
             if expected_log in message:
                 event_loop.call_soon_threadsafe(expected_log_written.set)
@@ -634,7 +636,7 @@ class TestBenchmarkServiceFailures:
             _mock_stream_command_output,
         )
         monkeypatch.setattr(sandbox_module, "_exec", _mock_exec)
-        monkeypatch.setattr(utils_module, "write_benchmark_log_event", _mock_write_benchmark_log_event)
+        monkeypatch.setattr(CloudWatchBenchmarkLogSink, "write", _mock_write_benchmark_log_event)
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
         # Log writes are dispatched to an executor and never awaited, so the flush carrying the
@@ -708,11 +710,11 @@ class TestBenchmarkServiceFailures:
         async def _mock_retrieve_task_timeout(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             raise httpx.ConnectTimeout("")
 
-        def _mock_write_benchmark_log_event(_stream_key: str, message: str, *_args: Any, **_kwargs: Any) -> None:
+        def _mock_write_benchmark_log_event(_self: Any, _stream_key: str, message: str) -> None:
             logged_messages.append(message)
 
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_timeout)
-        monkeypatch.setattr(utils_module, "write_benchmark_log_event", _mock_write_benchmark_log_event)
+        monkeypatch.setattr(CloudWatchBenchmarkLogSink, "write", _mock_write_benchmark_log_event)
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
@@ -779,6 +781,8 @@ class TestBenchmarkServiceFailures:
             raise BenchmarkServiceError(html_error)
 
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
+        capture_exception = Mock()
+        monkeypatch.setattr(run_orchestration_module.sentry_sdk, "capture_exception", capture_exception)
         benchmark_row = fetch_benchmark_row(benchmark_id, database_session, TEST_ORG)
         authority_kwargs = executor_authority_kwargs(benchmark_row)
 
@@ -794,3 +798,5 @@ class TestBenchmarkServiceFailures:
             assert benchmark_row.status == BenchmarkStatus.ERROR
             assert benchmark_row.error_message is not None
             assert "Final score failed with status code 404" in benchmark_row.error_message
+        captured_error = capture_exception.call_args.args[0]
+        assert isinstance(captured_error, BenchmarkServiceError)

@@ -402,9 +402,11 @@ class TestTaskExecutionRetry:
         async def _lost_grading_sandbox(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
             raise SandboxNotFoundError("grading sandbox was preempted")
 
+        capture_exception = Mock()
         monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monkeypatch.setattr(task_execution_module, "buffer_logs", Mock())
+        monkeypatch.setattr(task_execution_module.sentry_sdk, "capture_exception", capture_exception)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _failed_policy_lookup)
         monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _lost_grading_sandbox, raising=False)
 
@@ -419,6 +421,8 @@ class TestTaskExecutionRetry:
             .order_by(desc(ErrorResult.created_at))
         ).one()
         assert error_message == "grading sandbox was preempted"
+        captured_error = capture_exception.call_args.args[0]
+        assert isinstance(captured_error, SandboxNotFoundError)
 
     async def test_process_task_spans_timed_status_transitions(
         self,
@@ -496,13 +500,16 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr("tracker.utils.task_execution.upload_agent_artifacts", _mock_upload_agent_artifacts)
         monkeypatch.setattr("tracker.utils.task_execution.run_agent", _mock_run_agent)
         monkeypatch.setattr("tracker.utils.task_execution.logger.info", _mock_logger_info)
-        monkeypatch.setattr("tracker.utils.task_execution.logfire.span", _mock_span)
+        monkeypatch.setattr("tracker.observability.tracing.logfire.span", _mock_span)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
         await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         transition_records = [record for record in span_records if record["message"] == "task.status_transition"]
+        lifecycle_records = [
+            record for record in span_records if record["message"] in {"task.started", "task.completed"}
+        ]
 
         assert [(record["from_status"], record["to_status"]) for record in transition_records] == [
             (TaskStatus.PENDING.value, TaskStatus.BUILDING.value),
@@ -513,6 +520,9 @@ class TestTaskExecutionRetry:
         assert all(record["task_id"] == "task_0" for record in transition_records)
         assert all(record["benchmark_id"] == str(benchmark_id) for record in transition_records)
         assert all(record["entered"] and record["exited"] for record in transition_records)
+        assert [record["message"] for record in lifecycle_records] == ["task.started", "task.completed"]
+        assert all(record["task_id"] == "task_0" for record in lifecycle_records)
+        assert all(record["benchmark_id"] == str(benchmark_id) for record in lifecycle_records)
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
         assert run_agent_kwargs["benchmark_id"] == str(benchmark_id)
         assert create_sandbox_kwargs["labels"]["run-id"] == str(benchmark_id)
@@ -526,6 +536,10 @@ class TestTaskExecutionRetry:
         ]
 
         event_names = [record["message"] for record in log_records]
+        stream_record = next(record for record in log_records if record["message"] == "Task output stream selected")
+        assert stream_record["benchmark_id"] == str(benchmark_id)
+        assert stream_record["task_id"] == "task_0"
+        assert str(benchmark_id) in stream_record["cloudwatch_log_url"]
         assert "agent.run.complete" in event_names
         assert "task.evaluation.start" in event_names
 

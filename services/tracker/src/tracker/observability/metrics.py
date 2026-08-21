@@ -11,9 +11,12 @@ logger = logging.getLogger(__name__)
 # High-cardinality diagnostic fields belong in logs, spans, or Sentry context,
 # not metric attributes where they create one time series per task/session/etc.
 _BANNED_TAG_KEYS = {
+    "benchmark_id",
     "command",
     "error_message",
+    "org_id",
     "request_id",
+    "run_id",
     "sandbox_id",
     "session_id",
     "task_id",
