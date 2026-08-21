@@ -39,8 +39,8 @@ services:
     image: tracker-service
     container_name: tracker-service-container
     build:
-      context: ../..
-      dockerfile: services/tracker/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     command: ["uv", "run", "--no-sync", "python", "-m", "tracker.serve"]
     ports:
       - "8000:8000"
@@ -60,6 +60,11 @@ services:
       - BENCHMARK_SERVICE_BASE_URL=${BENCHMARK_SERVICE_BASE_URL:-benchmarks.vals.ai}
       - BENCHMARK_CATALOG_URL=${BENCHMARK_CATALOG_URL:-}
       - DAYTONA_HAPPY_EYEBALLS_DELAY=none
+      - AWS_DEPLOYMENT_ROLE_ORG_IDS=${AWS_DEPLOYMENT_ROLE_ORG_IDS:-}
+      - AWS_DEPLOYMENT_REGION=${AWS_DEPLOYMENT_REGION:-}
+      - AWS_DEPLOYMENT_S3_BUCKET=${AWS_DEPLOYMENT_S3_BUCKET:-}
+      - AWS_DEPLOYMENT_LOG_GROUP=${AWS_DEPLOYMENT_LOG_GROUP:-}
+      - AWS_DEPLOYMENT_LOG_RETENTION_DAYS=${AWS_DEPLOYMENT_LOG_RETENTION_DAYS:-}
     depends_on:
       postgres:
         condition: service_healthy

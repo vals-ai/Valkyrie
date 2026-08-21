@@ -332,6 +332,20 @@ async def create_presigned_url(s3_key: str, runtime: AWSRuntime, expiration: int
     return presigned_url
 
 
+@handle_s3_error(message="Failed to create presigned upload URL")
+async def create_presigned_upload_url(s3_key: str, runtime: AWSRuntime, expiration: int = 3600) -> str:
+    """Create a presigned single-part PUT URL for an S3 object."""
+    actual_expiration = runtime.clients.maximum_presign_ttl(expiration)
+    async with runtime.clients.s3_client() as client:
+        presigned_url: str = await client.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": runtime.resources.s3_bucket, "Key": s3_key},
+            ExpiresIn=actual_expiration,
+        )
+
+    return presigned_url
+
+
 def create_console_url(s3_key: str, resources: AWSResources) -> str:
     """
     Create an AWS console URL for an S3 object.

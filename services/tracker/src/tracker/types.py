@@ -482,6 +482,12 @@ class AgentDownloadURLResponse(BaseModel):
     expires_in: int
 
 
+class AgentUploadURLResponse(BaseModel):
+    name: str
+    upload_url: str
+    expires_in: int
+
+
 class TaskArtifactsResponse(BaseModel):
     cloudwatch_url: str | None
     agent_output_url: str | None
