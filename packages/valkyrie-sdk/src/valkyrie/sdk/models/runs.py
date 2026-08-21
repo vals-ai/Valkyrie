@@ -71,7 +71,7 @@ class StartBenchmarkRequest(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
-    harness_config: HarnessConfig
+    harness_config: HarnessConfig | None = None
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
     sandbox_provider: str = "daytona"
@@ -208,7 +208,6 @@ class BenchmarkArguments(ResponseModel):
 
     contract: AgentContractRequest
     concurrency: int
-    priority: int | None = Field(default=None, strict=True, ge=0, le=4)
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None
@@ -273,6 +272,7 @@ class S3UploadResultsResponse(ResponseModel):
     s3_url: str
     presigned_url: str
     console_url: str
+    expires_in: int = 86400
 
 
 class ResultsExistResponse(ResponseModel):

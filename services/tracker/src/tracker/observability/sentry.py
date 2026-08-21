@@ -44,12 +44,16 @@ def _apply_current_otel_trace_context(telemetry: dict[str, Any]) -> None:
 
 
 def _before_send_log(log: Log, _hint: Hint) -> Log | None:
+    attributes = log.setdefault("attributes", {})
+    for key, value in get_context_tags().items():
+        if value:
+            attributes[key] = value
     _apply_current_otel_trace_context(cast(dict[str, Any], log))
     return log
 
 
 def init_sentry(service_name: str, environment: str) -> None:
-    """Initialize Sentry SDK. No-op if SENTRY_DSN is not set.
+    """Initialize Sentry SDK when configured.
 
     Args:
         service_name: Identifies the process in Sentry (e.g. "valkyrie-tracker").
@@ -73,10 +77,10 @@ def init_sentry(service_name: str, environment: str) -> None:
             before_send=_before_send,
             before_send_log=_before_send_log,
             integrations=[
-                # level=None / event_level=None: spans carry context and we capture_exception explicitly,
-                # so we only want LoggingIntegration for shipping log records to Sentry Logs.
+                # INFO records become both searchable logs and breadcrumbs. Explicit exception
+                # capture owns issue creation so an error log cannot create a duplicate issue.
                 LoggingIntegration(
-                    level=None,
+                    level=logging.INFO,
                     event_level=None,
                     sentry_logs_level=logging.INFO,
                 ),
@@ -93,8 +97,15 @@ def init_sentry(service_name: str, environment: str) -> None:
             ],
         )
     except Exception as e:
-        # A malformed SENTRY_DSN or invalid integration shouldn't crash service startup.
         logger.warning("Failed to initialize Sentry: %s: %s", type(e).__name__, e)
+
+
+def capture_exception(error: BaseException) -> None:
+    """Capture an exception without allowing Sentry failures to escape."""
+    try:
+        sentry_sdk.capture_exception(error)
+    except Exception as telemetry_error:
+        logger.warning("Failed to capture exception: %s: %s", type(telemetry_error).__name__, telemetry_error)
 
 
 def set_sandbox_context(sandbox: Any, *, image: str | None = None) -> None:

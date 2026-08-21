@@ -18,7 +18,8 @@
       },
       "kwargs": {
         "temperature": "0"
-      }
+      },
+      "inference_settings_attested": false
     },
     "benchmark_name": "swebench",
     "concurrency": 2,

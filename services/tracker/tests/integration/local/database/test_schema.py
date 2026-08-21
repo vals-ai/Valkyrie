@@ -3,8 +3,9 @@
 Exercise schema and model events against disposable Postgres.
 """
 
+from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy.engine import Engine
-from sqlmodel import Session, inspect
+from sqlmodel import SQLModel, Session, inspect
 
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import (
@@ -16,6 +17,71 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+
+
+def test_error_result_provenance_schema_matches_metadata(postgres_engine: Engine) -> None:
+    inspector = inspect(postgres_engine)
+    table_names = set(inspector.get_table_names())
+    assert "errorresult" in table_names
+
+    metadata_table = SQLModel.metadata.tables["errorresult"]
+    expected_columns = {
+        "id",
+        "org_id",
+        "task",
+        "created_at",
+        "error_message",
+        "producer",
+        "operation",
+        "error_type",
+        "cause_code",
+        "retry_scheduled",
+        "failed_attempt_number",
+    }
+    metadata_columns = {column.name for column in metadata_table.columns}
+    actual_columns = {column["name"]: column for column in inspector.get_columns("errorresult")}
+    assert metadata_columns == expected_columns
+    assert set(actual_columns) == expected_columns
+    assert {column_name: column.nullable for column_name, column in metadata_table.columns.items()} == {
+        column_name: column["nullable"] for column_name, column in actual_columns.items()
+    }
+
+    expected_indexes = {
+        (index.name, tuple(column.name for column in index.columns)) for index in metadata_table.indexes
+    }
+    actual_indexes = {
+        (index["name"], tuple(index["column_names"])) for index in inspector.get_indexes("errorresult") if index["name"]
+    }
+    assert (
+        actual_indexes
+        == expected_indexes
+        == {
+            ("ix_errorresult_org_task_created_at", ("org_id", "task", "created_at")),
+        }
+    )
+
+    expected_primary_key = tuple(column.name for column in metadata_table.primary_key.columns)
+    actual_primary_key = tuple(inspector.get_pk_constraint("errorresult")["constrained_columns"])
+    assert actual_primary_key == expected_primary_key
+
+    expected_foreign_keys = {
+        (
+            tuple(constraint.column_keys),
+            constraint.elements[0].target_fullname.split(".")[0],
+            tuple(element.column.name for element in constraint.elements),
+        )
+        for constraint in metadata_table.constraints
+        if isinstance(constraint, ForeignKeyConstraint)
+    }
+    actual_foreign_keys = {
+        (
+            tuple(foreign_key["constrained_columns"]),
+            foreign_key["referred_table"],
+            tuple(foreign_key["referred_columns"]),
+        )
+        for foreign_key in inspector.get_foreign_keys("errorresult")
+    }
+    assert actual_foreign_keys == expected_foreign_keys
 
 
 class TestTrackerSchema:

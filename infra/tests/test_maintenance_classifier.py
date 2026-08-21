@@ -114,6 +114,93 @@ def upgrade() -> None:
         self.assertEqual(result.classification, "safe")
         self.assertEqual(result.findings, [])
 
+    def test_non_nullable_boolean_columns_with_constant_server_defaults_are_safe(self) -> None:
+        head_sha = self._commit_file(
+            f"{_MIGRATION_DIRECTORY}/boolean_defaults.py",
+            """
+from alembic import op
+import sqlalchemy as sa
+
+
+def upgrade() -> None:
+    op.add_column(
+        "benchmark",
+        sa.Column("published", sa.Boolean(), nullable=False, server_default=sa.false()),
+    )
+    op.add_column(
+        "benchmark",
+        sa.Column("reviewed", sa.Boolean(), nullable=False, server_default=sa.true()),
+    )
+""",
+        )
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "safe")
+        self.assertEqual(result.findings, [])
+
+    def test_unproven_or_constrained_defaults_require_maintenance(self) -> None:
+        head_sha = self._commit_file(
+            f"{_MIGRATION_DIRECTORY}/unsafe_defaults.py",
+            """
+from alembic import op
+import sqlalchemy as sa
+
+
+def upgrade() -> None:
+    op.add_column("benchmark", sa.Column("application", sa.Boolean(), nullable=False, default=False))
+    op.add_column(
+        "benchmark",
+        sa.Column("sql", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+    )
+    op.add_column(
+        "benchmark",
+        sa.Column("function", sa.Boolean(), nullable=False, server_default=sa.func.random()),
+    )
+    op.add_column(
+        "benchmark",
+        sa.Column("wrong_type", sa.String(), nullable=False, server_default=sa.false()),
+    )
+    op.add_column(
+        "benchmark",
+        sa.Column("unique", sa.Boolean(), nullable=False, server_default=sa.false(), unique=True),
+    )
+    op.add_column(
+        "benchmark",
+        sa.Column(
+            "boolean_options",
+            sa.Boolean(create_constraint=True),
+            nullable=False,
+            server_default=sa.false(),
+        ),
+    )
+    op.add_column(
+        "benchmark",
+        sa.Column("default_arguments", sa.Boolean(), nullable=False, server_default=sa.false("unexpected")),
+    )
+    op.add_column(
+        "benchmark",
+        sa.Column("schema", sa.Boolean(), nullable=False, server_default=sa.false()),
+        schema="public",
+    )
+    op.add_column(
+        "benchmark",
+        sa.Column(
+            "checked",
+            sa.Boolean(),
+            sa.CheckConstraint("checked IN (true, false)"),
+            nullable=False,
+            server_default=sa.false(),
+        ),
+    )
+""",
+        )
+
+        result = self._classify(head_sha)
+
+        self.assertEqual(result.classification, "maintenance-required")
+        self.assertEqual([finding.operation for finding in result.findings], ["op.add_column"] * 9)
+
     def test_non_unique_index_is_safe(self) -> None:
         head_sha = self._commit_file(
             f"{_MIGRATION_DIRECTORY}/index.py",

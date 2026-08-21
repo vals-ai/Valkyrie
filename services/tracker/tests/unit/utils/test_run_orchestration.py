@@ -39,6 +39,7 @@ def _persist_benchmark(
     benchmark = start_benchmark_request_to_benchmark(
         request,
         RequestIdentity(org=org, access_key_id=None, email=None, name=None),
+        aws_managed=False,
         queue_pool_id=queued_pool_id,
     )
     session.add(benchmark)

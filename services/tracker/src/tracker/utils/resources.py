@@ -8,6 +8,7 @@ from benchmark_service.client import BenchmarkServiceClient
 from sqlmodel import Session, select
 
 from tracker.auth import RequestIdentity
+from tracker.aws.clients import AWSClientProvider
 from tracker.aws.secrets import fetch_aws_secret
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -20,7 +21,6 @@ from tracker.database.models import (
 from tracker.exceptions import TrackerServiceError
 from tracker.outbound_security import validate_service_headers, validate_service_url_syntax
 from tracker.types import (
-    AWSCredentials,
     StartBenchmarkRequest,
 )
 
@@ -34,11 +34,11 @@ class BenchmarkConcurrencyUpdate:
 
 def fetch_sandbox_provider_config(
     secret_name: str,
-    aws: AWSCredentials | None,
+    clients: AWSClientProvider,
     provider_type: str,
 ) -> SandboxProviderConfig:
     """Resolve sandbox provider config from the selected provider type and secret."""
-    secret = fetch_aws_secret(secret_name, aws)
+    secret = fetch_aws_secret(secret_name, clients)
     if not isinstance(secret, dict):
         raise TrackerServiceError("Expected sandbox provider secret to be a JSON object")
 
@@ -63,18 +63,32 @@ def create_benchmark_service_client_from_request(request: StartBenchmarkRequest)
     return create_benchmark_service_client(url, service_headers=request.service_headers)
 
 
+def _sandbox_provider_secret_name(request: StartBenchmarkRequest) -> str | None:
+    if request.harness_config is not None and request.harness_config.sandbox_provider_secret_name:
+        return request.harness_config.sandbox_provider_secret_name
+    return request.sandbox_provider_secret_name
+
+
 def start_benchmark_request_to_benchmark(
     request: StartBenchmarkRequest,
     run_starter: RequestIdentity,
     *,
+    aws_managed: bool,
     queue_pool_id: str | None = None,
 ) -> Benchmark:
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
+    if aws_managed != (request.harness_config is None):
+        raise ValueError("Benchmark AWS mode does not match the start request")
+    provider_secret_name = _sandbox_provider_secret_name(request)
+    if aws_managed and (not request.sandbox_provider or not provider_secret_name):
+        raise ValueError("Managed runs require a sandbox provider and provider secret name")
+
     return Benchmark(
         org_id=run_starter.org.id,
         name=request.benchmark_name,
         label=request.label,
         custom_benchmark_service=request.custom_benchmark_service,
+        aws_managed=aws_managed,
         webhook_secret_name=request.webhook_secret_name,
         webhook_intervals=request.webhook_intervals,
         arguments=BenchmarkArguments(
@@ -87,7 +101,7 @@ def start_benchmark_request_to_benchmark(
             lambda_function=request.lambda_function,
             dataset=request.dataset,
             sandbox_provider=request.sandbox_provider,
-            sandbox_provider_secret_name=request.harness_config.sandbox_provider_secret_name,
+            sandbox_provider_secret_name=provider_secret_name,
         ),
         started_by_id=run_starter.access_key_id,
         started_by_email=run_starter.email,

@@ -18,7 +18,6 @@ from tracker.auth import get_current_org
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import fetch_harness_config
 
 
 @pytest.fixture
@@ -37,7 +36,6 @@ def harness_config(aws_credentials: AWSCredentials) -> HarnessConfig:
 def setup_app_dependencies(
     tracker_database: Session,
     monkeypatch: pytest.MonkeyPatch,
-    harness_config: HarnessConfig,
 ) -> None:
     """Route the app through the local database and organization."""
 
@@ -45,7 +43,6 @@ def setup_app_dependencies(
         yield tracker_database
 
     monkeypatch.setitem(app.dependency_overrides, get_session, get_test_session)
-    monkeypatch.setitem(app.dependency_overrides, fetch_harness_config, lambda: harness_config)
     test_org = Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME)
     monkeypatch.setitem(app.dependency_overrides, get_current_org, lambda: test_org)
 
@@ -54,7 +51,6 @@ def setup_app_dependencies(
 def local_app(
     monkeypatch: pytest.MonkeyPatch,
     database_session: Session,
-    harness_config: HarnessConfig,
 ) -> Generator[FastAPI, None, None]:
     """Configure the local app and database shared by API clients."""
     monkeypatch.setenv("AUTH_REQUIRED", "true")
@@ -68,7 +64,6 @@ def local_app(
         yield database_session
 
     main_module.app.dependency_overrides[get_session] = get_test_session
-    main_module.app.dependency_overrides[fetch_harness_config] = lambda: harness_config
     monkeypatch.setattr("tracker.database.session.engine", database_session.bind)
 
     try:

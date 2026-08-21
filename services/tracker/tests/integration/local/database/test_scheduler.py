@@ -28,9 +28,10 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, create_engine, func, select
-from tenacity import wait_none
 
 from tests.factories import make_task
+from tracker.aws.resolver import AWSRuntimeResolution
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -54,6 +55,24 @@ import main as tracker_main
 _ATTEMPT = datetime(2026, 7, 27, 12)
 _SOURCE = ImageSource(image="scheduler-test-image")
 _RESOURCES = Resources(vcpu=1, memory=2, disk=3)
+
+
+def _use_access_key_runtime(monkeypatch: pytest.MonkeyPatch, harness_config: HarnessConfig) -> None:
+    monkeypatch.setattr(
+        tracker_main,
+        "resolve_run_aws_runtime_and_access_key_config",
+        Mock(return_value=AWSRuntimeResolution(AWSRuntime.from_harness_config(harness_config), harness_config)),
+    )
+
+
+def _use_real_sandbox_recovery(service: AsyncMock) -> None:
+    async def run(**kwargs: Any) -> Any:
+        return await BenchmarkServiceClient.run_with_sandbox_recovery(
+            cast(BenchmarkServiceClient, service),
+            **kwargs,
+        )
+
+    service.run_with_sandbox_recovery.side_effect = run
 
 
 class MockProvider:
@@ -663,6 +682,7 @@ async def test_held_evaluation_lock_rejects_recovery_without_mutation(
     ).one()
     enqueue = AsyncMock()
     monkeypatch.setattr(tracker_main, "_enqueue_executor_dispatch", enqueue)
+    _use_access_key_runtime(monkeypatch, harness_config)
 
     async with store.task_evaluation_lock(postgres_engine, task.id) as acquired:
         assert acquired
@@ -678,7 +698,6 @@ async def test_held_evaluation_lock_rejects_recovery_without_mutation(
                 secrets={},
                 benchmark_url=None,
                 session=postgres_session,
-                harness_config=harness_config,
                 org=org,
             )
 
@@ -733,6 +752,7 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
             await release_first.wait()
 
     monkeypatch.setattr(tracker_main, "_enqueue_executor_dispatch", enqueue)
+    _use_access_key_runtime(monkeypatch, harness_config)
 
     async def recover() -> None:
         with Session(postgres_engine) as recovery_session:
@@ -747,7 +767,6 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
                 secrets={},
                 benchmark_url=None,
                 session=recovery_session,
-                harness_config=harness_config,
                 org=org,
             )
             assert response.status == "success"
@@ -775,9 +794,10 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
     stale_task.started_at = first_dispatch.created_at
     service = AsyncMock(spec=BenchmarkServiceClient)
     service.resume_evaluation.return_value = {"score": 1.0}
+    _use_real_sandbox_recovery(service)
     monkeypatch.setattr(task_execution, "engine", postgres_engine)
     monkeypatch.setattr(task_execution, "buffer_logs", Mock())
-    request = benchmark.start_benchmark_request(harness_config)
+    request = benchmark.access_key_start_benchmark_request(harness_config)
 
     async def run(task_row: Task, authority: ExecutionAuthority) -> dict[str, dict[str, Any] | None]:
         return await task_execution.process_task(
@@ -786,7 +806,7 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
             cast(BenchmarkServiceClient, service),
             benchmark.id,
             task.task_id,
-            harness_config,
+            AWSRuntime.from_harness_config(harness_config),
             org,
             sandbox_provider_config=cast(SandboxProviderConfig, object()),
             sandbox_provider=cast(SandboxProvider, object()),
@@ -833,6 +853,7 @@ async def test_resumed_evaluation_uses_lock_connection_for_callback_and_finaliza
         return {"score": 1.0}
 
     service.resume_evaluation.side_effect = resume_evaluation
+    _use_real_sandbox_recovery(service)
     single_connection_engine = create_engine(
         postgres_engine.url,
         pool_size=1,
@@ -841,7 +862,7 @@ async def test_resumed_evaluation_uses_lock_connection_for_callback_and_finaliza
     )
     monkeypatch.setattr(task_execution, "engine", single_connection_engine)
     monkeypatch.setattr(task_execution, "buffer_logs", Mock())
-    request = benchmark.start_benchmark_request(harness_config)
+    request = benchmark.access_key_start_benchmark_request(harness_config)
     try:
         result = await task_execution.process_task(
             task,
@@ -849,7 +870,7 @@ async def test_resumed_evaluation_uses_lock_connection_for_callback_and_finaliza
             cast(BenchmarkServiceClient, service),
             benchmark.id,
             task.task_id,
-            harness_config,
+            AWSRuntime.from_harness_config(harness_config),
             org,
             sandbox_provider_config=cast(SandboxProviderConfig, object()),
             sandbox_provider=cast(SandboxProvider, object()),
@@ -908,8 +929,8 @@ async def test_setup_retry_reenters_fifo_before_competitor(
         resources=_RESOURCES,
     )
     service.evaluate_instance.return_value = {"status": "success", "score": 1.0}
-    retryable_attempt = getattr(task_execution, "_process_task_attempt")
-    monkeypatch.setattr(retryable_attempt.retry, "wait", wait_none())
+    _use_real_sandbox_recovery(service)
+    monkeypatch.setattr(task_execution, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
     monkeypatch.setattr(task_execution, "engine", postgres_engine)
     monkeypatch.setattr(task_execution, "buffer_logs", Mock())
     monkeypatch.setattr(task_execution, "create_sandbox", create_sandbox)
@@ -924,11 +945,11 @@ async def test_setup_retry_reenters_fifo_before_competitor(
 
     await task_execution.process_task(
         retrying,
-        benchmark.start_benchmark_request(harness_config),
+        benchmark.access_key_start_benchmark_request(harness_config),
         cast(BenchmarkServiceClient, service),
         benchmark.id,
         retrying.task_id,
-        harness_config,
+        AWSRuntime.from_harness_config(harness_config),
         org,
         sandbox_provider_config=cast(SandboxProviderConfig, object()),
         sandbox_provider=context.provider,

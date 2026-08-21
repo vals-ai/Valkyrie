@@ -17,6 +17,7 @@ _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
     "LOG_GROUP": "benchmarks",  # the prefix to the cloudwatch logs (e.x. benchmarks/<benchmark_id>)
     "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
 }
+_STATIC_AWS_CREDENTIAL_KEYS = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}
 
 
 def _rotate_matching_benchmark_auth(config: dict[str, Any], new_api_key: str) -> int:
@@ -64,17 +65,18 @@ def init() -> None:
         type=click.Choice(["hosted", "self-hosted"]),
         default="self-hosted",
     )
+    environment_variables = _REQUIRED_ENVIRONMENT_VARIABLES
 
     if mode == "hosted":
         api_key = (os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key")).strip()
         _rotate_matching_benchmark_auth(current_config, api_key)
         current_config["api_key"] = api_key
 
-        # Validate the key and create/confirm org (uses default tracker URL)
         try:
             result = TrackerService.init_org(api_key)
+            runtime = TrackerService.aws_runtime_metadata(api_key)
         except TrackerServiceError as e:
-            raise click.ClickException(str(e))
+            raise click.ClickException(str(e)) from e
         click.echo(f"Organization '{result['org_name']}' configured successfully.\n")
 
         if result.get("email_claim_missing"):
@@ -88,9 +90,29 @@ def init() -> None:
                 )
             )
 
-    # Both modes require AWS credentials
+        if runtime.mode == "managed":
+            if not runtime.region or not runtime.s3_bucket:
+                raise click.ClickException("Managed AWS configuration is missing its Region or S3 bucket.")
+            current_config["AWS_DEFAULT_REGION"] = runtime.region
+            current_config["S3_BUCKET"] = runtime.s3_bucket
+            removed_static_credentials = any(key in current_config for key in _STATIC_AWS_CREDENTIAL_KEYS)
+            for key in _STATIC_AWS_CREDENTIAL_KEYS:
+                current_config.pop(key, None)
+            environment_variables = {
+                "LOG_GROUP": _REQUIRED_ENVIRONMENT_VARIABLES["LOG_GROUP"],
+                "LOG_RETENTION_POLICY": _REQUIRED_ENVIRONMENT_VARIABLES["LOG_RETENTION_POLICY"],
+            }
+            click.echo(
+                "Managed AWS execution is enabled. Local AWS operations will use the AWS SDK credential chain.\n"
+            )
+            if removed_static_credentials:
+                click.echo(
+                    "Existing static AWS credentials were removed. Restore them before retrying or resuming "
+                    "an access-key run.\n"
+                )
+
     collected_keys: dict[str, str] = {}
-    for key, default in _REQUIRED_ENVIRONMENT_VARIABLES.items():
+    for key, default in environment_variables.items():
         sourced = current_config.get(key) or os.environ.get(key)
         if sourced:
             click.echo(f"  {key}: sourced from {'environment' if not current_config.get(key) else 'existing config'}")
@@ -173,7 +195,7 @@ def config_remove(key: str) -> None:
             f"Key '{key}' is not a valid config key. Valid keys: {', '.join(m.value for m in ConfigValue)}"
         )
 
-    if config_value.value in _REQUIRED_ENVIRONMENT_VARIABLES:
+    if config_value.value in _REQUIRED_ENVIRONMENT_VARIABLES and config_value.value not in _STATIC_AWS_CREDENTIAL_KEYS:
         raise click.ClickException(
             f"Key '{key}' is required and cannot be removed. Consider using `valkyrie config set` to update it."
         )

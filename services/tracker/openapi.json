@@ -69,6 +69,45 @@
         "title": "AWSCredentials",
         "type": "object"
       },
+      "AWSRuntimeResponse": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "access_key",
+              "managed"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          },
+          "s3_bucket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "S3 Bucket"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "AWSRuntimeResponse",
+        "type": "object"
+      },
       "AgentContractRequest-Input": {
         "properties": {
           "egress_allowlist": {
@@ -89,6 +128,11 @@
               }
             ],
             "title": "Final Output"
+          },
+          "inference_settings_attested": {
+            "default": false,
+            "title": "Inference Settings Attested",
+            "type": "boolean"
           },
           "install_cmd": {
             "default": "",
@@ -173,6 +217,11 @@
               }
             ],
             "title": "Final Output"
+          },
+          "inference_settings_attested": {
+            "default": false,
+            "title": "Inference Settings Attested",
+            "type": "boolean"
           },
           "install_cmd": {
             "default": "",
@@ -409,19 +458,6 @@
               }
             ],
             "title": "Lambda Function"
-          },
-          "priority": {
-            "anyOf": [
-              {
-                "maximum": 4.0,
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Priority"
           },
           "sandbox_provider": {
             "default": "daytona",
@@ -1412,6 +1448,11 @@
             "title": "Console Url",
             "type": "string"
           },
+          "expires_in": {
+            "default": 86400,
+            "title": "Expires In",
+            "type": "integer"
+          },
           "presigned_url": {
             "title": "Presigned Url",
             "type": "string"
@@ -1932,7 +1973,14 @@
             "title": "Dataset"
           },
           "harness_config": {
-            "$ref": "#/components/schemas/HarnessConfig"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HarnessConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "label": {
             "anyOf": [
@@ -2067,8 +2115,7 @@
         },
         "required": [
           "contract",
-          "benchmark_name",
-          "harness_config"
+          "benchmark_name"
         ],
         "title": "StartBenchmarkRequest",
         "type": "object"
@@ -2570,6 +2617,25 @@
         "summary": "Analyze Benchmark"
       }
     },
+    "/aws-runtime": {
+      "get": {
+        "description": "Return managed AWS resource locations without credential material.",
+        "operationId": "fetch_aws_runtime_metadata",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AWSRuntimeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Fetch Aws Runtime Metadata"
+      }
+    },
     "/benchmark-services": {
       "get": {
         "description": "Fetch catalog benchmark services visible to the caller.",
@@ -2904,20 +2970,20 @@
         "parameters": [
           {
             "in": "path",
-            "name": "benchmark_id",
+            "name": "task_id",
             "required": true,
             "schema": {
-              "format": "uuid",
-              "title": "Benchmark Id",
+              "title": "Task Id",
               "type": "string"
             }
           },
           {
             "in": "path",
-            "name": "task_id",
+            "name": "benchmark_id",
             "required": true,
             "schema": {
-              "title": "Task Id",
+              "format": "uuid",
+              "title": "Benchmark Id",
               "type": "string"
             }
           }
@@ -2954,20 +3020,20 @@
         "parameters": [
           {
             "in": "path",
-            "name": "benchmark_id",
+            "name": "task_id",
             "required": true,
             "schema": {
-              "format": "uuid",
-              "title": "Benchmark Id",
+              "title": "Task Id",
               "type": "string"
             }
           },
           {
             "in": "path",
-            "name": "task_id",
+            "name": "benchmark_id",
             "required": true,
             "schema": {
-              "title": "Task Id",
+              "format": "uuid",
+              "title": "Benchmark Id",
               "type": "string"
             }
           },
@@ -3874,7 +3940,7 @@
     },
     "/stop-benchmark/{benchmark_id}": {
       "post": {
-        "description": "Stop a benchmark by its id.\nIf force is True, the sandboxes will be stopped and deleted, even if the tasks are in progress.\n\nUsage:\ncurl -X POST http://<endpoint>/stop-benchmark/<benchmark_id>?force=true\n\nReturns:\n    StopBenchmarkResponse",
+        "description": "Stop a benchmark by its id.\nIf force is True, the database run is stopped immediately and provider kill signals are sent\nwithout waiting for provider teardown to complete.\n\nUsage:\ncurl -X POST http://<endpoint>/stop-benchmark/<benchmark_id>?force=true\n\nReturns:\n    StopBenchmarkResponse",
         "operationId": "stop_benchmark",
         "parameters": [
           {

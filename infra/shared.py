@@ -122,6 +122,9 @@ class SharedStack(Stack):
             enforce_ssl=None if self.stage.is_prod else True,
             object_ownership=None if self.stage.is_prod else aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
             versioned=None if self.stage.is_prod else True,
+            lifecycle_rules=[
+                aws_s3.LifecycleRule(abort_incomplete_multipart_upload_after=cdk.Duration.days(1)),
+            ],
         )
 
         self.tracker_repository: aws_ecr.Repository | None = None

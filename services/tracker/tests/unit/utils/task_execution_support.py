@@ -7,10 +7,13 @@ from uuid import UUID
 
 from benchmark_service import ImageSource, Resources
 from benchmark_service.schemas import RetrieveTaskResponse
+import pytest
+from sqlalchemy.engine import Connection, Engine
 from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkStatus,
@@ -28,6 +31,36 @@ from tracker.utils import fetch_sandbox_provider_config, process_task, start_ben
 
 TEST_ORG = Org(id=TEST_ORG_ID, name="default")
 _TEST_STARTER = RequestIdentity(org=TEST_ORG, access_key_id=None, email=None, name=None)
+
+
+class _UnitEvaluationLock:
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+        self._connection: Connection | None = None
+
+    @property
+    def connection(self) -> Connection:
+        assert self._connection is not None
+        return self._connection
+
+    async def __aenter__(self) -> bool:
+        self._connection = self._engine.connect()
+        return True
+
+    async def __aexit__(self, *_args: object) -> None:
+        self.connection.close()
+        self._connection = None
+
+
+def install_sqlite_evaluation_lock(database_session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace PostgreSQL evaluation locking for a SQLite-backed unit test."""
+    bind = database_session.get_bind()
+    assert isinstance(bind, Engine)
+
+    def evaluation_lock(_engine: Engine, _task_row_id: UUID) -> _UnitEvaluationLock:
+        return _UnitEvaluationLock(bind)
+
+    monkeypatch.setattr("tracker.utils.task_execution.task_evaluation_lock", evaluation_lock)
 
 
 class MockKicker:
@@ -77,7 +110,11 @@ def create_task_environment(
         task_ids=["task_0"],
         harness_config=harness_config,
     )
-    benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, run_starter or _TEST_STARTER)
+    benchmark_row = start_benchmark_request_to_benchmark(
+        start_benchmark_request,
+        run_starter or _TEST_STARTER,
+        aws_managed=False,
+    )
     benchmark_row.status = BenchmarkStatus.IN_PROGRESS
     database_session.add(benchmark_row)
     database_session.commit()
@@ -112,11 +149,21 @@ def create_task_environment(
     return start_benchmark_request, task_row, benchmark_row.id, authority
 
 
+def bind_task_to_dispatch(session: Session, task: Task, authority: ExecutionAuthority) -> None:
+    """Set a task's attempt token to the dispatch that owns its evaluation."""
+    dispatch = session.get(ExecutorDispatch, authority.dispatch_id)
+    assert dispatch is not None
+    task.started_at = dispatch.created_at
+    session.add(task)
+    session.commit()
+    session.refresh(task)
+
+
 async def run_process_task(
     start_benchmark_request: StartBenchmarkRequest,
     task_row: Task,
     benchmark_id: UUID,
-    harness_config: HarnessConfig,
+    aws_runtime: AWSRuntime,
     authority: ExecutionAuthority,
     *,
     queue_context: SandboxQueueContext | None = None,
@@ -127,15 +174,18 @@ async def run_process_task(
     - start_benchmark_request: Request that created the benchmark.
     - task_row: Persisted task being processed.
     - benchmark_id: Parent benchmark identifier.
-    - harness_config: Harness configuration used for provider resolution.
+    - aws_runtime: Shared AWS runtime used for provider resolution.
+    - authority: Execution authority for the dispatch being exercised.
 
     Returns
     - The task result mapping returned by process_task.
     """
     benchmark_service = start_benchmark_request.benchmark_service
+    harness_config = start_benchmark_request.harness_config
+    assert harness_config is not None
     sandbox_provider_config = fetch_sandbox_provider_config(
         harness_config.sandbox_provider_secret_name,
-        harness_config.aws,
+        aws_runtime.clients,
         start_benchmark_request.sandbox_provider,
     )
     return await process_task(
@@ -144,7 +194,7 @@ async def run_process_task(
         benchmark_service=benchmark_service,
         benchmark_id=benchmark_id,
         task_id="task_0",
-        harness_config=harness_config,
+        aws_runtime=aws_runtime,
         org=TEST_ORG,
         sandbox_provider_config=sandbox_provider_config,
         sandbox_provider=benchmark_service.get_sandbox_provider(sandbox_provider_config),

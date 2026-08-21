@@ -82,6 +82,15 @@ def test_openapi_declares_required_harness_headers() -> None:
         assert operation["parameters"][-4:] == expected_references
 
 
+def test_openapi_keeps_scheduler_storage_fields_internal() -> None:
+    schemas = build_openapi()["components"]["schemas"]
+
+    benchmark_argument_properties = schemas["BenchmarkArguments"]["properties"]
+    assert "priority" not in benchmark_argument_properties
+    assert "queue_pool_id" not in benchmark_argument_properties
+    assert "priority" in schemas["StartBenchmarkRequest"]["properties"]
+
+
 def test_openapi_includes_scheduler_overview_contract() -> None:
     operation = build_openapi()["paths"]["/scheduler/overview"]["get"]
     parameters = {parameter["name"]: parameter["schema"] for parameter in operation["parameters"]}
