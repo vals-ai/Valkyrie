@@ -93,6 +93,7 @@ class TestOutputsCommands:
         """
         mock_download = AsyncMock(return_value=2)
         monkeypatch.setattr(outputs_module, "download_s3_path", mock_download)
+        monkeypatch.setattr(outputs_module, "use_tracker_storage", lambda: False)
 
         result = cli_runner.invoke(output_path, [str(_RUN_ID), "/task-a/", "--output-dir", "/tmp/output"])
 
@@ -106,3 +107,19 @@ class TestOutputsCommands:
 
         assert failed_result.exit_code == 1
         assert "download unavailable" in failed_result.stderr
+
+    def test_output_path_uses_tracker_storage_for_keyless_configs(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        cli_runner: CliRunner,
+    ) -> None:
+        """A keyless config must download outputs through tracker-issued URLs."""
+        mock_remote_download = AsyncMock(return_value=3)
+        monkeypatch.setattr(outputs_module, "download_outputs_remote", mock_remote_download)
+        monkeypatch.setattr(outputs_module, "use_tracker_storage", lambda: True)
+
+        result = cli_runner.invoke(output_path, [str(_RUN_ID), "task-a", "--output-dir", "/tmp/output"])
+
+        assert result.exit_code == 0, result.output
+        mock_remote_download.assert_awaited_once_with(str(_RUN_ID), "task-a", Path("/tmp/output"))
+        assert "3 file(s) downloaded" in result.output

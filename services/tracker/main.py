@@ -23,6 +23,7 @@ from sqlmodel import Session, col, select
 
 from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
+from tracker.api.benchmark_storage import router as benchmark_storage_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
 from tracker.api.dependencies import RunAWSDependency
@@ -178,6 +179,7 @@ app.add_middleware(RequestContextMiddleware)
 
 app.include_router(agents_router)
 app.include_router(benchmark_services_router)
+app.include_router(benchmark_storage_router)
 app.include_router(benchmarks_status_router)
 app.include_router(filter_options_router)
 app.include_router(single_benchmark_router)

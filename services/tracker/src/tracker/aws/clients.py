@@ -15,7 +15,9 @@ if TYPE_CHECKING:
     from tracker.types import AWSCredentials
 
 _HIGH_CONCURRENCY_CLIENT_CONFIG = Config(max_pool_connections=200)
-_S3_CLIENT_CONFIG = Config(max_pool_connections=200, retries={"mode": "standard"})
+# signature_version pins presigned URLs to SigV4; the default falls back to SigV2-style
+# signing, which breaks on unsigned headers and KMS-encrypted buckets.
+_S3_CLIENT_CONFIG = Config(max_pool_connections=200, retries={"mode": "standard"}, signature_version="s3v4")
 _DEFAULT_CHAIN_MAXIMUM_PRESIGN_TTL_SECONDS = 3600
 
 

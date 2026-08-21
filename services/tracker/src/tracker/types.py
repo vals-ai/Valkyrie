@@ -482,6 +482,23 @@ class AgentDownloadURLResponse(BaseModel):
     expires_in: int
 
 
+class AgentUploadURLResponse(BaseModel):
+    name: str
+    upload_url: str
+    expires_in: int
+
+
+class OutputURLEntry(BaseModel):
+    key: str
+    download_url: str
+
+
+class BenchmarkOutputURLsResponse(BaseModel):
+    prefix: str
+    files: list[OutputURLEntry]
+    expires_in: int
+
+
 class TaskArtifactsResponse(BaseModel):
     cloudwatch_url: str | None
     agent_output_url: str | None
