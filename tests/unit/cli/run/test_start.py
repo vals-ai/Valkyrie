@@ -57,6 +57,7 @@ class StartTestbed:
         self.tracker.__enter__.return_value = self.tracker
         self.tracker_factory = MagicMock(return_value=self.tracker)
         self.tracker_factory.validate_sandbox_provider.return_value = ("daytona", "DaytonaSecrets")
+        self.tracker_factory.parse_config_keys.return_value = {"AWS_ACCESS_KEY_ID": "key"}
         self.tracker_factory.get_webhook_secret.return_value = None
         self.resolve_remote = AsyncMock(
             return_value=AgentContractRequest(name="remote-agent", install_cmd="echo install", run_cmd="echo run")
@@ -264,6 +265,23 @@ class TestCountedStarts:
         get_contract.assert_called_once()
         push_agent.assert_awaited_once_with("local-agent", local_agent)
         assert start_testbed.tracker.start_benchmark.call_count == 2
+
+    def test_managed_start_defers_contract_resolution_to_tracker(
+        self,
+        start_testbed: StartTestbed,
+    ) -> None:
+        start_testbed.tracker_factory.parse_config_keys.return_value = {}
+
+        result = start_testbed.invoke(["--model", "anthropic/claude-opus-5", "-k", "variant", "max"])
+
+        assert result.exit_code == 0, result.output
+        start_testbed.resolve_remote.assert_not_awaited()
+        contract = start_testbed.tracker.start_benchmark.call_args.args[0]
+        assert contract == AgentContractRequest(
+            name="remote-agent",
+            model="anthropic/claude-opus-5",
+            kwargs={"variant": "max"},
+        )
 
     def test_invalid_options_precede_side_effects(self, start_testbed: StartTestbed) -> None:
         """
