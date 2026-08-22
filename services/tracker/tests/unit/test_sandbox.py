@@ -690,7 +690,9 @@ class TestRunAgent:
             install_cmd="",
             run_cmd="exit 23",
             final_output="/logs",
+            output_artifacts=["artifacts/result.json"],
         )
+        upload_artifacts = AsyncMock()
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
             if command.startswith("mkdir -p") or command == "test -e /logs":
@@ -707,6 +709,7 @@ class TestRunAgent:
             "archive_and_upload_output",
             AsyncMock(side_effect=OutputArtifactError("terminal upload failed")),
         )
+        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", upload_artifacts)
 
         sandbox = Mock(id="sandbox-123", name="task-alias")
         with pytest.raises(AgentRunFailedError, match="agent exited 23"):
@@ -721,6 +724,8 @@ class TestRunAgent:
                 agent_output_s3_key="benchmarks/benchmark-123/task_0/agent_output.tar.gz",
                 benchmark_id="benchmark-123",
             )
+
+        upload_artifacts.assert_awaited_once()
 
     async def test_run_agent_threads_benchmark_id_to_archive_and_upload(
         self,

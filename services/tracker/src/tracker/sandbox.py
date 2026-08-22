@@ -876,35 +876,63 @@ async def run_agent(
     # Create cwd if it does not already exist
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
-    async def upload_outputs() -> None:
+    async def upload_outputs(*, preserve_agent_error: bool = False) -> None:
+        errors: list[Exception] = []
         if contract.final_output:
-            result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
-            if (
-                result.exit_code == _SUCCESS_EXIT_CODE
-                and agent_output_s3_key
-                and (execution_is_current is None or execution_is_current())
-            ):
-                await archive_and_upload_output(
-                    sandbox,
-                    contract.final_output,
-                    agent_output_s3_key,
-                    object_store,
-                    benchmark_id=benchmark_id,
-                    task_id=task_id,
-                    execution_is_current=execution_is_current,
+            try:
+                result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
+                if (
+                    result.exit_code == _SUCCESS_EXIT_CODE
+                    and agent_output_s3_key
+                    and (execution_is_current is None or execution_is_current())
+                ):
+                    await archive_and_upload_output(
+                        sandbox,
+                        contract.final_output,
+                        agent_output_s3_key,
+                        object_store,
+                        benchmark_id=benchmark_id,
+                        task_id=task_id,
+                        execution_is_current=execution_is_current,
+                    )
+            except Exception as error:
+                errors.append(error)
+                logger.exception(
+                    "Failed to collect final agent output",
+                    extra={
+                        "sandbox_id": sandbox.id,
+                        "sandbox_name": sandbox.name,
+                        "benchmark_id": benchmark_id,
+                        "task_id": task_id,
+                    },
                 )
 
         if contract.output_artifacts:
-            if benchmark_id is None:
-                raise SandboxError("benchmark_id is required to upload output artifacts")
-            await upload_output_artifacts(
-                sandbox,
-                contract.output_artifacts,
-                benchmark_id,
-                task_id,
-                object_store,
-                execution_is_current,
-            )
+            try:
+                if benchmark_id is None:
+                    raise SandboxError("benchmark_id is required to upload output artifacts")
+                await upload_output_artifacts(
+                    sandbox,
+                    contract.output_artifacts,
+                    benchmark_id,
+                    task_id,
+                    object_store,
+                    execution_is_current,
+                )
+            except Exception as error:
+                errors.append(error)
+                logger.exception(
+                    "Failed to collect declared agent artifacts",
+                    extra={
+                        "sandbox_id": sandbox.id,
+                        "sandbox_name": sandbox.name,
+                        "benchmark_id": benchmark_id,
+                        "task_id": task_id,
+                    },
+                )
+
+        if errors and not preserve_agent_error:
+            raise errors[0]
 
     # A nonzero exit is terminal evidence; collect declared outputs while the
     # sandbox is still available.
@@ -916,18 +944,7 @@ async def run_agent(
             contract.egress_allowlist,
         )
     except Exception:
-        try:
-            await upload_outputs()
-        except Exception:
-            logger.exception(
-                "Failed to collect terminal agent outputs after agent error",
-                extra={
-                    "sandbox_id": sandbox.id,
-                    "sandbox_name": sandbox.name,
-                    "benchmark_id": benchmark_id,
-                    "task_id": task_id,
-                },
-            )
+        await upload_outputs(preserve_agent_error=True)
         raise
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:
