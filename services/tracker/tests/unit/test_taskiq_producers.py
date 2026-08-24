@@ -28,8 +28,8 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.aws.runtime import AWSRuntime
 from tracker.executor.release_control import promote_release
+from tracker.runtime.storage import ObjectStore
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 
 
@@ -143,7 +143,7 @@ def test_managed_start_and_resume_emit_credential_free_v2(
         return True
 
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
-    monkeypatch.setattr("main.s3_object_exists", agent_exists)
+    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", agent_exists)
     monkeypatch.setattr("main.copy_agent_to_benchmark", AsyncMock(return_value=True))
     reset_to_in_progress = AsyncMock(return_value=["task-2"])
     monkeypatch.setattr("main.reset_to_in_progress_status", reset_to_in_progress)
@@ -202,16 +202,18 @@ async def test_resolving_a_contract_from_s3_attests_its_inference_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Rebuilding from the bundle is what makes the settings trustworthy."""
-    monkeypatch.setattr("main.download_from_s3", AsyncMock(return_value=b"zip-bytes"))
+    object_store = AsyncMock()
+    object_store.get_bytes.return_value = b"zip-bytes"
     monkeypatch.setattr(
         "main.get_contract_from_zip_bytes",
         lambda *_args, **_kwargs: contract.model_copy(update={"kwargs": {"variant": "max"}}),
     )
 
-    resolved = await main._resolve_contract_from_s3(_start_request(contract, None), cast(AWSRuntime, None))
+    resolved = await main._resolve_contract_from_s3(_start_request(contract, None), cast(ObjectStore, object_store))
 
     assert resolved.inference_settings_attested is True
     assert resolved.kwargs == {"variant": "max"}
+    object_store.get_bytes.assert_awaited_once_with("agents/dummy.zip")
 
 
 def test_start_clears_a_caller_asserted_attestation(
@@ -231,7 +233,7 @@ def test_start_clears_a_caller_asserted_attestation(
         return True
 
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
-    monkeypatch.setattr("main.s3_object_exists", agent_exists)
+    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", agent_exists)
     monkeypatch.setattr("main.copy_agent_to_benchmark", AsyncMock(return_value=True))
     resolve_from_s3 = AsyncMock()
     monkeypatch.setattr("main._resolve_contract_from_s3", resolve_from_s3)
@@ -270,7 +272,7 @@ def test_managed_start_rejects_aws_authority_before_persistence(
     async def agent_exists(*_args: Any, **_kwargs: Any) -> bool:
         raise AssertionError("invalid managed requests must be rejected before checking S3")
 
-    monkeypatch.setattr("main.s3_object_exists", agent_exists)
+    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", agent_exists)
     request = _start_request(contract, None).model_copy(
         update={"service_headers": {"AWS_SECRET_ACCESS_KEY": "credential"}}
     )
@@ -331,7 +333,7 @@ def test_managed_resume_rolls_back_when_the_active_release_is_incompatible(
         "verify_task_ids",
         AsyncMock(return_value=VerifyTaskIdsResponse(task_ids=["task-1"])),
     )
-    monkeypatch.setattr("main.s3_object_exists", AsyncMock(return_value=True))
+    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", AsyncMock(return_value=True))
 
     response = client.post("/start-benchmark", json=_start_request(contract, None).model_dump(mode="json"))
     assert response.status_code == 200
@@ -383,7 +385,7 @@ def test_managed_resume_payload_failure_rolls_back_recovery_state(
         "verify_task_ids",
         AsyncMock(return_value=VerifyTaskIdsResponse(task_ids=["task-1"])),
     )
-    monkeypatch.setattr("main.s3_object_exists", AsyncMock(return_value=True))
+    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", AsyncMock(return_value=True))
     monkeypatch.setattr("main.copy_agent_to_benchmark", AsyncMock(return_value=True))
 
     response = client.post("/start-benchmark", json=_start_request(contract, None).model_dump(mode="json"))
