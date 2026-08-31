@@ -665,6 +665,9 @@ async def process_benchmark(
                         logger.warning(f"Completion lambda '{lambda_function}' failed: {error}")
                         callback_failure = callback_failure or error
                 if callback_failure is not None:
+                    # Reported, but not reflected in the run: set_benchmark_final_status has already
+                    # committed the terminal status, so commit_benchmark_error rolls back on
+                    # require_in_progress and the run stays FINISHED.
                     raise callback_failure
 
     except ExecutionAuthorityRevoked:

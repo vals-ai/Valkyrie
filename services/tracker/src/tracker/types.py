@@ -8,21 +8,14 @@ from typing import Any, Literal, cast
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
-from pydantic import (
-    AliasChoices,
-    BaseModel,
-    ConfigDict,
-    Field,
-    field_serializer,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
     BenchmarkStatus,
+    CompletionLambdas,
     DocentReadingStatus,
     FinalEvaluation,
     TaskStatus,
@@ -73,10 +66,7 @@ class StartBenchmarkRequest(BaseModel):
     label: str | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None
-    lambda_functions: list[str] = Field(
-        default_factory=list,
-        validation_alias=AliasChoices("lambda_functions", "lambda_function"),
-    )
+    lambda_functions: CompletionLambdas = Field(default_factory=list)
     dataset: str | None = None
     harness_config: HarnessConfig | None = None
     custom_benchmark_service: str | None = None
@@ -87,16 +77,6 @@ class StartBenchmarkRequest(BaseModel):
     service_auth_secret_name: str | None = None
     webhook_secret_name: str | None = None
     webhook_intervals: list[int] | None = None
-
-    @field_validator("lambda_functions", mode="before")
-    @classmethod
-    def widen_single_lambda(cls, value: Any) -> Any:
-        """Accept the single completion lambda sent by clients from before this field was a list."""
-        if value is None:
-            return []
-        if isinstance(value, str):
-            return [value]
-        return value
 
     @field_validator("benchmark_name")
     @classmethod

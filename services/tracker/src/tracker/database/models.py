@@ -1,13 +1,14 @@
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from pydantic import (
     AliasChoices,
     BaseModel,
+    BeforeValidator,
     Field as PydanticField,
     SerializerFunctionWrapHandler,
     field_serializer,
@@ -190,6 +191,22 @@ class AgentContractRequest(BaseModel):
         return normalized_artifacts
 
 
+def _widen_single_lambda(value: Any) -> Any:
+    """Read the single completion lambda persisted or sent before this field was a list."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return value
+
+
+CompletionLambdas = Annotated[
+    list[str],
+    BeforeValidator(_widen_single_lambda),
+    PydanticField(validation_alias=AliasChoices("lambda_functions", "lambda_function")),
+]
+
+
 class BenchmarkArguments(BaseModel):
     model_config = {"extra": "forbid", "populate_by_name": True}
 
@@ -197,23 +214,10 @@ class BenchmarkArguments(BaseModel):
     concurrency: int
     task_ids: list[str] | None = None
     slice_str: str | None = None
-    lambda_functions: list[str] = PydanticField(
-        default_factory=list,
-        validation_alias=AliasChoices("lambda_functions", "lambda_function"),
-    )
+    lambda_functions: CompletionLambdas = PydanticField(default_factory=list)
     dataset: str | None = None
     sandbox_provider: str = "daytona"
     sandbox_provider_secret_name: str | None = None
-
-    @field_validator("lambda_functions", mode="before")
-    @classmethod
-    def widen_single_lambda(cls, value: Any) -> Any:
-        """Read the single completion lambda persisted by runs started before this field was a list."""
-        if value is None:
-            return []
-        if isinstance(value, str):
-            return [value]
-        return value
 
 
 class FinalEvaluation(SQLModel, table=True):

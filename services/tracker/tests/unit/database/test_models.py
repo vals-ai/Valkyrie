@@ -16,6 +16,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.types import StartBenchmarkRequest
 
 
 def test_required_output_artifact_omits_default_from_serialized_contract() -> None:
@@ -88,7 +89,7 @@ def test_create_benchmark_table_row_counts_stopped_tasks_as_finished(database_se
 
 
 @pytest.mark.parametrize(
-    ("persisted", "expected"),
+    ("received", "expected"),
     [
         ({"lambda_function": "programbench-final-view-lambda"}, ["programbench-final-view-lambda"]),
         ({"lambda_function": None}, []),
@@ -96,16 +97,25 @@ def test_create_benchmark_table_row_counts_stopped_tasks_as_finished(database_se
         ({}, []),
     ],
 )
-def test_benchmark_arguments_read_completion_lambdas_from_either_shape(
-    persisted: dict[str, object],
+@pytest.mark.parametrize(
+    ("model", "required"),
+    [(BenchmarkArguments, {}), (StartBenchmarkRequest, {"benchmark_name": "swebench"})],
+    ids=["persisted", "inbound"],
+)
+def test_completion_lambdas_are_read_from_either_shape(
+    model: type[BenchmarkArguments | StartBenchmarkRequest],
+    required: dict[str, object],
+    received: dict[str, object],
     expected: list[str],
 ) -> None:
-    arguments = BenchmarkArguments.model_validate(
+    """Rows written before this field was a list still load, and so do requests from an older CLI or SDK."""
+    parsed = model.model_validate(
         {
             "contract": {"name": "agent", "install_cmd": "echo install", "run_cmd": "echo run"},
             "concurrency": 1,
-            **persisted,
+            **required,
+            **received,
         }
     )
 
-    assert arguments.lambda_functions == expected
+    assert parsed.lambda_functions == expected
