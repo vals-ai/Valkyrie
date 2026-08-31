@@ -5,7 +5,6 @@ description: Stream progress, inspect status and errors, and list historical run
 
 Stream updates until the run completes or disconnects.
 
-<Panel>
 <CodeGroup>
 
 ```bash CLI
@@ -18,7 +17,6 @@ async for update in client.runs.stream(run_id):
 ```
 
 </CodeGroup>
-</Panel>
 
 Full syntax for each command below is in the [`run fetch`](/reference/cli/run#fetch), [`run status`](/reference/cli/run#status), [`run errors`](/reference/cli/run#errors), and [`run list`](/reference/cli/run#list) reference, and in [`client.runs.stream`](/reference/sdk/runs#stream) for Python.
 

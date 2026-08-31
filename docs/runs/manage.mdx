@@ -5,7 +5,6 @@ description: Update concurrency, stop work, and resume or retry tasks.
 
 Resume pending work with an optional concurrency override.
 
-<Panel>
 <CodeGroup>
 
 ```bash CLI
@@ -17,7 +16,6 @@ await client.runs.resume(run_id, concurrency=20)
 ```
 
 </CodeGroup>
-</Panel>
 
 Full syntax for each command below is in the [`run update`](/reference/cli/run#update), [`run stop`](/reference/cli/run#stop), [`run resume`](/reference/cli/run#resume), and [`run retry`](/reference/cli/run#retry) reference, and in [`client.runs.resume`](/reference/sdk/runs#resume) and [`client.runs.retry`](/reference/sdk/runs#retry) for Python.
 
