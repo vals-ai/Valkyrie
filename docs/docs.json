@@ -8,6 +8,9 @@
     "light": "#6FD09F",
     "dark": "#488959"
   },
+  "icons": {
+    "library": "lucide"
+  },
   "appearance": {
     "default": "system"
   },

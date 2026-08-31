@@ -32,15 +32,15 @@ GUIDE_LINKS = {
 
 CLI_CARDS = {
     "run": ("play", "starting, monitoring, managing, and retrieving runs"),
-    "agent": ("robot", "installing, uploading, listing, downloading, and removing agent bundles"),
-    "benchmark": ("flask", "exporting the task IDs in a benchmark dataset"),
-    "config": ("gear", "credentials, sandbox providers, and benchmark services"),
+    "agent": ("package", "installing, uploading, listing, downloading, and removing agent bundles"),
+    "benchmark": ("flask-conical", "exporting the task IDs in a benchmark dataset"),
+    "config": ("sliders-horizontal", "credentials, sandbox providers, and benchmark services"),
 }
 
 RESOURCE_CARDS = {
     "RunsResource": ("Runs", "play", "starting, inspecting, streaming, controlling, and retrying runs"),
-    "BenchmarksResource": ("Benchmarks", "flask", "retrieving benchmark status, tasks, and artifacts"),
-    "AgentsResource": ("Agents", "robot", "listing agents and retrieving bundle download URLs"),
+    "BenchmarksResource": ("Benchmarks", "flask-conical", "retrieving benchmark status, tasks, and artifacts"),
+    "AgentsResource": ("Agents", "package", "listing agents and retrieving bundle download URLs"),
     "BenchmarkServicesResource": (
         "Benchmark services",
         "server",
@@ -49,11 +49,11 @@ RESOURCE_CARDS = {
 }
 
 TYPE_CARDS = {
-    "Agents": ("robot", "uploaded agent bundles and download URLs"),
+    "Agents": ("package", "uploaded agent bundles and download URLs"),
     "Runs": ("play", "run requests, responses, and lifecycle enums"),
-    "Benchmarks": ("flask", "benchmark, task, artifact, and status responses"),
+    "Benchmarks": ("flask-conical", "benchmark, task, artifact, and status responses"),
     "Services": ("server", "benchmark service catalog and health responses"),
-    "Config": ("gear", "validated SDK configuration and field aliases"),
+    "Config": ("sliders-horizontal", "validated SDK configuration and field aliases"),
 }
 
 READ_ONLY_COMMANDS = frozenset(
