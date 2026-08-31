@@ -51,34 +51,71 @@ The forwarding address changes each time a free-tier tunnel restarts, so re-regi
 
 ## Deploy the service
 
-A tunnel is fine while iterating, but a service other people run against needs a stable HTTPS endpoint. The generated project ships a `Dockerfile` that serves `main:app` with uvicorn on port `8001`, so any container host works.
+A tunnel is fine while iterating, but a service other people run against needs a stable HTTPS endpoint. The generated project ships a `Dockerfile` that serves `main:app` with uvicorn on container port `8001`, so any host that can run a container and route WebSocket traffic to it works.
 
-<Steps>
-  <Step title="Build and publish the image">
-    ```bash
-    make docker-build
-    docker tag benchmark-service:latest <registry>/<benchmark-name>-benchmark-service:<tag>
-    docker push <registry>/<benchmark-name>-benchmark-service:<tag>
-    ```
+### Build and publish the image
 
-    `make docker-build` tags the image `benchmark-service:latest`. The build accepts a `SERVICE_VERSION` argument that becomes the version the package reports; CI passes the git tag.
-  </Step>
-  <Step title="Run the container behind TLS">
-    Expose container port `8001` and terminate TLS in front of it. WebSocket upgrades must pass through, since setup and evaluation stream over a WebSocket connection.
-  </Step>
-  <Step title="Configure authentication">
-    `AUTH_DISABLED=true` serves every request without a credential and is for local development only. A hosted deployment sets `DESCOPE_PROJECT_ID` plus a tenant allowlist, either from the catalog API (`BENCHMARK_CATALOG_API_URL` and `SERVICE_NAME`) or inline as `DESCOPE_TENANT_ALLOWLIST_JSON`. Callers then send a Descope access key in `X-Descope-Api-Key`, scoped to one allowlisted tenant.
+```bash
+make docker-build
+docker tag benchmark-service:latest <registry>/<benchmark-name>-benchmark-service:<tag>
+docker push <registry>/<benchmark-name>-benchmark-service:<tag>
+```
 
-    Without an allowlist source the service starts but rejects every authenticated request. The removed `AUTH_REQUIRED` variable now fails startup when set to a false value.
-  </Step>
-  <Step title="Register the endpoint">
-    ```bash
-    valkyrie config service set <benchmark-name> https://benchmark.example.com
-    ```
+`make docker-build` tags the image `benchmark-service:latest`, so retag it before pushing. The build takes a `SERVICE_VERSION` argument that becomes the version reported by `GET /version`; CI passes the git tag.
 
-    Store the caller credential with [`config auth set`](/benchmarks/authentication) so the CLI sends it on every request.
-  </Step>
-</Steps>
+Deployment guides for common container hosts: [AWS App Runner](https://docs.aws.amazon.com/apprunner/latest/dg/service-source-image.html), [ECS with an Application Load Balancer](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/service-load-balancing.html), [Google Cloud Run](https://cloud.google.com/run/docs/deploying), and [Fly.io](https://fly.io/docs/launch/deploy/).
+
+### Route WebSocket traffic
+
+Task retrieval and scoring are plain HTTP (`GET /retrieve-task/`, `POST /final-score/`), but sandbox setup and evaluation stream over WebSockets (`/ws/setup-task`, `/ws/evaluate-instance`, `/ws/evaluate-response`). A proxy that terminates TLS in front of the container must therefore:
+
+- forward the `Upgrade` and `Connection` headers rather than answering the upgrade itself,
+- allow idle periods longer than the container's keepalive, which pings every 30s with a 10s timeout (`--ws-ping-interval 30 --ws-ping-timeout 10`),
+- allow connection lifetimes as long as your slowest task, since a setup or evaluation stream stays open for its whole duration.
+
+The usual failure mode is an idle-timeout default well below a task's runtime: Cloud Run caps a request at [60 minutes by default](https://cloud.google.com/run/docs/configuring/request-timeout), and an ALB [idles connections out after 60 seconds](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/application-load-balancer-connections.html) unless raised. Raise both to cover `agent_timeout` plus evaluation.
+
+`GET /health` is unauthenticated and suitable as the load balancer health check.
+
+### Configure authentication
+
+| Variable | Purpose |
+| --- | --- |
+| `AUTH_DISABLED` | `true` serves every request without a credential. Local development only; `/v1/*` still refuses to serve. |
+| `DESCOPE_PROJECT_ID` | Descope project that issues and validates caller access keys. Required when auth is enabled. |
+| `BENCHMARK_CATALOG_API_URL` | Catalog API base URL. When set, tenant policy is fetched per caller from `<url>/benchmark-services/<SERVICE_NAME>` and cached for 5 minutes. |
+| `SERVICE_NAME` | Service name used in that catalog path. Required alongside the catalog URL. |
+| `DESCOPE_TENANT_ALLOWLIST_JSON` | Inline allowlist, used only when no catalog URL is set. |
+| `DESCOPE_ALLOWLIST_PATH` | Path to the same structure as YAML, for local runs. |
+| `DESCOPE_AUTH_CACHE_TTL_SECONDS` | Positive-auth cache lifetime. Defaults to 3600. |
+
+Authenticated callers send their Descope access key in the `X-Descope-Api-Key` header. The key must resolve to exactly one tenant, and that tenant must appear in the allowlist, so the allowlist is what actually grants access:
+
+```json
+{
+  "tenants": {
+    "T2abc...": {
+      "datasets": ["default", "hard"],
+      "evaluation_quota": { "limit": 500, "period": "week" },
+      "trial_mode": false
+    }
+  }
+}
+```
+
+`datasets` is an explicit list of the dataset variants the tenant may request — `default` has to be listed too, and an empty list grants nothing. `evaluation_quota` caps evaluation requests per period, and `trial_mode` sanitizes `/v1/evaluate` and `/v1/score` responses down to score-only fields. Unknown keys are rejected.
+
+<Warning>
+  With auth enabled and no allowlist source configured, the service starts and logs a warning but rejects every authenticated request. `AUTH_REQUIRED` is no longer supported: static bearer auth was removed, and setting it to a false value fails startup.
+</Warning>
+
+### Register the endpoint
+
+```bash
+valkyrie config service set <benchmark-name> https://benchmark.example.com
+```
+
+Store the caller credential with [`config auth set`](/benchmarks/authentication) so the CLI sends it on every request.
 
 ## Build a service
 
