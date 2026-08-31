@@ -1,8 +1,26 @@
-pre,
-pre > div,
-.codeblock-light,
-.codeblock-dark {
-  border-radius: 2px !important;
+/* The theme fills inline code with a translucent white that disappears against the neutral page
+   background set in docs.json, leaving only the link underline drawn across the chip's padding.
+   An opaque surface and no underline keep a code link reading as a single chip. */
+:not(pre) > code {
+  background-color: #ffffff !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+}
+
+.dark :not(pre) > code {
+  background-color: #262626 !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+a:has(> code) {
+  border-bottom: none !important;
+}
+
+a > code {
+  color: #386b46 !important;
+}
+
+.dark a > code {
+  color: #6fd09f !important;
 }
 
 /* docs.json takes a single logo image per color scheme, so the wordmark is rendered as text next
