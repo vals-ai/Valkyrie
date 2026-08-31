@@ -55,13 +55,25 @@ A tunnel is fine while iterating, but a service other people run against needs a
 
 ### Build and publish the image
 
-```bash
-make docker-build
-docker tag benchmark-service:latest <registry>/<benchmark-name>-benchmark-service:<tag>
-docker push <registry>/<benchmark-name>-benchmark-service:<tag>
-```
+<Steps>
+  <Step title="Build the image">
+    ```bash
+    make docker-build
+    ```
 
-`make docker-build` tags the image `benchmark-service:latest`, so retag it before pushing. The build takes a `SERVICE_VERSION` argument that becomes the version reported by `GET /version`; CI passes the git tag.
+    This tags the image `benchmark-service:latest`. The build takes a `SERVICE_VERSION` argument that becomes the version reported by `GET /version`; CI passes the git tag.
+  </Step>
+  <Step title="Tag it for your registry">
+    ```bash
+    docker tag benchmark-service:latest <registry>/<benchmark-name>-benchmark-service:<tag>
+    ```
+  </Step>
+  <Step title="Push it">
+    ```bash
+    docker push <registry>/<benchmark-name>-benchmark-service:<tag>
+    ```
+  </Step>
+</Steps>
 
 Deployment guides for common container hosts: [AWS App Runner](https://docs.aws.amazon.com/apprunner/latest/dg/service-source-image.html), [ECS with an Application Load Balancer](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/service-load-balancing.html), [Google Cloud Run](https://cloud.google.com/run/docs/deploying), and [Fly.io](https://fly.io/docs/launch/deploy/).
 
