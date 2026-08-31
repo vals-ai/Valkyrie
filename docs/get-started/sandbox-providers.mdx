@@ -25,6 +25,36 @@ Register the secret:
 valkyrie config provider set daytona DaytonaSecrets
 ```
 
+## Modal
+
+1. [Create a Modal API token](https://modal.com/settings/tokens) in the workspace that should own the sandboxes.
+2. Store the following JSON as an AWS Secrets Manager secret:
+
+```json
+{
+  "MODAL_TOKEN_ID": "...",
+  "MODAL_TOKEN_SECRET": "..."
+}
+```
+
+Register the secret under the name `modal`:
+
+```bash
+valkyrie config provider set modal ModalSecrets
+```
+
+The provider name is sent to the benchmark service as the provider type, so Modal credentials must be registered under `modal`.
+
+Modal sandboxes differ from Daytona in three ways that affect benchmarks:
+
+- A GPU request must name a Modal GPU type, such as `H100`, `A100-80GB`, or `T4`.
+- Disk sizing is accepted but not enforced.
+- Snapshot-backed tasks must use a Modal filesystem snapshot; Daytona's targeted snapshots are unsupported.
+
+Modal support comes from the benchmark service, not the CLI. A service pinned to a `create-benchmark-service` release older than `v0.14.0` fails the run with `Modal sandbox provider is not implemented`.
+
+## Select a provider
+
 The first configured provider becomes the default. Set the default explicitly with:
 
 ```bash
