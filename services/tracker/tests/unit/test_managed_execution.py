@@ -17,6 +17,7 @@ from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.resolver import ManagedAWSEligibilityError
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org
+from tracker.exceptions import LambdaError
 from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmarkRequest
 from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
 from tracker.utils.run_orchestration import (
@@ -521,3 +522,51 @@ async def test_managed_execution_invokes_every_configured_completion_lambda(
     assert payloads[0] == payloads[1]
     assert payloads[0]["benchmark_id"] == str(benchmark.id)
     assert payloads[0]["benchmark_name"] == benchmark.name
+
+
+async def test_managed_execution_invokes_later_completion_lambdas_after_a_failure(
+    contract: AgentContractRequest,
+    aws_runtime: AWSRuntime,
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    process_benchmark_env: None,
+    executor_authority_kwargs: Any,
+) -> None:
+    request = _managed_request(contract).model_copy(
+        update={"lambda_functions": ["programbench-final-view-lambda", "vals-format-lambda"]}
+    )
+    benchmark = _persist_benchmark(database_session, request, aws_managed=True)
+    invoked: list[str] = []
+
+    def deployment_runtime(_org_id: UUID) -> AWSRuntime:
+        return aws_runtime
+
+    def invoke_post_run(
+        _clients: object,
+        function_name: str,
+        _payload: dict[str, Any],
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        invoked.append(function_name)
+        if function_name == "programbench-final-view-lambda":
+            raise LambdaError("Lambda function 'programbench-final-view-lambda' returned status 500: {}")
+        return {}
+
+    monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
+    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "tracker.utils.run_orchestration.fetch_sandbox_provider_config",
+        lambda *_args, **_kwargs: cast(SandboxProviderConfig, MagicMock()),
+    )
+    monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", AsyncMock())
+    monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", invoke_post_run)
+
+    await process_benchmark(
+        execution_context_json=_execution_context(request, benchmark.id),
+        **executor_authority_kwargs(benchmark),
+    )
+
+    assert invoked == ["programbench-final-view-lambda", "vals-format-lambda"]

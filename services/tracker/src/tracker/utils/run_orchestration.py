@@ -35,7 +35,7 @@ from tracker.database.models import (
 )
 from tracker.database.session import engine
 from tracker.executor.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
-from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
+from tracker.exceptions import ExecutionAuthorityRevoked, LambdaError, TrackerServiceError
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
@@ -647,14 +647,20 @@ async def process_benchmark(
 
         if lambda_payload is not None:
             async with hold_dispatch_authority(authority):
+                callback_failure: LambdaError | None = None
                 for lambda_function in lambda_functions:
-                    await asyncio.to_thread(
-                        invoke_lambda,
-                        aws_runtime.clients,
-                        lambda_function,
-                        lambda_payload,
-                        config=_COMPLETION_CALLBACK_CONFIG,
-                    )
+                    try:
+                        await asyncio.to_thread(
+                            invoke_lambda,
+                            aws_runtime.clients,
+                            lambda_function,
+                            lambda_payload,
+                            config=_COMPLETION_CALLBACK_CONFIG,
+                        )
+                    except LambdaError as error:
+                        callback_failure = callback_failure or error
+                if callback_failure is not None:
+                    raise callback_failure
 
     except ExecutionAuthorityRevoked:
         finalization_deferred = True
