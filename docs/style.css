@@ -1,9 +1,10 @@
-/* Wrap long code lines instead of clipping them at the content edge. A page that contains a
-   Panel narrows the main column, so an unwrapped block hides its tail behind the copy button.
+/* Wrap long code lines instead of clipping them at the content edge, since generated signatures
+   are wider than the content column and an unwrapped block hides its tail behind the copy button.
 
    Shiki emits one span.line per source line. Making the code element a grid puts each line on
    its own row and drops the newline text nodes between lines, so the padding and negative
-   indent below hang wrapped continuations without shifting the block's left edge.
+   indent below hang wrapped continuations without shifting the block's left edge. Grid rows
+   collapse when a line is empty, so blank lines need an explicit height.
 
    The width clamps are required because the theme lets the code element size to its longest
    line; without them the block still grows past the column and wrapping never happens.
@@ -26,6 +27,7 @@ pre code {
 pre code .line {
   padding-left: 2ch;
   text-indent: -2ch;
+  min-height: 1lh;
 }
 
 /* Keep the native right table of contents usable when a page lists many commands. Targets
