@@ -13,7 +13,7 @@ Full syntax is in the [`config service set`](/reference/cli/config#service-set),
 valkyrie config service set swebench https://my-tunnel.ngrok.io
 ```
 
-The tracker must be able to reach the endpoint. Local services generally require a reverse tunnel; see the [benchmark-service reverse-tunnel guide](https://github.com/vals-ai/create-benchmark-service?tab=readme-ov-file#reverse-tunnel-setup).
+The tracker must be able to reach the endpoint, so a service running on your machine needs a [reverse tunnel](#expose-a-local-service).
 
 ## List custom services
 
@@ -29,6 +29,26 @@ The interactive list supports `[h]` for previous, `[l]` for next, and `[q]` to q
 valkyrie config service remove swebench
 ```
 
+## Expose a local service
+
+A service running locally can be tested against hosted Valkyrie through a reverse tunnel. ngrok is the shortest path, but any tunnel that gives you a public HTTPS URL works.
+
+1. [Sign up for ngrok](https://dashboard.ngrok.com/login) and follow its [setup and installation steps](https://dashboard.ngrok.com/get-started/setup).
+2. Start the service, either `make dev` or `make docker-build && make docker-run` (the container publishes port `8001`).
+3. Forward the port the service is listening on:
+
+```bash
+ngrok http 8001
+```
+
+4. Register the forwarding address ngrok prints:
+
+```bash
+valkyrie config service set <benchmark-name> https://hemagglutinative-vonnie-fungic.ngrok-free.dev
+```
+
+The forwarding address changes each time a free-tier tunnel restarts, so re-register it after every restart.
+
 ## Build a service
 
-Use the public [create-benchmark-service](https://github.com/vals-ai/create-benchmark-service) utilities to implement a compatible service.
+Use the public [create-benchmark-service](https://github.com/vals-ai/create-benchmark-service) utilities to implement a compatible service, or follow [convert a benchmark into a service](/benchmarks/convert-a-benchmark).
