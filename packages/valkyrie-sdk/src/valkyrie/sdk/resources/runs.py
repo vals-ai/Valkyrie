@@ -48,7 +48,7 @@ class RunsResource:
         slice_str: str | None = None,
         dataset: str | None = None,
         label: str | None = None,
-        lambda_function: str | None = None,
+        lambda_functions: Sequence[str] | None = None,
         provider: str | None = None,
         agent_kwargs: Mapping[str, str] | None = None,
         secrets: Mapping[str, str] | None = None,
@@ -82,7 +82,7 @@ class RunsResource:
             slice_str=slice_str,
             dataset=dataset,
             label=label,
-            lambda_function=lambda_function,
+            lambda_functions=list(lambda_functions or []),
             harness_config=access_key_harness_config,
             custom_benchmark_service=(
                 None if ignore_custom_services else self._sdk.config.custom_benchmark_services.get(benchmark)

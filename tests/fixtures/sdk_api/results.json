@@ -30,7 +30,7 @@
         "task-2"
       ],
       "slice_str": null,
-      "lambda_function": null,
+      "lambda_functions": [],
       "dataset": "default",
       "sandbox_provider": "modal",
       "sandbox_provider_secret_name": "ModalSecret"

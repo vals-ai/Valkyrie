@@ -497,7 +497,7 @@ class TestRunFinalization:
             webhook_intervals=[100],
         )
         authority_kwargs = executor_authority_kwargs(benchmark, dispatch_id=uuid4(), session=postgres_session)
-        benchmark.arguments = benchmark.arguments.model_copy(update={"lambda_function": "test-lambda"})
+        benchmark.arguments = benchmark.arguments.model_copy(update={"lambda_functions": ["test-lambda"]})
         postgres_session.add(benchmark)
         postgres_session.commit()
         side_effects: dict[str, dict[str, int | bool]] = {

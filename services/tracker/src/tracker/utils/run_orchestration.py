@@ -413,8 +413,8 @@ def _preflight_managed_aws(
     resolve_secrets(request.contract.secrets, secret_store)
     if request.webhook_secret_name and request.webhook_intervals:
         secret_store.get(request.webhook_secret_name)
-    if request.lambda_function:
-        dry_run_lambda(runtime.clients, request.lambda_function)
+    for lambda_function in request.lambda_functions:
+        dry_run_lambda(runtime.clients, lambda_function)
     return sandbox_provider_config
 
 
@@ -635,9 +635,9 @@ async def process_benchmark(
             set_benchmark_final_status(benchmark_row, session, org, authority=authority)
 
             final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
-            lambda_function = benchmark_row.arguments.lambda_function
+            lambda_functions = benchmark_row.arguments.lambda_functions
             lambda_payload: dict[str, Any] | None = None
-            if lambda_function:
+            if lambda_functions:
                 lambda_payload = benchmark_row.arguments.model_dump()
                 lambda_payload["benchmark_id"] = str(benchmark_id)
                 lambda_payload["benchmark_name"] = benchmark_row.name
@@ -645,15 +645,16 @@ async def process_benchmark(
         async with hold_dispatch_authority(authority) as (_, benchmark_row):
             await upload_final_view(benchmark_row, final_view, aws_runtime)
 
-        if lambda_function and lambda_payload is not None:
+        if lambda_payload is not None:
             async with hold_dispatch_authority(authority):
-                await asyncio.to_thread(
-                    invoke_lambda,
-                    aws_runtime.clients,
-                    lambda_function,
-                    lambda_payload,
-                    config=_COMPLETION_CALLBACK_CONFIG,
-                )
+                for lambda_function in lambda_functions:
+                    await asyncio.to_thread(
+                        invoke_lambda,
+                        aws_runtime.clients,
+                        lambda_function,
+                        lambda_payload,
+                        config=_COMPLETION_CALLBACK_CONFIG,
+                    )
 
     except ExecutionAuthorityRevoked:
         finalization_deferred = True

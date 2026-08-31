@@ -85,3 +85,27 @@ def test_create_benchmark_table_row_counts_stopped_tasks_as_finished(database_se
 
     assert row.total_tasks == 4
     assert row.finished_tasks == 3
+
+
+@pytest.mark.parametrize(
+    ("persisted", "expected"),
+    [
+        ({"lambda_function": "programbench-final-view-lambda"}, ["programbench-final-view-lambda"]),
+        ({"lambda_function": None}, []),
+        ({"lambda_functions": ["a", "b"]}, ["a", "b"]),
+        ({}, []),
+    ],
+)
+def test_benchmark_arguments_read_completion_lambdas_from_either_shape(
+    persisted: dict[str, object],
+    expected: list[str],
+) -> None:
+    arguments = BenchmarkArguments.model_validate(
+        {
+            "contract": {"name": "agent", "install_cmd": "echo install", "run_cmd": "echo run"},
+            "concurrency": 1,
+            **persisted,
+        }
+    )
+
+    assert arguments.lambda_functions == expected

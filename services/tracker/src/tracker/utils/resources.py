@@ -97,7 +97,7 @@ def start_benchmark_request_to_benchmark(
             concurrency=request.concurrency,
             task_ids=request.task_ids,
             slice_str=request.slice_str,
-            lambda_function=request.lambda_function,
+            lambda_functions=request.lambda_functions,
             dataset=request.dataset,
             sandbox_provider=request.sandbox_provider,
             sandbox_provider_secret_name=provider_secret_name,

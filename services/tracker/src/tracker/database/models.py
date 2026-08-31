@@ -5,7 +5,15 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, SerializerFunctionWrapHandler, field_serializer, field_validator, model_serializer
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    Field as PydanticField,
+    SerializerFunctionWrapHandler,
+    field_serializer,
+    field_validator,
+    model_serializer,
+)
 from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -183,16 +191,29 @@ class AgentContractRequest(BaseModel):
 
 
 class BenchmarkArguments(BaseModel):
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "forbid", "populate_by_name": True}
 
     contract: AgentContractRequest
     concurrency: int
     task_ids: list[str] | None = None
     slice_str: str | None = None
-    lambda_function: str | None = None
+    lambda_functions: list[str] = PydanticField(
+        default_factory=list,
+        validation_alias=AliasChoices("lambda_functions", "lambda_function"),
+    )
     dataset: str | None = None
     sandbox_provider: str = "daytona"
     sandbox_provider_secret_name: str | None = None
+
+    @field_validator("lambda_functions", mode="before")
+    @classmethod
+    def widen_single_lambda(cls, value: Any) -> Any:
+        """Read the single completion lambda persisted by runs started before this field was a list."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value
 
 
 class FinalEvaluation(SQLModel, table=True):
@@ -381,7 +402,7 @@ class Benchmark(SQLModel, table=True):
             concurrency=self.arguments.concurrency,
             task_ids=self.arguments.task_ids,
             slice_str=self.arguments.slice_str,
-            lambda_function=self.arguments.lambda_function,
+            lambda_functions=self.arguments.lambda_functions,
             dataset=self.arguments.dataset,
             harness_config=harness_config,
             sandbox_provider=self.arguments.sandbox_provider,
@@ -406,7 +427,7 @@ class Benchmark(SQLModel, table=True):
             label=self.label,
             task_ids=self.arguments.task_ids,
             slice_str=self.arguments.slice_str,
-            lambda_function=self.arguments.lambda_function,
+            lambda_functions=self.arguments.lambda_functions,
             dataset=self.arguments.dataset,
             harness_config=None,
             sandbox_provider=self.arguments.sandbox_provider,

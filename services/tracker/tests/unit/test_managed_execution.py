@@ -318,7 +318,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     executor_authority_kwargs: Any,
 ) -> None:
     request = _managed_request(contract.model_copy(update={"secrets": {"MODEL_API_KEY": "model-secret"}})).model_copy(
-        update={"lambda_function": "post-run-handler"}
+        update={"lambda_functions": ["post-run-handler"]}
     )
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
     calls: list[str] = []
@@ -395,7 +395,7 @@ def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         update={
             "webhook_secret_name": "webhook-secret",
             "webhook_intervals": [10],
-            "lambda_function": "result-handler",
+            "lambda_functions": ["result-handler"],
         }
     )
     execution = _parse_queued_execution(None, None, None, _execution_context(request, uuid4()))
@@ -464,3 +464,60 @@ async def test_managed_preflight_failure_happens_before_sandbox(
     assert benchmark.status == BenchmarkStatus.ERROR
     assert "managed log preflight failed" in (benchmark.error_message or "")
     create_sandbox.assert_not_awaited()
+
+
+async def test_managed_execution_invokes_every_configured_completion_lambda(
+    contract: AgentContractRequest,
+    aws_runtime: AWSRuntime,
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    process_benchmark_env: None,
+    executor_authority_kwargs: Any,
+) -> None:
+    request = _managed_request(contract).model_copy(
+        update={"lambda_functions": ["programbench-final-view-lambda", "vals-format-lambda"]}
+    )
+    benchmark = _persist_benchmark(database_session, request, aws_managed=True)
+    dry_run_names: list[str] = []
+    invocations: list[tuple[str, dict[str, Any]]] = []
+
+    def deployment_runtime(_org_id: UUID) -> AWSRuntime:
+        return aws_runtime
+
+    def dry_run(_clients: object, function_name: str) -> None:
+        dry_run_names.append(function_name)
+
+    def invoke_post_run(
+        _clients: object,
+        function_name: str,
+        payload: dict[str, Any],
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        invocations.append((function_name, payload))
+        return {}
+
+    monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
+    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "tracker.utils.run_orchestration.fetch_sandbox_provider_config",
+        lambda *_args, **_kwargs: cast(SandboxProviderConfig, MagicMock()),
+    )
+    monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
+    monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", AsyncMock())
+    monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", invoke_post_run)
+
+    await process_benchmark(
+        execution_context_json=_execution_context(request, benchmark.id),
+        **executor_authority_kwargs(benchmark),
+    )
+
+    database_session.refresh(benchmark)
+    assert benchmark.status == BenchmarkStatus.FINISHED
+    assert dry_run_names == ["programbench-final-view-lambda", "vals-format-lambda"]
+    assert [name for name, _ in invocations] == ["programbench-final-view-lambda", "vals-format-lambda"]
+    payloads = [payload for _, payload in invocations]
+    assert payloads[0] == payloads[1]
+    assert payloads[0]["benchmark_id"] == str(benchmark.id)
+    assert payloads[0]["benchmark_name"] == benchmark.name

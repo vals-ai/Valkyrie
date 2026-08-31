@@ -28,7 +28,7 @@
       "task-1"
     ],
     "slice_str": null,
-    "lambda_function": null,
+    "lambda_functions": [],
     "dataset": "default",
     "harness_config": {
       "aws": {

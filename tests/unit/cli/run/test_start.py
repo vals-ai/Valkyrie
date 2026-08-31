@@ -442,3 +442,20 @@ class TestCountedStarts:
             assert "valkyrie run status --ids" not in result.output
         else:
             assert "requested runs successfully started" not in result.output
+
+
+def test_repeated_lambda_options_all_reach_the_tracker(start_testbed: StartTestbed) -> None:
+    result = start_testbed.invoke(["--lambda", "programbench-final-view-lambda", "--lambda", "vals-format-lambda"])
+
+    assert result.exit_code == 0, result.output
+    assert start_testbed.tracker.start_benchmark.call_args.args[7] == [
+        "programbench-final-view-lambda",
+        "vals-format-lambda",
+    ]
+
+
+def test_start_without_lambda_options_sends_no_completion_lambdas(start_testbed: StartTestbed) -> None:
+    result = start_testbed.invoke([])
+
+    assert result.exit_code == 0, result.output
+    assert start_testbed.tracker.start_benchmark.call_args.args[7] == []
