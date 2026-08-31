@@ -27,13 +27,18 @@ valkyrie config provider set daytona DaytonaSecrets
 
 ## Modal
 
-1. [Create a Modal API token](https://modal.com/settings/tokens) in the workspace that should own the sandboxes.
-2. Store the following JSON as an AWS Secrets Manager secret:
+1. Create an API token under `Settings → Tokens → API tokens` in the Modal workspace that should own the sandboxes, for example [the `vals-ai` workspace](https://modal.com/settings/vals-ai/tokens/api-tokens). Modal shows the token once, as a CLI command:
+
+```bash
+modal token set --token-id ak-... --token-secret as-... --profile=your-profile
+```
+
+2. Store the token id and secret from that command as an AWS Secrets Manager secret:
 
 ```json
 {
-  "MODAL_TOKEN_ID": "...",
-  "MODAL_TOKEN_SECRET": "..."
+  "MODAL_TOKEN_ID": "ak-...",
+  "MODAL_TOKEN_SECRET": "as-..."
 }
 ```
 
