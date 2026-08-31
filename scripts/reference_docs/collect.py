@@ -231,6 +231,10 @@ def _type_slug(name: str) -> str:
     return slug
 
 
+def _family(value: type[object]) -> str:
+    return value.__module__.rsplit(".", 1)[-1].replace("_", " ").title()
+
+
 def _field_default(field: Any) -> str | None:
     if field.is_required():
         return None
@@ -274,10 +278,9 @@ def _collect_model(model: type[BaseModel]) -> SDKModelReference:
         )
         for name, field in model.model_fields.items()
     )
-    family = model.__module__.rsplit(".", 1)[-1].replace("_", " ").title()
     return SDKModelReference(
         name=model.__name__,
-        family=family,
+        family=_family(model),
         slug=_type_slug(model.__name__),
         description=_clean_docstring(inspect.getdoc(model)),
         fields=fields,
@@ -343,11 +346,10 @@ def collect_sdk_reference() -> SDKReference:
     for name in sdk.__all__:
         value = getattr(sdk, name)
         if inspect.isclass(value) and issubclass(value, Enum):
-            family = value.__module__.rsplit(".", 1)[-1].replace("_", " ").title()
             enums.append(
                 SDKEnumReference(
                     name=name,
-                    family=family,
+                    family=_family(value),
                     slug=_type_slug(name),
                     description=_clean_docstring(inspect.getdoc(value)),
                     members=tuple((member.name, _format_value(member.value)) for member in value),

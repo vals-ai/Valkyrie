@@ -5,7 +5,6 @@ from __future__ import annotations
 import html
 import json
 import re
-from collections import OrderedDict
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -262,10 +261,10 @@ def _command_section(command: CLICommandReference) -> str:
     return _join_blocks(*blocks)
 
 
-def _cli_pages(commands: Sequence[CLICommandReference]) -> OrderedDict[Path, str]:
+def _cli_pages(commands: Sequence[CLICommandReference]) -> dict[Path, str]:
     groups = _groups(commands)
     cards: list[str] = []
-    pages: OrderedDict[Path, str] = OrderedDict()
+    pages: dict[Path, str] = {}
     for group, group_commands in groups.items():
         icon, purpose = CLI_CARDS[group]
         count = len(group_commands)
@@ -296,9 +295,7 @@ def _cli_pages(commands: Sequence[CLICommandReference]) -> OrderedDict[Path, str
         _card_group(cards),
     )
     navigation = json.dumps([_route(CLI_INDEX), *(_route(path) for path in pages)], indent=2) + "\n"
-    result: OrderedDict[Path, str] = OrderedDict(((CLI_INDEX, index), (CLI_NAVIGATION, navigation)))
-    result.update(pages)
-    return result
+    return {CLI_INDEX: index, CLI_NAVIGATION: navigation, **pages}
 
 
 def _returns(method: SDKMethodReference, routes: dict[str, str], heading: str) -> str:
@@ -361,7 +358,7 @@ def _type_section(entry: TypeEntry, routes: dict[str, str]) -> str:
     return _join_blocks(*blocks, *rows)
 
 
-def _sdk_pages(reference: SDKReference) -> OrderedDict[Path, str]:
+def _sdk_pages(reference: SDKReference) -> dict[Path, str]:
     entries = _type_entries(reference)
     expected_families = tuple(TYPE_CARDS)
     actual_families = {entry.family for entry in entries}
@@ -370,7 +367,7 @@ def _sdk_pages(reference: SDKReference) -> OrderedDict[Path, str]:
 
     routes = {entry.name: _type_url(entry) for entry in entries}
     resource_cards: list[str] = []
-    resource_pages: OrderedDict[Path, str] = OrderedDict()
+    resource_pages: dict[Path, str] = {}
     for resource in reference.resources:
         page_name = resource.client_attribute.rsplit(".", 1)[-1]
         path = _page_path(SDK_ROOT, page_name)
@@ -402,20 +399,15 @@ def _sdk_pages(reference: SDKReference) -> OrderedDict[Path, str]:
         + "\n\n".join(f"```python {method.name}\n{method.signatures[0]}\n```" for method in reference.client_methods)
         + "\n\n</CodeGroup>\n</Panel>"
     )
-    client_sections: list[str] = []
-    for method in reference.client_methods:
-        client_sections.append(
-            "\n\n".join(
-                block
-                for block in (
-                    f"## {method.name}",
-                    method.description,
-                    _parameter_rows(method.parameters, routes, heading="### Parameters"),
-                    _returns(method, routes, "### Returns"),
-                )
-                if block
-            )
+    client_sections = [
+        _join_blocks(
+            f"## {method.name}",
+            method.description,
+            _parameter_rows(method.parameters, routes, heading="### Parameters"),
+            _returns(method, routes, "### Returns"),
         )
+        for method in reference.client_methods
+    ]
     client = _page(
         "ValkyrieClient",
         "Construct and close the async Valkyrie SDK client.",
@@ -427,7 +419,7 @@ def _sdk_pages(reference: SDKReference) -> OrderedDict[Path, str]:
         '```python\nasync with ValkyrieClient(config) as client:\n    run = await client.runs.start(agent="sweagent", benchmark="swebench")\n```',
     )
     type_cards: list[str] = []
-    type_pages: OrderedDict[Path, str] = OrderedDict()
+    type_pages: dict[Path, str] = {}
     for family, (icon, purpose) in TYPE_CARDS.items():
         family_entries = [entry for entry in entries if entry.family == family]
         path = _page_path(TYPE_ROOT, family.lower())
@@ -471,14 +463,15 @@ def _sdk_pages(reference: SDKReference) -> OrderedDict[Path, str]:
         *(_route(path) for path in resource_pages),
         {"group": "Types", "pages": [_route(TYPE_INDEX), *(_route(path) for path in type_pages), _route(SDK_ERRORS)]},
     ]
-    result: OrderedDict[Path, str] = OrderedDict(
-        ((SDK_INDEX, index), (SDK_CLIENT, client), (SDK_NAVIGATION, json.dumps(navigation, indent=2) + "\n"))
-    )
-    result.update(resource_pages)
-    result[TYPE_INDEX] = types_index
-    result.update(type_pages)
-    result[SDK_ERRORS] = errors
-    return result
+    return {
+        SDK_INDEX: index,
+        SDK_CLIENT: client,
+        SDK_NAVIGATION: json.dumps(navigation, indent=2) + "\n",
+        **resource_pages,
+        TYPE_INDEX: types_index,
+        **type_pages,
+        SDK_ERRORS: errors,
+    }
 
 
 def _redirects(commands: Sequence[CLICommandReference], reference: SDKReference) -> list[dict[str, str]]:
@@ -504,14 +497,12 @@ def _redirects(commands: Sequence[CLICommandReference], reference: SDKReference)
     return [*cli, *methods, *types]
 
 
-def render_reference() -> OrderedDict[Path, str]:
+def render_reference() -> dict[Path, str]:
     """Collect each source surface once and render the generated manifest."""
     commands = collect_cli_commands()
     sdk_reference = collect_sdk_reference()
-    rendered = _cli_pages(commands)
-    sdk_pages = _sdk_pages(sdk_reference)
-    for path, content in sdk_pages.items():
-        if path == TYPE_INDEX:
-            rendered[REDIRECTS] = json.dumps(_redirects(commands, sdk_reference), indent=2) + "\n"
-        rendered[path] = content
-    return rendered
+    return {
+        **_cli_pages(commands),
+        **_sdk_pages(sdk_reference),
+        REDIRECTS: json.dumps(_redirects(commands, sdk_reference), indent=2) + "\n",
+    }
