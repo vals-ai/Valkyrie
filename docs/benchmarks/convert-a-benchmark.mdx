@@ -14,7 +14,7 @@ uv tool install git+https://github.com/vals-ai/create-benchmark-service.git@main
 create-benchmark-service <benchmark-name>
 ```
 
-This writes `./<benchmark-name>-benchmark-service/` with `main.py`, an example subclass under `src/<benchmark_name>_benchmark_service/benchmark_service.py`, tests, a `Dockerfile`, and a `Makefile`. `main.py` is the entire wiring:
+This writes `./<benchmark-name>-benchmark-service/` with `main.py`, an example subclass at `src/<benchmark_name>_benchmark_service/benchmark_service.py`, a `Dockerfile`, a `Makefile`, and CI workflows. `main.py` is the entire wiring:
 
 ```python
 from benchmark_service import BenchmarkServiceApp
@@ -44,7 +44,7 @@ yield StreamMessageChunk(type="message", data="running tests")
 yield StreamResultChunk(type="result", data={"resolved": True})
 ```
 
-Message chunks are the run output a Valkyrie user watches, `StreamErrorChunk` reports a non-fatal error, and the single `StreamResultChunk` is the value handed to `calculate_final_score`. `stream_command(sandbox, command, cwd)` runs a shell command, forwards its output as message chunks, and raises on a non-zero exit code.
+Message chunks are the run output a Valkyrie user watches, `StreamErrorChunk` reports a non-fatal error, and the final `StreamResultChunk` is the value handed to `calculate_final_score`. `stream_command(sandbox, command, cwd)` runs a shell command and yields its output line by line, raising on a non-zero exit code unless called with `ignore_error=True`.
 
 ## Choose an image strategy
 
@@ -80,7 +80,7 @@ Task objects normally hold evaluator-only data — answers, rubrics, grader conf
 
 ## Test against hosted Valkyrie
 
-Run the service locally and expose it with a reverse tunnel (the scaffold's README covers ngrok), then register the tunnel and run one task:
+Run the service locally and expose it with a reverse tunnel (the [reverse-tunnel setup](https://github.com/vals-ai/create-benchmark-service?tab=readme-ov-file#reverse-tunnel-setup) covers ngrok), then register the tunnel and run one task:
 
 ```bash
 make install
@@ -92,7 +92,7 @@ valkyrie run start --benchmark <benchmark-name> --agent <agent-name> --slice :1
 Scale past `--slice :1` only once setup, evaluation, and scoring all behave. See [custom benchmark services](/benchmarks/custom-services) for how registration resolves and [benchmark authentication](/benchmarks/authentication) for sending credentials.
 
 <Note>
-  `make dev` disables auth. A hosted service sets `AUTH_REQUIRED=true` with a Descope project and a tenant allowlist, after which every request except `/health` must be authenticated.
+  `make dev` runs with `AUTH_DISABLED=true`, which is local development only. A hosted service instead sets `DESCOPE_PROJECT_ID` and a tenant allowlist, and then rejects unauthenticated requests.
 </Note>
 
 ## Publish the service
