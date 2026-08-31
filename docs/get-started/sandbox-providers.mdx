@@ -21,8 +21,6 @@ valkyrie run start --agent sweagent --benchmark swebench --provider daytona
 
 Provider secret schemas are provider-specific. Registering a name does not make one provider's secret shape valid for another provider.
 
-The legacy `DAYTONA_SECRET_NAME` configuration key remains supported only when `sandbox_providers` is not configured.
-
 ## Daytona
 
 1. [Create a Daytona API key](https://app.daytona.io/dashboard/keys) with read, write, and delete access to sandboxes and snapshots.
@@ -42,6 +40,10 @@ Register the secret:
 ```bash
 valkyrie config provider set daytona DaytonaSecrets
 ```
+
+<Note>
+  The legacy `DAYTONA_SECRET_NAME` configuration key remains supported only when `sandbox_providers` is not configured.
+</Note>
 
 ## Modal
 
