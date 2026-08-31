@@ -49,6 +49,37 @@ valkyrie config service set <benchmark-name> https://hemagglutinative-vonnie-fun
 
 The forwarding address changes each time a free-tier tunnel restarts, so re-register it after every restart.
 
+## Deploy the service
+
+A tunnel is fine while iterating, but a service other people run against needs a stable HTTPS endpoint. The generated project ships a `Dockerfile` that serves `main:app` with uvicorn on port `8001`, so any container host works.
+
+<Steps>
+  <Step title="Build and publish the image">
+    ```bash
+    make docker-build
+    docker tag benchmark-service:latest <registry>/<benchmark-name>-benchmark-service:<tag>
+    docker push <registry>/<benchmark-name>-benchmark-service:<tag>
+    ```
+
+    `make docker-build` tags the image `benchmark-service:latest`. The build accepts a `SERVICE_VERSION` argument that becomes the version the package reports; CI passes the git tag.
+  </Step>
+  <Step title="Run the container behind TLS">
+    Expose container port `8001` and terminate TLS in front of it. WebSocket upgrades must pass through, since setup and evaluation stream over a WebSocket connection.
+  </Step>
+  <Step title="Configure authentication">
+    `AUTH_DISABLED=true` serves every request without a credential and is for local development only. A hosted deployment sets `DESCOPE_PROJECT_ID` plus a tenant allowlist, either from the catalog API (`BENCHMARK_CATALOG_API_URL` and `SERVICE_NAME`) or inline as `DESCOPE_TENANT_ALLOWLIST_JSON`. Callers then send a Descope access key in `X-Descope-Api-Key`, scoped to one allowlisted tenant.
+
+    Without an allowlist source the service starts but rejects every authenticated request. The removed `AUTH_REQUIRED` variable now fails startup when set to a false value.
+  </Step>
+  <Step title="Register the endpoint">
+    ```bash
+    valkyrie config service set <benchmark-name> https://benchmark.example.com
+    ```
+
+    Store the caller credential with [`config auth set`](/benchmarks/authentication) so the CLI sends it on every request.
+  </Step>
+</Steps>
+
 ## Build a service
 
 Use the public [create-benchmark-service](https://github.com/vals-ai/create-benchmark-service) utilities to implement a compatible service, or follow [convert a benchmark into a service](/benchmarks/convert-a-benchmark).
