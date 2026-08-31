@@ -55,7 +55,7 @@ The generated project is small:
 | `Makefile` | `make install`, `make dev`, `make test`, `make docker-build`, `make docker-run`. |
 | `pyproject.toml` | Pins `create-benchmark-service` to the version that generated the project. |
 
-`main.py` is the entire wiring, and stays as generated:
+`main.py` is the entire wiring, and stays as generated. `BenchmarkServiceApp` turns your class into the FastAPI application Valkyrie talks to, mounting the HTTP and WebSocket endpoints for task retrieval, setup, evaluation, and scoring on top of your method implementations:
 
 ```python main.py
 from benchmark_service import BenchmarkServiceApp
