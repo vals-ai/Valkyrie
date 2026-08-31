@@ -35,7 +35,7 @@ from tracker.database.models import (
 )
 from tracker.database.session import engine
 from tracker.executor.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
-from tracker.exceptions import ExecutionAuthorityRevoked, LambdaError, TrackerServiceError
+from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
@@ -647,17 +647,22 @@ async def process_benchmark(
 
         if lambda_payload is not None:
             async with hold_dispatch_authority(authority):
-                callback_failure: LambdaError | None = None
+                callback_failure: Exception | None = None
                 for lambda_function in lambda_functions:
                     try:
                         await asyncio.to_thread(
                             invoke_lambda,
                             aws_runtime.clients,
                             lambda_function,
-                            lambda_payload,
+                            # `lambda_function` names the callback reading this payload, as it did
+                            # when a run could configure only one.
+                            {**lambda_payload, "lambda_function": lambda_function},
                             config=_COMPLETION_CALLBACK_CONFIG,
                         )
-                    except LambdaError as error:
+                    except Exception as error:
+                        # Every configured callback owns a distinct artifact, so one failure must not
+                        # skip the rest; the first failure is re-raised once all have been attempted.
+                        logger.warning(f"Completion lambda '{lambda_function}' failed: {error}")
                         callback_failure = callback_failure or error
                 if callback_failure is not None:
                     raise callback_failure

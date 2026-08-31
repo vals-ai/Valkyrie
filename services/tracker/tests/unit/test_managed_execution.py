@@ -3,12 +3,14 @@
 Run: uv run pytest tests/unit/test_managed_execution.py
 """
 
+from collections.abc import Callable
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
 from benchmark_service import SandboxProviderConfig
+from botocore.exceptions import ReadTimeoutError
 from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
@@ -467,6 +469,37 @@ async def test_managed_preflight_failure_happens_before_sandbox(
     create_sandbox.assert_not_awaited()
 
 
+def _patch_completion_lambda_run(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+    *,
+    dry_run: Callable[[object, str], None],
+    invoke: Callable[..., dict[str, Any]],
+) -> None:
+    """Stub every managed-run dependency except the completion-lambda calls under test."""
+
+    def deployment_runtime(_org_id: UUID) -> AWSRuntime:
+        return aws_runtime
+
+    def create_log_group(_self: object, _benchmark_id: str, *, retention_days: int) -> None:
+        return None
+
+    def fetch_provider(_name: str, _secret_store: object, _provider: str) -> SandboxProviderConfig:
+        return cast(SandboxProviderConfig, MagicMock())
+
+    def resolve_agent_secrets(_secrets: object, _secret_store: object) -> dict[str, str]:
+        return {}
+
+    monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
+    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
+    monkeypatch.setattr("tracker.utils.run_orchestration.fetch_sandbox_provider_config", fetch_provider)
+    monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", resolve_agent_secrets)
+    monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", resolve_agent_secrets)
+    monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
+    monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", AsyncMock())
+    monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", invoke)
+
+
 async def test_managed_execution_invokes_every_configured_completion_lambda(
     contract: AgentContractRequest,
     aws_runtime: AWSRuntime,
@@ -482,9 +515,6 @@ async def test_managed_execution_invokes_every_configured_completion_lambda(
     dry_run_names: list[str] = []
     invocations: list[tuple[str, dict[str, Any]]] = []
 
-    def deployment_runtime(_org_id: UUID) -> AWSRuntime:
-        return aws_runtime
-
     def dry_run(_clients: object, function_name: str) -> None:
         dry_run_names.append(function_name)
 
@@ -497,17 +527,7 @@ async def test_managed_execution_invokes_every_configured_completion_lambda(
         invocations.append((function_name, payload))
         return {}
 
-    monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
-    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        "tracker.utils.run_orchestration.fetch_sandbox_provider_config",
-        lambda *_args, **_kwargs: cast(SandboxProviderConfig, MagicMock()),
-    )
-    monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
-    monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", AsyncMock())
-    monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", invoke_post_run)
+    _patch_completion_lambda_run(monkeypatch, aws_runtime, dry_run=dry_run, invoke=invoke_post_run)
 
     await process_benchmark(
         execution_context_json=_execution_context(request, benchmark.id),
@@ -519,12 +539,28 @@ async def test_managed_execution_invokes_every_configured_completion_lambda(
     assert dry_run_names == ["programbench-final-view-lambda", "vals-format-lambda"]
     assert [name for name, _ in invocations] == ["programbench-final-view-lambda", "vals-format-lambda"]
     payloads = [payload for _, payload in invocations]
+    # Each callback still receives the singular field naming itself, as it did before the list.
+    assert [payload.pop("lambda_function") for payload in payloads] == [
+        "programbench-final-view-lambda",
+        "vals-format-lambda",
+    ]
     assert payloads[0] == payloads[1]
+    assert payloads[0]["lambda_functions"] == ["programbench-final-view-lambda", "vals-format-lambda"]
     assert payloads[0]["benchmark_id"] == str(benchmark.id)
     assert payloads[0]["benchmark_name"] == benchmark.name
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        LambdaError("Lambda function 'programbench-final-view-lambda' returned status 500: {}"),
+        # invoke_lambda only wraps ClientError, so the 60s completion read timeout escapes as itself.
+        ReadTimeoutError(endpoint_url="https://lambda.us-east-1.amazonaws.com"),
+    ],
+    ids=["lambda_error", "read_timeout"],
+)
 async def test_managed_execution_invokes_later_completion_lambdas_after_a_failure(
+    failure: Exception,
     contract: AgentContractRequest,
     aws_runtime: AWSRuntime,
     database_session: Session,
@@ -538,8 +574,8 @@ async def test_managed_execution_invokes_later_completion_lambdas_after_a_failur
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
     invoked: list[str] = []
 
-    def deployment_runtime(_org_id: UUID) -> AWSRuntime:
-        return aws_runtime
+    def dry_run(_clients: object, _function_name: str) -> None:
+        return None
 
     def invoke_post_run(
         _clients: object,
@@ -549,20 +585,10 @@ async def test_managed_execution_invokes_later_completion_lambdas_after_a_failur
     ) -> dict[str, Any]:
         invoked.append(function_name)
         if function_name == "programbench-final-view-lambda":
-            raise LambdaError("Lambda function 'programbench-final-view-lambda' returned status 500: {}")
+            raise failure
         return {}
 
-    monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
-    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        "tracker.utils.run_orchestration.fetch_sandbox_provider_config",
-        lambda *_args, **_kwargs: cast(SandboxProviderConfig, MagicMock()),
-    )
-    monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", AsyncMock())
-    monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", invoke_post_run)
+    _patch_completion_lambda_run(monkeypatch, aws_runtime, dry_run=dry_run, invoke=invoke_post_run)
 
     await process_benchmark(
         execution_context_json=_execution_context(request, benchmark.id),
@@ -570,3 +596,7 @@ async def test_managed_execution_invokes_later_completion_lambdas_after_a_failur
     )
 
     assert invoked == ["programbench-final-view-lambda", "vals-format-lambda"]
+    # The run is already FINISHED when callbacks run, so commit_benchmark_error cannot reopen it;
+    # a failing callback surfaces through the log and Sentry, not the run status.
+    database_session.refresh(benchmark)
+    assert benchmark.status == BenchmarkStatus.FINISHED

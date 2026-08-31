@@ -6,10 +6,11 @@ The `--lambda` flag on `run start` lets you invoke AWS Lambda functions after a 
 valkyrie run start \
   --agent agents/claude_code \
   --benchmark swebench \
-  --lambda my-post-benchmark-handler
+  --lambda my-post-benchmark-handler \
+  --lambda vals-format-lambda
 ```
 
-Each lambda is invoked once after all tasks finish and results are uploaded. If a lambda fails (uncaught exception or `statusCode >= 400`), the run will be marked as `ERROR`.
+Each lambda is invoked once after all tasks finish and results are uploaded, in the order given. A lambda that fails (uncaught exception or `statusCode >= 400`) does not stop the remaining ones; the failure is logged and reported, and the first one is re-raised once every lambda has been attempted. The run status is already terminal by this point, so a failing lambda does not change it.
 
 ## Payload
 
@@ -29,7 +30,8 @@ The tracker invokes your lambda with the full `BenchmarkArguments` plus the pers
   "concurrency": 5,
   "task_ids": ["astropy__astropy-12907"],
   "slice_str": null,
-  "lambda_functions": ["my-post-benchmark-handler"],
+  "lambda_function": "my-post-benchmark-handler",
+  "lambda_functions": ["my-post-benchmark-handler", "vals-format-lambda"],
   "benchmark_id": "e532551e-d51b-4912-983d-47695bd24174",
   "benchmark_name": "swebench"
 }
@@ -41,7 +43,8 @@ The tracker invokes your lambda with the full `BenchmarkArguments` plus the pers
 | `concurrency` | int | Concurrency level |
 | `task_ids` | list or null | Task IDs that were run (null = all) |
 | `slice_str` | string or null | Dataset slice if provided |
-| `lambda_functions` | list | Names of the lambdas invoked at completion |
+| `lambda_function` | string | Name of the lambda receiving this payload |
+| `lambda_functions` | list | Every lambda invoked at completion, in configured order |
 | `benchmark_id` | string | UUID of the completed run |
 | `benchmark_name` | string | Persisted name of the completed benchmark |
 
