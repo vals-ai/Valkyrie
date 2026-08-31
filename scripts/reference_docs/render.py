@@ -233,7 +233,7 @@ def _example(command: CLICommandReference) -> str | None:
     elif command.path == ("config", "auth", "set"):
         example = "valkyrie config auth set benchmark-name $BENCHMARK_CREDENTIAL"
     if command.path not in READ_ONLY_COMMANDS:
-        example = "# Example only — review before running\n" + example
+        example = "# Example only, review before running\n" + example
     return _format_example(command, example)
 
 

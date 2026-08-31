@@ -105,7 +105,7 @@ Authenticated callers send their Descope access key in the `X-Descope-Api-Key` h
 }
 ```
 
-`datasets` is an explicit list of the dataset variants the tenant may request — `default` has to be listed too, and an empty list grants nothing. `evaluation_quota` caps evaluation requests per period, and `trial_mode` sanitizes `/v1/evaluate` and `/v1/score` responses down to score-only fields. Unknown keys are rejected.
+`datasets` is an explicit list of the dataset variants the tenant may request. `default` has to be listed too, and an empty list grants nothing. `evaluation_quota` caps evaluation requests per period, and `trial_mode` sanitizes `/v1/evaluate` and `/v1/score` responses down to score-only fields. Unknown keys are rejected.
 
 <Warning>
   With auth enabled and no allowlist source configured, the service starts and logs a warning but rejects every authenticated request. `AUTH_REQUIRED` is no longer supported: static bearer auth was removed, and setting it to a false value fails startup.

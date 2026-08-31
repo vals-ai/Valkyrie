@@ -15,7 +15,7 @@ Converting a benchmark means wrapping the dataset and grader you already have in
 ## Before you start
 
 <Info>
-  This guide assumes Valkyrie is already installed and configured — see the [quickstart](/get-started/quickstart), [configuration](/get-started/configuration), and [sandbox providers](/get-started/sandbox-providers). You also need Docker to build the images your tasks run on.
+  This guide assumes Valkyrie is already installed and configured. See the [quickstart](/get-started/quickstart), [configuration](/get-started/configuration), and [sandbox providers](/get-started/sandbox-providers). You also need Docker to build the images your tasks run on.
 </Info>
 
 ## Scaffold the service
@@ -92,7 +92,7 @@ class MyBenchmark(BenchmarkService):
 
 ### Load the dataset
 
-`load_datasets` runs once at startup and its return value is cached on `self.datasets`. Key it by dataset name, then by task id; the task value itself is whatever your benchmark needs — a problem statement, a repo and commit, a path to fixture files, the expected answer, a rubric.
+`load_datasets` runs once at startup and its return value is cached on `self.datasets`. Key it by dataset name, then by task id; the task value itself is whatever your benchmark needs: a problem statement, a repo and commit, a path to fixture files, the expected answer, a rubric.
 
 ```python
 async def load_datasets(self) -> dict[str, dict[str, Any]]:
@@ -103,7 +103,7 @@ async def load_datasets(self) -> dict[str, dict[str, Any]]:
 Use `self.get_dataset(dataset)` inside the other methods to read it back. Multiple datasets are how variants live in one service, for example a baseline dataset and a `with-skills` dataset.
 
 <Warning>
-  Task values usually contain evaluator-only data — answers, rubrics, grader configuration. Nothing in them reaches the agent unless you return it from `retrieve_task`, `list_tasks`, or upload it in `setup_task`.
+  Task values usually contain evaluator-only data such as answers, rubrics, and grader configuration. Nothing in them reaches the agent unless you return it from `retrieve_task`, `list_tasks`, or upload it in `setup_task`.
 </Warning>
 
 ### Describe the sandbox
@@ -128,8 +128,8 @@ async def retrieve_task(
 
 Decide your image strategy before writing this method, because it determines what `source` returns:
 
-- **One shared environment** — return the same `ImageSource` for every task and do the per-task work in `setup_task`.
-- **Per-task environments** (each task has its own Dockerfile) — build and publish one image or snapshot per task ahead of time, and return the per-task reference here.
+- **One shared environment**: return the same `ImageSource` for every task and do the per-task work in `setup_task`.
+- **Per-task environments** (each task has its own Dockerfile): build and publish one image or snapshot per task ahead of time, and return the per-task reference here.
 
 Other `source` options are `SnapshotSource` for a provider snapshot and `ComposeSource` when the task needs Docker Compose services. GPUs are requested through resources, for example `Resources(vcpu=8, memory=32, disk=50, gpu=1, gpu_type="H100")`. Nested Docker is available in every sandbox, so a benchmark that runs containers only needs a Docker-capable image and to start `dockerd` itself during setup.
 
@@ -139,7 +139,7 @@ Other `source` options are `SnapshotSource` for a provider snapshot and `Compose
 
 ### Set up the task
 
-`setup_task` runs in the live sandbox before the agent starts: write the problem statement, fetch the repo, install dependencies, start services. It is an async generator — instead of returning, it yields chunks that stream to the Valkyrie user watching the run.
+`setup_task` runs in the live sandbox before the agent starts: write the problem statement, fetch the repo, install dependencies, start services. It is an async generator: instead of returning, it yields chunks that stream to the Valkyrie user watching the run.
 
 ```python
 async def setup_task(
@@ -170,8 +170,8 @@ The sandbox handle gives you `upload_file`, `download_file`, `exec` (returns `Ex
 
 Implement the hook that matches how your benchmark grades. Both may exist, but a benchmark normally uses one:
 
-- `evaluate_instance` — the agent's live sandbox is graded. Upload the tests now, run them, parse the output. This is also an async generator, and its single `StreamResultChunk` is the per-task result.
-- `evaluate_response` — a plain text answer is graded with no sandbox. It returns the per-task result directly.
+- `evaluate_instance` grades the agent's live sandbox. Upload the tests now, run them, parse the output. This is also an async generator, and its single `StreamResultChunk` is the per-task result.
+- `evaluate_response` grades a plain text answer with no sandbox. It returns the per-task result directly.
 
 ```python
 async def evaluate_instance(
@@ -195,7 +195,7 @@ Per-task results can be any JSON-compatible value, since the same service both p
 
 ### Aggregate the score
 
-`calculate_final_score` receives `{task_id: result}` — the values your evaluation hook produced — and returns the benchmark's single score plus any metadata worth reporting.
+`calculate_final_score` receives `{task_id: result}`, the values your evaluation hook produced, and returns the benchmark's single score plus any metadata worth reporting.
 
 ```python
 async def calculate_final_score(

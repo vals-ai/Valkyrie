@@ -226,7 +226,7 @@ class TestCLIReference:
 
         start_section = _section(rendered, "## `valkyrie run start` {#start}")
         assert "[--secret|-s <TEXT> <TEXT>...]" in start_section
-        assert "# Example only — review before running" in start_section
+        assert "# Example only, review before running" in start_section
         assert "valkyrie run stop $RUN_ID" in _section(rendered, "## `valkyrie run stop` {#stop}")
         assert "$BENCHMARK_CREDENTIAL" in _section(rendered, "## `valkyrie config auth set` {#auth-set}")
 

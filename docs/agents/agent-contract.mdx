@@ -36,7 +36,7 @@ egress_allowlist:
 secrets:
   ANTHROPIC_API_KEY: AnthropicApiKey
 
-# Documentation only — these placeholders are always available and
+# Documentation only. These placeholders are always available and
 # substituted at runtime, changes will not be parsed
 provided:
   task_id:
@@ -347,4 +347,4 @@ The entire agent directory is bundled to `/bundle/<agent_name>/` in the sandbox 
 
 ## Integrations
 
-- **Docent ingestion** — set `ingest_lambda` in `contract.yaml` to declare which AWS Lambda converts this agent's output into Docent records. Run it after a run finishes with `valkyrie run analyze <run-id>`. See [Analyze runs with Docent](/integrations/docent).
+- **Docent ingestion**: set `ingest_lambda` in `contract.yaml` to declare which AWS Lambda converts this agent's output into Docent records. Run it after a run finishes with `valkyrie run analyze <run-id>`. See [Analyze runs with Docent](/integrations/docent).
