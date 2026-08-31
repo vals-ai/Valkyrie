@@ -63,9 +63,9 @@
       {
         "group": "Benchmarks",
         "pages": [
-          "benchmarks/convert-a-benchmark",
           "benchmarks/custom-services",
-          "benchmarks/authentication"
+          "benchmarks/authentication",
+          "benchmarks/convert-a-benchmark"
         ]
       },
       {
