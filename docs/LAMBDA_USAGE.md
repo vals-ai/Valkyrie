@@ -7,7 +7,7 @@ valkyrie run start \
   --agent agents/claude_code \
   --benchmark swebench \
   --lambda my-post-benchmark-handler \
-  --lambda vals-format-lambda
+  --lambda my-result-archiver
 ```
 
 Each lambda is invoked once after all tasks finish and results are uploaded, in the order given. A lambda that fails (uncaught exception or `statusCode >= 400`) does not stop the remaining ones; the failure is logged and reported, and the first one is re-raised once every lambda has been attempted. The run status is already terminal by this point, so a failing lambda does not change it.
@@ -31,7 +31,7 @@ The tracker invokes your lambda with the full `BenchmarkArguments` plus the pers
   "task_ids": ["astropy__astropy-12907"],
   "slice_str": null,
   "lambda_function": "my-post-benchmark-handler",
-  "lambda_functions": ["my-post-benchmark-handler", "vals-format-lambda"],
+  "lambda_functions": ["my-post-benchmark-handler", "my-result-archiver"],
   "benchmark_id": "e532551e-d51b-4912-983d-47695bd24174",
   "benchmark_name": "swebench"
 }
