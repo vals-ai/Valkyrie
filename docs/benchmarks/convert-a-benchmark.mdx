@@ -1,0 +1,100 @@
+---
+title: Convert a benchmark into a service
+description: Wrap an existing benchmark in a benchmark service that Valkyrie can run.
+---
+
+Valkyrie contains no benchmark logic. It provisions a sandbox, runs an agent in it, and calls a benchmark service to fetch tasks, set them up, and score them. Porting a benchmark means implementing that service around the dataset and grader you already have.
+
+The service is built with [create-benchmark-service](https://github.com/vals-ai/create-benchmark-service), which supplies the FastAPI app, the HTTP and WebSocket protocol, and the sandbox abstraction. You implement one `BenchmarkService` subclass.
+
+## Scaffold the service
+
+```bash
+uv tool install git+https://github.com/vals-ai/create-benchmark-service.git@main
+create-benchmark-service <benchmark-name>
+```
+
+This writes `./<benchmark-name>-benchmark-service/` with `main.py`, an example subclass under `src/<benchmark_name>_benchmark_service/benchmark_service.py`, tests, a `Dockerfile`, and a `Makefile`. `main.py` is the entire wiring:
+
+```python
+from benchmark_service import BenchmarkServiceApp
+
+from my_benchmark_service.benchmark_service import MyBenchmark
+
+app = BenchmarkServiceApp(MyBenchmark)
+```
+
+## Implement the required methods
+
+| Method | What your benchmark provides |
+| --- | --- |
+| `load_datasets()` | Every task, as `{dataset_name: {task_id: task}}`. Called once at startup and stored on `self.datasets`. |
+| `retrieve_task(task_id, skip_validation, dataset)` | Sandbox `source`, `problem_path`, `cwd`, `agent_timeout`, and `resources` for one task. |
+| `setup_task(task_id, sandbox, dataset)` | Prepares the sandbox before the agent starts: upload task files, install dependencies, run setup commands. |
+| `evaluate_instance(task_id, sandbox, dataset)` | Grades the agent's live sandbox — upload tests, run them, parse output. |
+| `evaluate_response(request, dataset)` | Grades a text answer with no sandbox. Implement this instead of `evaluate_instance` for text benchmarks. |
+| `calculate_final_score(evaluation_results, dataset)` | Aggregates `{task_id: result}` into a `FinalScoreResult(score, metadata)`. Errored tasks arrive as `None`. |
+
+Per-task results can be any JSON-compatible value: the same service produces them and aggregates them.
+
+`setup_task` and `evaluate_instance` are async generators that yield chunks instead of returning:
+
+```python
+yield StreamMessageChunk(type="message", data="running tests")
+yield StreamResultChunk(type="result", data={"resolved": True})
+```
+
+Message chunks are the run output a Valkyrie user watches, `StreamErrorChunk` reports a non-fatal error, and the single `StreamResultChunk` is the value handed to `calculate_final_score`. `stream_command(sandbox, command, cwd)` runs a shell command, forwards its output as message chunks, and raises on a non-zero exit code.
+
+## Choose an image strategy
+
+Decide this before writing `retrieve_task`, because it determines what `source` returns:
+
+- Tasks share one environment — return a single base image and do per-task work in `setup_task`.
+- Each task has its own Dockerfile — build and publish one image or snapshot per task ahead of time, and return the per-task reference.
+
+```python
+return RetrieveTaskResponse(
+    source=ImageSource(image="ghcr.io/my-org/my-benchmark:task-01"),
+    problem_path="/tmp/problem_statement.txt",
+    cwd="/workspace",
+    agent_timeout=1800.0,
+    resources=Resources(vcpu=4, memory=8, disk=20),
+)
+```
+
+`source` is an `ImageSource`, a `SnapshotSource`, or a `ComposeSource` when the task needs Docker Compose services. Request a GPU with `Resources(gpu=1, gpu_type="H100")`. Nested Docker is available in every sandbox, so a benchmark that runs containers only supplies a Docker-capable image and starts `dockerd` itself.
+
+<Warning>
+  Hosted sandboxes can only use `linux/amd64` images that pull anonymously. Build with `--platform linux/amd64` and verify an anonymous pull before a hosted run — a private image usually surfaces as sandbox creation or retry errors rather than an image-pull error.
+</Warning>
+
+## Keep evaluation material out of the agent's reach
+
+Task objects normally hold evaluator-only data — answers, rubrics, grader configuration — and only what `retrieve_task` and `list_tasks` return crosses the wire. Before the first real run, confirm:
+
+- Tests are uploaded in `evaluate_instance`, never in `setup_task`.
+- Reference solutions, patches, and answer keys never enter the sandbox.
+- The problem statement written in `setup_task` contains no evaluation criteria or expected output.
+- Hints, skills, or scaffolding are injected only for the datasets that are supposed to have them.
+
+## Test against hosted Valkyrie
+
+Run the service locally and expose it with a reverse tunnel (the scaffold's README covers ngrok), then register the tunnel and run one task:
+
+```bash
+make install
+make dev
+valkyrie config service set <benchmark-name> https://my-tunnel.ngrok.io
+valkyrie run start --benchmark <benchmark-name> --agent <agent-name> --slice :1
+```
+
+Scale past `--slice :1` only once setup, evaluation, and scoring all behave. See [custom benchmark services](/benchmarks/custom-services) for how registration resolves and [benchmark authentication](/benchmarks/authentication) for sending credentials.
+
+<Note>
+  `make dev` disables auth. A hosted service sets `AUTH_REQUIRED=true` with a Descope project and a tenant allowlist, after which every request except `/health` must be authenticated.
+</Note>
+
+## Publish the service
+
+A port is complete when the service is in the [public benchmark services registry](https://github.com/vals-ai/public-benchmark-services-registry): the service lives in its own `<benchmark>-benchmark-service` repository, added to the registry as a Git submodule with a matching `services.yaml` entry.
