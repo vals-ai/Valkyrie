@@ -3,24 +3,21 @@ title: What is Valkyrie?
 description: Why Vals built a microservice benchmarking framework, and how its subsystems fit together.
 ---
 
-Valkyrie is the result of months of running and investigating agentic benchmarks at Vals AI. Evaluation used to happen on researchers' own machines: one large box, one local copy of the benchmark, results on local disk. That worked until it didn't — at our scale we hit every niche failure mode, and existing harnesses could not scale with us, so we moved the whole process to the cloud as a service where many researchers create and run benchmarks in parallel.
+Valkyrie is a cloud service for building and running agentic benchmarks. It is the result of months of running evaluations at Vals AI and investigating where the common research workflows break down.
+
+Evaluation used to happen on each researcher's own machine: one large instance, one local copy of the benchmark, results written to local disk. Every run competed with every other run for the same machine, every benchmark change had to be pulled and reconfigured by hand, and the record of what happened disappeared with the instance. Comparing two results meant trusting that they were produced under the same conditions.
+
+At the volume we run benchmarks, that model stops working. We hit the niche cases first: a benchmark that needs a GPU, a task that needs a snapshot restored, an agent that needs network egress rules, a run that has to survive a worker restart. Existing harnesses could not absorb those cases at our scale, so we moved the whole process into the cloud as a service. Many researchers now create, host, and run benchmarks in parallel, and the results are durable, comparable, and owned by the organization rather than by whoever launched the run.
 
 ## The problems we hit
 
-<AccordionGroup>
-  <Accordion title="Maintainer scalability" icon="git-pull-request">
-    When every benchmark lives in one repository, adding a benchmark means a pull request the core team has to review, and every user has to pull changes and reconfigure. Version mismatches are silent and hard to diagnose.
-  </Accordion>
-  <Accordion title="Infrastructure scalability" icon="server">
-    A single large instance has to be sized for peak load, sits idle between runs, and still caps parallelism well below a benchmark with hundreds of tasks. Logs, results, and agent outputs live on that instance's disk, where they are easy to lose and hard to find.
-  </Accordion>
-  <Accordion title="Submission verification" icon="shield-check">
-    When generation happens on the submitter's machine, a maintainer can re-score the outputs but cannot verify the conditions they were produced under — per-task time limits, turn budgets, or network restrictions. Results are only comparable if those constraints are actually enforced.
-  </Accordion>
-  <Accordion title="Agent integration" icon="package">
-    Harnesses that require agents to implement a class or function signature demand far more code than the task needs. The only things that really vary per agent are the install command, the run command, where output lands, and which secrets it needs.
-  </Accordion>
-</AccordionGroup>
+**Maintainer scalability.** When every benchmark lives in one repository, adding a benchmark means a pull request the core team has to review, and every user has to pull the change and reconfigure. Version mismatches between users are silent and hard to diagnose.
+
+**Infrastructure scalability.** A single large instance has to be sized for peak load, sits idle between runs, and still caps parallelism far below what a benchmark with hundreds of tasks needs. Logs, results, and agent outputs live on that instance's disk, where they are easy to lose and hard to search.
+
+**Submission verification.** When generation happens on the submitter's machine, a maintainer can re-score the outputs but cannot verify the conditions that produced them, such as per-task time limits, turn budgets, or network restrictions. Results are only comparable when those constraints are actually enforced.
+
+**Agent integration.** Harnesses that require an agent to implement a class or function signature demand far more code than the job needs. The parts that genuinely differ between agents are the install command, the run command, where output lands, and which secrets and network access it requires.
 
 ## How Valkyrie solves it
 
@@ -28,16 +25,16 @@ Valkyrie separates the benchmark, the agent, and the infrastructure into indepen
 
 <CardGroup cols={2}>
   <Card title="Benchmarks as services" icon="plug">
-    Each benchmark is its own hosted service, owned by its author. New benchmarks are available as soon as they are deployed — no change to the core harness, and no local copy to modify.
+    Each benchmark is its own hosted service, owned by its author. A new benchmark is usable as soon as it is deployed, with no change to the core harness and no local copy to modify.
   </Card>
   <Card title="Declarative agents" icon="file-code">
-    An agent is a contract: install command, run command, output location, secrets, egress rules. The harness owns orchestration.
+    An agent is a contract: install command, run command, output location, secrets, and egress rules. The harness owns orchestration.
   </Card>
   <Card title="Horizontal execution" icon="layers">
-    Tasks run in isolated sandboxes provisioned on demand, so parallelism is bounded by provider limits rather than the size of one machine.
+    Tasks run in isolated sandboxes provisioned on demand, so parallelism is bounded by provider limits rather than by the size of one machine.
   </Card>
   <Card title="Your cloud, your record" icon="database">
-    Runs, logs, and artifacts persist in your own AWS account, giving a durable audit trail instead of a local directory.
+    Runs, logs, and artifacts persist in your own AWS account, which gives a durable audit trail instead of a local directory.
   </Card>
 </CardGroup>
 
@@ -74,7 +71,7 @@ flowchart LR
 | --- | --- |
 | CLI and SDK | Start runs, upload agents, monitor progress, retrieve results |
 | Tracker | Owns run state, dispatches tasks, exposes the API |
-| Executor | Runs a task end to end: provision sandbox, install and run the agent, collect outputs |
+| Executor | Runs a task end to end: provision the sandbox, install and run the agent, collect outputs |
 | Sandbox provider | Supplies the isolated environment each task executes in |
 | Benchmark service | Serves task definitions and evaluates results for one benchmark |
 | Storage | Persists artifacts, logs, and run history in your account |
