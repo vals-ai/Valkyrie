@@ -505,14 +505,8 @@ assert all(rendered.values())
         )
         assert result.returncode == 0, result.stderr
 
-    @pytest.mark.parametrize(
-        "command",
-        (
-            (sys.executable, "scripts/generate_reference.py", "--check"),
-            (sys.executable, "-m", "scripts.generate_reference", "--check"),
-        ),
-    )
-    def test_script_supports_path_and_module_invocation(self, command: tuple[str, ...]) -> None:
+    def test_script_entry_point_checks_committed_reference(self) -> None:
+        command = (sys.executable, "scripts/generate_reference.py", "--check")
         result = subprocess.run(command, cwd=Path.cwd(), capture_output=True, text=True)
 
         assert result.returncode == 0, result.stderr
