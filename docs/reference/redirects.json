@@ -1,5 +1,9 @@
 [
   {
+    "source": "/introduction",
+    "destination": "/get-started/overview"
+  },
+  {
     "source": "/reference/cli/run/analyze",
     "destination": "/reference/cli/run#analyze"
   },

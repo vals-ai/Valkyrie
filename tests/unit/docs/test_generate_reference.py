@@ -391,7 +391,8 @@ class TestGeneratedFiles:
         assert len(redirect_paths) == 1
         redirects = cast(list[dict[str, str]], json.loads(rendered[redirect_paths[0]]))
         expected_count = (
-            len(commands)
+            len(generator.STATIC_REDIRECTS)
+            + len(commands)
             + sum(len(resource.methods) for resource in sdk_reference.resources)
             + len(sdk_reference.models)
             + len(sdk_reference.enums)
@@ -408,7 +409,10 @@ class TestGeneratedFiles:
             == "/reference/sdk/models/runs#fetch-benchmarks-request"
         )
 
-        for entry in redirects:
+        for entry in generator.STATIC_REDIRECTS:
+            assert (_DOCS_ROOT / f"{entry['destination'].lstrip('/')}.mdx").is_file()
+
+        for entry in redirects[len(generator.STATIC_REDIRECTS) :]:
             page = _route_path(entry["destination"])
             anchor = entry["destination"].partition("#")[2]
             assert page in rendered

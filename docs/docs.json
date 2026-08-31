@@ -42,7 +42,7 @@
       {
         "group": "Get started",
         "pages": [
-          "introduction",
+          "get-started/overview",
           "get-started/quickstart",
           "get-started/hosting",
           "get-started/configuration",

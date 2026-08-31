@@ -23,6 +23,10 @@ SDK_NAVIGATION = SDK_ROOT / "navigation.json"
 TYPE_INDEX = TYPE_ROOT / "index.mdx"
 SDK_ERRORS = SDK_ROOT / "errors.mdx"
 
+STATIC_REDIRECTS = [
+    {"source": "/introduction", "destination": "/get-started/overview"},
+]
+
 GUIDE_LINKS = {
     "run": "/runs/start",
     "agent": "/agents/manage-agents",

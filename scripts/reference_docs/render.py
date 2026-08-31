@@ -24,6 +24,7 @@ from .model import (
     SDK_INDEX,
     SDK_NAVIGATION,
     SDK_ROOT,
+    STATIC_REDIRECTS,
     TYPE_CARDS,
     TYPE_INDEX,
     TYPE_ROOT,
@@ -492,7 +493,7 @@ def _redirects(commands: Sequence[CLICommandReference], reference: SDKReference)
         {"source": "/" + (TYPE_ROOT / entry.family.lower() / entry.slug).as_posix(), "destination": _type_url(entry)}
         for entry in _type_entries(reference)
     ]
-    return [*cli, *methods, *types]
+    return [*STATIC_REDIRECTS, *cli, *methods, *types]
 
 
 def render_reference() -> dict[Path, str]:
