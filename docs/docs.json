@@ -4,9 +4,40 @@
   "name": "Valkyrie",
   "description": "Run scalable, reproducible evaluations for AI agents.",
   "colors": {
-    "primary": "#0B7285",
-    "light": "#15AABF",
-    "dark": "#087F5B"
+    "primary": "#386B46",
+    "light": "#6FD09F",
+    "dark": "#488959"
+  },
+  "appearance": {
+    "default": "system"
+  },
+  "background": {
+    "color": {
+      "light": "#F3F2F2",
+      "dark": "#171717"
+    }
+  },
+  "logo": {
+    "light": "/images/vals-logo-light.svg",
+    "dark": "/images/vals-logo-dark.svg"
+  },
+  "favicon": {
+    "light": "/images/vals-icon-light.svg",
+    "dark": "/images/vals-icon-dark.svg"
+  },
+  "fonts": {
+    "heading": {
+      "family": "Martina Plantijn",
+      "source": "https://www.vals.ai/fonts/MartinaPlantijn/martina-plantijn-regular.woff2",
+      "format": "woff2",
+      "weight": 400
+    },
+    "body": {
+      "family": "Söhne",
+      "source": "https://www.vals.ai/fonts/Soehne/soehne-buch.woff2",
+      "format": "woff2",
+      "weight": 400
+    }
   },
   "navigation": {
     "groups": [

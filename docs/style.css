@@ -1,3 +1,53 @@
+/* docs.json only accepts heading and body fonts, so the mono face is declared here. */
+@font-face {
+  font-family: "Berkeley Mono";
+  src: url("https://www.vals.ai/fonts/BerkeleyMono/BerkeleyMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Berkeley Mono";
+  src: url("https://www.vals.ai/fonts/BerkeleyMono/BerkeleyMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
+
+:root {
+  --font-mono: "Berkeley Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+code,
+pre,
+pre code,
+kbd {
+  font-family: var(--font-mono) !important;
+  font-variant-ligatures: none;
+}
+
+pre,
+pre > div,
+.codeblock-light,
+.codeblock-dark {
+  border-radius: 2px !important;
+}
+
+/* docs.json takes a single logo image per color scheme, so the wordmark is rendered as text next
+   to the mark to keep it in the heading font and follow the current scheme's foreground color. */
+header a[href="/"]:has(img) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+header a[href="/"]:has(img)::after {
+  content: "Valkyrie";
+  font-family: "Martina Plantijn", Georgia, serif;
+  font-size: 1.25rem;
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+
 /* Wrap long code lines instead of clipping them at the content edge, since generated signatures
    are wider than the content column and an unwrapped block hides its tail behind the copy button.
 
