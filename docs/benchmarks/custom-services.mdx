@@ -71,13 +71,11 @@ Deployment guides for common container hosts: [AWS App Runner](https://docs.aws.
 | --- | --- |
 | `AUTH_DISABLED` | `true` serves every request without a credential. Local development only; `/v1/*` still refuses to serve. |
 | `DESCOPE_PROJECT_ID` | Descope project that issues and validates caller access keys. Required when auth is enabled. |
-| `BENCHMARK_CATALOG_API_URL` | Catalog API base URL. When set, tenant policy is fetched per caller from `<url>/benchmark-services/<SERVICE_NAME>` and cached for 5 minutes. |
-| `SERVICE_NAME` | Service name used in that catalog path. Required alongside the catalog URL. |
-| `DESCOPE_TENANT_ALLOWLIST_JSON` | Inline allowlist, used only when no catalog URL is set. |
+| `DESCOPE_TENANT_ALLOWLIST_JSON` | Tenant allowlist, as inline JSON. This is how a self-hosted service declares who may call it. |
 | `DESCOPE_ALLOWLIST_PATH` | Path to the same structure as YAML, for local runs. |
 | `DESCOPE_AUTH_CACHE_TTL_SECONDS` | Positive-auth cache lifetime. Defaults to 3600. |
 
-Authenticated callers send their Descope access key in the `X-Descope-Api-Key` header. The key must resolve to exactly one tenant, and that tenant must appear in the allowlist, so the allowlist is what actually grants access:
+Authenticated callers send their Descope access key in the `X-Descope-Api-Key` header. The key must resolve to exactly one tenant, and that tenant must appear in `DESCOPE_TENANT_ALLOWLIST_JSON`, so the allowlist is what actually grants access:
 
 ```json
 {
