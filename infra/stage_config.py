@@ -17,6 +17,16 @@ _KMS_KEY_ARN_PATTERN = re.compile(r"arn:[^:]+:kms:[^:]+:[0-9]{12}:key/[A-Za-z0-9
 _OFFLINE_SYNTH_ORG_ID = "00000000-0000-0000-0000-000000000001"
 _OFFLINE_SYNTH_SECRET_PREFIX = "offline-synth"
 
+_TRACKER_ANALYZER_LAMBDA_PATTERNS = ("analysis-*",)
+_EXECUTOR_OUTPUT_LAMBDA_PATTERNS = (
+    "vals-format-lambda",
+    "harvey-legal-agent-final-view-lambda",
+    "programbench-final-view-lambda",
+    "snap-final-view-lambda",
+    "swebench-final-view-lambda",
+    "terminalbench-final-view-lambda",
+)
+
 
 @dataclass(frozen=True)
 class ServiceConfig:
@@ -108,7 +118,8 @@ PROD_CONFIG = StageConfig(
         benchmark_log_retention_days=365,
         submissions_enabled=True,
         executor_all_secret_access=True,
-        executor_lambda_function_name_patterns=("vals-format-lambda",),
+        tracker_lambda_function_name_patterns=_TRACKER_ANALYZER_LAMBDA_PATTERNS,
+        executor_lambda_function_name_patterns=_EXECUTOR_OUTPUT_LAMBDA_PATTERNS,
     ),
 )
 
@@ -128,7 +139,8 @@ DEV_CONFIG = StageConfig(
         benchmark_log_retention_days=7,
         submissions_enabled=True,
         executor_all_secret_access=True,
-        executor_lambda_function_name_patterns=("vals-format-lambda",),
+        tracker_lambda_function_name_patterns=_TRACKER_ANALYZER_LAMBDA_PATTERNS,
+        executor_lambda_function_name_patterns=_EXECUTOR_OUTPUT_LAMBDA_PATTERNS,
     ),
 )
 

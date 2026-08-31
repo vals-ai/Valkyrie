@@ -10,7 +10,7 @@ from aws_cdk import assertions, aws_s3
 
 from runtime_iam import create_executor_task_role, create_tracker_task_role
 from stage import DEV, PROD, RELEASE_TEST, Stage
-from stage_config import ManagedAWSRuntimeConfig
+from stage_config import DEV_CONFIG, PROD_CONFIG, ManagedAWSRuntimeConfig
 from test_monitoring_stack import (
     TEST_AWS_ACCOUNT,
     TEST_AWS_REGION,
@@ -144,7 +144,13 @@ class RuntimeIamTest(unittest.TestCase):
                 tracker_template,
                 "ValkyrieTrackerTaskRole-dev",
                 "TrackerTaskRoleArn",
-                expected_actions | {"s3:DeleteObject", "s3:DeleteObjectVersion", "secretsmanager:GetSecretValue"},
+                expected_actions
+                | {
+                    "s3:DeleteObject",
+                    "s3:DeleteObjectVersion",
+                    "secretsmanager:GetSecretValue",
+                    "lambda:InvokeFunction",
+                },
             ),
             (
                 executor_template,
@@ -265,11 +271,23 @@ class RuntimeIamTest(unittest.TestCase):
                         for statement in statements
                         if _statement_actions(statement) == {"lambda:InvokeFunction"}
                     )
-                    self.assertEqual(lambda_statement["Resource"], _lambda_function_resource("vals-format-lambda"))
+                    self.assertEqual(
+                        lambda_statement["Resource"],
+                        [
+                            _lambda_function_resource(pattern)
+                            for pattern in DEV_CONFIG.managed_aws.executor_lambda_function_name_patterns
+                        ],
+                    )
                 else:
                     secret_resources = json.dumps(secret_statement["Resource"])
                     self.assertIn("secretsmanager", secret_resources)
                     self.assertIn(f"secret:{TEST_TRACKER_SECRET_NAME_PREFIX}*", secret_resources)
+                    lambda_statement = next(
+                        statement
+                        for statement in statements
+                        if _statement_actions(statement) == {"lambda:InvokeFunction"}
+                    )
+                    self.assertEqual(lambda_statement["Resource"], _lambda_function_resource("analysis-*"))
 
     def test_prod_managed_runtime_uses_prod_inventory_and_task_roles(self) -> None:
         with mock.patch.dict(os.environ, TEST_PROD_ENV, clear=True):
@@ -319,16 +337,20 @@ class RuntimeIamTest(unittest.TestCase):
                     self.assertEqual(len(lambda_statements), 1)
                     self.assertEqual(
                         lambda_statements[0]["Resource"],
-                        _lambda_function_resource("vals-format-lambda"),
+                        [
+                            _lambda_function_resource(pattern)
+                            for pattern in PROD_CONFIG.managed_aws.executor_lambda_function_name_patterns
+                        ],
                     )
                 else:
                     self.assertIn(f"secret:{TEST_TRACKER_SECRET_NAME_PREFIX}*", secret_resources)
-                    self.assertFalse(
-                        any(
-                            _statement_actions(statement) == {"lambda:InvokeFunction"}
-                            for statement in _role_policy_statements(template, role_logical_id)
-                        )
-                    )
+                    lambda_statements = [
+                        statement
+                        for statement in _role_policy_statements(template, role_logical_id)
+                        if _statement_actions(statement) == {"lambda:InvokeFunction"}
+                    ]
+                    self.assertEqual(len(lambda_statements), 1)
+                    self.assertEqual(lambda_statements[0]["Resource"], _lambda_function_resource("analysis-*"))
 
     def test_release_test_managed_runtime_remains_closed(self) -> None:
         with mock.patch.dict(os.environ, TEST_RELEASE_TEST_ENV, clear=True):
