@@ -51,7 +51,9 @@ Modal sandboxes differ from Daytona in three ways that affect benchmarks:
 - Disk sizing is accepted but not enforced.
 - Snapshot-backed tasks must use a Modal filesystem snapshot; Daytona's targeted snapshots are unsupported.
 
-Modal support comes from the benchmark service, not the CLI. A service pinned to a `create-benchmark-service` release older than `v0.14.0` fails the run with `Modal sandbox provider is not implemented`.
+<Note>
+  Modal support comes from the benchmark service, not the CLI. The service must pin `create-benchmark-service` `v0.14.0` or later; earlier releases fail the run with `Modal sandbox provider is not implemented`.
+</Note>
 
 ## Select a provider
 
