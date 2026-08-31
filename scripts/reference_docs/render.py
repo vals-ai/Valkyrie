@@ -307,21 +307,24 @@ def _returns(method: SDKMethodReference, routes: dict[str, str], heading: str) -
     return f"{heading}\n\nThe selected overload determines the return type.\n\n| Overload | Return type |\n| ---: | --- |\n{rows}"
 
 
-def _method_section(resource: SDKResourceReference, method: SDKMethodReference, routes: dict[str, str]) -> str:
-    title = f"{resource.client_attribute}.{method.name}"
-    summary, paragraphs = _summary(method.description, f"Reference for {title}.")
-    signatures = _join_blocks(
+def _signatures(method: SDKMethodReference) -> str:
+    return _join_blocks(
         *(
             f"```python {'Signature' if len(method.signatures) == 1 else f'Overload {index}'}\n{signature}\n```"
             for index, signature in enumerate(method.signatures, 1)
         )
     )
+
+
+def _method_section(resource: SDKResourceReference, method: SDKMethodReference, routes: dict[str, str]) -> str:
+    title = f"{resource.client_attribute}.{method.name}"
+    summary, paragraphs = _summary(method.description, f"Reference for {title}.")
     guide = "/sdk/runs" if resource.client_attribute.endswith(".runs") else "/sdk/resources"
     blocks = (
         f"## `{title}` {{#{method.name.replace('_', '-')}}}",
         summary,
         *paragraphs,
-        signatures,
+        _signatures(method),
         _parameter_rows(method.parameters, routes, heading="**Parameters**"),
         _returns(method, routes, "**Returns**"),
         f"For examples, see the [Python SDK guide]({guide}).",
@@ -394,15 +397,11 @@ def _sdk_pages(reference: SDKReference) -> dict[Path, str]:
         "## Types and errors",
         f"Browse [public models and enums](/{_route(TYPE_INDEX.parent)}) or the [SDK error hierarchy](/{_route(SDK_ERRORS)}).",
     )
-    panels = (
-        "<Panel>\n<CodeGroup>\n\n"
-        + "\n\n".join(f"```python {method.name}\n{method.signatures[0]}\n```" for method in reference.client_methods)
-        + "\n\n</CodeGroup>\n</Panel>"
-    )
     client_sections = [
         _join_blocks(
             f"## {method.name}",
             method.description,
+            _signatures(method),
             _parameter_rows(method.parameters, routes, heading="### Parameters"),
             _returns(method, routes, "### Returns"),
         )
@@ -412,7 +411,6 @@ def _sdk_pages(reference: SDKReference) -> dict[Path, str]:
         "ValkyrieClient",
         "Construct and close the async Valkyrie SDK client.",
         "`ValkyrieClient` owns the async HTTP connection pool and exposes the public resource namespaces.",
-        panels,
         *client_sections,
         "## Async context manager",
         "The client closes its connection pool when an `async with` block exits.",

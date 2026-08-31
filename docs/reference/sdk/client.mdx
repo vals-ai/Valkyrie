@@ -7,10 +7,11 @@ description: "Construct and close the async Valkyrie SDK client."
 
 `ValkyrieClient` owns the async HTTP connection pool and exposes the public resource namespaces.
 
-<Panel>
-<CodeGroup>
+## Constructor
 
-```python Constructor
+Async client for Valkyrie API resources.
+
+```python Signature
 ValkyrieClient(
     config: ValkyrieConfig,
     *,
@@ -19,27 +20,6 @@ ValkyrieClient(
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> ValkyrieClient
 ```
-
-```python from_config
-def from_config(
-    path: str | Path = '~/.config/valkyrie/valkyrie.yaml',
-    *,
-    base_url: str | None = None,
-    timeout: float | httpx.Timeout = 120,
-    transport: httpx.AsyncBaseTransport | None = None,
-) -> ValkyrieClient
-```
-
-```python close
-async def close() -> None
-```
-
-</CodeGroup>
-</Panel>
-
-## Constructor
-
-Async client for Valkyrie API resources.
 
 ### Parameters
 
@@ -67,6 +47,16 @@ ValkyrieClient
 
 Load a client from a CLI-compatible YAML config.
 
+```python Signature
+def from_config(
+    path: str | Path = '~/.config/valkyrie/valkyrie.yaml',
+    *,
+    base_url: str | None = None,
+    timeout: float | httpx.Timeout = 120,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> ValkyrieClient
+```
+
 ### Parameters
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
@@ -92,6 +82,10 @@ ValkyrieClient
 ## close
 
 Close the underlying HTTP connection pool.
+
+```python Signature
+async def close() -> None
+```
 
 ### Returns
 
