@@ -3,18 +3,18 @@ title: Choose a hosting mode
 description: Compare hosted and self-hosted Valkyrie deployments.
 ---
 
-Valkyrie supports hosted and self-hosted modes. Both modes use your AWS credentials and storage. Hosted mode adds Vals API key authentication for organization isolation.
+Valkyrie separates two choices. Hosted or self-hosted determines who operates the tracker and executor host. Managed or access-key AWS determines which AWS account and credentials a run uses. Hosted mode supports both AWS execution modes; eligible organizations default to managed AWS and can configure access keys to run against their own AWS resources instead.
 
 ## Hosted mode
 
-Hosted mode uses Vals-managed compute infrastructure with your AWS storage.
+Hosted mode uses Vals-managed compute infrastructure. Vals API key authentication isolates data per organization.
 
 ### Requirements
 
 - A Vals API key provided by Vals
-- AWS credentials with the [required permissions](/self-hosting/aws-permissions)
-- An existing S3 bucket for benchmark artifacts and agents
+- Local AWS SDK credentials for direct agent uploads and artifact downloads, including `AWS_PROFILE` with AWS SSO
 - A [sandbox-provider secret](/get-started/sandbox-providers)
+- For access-key execution, AWS credentials with the [required permissions](/self-hosting/aws-permissions) and an existing S3 bucket
 
 Run configuration and choose **hosted**:
 
@@ -22,7 +22,7 @@ Run configuration and choose **hosted**:
 valkyrie config init
 ```
 
-The CLI validates the Vals API key, configures the organization, and collects the AWS settings. It sends the Vals API key with tracker requests and sends AWS credentials through `X-Harness-*` headers.
+The CLI validates the Vals API key and configures the organization. When the organization can use managed AWS, it reads the Region and S3 bucket from the tracker instead of asking for access keys.
 
 Set a Vals API key directly when needed:
 
@@ -32,6 +32,39 @@ valkyrie config set api_key <your-vals-api-key>
 
 Contact `contact@vals.ai` for hosted access.
 
+### AWS execution mode
+
+The AWS credential fields in the selected config determine the execution mode of new runs.
+
+| Configured fields | Run execution mode |
+| --- | --- |
+| Neither `AWS_ACCESS_KEY_ID` nor `AWS_SECRET_ACCESS_KEY` | Managed AWS. The tracker and executor host use deployment task roles. |
+| Both `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` | Access-key AWS. The tracker receives the configured AWS resources and credentials. |
+| Only one access-key field | Invalid. Valkyrie stops before sending the request. |
+
+Managed execution still allows local AWS operations. Agent uploads and artifact downloads use the local AWS SDK credential chain.
+
+To use access-key AWS in hosted mode, run hosted setup first, then add a complete access-key configuration:
+
+```bash
+valkyrie config set AWS_ACCESS_KEY_ID <access-key-id>
+valkyrie config set AWS_SECRET_ACCESS_KEY <secret-access-key>
+valkyrie config set AWS_DEFAULT_REGION <region>
+valkyrie config set S3_BUCKET <bucket-name>
+valkyrie config set LOG_GROUP <log-group-prefix>
+valkyrie config set LOG_RETENTION_POLICY 365
+```
+
+Add `valkyrie config set AWS_SESSION_TOKEN <session-token>` for temporary credentials. Return to managed execution by removing the credential fields; the Region and bucket remain for local AWS operations.
+
+```bash
+valkyrie config remove AWS_ACCESS_KEY_ID
+valkyrie config remove AWS_SECRET_ACCESS_KEY
+valkyrie config remove AWS_SESSION_TOKEN
+```
+
+The tracker stores the AWS execution mode when a run starts. Retrying or resuming a run uses the stored mode rather than the current local config, so an access-key run still requires the access-key configuration it started with.
+
 ## Self-hosted mode
 
 Self-hosted mode uses your tracker service and AWS infrastructure.
@@ -39,7 +72,7 @@ Self-hosted mode uses your tracker service and AWS infrastructure.
 ### Requirements
 
 - A deployed tracker service
-- AWS credentials with the [required permissions](/self-hosting/aws-permissions)
+- AWS credentials with the [required permissions](/self-hosting/aws-permissions); self-hosted mode always uses access-key execution
 - An existing S3 bucket for benchmark artifacts and agents
 - A [sandbox-provider secret](/get-started/sandbox-providers)
 

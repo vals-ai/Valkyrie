@@ -13,6 +13,8 @@ import pytest
 
 import tracker.notifications as notifications_module
 from tracker.aws.runtime import AWSRuntime
+from tracker.aws.secrets import SecretsManagerStore
+from tracker.runtime.secrets import SecretStore
 from tracker.database.models import BenchmarkStatus
 from tracker.exceptions import SecretsError
 from tracker.notifications import NotificationContext, SlackNotifier
@@ -40,11 +42,12 @@ def _make_notifier(
     *,
     secret_name: str = "test/webhook",
     intervals: tuple[int, ...] = (50,),
+    secret_store: SecretStore | None = None,
 ) -> SlackNotifier:
-    """Build a notifier with deterministic credentials and thresholds."""
+    """Build a notifier with deterministic provider authority and thresholds."""
     return SlackNotifier(
         secret_name=secret_name,
-        clients=aws_runtime.clients,
+        secret_store=secret_store or SecretsManagerStore(aws_runtime.clients),
         intervals=list(intervals),
     )
 
@@ -70,7 +73,7 @@ def mock_http_client(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     client = AsyncMock()
     client.__aenter__.return_value = client
     client.__aexit__.return_value = False
-    monkeypatch.setattr(notifications_module.httpx, "AsyncClient", MagicMock(return_value=client))
+    monkeypatch.setattr(httpx, "AsyncClient", MagicMock(return_value=client))
 
     return client
 
@@ -216,12 +219,10 @@ class TestSlackNotifierFireAndForget:
         - A connection failure is caught after the threshold is crossed.
         """
 
-        def fetch_secret(_secret_name: str, _clients: object) -> str:
-            return "https://hooks.slack.com/test"
-
-        notifier = _make_notifier(aws_runtime)
+        secret_store = MagicMock()
+        secret_store.get.return_value = "https://hooks.slack.com/test"
+        notifier = _make_notifier(aws_runtime, secret_store=secret_store)
         mock_http_client.post = AsyncMock(side_effect=webhook_error)
-        monkeypatch.setattr(notifications_module, "fetch_aws_secret", fetch_secret)
 
         await notifier.check_and_notify(_make_context(finished_tasks=50))
 
@@ -235,15 +236,15 @@ class TestSlackNotifierSecretResolution:
         monkeypatch: pytest.MonkeyPatch,
         mock_http_client: AsyncMock,
     ) -> None:
-        """SlackNotifier calls fetch_aws_secret to resolve the webhook URL."""
-        notifier = _make_notifier(aws_runtime, secret_name="my/webhook/secret")
-        mock_fetch = MagicMock(return_value="https://hooks.slack.com/resolved")
+        """SlackNotifier resolves the webhook URL through its secret store."""
+        secret_store = MagicMock()
+        secret_store.get.return_value = "https://hooks.slack.com/resolved"
+        notifier = _make_notifier(aws_runtime, secret_name="my/webhook/secret", secret_store=secret_store)
         mock_http_client.post = AsyncMock(return_value=MagicMock(status_code=200))
-        monkeypatch.setattr(notifications_module, "fetch_aws_secret", mock_fetch)
 
         await notifier.check_and_notify(_make_context(finished_tasks=50))
 
-        mock_fetch.assert_called_once_with("my/webhook/secret", aws_runtime.clients)
+        secret_store.get.assert_called_once_with("my/webhook/secret")
         mock_http_client.post.assert_called_once()
         call_args = mock_http_client.post.call_args
         assert call_args[0][0] == "https://hooks.slack.com/resolved"
@@ -266,13 +267,13 @@ class TestSlackNotifierSecretResolution:
         - Secret retrieval raises an expected service error.
         - Secret retrieval returns structured data instead of a URL string.
         """
-        notifier = _make_notifier(aws_runtime, secret_name="invalid/secret")
-        fetch_secret = (
+        secret_store = MagicMock()
+        secret_store.get = (
             MagicMock(side_effect=secret_result)
             if isinstance(secret_result, Exception)
             else MagicMock(return_value=secret_result)
         )
-        monkeypatch.setattr(notifications_module, "fetch_aws_secret", fetch_secret)
+        notifier = _make_notifier(aws_runtime, secret_name="invalid/secret", secret_store=secret_store)
 
         await notifier.check_and_notify(_make_context(finished_tasks=50))
 

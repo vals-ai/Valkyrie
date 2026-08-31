@@ -66,6 +66,10 @@ class EcsClient(Protocol):
     def update_service(self, **kwargs: object) -> Mapping[str, object]: ...
 
 
+class S3ArtifactClient(Protocol):
+    def get_object(self, *, Bucket: str, Key: str) -> Mapping[str, object]: ...
+
+
 class DatabaseSecret(BaseModel):
     username: str
     password: str
@@ -110,6 +114,11 @@ def create_ecs_client() -> EcsClient:
     return cast(EcsClient, boto3.client("ecs"))  # pyright: ignore[reportUnknownMemberType]
 
 
+def create_s3_artifact_client() -> S3ArtifactClient:
+    """Select the sealed release task's ambient S3 authority at its root."""
+    return cast(S3ArtifactClient, boto3.client("s3"))  # pyright: ignore[reportUnknownMemberType]
+
+
 def _configure_database(task: ReleaseTaskConfig) -> None:
     for name in tuple(os.environ):
         if name in _CALLER_CONTROLLED_ENV or name.startswith("AWS_ENDPOINT_URL"):
@@ -131,6 +140,7 @@ def _configure_database(task: ReleaseTaskConfig) -> None:
 def _activate_sealed_release(task: ReleaseTaskConfig, release: ReleaseInput) -> None:
     from sqlmodel import Session
 
+    from tracker.aws.executor_artifacts import S3ExecutorArtifactReader
     from tracker.database.models import ExecutorRelease
     from tracker.database.session import engine
     from tracker.executor.release_control import ReleaseControlError, activate_release
@@ -147,6 +157,7 @@ def _activate_sealed_release(task: ReleaseTaskConfig, release: ReleaseInput) -> 
                 ),
                 expected_bucket=task.release_bucket,
                 expected_prefix=task.release_prefix,
+                artifact_reader=S3ExecutorArtifactReader(create_s3_artifact_client()),
             )
             session.commit()
     except ReleaseControlError as error:

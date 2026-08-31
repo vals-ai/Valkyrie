@@ -104,6 +104,12 @@ def test_config_rejects_missing_required_values_and_invalid_provider(config_valu
         sdk_config(LOG_GROUP=" ")
     with pytest.raises(ValidationError):
         sdk_config(AWS_SECRET_ACCESS_KEY=" ")
+    with pytest.raises(ValidationError, match="configured together"):
+        sdk_config(AWS_SECRET_ACCESS_KEY=None)
+    with pytest.raises(ValidationError, match="configured together"):
+        sdk_config(AWS_ACCESS_KEY_ID=None)
+    with pytest.raises(ValidationError, match="AWS_SESSION_TOKEN requires"):
+        sdk_config(AWS_ACCESS_KEY_ID=None, AWS_SECRET_ACCESS_KEY=None)
 
     config = sdk_config()
     with pytest.raises(ValkyrieConfigError, match="Unknown sandbox provider"):
@@ -198,6 +204,48 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
     assert body["harness_config"]["sandbox_provider_secret_name"] == "ModalSecret"
     assert body["webhook_secret_name"] == "SlackWebhook"
     assert body["webhook_intervals"] == [25, 100]
+
+
+async def test_start_without_static_keys_builds_managed_request(make_client, sdk_config) -> None:
+    """Managed SDK starts must omit every harness credential surface."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "benchmark_name": "swebench",
+                "agent_name": "sweagent",
+                "benchmark_id": str(uuid4()),
+                "concurrency": 1,
+                "started_at": "2026-07-08T12:00:00Z",
+                "task_count": 1,
+                "cloudwatch_url": "https://logs.test",
+                "s3_bucket_url": "s3://runs-bucket/run",
+            },
+        )
+
+    config = sdk_config(
+        AWS_ACCESS_KEY_ID=None,
+        AWS_SECRET_ACCESS_KEY=None,
+        AWS_SESSION_TOKEN=None,
+        default_sandbox_provider="daytona",
+    )
+    client = make_client(handler, config=config)
+    async with client:
+        await client.runs.start("sweagent", "swebench", ignore_custom_services=True)
+
+    request = requests[0]
+
+    assert request.headers["x-api-key"] == "vals-key"
+    assert not any(name.lower().startswith("x-harness-") for name in request.headers)
+
+    body = json.loads(request.content)
+
+    assert body["harness_config"] is None
+    assert body["sandbox_provider"] == "daytona"
+    assert body["sandbox_provider_secret_name"] == "DaytonaSecret"
 
 
 async def test_start_can_omit_optional_run_configuration(make_client, sdk_config) -> None:

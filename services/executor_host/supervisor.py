@@ -20,6 +20,7 @@ import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
 from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
 from redis.asyncio import Redis
+from taskiq import TaskiqEvents
 from taskiq_redis import RedisStreamBroker
 from executor_protocol import (
     DEFAULT_EXECUTOR_RELEASE_PREFIX,
@@ -27,8 +28,18 @@ from executor_protocol import (
     EXECUTOR_TASK_NAME,
     SUPPORTED_PROTOCOL_VERSIONS,
     ExecutorPayload,
+    ExecutorTelemetryContext,
+    executor_payload_benchmark_id,
+    normalize_executor_telemetry_context,
     validate_executor_artifact_uri,
     validate_executor_digest,
+)
+from services.executor_host.observability import (
+    capture_dispatch_error,
+    configure_observability,
+    dispatch_observability_context,
+    record_dispatch_cancellation,
+    record_dispatch_completion,
 )
 
 logger = logging.getLogger(__name__)
@@ -170,7 +181,12 @@ class ExecutorProcessPayload:
     arguments: dict[str, object]
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, object]) -> ExecutorProcessPayload:
+    def from_payload(
+        cls,
+        payload: Mapping[str, object],
+        *,
+        telemetry_context: ExecutorTelemetryContext,
+    ) -> ExecutorProcessPayload:
         execution_context = payload.get("execution_context_json")
         access_key_values = (
             payload.get("start_benchmark_request_json"),
@@ -196,6 +212,7 @@ class ExecutorProcessPayload:
                 "benchmark_id_str": benchmark_id,
                 "verified_task_ids": raw_task_ids,
             }
+        arguments["telemetry_context_json"] = telemetry_context
         if not isinstance(benchmark_id, str) or not benchmark_id:
             raise ValueError("Executor payload has no valid benchmark ID")
         verified_task_ids = (
@@ -206,6 +223,11 @@ class ExecutorProcessPayload:
             verified_task_ids=verified_task_ids,
             arguments=arguments,
         )
+
+
+def _payload_string(payload: Mapping[str, object], key: str) -> str:
+    value = payload.get(key)
+    return str(value) if value else ""
 
 
 class ExecutorDispatchStore(Protocol):
@@ -578,6 +600,7 @@ class ExecutorSupervisor:
                 str(artifact_path),
                 str(payload_path),
                 start_new_session=True,
+                env={**os.environ, "SENTRY_RELEASE": dispatch.release_id},
             )
             try:
                 return_code = await self._wait_with_authority(process, is_current)
@@ -672,6 +695,13 @@ broker = DeleteAfterAckRedisStreamBroker(
     consumer_group_name=QUEUE_NAME,
     idle_timeout=86400000,
 )
+
+
+@broker.on_event(TaskiqEvents.WORKER_STARTUP)
+async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:  # pyright: ignore[reportUnusedFunction]
+    configure_observability()
+
+
 supervisor = ExecutorSupervisor(CACHE_DIR)
 dispatch_store = PostgresExecutorDispatchStore.from_environment()
 
@@ -762,13 +792,30 @@ async def run_executor_dispatch(
 @broker.task(EXECUTOR_TASK_NAME)
 async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
     raw_payload: dict[str, object] = dict(payload)
-    dispatch_id = _required_string(raw_payload, "executor_dispatch_id")
-    dispatch = ArtifactDispatch.from_payload(raw_payload)
-    process_payload = ExecutorProcessPayload.from_payload(raw_payload)
-    await run_executor_dispatch(
-        supervisor,
-        dispatch_store,
-        executor_dispatch_id=dispatch_id,
-        dispatch=dispatch,
-        process_payload=process_payload,
-    )
+    with dispatch_observability_context(
+        executor_payload_benchmark_id(raw_payload),
+        _payload_string(raw_payload, "executor_dispatch_id"),
+        _payload_string(raw_payload, "executor_release_id"),
+        normalize_executor_telemetry_context(raw_payload.get("telemetry_context_json")),
+    ) as child_telemetry_context:
+        try:
+            dispatch_id = _required_string(raw_payload, "executor_dispatch_id")
+            dispatch = ArtifactDispatch.from_payload(raw_payload)
+            process_payload = ExecutorProcessPayload.from_payload(
+                raw_payload,
+                telemetry_context=child_telemetry_context,
+            )
+            await run_executor_dispatch(
+                supervisor,
+                dispatch_store,
+                executor_dispatch_id=dispatch_id,
+                dispatch=dispatch,
+                process_payload=process_payload,
+            )
+            record_dispatch_completion(child_telemetry_context)
+        except asyncio.CancelledError:
+            record_dispatch_cancellation(child_telemetry_context)
+            raise
+        except BaseException as error:
+            capture_dispatch_error(error, child_telemetry_context)
+            raise

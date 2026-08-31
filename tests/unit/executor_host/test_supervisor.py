@@ -1,3 +1,8 @@
+"""Tests for ExecutorHost dispatch supervision.
+
+Run: uv run pytest tests/unit/executor_host/test_supervisor.py
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,9 +15,11 @@ from collections.abc import Awaitable, Callable
 from functools import partial
 from pathlib import Path
 from typing import cast
+from unittest.mock import Mock
 
 import pytest
 
+import services.executor_host.observability as host_observability
 import services.executor_host.supervisor as supervisor_module
 from services.executor_host.supervisor import (  # pyright: ignore[reportMissingImports]
     ArtifactDispatch,
@@ -25,7 +32,7 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     run_executor_dispatch,
     verify_file_digest,
 )
-from executor_protocol import validate_executor_artifact_uri
+from executor_protocol import ExecutorTelemetryContext, validate_executor_artifact_uri
 
 
 class FakeDispatchStore:
@@ -168,22 +175,33 @@ def _process_payload(
             "start_benchmark_request_json": request or {},
             "benchmark_id_str": benchmark_id,
             "verified_task_ids": task_ids or [],
-        }
+        },
+        telemetry_context={"request_id": "", "trace_headers": {}},
     )
 
 
-def test_managed_process_payload_is_normalized_once() -> None:
+def test_managed_process_payload_includes_child_telemetry_context() -> None:
     context: dict[str, object] = {
         "benchmark_id": "benchmark-1",
         "verified_task_ids": ["task-1"],
         "start_benchmark_request": {},
     }
+    telemetry_context: ExecutorTelemetryContext = {
+        "request_id": "request-1",
+        "trace_headers": {"sentry-trace": "trace-header"},
+    }
 
-    payload = ExecutorProcessPayload.from_payload({"execution_context_json": context})
+    payload = ExecutorProcessPayload.from_payload(
+        {"execution_context_json": context},
+        telemetry_context=telemetry_context,
+    )
 
     assert payload.benchmark_id == "benchmark-1"
     assert payload.verified_task_ids == ["task-1"]
-    assert payload.arguments == {"execution_context_json": context}
+    assert payload.arguments == {
+        "execution_context_json": context,
+        "telemetry_context_json": telemetry_context,
+    }
 
 
 def test_process_payload_rejects_mixed_execution_shapes() -> None:
@@ -195,7 +213,8 @@ def test_process_payload_rejects_mixed_execution_shapes() -> None:
                     "verified_task_ids": [],
                 },
                 "start_benchmark_request_json": {},
-            }
+            },
+            telemetry_context={"request_id": "", "trace_headers": {}},
         )
 
 
@@ -433,7 +452,7 @@ async def test_run_forwards_dispatch_authority_to_executor(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    script = b"""import json, os, sys\nfrom pathlib import Path\npayload = json.loads(Path(sys.argv[1]).read_text())\nPath(os.environ[\"EXECUTOR_TEST_MARKER\"]).write_text(json.dumps(payload))\n"""
+    script = b"""import json, os, sys\nfrom pathlib import Path\npayload = json.loads(Path(sys.argv[1]).read_text())\nresult = {\"payload\": payload, \"sentry_release\": os.environ.get(\"SENTRY_RELEASE\")}\nPath(os.environ[\"EXECUTOR_TEST_MARKER\"]).write_text(json.dumps(result))\n"""
     digest = hashlib.sha256(script).hexdigest()
     marker = tmp_path / "marker.json"
     monkeypatch.setenv("EXECUTOR_TEST_MARKER", str(marker))
@@ -452,10 +471,12 @@ async def test_run_forwards_dispatch_authority_to_executor(
         result = json.loads(marker.read_text())
     except (OSError, JSONDecodeError) as error:
         raise AssertionError(f"executor marker was not valid JSON: {error}") from error
-    payload = result
+    payload = result["payload"]
     assert payload["benchmark_id_str"] == "benchmark-1"
     assert payload["verified_task_ids"] == ["task-1"]
     assert payload["executor_dispatch_id"] == "dispatch-1"
+    assert payload["telemetry_context_json"] == {"request_id": "", "trace_headers": {}}
+    assert result["sentry_release"] == "release-v2"
     assert store.authority_checks
     assert store.finished == [store.authority]
     assert (
@@ -576,6 +597,8 @@ async def test_launch_executor_rejects_invalid_dispatch_id_without_side_effects(
     monkeypatch.setattr(supervisor, "run", unexpected_run)
     monkeypatch.setattr(supervisor_module, "supervisor", supervisor)
     monkeypatch.setattr(supervisor_module, "dispatch_store", store)
+    capture_exception = Mock()
+    monkeypatch.setattr(host_observability.sentry_sdk, "capture_exception", capture_exception)
 
     with pytest.raises(ValueError, match="executor_dispatch_id is required"):
         await supervisor_module.launch_executor.original_func(
@@ -592,6 +615,7 @@ async def test_launch_executor_rejects_invalid_dispatch_id_without_side_effects(
     assert store.claimed == []
     assert store.finished == []
     assert s3_client.calls == []
+    capture_exception.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -617,6 +641,44 @@ async def test_broker_payload_dispatch_id_reaches_dispatch_owner(
     )
 
     assert captured["executor_dispatch_id"] == "dispatch-1"
+
+
+@pytest.mark.asyncio
+async def test_launch_executor_records_cancellation_before_context_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def cancel_dispatch(*_args: object, **_kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    cancellation_context: dict[str, object] = {}
+
+    def record_cancellation(telemetry_context: object) -> None:
+        cancellation_context.update(
+            {
+                "telemetry_context": telemetry_context,
+                "benchmark_id": host_observability.benchmark_id_var.get(),
+                "dispatch_id": host_observability.dispatch_id_var.get(),
+            }
+        )
+
+    monkeypatch.setattr(supervisor_module, "run_executor_dispatch", cancel_dispatch)
+    monkeypatch.setattr(supervisor_module, "record_dispatch_cancellation", record_cancellation)
+
+    with pytest.raises(asyncio.CancelledError):
+        await supervisor_module.launch_executor.original_func(
+            start_benchmark_request_json={},
+            benchmark_id_str="benchmark-1",
+            verified_task_ids=[],
+            executor_dispatch_id="dispatch-1",
+            executor_release_id="release-v2",
+            executor_artifact_uri="s3://artifacts/executors/v2.pex",
+            executor_artifact_digest="0" * 64,
+            executor_protocol_version="1",
+        )
+
+    assert cancellation_context["benchmark_id"] == "benchmark-1"
+    assert cancellation_context["dispatch_id"] == "dispatch-1"
+    assert host_observability.benchmark_id_var.get() == ""
 
 
 async def test_stream_message_is_deleted_only_after_successful_ack(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,19 +1,11 @@
 """Taskiq middleware that sets logging context vars for executor jobs."""
 
-from typing import Any, cast
+from typing import Any
 
 from taskiq import TaskiqMessage, TaskiqMiddleware, TaskiqResult
 
+from executor_protocol import executor_payload_benchmark_id
 from tracker.logging import benchmark_id_var, request_id_var, task_id_var
-
-
-def _benchmark_id_from_message(message: TaskiqMessage) -> str:
-    benchmark_id = message.kwargs.get("benchmark_id_str")
-    if not benchmark_id:
-        execution_context = message.kwargs.get("execution_context_json")
-        if isinstance(execution_context, dict):
-            benchmark_id = cast(dict[str, Any], execution_context).get("benchmark_id")
-    return str(benchmark_id) if benchmark_id else ""
 
 
 class LoggingContextMiddleware(TaskiqMiddleware):
@@ -24,7 +16,7 @@ class LoggingContextMiddleware(TaskiqMiddleware):
         benchmark_id_var.set("")
         task_id_var.set("")
 
-        benchmark_id = _benchmark_id_from_message(message)
+        benchmark_id = executor_payload_benchmark_id(message.kwargs)
         if benchmark_id:
             benchmark_id_var.set(benchmark_id)
 

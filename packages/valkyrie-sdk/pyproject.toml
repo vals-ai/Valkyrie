@@ -1,6 +1,6 @@
 [project]
 name = "valkyrie-sdk"
-version = "0.2.6"
+version = "0.2.9"
 description = "Async Python SDK for managing Valkyrie benchmark runs"
 readme = "README.md"
 requires-python = ">=3.12"

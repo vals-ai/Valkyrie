@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 from typing import Literal
-from uuid import UUID
-
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import case
 from sqlmodel import Session, col, desc, func, select
 
 from tracker.api.parsing import parse_csv
+from tracker.api.dependencies import TrackedBenchmarkId
 from tracker.auth import get_current_org
-from tracker.aws.cloudwatch_logs import get_benchmark_log_url
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.aws.resolver import resolve_run_metadata_aws_runtime
 from tracker.aws.s3 import create_benchmark_url
 from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
@@ -46,7 +45,7 @@ _STATUS_SORT_PRIORITY = case(
 
 @router.get("/{benchmark_id}", response_model=SingleBenchmarkResponse)
 def get_single_benchmark(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     request: Request,
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
@@ -73,10 +72,7 @@ def get_single_benchmark(
         aws_resources = aws_runtime.resources
         s3_bucket_url = create_benchmark_url(str(benchmark.id), aws_resources)
         if aws_resources.log_group:
-            cloudwatch_url = get_benchmark_log_url(
-                benchmark_id=str(benchmark.id),
-                resources=aws_resources,
-            )
+            cloudwatch_url = CloudWatchBenchmarkLogLocations(aws_resources).benchmark_location(str(benchmark.id))
 
     return SingleBenchmarkResponse(
         id=benchmark.id,
@@ -103,7 +99,7 @@ def get_single_benchmark(
 
 @router.get("/{benchmark_id}/tasks", response_model=TasksResponse)
 def get_benchmark_tasks(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     status: str = Query(default=""),
     task_id_search: str | None = None,
     sort: Literal["task_id", "started_at", "duration", "status"] = Query(default="started_at"),
@@ -134,6 +130,7 @@ def get_benchmark_tasks(
         select(ErrorResult.error_message)
         .where(ErrorResult.task == Task.id)
         .where(ErrorResult.org_id == org.id)
+        .where(col(ErrorResult.retry_scheduled).is_(False))
         .order_by(desc(ErrorResult.created_at))
         .limit(1)
         .scalar_subquery()

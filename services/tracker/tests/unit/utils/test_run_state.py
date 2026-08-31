@@ -4,8 +4,8 @@ Run: uv run pytest tests/unit/utils/test_run_state.py
 """
 
 from datetime import datetime
-from typing import Any, Sequence
-from unittest.mock import AsyncMock
+from typing import Any, Sequence, cast
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -23,7 +23,7 @@ from main import app
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
-from tracker.aws.runtime import AWSRuntime
+from tracker.runtime.secrets import SecretValue
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -86,7 +86,7 @@ class TestRunState:
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
     def test_fetch_sandbox_provider_config_combines_provider_type_with_secret(
-        self, harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch
+        self, harness_config: HarnessConfig
     ) -> None:
         """Sandbox provider config should combine client-selected type with the production secret shape.
 
@@ -101,16 +101,11 @@ class TestRunState:
             },
         }
 
-        def fetch_secret(name: str, _client_provider: object) -> dict[str, str]:
-            return secrets[name]
+        class TestSecretStore:
+            def get(self, name: str) -> SecretValue:
+                return cast(SecretValue, secrets[name])
 
-        monkeypatch.setattr("tracker.utils.resources.fetch_aws_secret", fetch_secret)
-
-        provider_config = fetch_sandbox_provider_config(
-            "provider-secret",
-            AWSRuntime.from_harness_config(harness_config).clients,
-            "daytona",
-        )
+        provider_config = fetch_sandbox_provider_config("provider-secret", TestSecretStore(), "daytona")
         assert provider_config.model_dump(mode="json") == {
             "type": "daytona",
             "DAYTONA_API_KEY": "key",
@@ -367,6 +362,13 @@ class TestRunState:
         )
         assert response.status_code == 200
 
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.commit()
+
         # Ensure that we can recreate the environment the benchmark was started in
         original_start_benchmark_request = StartBenchmarkRequest(
             contract=contract,
@@ -605,7 +607,7 @@ class TestRunState:
             return MockSpan(record)
 
         monkeypatch.setattr("tracker.utils.task_execution.logger.info", fake_info)
-        monkeypatch.setattr("tracker.utils.task_execution.logfire.span", fake_span)
+        monkeypatch.setattr("tracker.observability.tracing.logfire.span", fake_span)
 
         database_session.add(example_benchmark_object)
         database_session.commit()
@@ -620,16 +622,28 @@ class TestRunState:
         database_session.add(task_row)
         database_session.commit()
 
-        commit_task_error(task_row, database_session, "agent failed", authority=authority)
+        commit_task_error(
+            task_row,
+            database_session,
+            "agent failed",
+            producer="tracker",
+            operation="process_task",
+            error_type="RuntimeError",
+            authority=authority,
+        )
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        error_message = database_session.exec(
-            select(ErrorResult.error_message)
-            .where(ErrorResult.task == task_row.id)
-            .where(ErrorResult.org_id == TEST_ORG_ID)
+        error_result = database_session.exec(
+            select(ErrorResult).where(ErrorResult.task == task_row.id).where(ErrorResult.org_id == TEST_ORG_ID)
         ).one()
-        assert error_message == "agent failed"
+        assert error_result.error_message == "agent failed"
+        assert error_result.producer == "tracker"
+        assert error_result.operation == "process_task"
+        assert error_result.error_type == "RuntimeError"
+        assert error_result.cause_code is None
+        assert error_result.retry_scheduled is False
+        assert error_result.failed_attempt_number is None
         transition_record = next(record for record in span_records if record["message"] == "task.status_transition")
         assert transition_record["from_status"] == TaskStatus.IN_PROGRESS.value
         assert transition_record["to_status"] == TaskStatus.ERROR.value
@@ -639,11 +653,49 @@ class TestRunState:
         assert transition_record["has_error_message"]
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
 
+    def test_commit_task_error_rolls_back_when_started_at_is_stale(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        executor_authority: Any,
+    ) -> None:
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        authority = executor_authority(example_benchmark_object, session=database_session)
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="stale-task",
+            benchmark=example_benchmark_object.id,
+            status=TaskStatus.IN_PROGRESS,
+        )
+        database_session.add(task_row)
+        database_session.commit()
+
+        committed = commit_task_error(
+            task_row,
+            database_session,
+            "stale failure",
+            producer="tracker",
+            operation="process_task",
+            error_type="RuntimeError",
+            expected_started_at=datetime(2000, 1, 1, tzinfo=ZoneInfo("UTC")),
+            authority=authority,
+        )
+
+        assert committed is False
+        database_session.expire_all()
+        persisted_task = database_session.get(Task, task_row.id)
+        assert persisted_task is not None
+        assert persisted_task.status == TaskStatus.IN_PROGRESS
+        assert persisted_task.finished_at is None
+        assert database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all() == []
+
     async def test_set_benchmark_final_status(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
         executor_authority: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Tests the end to end flow when stopping and resuming a benchmark
 
@@ -652,6 +704,15 @@ class TestRunState:
             - Benchmark status is set to finished if all tasks are finished
             - Benchmark status is set to stopped if any tasks are stopped
         """
+
+        finalized_statuses: list[str] = []
+
+        def record_span(name: str, **attributes: Any) -> MagicMock:
+            if name == "run.finalized":
+                finalized_statuses.append(attributes["status"])
+            return MagicMock()
+
+        monkeypatch.setattr("tracker.utils.run_orchestration.observability_span", record_span)
 
         # Create benchmark
         benchmark_row = example_benchmark_object
@@ -701,6 +762,7 @@ class TestRunState:
         set_benchmark_final_status(benchmark_row, database_session, self._test_org, authority=authority)
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.STOPPED
+        assert finalized_statuses == ["FINISHED", "STOPPED"]
 
 
 class TestFetchStartedByFilter:

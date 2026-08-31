@@ -32,8 +32,10 @@ asyncio.run(main())
 
 Pass `base_url` to `ValkyrieClient` for a self-hosted tracker. Otherwise, the SDK uses `TRACKER_SERVICE_URL` or the hosted tracker URL. The [`ValkyrieClient` reference](/reference/sdk/client) lists every constructor parameter and default.
 
+When both AWS access-key fields are configured, the SDK sends those credentials and AWS resources to the tracker for the run. When both are absent, start requests omit AWS credentials and request managed execution. See [AWS execution mode](/get-started/hosting#aws-execution-mode).
+
 <Warning>
-  The SDK sends AWS credentials through `X-Harness-*` headers. Connect only to a trusted tracker and use HTTPS outside local development.
+  In access-key execution, the SDK sends AWS credentials through `X-Harness-*` headers. Connect only to a trusted tracker and use HTTPS outside local development.
 </Warning>
 
 ## Examples

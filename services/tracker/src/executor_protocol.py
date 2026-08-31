@@ -1,7 +1,8 @@
 """Shared Tracker-to-ExecutorHost wire contract."""
 
+from collections.abc import Mapping
 from enum import Enum
-from typing import Any, NotRequired, TypedDict, Unpack
+from typing import Any, NotRequired, TypedDict, Unpack, cast
 from urllib.parse import urlparse
 
 EXECUTOR_TASK_NAME = "tracker.utils:process_benchmark"
@@ -19,6 +20,11 @@ class ExecutorDispatchStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class ExecutorTelemetryContext(TypedDict):
+    request_id: str
+    trace_headers: dict[str, str]
+
+
 class ExecutorPayload(TypedDict):
     # Exactly one execution shape is set: access-key runs carry the first three
     # fields; managed runs carry only execution_context_json. Dispatch fields
@@ -27,6 +33,7 @@ class ExecutorPayload(TypedDict):
     benchmark_id_str: NotRequired[str | None]
     verified_task_ids: NotRequired[list[str] | None]
     execution_context_json: NotRequired[dict[str, Any] | None]
+    telemetry_context_json: NotRequired[ExecutorTelemetryContext | None]
     executor_dispatch_id: str
     executor_release_id: str
     executor_artifact_uri: str
@@ -37,6 +44,39 @@ class ExecutorPayload(TypedDict):
 async def executor_task_signature(**_payload: Unpack[ExecutorPayload]) -> None:
     """Provide the producer's typed Taskiq signature; this body never executes."""
     raise RuntimeError("Executor task signatures cannot execute in Tracker")
+
+
+def executor_payload_benchmark_id(payload: Mapping[str, object]) -> str:
+    """Return the benchmark ID from either supported executor payload shape."""
+    benchmark_id = payload.get("benchmark_id_str")
+    if benchmark_id:
+        return str(benchmark_id)
+
+    execution_context = payload.get("execution_context_json")
+    if isinstance(execution_context, Mapping):
+        benchmark_id = cast(Mapping[object, object], execution_context).get("benchmark_id")
+
+    return str(benchmark_id) if benchmark_id else ""
+
+
+def normalize_executor_telemetry_context(value: object) -> ExecutorTelemetryContext:
+    """Normalize optional telemetry fields at the executor wire boundary."""
+    if not isinstance(value, Mapping):
+        return {"request_id": "", "trace_headers": {}}
+
+    telemetry_context = cast(Mapping[object, object], value)
+    request_id = telemetry_context.get("request_id")
+    raw_trace_headers = telemetry_context.get("trace_headers")
+    trace_headers = (
+        {str(key): str(header) for key, header in cast(Mapping[object, object], raw_trace_headers).items()}
+        if isinstance(raw_trace_headers, Mapping)
+        else {}
+    )
+
+    return {
+        "request_id": str(request_id) if request_id else "",
+        "trace_headers": trace_headers,
+    }
 
 
 def validate_executor_digest(digest: str) -> str:

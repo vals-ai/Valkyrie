@@ -1,3 +1,8 @@
+"""Tests for managed and access-key executor inputs.
+
+Run: uv run pytest tests/unit/test_managed_execution.py
+"""
+
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -8,6 +13,7 @@ from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.resolver import ManagedAWSEligibilityError
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org
@@ -278,11 +284,17 @@ async def test_ineligible_managed_execution_marks_run_error(
 ) -> None:
     request = _managed_request(contract)
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
+    spans: list[tuple[str, dict[str, Any]]] = []
 
     def reject_managed_runtime(_org_id: UUID) -> AWSRuntime:
         raise ManagedAWSEligibilityError("Managed AWS access is not available for this organization")
 
+    def record_span(name: str, **attributes: Any) -> MagicMock:
+        spans.append((name, attributes))
+        return MagicMock()
+
     monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", reject_managed_runtime)
+    monkeypatch.setattr("tracker.utils.run_orchestration.observability_span", record_span)
 
     await process_benchmark(
         execution_context_json=_execution_context(request, benchmark.id),
@@ -292,6 +304,9 @@ async def test_ineligible_managed_execution_marks_run_error(
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
     assert "Managed AWS access is not available for this organization" in (benchmark.error_message or "")
+    finalized_span = next(attributes for name, attributes in spans if name == "run.finalized")
+    assert finalized_span["benchmark_id"] == str(benchmark.id)
+    assert finalized_span["status"] == "ERROR"
 
 
 async def test_managed_execution_completes_with_the_deployment_runtime(
@@ -307,23 +322,23 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     )
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
     calls: list[str] = []
+    spans: list[tuple[str, dict[str, Any]]] = []
     provider_config = cast(SandboxProviderConfig, MagicMock())
 
     def deployment_runtime(_org_id: UUID) -> AWSRuntime:
         return aws_runtime
 
-    def create_log_group(_benchmark_id: str, runtime: AWSRuntime) -> str:
-        assert runtime is aws_runtime
+    def create_log_group(_self: object, _benchmark_id: str, *, retention_days: int) -> None:
+        assert retention_days == aws_runtime.resources.log_retention_days
         calls.append("logs")
-        return "benchmark-log-group"
 
-    def fetch_provider(_name: str, clients: object, _provider: str) -> SandboxProviderConfig:
-        assert clients is aws_runtime.clients
+    def fetch_provider(_name: str, secret_store: object, _provider: str) -> SandboxProviderConfig:
+        assert secret_store is not aws_runtime.clients
         calls.append("provider-secret")
         return provider_config
 
-    def resolve_agent_secrets(_secrets: object, clients: object) -> dict[str, str]:
-        assert clients is aws_runtime.clients
+    def resolve_agent_secrets(_secrets: object, secret_store: object) -> dict[str, str]:
+        assert secret_store is not aws_runtime.clients
         calls.append("agent-secrets")
         return {"MODEL_API_KEY": "resolved"}
 
@@ -335,19 +350,24 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         assert runtime is aws_runtime
         calls.append("s3-final-upload")
 
-    def invoke_post_run(clients: object, _function_name: str, _payload: object) -> dict[str, Any]:
+    def invoke_post_run(clients: object, _function_name: str, _payload: object, **_kwargs: Any) -> dict[str, Any]:
         assert clients is aws_runtime.clients
         calls.append("lambda-post-run")
         return {}
 
+    def record_span(name: str, **attributes: Any) -> MagicMock:
+        spans.append((name, attributes))
+        return MagicMock()
+
     monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
-    monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", create_log_group)
+    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
     monkeypatch.setattr("tracker.utils.run_orchestration.fetch_sandbox_provider_config", fetch_provider)
     monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
     monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", upload_results)
     monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", invoke_post_run)
+    monkeypatch.setattr("tracker.utils.run_orchestration.observability_span", record_span)
 
     execution_context = _execution_context(request, benchmark.id)
     # A resume may change stored inputs while this job is queued; the queued job must still run.
@@ -362,6 +382,8 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     assert calls[:4] == ["logs", "provider-secret", "agent-secrets", "lambda-dry-run"]
     assert calls.count("agent-secrets") >= 2
     assert calls[-2:] == ["s3-final-upload", "lambda-post-run"]
+    finalized_span = next(attributes for name, attributes in spans if name == "run.finalized")
+    assert finalized_span["status"] == "FINISHED"
 
 
 def test_managed_execution_preflight_checks_aws_dependencies_in_order(
@@ -392,17 +414,17 @@ def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         calls.append("agent_secrets")
         return {"AGENT_TOKEN": "resolved"}
 
-    def fetch_webhook_secret(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+    def get_webhook_secret(_store: object, _name: str) -> dict[str, str]:
         calls.append("webhook_secret")
         return {"url": "https://example.com"}
 
     def dry_run(*_args: Any, **_kwargs: Any) -> None:
         calls.append("lambda")
 
-    monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", create_log_group)
+    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
     monkeypatch.setattr("tracker.utils.run_orchestration.fetch_sandbox_provider_config", fetch_provider)
     monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", resolve_agent_secrets)
-    monkeypatch.setattr("tracker.utils.run_orchestration.fetch_aws_secret", fetch_webhook_secret)
+    monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get_webhook_secret)
     monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
 
     result = _preflight_managed_aws(execution, aws_runtime)
@@ -430,7 +452,7 @@ async def test_managed_preflight_failure_happens_before_sandbox(
         raise RuntimeError("managed log preflight failed")
 
     monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
-    monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", fail_log_preflight)
+    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", fail_log_preflight)
     monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", create_sandbox)
 
     await process_benchmark(

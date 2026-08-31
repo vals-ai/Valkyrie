@@ -4,12 +4,15 @@ import os
 import subprocess
 import sys
 from collections.abc import Generator
+from datetime import UTC, datetime
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic, sleep
 from uuid import uuid4
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlmodel import Session, create_engine
 from testcontainers.postgres import PostgresContainer
@@ -30,7 +33,14 @@ _EXECUTOR_RELEASE_OWNERSHIP_PREDECESSOR = "6f3c2d9a8b10"
 _CURRENT_OWNERSHIP_REVISION = "e9f0a1b2c3d4"
 _PREVIOUS_REVISION = "d8e9f0a1b2c3"
 _MAINTENANCE_REVISION = "f0a1b2c3d4e5"
+_ERROR_RESULT_PROVENANCE_REVISION = "a3f4b5c6d7e8"
 _MIGRATION_ADVISORY_LOCK_ID = 0x56414C4B59524945
+
+
+def test_migration_graph_has_single_head() -> None:
+    heads = ScriptDirectory.from_config(Config(str(_ALEMBIC_INI))).get_heads()
+
+    assert len(heads) == 1, f"Expected one Alembic head, found {heads}"
 
 
 @pytest.fixture
@@ -80,6 +90,196 @@ def test_executor_release_ownership_downgrade_restores_predecessor_schema(
         ).scalar_one()
     assert revision == _EXECUTOR_RELEASE_OWNERSHIP_PREDECESSOR
     assert release_status_enum_exists is False
+    engine.dispose()
+
+
+def test_error_result_provenance_migration_preserves_legacy_rows(
+    migration_database_url: str,
+) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", _MAINTENANCE_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    engine = create_engine(migration_database_url)
+    org_id = uuid4()
+    benchmark_id = uuid4()
+    task_id = uuid4()
+    raw_insert_id = uuid4()
+    legacy_failures = [
+        (uuid4(), datetime(2026, 8, 10, 12, 0, tzinfo=UTC), "first legacy failure"),
+        (uuid4(), datetime(2026, 8, 11, 12, 0, tzinfo=UTC), "second legacy failure"),
+    ]
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO org (id, name) VALUES (:id, :name)"),
+            {"id": org_id, "name": "legacy-error-result-migration-org"},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO benchmark (id, org_id, name, started_at, status) "
+                "VALUES (:id, :org_id, :name, :started_at, :status)"
+            ),
+            {
+                "id": benchmark_id,
+                "org_id": org_id,
+                "name": "legacy-error-result-migration-benchmark",
+                "started_at": legacy_failures[0][1],
+                "status": "IN_PROGRESS",
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO task "
+                "(id, org_id, task_id, status, started_at, finished_at, benchmark) "
+                "VALUES (:id, :org_id, :task_id, :status, :started_at, :finished_at, :benchmark)"
+            ),
+            {
+                "id": task_id,
+                "org_id": org_id,
+                "task_id": "legacy-task",
+                "status": "ERROR",
+                "started_at": legacy_failures[0][1],
+                "finished_at": legacy_failures[1][1],
+                "benchmark": benchmark_id,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO errorresult (id, org_id, task, created_at, error_message) VALUES "
+                "(:id, :org_id, :task, :created_at, :error_message)"
+            ),
+            [
+                {
+                    "id": failure_id,
+                    "org_id": org_id,
+                    "task": task_id,
+                    "created_at": created_at,
+                    "error_message": message,
+                }
+                for failure_id, created_at, message in legacy_failures
+            ],
+        )
+
+    upgrade = _run_alembic(migration_database_url, "upgrade", _ERROR_RESULT_PROVENANCE_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    with engine.begin() as connection:
+        migrated_rows = (
+            connection.execute(
+                text(
+                    "SELECT id, org_id, task, created_at, error_message, producer, operation, "
+                    "error_type, cause_code, retry_scheduled, failed_attempt_number "
+                    "FROM errorresult WHERE task = :task ORDER BY created_at"
+                ),
+                {"task": task_id},
+            )
+            .mappings()
+            .all()
+        )
+        connection.execute(
+            text(
+                "INSERT INTO errorresult (id, org_id, task, created_at, error_message) "
+                "VALUES (:id, :org_id, :task, :created_at, :error_message)"
+            ),
+            {
+                "id": raw_insert_id,
+                "org_id": org_id,
+                "task": task_id,
+                "created_at": datetime(2026, 8, 12, 12, 0, tzinfo=UTC),
+                "error_message": "terminal row using database default",
+            },
+        )
+        raw_retry_scheduled = connection.execute(
+            text("SELECT retry_scheduled FROM errorresult WHERE id = :id"),
+            {"id": raw_insert_id},
+        ).scalar_one()
+
+        inspector = inspect(connection)
+        error_result_columns = {column["name"]: column for column in inspector.get_columns("errorresult")}
+        error_result_indexes = {
+            (index["name"], tuple(index["column_names"]), index["unique"])
+            for index in inspector.get_indexes("errorresult")
+        }
+
+    assert len(migrated_rows) == len(legacy_failures)
+    for migrated, (failure_id, created_at, message) in zip(migrated_rows, legacy_failures, strict=True):
+        assert migrated["id"] == failure_id
+        assert migrated["org_id"] == org_id
+        assert migrated["task"] == task_id
+        assert migrated["created_at"] == created_at.replace(tzinfo=None)
+        assert migrated["error_message"] == message
+        assert migrated["retry_scheduled"] is False
+        assert all(
+            migrated[field] is None
+            for field in (
+                "producer",
+                "operation",
+                "error_type",
+                "cause_code",
+                "failed_attempt_number",
+            )
+        )
+
+    assert raw_retry_scheduled is False
+    assert set(error_result_columns) == {
+        "id",
+        "org_id",
+        "task",
+        "created_at",
+        "error_message",
+        "producer",
+        "operation",
+        "error_type",
+        "cause_code",
+        "retry_scheduled",
+        "failed_attempt_number",
+    }
+    assert error_result_columns["retry_scheduled"]["nullable"] is False
+    assert error_result_indexes == {
+        ("ix_errorresult_org_task_created_at", ("org_id", "task", "created_at"), False),
+    }
+
+    downgrade = _run_alembic(migration_database_url, "downgrade", _MAINTENANCE_REVISION)
+    assert downgrade.returncode == 0, downgrade.stderr
+
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        downgraded_columns = {column["name"] for column in inspector.get_columns("errorresult")}
+        downgraded_indexes = {index["name"] for index in inspector.get_indexes("errorresult")}
+        downgraded_rows = (
+            connection.execute(
+                text("SELECT id, org_id, task, created_at, error_message FROM errorresult ORDER BY created_at")
+            )
+            .mappings()
+            .all()
+        )
+        revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+
+    assert downgraded_columns == {"id", "org_id", "task", "created_at", "error_message"}
+    assert "ix_errorresult_org_task_created_at" not in downgraded_indexes
+    assert [dict(row) for row in downgraded_rows] == [
+        {
+            "id": legacy_failures[0][0],
+            "org_id": org_id,
+            "task": task_id,
+            "created_at": legacy_failures[0][1].replace(tzinfo=None),
+            "error_message": legacy_failures[0][2],
+        },
+        {
+            "id": legacy_failures[1][0],
+            "org_id": org_id,
+            "task": task_id,
+            "created_at": legacy_failures[1][1].replace(tzinfo=None),
+            "error_message": legacy_failures[1][2],
+        },
+        {
+            "id": raw_insert_id,
+            "org_id": org_id,
+            "task": task_id,
+            "created_at": datetime(2026, 8, 12, 12, 0),
+            "error_message": "terminal row using database default",
+        },
+    ]
+    assert revision == _MAINTENANCE_REVISION
     engine.dispose()
 
 

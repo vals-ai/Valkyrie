@@ -12,6 +12,7 @@ on:
       - "services/executor_artifact/**"
       - "services/executor_host/**"
       - "services/tracker/**"
+      - "tests/integration/observability/**"
       - "tests/unit/executor_host/**"
   # Runs on every PR so the required check is always reported; the guard below
   # skips the (slow) build when the PR does not touch executor-related paths.
@@ -44,7 +45,7 @@ jobs:
             echo "Could not compute the PR diff; running the build to be safe."
             echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if printf '%s\n' "$changed" | grep -qE '^(\.dockerignore|\.github/workflows/(executor-build|deploy)\.yaml|infra/(executor_stack|tracker_stack)\.py|services/(executor_artifact|executor_host|tracker)/|tests/unit/executor_host/)'; then
+          if printf '%s\n' "$changed" | grep -qE '^(\.dockerignore|\.github/workflows/(executor-build|deploy)\.yaml|infra/(executor_stack|tracker_stack)\.py|services/(executor_artifact|executor_host|tracker)/|tests/(integration/observability|unit/executor_host)/)'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "No executor-related changes; skipping build."
@@ -87,9 +88,9 @@ jobs:
         if: steps.rel.outputs.relevant == 'true'
         run: uv sync --frozen
 
-      - name: Run executor support unit tests
+      - name: Run executor support tests
         if: steps.rel.outputs.relevant == 'true'
-        run: uv run pytest tests/unit/executor_host services/executor_artifact/tests
+        run: uv run pytest tests/unit/executor_host tests/integration/observability services/executor_artifact/tests
 
       - name: Build and inspect immutable executor PEX
         if: steps.rel.outputs.relevant == 'true'

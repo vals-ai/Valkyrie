@@ -16,6 +16,7 @@ from sqlmodel import Session
 
 import tracker.api.single_task as single_task_module
 from main import app
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tests.factories import make_error_result, make_evaluation_result, make_task
 from tracker.database.models import (
     AgentCausedExitReason,
@@ -35,7 +36,7 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
 
     Test cases:
     - Finished, error, and pending tasks return status-appropriate result fields.
-    - The newest result row wins when a task has retry history.
+    - The newest terminal result wins when a newer scheduled-retry row exists.
     - A benchmark from another organization returns 404.
     """
     now = datetime.now(ZoneInfo("UTC"))
@@ -75,6 +76,16 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
             ),
             make_error_result(error_task, "old failure", now - timedelta(minutes=1)),
             make_error_result(error_task, "latest failure", now),
+            make_error_result(
+                error_task,
+                "scheduled retry",
+                now + timedelta(minutes=1),
+                producer="sandbox_provider",
+                operation="setup",
+                error_type="SandboxSetupError",
+                retry_scheduled=True,
+                failed_attempt_number=1,
+            ),
         ]
     )
 
@@ -127,7 +138,7 @@ def test_task_artifacts_only_presign_existing_output(
     get_log_url = Mock(return_value="https://example.test/cloudwatch")
     monkeypatch.setattr(single_task_module, "s3_object_exists", object_exists)
     monkeypatch.setattr(single_task_module, "create_presigned_url", create_presigned_url)
-    monkeypatch.setattr(single_task_module, "get_benchmark_log_url", get_log_url)
+    monkeypatch.setattr(CloudWatchBenchmarkLogLocations, "task_location", get_log_url)
 
     found_response = _client.get(
         f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts",
