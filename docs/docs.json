@@ -28,19 +28,8 @@
     "light": "/images/vals-icon-light.svg",
     "dark": "/images/vals-icon-dark.svg"
   },
-  "fonts": {
-    "heading": {
-      "family": "Martina Plantijn",
-      "source": "https://www.vals.ai/fonts/MartinaPlantijn/martina-plantijn-regular.woff2",
-      "format": "woff2",
-      "weight": 400
-    },
-    "body": {
-      "family": "Söhne",
-      "source": "https://www.vals.ai/fonts/Soehne/soehne-buch.woff2",
-      "format": "woff2",
-      "weight": 400
-    }
+  "contextual": {
+    "options": ["copy", "view", "chatgpt", "claude", "cursor", "vscode"]
   },
   "navigation": {
     "groups": [
