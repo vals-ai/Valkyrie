@@ -57,7 +57,7 @@ def _format_expiration(seconds: int) -> str:
     type=str,
     required=False,
     default=None,
-    help="Lambda function to invoke on the uploaded results, replacing the one the run was started with. Requires --s3.",
+    help="Lambda to invoke on the uploaded results, replacing the one the run was started with. Requires --s3.",
 )
 def results(
     run_id: UUID,
@@ -73,9 +73,6 @@ def results(
     Example:
         valkyrie run results e532551e-d51b-4912-983d-47695bd24174 --path ./results-e532551e-d51b-4912-983d-47695bd24174.json
     """
-    if lambda_function and not s3:
-        raise click.UsageError("--lambda requires --s3, since the lambda reads the results from S3.")
-
     subset_task_ids = resolve_task_ids(task_ids, task_ids_file)
 
     click.echo(f"Retrieving results for run: {run_id}")

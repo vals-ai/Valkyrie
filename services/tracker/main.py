@@ -836,14 +836,12 @@ async def retrieve_results(
     just computed (full or subset). The DB remains source of truth, so re-running without
     task_ids re-uploads the canonical full view.
 
-    When `lambda_function` is set the uploaded view is handed to that function instead of the one
-    the run was started with, so a subset can be exported before the run reaches a terminal state.
-    It requires `s3=True`, because the callback reads the view from the canonical key.
+    `lambda_function` invokes that function on the uploaded view instead of the one the run was
+    started with, and requires `s3=True` because the callback reads the canonical key.
 
     Usage:
     curl -X GET http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=false
     curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'
-    curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=true&lambda_function=my-exporter'
     """
     if lambda_function and not s3:
         raise HTTPException(status_code=400, detail="lambda_function requires s3=true")
@@ -907,17 +905,17 @@ async def retrieve_results(
         s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime)
 
         if lambda_function:
-            lambda_payload = benchmark_row.arguments.model_dump()
-            lambda_payload["benchmark_id"] = str(benchmark_id)
-            lambda_payload["benchmark_name"] = benchmark_row.name
-            lambda_payload["lambda_function"] = lambda_function
-            if task_ids:
-                lambda_payload["task_ids"] = task_ids
             await asyncio.to_thread(
                 invoke_lambda,
                 aws_runtime.clients,
                 lambda_function,
-                lambda_payload,
+                benchmark_row.arguments.model_dump()
+                | {
+                    "benchmark_id": str(benchmark_id),
+                    "benchmark_name": benchmark_row.name,
+                    "lambda_function": lambda_function,
+                    "task_ids": task_ids,
+                },
                 config=_RESULTS_CALLBACK_CONFIG,
             )
 

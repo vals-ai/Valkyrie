@@ -591,9 +591,6 @@ class TrackerService:
 
         If task_ids is provided, results are filtered to that subset and the final score is
         recomputed over those tasks (does not mutate the stored FinalEvaluation).
-
-        If lambda_function is provided, it is invoked on the uploaded results instead of the
-        lambda the run was started with; it requires s3.
         """
         try:
             params: dict[str, Any] = {"benchmark_id": str(benchmark_id), "s3": s3}

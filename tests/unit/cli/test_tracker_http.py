@@ -192,7 +192,7 @@ class TestTrackerJsonEndpoints:
             fetched_run = tracker.fetch_benchmark(_RUN_ID)
             metadata = tracker.fetch_benchmark_metadata(_RUN_ID)
             inline_results = tracker.retrieve_results(_RUN_ID, False, task_ids=["task-a"])
-            s3_results = tracker.retrieve_results(_RUN_ID, True)
+            s3_results = tracker.retrieve_results(_RUN_ID, True, lambda_function="subset-export")
             task_ids = tracker.fetch_benchmark_tasks(
                 "swebench",
                 dataset="verified",
@@ -216,6 +216,14 @@ class TestTrackerJsonEndpoints:
             if request.url.path == "/retrieve-results" and request.url.params["s3"] == "false"
         )
         assert result_request.url.params.get_list("task_ids") == ["task-a"]
+        assert "lambda_function" not in result_request.url.params
+
+        s3_request = next(
+            request
+            for request in requests
+            if request.url.path == "/retrieve-results" and request.url.params["s3"] == "true"
+        )
+        assert s3_request.url.params["lambda_function"] == "subset-export"
 
         task_request = next(request for request in requests if request.url.path == "/fetch-benchmark-tasks")
         assert json.loads(task_request.content) == {

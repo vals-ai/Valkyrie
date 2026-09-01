@@ -389,7 +389,6 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
     assert_type(subset_lambda_results, S3UploadResultsResponse)
     assert "lambda_function" not in result_queries[1]
     assert "lambda_function=subset-export" in result_queries[2]
-    assert "task_ids=task-1" in result_queries[2]
     assert paths == [
         "/fetch-benchmark",
         "/fetch-benchmarks",

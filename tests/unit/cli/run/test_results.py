@@ -147,23 +147,19 @@ class TestResultsCommand:
         assert "Overwrite" in declined_result.output
         assert existing_tracker.retrieve_calls == []
 
-    def test_subset_lambda_is_forwarded_only_with_an_s3_upload(
+    def test_subset_lambda_is_forwarded_with_the_selected_task_ids(
         self,
         monkeypatch: pytest.MonkeyPatch,
         cli_runner: CliRunner,
     ) -> None:
-        """A subset lambda must reach the tracker, and never run against a view that was not uploaded.
-
-        Test cases:
-        - The lambda name is forwarded alongside the selected task ids.
-        - Requesting a lambda without an upload fails before contacting the tracker.
-        """
-        response = S3UploadResultsResponse(
-            s3_url="s3://bucket/results.json",
-            presigned_url="https://download.example/results",
-            console_url="https://console.aws.amazon.com/s3/object/results",
+        """A lambda given on the command line reaches the tracker with the subset it should score."""
+        tracker = MockResultsTracker(
+            S3UploadResultsResponse(
+                s3_url="s3://bucket/results.json",
+                presigned_url="https://download.example/results",
+                console_url="https://console.aws.amazon.com/s3/object/results",
+            )
         )
-        tracker = MockResultsTracker(response)
         monkeypatch.setattr(results_module, "TrackerService", lambda: tracker)
 
         result = cli_runner.invoke(
@@ -173,15 +169,6 @@ class TestResultsCommand:
 
         assert result.exit_code == 0, result.output
         assert tracker.retrieve_calls == [(_RUN_ID, True, ["task-a", "task-b"], "subset-export")]
-
-        local_tracker = MockResultsTracker(response)
-        monkeypatch.setattr(results_module, "TrackerService", lambda: local_tracker)
-
-        local_result = cli_runner.invoke(results, [str(_RUN_ID), "--lambda", "subset-export"])
-
-        assert local_result.exit_code == 2
-        assert "--lambda requires --s3" in local_result.output
-        assert local_tracker.retrieve_calls == []
 
     @pytest.mark.parametrize(
         ("path", "expected_message"),

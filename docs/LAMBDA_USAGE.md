@@ -11,7 +11,7 @@ valkyrie run start \
 
 The lambda is invoked once after all tasks finish and results are uploaded. If the lambda fails (uncaught exception or `statusCode >= 400`), the run will be marked as `ERROR`.
 
-`run results --lambda` invokes a lambda on the results you just retrieved, replacing the one the run was started with. It requires `--s3`, since the lambda reads the view from S3, and it has no status gate, so it can export a subset while the run is still in progress:
+`run results --lambda` invokes a lambda on the results it just uploaded, replacing the one the run was started with. There is no status gate, so a subset can be exported while the run is still in progress:
 
 ```bash
 valkyrie run results e532551e-d51b-4912-983d-47695bd24174 \
@@ -20,7 +20,7 @@ valkyrie run results e532551e-d51b-4912-983d-47695bd24174 \
   --lambda my-post-benchmark-handler
 ```
 
-The uploaded view is the subset view and overwrites the canonical results key, so retrieving results again without `--task-ids` restores the full view. The payload's `task_ids` are the ones you requested.
+The upload overwrites the canonical results key with the subset view, so retrieving results again without `--task-ids` restores the full view.
 
 ## Payload
 

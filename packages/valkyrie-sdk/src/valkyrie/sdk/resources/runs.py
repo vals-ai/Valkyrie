@@ -191,11 +191,7 @@ class RunsResource:
         upload_to_s3: bool = False,
         lambda_function: str | None = None,
     ) -> RetrieveResultsResponse:
-        """Fetch final results or upload them and return S3 links.
-
-        `lambda_function` invokes that lambda on the uploaded results, replacing the one the run
-        was started with, and requires `upload_to_s3`.
-        """
+        """Fetch final results, or upload them to S3 and return links, optionally invoking a lambda on the upload."""
         params: dict[str, Any] = {"benchmark_id": str(run_id), "s3": upload_to_s3}
         if task_ids:
             params["task_ids"] = list(task_ids)
