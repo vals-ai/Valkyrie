@@ -9,37 +9,42 @@ import logging
 import signal
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Generator, Mapping, cast
+from typing import Generator, Protocol
+from uuid import UUID
 
 import logfire
 import sentry_sdk
 from opentelemetry.context import attach, detach
 from opentelemetry.propagate import extract
 
-from executor_protocol import (
-    SUPPORTED_PROTOCOL_VERSION,
-    executor_payload_benchmark_id,
-    normalize_executor_telemetry_context,
-)
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION, ExecutorTelemetryContext
 from tracker.config import ENVIRONMENT
 from tracker.logging import benchmark_id_var, request_id_var, task_id_var
 from tracker.observability import configure_observability
 from tracker.observability.sentry import capture_exception
+from tracker.types import ExecutorProcessPayload
 from tracker.utils.run_orchestration import process_benchmark
 
 logger = logging.getLogger(__name__)
 
 
-@contextmanager
-def _executor_context(payload: Mapping[str, object]) -> Generator[None, None, None]:
-    telemetry_context = normalize_executor_telemetry_context(payload.get("telemetry_context_json"))
+class _ExecutorContextPayload(Protocol):
+    @property
+    def benchmark_id(self) -> UUID: ...
 
+    @property
+    def telemetry_context(self) -> ExecutorTelemetryContext: ...
+
+
+@contextmanager
+def _executor_context(payload: _ExecutorContextPayload) -> Generator[None, None, None]:
+    telemetry_context = payload.telemetry_context
     context_tokens = [
-        request_id_var.set(telemetry_context["request_id"]),
-        benchmark_id_var.set(executor_payload_benchmark_id(payload)),
+        request_id_var.set(telemetry_context.request_id),
+        benchmark_id_var.set(str(payload.benchmark_id)),
         task_id_var.set(""),
     ]
-    trace_headers = telemetry_context["trace_headers"]
+    trace_headers = telemetry_context.trace_headers
     otel_token = attach(extract(trace_headers)) if trace_headers else None
     try:
         yield
@@ -50,15 +55,12 @@ def _executor_context(payload: Mapping[str, object]) -> Generator[None, None, No
             token.var.reset(token)
 
 
-async def _run_executor(payload: dict[str, Any]) -> None:
+async def _run_executor(payload: ExecutorProcessPayload) -> None:
     with _executor_context(payload):
         task = asyncio.create_task(
             process_benchmark(
-                start_benchmark_request_json=payload.get("start_benchmark_request_json"),
-                benchmark_id_str=payload.get("benchmark_id_str"),
-                verified_task_ids=payload.get("verified_task_ids"),
-                execution_context_json=payload.get("execution_context_json"),
-                executor_dispatch_id=payload["executor_dispatch_id"],
+                payload.execution,
+                executor_dispatch_id=payload.executor_dispatch_id,
             )
         )
         loop = asyncio.get_running_loop()
@@ -96,12 +98,18 @@ def main() -> None:
     if args.payload is None:
         parser.error("payload is required")
 
-    decoded: object = json.loads(args.payload.read_text())
-    if not isinstance(decoded, dict):
-        raise SystemExit("Invalid executor payload: expected object")
-    payload = cast(dict[str, Any], decoded)
     configure_observability("valkyrie-executor", environment=ENVIRONMENT)
     try:
+        decoded: object = json.loads(args.payload.read_text())
+        if not isinstance(decoded, dict):
+            error = ValueError("expected object")
+            capture_exception(error)
+            raise SystemExit("Invalid executor payload: expected object")
+        try:
+            payload = ExecutorProcessPayload.from_wire(decoded)
+        except ValueError as error:
+            capture_exception(error)
+            raise SystemExit(f"Invalid executor payload: {error}") from None
         asyncio.run(_run_executor(payload))
     finally:
         _flush_observability()

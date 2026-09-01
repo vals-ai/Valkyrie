@@ -101,7 +101,7 @@ def dispatch_observability_context(
 ) -> Generator[ExecutorTelemetryContext, None, None]:
     """Bind one dispatch and create the child executor trace context."""
     tokens = [
-        request_id_var.set(telemetry_context["request_id"]),
+        request_id_var.set(telemetry_context.request_id),
         benchmark_id_var.set(benchmark_id),
         dispatch_id_var.set(dispatch_id),
         release_id_var.set(release_id),
@@ -149,24 +149,27 @@ def _dispatch_sentry_scope() -> Generator[None, None, None]:
 
 
 def _accepted_telemetry_context(telemetry_context: ExecutorTelemetryContext) -> ExecutorTelemetryContext:
+    if not telemetry_context.request_id and not telemetry_context.trace_headers:
+        return ExecutorTelemetryContext()
+
     try:
         transaction = sentry_sdk.continue_trace(
-            telemetry_context["trace_headers"],
+            telemetry_context.trace_headers,
             op="queue.process",
             name="executor_host.dispatch.accepted",
         )
         with sentry_sdk.start_transaction(transaction):
-            trace_headers = dict(telemetry_context["trace_headers"])
+            trace_headers = dict(telemetry_context.trace_headers)
             if sentry_trace := sentry_sdk.get_traceparent():
                 trace_headers.pop("traceparent", None)
                 trace_headers.pop("tracestate", None)
                 trace_headers["sentry-trace"] = sentry_trace
             if baggage := sentry_sdk.get_baggage():
                 trace_headers["baggage"] = baggage
-            child_context: ExecutorTelemetryContext = {
-                "request_id": telemetry_context["request_id"],
-                "trace_headers": trace_headers,
-            }
+            child_context = ExecutorTelemetryContext(
+                request_id=telemetry_context.request_id,
+                trace_headers=trace_headers,
+            )
         return child_context
     except Exception as error:
         logger.warning(
@@ -174,10 +177,10 @@ def _accepted_telemetry_context(telemetry_context: ExecutorTelemetryContext) -> 
             type(error).__name__,
             error,
         )
-        return {
-            "request_id": telemetry_context["request_id"],
-            "trace_headers": dict(telemetry_context["trace_headers"]),
-        }
+        return ExecutorTelemetryContext(
+            request_id=telemetry_context.request_id,
+            trace_headers=dict(telemetry_context.trace_headers),
+        )
 
 
 def _record_terminal_transaction(
@@ -191,7 +194,7 @@ def _record_terminal_transaction(
         with sentry_sdk.new_scope() as scope:
             scope.set_tags({key: value for key, value in _context_fields().items() if value})
             transaction = sentry_sdk.continue_trace(
-                telemetry_context["trace_headers"],
+                telemetry_context.trace_headers,
                 op="queue.process",
                 name=name,
             )

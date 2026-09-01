@@ -44,7 +44,7 @@ from tracker.executor.dispatch_control import admit_recovery_dispatch, terminali
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.executor.release_control import promote_release
 from tracker.notifications import SlackNotifier
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.types import HarnessConfig, StartBenchmarkRequest, access_key_executor_execution
 from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
 from tracker.utils.reporting import create_final_view
 from tracker.utils.resources import fetch_benchmark_row
@@ -321,9 +321,7 @@ class TestRunFinalization:
         postgres_session.commit()
 
         await process_benchmark(
-            start_benchmark_request_json=request.model_dump(),
-            benchmark_id_str=str(benchmark.id),
-            verified_task_ids=[],
+            access_key_executor_execution(request, benchmark.id, []),
             **authority_kwargs,
         )
 
@@ -430,15 +428,11 @@ class TestRunFinalization:
 
         await asyncio.gather(
             process_benchmark(
-                start_benchmark_request_json=request.model_dump(),
-                benchmark_id_str=str(benchmark.id),
-                verified_task_ids=[],
+                access_key_executor_execution(request, benchmark.id, []),
                 **first_authority,
             ),
             process_benchmark(
-                start_benchmark_request_json=request.model_dump(),
-                benchmark_id_str=str(benchmark.id),
-                verified_task_ids=[],
+                access_key_executor_execution(request, benchmark.id, []),
                 **second_authority,
             ),
         )
@@ -561,9 +555,7 @@ class TestRunFinalization:
         postgres_session.close()
 
         await process_benchmark(
-            start_benchmark_request_json=request.model_dump(),
-            benchmark_id_str=str(benchmark.id),
-            verified_task_ids=[],
+            access_key_executor_execution(request, benchmark.id, []),
             **authority_kwargs,
         )
 
@@ -662,7 +654,7 @@ class TestRunFinalization:
                 harness_config=harness_config,
             )
             authority_kwargs = executor_authority_kwargs(benchmark, session=postgres_session)
-            await process_benchmark(request.model_dump(), str(benchmark.id), [], **authority_kwargs)
+            await process_benchmark(access_key_executor_execution(request, benchmark.id, []), **authority_kwargs)
 
             with Session(postgres_engine) as assertion_session:
                 persisted_benchmark = assertion_session.get(Benchmark, benchmark.id)

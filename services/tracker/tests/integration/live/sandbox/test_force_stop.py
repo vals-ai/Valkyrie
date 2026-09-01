@@ -19,7 +19,7 @@ from tracker.aws.secrets import SecretsManagerStore
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.logging import get_logger
 from tracker.sandbox import create_sandbox
-from tracker.types import HarnessConfig
+from tracker.types import HarnessConfig, access_key_executor_execution
 from tracker.utils import fetch_sandbox_provider_config, force_stop_sandboxes
 
 process_benchmark = getattr(tracker_utils, "process_benchmark")
@@ -340,11 +340,13 @@ class TestForceStop:
             authority_kwargs = executor_authority_kwargs(example_benchmark_object)
             benchmark_task = asyncio.create_task(
                 process_benchmark(
-                    start_benchmark_request_json=example_benchmark_object.access_key_start_benchmark_request(
-                        harness_config, service_headers=service_headers
-                    ).model_dump(),
-                    benchmark_id_str=str(example_benchmark_object.id),
-                    verified_task_ids=verify_response.task_ids,
+                    access_key_executor_execution(
+                        example_benchmark_object.access_key_start_benchmark_request(
+                            harness_config, service_headers=service_headers
+                        ),
+                        example_benchmark_object.id,
+                        verify_response.task_ids,
+                    ),
                     **authority_kwargs,
                 )
             )

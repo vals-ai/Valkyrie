@@ -95,7 +95,7 @@ jobs:
       - name: Build and inspect immutable executor PEX
         if: steps.rel.outputs.relevant == 'true'
         run: |
-          PYTHONPATH=services/tracker/src python services/executor_artifact/build.py \
+          uv run --project services/executor_artifact --frozen python services/executor_artifact/build.py \
             --output-directory "$RUNNER_TEMP/executor-release" \
             --source-revision "$GITHUB_SHA"
           test -s "$RUNNER_TEMP/executor-release/executor.pex"

@@ -52,7 +52,7 @@ from tracker.database.models import (
 )
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.executor.release_control import ReleaseControlError, promote_release
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.types import HarnessConfig, StartBenchmarkRequest, access_key_executor_execution
 from tracker.utils import run_control as run_control_module
 from tracker.utils import (
     ResizableLimiter,
@@ -74,6 +74,10 @@ UTC = ZoneInfo("UTC")
 _NEVER_RELEASED = 1_000_000
 _ORIGINAL_ATTEMPT_AT = datetime(2026, 7, 8)
 _RESUMED_ATTEMPT_AT = datetime(2026, 7, 9)
+_EXECUTOR_DIGEST = "0" * 64
+_NEW_EXECUTOR_DIGEST = "1" * 64
+_LATEST_EXECUTOR_DIGEST = "2" * 64
+_RECOVERY_EXECUTOR_DIGEST = "3" * 64
 client = TestClient(app)
 
 
@@ -83,7 +87,7 @@ def example_benchmark_object(contract: AgentContractRequest, database_session: S
     release = ExecutorRelease(
         id="test-release",
         artifact_uri="s3://artifacts/test-release.pex",
-        artifact_digest="digest-test-release",
+        artifact_digest=_EXECUTOR_DIGEST,
         protocol_version=SUPPORTED_PROTOCOL_VERSION,
         readiness_verified=True,
     )
@@ -208,9 +212,7 @@ class TestRunRecovery:
 
         process_future = asyncio.create_task(
             process_benchmark(
-                start_benchmark_request_json=request.model_dump(),
-                benchmark_id_str=str(benchmark_row.id),
-                verified_task_ids=task_ids,
+                access_key_executor_execution(request, benchmark_row.id, task_ids),
                 **authority_kwargs,
             )
         )
@@ -384,7 +386,7 @@ class TestRunRecovery:
         )
         benchmark_row.executor_release_id = "test-release"
         benchmark_row.executor_artifact_uri = "s3://artifacts/test-release.pex"
-        benchmark_row.executor_artifact_digest = "digest-test-release"
+        benchmark_row.executor_artifact_digest = _EXECUTOR_DIGEST
         benchmark_row.executor_protocol_version = "1"
         selected_task = Task(
             org_id=TEST_ORG_ID,
@@ -397,7 +399,7 @@ class TestRunRecovery:
             ExecutorRelease(
                 id="test-release",
                 artifact_uri="s3://artifacts/test-release.pex",
-                artifact_digest="digest-test-release",
+                artifact_digest=_EXECUTOR_DIGEST,
                 protocol_version="1",
                 readiness_verified=True,
             )
@@ -631,9 +633,11 @@ class TestRunRecovery:
         # Run process_benchmark to complete the remaining tasks (the 3 tasks that are pending)
         authority_kwargs = executor_authority_kwargs(benchmark_row)
         await process_benchmark(
-            start_benchmark_request_json=benchmark_row.access_key_start_benchmark_request(harness_config).model_dump(),
-            benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=verified_task_ids,
+            access_key_executor_execution(
+                benchmark_row.access_key_start_benchmark_request(harness_config),
+                benchmark_row.id,
+                verified_task_ids,
+            ),
             **authority_kwargs,
         )
 
@@ -959,9 +963,11 @@ class TestRunRecovery:
         # Run the worker — the new task should make it through evaluation
         authority_kwargs = executor_authority_kwargs(benchmark_row)
         await process_benchmark(
-            start_benchmark_request_json=benchmark_row.access_key_start_benchmark_request(harness_config).model_dump(),
-            benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=verified_task_ids,
+            access_key_executor_execution(
+                benchmark_row.access_key_start_benchmark_request(harness_config),
+                benchmark_row.id,
+                verified_task_ids,
+            ),
             **authority_kwargs,
         )
 
@@ -1730,14 +1736,14 @@ class TestRunRecovery:
                 ExecutorRelease(
                     id="new-release",
                     artifact_uri="s3://artifacts/new-release.pex",
-                    artifact_digest="digest-new-release",
+                    artifact_digest=_NEW_EXECUTOR_DIGEST,
                     protocol_version="1",
                     readiness_verified=True,
                 ),
                 ExecutorRelease(
                     id="latest-release",
                     artifact_uri="s3://artifacts/latest-release.pex",
-                    artifact_digest="digest-latest-release",
+                    artifact_digest=_LATEST_EXECUTOR_DIGEST,
                     protocol_version="1",
                     readiness_verified=True,
                 ),
@@ -1775,7 +1781,7 @@ class TestRunRecovery:
         assert dispatch.executor_release_id == "test-release"
         assert benchmark_row.executor_release_id == "test-release"
         assert benchmark_row.current_execution_release_id == "test-release"
-        assert benchmark_row.executor_artifact_digest == "digest-test-release"
+        assert benchmark_row.executor_artifact_digest == _EXECUTOR_DIGEST
 
         task_statuses = {
             task.task_id: task.status
@@ -2024,7 +2030,7 @@ class TestRunRecovery:
         release = ExecutorRelease(
             id="recovery-release",
             artifact_uri="s3://artifacts/recovery-release.pex",
-            artifact_digest="digest-recovery-release",
+            artifact_digest=_RECOVERY_EXECUTOR_DIGEST,
             protocol_version="1",
             readiness_verified=True,
         )
@@ -2053,7 +2059,7 @@ class TestRunRecovery:
         latest_release = ExecutorRelease(
             id="latest-release",
             artifact_uri="s3://artifacts/latest-release.pex",
-            artifact_digest="digest-latest-release",
+            artifact_digest=_LATEST_EXECUTOR_DIGEST,
             protocol_version="1",
             readiness_verified=True,
         )
@@ -2122,7 +2128,7 @@ class TestRunRecovery:
             ExecutorRelease(
                 id="new-release",
                 artifact_uri="s3://artifacts/new-release.pex",
-                artifact_digest="digest-new-release",
+                artifact_digest=_NEW_EXECUTOR_DIGEST,
                 protocol_version="1",
                 readiness_verified=True,
             )
@@ -2175,7 +2181,7 @@ class TestRunRecovery:
             ExecutorRelease(
                 id="new-release",
                 artifact_uri="s3://artifacts/new-release.pex",
-                artifact_digest="digest-new-release",
+                artifact_digest=_NEW_EXECUTOR_DIGEST,
                 protocol_version="1",
                 readiness_verified=True,
             )
@@ -2236,9 +2242,7 @@ class TestRunRecovery:
         authority_kwargs = executor_authority_kwargs(benchmark_row, retry_dispatch.id)
 
         await process_benchmark(
-            start_benchmark_request_json=request.model_dump(),
-            benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=queued_task_ids,
+            access_key_executor_execution(request, benchmark_row.id, queued_task_ids),
             **authority_kwargs,
         )
 
@@ -2248,9 +2252,7 @@ class TestRunRecovery:
         assert final_score_inputs == []
 
         await process_benchmark(
-            start_benchmark_request_json=request.model_dump(),
-            benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=["task_original"],
+            access_key_executor_execution(request, benchmark_row.id, ["task_original"]),
             **original_authority_kwargs,
         )
 

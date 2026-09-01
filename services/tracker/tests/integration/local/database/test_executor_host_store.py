@@ -1,4 +1,7 @@
-"""ExecutorHost dispatch-store integration against disposable PostgreSQL."""
+"""ExecutorHost dispatch-store integration against disposable PostgreSQL.
+
+Run: uv run pytest tests/integration/local/database/test_executor_host_store.py
+"""
 
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -84,13 +87,11 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
         user=url.username,
         password=url.password,
     )
-    artifact = ArtifactDispatch.from_payload(
-        {
-            "executor_release_id": release.id,
-            "executor_artifact_uri": release.artifact_uri,
-            "executor_artifact_digest": release.artifact_digest,
-            "executor_protocol_version": release.protocol_version,
-        }
+    artifact = ArtifactDispatch(
+        release_id=release.id,
+        artifact_uri=release.artifact_uri,
+        artifact_digest=release.artifact_digest,
+        protocol_version=release.protocol_version,
     )
 
     first_authority = await store.claim(str(first_dispatch.id), str(benchmark.id), artifact)
