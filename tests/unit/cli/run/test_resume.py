@@ -61,10 +61,14 @@ def test_resume_forwards_custom_headers(
     """Send `-H` headers to the tracker so custom benchmark services authenticate."""
     run_id = UUID("123e4567-e89b-12d3-a456-426614174000")
     monkeypatch.setattr(resume_module, "TrackerService", MockTrackerService)
+
+    def no_configured_auth(_benchmark_name: str) -> str | None:
+        return None
+
     monkeypatch.setattr(
         service_headers_module.TrackerService,
         "get_benchmark_auth",
-        staticmethod(lambda _name: None),
+        staticmethod(no_configured_auth),
     )
 
     result = cli_runner.invoke(
