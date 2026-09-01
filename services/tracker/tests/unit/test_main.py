@@ -494,6 +494,31 @@ class TestTrackerAPI:
         if provider is not None:
             provider.close.assert_awaited_once_with()
 
+    async def test_start_benchmark_queue_resolves_daytona_provider_from_secret_store(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ) -> None:
+        """Queued Daytona admission should load provider configuration through the secret store."""
+        monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", True, raising=False)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            harness_config=harness_config,
+            sandbox_provider="daytona",
+        )
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 200
+        benchmark_row = database_session.get(Benchmark, UUID(response.json()["benchmark_id"]))
+        assert benchmark_row is not None
+        assert benchmark_row.arguments.priority == 3
+        assert benchmark_row.arguments.queue_pool_id is not None
+
     @pytest.mark.parametrize(
         ("priority", "expected_status"),
         [
