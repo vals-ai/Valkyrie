@@ -14,6 +14,16 @@
   "appearance": {
     "default": "system"
   },
+  "fonts": {
+    "family": "Söhne",
+    "source": "https://www.vals.ai/fonts/Soehne/soehne-buch.woff2",
+    "format": "woff2",
+    "heading": {
+      "family": "Martina Plantijn",
+      "source": "https://www.vals.ai/fonts/MartinaPlantijn/martina-plantijn-regular.woff2",
+      "format": "woff2"
+    }
+  },
   "background": {
     "color": {
       "light": "#F3F2F2",
@@ -21,8 +31,9 @@
     }
   },
   "logo": {
-    "light": "/images/vals-logo-light.svg",
-    "dark": "/images/vals-logo-dark.svg"
+    "light": "/images/valkyrie-logo-light.png",
+    "dark": "/images/valkyrie-logo-dark.png",
+    "href": "https://www.vals.ai"
   },
   "favicon": {
     "light": "/images/vals-icon-light.svg",
@@ -117,13 +128,19 @@
   "navbar": {
     "links": [
       {
-        "label": "GitHub",
+        "type": "github",
         "href": "https://github.com/vals-ai/Valkyrie"
       }
-    ]
+    ],
+    "primary": {
+      "type": "button",
+      "label": "vals.ai",
+      "href": "https://www.vals.ai"
+    }
   },
   "footer": {
     "socials": {
+      "website": "https://www.vals.ai",
       "github": "https://github.com/vals-ai/Valkyrie"
     }
   }
