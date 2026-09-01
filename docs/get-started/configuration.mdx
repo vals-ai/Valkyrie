@@ -48,6 +48,20 @@ valkyrie config provider remove <name>
 
 Select another configured provider for one run with `valkyrie run start --provider <name>`. See [Configure sandbox providers](/get-started/sandbox-providers) for the Daytona secret shape.
 
+## Environment variables
+
+The CLI reads these variables at startup, before any configuration file is loaded.
+
+| Variable | Effect |
+| --- | --- |
+| `VALKYRIE_ENV` | `prod` (default) or `dev`. Selects the hosted tracker URL and the default configuration file. Any other value fails immediately. |
+| `TRACKER_SERVICE_URL` | Overrides the tracker endpoint for both environments. |
+| `VALKYRIE_CONFIG_PATH` | Overrides the configuration file path. |
+| `VALKYRIE_API_KEY` | Supplies the Vals API key during `config init` in hosted mode instead of prompting for it. |
+| `VALKYRIE_CLI_LOGS` | Set to `true` to print library log output. Logs are suppressed otherwise. |
+
+With `VALKYRIE_ENV=dev` the CLI uses `https://benchmark-tracker-dev.vals.ai` and `~/.config/valkyrie/dev.yaml`, so a development profile never overwrites your production configuration.
+
 ## Configure benchmark services
 
 Custom benchmark endpoints and credentials use `config service` and `config auth`. See [Custom benchmark services](/benchmarks/custom-services) and [Benchmark authentication](/benchmarks/authentication).

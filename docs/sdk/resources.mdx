@@ -43,3 +43,12 @@ Discover services, check their health, or fetch dataset task IDs:
 services = await client.services.list()
 task_ids = await client.services.task_ids("swebench", dataset="default")
 ```
+
+`list` reads the catalog and then health-checks every service in it. Use `catalog` when you only need the registered endpoints without paying for the health checks:
+
+```python
+catalog = await client.services.catalog()
+names = [service.name for service in catalog.services]
+```
+
+Task IDs come from the custom endpoint registered for that benchmark when one exists. Pass `ignore_custom_services=True` to query the hosted service instead, or `service_headers` to add request headers alongside the stored credential.

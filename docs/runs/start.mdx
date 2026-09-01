@@ -34,6 +34,28 @@ To select ids explicitly, export the dataset's task ids first with [`valkyrie be
 
 `--concurrency` sets how many sandboxes run at once. Raising it shortens wall-clock time and raises simultaneous provider and model cost.
 
+A benchmark that publishes several datasets defaults to `default`. Name another one with `--dataset`:
+
+```bash
+valkyrie run start --agent sweagent --benchmark terminal-bench --dataset terminal-bench-2.1
+```
+
+## Label a run
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench -l sweep-a
+```
+
+The label is stored on the run and is a filter on [`valkyrie run list`](/reference/cli/run#list), which is how a set of runs started for the same experiment is found later. Model and agent parameters are separate: `--model` and `-k` populate the agent contract's `kwargs`. See [Agent contract](/agents/agent-contract).
+
+## Ignore a configured custom service
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench --ignore-custom-services
+```
+
+When a benchmark has an endpoint registered with `config service set`, every run resolves tasks through it. This flag, aliased `--ics`, sends the run to the hosted service instead without removing the local registration. See [Custom benchmark services](/benchmarks/custom-services).
+
 ## Map secrets instead of passing values
 
 ```bash

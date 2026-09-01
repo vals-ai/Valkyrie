@@ -62,7 +62,7 @@ Filter the history to find a run:
 valkyrie run list --benchmark-name swebench --status IN_PROGRESS
 ```
 
-Filters combine, and the interactive list supports `[h]` for previous, `[l]` for next, and `[q]` to quit. Emit all matching runs as one document with:
+Runs can be filtered by `--agent-name`, `--benchmark-name`, `--model`, `--dataset`, `-l/--label`, `--status`, and `--started-by`, and ordered with `--order-by asc|desc`. Filters combine, and the interactive list supports `[h]` for previous, `[l]` for next, and `[q]` to quit. Emit all matching runs as one document with:
 
 ```bash
 valkyrie run list --format json --all --status IN_PROGRESS
