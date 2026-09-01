@@ -187,11 +187,11 @@ def resolve_webhook_config(
 )
 @click.option(
     "--lambda",
-    "lambda_function",
+    "lambda_functions",
     type=str,
-    default=None,
+    multiple=True,
     required=False,
-    help="Lambda function to invoke at the end of the benchmark run",
+    help="Lambda function to invoke at the end of the benchmark run; repeatable",
 )
 @click.option(
     "--task-ids",
@@ -297,7 +297,7 @@ def start(
     model: str | None,
     benchmark: str,
     concurrency: int,
-    lambda_function: str | None,
+    lambda_functions: tuple[str, ...],
     task_ids: str | None,
     task_ids_file: str | None,
     slice_str: str | None,
@@ -396,7 +396,7 @@ def start(
                         formatted_task_ids,
                         slice_str,
                         label,
-                        lambda_function,
+                        list(lambda_functions),
                         dataset,
                         service_headers=service_headers or None,
                         provider=provider,

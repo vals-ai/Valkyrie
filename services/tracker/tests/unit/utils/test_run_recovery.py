@@ -557,7 +557,7 @@ class TestRunRecovery:
             contract=contract,
             concurrency=2,
             task_ids=task_ids,
-            lambda_function="vals-format-lambda",
+            lambda_functions=["vals-format-lambda"],
             harness_config=harness_config,
         )
 

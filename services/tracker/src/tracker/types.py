@@ -15,6 +15,7 @@ from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
     BenchmarkStatus,
+    CompletionLambdas,
     DocentReadingStatus,
     FinalEvaluation,
     TaskStatus,
@@ -57,13 +58,15 @@ class HarnessConfig(BaseModel):
 
 
 class StartBenchmarkRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
     label: str | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None
-    lambda_function: str | None = None
+    lambda_functions: CompletionLambdas = Field(default_factory=list)
     dataset: str | None = None
     harness_config: HarnessConfig | None = None
     custom_benchmark_service: str | None = None

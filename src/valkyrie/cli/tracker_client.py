@@ -423,7 +423,7 @@ class TrackerService:
         task_ids: list[str] | None,
         slice_str: str | None,
         label: str | None = None,
-        lambda_function: str | None = None,
+        lambda_functions: list[str] | None = None,
         dataset: str | None = None,
         service_headers: dict[str, str] | None = None,
         provider: str | None = None,
@@ -440,7 +440,7 @@ class TrackerService:
             task_ids: Optional list of specific task IDs to run
             slice_str: Optional slice string for task selection
             label: Optional run label
-            lambda_function: Optional lambda function to invoke after benchmark
+            lambda_functions: Lambda functions to invoke after benchmark
 
         Returns:
             Run response with status, message, and results
@@ -462,7 +462,7 @@ class TrackerService:
                 label=label,
                 task_ids=task_ids,
                 slice_str=slice_str,
-                lambda_function=lambda_function,
+                lambda_functions=lambda_functions or [],
                 dataset=dataset,
                 harness_config=access_key_harness_config,
                 custom_benchmark_service=self.get_benchmark_service_url(benchmark_name)

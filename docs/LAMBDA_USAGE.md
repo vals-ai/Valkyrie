@@ -1,15 +1,16 @@
 # Lambda Usage
 
-The `--lambda` flag on `run start` lets you invoke an AWS Lambda function after a run completes.
+The `--lambda` flag on `run start` lets you invoke AWS Lambda functions after a run completes, and may be repeated.
 
 ```bash
 valkyrie run start \
   --agent agents/claude_code \
   --benchmark swebench \
-  --lambda my-post-benchmark-handler
+  --lambda my-post-benchmark-handler \
+  --lambda my-result-archiver
 ```
 
-The lambda is invoked once after all tasks finish and results are uploaded. If the lambda fails (uncaught exception or `statusCode >= 400`), the run will be marked as `ERROR`.
+Each lambda is invoked once after all tasks finish and results are uploaded, in the order given. A lambda that fails (uncaught exception or `statusCode >= 400`) does not stop the remaining ones; the failure is logged and reported, and the first one is re-raised once every lambda has been attempted. The run status is already terminal by this point, so a failing lambda does not change it.
 
 ## Payload
 
@@ -30,6 +31,7 @@ The tracker invokes your lambda with the full `BenchmarkArguments` plus the pers
   "task_ids": ["astropy__astropy-12907"],
   "slice_str": null,
   "lambda_function": "my-post-benchmark-handler",
+  "lambda_functions": ["my-post-benchmark-handler", "my-result-archiver"],
   "benchmark_id": "e532551e-d51b-4912-983d-47695bd24174",
   "benchmark_name": "swebench"
 }
@@ -41,7 +43,8 @@ The tracker invokes your lambda with the full `BenchmarkArguments` plus the pers
 | `concurrency` | int | Concurrency level |
 | `task_ids` | list or null | Task IDs that were run (null = all) |
 | `slice_str` | string or null | Dataset slice if provided |
-| `lambda_function` | string | Name of this lambda function |
+| `lambda_function` | string | Name of the lambda receiving this payload |
+| `lambda_functions` | list | Every lambda invoked at completion, in configured order |
 | `benchmark_id` | string | UUID of the completed run |
 | `benchmark_name` | string | Persisted name of the completed benchmark |
 
