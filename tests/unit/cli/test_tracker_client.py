@@ -117,6 +117,10 @@ class MockTrackerService:
         self.require_config_values.append(require_config)
 
     @staticmethod
+    def parse_config_keys() -> dict[str, str]:
+        return {"AWS_ACCESS_KEY_ID": "key"}
+
+    @staticmethod
     def benchmark_service_health(
         name: str,
         url: str,

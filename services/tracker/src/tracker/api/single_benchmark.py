@@ -10,7 +10,7 @@ from sqlmodel import Session, col, desc, func, select
 from tracker.api.parsing import parse_csv
 from tracker.api.dependencies import TrackedBenchmarkId
 from tracker.auth import get_current_org
-from tracker.aws.cloudwatch_logs import get_benchmark_log_url
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.aws.resolver import resolve_run_metadata_aws_runtime
 from tracker.aws.s3 import create_benchmark_url
 from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
@@ -72,10 +72,7 @@ def get_single_benchmark(
         aws_resources = aws_runtime.resources
         s3_bucket_url = create_benchmark_url(str(benchmark.id), aws_resources)
         if aws_resources.log_group:
-            cloudwatch_url = get_benchmark_log_url(
-                benchmark_id=str(benchmark.id),
-                resources=aws_resources,
-            )
+            cloudwatch_url = CloudWatchBenchmarkLogLocations(aws_resources).benchmark_location(str(benchmark.id))
 
     return SingleBenchmarkResponse(
         id=benchmark.id,

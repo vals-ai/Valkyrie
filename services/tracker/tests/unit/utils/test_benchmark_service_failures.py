@@ -26,6 +26,7 @@ from websockets.http11 import Response
 
 import tracker.sandbox as sandbox_module
 import tracker.utils.run_orchestration as run_orchestration_module
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
 from tracker.aws.runtime import AWSRuntime
@@ -622,7 +623,7 @@ class TestBenchmarkServiceFailures:
                 return ExecResult(exit_code=1, output="")
             raise AssertionError(f"unexpected command: {command}")
 
-        def _mock_write_benchmark_log_event(_stream_key: str, message: str, *_args: Any, **_kwargs: Any) -> None:
+        def _mock_write_benchmark_log_event(_self: Any, _stream_key: str, message: str) -> None:
             logged_messages.append(message)
             if expected_log in message:
                 event_loop.call_soon_threadsafe(expected_log_written.set)
@@ -635,7 +636,7 @@ class TestBenchmarkServiceFailures:
             _mock_stream_command_output,
         )
         monkeypatch.setattr(sandbox_module, "_exec", _mock_exec)
-        monkeypatch.setattr(utils_module, "write_benchmark_log_event", _mock_write_benchmark_log_event)
+        monkeypatch.setattr(CloudWatchBenchmarkLogSink, "write", _mock_write_benchmark_log_event)
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
         # Log writes are dispatched to an executor and never awaited, so the flush carrying the
@@ -709,11 +710,11 @@ class TestBenchmarkServiceFailures:
         async def _mock_retrieve_task_timeout(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             raise httpx.ConnectTimeout("")
 
-        def _mock_write_benchmark_log_event(_stream_key: str, message: str, *_args: Any, **_kwargs: Any) -> None:
+        def _mock_write_benchmark_log_event(_self: Any, _stream_key: str, message: str) -> None:
             logged_messages.append(message)
 
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_timeout)
-        monkeypatch.setattr(utils_module, "write_benchmark_log_event", _mock_write_benchmark_log_event)
+        monkeypatch.setattr(CloudWatchBenchmarkLogSink, "write", _mock_write_benchmark_log_event)
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 

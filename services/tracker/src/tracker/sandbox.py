@@ -44,14 +44,8 @@ from tenacity import (
     wait_none,
 )
 
-from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import (
-    create_presigned_url,
-    get_agent_result_s3_key,
-    get_benchmark_contract_s3_key,
-    upload_stream_to_s3,
-    upload_to_s3,
-)
+from tracker.runtime.artifacts import benchmark_agent_bundle_key, task_artifact_key
+from tracker.runtime.storage import ObjectStore
 from tracker.database.models import (
     MAX_OUTPUT_ARTIFACT_BYTES,
     AgentCausedExitReason,
@@ -339,7 +333,7 @@ async def upload_agent_artifacts(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     benchmark_id: str,
-    aws_runtime: AWSRuntime,
+    object_store: ObjectStore,
 ) -> None:
     """
     Download and extract the agent contract zip directly inside the sandbox. We generate a presigned S3 URL and have the sandbox curl + unzip it directly.
@@ -350,18 +344,17 @@ async def upload_agent_artifacts(
         sandbox: The sandbox to download and extract files in
         contract: The agent contract configuration
         benchmark_id: The benchmark run id, used to locate the agent
-        aws_runtime: AWS resources and client provider
+        object_store: storage provider for the already-resolved run authority
 
     Raises:
         SandboxError: If download or extraction fails inside the sandbox
     """
     logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
-    contract_s3_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
-    presigned_url = await create_presigned_url(
+    contract_s3_key = benchmark_agent_bundle_key(benchmark_id, contract.name)
+    presigned_url = await object_store.temporary_download_url(
         contract_s3_key,
-        aws_runtime,
-        expiration=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS,
+        expires_in=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS,
     )
 
     zip_path = shlex.quote(f"/tmp/{contract.name}.zip")
@@ -639,7 +632,7 @@ async def archive_and_upload_output(
     sandbox: Sandbox,
     output_path: str,
     agent_output_s3_key: str,
-    aws_runtime: AWSRuntime,
+    object_store: ObjectStore,
     *,
     benchmark_id: str | None = None,
     task_id: str | None = None,
@@ -654,10 +647,9 @@ async def archive_and_upload_output(
         raise SandboxError(f"Failed to create archive from {output_path}")
 
     try:
-        archive_bytes = await upload_stream_to_s3(
-            sandbox.stream_download(archive_path),
+        archive_bytes = await object_store.put_stream(
             agent_output_s3_key,
-            aws_runtime,
+            sandbox.stream_download(archive_path),
             should_continue=execution_is_current,
         )
 
@@ -744,7 +736,7 @@ async def upload_output_artifacts(
     artifacts: list[OutputArtifactSpec],
     benchmark_id: str,
     task_id: str,
-    aws_runtime: AWSRuntime,
+    object_store: ObjectStore,
     execution_is_current: Callable[[], bool] | None = None,
 ) -> None:
     """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
@@ -760,7 +752,7 @@ async def upload_output_artifacts(
                 artifact,
                 benchmark_id,
                 task_id,
-                aws_runtime,
+                object_store,
                 total_bytes,
                 execution_is_current,
             )
@@ -788,7 +780,7 @@ async def _upload_output_artifact(
     artifact: OutputArtifactSpec,
     benchmark_id: str,
     task_id: str,
-    aws_runtime: AWSRuntime,
+    object_store: ObjectStore,
     total_bytes: int,
     execution_is_current: Callable[[], bool] | None = None,
 ) -> int | None:
@@ -821,11 +813,11 @@ async def _upload_output_artifact(
     if execution_is_current is not None and not execution_is_current():
         return None
 
-    s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path)
+    s3_key = task_artifact_key(benchmark_id, task_id, artifact_path)
     file_content = await sandbox.download_file(sandbox_path)
     if execution_is_current is not None and not execution_is_current():
         return None
-    await upload_to_s3(file_content, s3_key, aws_runtime)
+    await object_store.put_bytes(s3_key, file_content)
 
     logger.info(
         "output_artifact.upload.complete",
@@ -849,7 +841,7 @@ async def run_agent(
     task_id: str,
     log_output: Callable[[str], None],
     cwd: str,
-    aws_runtime: AWSRuntime,
+    object_store: ObjectStore,
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
@@ -925,7 +917,7 @@ async def run_agent(
                 sandbox,
                 contract.final_output,
                 agent_output_s3_key,
-                aws_runtime,
+                object_store,
                 benchmark_id=benchmark_id,
                 task_id=task_id,
                 execution_is_current=execution_is_current,
@@ -939,7 +931,7 @@ async def run_agent(
             contract.output_artifacts,
             benchmark_id,
             task_id,
-            aws_runtime,
+            object_store,
             execution_is_current,
         )
 

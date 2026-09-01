@@ -19,7 +19,7 @@ from benchmark_service import ImageSource, Resources, Sandbox, SandboxNotFoundEr
 
 from tests.utils import random_task_id
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import get_benchmark_contract_s3_key, get_contract_s3_key
+from tracker.aws.s3 import S3ObjectStore, get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
 from tracker.sandbox import (
@@ -157,6 +157,7 @@ class TestSandboxOperations:
             run_cmd="echo hello",
         )
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        object_store = S3ObjectStore(aws_runtime)
 
         agent_file = f"{contract_name}/{contract_name}/file.txt"
         setup_file = f"{contract_name}/setup.sh"
@@ -191,7 +192,7 @@ class TestSandboxOperations:
         )
 
         try:
-            await upload_agent_artifacts(test_sandbox, contract, benchmark_id, aws_runtime)
+            await upload_agent_artifacts(test_sandbox, contract, benchmark_id, object_store)
 
             # Verify files exist in sandbox
             result = await test_sandbox.exec(f"cat /bundle/{setup_file}")
@@ -260,6 +261,7 @@ class TestSandboxOperations:
             final_output="/tmp/agent_output.json",
         )
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        object_store = S3ObjectStore(aws_runtime)
 
         # Expecting bundle directory to exist
         await test_sandbox.exec("mkdir -p /bundle/test_agent")
@@ -271,7 +273,7 @@ class TestSandboxOperations:
             task_id=random_task_id(),
             log_output=log_callback,
             cwd="/",
-            aws_runtime=aws_runtime,
+            object_store=object_store,
         )
 
         output = "\n".join(logged_messages)
@@ -306,6 +308,7 @@ class TestSandboxOperations:
 
         await test_sandbox.exec("mkdir -p /bundle/test_agent")
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        object_store = S3ObjectStore(aws_runtime)
 
         await run_agent(
             test_sandbox,
@@ -314,7 +317,7 @@ class TestSandboxOperations:
             task_id=random_task_id(),
             log_output=log_callback,
             cwd="/",
-            aws_runtime=aws_runtime,
+            object_store=object_store,
         )
 
         output = "\n".join(logged_messages)

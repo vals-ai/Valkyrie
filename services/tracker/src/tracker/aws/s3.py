@@ -1,7 +1,7 @@
 """S3 upload utilities for the tracker service."""
 
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Iterable
-from contextlib import suppress
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Iterable
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
@@ -13,6 +13,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.exceptions import S3Error
 from tracker.logging import get_logger
+from tracker.runtime.storage import ArtifactLocations, ObjectReadSession, StoredObject, StoredObjectCopy
 
 logger = get_logger(__name__)
 
@@ -387,3 +388,99 @@ async def list_agents(runtime: AWSRuntime) -> list[tuple[str, datetime | None]]:
                 agents.append((tail[: -len(".zip")], s3_object.get("LastModified")))
 
     return agents
+
+
+class _S3ObjectReadSession:
+    """S3 reads scoped to an already-open client."""
+
+    def __init__(self, client: Any, bucket: str) -> None:
+        self._client = client
+        self._bucket = bucket
+
+    @handle_s3_error(message="Failed to download from S3")
+    async def get_bytes(self, key: str) -> bytes:
+        response = await self._client.get_object(Bucket=self._bucket, Key=key)
+        async with response["Body"] as stream:
+            return await stream.read()
+
+    async def list_objects(self, prefix: str) -> AsyncIterator[StoredObject]:
+        try:
+            paginator = self._client.get_paginator("list_objects_v2")
+            async for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+                for stored_object in page.get("Contents", []):
+                    key = stored_object.get("Key")
+                    if key is not None:
+                        yield StoredObject(key=key, last_modified=stored_object.get("LastModified"))
+        except (ClientError, BotoCoreError) as error:
+            raise S3Error(f"Failed to list objects from S3: {error}") from error
+
+
+class S3ObjectStore:
+    """Object-store adapter using already-resolved AWS authority."""
+
+    def __init__(self, runtime: AWSRuntime) -> None:
+        self._runtime = runtime
+
+    @asynccontextmanager
+    async def read_session(self) -> AsyncGenerator[ObjectReadSession, None]:
+        async with self._runtime.clients.s3_client() as client:
+            yield _S3ObjectReadSession(client, self._runtime.resources.s3_bucket)
+
+    async def put_bytes(self, key: str, content: bytes) -> None:
+        await upload_to_s3(content, key, self._runtime)
+
+    async def put_stream(
+        self,
+        key: str,
+        chunks: AsyncIterable[bytes],
+        *,
+        should_continue: Callable[[], bool] | None = None,
+    ) -> int:
+        return await upload_stream_to_s3(chunks, key, self._runtime, should_continue=should_continue)
+
+    async def get_bytes(self, key: str) -> bytes:
+        async with self.read_session() as reader:
+            return await reader.get_bytes(key)
+
+    async def get_many(self, keys: AsyncIterable[str]) -> AsyncIterator[tuple[str, bytes]]:
+        async with self._runtime.clients.s3_client() as client:
+            async for key in keys:
+                try:
+                    response = await client.get_object(Bucket=self._runtime.resources.s3_bucket, Key=key)
+                    async with response["Body"] as stream:
+                        yield key, await stream.read()
+                except (ClientError, BotoCoreError) as error:
+                    logger.warning(f"Failed to download {key} from S3: {error}")
+
+    async def delete(self, key: str, *, deletion_token: str | None = None) -> None:
+        await delete_from_s3(key, self._runtime, version_id=deletion_token)
+
+    async def copy(self, source_key: str, destination_key: str) -> StoredObjectCopy:
+        return StoredObjectCopy(deletion_token=await copy_s3_object(source_key, destination_key, self._runtime))
+
+    async def exists(self, key: str) -> bool:
+        return await s3_object_exists(key, self._runtime)
+
+    async def list_objects(self, prefix: str) -> AsyncIterator[StoredObject]:
+        async with self.read_session() as reader:
+            async for stored_object in reader.list_objects(prefix):
+                yield stored_object
+
+    async def temporary_download_url(self, key: str, *, expires_in: int) -> str:
+        return await create_presigned_url(key, self._runtime, expiration=expires_in)
+
+
+class S3ArtifactLocations(ArtifactLocations):
+    """AWS-console artifact locations for resolved S3 resources."""
+
+    def __init__(self, resources: AWSResources) -> None:
+        self._resources = resources
+
+    def object_location(self, key: str) -> str:
+        return create_console_url(key, self._resources)
+
+    def prefix_location(self, prefix: str) -> str:
+        return (
+            f"https://{self._resources.region}.console.aws.amazon.com/s3/buckets/{self._resources.s3_bucket}"
+            f"?region={self._resources.region}&prefix={prefix}"
+        )
