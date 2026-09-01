@@ -16,6 +16,9 @@ from benchmark_service import (
     SandboxQuery,
 )
 
+from tracker.aws.clients import DefaultChainAWSClientProvider
+from tracker.aws.secrets import SecretsManagerStore
+from tracker.config import AWS_DEPLOYMENT_REGION
 from tracker.logging import configure_logging, get_logger
 from tracker.sandbox import audit_sandbox_delete
 from tracker.utils.resources import fetch_sandbox_provider_config
@@ -157,9 +160,16 @@ async def run_cleanup(
         return await cleanup_old_sandboxes(provider, now=now or datetime.now(UTC))
 
 
+def _cleanup_secret_store() -> SecretsManagerStore:
+    """Build the cleanup Lambda's sole ambient default-chain secret authority."""
+    if AWS_DEPLOYMENT_REGION is None:
+        raise RuntimeError("Sandbox cleanup requires AWS_DEPLOYMENT_REGION")
+    return SecretsManagerStore(DefaultChainAWSClientProvider(AWS_DEPLOYMENT_REGION))
+
+
 def _load_provider_config(secret_name: str, provider_type: str) -> SandboxProviderConfig:
     try:
-        return fetch_sandbox_provider_config(secret_name, None, provider_type)
+        return fetch_sandbox_provider_config(secret_name, _cleanup_secret_store(), provider_type)
     except (TypeError, ValueError):
         # Provider validation may echo credentials, so do not expose or chain it.
         raise RuntimeError(f"Sandbox cleanup secret is invalid for provider {provider_type!r}") from None

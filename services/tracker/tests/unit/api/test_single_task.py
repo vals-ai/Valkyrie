@@ -16,6 +16,7 @@ from sqlmodel import Session
 
 import tracker.api.single_task as single_task_module
 from main import app
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tests.factories import make_error_result, make_evaluation_result, make_task
 from tracker.database.models import (
     AgentCausedExitReason,
@@ -137,7 +138,7 @@ def test_task_artifacts_only_presign_existing_output(
     get_log_url = Mock(return_value="https://example.test/cloudwatch")
     monkeypatch.setattr(single_task_module, "s3_object_exists", object_exists)
     monkeypatch.setattr(single_task_module, "create_presigned_url", create_presigned_url)
-    monkeypatch.setattr(single_task_module, "get_benchmark_log_url", get_log_url)
+    monkeypatch.setattr(CloudWatchBenchmarkLogLocations, "task_location", get_log_url)
 
     found_response = _client.get(
         f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts",

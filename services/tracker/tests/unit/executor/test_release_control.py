@@ -17,6 +17,7 @@ from tracker.database.models import (
     ExecutorRelease,
     ExecutorReleaseStatus,
 )
+from tracker.aws.executor_artifacts import S3ExecutorArtifactReader
 from tracker.executor.release_control import (
     ReleaseControlError,
     activate_release,
@@ -80,7 +81,7 @@ def test_activate_release_registers_verifies_and_promotes_in_one_session(databas
         release,
         expected_bucket="artifacts",
         expected_prefix="releases",
-        s3_client=FakeS3Client(content, key="releases/git-abc123-def456/executor.pex"),
+        artifact_reader=S3ExecutorArtifactReader(FakeS3Client(content, key="releases/git-abc123-def456/executor.pex")),
     )
 
     admission = database_session.get(ExecutorAdmission, 1)
@@ -104,7 +105,7 @@ def test_activate_release_is_idempotent_for_exact_active_release(database_sessio
         release,
         expected_bucket="artifacts",
         expected_prefix="releases",
-        s3_client=client,
+        artifact_reader=S3ExecutorArtifactReader(client),
     )
     activated_at = first.activated_at
 
@@ -118,7 +119,7 @@ def test_activate_release_is_idempotent_for_exact_active_release(database_sessio
         ),
         expected_bucket="artifacts",
         expected_prefix="releases",
-        s3_client=client,
+        artifact_reader=S3ExecutorArtifactReader(client),
     )
 
     assert second.status == ExecutorReleaseStatus.ACTIVE
@@ -146,14 +147,14 @@ def test_activate_release_rejects_draining_release(database_session: Session) ->
         previous,
         expected_bucket="artifacts",
         expected_prefix="releases",
-        s3_client=FakeS3Client(content, key="releases/git-previous/executor.pex"),
+        artifact_reader=S3ExecutorArtifactReader(FakeS3Client(content, key="releases/git-previous/executor.pex")),
     )
     activate_release(
         database_session,
         current,
         expected_bucket="artifacts",
         expected_prefix="releases",
-        s3_client=FakeS3Client(content, key="releases/git-current/executor.pex"),
+        artifact_reader=S3ExecutorArtifactReader(FakeS3Client(content, key="releases/git-current/executor.pex")),
     )
 
     with pytest.raises(ReleaseControlError, match="cannot be activated from DRAINING"):
@@ -167,7 +168,7 @@ def test_activate_release_rejects_draining_release(database_session: Session) ->
             ),
             expected_bucket="artifacts",
             expected_prefix="releases",
-            s3_client=FakeS3Client(content, key="releases/git-previous/executor.pex"),
+            artifact_reader=S3ExecutorArtifactReader(FakeS3Client(content, key="releases/git-previous/executor.pex")),
         )
 
 
@@ -195,7 +196,7 @@ def test_activate_release_rejects_retired_release(database_session: Session) -> 
             ),
             expected_bucket="artifacts",
             expected_prefix="releases",
-            s3_client=FakeS3Client(content, key="releases/git-retired/executor.pex"),
+            artifact_reader=S3ExecutorArtifactReader(FakeS3Client(content, key="releases/git-retired/executor.pex")),
         )
 
 
@@ -219,7 +220,7 @@ def test_activate_release_rejects_release_id_reuse_with_different_content(databa
             ),
             expected_bucket="artifacts",
             expected_prefix="releases",
-            s3_client=FakeS3Client(b"irrelevant"),
+            artifact_reader=S3ExecutorArtifactReader(FakeS3Client(b"irrelevant")),
         )
 
 
@@ -237,7 +238,9 @@ def test_activate_release_digest_failure_rolls_back_new_candidate(database_sessi
             release,
             expected_bucket="artifacts",
             expected_prefix="releases",
-            s3_client=FakeS3Client(b"different", key="releases/git-abc123-def456/executor.pex"),
+            artifact_reader=S3ExecutorArtifactReader(
+                FakeS3Client(b"different", key="releases/git-abc123-def456/executor.pex")
+            ),
         )
     database_session.rollback()
 
@@ -253,7 +256,7 @@ def test_activate_release_rejects_artifact_outside_configured_location(database_
             release,
             expected_bucket="release-artifacts",
             expected_prefix="releases",
-            s3_client=FakeS3Client(b"irrelevant"),
+            artifact_reader=S3ExecutorArtifactReader(FakeS3Client(b"irrelevant")),
         )
 
 
@@ -263,7 +266,9 @@ def test_verify_release_artifact_marks_candidate_ready(database_session: Session
     release.artifact_digest = hashlib.sha256(content).hexdigest()
     register_release(database_session, release)
 
-    verified = verify_release_artifact(database_session, "v1", s3_client=FakeS3Client(content))
+    verified = verify_release_artifact(
+        database_session, "v1", artifact_reader=S3ExecutorArtifactReader(FakeS3Client(content))
+    )
 
     assert verified.readiness_verified
     assert verified.readiness_metadata["artifact_bytes"] == len(content)
@@ -275,7 +280,11 @@ def test_verify_release_artifact_rejects_digest_mismatch(database_session: Sessi
     register_release(database_session, release)
 
     with pytest.raises(ReleaseControlError, match="digest mismatch"):
-        verify_release_artifact(database_session, "v1", s3_client=FakeS3Client(b"different artifact"))
+        verify_release_artifact(
+            database_session,
+            "v1",
+            artifact_reader=S3ExecutorArtifactReader(FakeS3Client(b"different artifact")),
+        )
 
     stored = database_session.get(ExecutorRelease, "v1")
     assert stored is not None

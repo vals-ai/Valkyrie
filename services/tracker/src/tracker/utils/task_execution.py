@@ -31,12 +31,13 @@ from sqlalchemy.engine import Connection
 from sqlmodel import Session, col, select, update
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
-from tracker.aws.cloudwatch_logs import get_benchmark_log_url, write_benchmark_log_event
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations, CloudWatchBenchmarkLogSink
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import (
-    get_agent_result_s3_key,
-)
-from tracker.aws.secrets import resolve_secrets
+from tracker.aws.s3 import S3ObjectStore
+from tracker.runtime.artifacts import task_artifact_key
+from tracker.runtime.logs import BenchmarkLogSink
+from tracker.aws.secrets import SecretsManagerStore
+from tracker.runtime.secrets import resolve_secrets
 from tracker.config import ENVIRONMENT
 from tracker.database.models import (
     AgentCausedExitReason,
@@ -428,7 +429,7 @@ def handle_early_exit(task_row: Task, task_session: Session, authority: Executio
 def buffer_logs(
     log_queue: asyncio.Queue[str],
     stream_key: str,
-    aws_runtime: AWSRuntime,
+    log_sink: BenchmarkLogSink,
     force_flush: bool = False,
 ) -> None:
     """
@@ -443,7 +444,7 @@ def buffer_logs(
 
     message = "".join(messages)
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, write_benchmark_log_event, stream_key, message, aws_runtime)
+    loop.run_in_executor(None, log_sink.write, stream_key, message)
 
 
 def save_eval_resume_state(
@@ -680,6 +681,7 @@ async def _process_task_attempt(
     stream_suffix = f"{int(task_row.started_at.timestamp() * 1_000_000):x}"
     task_stream_name = f"{task_id}_{stream_suffix}"
     stream_key: str = f"{benchmark_id}:{task_stream_name}"
+    log_sink = CloudWatchBenchmarkLogSink(aws_runtime.clients, aws_runtime.resources.log_group)
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
 
     logger.info(
@@ -687,9 +689,8 @@ async def _process_task_attempt(
         extra={
             "benchmark_id": str(benchmark_id),
             "task_id": task_id,
-            "cloudwatch_log_url": get_benchmark_log_url(
+            "cloudwatch_log_url": CloudWatchBenchmarkLogLocations(aws_runtime.resources).task_location(
                 str(benchmark_id),
-                aws_runtime.resources,
                 task_stream_name,
             ),
         },
@@ -702,7 +703,7 @@ async def _process_task_attempt(
         nonlocal last_log_time
         last_log_time = time.monotonic()
         log_queue.put_nowait(data)
-        buffer_logs(log_queue, stream_key, aws_runtime)
+        buffer_logs(log_queue, stream_key, log_sink)
 
     # Auto flush if process takes a while to produce next log
     # If a process pauses without producing anymore logs, the logs we have collected get stuck
@@ -710,7 +711,7 @@ async def _process_task_attempt(
         while True:
             await asyncio.sleep(1)
             if not log_queue.empty() and time.monotonic() - last_log_time >= 10:
-                buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
+                buffer_logs(log_queue, stream_key, log_sink, force_flush=True)
 
     flush_task = asyncio.create_task(auto_flush_logs())
     evaluation_lock: PostgresAdvisoryLock | None = None
@@ -1018,7 +1019,7 @@ async def _process_task_attempt(
             identity["email"] = benchmark_started_by_email
 
         env_vars = {
-            **resolve_secrets(start_benchmark_request.contract.secrets, aws_runtime.clients),
+            **resolve_secrets(start_benchmark_request.contract.secrets, SecretsManagerStore(aws_runtime.clients)),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             **_attested_inference_settings(start_benchmark_request.contract),
@@ -1036,6 +1037,7 @@ async def _process_task_attempt(
         task_breakdown = TaskBreakdown()
 
         start_sandbox_build_time = time.perf_counter()
+        object_store = S3ObjectStore(aws_runtime)
 
         def sandbox_context() -> AbstractAsyncContextManager[Sandbox]:
             nonlocal start_sandbox_build_time
@@ -1096,7 +1098,7 @@ async def _process_task_attempt(
                     sandbox,
                     start_benchmark_request.contract,
                     str(benchmark_id),
-                    aws_runtime,
+                    object_store,
                 )
 
                 # Reset timer to keep the last received message from the benchmarks service accurate
@@ -1116,12 +1118,12 @@ async def _process_task_attempt(
                 recovery_attempt.mark_replacement_ready()
 
                 # Force flush the logs if anything has been buffered
-                buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
+                buffer_logs(log_queue, stream_key, log_sink, force_flush=True)
 
                 # Compute the S3 key for the agent's output archive
                 agent_output_s3_key = None
                 if start_benchmark_request.contract.final_output:
-                    agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
+                    agent_output_s3_key = task_artifact_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
                 try:
                     exit_reason, agent_run_time = await run_agent(
@@ -1131,7 +1133,7 @@ async def _process_task_attempt(
                         task_id,
                         log_output,
                         task_data.cwd,
-                        aws_runtime=aws_runtime,
+                        object_store=object_store,
                         agent_output_s3_key=agent_output_s3_key,
                         agent_timeout=task_data.agent_timeout,
                         benchmark_id=str(benchmark_id),
@@ -1199,7 +1201,7 @@ async def _process_task_attempt(
                 task_breakdown.sandbox_run_duration = time.perf_counter() - start_sandbox_run_time
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
-                buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
+                buffer_logs(log_queue, stream_key, log_sink, force_flush=True)
 
                 # Save the evaluation result to the database with the task row
                 # Record the termination reason if the agent did not exit cleanly (timeout / OS kill)
@@ -1403,7 +1405,7 @@ async def _process_task_attempt(
         flush_task.cancel()
         with suppress(asyncio.CancelledError):
             await flush_task
-        buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
+        buffer_logs(log_queue, stream_key, log_sink, force_flush=True)
 
 
 def commit_task_error(

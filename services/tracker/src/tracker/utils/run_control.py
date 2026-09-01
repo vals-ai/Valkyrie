@@ -27,6 +27,7 @@ from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.sandbox import delete_sandbox
 from tracker.aws.runtime import AWSRuntime
+from tracker.aws.secrets import SecretsManagerStore
 
 from tracker.utils.resources import fetch_benchmark_row, fetch_sandbox_provider_config
 
@@ -137,7 +138,9 @@ async def force_stop_sandboxes(
     benchmark_service = benchmark_row.benchmark_service()
     try:
         provider = benchmark_service.get_sandbox_provider(
-            fetch_sandbox_provider_config(sandbox_provider_secret_name, aws_runtime.clients, sandbox_provider)
+            fetch_sandbox_provider_config(
+                sandbox_provider_secret_name, SecretsManagerStore(aws_runtime.clients), sandbox_provider
+            )
         )
         sandboxes = [sandbox async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids)]
         await asyncio.gather(*(stop_sandbox(sandbox, provider, org) for sandbox in sandboxes))

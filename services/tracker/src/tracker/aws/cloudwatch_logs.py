@@ -8,8 +8,10 @@ from urllib.parse import quote
 import logfire
 from botocore.exceptions import BotoCoreError, ClientError
 
-from tracker.aws.runtime import AWSResources, AWSRuntime
+from tracker.aws.clients import AWSClientProvider
+from tracker.aws.runtime import AWSResources
 from tracker.exceptions import CloudWatchError
+from tracker.runtime.logs import BenchmarkLogLocations, BenchmarkLogSink
 
 _created_streams: set[str] = set()
 _P = ParamSpec("_P")
@@ -34,106 +36,88 @@ def handle_cloudwatch_error(message: str) -> Callable[[Callable[_P, _R]], Callab
         def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
             try:
                 return func(*args, **kwargs)
-            except (ClientError, BotoCoreError) as e:
-                raise CloudWatchError(f"{message}: {e}") from e
+            except (ClientError, BotoCoreError) as error:
+                raise CloudWatchError(f"{message}: {error}") from error
 
         return wrapper
 
     return decorator
 
 
-def get_benchmark_log_url(benchmark_id: str, resources: AWSResources, task_id: str | None = None) -> str:
-    """
-    Get the CloudWatch console URL for a benchmark or specific task.
+class CloudWatchBenchmarkLogLocations(BenchmarkLogLocations):
+    """CloudWatch console locations for resolved AWS resources."""
 
-    Args:
-        benchmark_id: The benchmark identifier
-        resources: AWS resource locations
-        task_id: Optional task identifier for task-specific logs
+    def __init__(self, resources: AWSResources) -> None:
+        self._resources = resources
 
-    Returns:
-        CloudWatch console URL
-    """
-    safe_region = quote(resources.region, safe="-")
-    safe_log_group = quote(resources.log_group, safe="-_")
-    safe_benchmark_id = quote(benchmark_id, safe="-_")
-    base = f"https://{safe_region}.console.aws.amazon.com/cloudwatch/home?region={safe_region}"
-    encoded_log_group = f"{safe_log_group}$252F{safe_benchmark_id}"
-    if task_id:
-        safe_task_id = quote(_sanitize_log_stream_name(task_id), safe="-_.")
-        return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}/log-events/{safe_task_id}"
+    def benchmark_location(self, benchmark_id: str) -> str:
+        return self._location(benchmark_id)
 
-    return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}"
+    def task_location(self, benchmark_id: str, task_stream_id: str) -> str:
+        return self._location(benchmark_id, task_stream_id)
 
-
-@handle_cloudwatch_error(message="Failed to create log group")
-@logfire.instrument("create_log_group", extract_args=("benchmark_id",))
-def create_benchmark_log_group(benchmark_id: str, runtime: AWSRuntime) -> str:
-    """
-    Create a log group for a benchmark.
-
-    Args:
-        benchmark_id: The benchmark identifier
-        runtime: AWS resources and clients for the operation
-
-    Returns:
-        The log group name
-    """
-    client = runtime.clients.cloudwatch_logs_client()
-    log_group_name: str = f"{runtime.resources.log_group}/{benchmark_id}"
-
-    try:
-        client.create_log_group(logGroupName=log_group_name)  # pyright: ignore[reportUnknownMemberType]
-        client.put_retention_policy(  # pyright: ignore[reportUnknownMemberType]
-            logGroupName=log_group_name,
-            retentionInDays=runtime.resources.log_retention_days,
-        )
-    except ClientError as e:
-        if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
-            raise
-
-    return log_group_name
+    def _location(self, benchmark_id: str, task_stream_id: str | None = None) -> str:
+        safe_region = quote(self._resources.region, safe="-")
+        safe_log_group = quote(self._resources.log_group, safe="-_")
+        safe_benchmark_id = quote(benchmark_id, safe="-_")
+        base = f"https://{safe_region}.console.aws.amazon.com/cloudwatch/home?region={safe_region}"
+        encoded_log_group = f"{safe_log_group}$252F{safe_benchmark_id}"
+        if task_stream_id:
+            safe_task_id = quote(_sanitize_log_stream_name(task_stream_id), safe="-_.")
+            return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}/log-events/{safe_task_id}"
+        return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}"
 
 
-@handle_cloudwatch_error(message="Failed to create cloudwatch stream")
-def write_benchmark_log_event(stream_key: str, message: str, runtime: AWSRuntime) -> None:
-    """
-    Stream a log message to CloudWatch.
+class CloudWatchBenchmarkLogSink(BenchmarkLogSink):
+    """CloudWatch transport using already-resolved AWS authority."""
 
-    Creates the log stream if it doesn't exist.
+    def __init__(self, clients: AWSClientProvider, log_group: str) -> None:
+        self._clients = clients
+        self._log_group = log_group
 
-    Args:
-        stream_key: The stream key (benchmark_id:task_id)
-        message: The log message
-        runtime: AWS resources and clients for the operation
-    """
-    if not message.strip():
-        return
-
-    benchmark_id, task_id = stream_key.split(":", 1)
-
-    if not benchmark_id or not task_id:
-        raise CloudWatchError(f"Invalid stream key '{stream_key}', expected format 'benchmark_id:task_id'")
-
-    client = runtime.clients.cloudwatch_logs_client()
-    log_group_name = f"{runtime.resources.log_group}/{benchmark_id}"
-    stream_name = _sanitize_log_stream_name(task_id)
-
-    if stream_key not in _created_streams:
+    @handle_cloudwatch_error(message="Failed to create log group")
+    @logfire.instrument("create_log_group", extract_args=("benchmark_id",))
+    def create_benchmark(self, benchmark_id: str, *, retention_days: int) -> None:
+        client = self._clients.cloudwatch_logs_client()
+        log_group_name = f"{self._log_group}/{benchmark_id}"
         try:
-            client.create_log_stream(logGroupName=log_group_name, logStreamName=stream_name)  # pyright: ignore[reportUnknownMemberType]
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
+            client.create_log_group(logGroupName=log_group_name)  # pyright: ignore[reportUnknownMemberType]
+            client.put_retention_policy(  # pyright: ignore[reportUnknownMemberType]
+                logGroupName=log_group_name,
+                retentionInDays=retention_days,
+            )
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
                 raise
-        except BotoCoreError as e:
-            raise CloudWatchError(f"Failed to create log stream '{stream_name}': {e}") from e
-        _created_streams.add(stream_key)
 
-    try:
-        client.put_log_events(  # pyright: ignore[reportUnknownMemberType]
-            logGroupName=log_group_name,
-            logStreamName=stream_name,
-            logEvents=[{"timestamp": int(time.time() * 1000), "message": message}],
-        )
-    except (ClientError, BotoCoreError) as e:
-        raise CloudWatchError(f"Failed to put log event: {e}") from e
+    @handle_cloudwatch_error(message="Failed to create cloudwatch stream")
+    def write(self, stream_key: str, message: str) -> None:
+        if not message.strip():
+            return
+
+        benchmark_id, task_id = stream_key.split(":", 1)
+        if not benchmark_id or not task_id:
+            raise CloudWatchError(f"Invalid stream key '{stream_key}', expected format 'benchmark_id:task_id'")
+
+        client = self._clients.cloudwatch_logs_client()
+        log_group_name = f"{self._log_group}/{benchmark_id}"
+        stream_name = _sanitize_log_stream_name(task_id)
+
+        if stream_key not in _created_streams:
+            try:
+                client.create_log_stream(logGroupName=log_group_name, logStreamName=stream_name)  # pyright: ignore[reportUnknownMemberType]
+            except ClientError as error:
+                if error.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
+                    raise
+            except BotoCoreError as error:
+                raise CloudWatchError(f"Failed to create log stream '{stream_name}': {error}") from error
+            _created_streams.add(stream_key)
+
+        try:
+            client.put_log_events(  # pyright: ignore[reportUnknownMemberType]
+                logGroupName=log_group_name,
+                logStreamName=stream_name,
+                logEvents=[{"timestamp": int(time.time() * 1000), "message": message}],
+            )
+        except (ClientError, BotoCoreError) as error:
+            raise CloudWatchError(f"Failed to put log event: {error}") from error

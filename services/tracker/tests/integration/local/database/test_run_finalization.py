@@ -21,6 +21,7 @@ from sqlmodel import Session, select
 
 import tracker.utils.run_control as run_control_module
 import tracker.utils.run_orchestration as run_orchestration_module
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tests.factories import make_benchmark, make_task
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
@@ -74,7 +75,7 @@ def _patch_process_dependencies(
     upload: Any = _skip_cloud_operation,
 ) -> None:
     monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
-    monkeypatch.setattr(run_orchestration_module, "create_benchmark_log_group", _skip_log_group)
+    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", _skip_log_group)
     monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", _provider_config)
     monkeypatch.setattr(run_orchestration_module, "upload_final_view", upload)
 
@@ -348,7 +349,7 @@ class TestRunFinalization:
             return FinalScoreResponse(tasks_evaluated=[scored_task.task_id], final_score=0.25, metadata={})
 
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
-        monkeypatch.setattr(run_orchestration_module, "create_benchmark_log_group", skip_log_group)
+        monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", skip_log_group)
         monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", provider_config)
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", skip_cloud_operation)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_retry_task)
@@ -460,7 +461,7 @@ class TestRunFinalization:
             await both_monitors_arrived.wait()
 
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
-        monkeypatch.setattr(run_orchestration_module, "create_benchmark_log_group", skip_log_group)
+        monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", skip_log_group)
         monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", provider_config)
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", skip_cloud_operation)
         monkeypatch.setattr(TaskMonitor, "track_tasks", synchronized_track_tasks)
@@ -589,7 +590,7 @@ class TestRunFinalization:
             return FinalScoreResponse(tasks_evaluated=[task.task_id], final_score=1.0, metadata={})
 
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
-        monkeypatch.setattr(run_orchestration_module, "create_benchmark_log_group", skip_log_group)
+        monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", skip_log_group)
         monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", provider_config)
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", assert_upload_lock_held)
         monkeypatch.setattr(run_orchestration_module, "invoke_lambda", assert_lambda_lock_held)
