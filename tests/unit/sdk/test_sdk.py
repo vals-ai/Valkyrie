@@ -320,9 +320,12 @@ async def test_start_overlays_a_supplied_contract_without_mutating_it(make_clien
 async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_response) -> None:
     run_id = uuid4()
     paths: list[str] = []
+    result_queries: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
+        if request.url.path == "/retrieve-results":
+            result_queries.append(str(request.url.query, encoding="utf-8"))
         if request.url.path == "/fetch-benchmark":
             return httpx.Response(200, json=fetch_response(run_id))
         if request.url.path == "/fetch-benchmarks":
@@ -368,6 +371,12 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
         stopped = await client.runs.stop(run_id, force=True)
         inline_results = await client.runs.results(run_id)
         results = await client.runs.results(run_id, task_ids=["task-1"], upload_to_s3=True)
+        subset_lambda_results = await client.runs.results(
+            run_id,
+            task_ids=["task-1"],
+            upload_to_s3=True,
+            lambda_function="subset-export",
+        )
 
     assert fetched.benchmark_id == run_id
     assert listed.total_count == 0
@@ -377,10 +386,15 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
     assert inline_results.benchmark_id == run_id
     assert results.s3_url == "s3://runs-bucket/results.json"
     assert results.expires_in == 86400
+    assert_type(subset_lambda_results, S3UploadResultsResponse)
+    assert "lambda_function" not in result_queries[1]
+    assert "lambda_function=subset-export" in result_queries[2]
+    assert "task_ids=task-1" in result_queries[2]
     assert paths == [
         "/fetch-benchmark",
         "/fetch-benchmarks",
         f"/stop-benchmark/{run_id}",
+        "/retrieve-results",
         "/retrieve-results",
         "/retrieve-results",
     ]

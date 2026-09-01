@@ -160,6 +160,7 @@ class RunsResource:
         *,
         task_ids: Sequence[str] | None = None,
         upload_to_s3: Literal[False] = False,
+        lambda_function: None = None,
     ) -> FinalViewResponse: ...
 
     @overload
@@ -169,6 +170,7 @@ class RunsResource:
         *,
         task_ids: Sequence[str] | None = None,
         upload_to_s3: Literal[True],
+        lambda_function: str | None = None,
     ) -> S3UploadResultsResponse: ...
 
     @overload
@@ -178,6 +180,7 @@ class RunsResource:
         *,
         task_ids: Sequence[str] | None = None,
         upload_to_s3: bool,
+        lambda_function: str | None = None,
     ) -> RetrieveResultsResponse: ...
 
     async def results(
@@ -186,11 +189,18 @@ class RunsResource:
         *,
         task_ids: Sequence[str] | None = None,
         upload_to_s3: bool = False,
+        lambda_function: str | None = None,
     ) -> RetrieveResultsResponse:
-        """Fetch final results or upload them and return S3 links."""
+        """Fetch final results or upload them and return S3 links.
+
+        `lambda_function` invokes that lambda on the uploaded results, replacing the one the run
+        was started with, and requires `upload_to_s3`.
+        """
         params: dict[str, Any] = {"benchmark_id": str(run_id), "s3": upload_to_s3}
         if task_ids:
             params["task_ids"] = list(task_ids)
+        if lambda_function:
+            params["lambda_function"] = lambda_function
         response_model = S3UploadResultsResponse if upload_to_s3 else FinalViewResponse
         return await self._sdk.request_model("GET", "/retrieve-results", response_model, params=params)
 

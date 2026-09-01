@@ -584,17 +584,23 @@ class TrackerService:
         benchmark_id: UUID,
         s3: bool,
         task_ids: list[str] | None = None,
+        lambda_function: str | None = None,
     ) -> RetrieveResultsResponse:
         """
         Retrieve the results of a benchmark by its benchmark id.
 
         If task_ids is provided, results are filtered to that subset and the final score is
         recomputed over those tasks (does not mutate the stored FinalEvaluation).
+
+        If lambda_function is provided, it is invoked on the uploaded results instead of the
+        lambda the run was started with; it requires s3.
         """
         try:
             params: dict[str, Any] = {"benchmark_id": str(benchmark_id), "s3": s3}
             if task_ids:
                 params["task_ids"] = task_ids
+            if lambda_function:
+                params["lambda_function"] = lambda_function
 
             response = self._client.get(f"{self._base_url}/retrieve-results", params=params)
 

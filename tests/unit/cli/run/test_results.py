@@ -34,7 +34,7 @@ class MockResultsTracker:
     ) -> None:
         self.response = response
         self.results_exist = results_exist
-        self.retrieve_calls: list[tuple[UUID, bool, list[str] | None]] = []
+        self.retrieve_calls: list[tuple[UUID, bool, list[str] | None, str | None]] = []
 
     def __enter__(self) -> "MockResultsTracker":
         return self
@@ -50,8 +50,9 @@ class MockResultsTracker:
         run_id: UUID,
         s3: bool,
         task_ids: list[str] | None = None,
+        lambda_function: str | None = None,
     ) -> RetrieveResultsResponse:
-        self.retrieve_calls.append((run_id, s3, task_ids))
+        self.retrieve_calls.append((run_id, s3, task_ids, lambda_function))
         if isinstance(self.response, TrackerServiceError):
             raise self.response
 
@@ -93,7 +94,7 @@ class TestResultsCommand:
 
         assert result.exit_code == 0, result.output
         assert "Scored over 2 of 3 subset task ids" in result.output
-        assert tracker.retrieve_calls == [(_RUN_ID, False, ["task-a", "task-b", "missing"])]
+        assert tracker.retrieve_calls == [(_RUN_ID, False, ["task-a", "task-b", "missing"], None)]
 
         saved_payload = json.loads(output_path.read_text(encoding="utf-8"))
         assert saved_payload["benchmark_id"] == str(_RUN_ID)
@@ -127,7 +128,7 @@ class TestResultsCommand:
         assert "Download (expires in 1 day):" in result.output
         assert "https://download.example/results" in result.output
         assert "https://console.aws.amazon.com/s3/object/results" in result.output
-        assert tracker.retrieve_calls == [(_RUN_ID, True, None)]
+        assert tracker.retrieve_calls == [(_RUN_ID, True, None, None)]
 
         managed_tracker = MockResultsTracker(response.model_copy(update={"expires_in": 3600}))
         monkeypatch.setattr(results_module, "TrackerService", lambda: managed_tracker)
@@ -145,6 +146,42 @@ class TestResultsCommand:
         assert declined_result.exit_code == 1
         assert "Overwrite" in declined_result.output
         assert existing_tracker.retrieve_calls == []
+
+    def test_subset_lambda_is_forwarded_only_with_an_s3_upload(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        cli_runner: CliRunner,
+    ) -> None:
+        """A subset lambda must reach the tracker, and never run against a view that was not uploaded.
+
+        Test cases:
+        - The lambda name is forwarded alongside the selected task ids.
+        - Requesting a lambda without an upload fails before contacting the tracker.
+        """
+        response = S3UploadResultsResponse(
+            s3_url="s3://bucket/results.json",
+            presigned_url="https://download.example/results",
+            console_url="https://console.aws.amazon.com/s3/object/results",
+        )
+        tracker = MockResultsTracker(response)
+        monkeypatch.setattr(results_module, "TrackerService", lambda: tracker)
+
+        result = cli_runner.invoke(
+            results,
+            [str(_RUN_ID), "--s3", "--task-ids", "task-a,task-b", "--lambda", "subset-export"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert tracker.retrieve_calls == [(_RUN_ID, True, ["task-a", "task-b"], "subset-export")]
+
+        local_tracker = MockResultsTracker(response)
+        monkeypatch.setattr(results_module, "TrackerService", lambda: local_tracker)
+
+        local_result = cli_runner.invoke(results, [str(_RUN_ID), "--lambda", "subset-export"])
+
+        assert local_result.exit_code == 2
+        assert "--lambda requires --s3" in local_result.output
+        assert local_tracker.retrieve_calls == []
 
     @pytest.mark.parametrize(
         ("path", "expected_message"),

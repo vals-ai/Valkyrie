@@ -11,6 +11,17 @@ valkyrie run start \
 
 The lambda is invoked once after all tasks finish and results are uploaded. If the lambda fails (uncaught exception or `statusCode >= 400`), the run will be marked as `ERROR`.
 
+`run results --lambda` invokes a lambda on the results you just retrieved, replacing the one the run was started with. It requires `--s3`, since the lambda reads the view from S3, and it has no status gate, so it can export a subset while the run is still in progress:
+
+```bash
+valkyrie run results e532551e-d51b-4912-983d-47695bd24174 \
+  --s3 \
+  --task-ids astropy__astropy-12907,django__django-11099 \
+  --lambda my-post-benchmark-handler
+```
+
+The uploaded view is the subset view and overwrites the canonical results key, so retrieving results again without `--task-ids` restores the full view. The payload's `task_ids` are the ones you requested.
+
 ## Payload
 
 The tracker invokes your lambda with the full `BenchmarkArguments` plus the persisted benchmark ID and name:

@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 import httpx
 import logfire
 import sentry_sdk
+from botocore.config import Config
 from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
@@ -95,6 +96,7 @@ from tracker.database.session import check_database_connection, get_session
 from tracker.docent_analysis import (
     analyze_event_stream,
 )
+from tracker._lambda import invoke_lambda
 from tracker.exceptions import TrackerServiceError
 from executor_protocol import EXECUTOR_TASK_NAME, ExecutorTelemetryContext, executor_task_signature
 from tracker.logging import configure_logging, get_logger, request_id_var
@@ -152,6 +154,9 @@ logger = get_logger(__name__)
 # Tracker publishes the stable wire contract; ExecutorHost resolves the same
 # task name before launching the pinned executor artifact.
 process_benchmark = broker.task(EXECUTOR_TASK_NAME)(executor_task_signature)
+
+# Limit the non-idempotent results callback to one attempt and a 60-second read.
+_RESULTS_CALLBACK_CONFIG = Config(read_timeout=60, retries={"total_max_attempts": 1})
 
 
 def _operation_id(route: APIRoute) -> str:
@@ -818,6 +823,7 @@ async def retrieve_results(
     http_request: Request,
     s3: bool = Query(default=False),
     task_ids: list[str] | None = Query(default=None),
+    lambda_function: str | None = Query(default=None),
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> RetrieveResultsResponse:
@@ -830,10 +836,18 @@ async def retrieve_results(
     just computed (full or subset). The DB remains source of truth, so re-running without
     task_ids re-uploads the canonical full view.
 
+    When `lambda_function` is set the uploaded view is handed to that function instead of the one
+    the run was started with, so a subset can be exported before the run reaches a terminal state.
+    It requires `s3=True`, because the callback reads the view from the canonical key.
+
     Usage:
     curl -X GET http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=false
     curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'
+    curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=true&lambda_function=my-exporter'
     """
+    if lambda_function and not s3:
+        raise HTTPException(status_code=400, detail="lambda_function requires s3=true")
+
     benchmark_row = assert_org(
         session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)]),
         org,
@@ -891,6 +905,21 @@ async def retrieve_results(
 
     if s3:
         s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime)
+
+        if lambda_function:
+            lambda_payload = benchmark_row.arguments.model_dump()
+            lambda_payload["benchmark_id"] = str(benchmark_id)
+            lambda_payload["benchmark_name"] = benchmark_row.name
+            lambda_payload["lambda_function"] = lambda_function
+            if task_ids:
+                lambda_payload["task_ids"] = task_ids
+            await asyncio.to_thread(
+                invoke_lambda,
+                aws_runtime.clients,
+                lambda_function,
+                lambda_payload,
+                config=_RESULTS_CALLBACK_CONFIG,
+            )
 
         https_url = f"s3://{aws_runtime.resources.s3_bucket}/{s3_key}"
         expires_in = aws_runtime.clients.maximum_presign_ttl(86400)

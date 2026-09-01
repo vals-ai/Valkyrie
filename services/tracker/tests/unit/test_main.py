@@ -1530,6 +1530,105 @@ class TestTrackerAPI:
         assert response.json()["final_evaluation"]["final_score"] == 1.0
         assert "X-Descope-Api-Key" not in observed_headers
 
+    async def test_retrieve_results_invokes_lambda_on_uploaded_subset(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        harness_headers: dict[str, str],
+    ) -> None:
+        """A subset lambda replaces the run's stored lambda and is told which tasks it scored.
+
+        Test Cases:
+            - The explicitly passed lambda is invoked with the requested subset
+            - A lambda without an S3 upload is rejected, since it would read a stale view
+            - A plain S3 retrieval leaves the run's stored completion lambda uninvoked
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.arguments.lambda_function = "run-completion-lambda"
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_1",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        database_session.add_all(
+            [
+                benchmark_row,
+                task_row,
+                EvaluationResult(
+                    org_id=TEST_ORG_ID,
+                    task=task_row.id,
+                    instance_id=str(uuid4()),
+                    result={"finished": True},
+                ),
+            ]
+        )
+        database_session.commit()
+
+        async def _mock_final_score(_client: BenchmarkServiceClient, **kwargs: Any) -> FinalScoreResponse:
+            task_ids = list(kwargs["evaluation_results"])
+            return FinalScoreResponse(tasks_evaluated=task_ids, final_score=len(task_ids), metadata={})
+
+        async def _upload_final_view(*_args: Any, **_kwargs: Any) -> str:
+            return f"benchmarks/{benchmark_row.id}/swebench.json"
+
+        async def _create_presigned_url(*_args: Any, **_kwargs: Any) -> str:
+            return "https://example.test/results"
+
+        invocations: list[tuple[str, dict[str, Any]]] = []
+
+        def _invoke_lambda(_clients: Any, function_name: str, payload: dict[str, Any], **_kwargs: Any) -> None:
+            invocations.append((function_name, payload))
+
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
+        monkeypatch.setattr(main_module, "upload_final_view", _upload_final_view)
+        monkeypatch.setattr(main_module, "create_presigned_url", _create_presigned_url)
+        monkeypatch.setattr(main_module, "create_console_url", lambda *_args, **_kwargs: "https://console.test")
+        monkeypatch.setattr(main_module, "invoke_lambda", _invoke_lambda)
+
+        response = client.get(
+            "/retrieve-results",
+            params=[
+                ("benchmark_id", str(benchmark_row.id)),
+                ("task_ids", "task_1"),
+                ("s3", "true"),
+                ("lambda_function", "subset-export-lambda"),
+            ],
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 200
+        assert len(invocations) == 1
+        function_name, payload = invocations[0]
+        assert function_name == "subset-export-lambda"
+        assert payload["lambda_function"] == "subset-export-lambda"
+        assert payload["task_ids"] == ["task_1"]
+        assert payload["benchmark_id"] == str(benchmark_row.id)
+        assert payload["benchmark_name"] == benchmark_row.name
+
+        rejected = client.get(
+            "/retrieve-results",
+            params=[
+                ("benchmark_id", str(benchmark_row.id)),
+                ("task_ids", "task_1"),
+                ("lambda_function", "subset-export-lambda"),
+            ],
+            headers=harness_headers,
+        )
+
+        assert rejected.status_code == 400
+        assert len(invocations) == 1
+
+        response = client.get(
+            "/retrieve-results",
+            params=[("benchmark_id", str(benchmark_row.id)), ("s3", "true")],
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 200
+        assert len(invocations) == 1
+
     async def test_benchmark_error_handling(
         self,
         contract: AgentContractRequest,
