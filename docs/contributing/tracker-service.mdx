@@ -3,13 +3,13 @@ title: Tracker service
 description: Architecture, local commands, and test suites for the tracker backend.
 ---
 
-The tracker is the FastAPI control plane. It orchestrates benchmark runs, manages task lifecycle, stores artifacts in S3, and provisions sandboxes through the configured provider. It records release-bound dispatches in PostgreSQL and publishes them through Redis. Deployed ExecutorHost services consume those dispatches and run the selected immutable executor artifact.
+The tracker is the FastAPI backend. It serves the CLI and SDK API, tracks run and task state in PostgreSQL, writes artifacts to S3, and publishes task dispatches through Redis. Each dispatch names an executor release. ExecutorHost picks the dispatch up and runs that release in a sandbox.
 
-Local Docker Compose starts the tracker, PostgreSQL, and Redis only. It does not run ExecutorHost, create an active executor release, or execute benchmarks. Use a deployed release environment for benchmark execution.
+Local Docker Compose starts the tracker, PostgreSQL, and Redis only. It does not run ExecutorHost or create an active executor release, so a locally started run never executes. Use a deployed environment to run benchmarks.
 
 ## Benchmark-service authentication
 
-The tracker forwards its inbound Descope API key only when the effective benchmark-service origin exactly matches the hosted origin derived from the benchmark name and tracker configuration. Custom benchmark-service origins never receive the tracker key. They authenticate with explicit service-owned headers or secret-backed service authentication instead. See [Benchmark authentication](/benchmarks/authentication).
+The tracker forwards its inbound Descope API key only when the benchmark-service origin matches the hosted origin derived from the benchmark name and tracker configuration. A custom origin never receives that key. Custom services authenticate with explicit headers or a stored service secret instead. See [Benchmark authentication](/benchmarks/authentication).
 
 ## Run it locally
 

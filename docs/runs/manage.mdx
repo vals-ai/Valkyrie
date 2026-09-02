@@ -25,9 +25,9 @@ Full syntax for each command below is in the [`run update`](/reference/cli/run#u
 valkyrie run update <run-id> --concurrency 20
 ```
 
-The tracker applies the persisted limit when it next refreshes the run. Increasing it admits more tasks. Decreasing it does not cancel in-flight work and pauses new admissions until usage falls below the limit.
+The tracker picks up the new limit the next time it refreshes the run. Raising it lets more tasks in, while lowering it leaves work that already started alone and simply holds back new tasks until usage drops below the limit.
 
-The value must be positive. Completed, stopped, and failed runs cannot be updated. The limit is enforced independently by each `process_benchmark` executor, so overlapping executors can temporarily exceed the persisted value.
+The value has to be positive, and a completed, stopped, or failed run cannot be updated at all. Each `process_benchmark` executor applies the limit on its own, so two overlapping executors can briefly run more tasks than the stored value.
 
 ## Stop work
 
@@ -38,7 +38,7 @@ valkyrie run stop <run-id>
 valkyrie run stop <run-id> --task-ids task-a,task-b
 ```
 
-A plain stop does not interrupt work that already started. `--force` also deletes the sandboxes of in-progress and evaluating tasks and marks those tasks stopped:
+A plain stop leaves work that already started running to completion. Add `--force` to also delete the sandboxes of in-progress and evaluating tasks and mark those tasks stopped:
 
 ```bash
 valkyrie run stop <run-id> --force
@@ -65,7 +65,7 @@ Either accepts a task subset, a concurrency override, and `--connect` to stream 
 
 `-s` merges a secret mapping into the stored contract, which is how a rotated credential reaches resumed tasks.
 
-For a terminal run, a selected valid task ID without an existing row is created as new `PENDING` work. An in-progress retry rejects selected IDs that do not already exist in `ERROR` state.
+Which task IDs you can name depends on the run's state. On a run that has already reached a terminal state, a valid task ID with no row yet is created as new `PENDING` work; on a run still in progress, a retry rejects any ID that is not already in `ERROR`.
 
 ## Export benchmark task IDs
 

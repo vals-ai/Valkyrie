@@ -30,13 +30,13 @@ valkyrie run fetch <run-id> --format json
 valkyrie run fetch <run-id> --connect --format jsonl
 ```
 
-Connected text output shows run identity and metadata before progress updates. JSONL begins with a `snapshot` record, followed by `update` records. Recognized termination emits `complete`, `error`, `stopped`, `disconnect`, or `interrupted`.
+Connected text output starts with the run's identity and metadata, then the progress updates. JSONL starts with a `snapshot` record and continues with `update` records until the stream ends, at which point it emits `complete`, `error`, `stopped`, `disconnect`, or `interrupted`.
 
-Exit code 0 means the CLI handled the tracker response or stream event. It does not mean the benchmark succeeded. Inspect the run `status` and each JSONL record's `event`.
+Exit code 0 only means the CLI handled the tracker response or stream event, not that the benchmark succeeded, so read the run `status` and each JSONL record's `event` to know how it went.
 
 ### Machine-readable output
 
-Unexpected clean JSONL exhaustion emits a final `disconnect` record and exits nonzero. Transport or malformed-protocol failures can exit nonzero without a final record. In fetch output, `metadata_available: false` means identity metadata could not load. Batch `finished_tasks` includes `FINISHED`, `ERROR`, and `STOPPED` tasks.
+When the JSONL stream ends cleanly but should not have, the CLI writes a final `disconnect` record and exits nonzero. Transport failures and malformed protocol output can also exit nonzero, but without any final record. Two field-level details are worth knowing: `metadata_available: false` means the run's identity metadata could not be loaded, and `finished_tasks` in batch output counts `FINISHED`, `ERROR`, and `STOPPED` tasks together.
 
 ## Check several run IDs
 
@@ -44,7 +44,7 @@ Unexpected clean JSONL exhaustion emits a final `disconnect` record and exits no
 valkyrie run status --ids <run-id-1>,<run-id-2> --format json
 ```
 
-Batch status preserves requested order, ignores duplicate IDs, and requests at most 50 IDs at a time. Missing or inaccessible IDs appear in `missing_run_ids` and make the command exit nonzero after it emits the JSON document.
+Batch status keeps the order you asked for, ignores duplicate IDs, and takes at most 50 IDs at a time. Any ID that is missing or that you cannot access is listed under `missing_run_ids`, and the command exits nonzero after writing the JSON document.
 
 ## Inspect errors
 
@@ -52,7 +52,7 @@ Batch status preserves requested order, ignores duplicate IDs, and requests at m
 valkyrie run errors <run-id>
 ```
 
-The command shows stored run and current task error messages. Add `--format json` to consume them from a script.
+This shows both the errors stored on the run and the current task errors. Add `--format json` to read them from a script.
 
 ## List runs
 
@@ -68,4 +68,4 @@ Runs can be filtered by `--agent-name`, `--benchmark-name`, `--model`, `--datase
 valkyrie run list --format json --all --status IN_PROGRESS
 ```
 
-Machine-readable output uses a versioned allowlist. It excludes stored agent secrets, kwargs, and raw error messages. Optional identity fields and scores can be `null`; timestamps are UTC ISO 8601 strings, and non-finite scores become `null`.
+Machine-readable output is built from a versioned allowlist of fields, so it never carries stored agent secrets, kwargs, or raw error messages. Optional identity fields and scores may be `null`, timestamps are UTC ISO 8601 strings, and a non-finite score is reported as `null`.

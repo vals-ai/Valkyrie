@@ -43,9 +43,9 @@ await client.runs.retry(
 )
 ```
 
-Use `benchmark_url` when a benchmark service does not have a stable URL. `resume` admits work that never ran; `retry` re-runs tasks that ended in `ERROR`. See [Manage a run](/runs/manage) for the lifecycle rules that apply to both.
+Use `benchmark_url` when a benchmark service does not have a stable URL. `resume` picks up work that never ran, while `retry` re-runs tasks that ended in `ERROR`. See [Manage a run](/runs/manage) for the lifecycle rules that apply to both.
 
-Fetch stored launch metadata or test whether canonical S3 results exist:
+Fetch the stored launch metadata, or check whether the run's S3 results are there yet:
 
 ```python
 metadata = await client.runs.metadata(run.benchmark_id)
@@ -76,15 +76,15 @@ with Path("run-outputs.tar").open("wb") as archive:
         archive.write(chunk)
 ```
 
-## Executor release provenance
+## Which executor release ran the work
 
-Run responses expose the initial and current executor-release identity:
+A run response reports both the release it started on and the one running it now:
 
 | Field | Meaning |
 | --- | --- |
-| `executor_release_id` | Immutable release selected at initial admission |
-| `current_execution_release_id` | Release that currently owns execution; a whole-run terminal retry or resume can change it |
-| `executor_artifact_digest` | Immutable digest of the initial release artifact |
-| `executor_protocol_version` | Immutable protocol version of the initial release |
+| `executor_release_id` | The release chosen when the run was first admitted, which never changes |
+| `current_execution_release_id` | The release running the work now, which a retry or resume of a finished run can move forward |
+| `executor_artifact_digest` | Digest of the artifact from that first release |
+| `executor_protocol_version` | Protocol version of that first release |
 
-Pre-migration runs can return `null` for these fields. The metadata endpoint also exposes the initial `executor_artifact_uri`. A per-dispatch snapshot identifies the exact artifact used by each invocation.
+Runs that predate these fields return `null` for all of them. The metadata endpoint also reports the first `executor_artifact_uri`, and each dispatch keeps its own snapshot of the exact artifact that invocation used.

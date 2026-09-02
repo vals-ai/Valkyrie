@@ -50,9 +50,9 @@ Migration tests run through `pytest-alembic` on every push and pull request:
 make test-alembic
 ```
 
-## Known defect: custom TypeDecorator not sourced
+## Known defect: a custom type is not imported
 
-Alembic may generate a migration that references a custom type by module path:
+Alembic sometimes generates a migration that refers to a custom type by its module path without importing it, which fails on upgrade:
 
 ```text
 sa.Column('arguments', tracker.database.models.BenchmarkArgumentsType(), nullable=True),

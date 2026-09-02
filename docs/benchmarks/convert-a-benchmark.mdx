@@ -3,7 +3,7 @@ title: Convert a benchmark into a service
 description: Wrap an existing benchmark in a benchmark service that Valkyrie can run.
 ---
 
-Valkyrie contains no benchmark logic. It provisions a sandbox, runs an agent inside it, and calls a benchmark service over HTTP and WebSocket to fetch tasks, prepare them, and score the results.
+Valkyrie contains no benchmark logic of its own. It creates a sandbox, runs an agent inside it, and calls a benchmark service over HTTP and WebSocket to fetch tasks, prepare them, and score the results.
 
 Converting a benchmark means wrapping the dataset and grader you already have in that service. You do not reimplement the benchmark; you expose four things Valkyrie needs to know:
 
@@ -161,7 +161,7 @@ Three chunk types matter:
 | Chunk | Meaning |
 | --- | --- |
 | `StreamMessageChunk` | Progress text. This is what a Valkyrie user sees while the task runs. |
-| `StreamErrorChunk` | A non-fatal problem worth surfacing. |
+| `StreamErrorChunk` | A problem worth reporting that does not stop the task. |
 | `StreamResultChunk` | The terminal chunk. In `setup_task` it reports whether setup succeeded; in `evaluate_instance` it carries the value passed to scoring. |
 
 The sandbox handle gives you `upload_file`, `download_file`, `exec` (returns `ExecResult` with `exit_code` and `output`), and `command` for line-by-line streaming. `stream_command(sandbox, command, cwd)` wraps `command` and raises on a non-zero exit code unless you pass `ignore_error=True`.
@@ -187,7 +187,7 @@ async def evaluate_instance(
     yield StreamResultChunk(type="result", data={"resolved": result.exit_code == 0})
 ```
 
-Per-task results can be any JSON-compatible value, since the same service both produces and aggregates them.
+A per-task result can be any JSON-compatible value, because the same service both produces it and aggregates it later.
 
 <Warning>
   Uploading evaluation material during `setup_task` lets the agent read or overwrite it. Upload tests only inside `evaluate_instance`.
@@ -257,4 +257,4 @@ You do not need to deploy to test. Run the service locally, [expose it with a re
 
 ## Publish the service
 
-A port is complete when the service is in the [public benchmark services registry](https://github.com/vals-ai/public-benchmark-services-registry): the service lives in its own `<benchmark>-benchmark-service` repository, added to the registry as a Git submodule with a matching `services.yaml` entry.
+A port is finished once the service is listed in the [public benchmark services registry](https://github.com/vals-ai/public-benchmark-services-registry), which means the service lives in its own `<benchmark>-benchmark-service` repository and is added to the registry as a Git submodule with a matching `services.yaml` entry.

@@ -3,11 +3,11 @@ title: Choose a hosting mode
 description: Compare hosted and self-hosted Valkyrie deployments.
 ---
 
-Valkyrie separates two choices. Hosted or self-hosted determines who operates the tracker and executor host. Managed or access-key AWS determines which AWS account and credentials a run uses. Hosted mode supports both AWS execution modes; eligible organizations default to managed AWS and can configure access keys to run against their own AWS resources instead.
+There are two separate choices here. Hosted or self-hosted decides who operates the tracker and executor host, while managed or access-key AWS decides which AWS account and credentials a run uses. Hosted mode works with either AWS execution mode: eligible organizations start on managed AWS, and can add access keys later to run against their own AWS resources instead.
 
 ## Hosted mode
 
-Hosted mode uses Vals-managed compute infrastructure. Vals API key authentication isolates data per organization.
+In hosted mode, Vals operates the compute infrastructure and your Vals API key keeps each organization's data separate.
 
 ### Requirements
 
@@ -34,7 +34,7 @@ Contact `contact@vals.ai` for hosted access.
 
 ### AWS execution mode
 
-The AWS credential fields in the selected config determine the execution mode of new runs.
+The AWS credential fields in the selected config decide how new runs execute.
 
 | Configured fields | Run execution mode |
 | --- | --- |
@@ -42,7 +42,7 @@ The AWS credential fields in the selected config determine the execution mode of
 | Both `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` | Access-key AWS. The tracker receives the configured AWS resources and credentials. |
 | Only one access-key field | Invalid. Valkyrie stops before sending the request. |
 
-Managed execution still allows local AWS operations. Agent uploads and artifact downloads use the local AWS SDK credential chain.
+Managed execution still leaves local AWS operations to you: agent uploads and artifact downloads go through the local AWS SDK credential chain.
 
 To use access-key AWS in hosted mode, run hosted setup first, then add a complete access-key configuration:
 
@@ -67,7 +67,7 @@ The tracker stores the AWS execution mode when a run starts. Retrying or resumin
 
 ## Self-hosted mode
 
-Self-hosted mode uses your tracker service and AWS infrastructure.
+In self-hosted mode you run the tracker service and the AWS infrastructure yourself.
 
 ### Requirements
 
@@ -88,4 +88,4 @@ Then run configuration and choose **self-hosted**:
 valkyrie config init
 ```
 
-Self-hosted mode does not use a Vals API key or Descope authentication. The tracker assigns data to its default organization. Review the [infrastructure guide](/self-hosting/infrastructure) before deploying the included AWS CDK application.
+Self-hosted mode uses neither a Vals API key nor Descope authentication, so the tracker assigns all data to its default organization. Read the [infrastructure guide](/self-hosting/infrastructure) before deploying the included AWS CDK application.

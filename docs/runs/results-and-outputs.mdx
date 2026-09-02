@@ -3,7 +3,7 @@ title: Results and outputs
 description: Download scores, task artifacts, or a specific run path.
 ---
 
-Valkyrie distinguishes evaluated results from the files produced by an agent.
+Valkyrie keeps two things apart: the evaluated results, and the files the agent produced along the way.
 
 <CodeGroup>
 
@@ -21,21 +21,21 @@ Full syntax is in the [`run results`](/reference/cli/run#results), [`run outputs
 
 ## Download results
 
-Results hold the scores and evaluation. Without `--path`, the CLI writes `./results-<run-id>.json`.
+The results file holds the scores and the per-task evaluation. Without `--path`, the CLI writes it to `./results-<run-id>.json`.
 
-Pass a task subset to recompute `final_score` over just those tasks. The stored full result is unchanged:
+Pass a task subset to recompute `final_score` over only those tasks. The stored full result stays as it was:
 
 ```bash
 valkyrie run results <run-id> --task-ids task_1,task_2
 ```
 
 <Warning>
-  Combining `--s3` with a task subset overwrites the canonical S3 result key with that subset view. Run the command again without filters to restore the full result.
+  Combining `--s3` with a task subset overwrites the run's S3 result file with that subset view. Run the command again without filters to put the full result back.
 </Warning>
 
 ## Download outputs
 
-Outputs are the files the agent produced. Fetch all of them, or only the tasks you care about:
+Outputs are the files the agent itself wrote. Fetch all of them, or only the tasks you care about:
 
 ```bash
 valkyrie run outputs <run-id> --output-dir ./outputs
