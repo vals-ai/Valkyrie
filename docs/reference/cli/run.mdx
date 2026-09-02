@@ -320,6 +320,7 @@ valkyrie run resume \
   [--task-ids <TEXT>] \
   [--task-ids-file <TEXT>] \
   [--secret|-s <TEXT> <TEXT>...] \
+  [--header|-H <TEXT> <TEXT>...] \
   [--update-agent|-u] \
   [--from-scratch] \
   [--benchmark-url <TEXT>] \
@@ -368,6 +369,11 @@ valkyrie run resume \
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--header, -H"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"tuple[text, text]"}</code> · constraints: {"2 values; repeatable"}</span></div>
+  <p className="mb-0 mt-1">{"Custom header for benchmark service requests (e.g., -H Authorization my-credential)"}</p>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--update-agent, -u"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"boolean"}</code> · default: <code>{"False"}</code></span></div>
   <p className="mb-0 mt-1">{"Refresh the frozen agent copy from the current agents/<name>.zip in S3 before resuming."}</p>
 </div>
@@ -402,6 +408,7 @@ valkyrie run retry \
   [--task-ids <TEXT>] \
   [--task-ids-file <TEXT>] \
   [--secret|-s <TEXT> <TEXT>...] \
+  [--header|-H <TEXT> <TEXT>...] \
   [--update-agent|-u] \
   [--from-scratch] \
   [--benchmark-url <TEXT>] \
@@ -443,6 +450,11 @@ valkyrie run retry \
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--secret, -s"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"tuple[text, text]"}</code> · constraints: {"2 values; repeatable"}</span></div>
   <p className="mb-0 mt-1">{"Secret as ENV_VAR aws_secret_name (e.g., -s ANTHROPIC_API_KEY AnthropicApiKey)"}</p>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--header, -H"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"tuple[text, text]"}</code> · constraints: {"2 values; repeatable"}</span></div>
+  <p className="mb-0 mt-1">{"Custom header for benchmark service requests (e.g., -H Authorization my-credential)"}</p>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
