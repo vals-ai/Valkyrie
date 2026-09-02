@@ -5,16 +5,16 @@ description: Use when adding or changing Valkyrie public documentation, Mintlify
 
 # Updating Valkyrie documentation
 
-Read this skill before editing `docs/`, `scripts/generate_reference.py`, documentation tests, or public behavior that changes documented commands, defaults, routes, SDK methods, or types.
+Read this skill before editing `docs/`, the reference generator, documentation tests, or public behavior that changes documented commands, defaults, routes, SDK methods, or types.
 
 ## Canonical locations
 
-`docs/` is the only public end-user documentation source.
+`docs/` is the only public end-user documentation source, published at `https://docs.valkyrie.vals.ai`. Repository files link readers to that site rather than restating or indexing its pages.
 
 | Subject | Canonical location |
 | --- | --- |
 | Public end-user documentation | `docs/` |
-| Public CLI and Python SDK reference generator | `scripts/generate_reference.py` |
+| Public CLI and Python SDK reference generator | `scripts/generate_reference.py` entry point over the `scripts/reference_docs/` package: `collect` reads the public surface, `model` holds the manifest and `STATIC_REDIRECTS` for handwritten routes, `render` writes MDX, `generate` orchestrates |
 | Generated reference tests | `tests/unit/docs/test_generate_reference.py` |
 | Contributor setup | `DEVELOPMENT.md` |
 | Tracker operation | `services/tracker/README.md` and tracker-local docs |
@@ -25,7 +25,7 @@ Read this skill before editing `docs/`, `scripts/generate_reference.py`, documen
 
 Never publish contributor procedures, Vals-specific operations, release activation, protected-environment instructions, incident procedures, break-glass access, or internal automation instructions in Mintlify.
 
-Never reference a private repository, issue, URL, hostname, credential, or internal item from public documentation.
+Never reference a private repository, issue, URL, hostname, credential, or internal item from public documentation. This includes configuration an external reader cannot use: document the self-contained path instead, such as an inline allowlist rather than a Vals-internal catalog service.
 
 ## Choose the document layer
 
@@ -47,6 +47,8 @@ Do not remove unique lifecycle, safety, cost, consequence, or recovery guidance 
 ## Write the smallest truthful change
 
 - Read the affected code and current documentation before editing.
+- Trace every behavioral claim to the source that implements it, and reread that source when the claim changes. Treat a README as a claim to verify, not a source.
+- Write no em dashes, in handwritten pages and in generator-rendered strings alike. Use a colon or a second sentence.
 - Correct the smallest block that became false. Do not rewrite adjacent prose without a separate reason.
 - Lead with the task outcome. Use concrete commands before abstract explanation.
 - Use current repository vocabulary and real names.
@@ -60,7 +62,7 @@ Do not remove unique lifecycle, safety, cost, consequence, or recovery guidance 
 
 ## Generated reference architecture
 
-Always change `scripts/generate_reference.py` and its tests first. Never hand-edit generated files under `docs/reference/`.
+Always change the generator and its tests first. Never hand-edit generated files under `docs/reference/`. A redirect for a handwritten route belongs in `STATIC_REDIRECTS`, not in `docs/docs.json`.
 
 Group the current public surface by top-level CLI command, SDK resource, and SDK type family. Derive groups, pages, anchors, and redirects from source through the generator; do not copy current counts or route inventories into instructions.
 
@@ -178,5 +180,6 @@ Any CI workflow edit requires explicit human attention.
 ## Before delivery
 
 - Read the full diff and remove duplicate prose, debug artifacts, and stale generated files.
+- After merging the base branch, reread the pages documenting whatever behavior it changed. Generated references go stale silently until `--check` runs.
 - Report changed routes, commands run, validation output, and residual risks.
 - For a pull request, include the local preview command and truthful test/checklist state.

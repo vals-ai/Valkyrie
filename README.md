@@ -42,16 +42,7 @@ The `valk` alias invokes the same CLI.
 
 ## Documentation
 
-The [`docs/`](docs/introduction.mdx) directory is the canonical source for Valkyrie documentation.
-
-- [Quickstart](docs/get-started/quickstart.mdx)
-- [Hosted and self-hosted modes](docs/get-started/hosting.mdx)
-- [Agent management](docs/agents/manage-agents.mdx)
-- [Agent contract](docs/agents/agent-contract.mdx)
-- [Run workflows](docs/runs/start.mdx)
-- [Custom benchmark services](docs/benchmarks/custom-services.mdx)
-- [Python SDK](docs/sdk/quickstart.mdx)
-- [Self-hosting infrastructure](docs/self-hosting/infrastructure.mdx)
+Guides, the CLI reference, and the Python SDK reference are published at [docs.valkyrie.vals.ai](https://docs.valkyrie.vals.ai/introduction/what-is-valkyrie). Their source lives in [`docs/`](docs).
 
 ## Contributing and operations
 
