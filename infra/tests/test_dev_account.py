@@ -14,22 +14,23 @@ import aws_cdk as cdk
 from aws_cdk import assertions
 
 from constants import (
-    DEV_SHARED_ARTIFACT_BUCKET_PARAMETER,
-    DEV_SHARED_AVAILABILITY_ZONES_PARAMETER,
-    DEV_SHARED_CLUSTER_NAME_PARAMETER,
-    DEV_SHARED_NAMESPACE_ARN_PARAMETER,
-    DEV_SHARED_NAMESPACE_ID_PARAMETER,
-    DEV_SHARED_NAMESPACE_NAME_PARAMETER,
-    DEV_SHARED_PUBLIC_SUBNET_IDS_PARAMETER,
-    DEV_SHARED_VPC_ID_PARAMETER,
-    DEV_TRACKER_ALB_DNS_PARAMETER,
-    DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER,
-    DEV_TRACKER_SECURITY_GROUP_PARAMETER,
+    SHARED_ARTIFACT_BUCKET_PARAMETER_PATH,
+    SHARED_AVAILABILITY_ZONES_PARAMETER_PATH,
+    SHARED_CLUSTER_NAME_PARAMETER_PATH,
+    SHARED_NAMESPACE_ARN_PARAMETER_PATH,
+    SHARED_NAMESPACE_ID_PARAMETER_PATH,
+    SHARED_NAMESPACE_NAME_PARAMETER_PATH,
+    SHARED_PUBLIC_SUBNET_IDS_PARAMETER_PATH,
+    SHARED_VPC_ID_PARAMETER_PATH,
+    TRACKER_ALB_DNS_PARAMETER_PATH,
+    TRACKER_HOSTED_ZONE_ID_PARAMETER_PATH,
+    TRACKER_SECURITY_GROUP_PARAMETER_PATH,
     executor_release_launch_parameter,
+    stage_parameter_name,
 )
 from shared import SharedStack
 from executor_stack import ExecutorStack
-from stage import DEV, PROD, RELEASE_TEST, Stage
+from stage import BENCH, DEV, RELEASE_TEST, Stage
 from tracker_stack import TrackerStack
 
 TEST_ACCOUNT = "123456789012"
@@ -41,7 +42,7 @@ TEST_CONTEXT = {
         f"{TEST_REGION}b",
     ]
 }
-PROD_CONTEXT = {
+BENCH_CONTEXT = {
     **TEST_CONTEXT,
     f"hosted-zone:account={TEST_ACCOUNT}:domainName=vals.ai:region={TEST_REGION}": {
         "Id": "/hostedzone/Z0000000000000000000",
@@ -50,18 +51,21 @@ PROD_CONTEXT = {
 }
 
 DEV_SHARED_CONTRACT_PARAMETERS = {
-    DEV_SHARED_VPC_ID_PARAMETER,
-    DEV_SHARED_AVAILABILITY_ZONES_PARAMETER,
-    DEV_SHARED_PUBLIC_SUBNET_IDS_PARAMETER,
-    DEV_SHARED_CLUSTER_NAME_PARAMETER,
-    DEV_SHARED_NAMESPACE_NAME_PARAMETER,
-    DEV_SHARED_NAMESPACE_ID_PARAMETER,
-    DEV_SHARED_NAMESPACE_ARN_PARAMETER,
-    DEV_SHARED_ARTIFACT_BUCKET_PARAMETER,
+    stage_parameter_name(DEV, path)
+    for path in (
+        SHARED_VPC_ID_PARAMETER_PATH,
+        SHARED_AVAILABILITY_ZONES_PARAMETER_PATH,
+        SHARED_PUBLIC_SUBNET_IDS_PARAMETER_PATH,
+        SHARED_CLUSTER_NAME_PARAMETER_PATH,
+        SHARED_NAMESPACE_NAME_PARAMETER_PATH,
+        SHARED_NAMESPACE_ID_PARAMETER_PATH,
+        SHARED_NAMESPACE_ARN_PARAMETER_PATH,
+        SHARED_ARTIFACT_BUCKET_PARAMETER_PATH,
+    )
 }
 DEV_TRACKER_CONTRACT_PARAMETERS = {
-    DEV_TRACKER_SECURITY_GROUP_PARAMETER,
-    DEV_TRACKER_ALB_DNS_PARAMETER,
+    stage_parameter_name(DEV, TRACKER_SECURITY_GROUP_PARAMETER_PATH),
+    stage_parameter_name(DEV, TRACKER_ALB_DNS_PARAMETER_PATH),
 }
 EXECUTOR_CONTRACT_PARAMETERS = {executor_release_launch_parameter(DEV)}
 DESCOPE_MANAGEMENT_KEY_SECRET_NAME = "example-descope-management-key"
@@ -228,7 +232,10 @@ class DevAccountInfrastructureTest(unittest.TestCase):
             tracker_template = dev_tracker_template()
 
         template = cast(Mapping[str, object], tracker_template.to_json())
-        hosted_zone_parameter = ssm_parameter_id(template, DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER)
+        hosted_zone_parameter = ssm_parameter_id(
+            template,
+            stage_parameter_name(DEV, TRACKER_HOSTED_ZONE_ID_PARAMETER_PATH),
+        )
         rendered = json.dumps(template)
         iam_policies = tracker_template.find_resources("AWS::IAM::Policy")
         delete_statements = [
@@ -380,7 +387,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
             "AWS_TRACKER_SECRET_NAME_PREFIXES": DEV_AUTH_ENV["AWS_TRACKER_SECRET_NAME_PREFIXES"],
         }
         with mock.patch.dict(os.environ, managed_runtime_environment, clear=True):
-            with self.assertRaisesRegex(ValueError, "Development deployments require DESCOPE_PROJECT_ID"):
+            with self.assertRaisesRegex(ValueError, "dev deployments require DESCOPE_PROJECT_ID"):
                 dev_tracker_template()
 
     def test_dev_stacks_publish_the_shared_resource_contract(self) -> None:
@@ -393,9 +400,9 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         self.assertEqual(published_parameter_names(tracker_template), DEV_TRACKER_CONTRACT_PARAMETERS)
         self.assertEqual(published_parameter_names(executor_template), EXECUTOR_CONTRACT_PARAMETERS)
 
-    def test_prod_shared_stack_publishes_no_contract_parameters(self) -> None:
-        app = cdk.App(context=PROD_CONTEXT)
-        stage = Stage(PROD)
+    def test_bench_shared_stack_publishes_no_contract_parameters(self) -> None:
+        app = cdk.App(context=BENCH_CONTEXT)
+        stage = Stage(BENCH)
         shared = SharedStack(app, stage.stack_id("SharedStack"), stage=stage, env=TEST_ENV)
         template = assertions.Template.from_stack(shared)
         self.assertFalse(template.find_resources("AWS::SSM::Parameter"))

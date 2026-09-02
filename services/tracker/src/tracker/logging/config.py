@@ -52,6 +52,7 @@ _DEVELOPMENT_FORMATTER = {
 
 _FORMATTERS = {
     "production": _JSON_FORMATTER,
+    "prod": _JSON_FORMATTER,
     "dev": _JSON_FORMATTER,
     "development": _DEVELOPMENT_FORMATTER,
     "release-test": _DEVELOPMENT_FORMATTER,

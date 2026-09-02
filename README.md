@@ -36,7 +36,9 @@ uv tool install git+https://github.com/vals-ai/Valkyrie@prod
 valkyrie config init
 ```
 
-This will prompt you to choose between **hosted** and **self-hosted** mode, then collect the required credentials. See [Hosted vs Self-Hosted Mode](docs/HOSTED_MODE.md) for detailed setup instructions.
+This prompts for **hosted** or **self-hosted** mode. Hosted setup also asks whether your account uses the bench or production environment and remembers that choice for later commands. See [Hosted vs Self-Hosted Mode](docs/HOSTED_MODE.md) for detailed setup instructions.
+
+`VALKYRIE_ENV` is a legacy override and takes precedence over the saved selection. For compatibility, `VALKYRIE_ENV=prod` selects bench and `VALKYRIE_ENV=external` selects production. New configurations should use the saved `bench` or `prod` selection and leave `VALKYRIE_ENV` unset.
 
 To upsert a single key:
 
