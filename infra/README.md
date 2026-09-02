@@ -13,9 +13,12 @@ AWS CDK infrastructure for the Agentic Harness benchmark platform.
 physical CloudFormation name remains `WorkerStack` so deployments update the
 existing stack and retained resources in place.
 
-Production imports the existing `vals.ai` hosted zone. Development imports only
-the account-local `benchmark-tracker-dev.vals.ai` child zone. Each production
-and development Tracker stack creates and owns its ACM certificate.
+Bench imports the existing `vals.ai` hosted zone and retains the established
+unsuffixed stack and resource names. Development and production import
+account-local delegated child zones. Production stack ids use the `ValkProd`
+prefix and physical resources use the `-prod` suffix. Each production stage has independent service and database settings in
+`stage_config.py`. Each Tracker stack owns its ACM certificate in the account
+where it runs.
 
 ## Prerequisites
 
@@ -26,16 +29,16 @@ and development Tracker stack creates and owns its ACM certificate.
 
 The deployment account must be bootstrapped before deploying this application.
 Account setup owns the GitHub OIDC provider and deploy role and the child hosted
-zone. Before deploying the development Tracker, the production root zone must
-delegate `benchmark-tracker-dev.vals.ai` to the account-local child hosted zone
-so CDK DNS validation can complete. Configure the protected `dev` GitHub
+zone. Before deploying the development or production Tracker, the root
+zone must delegate its Tracker child zone to the target account so CDK DNS
+validation can complete. Configure the protected `dev` GitHub
 Environment with the `AWS_REGION=us-east-1` variable and the `DEV_ACCOUNT_ID`,
 `AWS_DEPLOY_ROLE_ARN`, `DESCOPE_PROJECT_ID`, and
 `DESCOPE_MANAGEMENT_KEY_SECRET_NAME` secrets (the last one names an
 account-local Secrets Manager secret holding the Descope management key).
 Managed AWS execution also requires these secrets in each enabled stage's
-protected GitHub Environment. The `dev` and `prod` environments hold their own
-values:
+protected GitHub Environment. The `dev`, `prod`, and `prod-external`
+environments hold their own values:
 
 - `AWS_DEPLOYMENT_ROLE_ORG_IDS` -- comma-separated organization UUIDs allowed
   to submit managed runs
@@ -50,17 +53,22 @@ Secrets Manager secret containing the DSN. Production also requires
 `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`
 whenever `AUTH_REQUIRED` is `true`. The dev Environment holds every dev
 deployment input as an Environment secret except `AWS_REGION`, which stays a
-variable. Production reads its managed AWS inventory from the `prod`
-Environment and retains the existing repository-level deployment secrets. The
+variable. Each production lane reads its managed AWS inventory from its matching
+Environment. Under **Settings → Secrets and variables → Actions → Repository
+secrets**, `VALKYRIE_BENCH_ACCOUNT_ID` holds the bench account ID and
+`VALKYRIE_PRODUCTION_ACCOUNT_ID` holds the production account ID. Deployment
+roles and `allowed-account-ids` constrain AWS access to the selected account. The
 `SANDBOX_CLEANUP_ENABLED` and `SANDBOX_CLEANUP_PROVIDER` toggles stay variables.
 The Sentry DSN is injected into both Tracker and ExecutorHost. The host
 propagates each run's trace and request context into its immutable executor
 artifact.
 
-Before production activation, configure the protected `prod` GitHub
-Environment with `AWS_DEPLOYMENT_ROLE_ORG_IDS` and
-`AWS_TRACKER_SECRET_NAME_PREFIXES`. Both production deploy jobs use that
-Environment. Both AWS accounts must already have the account-owned
+The existing `prod` GitHub Environment deploys the bench stage so its OIDC
+subject remains compatible with the established roles. Configure the new
+production account in the protected `prod-external` GitHub Environment. Both
+production Environments require their own
+`AWS_DEPLOYMENT_ROLE_ORG_IDS` and `AWS_TRACKER_SECRET_NAME_PREFIXES`. All target
+AWS accounts must already have the account-owned
 `token.actions.githubusercontent.com` OIDC provider with the
 `sts.amazonaws.com` audience. The stacks import that provider and create
 separate environment-bound executor release roles; they do not create a fallback
@@ -69,6 +77,7 @@ provider.
 The application imports these account-local values:
 
 - `/valkyrie/dev/dns/tracker/hosted-zone-id`
+- `/valkyrie/prod/dns/tracker/hosted-zone-id` in the production account
 - the Secrets Manager secret named by `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`
 
 ## Setup
@@ -83,8 +92,9 @@ make install
 ## Deployment
 
 Production and development deploy automatically when changes reach `prod` and
-`dev`. The manual **Deploy to AWS** workflow on `dev` supports only
-`credentials-only` and `plan`; deployments come from branch pushes.
+`dev`. A `prod` push starts the bench and production lanes with
+separate concurrency controls. The manual **Deploy to AWS** workflow on `dev`
+supports only `credentials-only` and `plan`; deployments come from branch pushes.
 
 Core and executor changes use separate jobs but one deployment mutex per stage.
 A core-only change never builds an executor artifact, enters executor maintenance,
@@ -111,16 +121,18 @@ steps. The preflight rejects the wrong account, Region, or STS identity.
    deployment must receive the same organization and secret namespaces as CI.
 
 ```bash
-export DEV_ACCOUNT_ID=123456789012
+export DEV_ACCOUNT_ID="<dev-account-id>"
+export BENCH_ACCOUNT_ID="<bench-account-id>"
+export PRODUCTION_ACCOUNT_ID="<production-account-id>"
 export DESCOPE_PROJECT_ID="dev-project-id"
 export DESCOPE_MANAGEMENT_KEY_SECRET_NAME="dev-descope-management-key-secret"
 export AWS_DEPLOYMENT_ROLE_ORG_IDS="00000000-0000-0000-0000-000000000001"
 export AWS_TRACKER_SECRET_NAME_PREFIXES="benchmark-services/"
 ```
 
-   Use the target stage's values. Production also requires its existing
-   production deployment inputs, including `SENTRY_DSN_SECRET_NAME`. In GitHub,
-   the managed AWS values are under **Settings → Environments → dev or prod →
+   Use the target stage's values. Bench and production also require their
+   deployment inputs, including `SENTRY_DSN_SECRET_NAME`. In GitHub,
+   the managed AWS values are under **Settings → Environments → dev, prod, or prod-external →
    Environment secrets**. GitHub does not reveal stored secret values, so an
    administrator must obtain the approved values from the deployment owner.
 
@@ -137,6 +149,9 @@ export AWS_TRACKER_SECRET_NAME_PREFIXES="benchmark-services/"
 
 make plan STAGE=dev SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
+
+make plan STAGE=bench SCOPE=all AWS_REGION=us-east-1 \
+  PROFILE=vals-bench-admin
 
 make plan STAGE=prod SCOPE=all AWS_REGION=us-east-1 \
   PROFILE=vals-prod-admin
@@ -160,15 +175,19 @@ make plan STAGE=prod SCOPE=all AWS_REGION=us-east-1 \
 make deploy STAGE=dev SCOPE=shared AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
 
+make deploy STAGE=bench SCOPE=shared AWS_REGION=us-east-1 \
+  PROFILE=vals-bench-admin
+
 make deploy STAGE=prod SCOPE=shared AWS_REGION=us-east-1 \
   PROFILE=vals-prod-admin
 ```
 
    This step is CLI-only because the manual GitHub workflow intentionally does
-   not offer deployment. Normal deployments come from a merge to `dev`.
+   not offer deployment. Dev deploys from `dev`; bench and production both
+   deploy from `prod`.
 
-   **Done when** -- CDK reports the selected stack deployed in the expected dev
-   account and its CloudFormation events contain no failed resources.
+   **Done when** -- CDK reports the selected stack deployed in the account for
+   the selected stage and its CloudFormation events contain no failed resources.
 
 `release-test` is an isolated, dev-sized deployment in the account selected by
 `DEV_ACCOUNT_ID`. It uses `-release-test` resource names and
@@ -177,7 +196,7 @@ the ALB DNS output is reachable from the VPC instead of creating a DNS record
 or certificate. Its benchmark-service base is
 `benchmarks.vals.ai`; no separate benchmark-service stack is created. Unlike
 `dev`, the target guard permits `release-test` to be explicitly deployed in the
-production account when coexistence validation requires it.
+bench or production account when coexistence validation requires it.
 
 ```bash
 make plan STAGE=release-test SCOPE=all AWS_REGION=us-east-1 \
@@ -187,14 +206,12 @@ make plan STAGE=release-test SCOPE=all AWS_REGION=us-east-1 \
 `SCOPE` accepts `shared`, `tracker`, `executor`, `monitoring`, `driver`
 (`release-test` only), `core`, or `all`. The `executor` scope targets the
 historical physical `WorkerStack` name. CDK follows the existing stack
-dependencies when an individual stack is selected. The
-Makefile defaults `PRODUCTION_ACCOUNT_ID` to the Vals production account so a
-dev target cannot select it accidentally. Self-hosted operators can override
-that value for their own production account.
+dependencies when an individual stack is selected. Production account IDs are
+required inputs and stay outside the repository.
 
 ## Benchmark Catalog
 
-`BENCHMARK_CATALOG_URL` points tracker-service at a benchmark catalog API. Set it for deployed tracker-service so `valkyrie config service list` can show the catalog of benchmarks hosted at that endpoint.
+`BENCHMARK_CATALOG_URL` optionally points tracker-service at a benchmark catalog API. When it is unset, `valkyrie config service list` returns an empty catalog.
 
 ```bash
 export BENCHMARK_CATALOG_URL=https://<api-id>.execute-api.us-east-1.amazonaws.com
@@ -202,7 +219,7 @@ export BENCHMARK_CATALOG_URL=https://<api-id>.execute-api.us-east-1.amazonaws.co
 
 ## Sandbox cleanup schedule
 
-Production includes an hourly EventBridge schedule for a singleton, 14-minute cleanup Lambda. The schedule is disabled
+Each production account includes an hourly EventBridge schedule for a singleton, 14-minute cleanup Lambda. The schedule is disabled
 unless `SANDBOX_CLEANUP_ENABLED` is exactly `true`; Scheduler delivery and asynchronous Lambda failures go to an encrypted
 dead-letter queue.
 

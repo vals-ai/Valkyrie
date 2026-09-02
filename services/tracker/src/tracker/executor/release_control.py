@@ -2,14 +2,11 @@
 
 import hashlib
 import logging
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol, cast
 from urllib.parse import urlparse
 from uuid import UUID
 
-import boto3
 from sqlmodel import Session, col, select
 
 from tracker.database.models import (
@@ -27,6 +24,7 @@ from executor_protocol import (
     validate_executor_artifact_uri,
     validate_executor_digest,
 )
+from tracker.runtime.executor_artifacts import ExecutorArtifactReader
 
 _ACTIVE_BENCHMARK_STATUSES = (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING)
 _ACTIVE_DISPATCH_STATUSES = (
@@ -51,16 +49,6 @@ class ActiveExecutorReleaseWork:
             + len(self.executions_by_release.get(release_id, []))
             for release_id in release_ids
         }
-
-
-class S3Body(Protocol):
-    def read(self, size: int = -1) -> bytes: ...
-
-    def close(self) -> None: ...
-
-
-class S3Client(Protocol):
-    def get_object(self, *, Bucket: str, Key: str) -> Mapping[str, object]: ...
 
 
 class ReleaseControlError(ValueError):
@@ -94,7 +82,7 @@ def activate_release(
     *,
     expected_bucket: str,
     expected_prefix: str,
-    s3_client: S3Client | None = None,
+    artifact_reader: ExecutorArtifactReader,
 ) -> ExecutorRelease:
     """Create-or-match, verify, promote, and assert one immutable release."""
     _validate_release_manifest(candidate)
@@ -116,7 +104,7 @@ def activate_release(
     if release.status in (ExecutorReleaseStatus.DRAINING, ExecutorReleaseStatus.RETIRED):
         raise ReleaseControlError(f"Executor release {release.id!r} cannot be activated from {release.status.value}")
 
-    verify_release_artifact(session, release.id, s3_client=s3_client)
+    verify_release_artifact(session, release.id, artifact_reader=artifact_reader)
     activated = promote_release(session, release.id)
     admission = _get_required_admission(session)
     if (
@@ -132,7 +120,7 @@ def verify_release_artifact(
     session: Session,
     release_id: str,
     *,
-    s3_client: S3Client | None = None,
+    artifact_reader: ExecutorArtifactReader,
 ) -> ExecutorRelease:
     """Verify a registered release artifact and mark it ready for promotion."""
     release = _get_release(session, release_id)
@@ -142,22 +130,12 @@ def verify_release_artifact(
     if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.lstrip("/"):
         raise ReleaseControlError("Executor artifact URI must use s3://bucket/key")
 
-    client: S3Client
-    if s3_client is None:
-        boto3_client: Any = boto3.client("s3")  # pyright: ignore
-        client = cast(S3Client, boto3_client)
-    else:
-        client = s3_client
-    response = client.get_object(Bucket=parsed.netloc, Key=parsed.path.lstrip("/"))
-    body = cast(S3Body, response["Body"])
     digest = hashlib.sha256()
     artifact_bytes = 0
-    try:
+    with artifact_reader.open(parsed.netloc, parsed.path.lstrip("/")) as body:
         while chunk := body.read(1024 * 1024):
             digest.update(chunk)
             artifact_bytes += len(chunk)
-    finally:
-        body.close()
     if digest.hexdigest() != release.artifact_digest:
         raise ReleaseControlError(f"Executor artifact digest mismatch for release {release_id!r}")
 

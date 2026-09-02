@@ -9,14 +9,14 @@ import aws_cdk as cdk
 from aws_cdk import assertions, aws_s3
 
 from runtime_iam import create_executor_task_role, create_tracker_task_role
-from stage import DEV, PROD, RELEASE_TEST, Stage
-from stage_config import ManagedAWSRuntimeConfig
+from stage import BENCH, DEV, RELEASE_TEST, Stage
+from stage_config import BENCH_CONFIG, DEV_CONFIG, ManagedAWSRuntimeConfig
 from test_monitoring_stack import (
     TEST_AWS_ACCOUNT,
     TEST_AWS_REGION,
+    TEST_BENCH_ENV,
     TEST_DEV_ENV,
     TEST_MANAGED_ORG_ID,
-    TEST_PROD_ENV,
     TEST_RELEASE_TEST_ENV,
     TEST_TRACKER_SECRET_NAME_PREFIX,
     JsonObject,
@@ -55,6 +55,19 @@ def _role_policy_statements(template: assertions.Template, role_logical_id: str)
 def _statement_actions(statement: JsonObject) -> set[str]:
     actions = cast(str | list[str], statement["Action"])
     return set(actions) if isinstance(actions, list) else {actions}
+
+
+def _lambda_function_resource(function_name: str) -> JsonObject:
+    return {
+        "Fn::Join": [
+            "",
+            [
+                "arn:",
+                {"Ref": "AWS::Partition"},
+                f":lambda:{TEST_AWS_REGION}:{TEST_AWS_ACCOUNT}:function:{function_name}",
+            ],
+        ]
+    }
 
 
 class RuntimeIamTest(unittest.TestCase):
@@ -131,7 +144,13 @@ class RuntimeIamTest(unittest.TestCase):
                 tracker_template,
                 "ValkyrieTrackerTaskRole-dev",
                 "TrackerTaskRoleArn",
-                expected_actions | {"s3:DeleteObject", "s3:DeleteObjectVersion", "secretsmanager:GetSecretValue"},
+                expected_actions
+                | {
+                    "s3:DeleteObject",
+                    "s3:DeleteObjectVersion",
+                    "secretsmanager:GetSecretValue",
+                    "lambda:InvokeFunction",
+                },
             ),
             (
                 executor_template,
@@ -146,6 +165,7 @@ class RuntimeIamTest(unittest.TestCase):
                     "logs:CreateLogStream",
                     "logs:PutLogEvents",
                     "ecs:UpdateTaskProtection",
+                    "lambda:InvokeFunction",
                 },
             ),
         ):
@@ -246,14 +266,32 @@ class RuntimeIamTest(unittest.TestCase):
                     )
                     self.assertIn("/valkyrie/benchmarks-dev/*", json.dumps(log_statement["Resource"]))
                     self.assertNotIn(":log-stream:", json.dumps(log_statement["Resource"]))
+                    lambda_statement = next(
+                        statement
+                        for statement in statements
+                        if _statement_actions(statement) == {"lambda:InvokeFunction"}
+                    )
+                    self.assertEqual(
+                        lambda_statement["Resource"],
+                        [
+                            _lambda_function_resource(pattern)
+                            for pattern in DEV_CONFIG.managed_aws.executor_lambda_function_name_patterns
+                        ],
+                    )
                 else:
                     secret_resources = json.dumps(secret_statement["Resource"])
                     self.assertIn("secretsmanager", secret_resources)
                     self.assertIn(f"secret:{TEST_TRACKER_SECRET_NAME_PREFIX}*", secret_resources)
+                    lambda_statement = next(
+                        statement
+                        for statement in statements
+                        if _statement_actions(statement) == {"lambda:InvokeFunction"}
+                    )
+                    self.assertEqual(lambda_statement["Resource"], _lambda_function_resource("analysis-*"))
 
-    def test_prod_managed_runtime_uses_prod_inventory_and_task_roles(self) -> None:
-        with mock.patch.dict(os.environ, TEST_PROD_ENV, clear=True):
-            tracker_template, executor_template, _ = service_templates(PROD)
+    def test_bench_managed_runtime_uses_bench_inventory_and_task_roles(self) -> None:
+        with mock.patch.dict(os.environ, TEST_BENCH_ENV, clear=True):
+            tracker_template, executor_template, _ = service_templates(BENCH)
 
         expected_environment = assertions.Match.array_with(
             [
@@ -291,8 +329,28 @@ class RuntimeIamTest(unittest.TestCase):
                 if role_name.startswith("ValkyrieExecutor"):
                     self.assertIn("secret:*", secret_resources)
                     self.assertNotIn(TEST_TRACKER_SECRET_NAME_PREFIX, secret_resources)
+                    lambda_statements = [
+                        statement
+                        for statement in _role_policy_statements(template, role_logical_id)
+                        if _statement_actions(statement) == {"lambda:InvokeFunction"}
+                    ]
+                    self.assertEqual(len(lambda_statements), 1)
+                    self.assertEqual(
+                        lambda_statements[0]["Resource"],
+                        [
+                            _lambda_function_resource(pattern)
+                            for pattern in BENCH_CONFIG.managed_aws.executor_lambda_function_name_patterns
+                        ],
+                    )
                 else:
                     self.assertIn(f"secret:{TEST_TRACKER_SECRET_NAME_PREFIX}*", secret_resources)
+                    lambda_statements = [
+                        statement
+                        for statement in _role_policy_statements(template, role_logical_id)
+                        if _statement_actions(statement) == {"lambda:InvokeFunction"}
+                    ]
+                    self.assertEqual(len(lambda_statements), 1)
+                    self.assertEqual(lambda_statements[0]["Resource"], _lambda_function_resource("analysis-*"))
 
     def test_release_test_managed_runtime_remains_closed(self) -> None:
         with mock.patch.dict(os.environ, TEST_RELEASE_TEST_ENV, clear=True):

@@ -223,9 +223,9 @@ admission target before committing. PostgreSQL serializes overlapping activation
 on the singleton admission row before either task creates or matches the release.
 
 Dev executor operations follow a successful core deployment unless an incompatible
-migration must run inside maintenance. Production executor operations use the
-protected `prod` GitHub Environment directly on the mutating job, mirroring the
-`dev` Environment wiring. The mutating executor job starts only after its
+migration must run inside maintenance. Bench executor operations use the existing
+protected `prod` GitHub Environment; production uses `prod-external`. Both are
+wired directly to their mutating jobs, like the `dev` Environment. Each mutating executor job starts only after its
 same-revision core dependency succeeds. The AWS accounts must already contain the
 account-owned GitHub OIDC provider used by the environment-bound release roles.
 
@@ -309,10 +309,9 @@ There is no two-release limit.
 ## Release-test
 
 The release-test stage is dev-sized and targets the account selected by
-`DEV_ACCOUNT_ID`; the target guard also permits an explicit production-account
-campaign. Production-account validation uses `STAGE=release-test`, account
-`613431292675`, and region `us-east-1`. Unrelated account resources remain outside
-the release-test boundary.
+`DEV_ACCOUNT_ID`. The coexistence procedure below runs it in the bench account
+by setting `DEV_ACCOUNT_ID` to `BENCH_ACCOUNT_ID`; the target guard still keeps
+the release-test resources inside the explicitly selected account.
 
 Release-test also publishes `/valkyrie/release-test/executor-release/launch-config`
 and the same sealed activation task used by deployment. It reuses the existing
@@ -330,9 +329,11 @@ internal.
 Before running the release-test driver, set:
 
 ```bash
-export RELEASE_TEST_DRIVER_SECRET_ARN=arn:aws:secretsmanager:us-east-1:613431292675:secret:YOUR_DRIVER_SECRET-SUFFIX
-export RELEASE_TEST_SANDBOX_PROVIDER_SECRET_ARN=arn:aws:secretsmanager:us-east-1:613431292675:secret:SANDBOX_PROVIDER_SECRET-SUFFIX
-export RELEASE_TEST_OPERATOR_PRINCIPAL_ARN=arn:aws:iam::613431292675:role/ROLE_NAME
+export BENCH_ACCOUNT_ID="<bench-account-id>"
+export PRODUCTION_ACCOUNT_ID="<production-account-id>"
+export RELEASE_TEST_DRIVER_SECRET_ARN="arn:aws:secretsmanager:us-east-1:${BENCH_ACCOUNT_ID}:secret:YOUR_DRIVER_SECRET-SUFFIX"
+export RELEASE_TEST_SANDBOX_PROVIDER_SECRET_ARN="arn:aws:secretsmanager:us-east-1:${BENCH_ACCOUNT_ID}:secret:SANDBOX_PROVIDER_SECRET-SUFFIX"
+export RELEASE_TEST_OPERATOR_PRINCIPAL_ARN="arn:aws:iam::${BENCH_ACCOUNT_ID}:role/ROLE_NAME"
 export RELEASE_TEST_IMAGE_TAG=package-r-RUN_ID
 ```
 
@@ -341,7 +342,7 @@ role, upload the executor artifact under its reserved prefix and require that th
 key does not already exist:
 
 ```bash
-export RELEASE_TEST_ARTIFACT_BUCKET=agentic-harness-release-test-613431292675
+export RELEASE_TEST_ARTIFACT_BUCKET="agentic-harness-release-test-${BENCH_ACCOUNT_ID}"
 export PACKAGE_R_EXECUTOR_ARTIFACT=/path/to/executor.pex
 aws s3api put-object \
   --bucket "$RELEASE_TEST_ARTIFACT_BUCKET" \
@@ -364,8 +365,8 @@ Release-test owns immutable `valkyrie/release-test/tracker` and
 `valkyrie/release-test/executor-host` ECR repositories. This avoids mutating the
 account-wide CDK bootstrap repository. Deploy Shared first when creating those
 repositories, build and push both ARM64 images with the same new immutable tag,
-then synthesize and deploy the dependent stacks with that tag. Dev and prod keep
-the existing CDK asset path.
+then synthesize and deploy the dependent stacks with that tag. Dev, bench, and
+prod keep the existing CDK asset path.
 
 Review all stacks and the driver separately before deployment. Release-test
 forces authentication on, so synthesis also needs the Descope project ID and
@@ -376,9 +377,9 @@ export DESCOPE_PROJECT_ID="release-test-descope-project-id"
 export DESCOPE_MANAGEMENT_KEY_SECRET_NAME="release-test-descope-management-key-secret"
 
 make plan STAGE=release-test SCOPE=all AWS_REGION=us-east-1 \
-  DEV_ACCOUNT_ID=613431292675 PROFILE=admin
+  DEV_ACCOUNT_ID="$BENCH_ACCOUNT_ID" PROFILE=admin
 make plan STAGE=release-test SCOPE=driver AWS_REGION=us-east-1 \
-  DEV_ACCOUNT_ID=613431292675 PROFILE=admin
+  DEV_ACCOUNT_ID="$BENCH_ACCOUNT_ID" PROFILE=admin
 ```
 
 The driver launch contract is published under

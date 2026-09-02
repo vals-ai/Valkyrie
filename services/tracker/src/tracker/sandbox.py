@@ -5,7 +5,6 @@ import shlex
 import time
 import uuid
 from asyncio import Semaphore
-from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from enum import Enum
@@ -44,14 +43,8 @@ from tenacity import (
     wait_none,
 )
 
-from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import (
-    create_presigned_url,
-    get_agent_result_s3_key,
-    get_benchmark_contract_s3_key,
-    upload_stream_to_s3,
-    upload_to_s3,
-)
+from tracker.runtime.artifacts import benchmark_agent_bundle_key, task_artifact_key
+from tracker.runtime.storage import ObjectStore
 from tracker.database.models import (
     MAX_OUTPUT_ARTIFACT_BYTES,
     AgentCausedExitReason,
@@ -357,7 +350,7 @@ async def upload_agent_artifacts(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     benchmark_id: str,
-    aws_runtime: AWSRuntime,
+    object_store: ObjectStore,
 ) -> None:
     """
     Download and extract the agent contract zip directly inside the sandbox. We generate a presigned S3 URL and have the sandbox curl + unzip it directly.
@@ -368,18 +361,17 @@ async def upload_agent_artifacts(
         sandbox: The sandbox to download and extract files in
         contract: The agent contract configuration
         benchmark_id: The benchmark run id, used to locate the agent
-        aws_runtime: AWS resources and client provider
+        object_store: storage provider for the already-resolved run authority
 
     Raises:
         SandboxError: If download or extraction fails inside the sandbox
     """
     logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
-    contract_s3_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
-    presigned_url = await create_presigned_url(
+    contract_s3_key = benchmark_agent_bundle_key(benchmark_id, contract.name)
+    presigned_url = await object_store.temporary_download_url(
         contract_s3_key,
-        aws_runtime,
-        expiration=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS,
+        expires_in=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS,
     )
 
     zip_path = shlex.quote(f"/tmp/{contract.name}.zip")
@@ -506,7 +498,6 @@ _TIMEOUT_EXIT_CODE: int = 124
 _OS_KILL_EXIT_CODE: int = 137
 _SUCCESS_EXIT_CODE: int = 0
 _STATUS_DIR = "/tmp/.valkyrie"
-_OUTPUT_TAIL_MAX_CHARS = 64 * 1024
 _EGRESS_RETRY = retry(
     retry=retry_if_exception_type(ProviderSandboxError) & retry_if_not_exception_type(SandboxNotFoundError),
     reraise=True,
@@ -584,10 +575,6 @@ async def stream_command_output(
     command: str,
     on_output: Callable[[str], None],
 ) -> tuple[AgentCausedExitReason | None, float]:
-    # Bounded tail of recent output, kept only for error messages; capped by characters
-    # rather than chunk count since a single chunk can be arbitrarily large.
-    output: deque[str] = deque()
-    output_chars = 0
     run_id = uuid.uuid4().hex
     start_ns_path = f"{_STATUS_DIR}/{run_id}.start_ns"
     end_ns_path = f"{_STATUS_DIR}/{run_id}.end_ns"
@@ -608,10 +595,6 @@ async def stream_command_output(
         try:
             async for data in sandbox.command(timed_command):
                 on_output(data)
-                output.append(data)
-                output_chars += len(data)
-                while output_chars > _OUTPUT_TAIL_MAX_CHARS and len(output) > 1:
-                    output_chars -= len(output.popleft())
         except ProviderSandboxCommandError as e:
             exit_code = e.exit_code
         except SandboxNotFoundError:
@@ -652,10 +635,8 @@ async def stream_command_output(
         if exit_code == _OS_KILL_EXIT_CODE:
             return AgentCausedExitReason.OS_KILLED, duration
 
-        tail = "".join(output).strip().splitlines()
-        recent = "\n".join(tail[-10:]) if tail else "(no output)"
         sentry_sdk.set_tag("agent_exit_code", str(exit_code))
-        raise AgentRunFailedError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
+        raise AgentRunFailedError(f"Agent command failed with exit code {exit_code}")
     finally:
         try:
             await _exec(sandbox, f"rm -f {shlex.quote(start_ns_path)} {shlex.quote(end_ns_path)}")
@@ -683,7 +664,7 @@ async def archive_and_upload_output(
     sandbox: Sandbox,
     output_path: str,
     agent_output_s3_key: str,
-    aws_runtime: AWSRuntime,
+    object_store: ObjectStore,
     *,
     benchmark_id: str | None = None,
     task_id: str | None = None,
@@ -698,10 +679,9 @@ async def archive_and_upload_output(
         raise SandboxError(f"Failed to create archive from {output_path}")
 
     try:
-        archive_bytes = await upload_stream_to_s3(
-            sandbox.stream_download(archive_path),
+        archive_bytes = await object_store.put_stream(
             agent_output_s3_key,
-            aws_runtime,
+            sandbox.stream_download(archive_path),
             should_continue=execution_is_current,
         )
 
@@ -788,7 +768,7 @@ async def upload_output_artifacts(
     artifacts: list[OutputArtifactSpec],
     benchmark_id: str,
     task_id: str,
-    aws_runtime: AWSRuntime,
+    object_store: ObjectStore,
     execution_is_current: Callable[[], bool] | None = None,
 ) -> None:
     """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
@@ -804,7 +784,7 @@ async def upload_output_artifacts(
                 artifact,
                 benchmark_id,
                 task_id,
-                aws_runtime,
+                object_store,
                 total_bytes,
                 execution_is_current,
             )
@@ -832,7 +812,7 @@ async def _upload_output_artifact(
     artifact: OutputArtifactSpec,
     benchmark_id: str,
     task_id: str,
-    aws_runtime: AWSRuntime,
+    object_store: ObjectStore,
     total_bytes: int,
     execution_is_current: Callable[[], bool] | None = None,
 ) -> int | None:
@@ -865,11 +845,11 @@ async def _upload_output_artifact(
     if execution_is_current is not None and not execution_is_current():
         return None
 
-    s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path)
+    s3_key = task_artifact_key(benchmark_id, task_id, artifact_path)
     file_content = await sandbox.download_file(sandbox_path)
     if execution_is_current is not None and not execution_is_current():
         return None
-    await upload_to_s3(file_content, s3_key, aws_runtime)
+    await object_store.put_bytes(s3_key, file_content)
 
     logger.info(
         "output_artifact.upload.complete",
@@ -893,7 +873,7 @@ async def run_agent(
     task_id: str,
     log_output: Callable[[str], None],
     cwd: str,
-    aws_runtime: AWSRuntime,
+    object_store: ObjectStore,
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
@@ -940,13 +920,76 @@ async def run_agent(
     # Create cwd if it does not already exist
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
-    # Run the agent without including task directory dependencies
-    exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
-        sandbox,
-        f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
-        log_output,
-        contract.egress_allowlist,
-    )
+    async def upload_outputs(*, preserve_agent_error: bool = False) -> None:
+        errors: list[Exception] = []
+        if contract.final_output:
+            try:
+                result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
+                if (
+                    result.exit_code == _SUCCESS_EXIT_CODE
+                    and agent_output_s3_key
+                    and (execution_is_current is None or execution_is_current())
+                ):
+                    await archive_and_upload_output(
+                        sandbox,
+                        contract.final_output,
+                        agent_output_s3_key,
+                        object_store,
+                        benchmark_id=benchmark_id,
+                        task_id=task_id,
+                        execution_is_current=execution_is_current,
+                    )
+            except Exception as error:
+                errors.append(error)
+                logger.exception(
+                    "Failed to collect final agent output",
+                    extra={
+                        "sandbox_id": sandbox.id,
+                        "sandbox_name": sandbox.name,
+                        "benchmark_id": benchmark_id,
+                        "task_id": task_id,
+                    },
+                )
+
+        if contract.output_artifacts:
+            try:
+                if benchmark_id is None:
+                    raise SandboxError("benchmark_id is required to upload output artifacts")
+                await upload_output_artifacts(
+                    sandbox,
+                    contract.output_artifacts,
+                    benchmark_id,
+                    task_id,
+                    object_store,
+                    execution_is_current,
+                )
+            except Exception as error:
+                errors.append(error)
+                logger.exception(
+                    "Failed to collect declared agent artifacts",
+                    extra={
+                        "sandbox_id": sandbox.id,
+                        "sandbox_name": sandbox.name,
+                        "benchmark_id": benchmark_id,
+                        "task_id": task_id,
+                    },
+                )
+
+        if errors and not preserve_agent_error:
+            raise errors[0]
+
+    # A nonzero exit is terminal evidence; collect declared outputs while the
+    # sandbox is still available.
+    try:
+        exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
+            sandbox,
+            f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
+            log_output,
+            contract.egress_allowlist,
+        )
+    except Exception:
+        await upload_outputs(preserve_agent_error=True)
+        raise
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:
         log_output(
@@ -957,35 +1000,7 @@ async def run_agent(
             f"[WARNING]:`{contract.name}` was killed by the OS (exit code {_OS_KILL_EXIT_CODE}, likely out-of-memory). The process has been terminated and evaluation will proceed."
         )
 
-    # Upload any output from the agent to S3
-    if contract.final_output:
-        result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
-        if (
-            result.exit_code == _SUCCESS_EXIT_CODE
-            and agent_output_s3_key
-            and (execution_is_current is None or execution_is_current())
-        ):
-            await archive_and_upload_output(
-                sandbox,
-                contract.final_output,
-                agent_output_s3_key,
-                aws_runtime,
-                benchmark_id=benchmark_id,
-                task_id=task_id,
-                execution_is_current=execution_is_current,
-            )
-
-    if contract.output_artifacts:
-        if benchmark_id is None:
-            raise SandboxError("benchmark_id is required to upload output artifacts")
-        await upload_output_artifacts(
-            sandbox,
-            contract.output_artifacts,
-            benchmark_id,
-            task_id,
-            aws_runtime,
-            execution_is_current,
-        )
+    await upload_outputs()
 
     # Return why the agent terminated abnormally, or None on clean exit
     return exit_reason, agent_run_time

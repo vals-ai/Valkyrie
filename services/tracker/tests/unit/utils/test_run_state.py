@@ -4,7 +4,7 @@ Run: uv run pytest tests/unit/utils/test_run_state.py
 """
 
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Any, Sequence, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -23,7 +23,7 @@ from main import app
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
-from tracker.aws.runtime import AWSRuntime
+from tracker.runtime.secrets import SecretValue
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -86,7 +86,7 @@ class TestRunState:
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
     def test_fetch_sandbox_provider_config_combines_provider_type_with_secret(
-        self, harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch
+        self, harness_config: HarnessConfig
     ) -> None:
         """Sandbox provider config should combine client-selected type with the production secret shape.
 
@@ -101,16 +101,11 @@ class TestRunState:
             },
         }
 
-        def fetch_secret(name: str, _client_provider: object) -> dict[str, str]:
-            return secrets[name]
+        class TestSecretStore:
+            def get(self, name: str) -> SecretValue:
+                return cast(SecretValue, secrets[name])
 
-        monkeypatch.setattr("tracker.utils.resources.fetch_aws_secret", fetch_secret)
-
-        provider_config = fetch_sandbox_provider_config(
-            "provider-secret",
-            AWSRuntime.from_harness_config(harness_config).clients,
-            "daytona",
-        )
+        provider_config = fetch_sandbox_provider_config("provider-secret", TestSecretStore(), "daytona")
         assert provider_config.model_dump(mode="json") == {
             "type": "daytona",
             "DAYTONA_API_KEY": "key",

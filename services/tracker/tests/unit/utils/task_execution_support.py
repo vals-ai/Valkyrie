@@ -12,6 +12,7 @@ from sqlmodel import Session
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.aws.runtime import AWSRuntime
+from tracker.aws.secrets import SecretsManagerStore
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkStatus,
@@ -135,6 +136,9 @@ async def run_process_task(
     Returns
     - The task result mapping returned by process_task.
     """
+    harness_config = start_benchmark_request.harness_config
+    assert harness_config is not None
+
     return await process_task(
         task_row=task_row,
         start_benchmark_request=start_benchmark_request,
@@ -144,8 +148,8 @@ async def run_process_task(
         aws_runtime=aws_runtime,
         org=TEST_ORG,
         sandbox_provider_config=fetch_sandbox_provider_config(
-            start_benchmark_request.harness_config.sandbox_provider_secret_name,
-            aws_runtime.clients,
+            harness_config.sandbox_provider_secret_name,
+            SecretsManagerStore(aws_runtime.clients),
             start_benchmark_request.sandbox_provider,
         ),
         creation_semaphore=Semaphore(1),

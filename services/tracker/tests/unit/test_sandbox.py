@@ -29,6 +29,7 @@ from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
 from tracker import sandbox as sandbox_module
 from tracker.aws.runtime import AWSRuntime
+from tracker.runtime.storage import ObjectStore
 from tracker.database.models import (
     AgentCausedExitReason,
     AgentContractRequest,
@@ -57,6 +58,28 @@ def _ignore_output(_message: str) -> None:
     pass
 
 
+def _mock_object_store() -> Mock:
+    store = Mock(spec=ObjectStore)
+    store.put_bytes = AsyncMock()
+    store.put_stream = AsyncMock(return_value=0)
+    store.temporary_download_url = AsyncMock(return_value="https://example.com/presigned")
+    return store
+
+
+def _capture_put_bytes(store: Mock, upload: Callable[..., Any]) -> None:
+    async def put_bytes(key: str, content: bytes) -> None:
+        await upload(content, key, None)
+
+    store.put_bytes.side_effect = put_bytes
+
+
+def _capture_put_stream(store: Mock, upload: Callable[..., Any]) -> None:
+    async def put_stream(key: str, chunks: AsyncIterator[bytes], **kwargs: Any) -> int:
+        return await upload(chunks, key, None, **kwargs)
+
+    store.put_stream.side_effect = put_stream
+
+
 _create_sandbox = getattr(sandbox_module, "_create_sandbox")
 _delete_sandbox = getattr(sandbox_module, "delete_sandbox")
 _exec = getattr(sandbox_module, "_exec")
@@ -76,6 +99,7 @@ class TestOutputArtifacts:
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        store = _mock_object_store()
         """
         Verify artifact contents use the sandbox file-transfer API instead of command output.
 
@@ -98,7 +122,7 @@ class TestOutputArtifacts:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "upload_to_s3", fake_upload_to_s3)
+        _capture_put_bytes(store, fake_upload_to_s3)
 
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
@@ -110,7 +134,7 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            aws_runtime,
+            store,
         )
 
         assert uploaded == [(artifact_content, "benchmarks/benchmark-123/task_0/artifacts/turns.jsonl")]
@@ -120,6 +144,7 @@ class TestOutputArtifacts:
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        store = _mock_object_store()
         artifact = "artifacts/turns.jsonl"
         authority_checks = iter([True, False])
         uploaded: list[bytes] = []
@@ -135,7 +160,7 @@ class TestOutputArtifacts:
             uploaded.append(file_content)
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "upload_to_s3", fake_upload_to_s3)
+        _capture_put_bytes(store, fake_upload_to_s3)
         mock_sandbox = Mock()
         mock_sandbox.download_file = AsyncMock(return_value=b"old")
 
@@ -144,7 +169,7 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            aws_runtime,
+            store,
             execution_is_current=lambda: next(authority_checks),
         )
 
@@ -156,6 +181,7 @@ class TestOutputArtifacts:
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        store = _mock_object_store()
         uploaded: list[tuple[bytes, str]] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
@@ -173,7 +199,7 @@ class TestOutputArtifacts:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "upload_to_s3", fake_upload_to_s3)
+        _capture_put_bytes(store, fake_upload_to_s3)
 
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
@@ -188,7 +214,7 @@ class TestOutputArtifacts:
             ],
             "benchmark-123",
             "task_0",
-            aws_runtime,
+            store,
         )
 
         assert uploaded == [
@@ -201,6 +227,7 @@ class TestOutputArtifacts:
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        store = _mock_object_store()
         uploaded: list[tuple[bytes, str]] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
@@ -214,7 +241,7 @@ class TestOutputArtifacts:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "upload_to_s3", fake_upload_to_s3)
+        _capture_put_bytes(store, fake_upload_to_s3)
 
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
@@ -226,7 +253,7 @@ class TestOutputArtifacts:
             [OutputArtifact(path="artifacts/result.json", source="/logs/model-library-run/result.json")],
             "benchmark-123",
             "task_0",
-            aws_runtime,
+            store,
         )
 
         assert uploaded == [(b'{"turns":[]}\n', "benchmarks/benchmark-123/task_0/artifacts/result.json")]
@@ -236,6 +263,7 @@ class TestOutputArtifacts:
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        store = _mock_object_store()
         artifact = "artifacts/missing.json"
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
@@ -245,13 +273,14 @@ class TestOutputArtifacts:
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
 
         with pytest.raises(OutputArtifactError, match="Required output artifact missing"):
-            await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", aws_runtime)
+            await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", store)
 
     async def test_upload_output_artifacts_skips_missing_optional_model_patch(
         self,
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        store = _mock_object_store()
         artifact = OutputArtifact(
             path="artifacts/model.patch",
             source="/logs/artifacts/model.patch",
@@ -262,14 +291,14 @@ class TestOutputArtifacts:
         exec_mock = AsyncMock(return_value=ExecResult(exit_code=1, output=""))
         upload_mock = AsyncMock()
         monkeypatch.setattr(sandbox_module, "_exec", exec_mock)
-        monkeypatch.setattr(sandbox_module, "upload_to_s3", upload_mock)
+        _capture_put_bytes(store, upload_mock)
 
         await upload_output_artifacts(
             sandbox,
             [artifact],
             "benchmark-123",
             "task_0",
-            aws_runtime,
+            store,
         )
 
         exec_mock.assert_awaited_once_with(
@@ -290,6 +319,7 @@ class TestOutputArtifacts:
         required: bool,
         expected_uploads: list[bytes],
     ) -> None:
+        store = _mock_object_store()
         source = "/logs/symlink result.json"
         uploaded: list[bytes] = []
 
@@ -306,7 +336,7 @@ class TestOutputArtifacts:
             uploaded.append(file_content)
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "upload_to_s3", fake_upload_to_s3)
+        _capture_put_bytes(store, fake_upload_to_s3)
 
         sandbox = Mock()
         sandbox.id = "sandbox-123"
@@ -319,7 +349,7 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            aws_runtime,
+            store,
         )
 
         assert uploaded == expected_uploads
@@ -329,6 +359,7 @@ class TestOutputArtifacts:
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        store = _mock_object_store()
         optional_source = "/logs/optional.json"
         required_source = "/logs/required.json"
         uploaded: list[tuple[bytes, str]] = []
@@ -352,7 +383,7 @@ class TestOutputArtifacts:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "upload_to_s3", fake_upload_to_s3)
+        _capture_put_bytes(store, fake_upload_to_s3)
 
         sandbox = Mock()
         sandbox.id = "sandbox-123"
@@ -367,7 +398,7 @@ class TestOutputArtifacts:
             ],
             "benchmark-123",
             "task_0",
-            aws_runtime,
+            store,
         )
 
         assert uploaded == [
@@ -382,6 +413,7 @@ class TestOutputArtifacts:
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        store = _mock_object_store()
         artifact = "artifacts/large.json"
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
@@ -393,10 +425,10 @@ class TestOutputArtifacts:
 
         upload_mock = AsyncMock()
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "upload_to_s3", upload_mock)
+        _capture_put_bytes(store, upload_mock)
 
         with pytest.raises(OutputArtifactError, match="too large"):
-            await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", aws_runtime)
+            await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", store)
 
         upload_mock.assert_not_awaited()
 
@@ -420,6 +452,7 @@ class TestOutputArtifacts:
         total_bytes: int,
         error: str,
     ) -> None:
+        store = _mock_object_store()
         sandbox = Mock()
         sandbox.download_file = AsyncMock()
         exec_mock = AsyncMock(
@@ -436,7 +469,7 @@ class TestOutputArtifacts:
                 "artifacts/result.json",
                 "benchmark-123",
                 "task_0",
-                aws_runtime,
+                store,
                 total_bytes,
             )
 
@@ -447,6 +480,7 @@ class TestOutputArtifacts:
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        store = _mock_object_store()
         artifact = OutputArtifact(
             path="atif/trajectory.json",
             source="/logs/trajectory_atif.json",
@@ -462,14 +496,14 @@ class TestOutputArtifacts:
         )
         upload_mock = AsyncMock()
         monkeypatch.setattr(sandbox_module, "_exec", exec_mock)
-        monkeypatch.setattr(sandbox_module, "upload_to_s3", upload_mock)
+        _capture_put_bytes(store, upload_mock)
 
         await upload_output_artifacts(
             sandbox,
             [artifact],
             "benchmark-123",
             "task_0",
-            aws_runtime,
+            store,
         )
 
         assert exec_mock.await_args_list == [
@@ -490,6 +524,7 @@ class TestArchiveAndUploadOutput:
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        store = _mock_object_store()
         """
         Test cases:
         - The tar.gz archive is streamed chunk-by-chunk to S3 without a full in-memory download.
@@ -522,7 +557,7 @@ class TestArchiveAndUploadOutput:
             return chunks()
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "upload_stream_to_s3", fake_upload_stream_to_s3)
+        _capture_put_stream(store, fake_upload_stream_to_s3)
 
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
@@ -533,7 +568,7 @@ class TestArchiveAndUploadOutput:
             mock_sandbox,
             "/logs",
             "benchmarks/benchmark-123/task_0/output.tar.gz",
-            aws_runtime,
+            store,
         )
 
         assert uploaded == [(b"chunk-1chunk-2", "benchmarks/benchmark-123/task_0/output.tar.gz")]
@@ -549,6 +584,7 @@ class TestRunAgent:
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        store = _mock_object_store()
         contract = AgentContractRequest(
             name="test-agent",
             install_cmd="",
@@ -591,17 +627,112 @@ class TestRunAgent:
             "task_0",
             lambda _msg: None,
             "/testbed",
-            aws_runtime=aws_runtime,
+            object_store=store,
             benchmark_id="benchmark-123",
         )
 
         assert artifact_calls == ["benchmark-123:task_0:artifacts/result.json"]
+
+    async def test_run_agent_collects_outputs_before_reraising_agent_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        store = _mock_object_store()
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="",
+            run_cmd="exit 23",
+            final_output="/logs",
+            output_artifacts=["artifacts/result.json"],
+        )
+        archive_output = AsyncMock()
+        upload_artifacts = AsyncMock()
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command.startswith("mkdir -p") or command == "test -e /logs":
+                return ExecResult(exit_code=0, output="")
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fail_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            raise AgentRunFailedError("agent exited 23")
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fail_agent)
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive_output)
+        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", upload_artifacts)
+
+        sandbox = Mock(id="sandbox-123", name="task-alias")
+        with pytest.raises(AgentRunFailedError, match="agent exited 23"):
+            await run_agent(
+                sandbox,
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/testbed",
+                object_store=store,
+                agent_output_s3_key="benchmarks/benchmark-123/task_0/agent_output.tar.gz",
+                benchmark_id="benchmark-123",
+            )
+
+        archive_output.assert_awaited_once()
+        upload_artifacts.assert_awaited_once()
+
+    async def test_run_agent_preserves_agent_error_when_terminal_upload_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        store = _mock_object_store()
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="",
+            run_cmd="exit 23",
+            final_output="/logs",
+            output_artifacts=["artifacts/result.json"],
+        )
+        upload_artifacts = AsyncMock()
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command.startswith("mkdir -p") or command == "test -e /logs":
+                return ExecResult(exit_code=0, output="")
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fail_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            raise AgentRunFailedError("agent exited 23")
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fail_agent)
+        monkeypatch.setattr(
+            sandbox_module,
+            "archive_and_upload_output",
+            AsyncMock(side_effect=OutputArtifactError("terminal upload failed")),
+        )
+        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", upload_artifacts)
+
+        sandbox = Mock(id="sandbox-123", name="task-alias")
+        with pytest.raises(AgentRunFailedError, match="agent exited 23"):
+            await run_agent(
+                sandbox,
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/testbed",
+                object_store=store,
+                agent_output_s3_key="benchmarks/benchmark-123/task_0/agent_output.tar.gz",
+                benchmark_id="benchmark-123",
+            )
+
+        upload_artifacts.assert_awaited_once()
 
     async def test_run_agent_threads_benchmark_id_to_archive_and_upload(
         self,
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        store = _mock_object_store()
         contract = AgentContractRequest(
             name="test-agent",
             install_cmd="",
@@ -645,7 +776,7 @@ class TestRunAgent:
             "task_0",
             lambda _msg: None,
             "/testbed",
-            aws_runtime=aws_runtime,
+            object_store=store,
             agent_output_s3_key="benchmarks/run/task/agent_output.tar.gz",
             benchmark_id="benchmark-123",
         )
@@ -660,7 +791,7 @@ class TestRunAgent:
             "task_0",
             lambda _msg: None,
             "/testbed",
-            aws_runtime=aws_runtime,
+            object_store=store,
             agent_output_s3_key="benchmarks/run/task/agent_output.tar.gz",
             benchmark_id="benchmark-123",
             execution_is_current=lambda: False,
@@ -672,6 +803,7 @@ class TestRunAgent:
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        store = _mock_object_store()
         """Compose runtime sources should route agent setup and execution through the wrapper.
 
         Test cases:
@@ -709,7 +841,7 @@ class TestRunAgent:
             "task_0",
             lambda _msg: None,
             "/workspace",
-            aws_runtime=aws_runtime,
+            object_store=store,
             runtime_source=ComposeSource(
                 outer=ImageSource(image="docker:28.3.3-dind"),
                 compose_command="docker compose -f /harbor/compose.yaml",
@@ -724,6 +856,7 @@ class TestRunAgent:
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        store = _mock_object_store()
         """Task timeouts should apply to the full shell-form agent command.
 
         Test cases:
@@ -759,7 +892,7 @@ class TestRunAgent:
             "task_0",
             lambda _msg: None,
             "/workspace",
-            aws_runtime=aws_runtime,
+            object_store=store,
             agent_timeout=2.5,
         )
 
@@ -1532,6 +1665,7 @@ class TestUploadAgentArtifacts:
         exit_code: int,
         retryable: bool,
     ) -> None:
+        store = _mock_object_store()
         """Exit code 35 (curl SSL/TLS) raises SandboxSetupError so process_task retries
         with a fresh sandbox. All other non-zero exit codes raise the base SandboxError,
         which marks the task as failed without a sandbox retry.
@@ -1548,14 +1682,11 @@ class TestUploadAgentArtifacts:
             "_exec",
             AsyncMock(return_value=ExecResult(exit_code=exit_code, output="error output")),
         )
-        monkeypatch.setattr(
-            "tracker.sandbox.create_presigned_url",
-            AsyncMock(return_value="https://example.com/presigned"),
-        )
+        store.temporary_download_url = AsyncMock(return_value="https://example.com/presigned")
 
         expected = SSLConnectionError if retryable else SandboxError
         with pytest.raises(expected) as exc_info:
-            await upload_agent_artifacts(mock_sandbox, contract, "bench-123", aws_runtime)
+            await upload_agent_artifacts(mock_sandbox, contract, "bench-123", store)
 
         if not retryable:
             assert not isinstance(exc_info.value, SandboxSetupError)
@@ -1736,7 +1867,7 @@ class TestStreamCommandOutputAgentFailure:
         assert duration >= 0
 
     @pytest.mark.parametrize("exit_code", [1, 2, 127])
-    async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(
+    async def test_non_zero_exit_raises_prompt_free_agent_error_and_tags_exit_code(
         self, monkeypatch: pytest.MonkeyPatch, exit_code: int
     ) -> None:
         async def stream_command(_command: str) -> AsyncIterator[str]:
@@ -1760,22 +1891,14 @@ class TestStreamCommandOutputAgentFailure:
 
         assert isinstance(exc_info.value, SandboxError)
         assert not isinstance(exc_info.value, SandboxSetupError)
-        assert f"exit code: {exit_code}" in str(exc_info.value)
-        assert "last line" in str(exc_info.value)
+        assert str(exc_info.value) == f"Sandbox error: Agent command failed with exit code {exit_code}"
+        assert "last line" not in str(exc_info.value)
+        assert "run-agent.sh" not in str(exc_info.value)
         assert tagged == {"agent_exit_code": str(exit_code)}
 
-    async def test_output_tail_is_byte_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """
-        Test cases:
-        - Output retained for the failure message is capped by characters, not chunk count.
-        - The newest output survives while old output beyond the cap is dropped.
-        """
-        tail_cap = getattr(sandbox_module, "_OUTPUT_TAIL_MAX_CHARS")
-
+    async def test_arbitrary_agent_output_is_not_persisted_in_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def stream_command(_command: str) -> AsyncIterator[str]:
-            yield "old-marker\n"
-            yield "x" * (tail_cap + 1) + "\n"
-            yield "new-marker\n"
+            yield "prompt secret and attacker-controlled output\n"
             raise ProviderSandboxCommandError(1)
 
         mock_sandbox = Mock()
@@ -1790,10 +1913,16 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", fake_set_tag)
 
         with pytest.raises(AgentRunFailedError) as exc_info:
-            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+            await sandbox_module.stream_command_output(
+                mock_sandbox,
+                "run-agent.sh --secret value",
+                on_output=lambda _: None,
+            )
 
-        assert "new-marker" in str(exc_info.value)
-        assert "old-marker" not in str(exc_info.value)
+        assert str(exc_info.value) == "Sandbox error: Agent command failed with exit code 1"
+        assert "prompt" not in str(exc_info.value)
+        assert "secret" not in str(exc_info.value)
+        assert "run-agent.sh" not in str(exc_info.value)
 
 
 class TestStreamCommandOutputRemovedContainer:

@@ -6,12 +6,13 @@ from uuid import UUID
 import click
 from tracker.agent.contract import get_contract
 from tracker.agent.schemas import AgentConfig
+from tracker.database.models import AgentContractRequest
 from tracker.types import StartBenchmarkResponse
 
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
-from valkyrie.cli.agent.storage import get_contract_from_s3, push_agent
+from valkyrie.cli.agent.storage import get_contract_from_s3, push_agent_if_absent
 from valkyrie.cli.display import local_time
 from valkyrie.cli.service_headers import benchmark_service_headers
 from valkyrie.cli.tracker_client import TrackerService, response_error_detail
@@ -345,6 +346,7 @@ def start(
 
         config_kwargs["kwargs"] = {key: value for key, value in kwargs}
         agent_config = AgentConfig(**config_kwargs)
+        managed_execution = not TrackerService.parse_config_keys()
 
         agent_path = Path(agent)
 
@@ -359,7 +361,25 @@ def start(
                 agent_path / "contract.yaml",
             )
             contract = get_contract(contract_file, agent_config)
-            asyncio.run(push_agent(contract.name, agent_path))
+            if not asyncio.run(push_agent_if_absent(contract.name, agent_path)):
+                raise click.UsageError(
+                    f"A published agent named '{contract.name}' already exists. "
+                    "Refusing to overwrite it as a side effect of run start. "
+                    f"Use --agent {contract.name} to run the published release, "
+                    "or explicitly publish the local directory under a different name first."
+                )
+            if managed_execution:
+                contract = AgentContractRequest(
+                    name=contract.name,
+                    model=agent_config.model,
+                    kwargs={key: str(value) for key, value in agent_config.kwargs.items()},
+                )
+        elif managed_execution:
+            contract = AgentContractRequest(
+                name=agent,
+                model=agent_config.model,
+                kwargs={key: str(value) for key, value in agent_config.kwargs.items()},
+            )
         else:
             contract = asyncio.run(get_contract_from_s3(agent, agent_config))
             contract.name = agent

@@ -11,7 +11,7 @@ from benchmark_service import ImageSource, Resources, SandboxProvider
 
 from tests.utils import random_task_id
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import get_benchmark_contract_s3_key, get_contract_s3_key
+from tracker.aws.s3 import S3ObjectStore, get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.database.models import AgentContractRequest
 from tracker.sandbox import create_sandbox, upload_agent_artifacts
 from tracker.types import HarnessConfig
@@ -19,7 +19,7 @@ from tracker.types import HarnessConfig
 # Images covering the major package families
 _IMAGES = [
     ("python:3.11-slim", "python-slim-apt"),
-    ("python:3.11-alpine", "python-alpine-apk"),
+    ("python:3.11-alpine3.20", "python-alpine-apk"),
     ("debian:bookworm-slim", "debian-apt"),
     ("ubuntu:24.04", "ubuntu-apt"),
     ("fedora:40", "fedora-dnf"),
@@ -60,6 +60,7 @@ class TestUploadArtifactsAcrossImages:
 
         benchmark_id = f"test-benchmark-{uuid4().hex[:5]}"
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        object_store = S3ObjectStore(aws_runtime)
         aws_credentials = harness_config.aws
 
         # Stage the per-benchmark frozen copy that upload_agent_artifacts will now read from.
@@ -91,7 +92,7 @@ class TestUploadArtifactsAcrossImages:
                     creation_semaphore,
                 ) as sandbox,
             ):
-                await upload_agent_artifacts(sandbox, contract, benchmark_id, aws_runtime)
+                await upload_agent_artifacts(sandbox, contract, benchmark_id, object_store)
 
                 dir_check = await sandbox.exec(f"test -d /bundle/{contract.name}")
                 assert dir_check.exit_code == 0, f"[{label}] contract dir /bundle/{contract.name} should exist"
