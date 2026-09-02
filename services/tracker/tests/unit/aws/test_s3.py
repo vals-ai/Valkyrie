@@ -20,6 +20,7 @@ from tracker.aws.s3 import (
     delete_from_s3,
     download_many_from_s3,
     upload_stream_to_s3,
+    upload_to_s3_if_absent,
 )
 from tracker.exceptions import S3Error
 
@@ -219,6 +220,41 @@ async def test_versioned_copy_can_be_deleted_exactly(
         Key="benchmarks/run/demo.zip",
         VersionId="version-1",
     )
+
+
+async def test_conditional_upload_claims_only_an_absent_key(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+) -> None:
+    """Conditional uploads distinguish a successful claim from an existing key."""
+    client = AsyncMock()
+    client_context = AsyncMock()
+    client_context.__aenter__.return_value = client
+
+    def s3_client(_provider: object) -> AsyncMock:
+        return client_context
+
+    monkeypatch.setattr(type(aws_runtime.clients), "s3_client", s3_client)
+
+    claimed = await upload_to_s3_if_absent(b"pending", "callbacks/request.json", aws_runtime)
+
+    assert claimed is True
+    client.put_object.assert_awaited_once_with(
+        Bucket="test-bucket",
+        Key="callbacks/request.json",
+        Body=b"pending",
+        IfNoneMatch="*",
+    )
+
+    client.put_object.reset_mock()
+    client.put_object.side_effect = ClientError(
+        {"Error": {"Code": "PreconditionFailed", "Message": "exists"}},
+        "PutObject",
+    )
+
+    claimed = await upload_to_s3_if_absent(b"pending", "callbacks/request.json", aws_runtime)
+
+    assert claimed is False
 
 
 @pytest.fixture

@@ -69,7 +69,9 @@ EXPECTED_SIGNATURES = {
     RunsResource.fetch: "self, run_id",
     RunsResource.list: "self, request=None",
     RunsResource.stream: "self, run_id",
-    RunsResource.results: "self, run_id, *, task_ids=None, upload_to_s3=False, lambda_function=None",
+    RunsResource.results: (
+        "self, run_id, *, task_ids=None, upload_to_s3=False, lambda_function=None, idempotency_key=None"
+    ),
     RunsResource.metadata: "self, run_id",
     RunsResource.results_exist: "self, run_id",
     RunsResource.analyze: "self, run_id, *, no_cache=False, lambda_function=None",

@@ -177,6 +177,22 @@ class S3UploadResultsResponse(BaseModel):
     expires_in: int = 86400
 
 
+class InvokeResultsLambdaRequest(BaseModel):
+    """Request a Lambda callback for a run result view."""
+
+    lambda_function: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    idempotency_key: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._~-]+$")
+    task_ids: list[str] | None = None
+
+
+class ResultCallbackState(BaseModel):
+    """Durable state for one idempotent result callback request."""
+
+    request_hash: str
+    s3_key: str
+    status: Literal["pending", "completed", "failed"]
+
+
 RetrieveResultsResponse = FinalViewResponse | S3UploadResultsResponse
 
 

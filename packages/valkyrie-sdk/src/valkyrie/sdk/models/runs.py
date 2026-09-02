@@ -106,6 +106,14 @@ class AnalyzeBenchmarkRequest(BaseModel):
     lambda_function: str | None = None
 
 
+class InvokeResultsLambdaRequest(BaseModel):
+    """Wire payload used to invoke a Lambda on an immutable result view."""
+
+    lambda_function: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    idempotency_key: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._~-]+$")
+    task_ids: list[str] | None = None
+
+
 class AnalyzeEvent(ResponseModel):
     """One progress or completion event from run analysis."""
 

@@ -1,5 +1,7 @@
 import asyncio
+import hashlib
 import io
+import json
 import logging
 import tarfile
 from collections.abc import AsyncGenerator, AsyncIterator
@@ -12,12 +14,14 @@ import httpx
 import logfire
 import sentry_sdk
 from botocore.config import Config
+from botocore.exceptions import ConnectionClosedError, IncompleteReadError, ReadTimeoutError, ResponseStreamingError
 from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from opentelemetry.propagate import inject
+from pydantic import ValidationError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, select
@@ -48,13 +52,18 @@ from tracker.aws.resolver import (
 )
 from tracker.aws.secrets import SecretsManagerStore
 from tracker.agent.contract import get_contract_from_zip_bytes
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     S3ObjectStore,
     create_benchmark_url,
     create_console_url,
     create_presigned_url,
+    delete_from_s3,
+    download_from_s3,
     s3_object_exists,
+    upload_to_s3,
+    upload_to_s3_if_absent,
 )
 from tracker.runtime.artifacts import (
     agent_bundle_key,
@@ -113,9 +122,12 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FetchBenchmarkTasksRequest,
+    FinalViewResponse,
     HarnessConfig,
+    InvokeResultsLambdaRequest,
     ManagedExecutionContext,
     Order,
+    ResultCallbackState,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
@@ -142,6 +154,7 @@ from tracker.utils import (
     start_benchmark_request_to_benchmark,
     stream_benchmark_results,
     upload_final_view,
+    upload_final_view_to_key,
     update_benchmark_concurrency,
     update_benchmark_resume_arguments,
 )
@@ -817,35 +830,123 @@ async def analyze_benchmark(
     )
 
 
+async def _create_results_view(
+    benchmark_row: Benchmark,
+    http_request: Request,
+    task_ids: list[str] | None,
+    session: Session,
+    org: Org,
+) -> FinalViewResponse:
+    """Build a full or rescored subset result view without persisting it."""
+    final_view = create_final_view(benchmark_row, session, org)
+    if not task_ids:
+        return final_view
+
+    task_ids_set = set(task_ids)
+
+    def _filter_task_map(task_map: dict[str, Any] | None) -> dict[str, Any] | None:
+        return {task_id: value for task_id, value in (task_map or {}).items() if task_id in task_ids_set} or None
+
+    final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
+    final_view.task_errors = _filter_task_map(final_view.task_errors)
+
+    # Tasks without results still contribute to the subset score denominator.
+    scored_results = {
+        task_id: result
+        for task_id, result in fetch_final_score_inputs(session, benchmark_row, org).items()
+        if task_id in task_ids_set
+    }
+
+    if benchmark_row.custom_benchmark_service is not None:
+        _authorize_custom_benchmark_destination(benchmark_row.custom_benchmark_service, org)
+
+    effective_service_headers = forward_tracker_api_key(
+        None,
+        http_request.headers.get("x-api-key"),
+        destination=classify_benchmark_service_destination(
+            benchmark_row.name,
+            benchmark_row.custom_benchmark_service,
+        ),
+    )
+    benchmark_service = benchmark_row.benchmark_service(service_headers=effective_service_headers)
+    try:
+        resp = await benchmark_service.final_score(
+            evaluation_results=scored_results,
+            dataset=benchmark_row.arguments.dataset,
+        )
+    finally:
+        await benchmark_service.close()
+    final_view.final_evaluation = FinalEvaluation(
+        org_id=org.id,
+        benchmark=benchmark_row.id,
+        final_score=resp.final_score,
+        properties=resp.metadata,
+    )
+
+    return final_view
+
+
+async def _s3_results_response(s3_key: str, aws_runtime: AWSRuntime) -> S3UploadResultsResponse:
+    """Create downloadable URLs for one uploaded result view."""
+    expires_in = aws_runtime.clients.maximum_presign_ttl(86400)
+
+    return S3UploadResultsResponse(
+        s3_url=f"s3://{aws_runtime.resources.s3_bucket}/{s3_key}",
+        presigned_url=await create_presigned_url(s3_key, aws_runtime, expiration=expires_in),
+        console_url=create_console_url(s3_key, aws_runtime.resources),
+        expires_in=expires_in,
+    )
+
+
+def _result_callback_keys(benchmark_id: UUID, body: InvokeResultsLambdaRequest) -> tuple[str, str, str]:
+    """Derive stable request state and immutable result keys."""
+    request_payload = {
+        "benchmark_id": str(benchmark_id),
+        "lambda_function": body.lambda_function,
+        "task_ids": body.task_ids,
+    }
+    request_hash = hashlib.sha256(
+        json.dumps(request_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    idempotency_hash = hashlib.sha256(body.idempotency_key.encode()).hexdigest()
+    prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/result-callbacks"
+
+    return (
+        request_hash,
+        f"{prefix}/requests/{idempotency_hash}.json",
+        f"{prefix}/results/{idempotency_hash}-{request_hash}.json",
+    )
+
+
+async def _existing_result_callback(
+    state_key: str,
+    request_hash: str,
+    aws_runtime: AWSRuntime,
+) -> S3UploadResultsResponse:
+    """Return a completed callback replay or reject an unsafe replay."""
+    try:
+        state = ResultCallbackState.model_validate_json(await download_from_s3(state_key, aws_runtime))
+    except ValidationError as exc:
+        raise TrackerServiceError("Stored result callback state is invalid") from exc
+
+    if state.request_hash != request_hash:
+        raise HTTPException(status_code=409, detail="Idempotency key was already used for a different callback")
+    if state.status == "completed":
+        return await _s3_results_response(state.s3_key, aws_runtime)
+
+    raise HTTPException(status_code=409, detail=f"Result callback is already {state.status}")
+
+
 @app.get("/retrieve-results")
 async def retrieve_results(
     benchmark_id: TrackedBenchmarkId,
     http_request: Request,
     s3: bool = Query(default=False),
     task_ids: list[str] | None = Query(default=None),
-    lambda_function: str | None = Query(default=None),
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> RetrieveResultsResponse:
-    """
-    Retrieve the results of a benchmark by its id. When task_ids is non-empty, the final view is
-    filtered to that subset and the final score is recomputed over the subset; the persisted
-    FinalEvaluation / per-task rows are left untouched.
-
-    Note: with `s3=True` the S3 final view at the canonical key is overwritten with whatever was
-    just computed (full or subset). The DB remains source of truth, so re-running without
-    task_ids re-uploads the canonical full view.
-
-    `lambda_function` invokes that function on the uploaded view instead of the one the run was
-    started with, and requires `s3=True` because the callback reads the canonical key.
-
-    Usage:
-    curl -X GET http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=false
-    curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'
-    """
-    if lambda_function and not s3:
-        raise HTTPException(status_code=400, detail="lambda_function requires s3=true")
-
+    """Retrieve a full or rescored subset result view."""
     benchmark_row = assert_org(
         session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)]),
         org,
@@ -855,83 +956,86 @@ async def retrieve_results(
         aws_managed=benchmark_row.aws_managed,
         org_id=org.id,
     )
+    final_view = await _create_results_view(benchmark_row, http_request, task_ids, session, org)
 
-    final_view = create_final_view(benchmark_row, session, org)
+    if not s3:
+        return final_view
 
-    if task_ids:
-        task_ids_set = set(task_ids)
+    s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime)
+    return await _s3_results_response(s3_key, aws_runtime)
 
-        def _filter_task_map(task_map: dict[str, Any] | None) -> dict[str, Any] | None:
-            return {task_id: value for task_id, value in (task_map or {}).items() if task_id in task_ids_set} or None
 
-        final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
-        final_view.task_errors = _filter_task_map(final_view.task_errors)
+@app.post("/invoke-results-lambda/{benchmark_id}")
+async def invoke_results_lambda(
+    benchmark_id: TrackedBenchmarkId,
+    http_request: Request,
+    body: InvokeResultsLambdaRequest,
+    session: Session = Depends(get_session),
+    run_starter: RequestIdentity = Depends(get_current_starter),
+) -> S3UploadResultsResponse:
+    """Invoke a Lambda once on an immutable full or subset result view."""
+    org = run_starter.org
+    benchmark_row = assert_org(
+        session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)]),
+        org,
+    )
+    if AUTH_REQUIRED and (
+        run_starter.access_key_id is None
+        or benchmark_row.started_by_id is None
+        or benchmark_row.started_by_id != run_starter.access_key_id
+    ):
+        raise HTTPException(status_code=403, detail="Only the credential that started this run can invoke its callback")
 
-        # Include every requested task with its result or None, so tasks without a result
-        # (e.g. stopped/errored) still count toward the denominator instead of being dropped.
-        scored_results = {
-            task_id: result
-            for task_id, result in fetch_final_score_inputs(session, benchmark_row, org).items()
-            if task_id in task_ids_set
-        }
+    aws_runtime = resolve_run_aws_runtime(
+        http_request,
+        aws_managed=benchmark_row.aws_managed,
+        org_id=org.id,
+    )
+    request_hash, state_key, result_key = _result_callback_keys(benchmark_id, body)
+    pending_state = ResultCallbackState(request_hash=request_hash, s3_key=result_key, status="pending")
+    claimed = await upload_to_s3_if_absent(pending_state.model_dump_json().encode(), state_key, aws_runtime)
+    if not claimed:
+        return await _existing_result_callback(state_key, request_hash, aws_runtime)
 
-        if benchmark_row.custom_benchmark_service is not None:
-            _authorize_custom_benchmark_destination(benchmark_row.custom_benchmark_service, org)
-
-        effective_service_headers = forward_tracker_api_key(
-            None,
-            http_request.headers.get("x-api-key"),
-            destination=classify_benchmark_service_destination(
-                benchmark_row.name,
-                benchmark_row.custom_benchmark_service,
-            ),
+    try:
+        final_view = await _create_results_view(benchmark_row, http_request, body.task_ids, session, org)
+        await upload_final_view_to_key(final_view, result_key, aws_runtime)
+        await asyncio.to_thread(
+            invoke_lambda,
+            aws_runtime.clients,
+            body.lambda_function,
+            benchmark_row.arguments.model_dump()
+            | {
+                "benchmark_id": str(benchmark_id),
+                "benchmark_name": benchmark_row.name,
+                "lambda_function": body.lambda_function,
+                "task_ids": body.task_ids,
+                "idempotency_key": body.idempotency_key,
+                "s3_bucket": aws_runtime.resources.s3_bucket,
+                "s3_key": result_key,
+            },
+            config=_RESULTS_CALLBACK_CONFIG,
         )
-        benchmark_service = benchmark_row.benchmark_service(service_headers=effective_service_headers)
+    except (ConnectionClosedError, IncompleteReadError, ReadTimeoutError, ResponseStreamingError):
+        # The Lambda may have run before its response transport failed. Keep the claim and input
+        # so retries cannot duplicate downstream side effects.
+        raise
+    except Exception:
+        failed_state = pending_state.model_copy(update={"status": "failed"})
         try:
-            resp = await benchmark_service.final_score(
-                evaluation_results=scored_results,
-                dataset=benchmark_row.arguments.dataset,
-            )
-        finally:
-            await benchmark_service.close()
-        final_view.final_evaluation = FinalEvaluation(
-            org_id=org.id,
-            benchmark=benchmark_row.id,
-            final_score=resp.final_score,
-            properties=resp.metadata,
-        )
+            await upload_to_s3(failed_state.model_dump_json().encode(), state_key, aws_runtime)
+        except Exception:
+            logger.exception("Failed to record result callback failure for run %s", benchmark_id)
+        try:
+            await delete_from_s3(result_key, aws_runtime)
+        except Exception:
+            logger.exception("Failed to delete result callback input for run %s", benchmark_id)
+        raise
 
-    if s3:
-        s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime)
+    completed_state = pending_state.model_copy(update={"status": "completed"})
+    await upload_to_s3(completed_state.model_dump_json().encode(), state_key, aws_runtime)
 
-        if lambda_function:
-            await asyncio.to_thread(
-                invoke_lambda,
-                aws_runtime.clients,
-                lambda_function,
-                benchmark_row.arguments.model_dump()
-                | {
-                    "benchmark_id": str(benchmark_id),
-                    "benchmark_name": benchmark_row.name,
-                    "lambda_function": lambda_function,
-                    "task_ids": task_ids,
-                },
-                config=_RESULTS_CALLBACK_CONFIG,
-            )
-
-        https_url = f"s3://{aws_runtime.resources.s3_bucket}/{s3_key}"
-        expires_in = aws_runtime.clients.maximum_presign_ttl(86400)
-        presigned_url = await create_presigned_url(s3_key, aws_runtime, expiration=expires_in)
-        console_url = create_console_url(s3_key, aws_runtime.resources)
-
-        return S3UploadResultsResponse(
-            s3_url=https_url,
-            presigned_url=presigned_url,
-            console_url=console_url,
-            expires_in=expires_in,
-        )
-
-    return final_view
+    return await _s3_results_response(result_key, aws_runtime)
 
 
 @app.get("/check-results-exist")

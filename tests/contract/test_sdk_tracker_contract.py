@@ -40,6 +40,7 @@ from tracker.types import (
     FetchBenchmarksResponse,
     FinalViewResponse,
     HarnessConfig,
+    InvokeResultsLambdaRequest,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
     SingleBenchmarkResponse,
@@ -77,6 +78,7 @@ from valkyrie.sdk.models import (
     FinalEvaluation as SDKFinalEvaluation,
     FinalViewResponse as SDKFinalViewResponse,
     HarnessConfig as SDKHarnessConfig,
+    InvokeResultsLambdaRequest as SDKInvokeResultsLambdaRequest,
     OutputArtifact as SDKOutputArtifact,
     RetryOrResumeBenchmarkResponse as SDKRetryResponse,
     S3UploadResultsResponse as SDKS3ResultsResponse,
@@ -100,7 +102,8 @@ ROUTES = (
         "get",
         "agent_name benchmark_name model dataset label status started_by started_after started_before order_by cursor limit offset",
     ),
-    ("/retrieve-results", "get", "benchmark_id s3 task_ids lambda_function"),
+    ("/retrieve-results", "get", "benchmark_id s3 task_ids"),
+    ("/invoke-results-lambda/{benchmark_id}", "post", "benchmark_id"),
     ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id force"),
     ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id retry retry_mode concurrency"),
     ("/benchmarks/status", "get", "ids"),
@@ -138,6 +141,7 @@ RESPONSE_MODELS = {
     ("/benchmark-services", "post"): "BenchmarkServicesResponse",
     ("/fetch-benchmark-tasks", "post"): "VerifyTaskIdsResponse",
     ("/fetch-benchmark-metadata/{benchmark_id}", "get"): "FetchBenchmarkMetadataResponse",
+    ("/invoke-results-lambda/{benchmark_id}", "post"): "S3UploadResultsResponse",
 }
 MODEL_PAIRS = (
     (OutputArtifact, SDKOutputArtifact),
@@ -176,6 +180,7 @@ MODEL_PAIRS = (
     (FetchBenchmarkTasksRequest, SDKFetchBenchmarkTasksRequest),
     (VerifyTaskIdsResponse, SDKTaskIDsResponse),
     (AnalyzeBenchmarkRequest, SDKAnalyzeBenchmarkRequest),
+    (InvokeResultsLambdaRequest, SDKInvokeResultsLambdaRequest),
     (FetchBenchmarkMetadataResponse, SDKFetchBenchmarkMetadataResponse),
 )
 INTERNAL_ROUTES = {

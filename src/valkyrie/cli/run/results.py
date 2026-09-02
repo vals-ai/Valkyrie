@@ -1,5 +1,5 @@
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import click
 from tracker.types import FinalViewResponse, RetrieveResultsResponse
@@ -57,7 +57,7 @@ def _format_expiration(seconds: int) -> str:
     type=str,
     required=False,
     default=None,
-    help="Lambda to invoke on the uploaded results, replacing the one the run was started with. Requires --s3.",
+    help="Lambda to invoke once on an immutable result upload. Requires --s3.",
 )
 def results(
     run_id: UUID,
@@ -74,22 +74,30 @@ def results(
         valkyrie run results e532551e-d51b-4912-983d-47695bd24174 --path ./results-e532551e-d51b-4912-983d-47695bd24174.json
     """
     subset_task_ids = resolve_task_ids(task_ids, task_ids_file)
+    if lambda_function and not s3:
+        raise click.UsageError("--lambda requires --s3")
 
     click.echo(f"Retrieving results for run: {run_id}")
 
     try:
         with TrackerService() as tracker:
-            if s3:
-                if tracker.check_results_exist_in_s3(run_id):
+            if lambda_function:
+                results_response: RetrieveResultsResponse = tracker.invoke_results_lambda(
+                    run_id,
+                    lambda_function,
+                    str(uuid4()),
+                    task_ids=subset_task_ids,
+                )
+            else:
+                if s3 and tracker.check_results_exist_in_s3(run_id):
                     if not click.confirm("Results already exist in S3. Overwrite?"):
                         raise click.Abort()
 
-            results_response: RetrieveResultsResponse = tracker.retrieve_results(
-                run_id,
-                s3,
-                task_ids=subset_task_ids,
-                lambda_function=lambda_function,
-            )
+                results_response = tracker.retrieve_results(
+                    run_id,
+                    s3,
+                    task_ids=subset_task_ids,
+                )
 
             if isinstance(results_response, FinalViewResponse):
                 if subset_task_ids:

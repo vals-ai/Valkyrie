@@ -553,13 +553,18 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
     return final_view
 
 
-async def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse, aws_runtime: AWSRuntime) -> str:
-    """Uploads the final view to the root of the benchmark folder and returns the s3 key"""
-    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/{benchmark_row.name}.json"
+async def upload_final_view_to_key(final_view: FinalViewResponse, s3_key: str, aws_runtime: AWSRuntime) -> None:
+    """Upload a final view to an explicit S3 key."""
     await upload_to_s3(
         final_view.model_dump_json(indent=4, exclude_none=True).encode(),
         s3_key,
         aws_runtime,
     )
+
+
+async def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse, aws_runtime: AWSRuntime) -> str:
+    """Uploads the final view to the root of the benchmark folder and returns the s3 key"""
+    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/{benchmark_row.name}.json"
+    await upload_final_view_to_key(final_view, s3_key, aws_runtime)
 
     return s3_key

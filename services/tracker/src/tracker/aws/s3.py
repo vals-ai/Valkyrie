@@ -83,6 +83,28 @@ async def upload_to_s3(file_content: bytes, s3_key: str, runtime: AWSRuntime) ->
         await client.put_object(Bucket=runtime.resources.s3_bucket, Key=s3_key, Body=file_content)
 
 
+@logfire.instrument("upload_to_s3_if_absent", extract_args=("s3_key",))
+async def upload_to_s3_if_absent(file_content: bytes, s3_key: str, runtime: AWSRuntime) -> bool:
+    """Upload an object only when its key does not already exist."""
+    try:
+        async with runtime.clients.s3_client() as client:
+            await client.put_object(
+                Bucket=runtime.resources.s3_bucket,
+                Key=s3_key,
+                Body=file_content,
+                IfNoneMatch="*",
+            )
+    except ClientError as exc:
+        error_code = str(exc.response.get("Error", {}).get("Code", ""))
+        if error_code in {"409", "412", "ConditionalRequestConflict", "PreconditionFailed"}:
+            return False
+        raise S3Error(f"Failed to upload to S3: {exc}") from exc
+    except BotoCoreError as exc:
+        raise S3Error(f"Failed to upload to S3: {exc}") from exc
+
+    return True
+
+
 @logfire.instrument("upload_stream_to_s3", extract_args=("s3_key",))
 @handle_s3_error(message="Failed to upload stream to S3")
 async def upload_stream_to_s3(
