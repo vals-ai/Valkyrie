@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# PR classification runs this helper from a trusted default-branch revision while
+# PR classification runs this helper from a trusted branch revision while
 # synthesizing source revisions with synthetic account IDs and no AWS access.
 revision="${1:?revision is required}"
 target_branch="${2:?target branch is required}"

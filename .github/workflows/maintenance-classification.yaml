@@ -20,18 +20,36 @@ jobs:
   resolve-synthesis-helper:
     runs-on: ubuntu-24.04-arm
     outputs:
-      sha: ${{ steps.revision.outputs.sha }}
+      sha: ${{ steps.target-revision.outputs.sha || steps.default-revision.outputs.sha }}
     steps:
-      - name: Checkout trusted synthesis helper
+      - name: Checkout exact trusted target revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ env.BASE_SHA }}
+
+      - name: Select target synthesis helper
+        id: target-revision
+        run: |
+          if [[ -f .github/scripts/synthesize-worker-templates.sh ]]; then
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout default-branch synthesis helper fallback
+        if: steps.target-revision.outputs.sha == ''
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 1
           persist-credentials: false
           ref: ${{ github.event.repository.default_branch }}
 
-      - name: Record trusted synthesis helper revision
-        id: revision
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Select default-branch synthesis helper
+        if: steps.target-revision.outputs.sha == ''
+        id: default-revision
+        run: |
+          test -f .github/scripts/synthesize-worker-templates.sh
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   synthesize-base:
     needs: resolve-synthesis-helper
