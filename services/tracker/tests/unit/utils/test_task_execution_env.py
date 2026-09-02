@@ -249,6 +249,127 @@ class TestProcessTaskEnvironment:
         assert "TAVILY_API_KEY" not in captured["env_vars"]
 
     @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_gateway_run_does_not_resolve_or_inject_direct_provider_credentials(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        contract = contract.model_copy(
+            update={
+                "kwargs": {"no_model_gateway": "False"},
+                "secrets": {
+                    "MODEL_GATEWAY_URL": "gateway-config",
+                    "MODEL_GATEWAY_API_KEY": "gateway-config",
+                    "OPENAI_API_KEY": "provider-bundle",
+                    "TAVILY_API_KEY": "tool-secret",
+                },
+            }
+        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        captured: dict[str, dict[str, str]] = {}
+        resolved_inputs: list[dict[str, str]] = []
+
+        def _mock_resolve_secrets(
+            secrets: dict[str, str], *_args: Any, **_kwargs: Any
+        ) -> dict[str, str]:
+            resolved_inputs.append(secrets)
+            return {name: f"resolved-{name}" for name in secrets}
+
+        @asynccontextmanager
+        async def _capture_sandbox(
+            *_args: Any, **kwargs: Any
+        ) -> AsyncGenerator[SimpleNamespace, None]:
+            captured["env_vars"] = kwargs["env_vars"]
+            captured["sandbox_secrets"] = kwargs["sandbox_secrets"]
+            yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> Any:
+            response = make_retrieve_task_response()
+            response.sandbox_secrets = {
+                "ANTHROPIC_API_KEY": "native-provider-secret",
+                "BENCHMARK_TOOL_API_KEY": "native-tool-secret",
+            }
+            return response
+
+        monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr(utils_module, "create_sandbox", _capture_sandbox)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+
+        result = await run_process_task(
+            start_benchmark_request, task_row, benchmark_id, aws_runtime, authority
+        )
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        assert resolved_inputs == [
+            {
+                "MODEL_GATEWAY_URL": "gateway-config",
+                "MODEL_GATEWAY_API_KEY": "gateway-config",
+                "TAVILY_API_KEY": "tool-secret",
+            }
+        ]
+        assert "OPENAI_API_KEY" not in captured["env_vars"]
+        assert captured["env_vars"]["TAVILY_API_KEY"] == "resolved-TAVILY_API_KEY"
+        assert captured["sandbox_secrets"] == {
+            "BENCHMARK_TOOL_API_KEY": "native-tool-secret"
+        }
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_direct_provider_escape_hatch_preserves_provider_credentials(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        contract = contract.model_copy(
+            update={
+                "kwargs": {"no_model_gateway": "True"},
+                "secrets": {
+                    "MODEL_GATEWAY_URL": "gateway-config",
+                    "MODEL_GATEWAY_API_KEY": "gateway-config",
+                    "OPENAI_API_KEY": "provider-bundle",
+                },
+            }
+        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        captured_env_vars: list[dict[str, str]] = []
+
+        def _resolve_direct_secrets(
+            secrets: dict[str, str], *_args: Any, **_kwargs: Any
+        ) -> dict[str, str]:
+            return {name: f"resolved-{name}" for name in secrets}
+
+        monkeypatch.setattr(
+            utils_module,
+            "resolve_secrets",
+            _resolve_direct_secrets,
+        )
+        monkeypatch.setattr(
+            utils_module,
+            "create_sandbox",
+            partial(_capture_sandbox_environment, captured_env_vars),
+        )
+
+        result = await run_process_task(
+            start_benchmark_request, task_row, benchmark_id, aws_runtime, authority
+        )
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        assert captured_env_vars[0]["OPENAI_API_KEY"] == "resolved-OPENAI_API_KEY"
+
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_stopped_task_output_is_fenced_while_sibling_keeps_dispatch_active(
         self,
         contract: AgentContractRequest,

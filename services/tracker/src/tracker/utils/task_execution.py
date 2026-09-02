@@ -34,7 +34,11 @@ from tracker.aws.s3 import S3ObjectStore
 from tracker.runtime.artifacts import task_artifact_key
 from tracker.runtime.logs import BenchmarkLogSink
 from tracker.aws.secrets import SecretsManagerStore
-from tracker.runtime.secrets import resolve_secrets
+from tracker.runtime.secrets import (
+    gateway_routing_enabled,
+    resolve_secrets,
+    without_direct_provider_credentials,
+)
 from tracker.config import ENVIRONMENT
 from tracker.database.models import (
     AgentCausedExitReason,
@@ -934,11 +938,23 @@ async def _process_task_attempt(
         if benchmark_started_by_email:
             identity["email"] = benchmark_started_by_email
 
+        contract = start_benchmark_request.contract
+        gateway_backed = gateway_routing_enabled(
+            contract.secrets.keys()
+            | task_data.sandbox_secrets.keys()
+            | recovery_attempt.environment.keys(),
+            contract.kwargs,
+        )
+        secret_refs = (
+            without_direct_provider_credentials(contract.secrets)
+            if gateway_backed
+            else contract.secrets
+        )
         env_vars = {
-            **resolve_secrets(start_benchmark_request.contract.secrets, SecretsManagerStore(aws_runtime.clients)),
+            **resolve_secrets(secret_refs, SecretsManagerStore(aws_runtime.clients)),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
-            **_attested_inference_settings(start_benchmark_request.contract),
+            **_attested_inference_settings(contract),
             "IDENTITY": json.dumps(identity),
             # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
             # are filterable per benchmark run and separable from other environments sharing the
@@ -948,6 +964,13 @@ async def _process_task_attempt(
             ),
             **recovery_attempt.environment,
         }
+        sandbox_secrets = task_data.sandbox_secrets
+        if gateway_backed:
+            # Filter both sources after assembly as well, so provider-confirmed
+            # recovery state and benchmark-owned native secret references cannot
+            # reintroduce a direct-provider credential into a gateway run.
+            env_vars = without_direct_provider_credentials(env_vars)
+            sandbox_secrets = without_direct_provider_credentials(sandbox_secrets)
 
         # We don't want to track the task until the sandbox is actually created.
         task_breakdown = TaskBreakdown()
@@ -960,7 +983,7 @@ async def _process_task_attempt(
             source=task_data.source,
             labels=labels,
             env_vars=env_vars,
-            sandbox_secrets=task_data.sandbox_secrets,
+            sandbox_secrets=sandbox_secrets,
             resources=task_data.resources,
             volumes=task_data.volumes,
             creation_semaphore=creation_semaphore,

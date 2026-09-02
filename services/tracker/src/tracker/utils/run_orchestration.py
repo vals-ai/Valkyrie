@@ -21,7 +21,11 @@ from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.resolver import deployment_aws_runtime
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.secrets import SecretsManagerStore
-from tracker.runtime.secrets import resolve_secrets
+from tracker.runtime.secrets import (
+    gateway_routing_enabled,
+    resolve_secrets,
+    without_direct_provider_credentials,
+)
 from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
     Benchmark,
@@ -410,7 +414,13 @@ def _preflight_managed_aws(
         secret_store,
         request.sandbox_provider,
     )
-    resolve_secrets(request.contract.secrets, secret_store)
+    contract = request.contract
+    secret_refs = (
+        without_direct_provider_credentials(contract.secrets)
+        if gateway_routing_enabled(contract.secrets.keys(), contract.kwargs)
+        else contract.secrets
+    )
+    resolve_secrets(secret_refs, secret_store)
     if request.webhook_secret_name and request.webhook_intervals:
         secret_store.get(request.webhook_secret_name)
     if request.lambda_function:
