@@ -261,7 +261,8 @@ class TestAccessKeyCache:
         auth_module._exchange_and_normalize_access_key.cache_clear()
 
     def test_cache_deadline_uses_monotonic_clock_ttl_and_expiry_skew(self) -> None:
-        assert auth_module._cache_deadline(200.0, wall_now=100.0, monotonic_now=500.0) == 510.0
+        assert auth_module._cache_deadline(10000.0, wall_now=100.0, monotonic_now=500.0) == 4100.0
+        assert auth_module._cache_deadline(200.0, wall_now=100.0, monotonic_now=500.0) == 599.0
         assert auth_module._cache_deadline(105.0, wall_now=100.0, monotonic_now=500.0) == 504.0
         assert auth_module._cache_deadline(101.0, wall_now=100.0, monotonic_now=500.0) == 500.0
 

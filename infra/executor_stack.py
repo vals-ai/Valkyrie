@@ -249,7 +249,7 @@ class ExecutorStack(Stack):
             db_secret=db_credentials_secret,
         )
 
-        if stage.is_prod:
+        if stage.is_production:
             self._add_sandbox_cleanup_schedule(
                 stage=stage,
                 log_retention=stage_config.service_log_retention,
@@ -496,7 +496,6 @@ class ExecutorStack(Stack):
             "GitHubOidcProvider",
             f"arn:{self.partition}:iam::{self.account}:oidc-provider/token.actions.githubusercontent.com",
         )
-        github_environment = stage.name
         release_role = aws_iam.Role(
             self,
             "ExecutorReleaseRole",
@@ -509,7 +508,7 @@ class ExecutorStack(Stack):
                         "StringEquals": {
                             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
                             "token.actions.githubusercontent.com:sub": (
-                                f"repo:vals-ai/Valkyrie:environment:{github_environment}"
+                                f"repo:vals-ai/Valkyrie:environment:{stage.github_environment}"
                             ),
                         }
                     },

@@ -62,12 +62,29 @@ jobs:
           uv venv --python 3.12
           uv sync --group dev
 
+      - name: Validate bench account boundary
+        if: steps.rel.outputs.relevant == 'true'
+        env:
+          BENCH_ACCOUNT_ID: ${{ secrets.VALKYRIE_BENCH_ACCOUNT_ID }}
+          TRACKER_INTEGRATION_ROLE_ARN: ${{ secrets.VALKYRIE_TRACKER_INTEGRATION_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$BENCH_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "::error::VALKYRIE_BENCH_ACCOUNT_ID must be a 12-digit Actions secret."
+            exit 1
+          fi
+          if [[ "$TRACKER_INTEGRATION_ROLE_ARN" != "arn:aws:iam::${BENCH_ACCOUNT_ID}:role/github-actions-valkyrie-tests" ]]; then
+            echo "::error::VALKYRIE_TRACKER_INTEGRATION_ROLE_ARN must name the approved Tracker test role in the bench account."
+            exit 1
+          fi
+
       - name: Configure AWS Credentials
         if: steps.rel.outputs.relevant == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::613431292675:role/github-actions-valkyrie-tests
+          role-to-assume: ${{ secrets.VALKYRIE_TRACKER_INTEGRATION_ROLE_ARN }}
           aws-region: us-east-1
+          allowed-account-ids: ${{ secrets.VALKYRIE_BENCH_ACCOUNT_ID }}
 
       - name: Run live integration tests
         if: steps.rel.outputs.relevant == 'true'

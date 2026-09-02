@@ -23,11 +23,12 @@ Use Vals-hosted compute infrastructure. Data is isolated per organization throug
 valkyrie config init
 ```
 
-Choose **hosted** when prompted. Valkyrie asks for your Vals AI API key, validates it, and creates your organization. When the organization can use managed AWS, Valkyrie reads the deployment Region and S3 bucket from Tracker instead of asking for access keys.
+Choose **hosted** when prompted, then select the **bench** or **prod** hosted environment for your organization. Valkyrie asks for your Vals AI API key, validates it against that environment, and creates your organization. When the organization can use managed AWS, Valkyrie reads the deployment Region and S3 bucket from Tracker instead of asking for access keys.
 
 ```
 $ valkyrie config init
 Setup mode (hosted, self-hosted) [self-hosted]: hosted
+Hosted environment (bench, prod) [bench]: bench
 API Key: <your-vals-ai-api-key>
 Organization 'your-org' configured successfully.
 
@@ -35,6 +36,8 @@ Managed AWS execution is enabled. Local AWS operations will use the AWS SDK cred
 ```
 
 Your Vals AI API key is sent with every request to authenticate and scope data to your organization.
+
+`VALKYRIE_ENV` overrides the saved environment. Its shipped values retain their existing meaning: `VALKYRIE_ENV=prod` selects bench, while `VALKYRIE_ENV=external` selects production. Leave this variable unset when using the saved `bench` or `prod` selection.
 
 ### AWS execution mode
 

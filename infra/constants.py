@@ -2,6 +2,8 @@
 
 import os
 
+from stage import resource_stage_name
+
 # VPC
 VPC_CIDR = "10.0.0.0/16"
 VPC_MAX_AZS = 2
@@ -84,7 +86,7 @@ DOCKER_ASSET_EXCLUDES = (
 
 
 def executor_release_launch_parameter(stage_name: str) -> str:
-    return f"/valkyrie/{stage_name}/executor-release/launch-config"
+    return f"/valkyrie/{resource_stage_name(stage_name)}/executor-release/launch-config"
 
 
 # Release-test service images. Dedicated repositories keep deployment writes
@@ -94,36 +96,32 @@ RELEASE_TEST_EXECUTOR_HOST_REPOSITORY_NAME = "valkyrie/release-test/executor-hos
 RELEASE_TEST_IMAGE_TAG_ENV = "RELEASE_TEST_IMAGE_TAG"
 
 
-# Stage-scoped account contract parameters. Release-test uses the same dev
-# account but must not overwrite dev's resource contract.
-def stage_parameter_name(dev_parameter: str, stage_name: str) -> str:
-    if stage_name == "dev":
-        return dev_parameter
-    return dev_parameter.replace("/dev/", f"/{stage_name}/", 1)
+# Stage-scoped account contract parameters.
+def stage_parameter_name(stage_name: str, parameter_path: str) -> str:
+    return f"/valkyrie/{resource_stage_name(stage_name)}/{parameter_path}"
 
 
-# Dev account prerequisites
-DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER = "/valkyrie/dev/dns/tracker/hosted-zone-id"
+TRACKER_HOSTED_ZONE_ID_PARAMETER_PATH = "dns/tracker/hosted-zone-id"
 
-# Dev shared-resource contract published for benchmark-service consumers.
+# Shared-resource contract published for benchmark-service consumers.
 # The benchmark-services registry resolves these names at deploy time; renaming
 # any of them is a cross-repo breaking change.
-DEV_SHARED_VPC_ID_PARAMETER = "/valkyrie/dev/shared/vpc-id"
-DEV_SHARED_AVAILABILITY_ZONES_PARAMETER = "/valkyrie/dev/shared/availability-zones"
-DEV_SHARED_PUBLIC_SUBNET_IDS_PARAMETER = "/valkyrie/dev/shared/public-subnet-ids"
-DEV_SHARED_CLUSTER_NAME_PARAMETER = "/valkyrie/dev/shared/cluster-name"
-DEV_SHARED_NAMESPACE_NAME_PARAMETER = "/valkyrie/dev/shared/cloud-map-namespace-name"
-DEV_SHARED_NAMESPACE_ID_PARAMETER = "/valkyrie/dev/shared/cloud-map-namespace-id"
-DEV_SHARED_NAMESPACE_ARN_PARAMETER = "/valkyrie/dev/shared/cloud-map-namespace-arn"
-DEV_SHARED_ARTIFACT_BUCKET_PARAMETER = "/valkyrie/dev/shared/artifact-bucket-name"
-DEV_SHARED_TRACKER_REPOSITORY_URI_PARAMETER = "/valkyrie/dev/shared/tracker-repository-uri"
-DEV_SHARED_EXECUTOR_HOST_REPOSITORY_URI_PARAMETER = "/valkyrie/dev/shared/executor-host-repository-uri"
-DEV_TRACKER_SECURITY_GROUP_PARAMETER = "/valkyrie/dev/tracker/security-group-id"
-DEV_TRACKER_ALB_DNS_PARAMETER = "/valkyrie/dev/tracker/alb-dns-name"
-DEV_DRIVER_TASK_DEFINITION_PARAMETER = "/valkyrie/dev/driver/task-definition-arn"
-DEV_DRIVER_SECURITY_GROUP_PARAMETER = "/valkyrie/dev/driver/security-group-id"
-DEV_DRIVER_LOG_GROUP_PARAMETER = "/valkyrie/dev/driver/log-group-name"
-DEV_DRIVER_OPERATOR_ROLE_PARAMETER = "/valkyrie/dev/driver/operator-role-arn"
+SHARED_VPC_ID_PARAMETER_PATH = "shared/vpc-id"
+SHARED_AVAILABILITY_ZONES_PARAMETER_PATH = "shared/availability-zones"
+SHARED_PUBLIC_SUBNET_IDS_PARAMETER_PATH = "shared/public-subnet-ids"
+SHARED_CLUSTER_NAME_PARAMETER_PATH = "shared/cluster-name"
+SHARED_NAMESPACE_NAME_PARAMETER_PATH = "shared/cloud-map-namespace-name"
+SHARED_NAMESPACE_ID_PARAMETER_PATH = "shared/cloud-map-namespace-id"
+SHARED_NAMESPACE_ARN_PARAMETER_PATH = "shared/cloud-map-namespace-arn"
+SHARED_ARTIFACT_BUCKET_PARAMETER_PATH = "shared/artifact-bucket-name"
+SHARED_TRACKER_REPOSITORY_URI_PARAMETER_PATH = "shared/tracker-repository-uri"
+SHARED_EXECUTOR_HOST_REPOSITORY_URI_PARAMETER_PATH = "shared/executor-host-repository-uri"
+TRACKER_SECURITY_GROUP_PARAMETER_PATH = "tracker/security-group-id"
+TRACKER_ALB_DNS_PARAMETER_PATH = "tracker/alb-dns-name"
+DRIVER_TASK_DEFINITION_PARAMETER_PATH = "driver/task-definition-arn"
+DRIVER_SECURITY_GROUP_PARAMETER_PATH = "driver/security-group-id"
+DRIVER_LOG_GROUP_PARAMETER_PATH = "driver/log-group-name"
+DRIVER_OPERATOR_ROLE_PARAMETER_PATH = "driver/operator-role-arn"
 
 RELEASE_TEST_DRIVER_SECRET_ARN_ENV = "RELEASE_TEST_DRIVER_SECRET_ARN"
 RELEASE_TEST_SANDBOX_PROVIDER_SECRET_ARN_ENV = "RELEASE_TEST_SANDBOX_PROVIDER_SECRET_ARN"

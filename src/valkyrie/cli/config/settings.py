@@ -4,7 +4,12 @@ from typing import Any
 import click
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.runtime_config import config_location
+from valkyrie.cli.runtime_config import (
+    ENVIRONMENT_CONFIG_KEY,
+    TRACKER_SERVICE_URL_ENV_VAR,
+    config_location,
+    tracker_url_for_environment,
+)
 from valkyrie.cli.tracker_client import TrackerService
 from valkyrie.cli.config.state import ConfigValue, load_config, read_config_if_exists, write_config
 
@@ -68,13 +73,20 @@ def init() -> None:
     environment_variables = _REQUIRED_ENVIRONMENT_VARIABLES
 
     if mode == "hosted":
+        environment = click.prompt(
+            "Hosted environment",
+            type=click.Choice(["bench", "prod"]),
+            default="bench",
+        )
+        current_config[ENVIRONMENT_CONFIG_KEY] = environment
+        tracker_url = os.environ.get(TRACKER_SERVICE_URL_ENV_VAR) or tracker_url_for_environment(environment)
         api_key = (os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key")).strip()
         _rotate_matching_benchmark_auth(current_config, api_key)
         current_config["api_key"] = api_key
 
         try:
-            result = TrackerService.init_org(api_key)
-            runtime = TrackerService.aws_runtime_metadata(api_key)
+            result = TrackerService.init_org(api_key, tracker_url)
+            runtime = TrackerService.aws_runtime_metadata(api_key, tracker_url)
         except TrackerServiceError as e:
             raise click.ClickException(str(e)) from e
         click.echo(f"Organization '{result['org_name']}' configured successfully.\n")
@@ -138,6 +150,7 @@ def init() -> None:
 
     if mode != "hosted":
         current_config.pop("api_key", None)
+        current_config.pop(ENVIRONMENT_CONFIG_KEY, None)
 
     write_config(current_config)
 
