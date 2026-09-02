@@ -170,8 +170,8 @@ class TestTrackerJsonEndpoints:
                 return httpx.Response(200, json=_fetch_payload(), request=request)
             if request.url.path == f"/fetch-benchmark-metadata/{_RUN_ID}":
                 return httpx.Response(200, json=_metadata_payload(), request=request)
-            if request.url.path in {"/retrieve-results", f"/invoke-results-lambda/{_RUN_ID}"}:
-                if request.url.path != "/retrieve-results" or request.url.params["s3"] == "true":
+            if request.url.path == "/retrieve-results":
+                if request.url.params["s3"] == "true":
                     return httpx.Response(
                         200,
                         json={
@@ -192,13 +192,7 @@ class TestTrackerJsonEndpoints:
             fetched_run = tracker.fetch_benchmark(_RUN_ID)
             metadata = tracker.fetch_benchmark_metadata(_RUN_ID)
             inline_results = tracker.retrieve_results(_RUN_ID, False, task_ids=["task-a"])
-            s3_results = tracker.retrieve_results(_RUN_ID, True)
-            callback_results = tracker.invoke_results_lambda(
-                _RUN_ID,
-                "subset-export",
-                "callback-request-1",
-                task_ids=["task-a"],
-            )
+            s3_results = tracker.retrieve_results(_RUN_ID, True, lambda_function="subset-export")
             task_ids = tracker.fetch_benchmark_tasks(
                 "swebench",
                 dataset="verified",
@@ -213,7 +207,6 @@ class TestTrackerJsonEndpoints:
         assert isinstance(s3_results, S3UploadResultsResponse)
         assert inline_results.benchmark_id == _RUN_ID
         assert s3_results.presigned_url == "https://download.example/results"
-        assert callback_results.s3_url == "s3://bucket/results.json"
         assert task_ids == ["task-a", "task-b"]
         assert results_exist is True
 
@@ -230,17 +223,7 @@ class TestTrackerJsonEndpoints:
             for request in requests
             if request.url.path == "/retrieve-results" and request.url.params["s3"] == "true"
         )
-        assert "lambda_function" not in s3_request.url.params
-
-        callback_request = next(
-            request for request in requests if request.url.path.startswith("/invoke-results-lambda/")
-        )
-        assert callback_request.method == "POST"
-        assert json.loads(callback_request.content) == {
-            "lambda_function": "subset-export",
-            "idempotency_key": "callback-request-1",
-            "task_ids": ["task-a"],
-        }
+        assert s3_request.url.params["lambda_function"] == "subset-export"
 
         task_request = next(request for request in requests if request.url.path == "/fetch-benchmark-tasks")
         assert json.loads(task_request.content) == {

@@ -11,7 +11,7 @@ valkyrie run start \
 
 The lambda is invoked once after all tasks finish and results are uploaded. If the lambda fails (uncaught exception or `statusCode >= 400`), the run will be marked as `ERROR`.
 
-`run results --lambda` invokes a lambda on an immutable result upload, replacing the one the run was started with. There is no status gate, so a subset can be exported while the run is still in progress:
+`run results --lambda` invokes a lambda on the results it just uploaded, replacing the one the run was started with. There is no status gate, so a subset can be exported while the run is still in progress:
 
 ```bash
 valkyrie run results e532551e-d51b-4912-983d-47695bd24174 \
@@ -20,13 +20,11 @@ valkyrie run results e532551e-d51b-4912-983d-47695bd24174 \
   --lambda my-post-benchmark-handler
 ```
 
-The callback upload uses a request-specific key under `benchmarks/<run-id>/result-callbacks/results/`; it never overwrites the canonical result object. The tracker passes the exact bucket and key to the Lambda. In hosted deployments, only the credential that started the run can trigger this callback.
-
-Each CLI invocation generates an idempotency key, so transport retries of that request invoke the Lambda at most once. SDK callers can pass `idempotency_key=` to reuse the same request safely after a lost response; reusing a key with different callback arguments is rejected.
+The callback upload uses a request-specific key under `benchmarks/<run-id>/result-callbacks/results/`. It does not overwrite the canonical result object used by ordinary `--s3` retrieval. The tracker returns links for this object and passes its exact bucket and key to the Lambda. In hosted deployments, only the credential that started the run can trigger the callback.
 
 ## Payload
 
-The tracker invokes your lambda with the full `BenchmarkArguments` plus the persisted benchmark ID and name:
+For `run results --lambda`, the tracker invokes the Lambda with the full `BenchmarkArguments`, the selected task IDs, the persisted benchmark ID and name, and the exact callback object location:
 
 ```json
 {
@@ -45,9 +43,8 @@ The tracker invokes your lambda with the full `BenchmarkArguments` plus the pers
   "lambda_function": "my-post-benchmark-handler",
   "benchmark_id": "e532551e-d51b-4912-983d-47695bd24174",
   "benchmark_name": "swebench",
-  "idempotency_key": "7a4d77ab-9fd8-4f45-bbc3-849b20f5cc9e",
   "s3_bucket": "my-valkyrie-bucket",
-  "s3_key": "benchmarks/e532551e-d51b-4912-983d-47695bd24174/result-callbacks/results/...json"
+  "s3_key": "benchmarks/e532551e-d51b-4912-983d-47695bd24174/result-callbacks/results/3bb3f1f7-f64f-42b3-a2c7-a96e0b2ea27a.json"
 }
 ```
 
@@ -60,9 +57,8 @@ The tracker invokes your lambda with the full `BenchmarkArguments` plus the pers
 | `lambda_function` | string | Name of this lambda function |
 | `benchmark_id` | string | UUID of the completed run |
 | `benchmark_name` | string | Persisted name of the completed benchmark |
-| `idempotency_key` | string | Stable identifier for this callback request |
-| `s3_bucket` | string | Bucket containing this callback's immutable result view |
-| `s3_key` | string | Exact object key for this callback's immutable result view |
+| `s3_bucket` | string | Bucket containing this callback's result view |
+| `s3_key` | string | Exact object key for this callback's result view |
 
 ## Format required by AWS
 
@@ -78,6 +74,7 @@ def lambda_handler(event, context):
     results_key = event["s3_key"]
 
     # Read this callback's result view from results_bucket/results_key.
+    # e.g. send a Slack notification, trigger evaluation, etc.
 
     return {"statusCode": 200, "body": f"Processed {agent_name} run {benchmark_id}"}
 ```

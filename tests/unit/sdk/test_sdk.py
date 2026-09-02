@@ -321,22 +321,19 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
     run_id = uuid4()
     paths: list[str] = []
     result_queries: list[str] = []
-    callback_bodies: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
         if request.url.path == "/retrieve-results":
             result_queries.append(str(request.url.query, encoding="utf-8"))
-        if request.url.path == f"/invoke-results-lambda/{run_id}":
-            callback_bodies.append(json.loads(request.content))
         if request.url.path == "/fetch-benchmark":
             return httpx.Response(200, json=fetch_response(run_id))
         if request.url.path == "/fetch-benchmarks":
             return httpx.Response(200, json={"benchmarks": [], "total_count": 0, "next_cursor": None})
         if request.url.path == f"/stop-benchmark/{run_id}":
             return httpx.Response(200, json={"status": "success"})
-        if request.url.path in {"/retrieve-results", f"/invoke-results-lambda/{run_id}"}:
-            if request.url.path == "/retrieve-results" and request.url.params["s3"] == "false":
+        if request.url.path == "/retrieve-results":
+            if request.url.params["s3"] == "false":
                 return httpx.Response(
                     200,
                     json={
@@ -379,7 +376,6 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
             task_ids=["task-1"],
             upload_to_s3=True,
             lambda_function="subset-export",
-            idempotency_key="callback-request-1",
         )
 
     assert fetched.benchmark_id == run_id
@@ -391,21 +387,15 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
     assert results.s3_url == "s3://runs-bucket/results.json"
     assert results.expires_in == 86400
     assert_type(subset_lambda_results, S3UploadResultsResponse)
-    assert all("lambda_function" not in query for query in result_queries)
-    assert callback_bodies == [
-        {
-            "lambda_function": "subset-export",
-            "idempotency_key": "callback-request-1",
-            "task_ids": ["task-1"],
-        }
-    ]
+    assert "lambda_function" not in result_queries[1]
+    assert "lambda_function=subset-export" in result_queries[2]
     assert paths == [
         "/fetch-benchmark",
         "/fetch-benchmarks",
         f"/stop-benchmark/{run_id}",
         "/retrieve-results",
         "/retrieve-results",
-        f"/invoke-results-lambda/{run_id}",
+        "/retrieve-results",
     ]
 
 

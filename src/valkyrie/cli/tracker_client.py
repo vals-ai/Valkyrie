@@ -27,7 +27,6 @@ from tracker.types import (
     FetchBenchmarksResponse,
     FinalViewResponse,
     HarnessConfig,
-    InvokeResultsLambdaRequest,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
@@ -585,6 +584,7 @@ class TrackerService:
         benchmark_id: UUID,
         s3: bool,
         task_ids: list[str] | None = None,
+        lambda_function: str | None = None,
     ) -> RetrieveResultsResponse:
         """
         Retrieve the results of a benchmark by its benchmark id.
@@ -596,6 +596,8 @@ class TrackerService:
             params: dict[str, Any] = {"benchmark_id": str(benchmark_id), "s3": s3}
             if task_ids:
                 params["task_ids"] = task_ids
+            if lambda_function:
+                params["lambda_function"] = lambda_function
 
             response = self._client.get(f"{self._base_url}/retrieve-results", params=params)
 
@@ -606,29 +608,6 @@ class TrackerService:
 
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to retrieve results: {e}") from e
-
-    def invoke_results_lambda(
-        self,
-        benchmark_id: UUID,
-        lambda_function: str,
-        idempotency_key: str,
-        task_ids: list[str] | None = None,
-    ) -> S3UploadResultsResponse:
-        """Invoke a Lambda once on an immutable result view."""
-        try:
-            payload = InvokeResultsLambdaRequest(
-                lambda_function=lambda_function,
-                idempotency_key=idempotency_key,
-                task_ids=task_ids,
-            )
-            response = self._client.post(
-                f"{self._base_url}/invoke-results-lambda/{benchmark_id}",
-                json=payload.model_dump(),
-            )
-
-            return _parse_model_response(response, "Failed to invoke results lambda", S3UploadResultsResponse)
-        except httpx.HTTPError as e:
-            raise TrackerServiceError(f"Failed to invoke results lambda: {e}") from e
 
     def fetch_benchmark_tasks(
         self,

@@ -34,8 +34,7 @@ class MockResultsTracker:
     ) -> None:
         self.response = response
         self.results_exist = results_exist
-        self.retrieve_calls: list[tuple[UUID, bool, list[str] | None]] = []
-        self.invoke_calls: list[tuple[UUID, str, str, list[str] | None]] = []
+        self.retrieve_calls: list[tuple[UUID, bool, list[str] | None, str | None]] = []
 
     def __enter__(self) -> "MockResultsTracker":
         return self
@@ -51,25 +50,11 @@ class MockResultsTracker:
         run_id: UUID,
         s3: bool,
         task_ids: list[str] | None = None,
+        lambda_function: str | None = None,
     ) -> RetrieveResultsResponse:
-        self.retrieve_calls.append((run_id, s3, task_ids))
+        self.retrieve_calls.append((run_id, s3, task_ids, lambda_function))
         if isinstance(self.response, TrackerServiceError):
             raise self.response
-
-        return self.response
-
-    def invoke_results_lambda(
-        self,
-        run_id: UUID,
-        lambda_function: str,
-        idempotency_key: str,
-        task_ids: list[str] | None = None,
-    ) -> S3UploadResultsResponse:
-        self.invoke_calls.append((run_id, lambda_function, idempotency_key, task_ids))
-        if isinstance(self.response, TrackerServiceError):
-            raise self.response
-        if not isinstance(self.response, S3UploadResultsResponse):
-            raise AssertionError("Lambda callback requires an S3 response")
 
         return self.response
 
@@ -109,7 +94,7 @@ class TestResultsCommand:
 
         assert result.exit_code == 0, result.output
         assert "Scored over 2 of 3 subset task ids" in result.output
-        assert tracker.retrieve_calls == [(_RUN_ID, False, ["task-a", "task-b", "missing"])]
+        assert tracker.retrieve_calls == [(_RUN_ID, False, ["task-a", "task-b", "missing"], None)]
 
         saved_payload = json.loads(output_path.read_text(encoding="utf-8"))
         assert saved_payload["benchmark_id"] == str(_RUN_ID)
@@ -143,7 +128,7 @@ class TestResultsCommand:
         assert "Download (expires in 1 day):" in result.output
         assert "https://download.example/results" in result.output
         assert "https://console.aws.amazon.com/s3/object/results" in result.output
-        assert tracker.retrieve_calls == [(_RUN_ID, True, None)]
+        assert tracker.retrieve_calls == [(_RUN_ID, True, None, None)]
 
         managed_tracker = MockResultsTracker(response.model_copy(update={"expires_in": 3600}))
         monkeypatch.setattr(results_module, "TrackerService", lambda: managed_tracker)
@@ -167,13 +152,14 @@ class TestResultsCommand:
         monkeypatch: pytest.MonkeyPatch,
         cli_runner: CliRunner,
     ) -> None:
-        """A Lambda callback receives its subset and one generated idempotency key."""
+        """A lambda given on the command line reaches the tracker with the subset it should score."""
         tracker = MockResultsTracker(
             S3UploadResultsResponse(
                 s3_url="s3://bucket/results.json",
                 presigned_url="https://download.example/results",
                 console_url="https://console.aws.amazon.com/s3/object/results",
-            )
+            ),
+            results_exist=True,
         )
         monkeypatch.setattr(results_module, "TrackerService", lambda: tracker)
 
@@ -183,19 +169,7 @@ class TestResultsCommand:
         )
 
         assert result.exit_code == 0, result.output
-        assert tracker.retrieve_calls == []
-        assert len(tracker.invoke_calls) == 1
-        run_id, function_name, idempotency_key, task_ids = tracker.invoke_calls[0]
-        assert run_id == _RUN_ID
-        assert function_name == "subset-export"
-        assert str(UUID(idempotency_key)) == idempotency_key
-        assert task_ids == ["task-a", "task-b"]
-
-        rejected = cli_runner.invoke(results, [str(_RUN_ID), "--lambda", "subset-export"])
-
-        assert rejected.exit_code == 2
-        assert "--lambda requires --s3" in rejected.output
-        assert len(tracker.invoke_calls) == 1
+        assert tracker.retrieve_calls == [(_RUN_ID, True, ["task-a", "task-b"], "subset-export")]
 
     @pytest.mark.parametrize(
         ("path", "expected_message"),

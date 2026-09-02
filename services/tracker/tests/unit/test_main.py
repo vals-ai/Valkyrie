@@ -3,7 +3,6 @@
 Run: uv run pytest tests/unit/test_main.py
 """
 
-import asyncio
 import io
 import logging
 import tarfile
@@ -21,10 +20,9 @@ from benchmark_service.client import (
     BenchmarkServiceUnauthenticatedError,
 )
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
-from botocore.exceptions import ReadTimeoutError
 from dateutil.parser import isoparse
 from descope.descope_client import DescopeClient
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
@@ -64,7 +62,6 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FinalViewResponse,
     HarnessConfig,
-    InvokeResultsLambdaRequest,
     StartBenchmarkRequest,
 )
 from tracker.utils import update_benchmark_concurrency
@@ -1533,23 +1530,16 @@ class TestTrackerAPI:
         assert response.json()["final_evaluation"]["final_score"] == 1.0
         assert "X-Descope-Api-Key" not in observed_headers
 
-    async def test_results_callback_is_immutable_idempotent_and_get_safe(
+    async def test_retrieve_results_invokes_lambda_on_uploaded_subset(
         self,
         monkeypatch: MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
         harness_headers: dict[str, str],
     ) -> None:
-        """A result callback uses one immutable object and invokes once across replays.
-
-        Test cases:
-        - POST passes the exact callback object location to Lambda without touching the canonical key.
-        - Replaying the same idempotency key returns that object without invoking again.
-        - Independent requests receive different result keys, so concurrent callbacks cannot collide.
-        - Reusing the key for another request is rejected.
-        - GET never invokes a Lambda, including when a stale callback query parameter is supplied.
-        """
+        """Callback retrieval uses an isolated result object and the run starter's credential."""
         benchmark_row = example_benchmark_object
+        benchmark_row.arguments.lambda_function = "run-completion-lambda"
         task_row = Task(
             org_id=TEST_ORG_ID,
             task_id="task_1",
@@ -1570,357 +1560,110 @@ class TestTrackerAPI:
         )
         database_session.commit()
 
-        states: dict[str, bytes] = {}
-        uploaded_result_keys: list[str] = []
-        invocations: list[tuple[str, dict[str, Any]]] = []
-
         async def _mock_final_score(_client: BenchmarkServiceClient, **kwargs: Any) -> FinalScoreResponse:
             task_ids = list(kwargs["evaluation_results"])
             return FinalScoreResponse(tasks_evaluated=task_ids, final_score=len(task_ids), metadata={})
 
-        async def _claim(content: bytes, key: str, _runtime: AWSRuntime) -> bool:
-            if key in states:
-                return False
-            states[key] = content
-            return True
+        canonical_key = f"benchmarks/{benchmark_row.id}/swebench.json"
+        uploaded_keys: list[str] = []
 
-        async def _download(key: str, _runtime: AWSRuntime) -> bytes:
-            return states[key]
-
-        async def _upload(content: bytes, key: str, _runtime: AWSRuntime) -> None:
-            states[key] = content
-
-        async def _upload_view(_view: FinalViewResponse, key: str, _runtime: AWSRuntime) -> None:
-            uploaded_result_keys.append(key)
+        async def _upload_final_view(*_args: Any, s3_key: str | None = None, **_kwargs: Any) -> str:
+            uploaded_keys.append(s3_key or canonical_key)
+            return uploaded_keys[-1]
 
         async def _create_presigned_url(*_args: Any, **_kwargs: Any) -> str:
             return "https://example.test/results"
+
+        invocations: list[tuple[str, dict[str, Any]]] = []
 
         def _invoke_lambda(_clients: Any, function_name: str, payload: dict[str, Any], **_kwargs: Any) -> None:
             invocations.append((function_name, payload))
 
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
-        monkeypatch.setattr(main_module, "upload_to_s3_if_absent", _claim)
-        monkeypatch.setattr(main_module, "download_from_s3", _download)
-        monkeypatch.setattr(main_module, "upload_to_s3", _upload)
-        monkeypatch.setattr(main_module, "upload_final_view_to_key", _upload_view)
-        monkeypatch.setattr(main_module, "upload_final_view", lambda *_args, **_kwargs: pytest.fail("canonical upload"))
+        monkeypatch.setattr(main_module, "upload_final_view", _upload_final_view)
         monkeypatch.setattr(main_module, "create_presigned_url", _create_presigned_url)
-        monkeypatch.setattr(main_module, "create_console_url", lambda *_args, **_kwargs: "https://console.test")
+        monkeypatch.setattr(main_module, "create_console_url", MagicMock(return_value="https://console.test"))
         monkeypatch.setattr(main_module, "invoke_lambda", _invoke_lambda)
 
-        request_body = {
-            "lambda_function": "subset-export-lambda",
-            "idempotency_key": "callback-request-1",
-            "task_ids": ["task_1"],
-        }
-        response = client.post(
-            f"/invoke-results-lambda/{benchmark_row.id}",
-            json=request_body,
-            headers=harness_headers,
+        callback_params = (
+            ("benchmark_id", str(benchmark_row.id)),
+            ("task_ids", "task_1"),
+            ("s3", "true"),
+            ("lambda_function", "subset-export-lambda"),
         )
+        response = client.get("/retrieve-results", params=callback_params, headers=harness_headers)
 
         assert response.status_code == 200
-        assert len(uploaded_result_keys) == 1
-        result_key = uploaded_result_keys[0]
-        assert "/result-callbacks/results/" in result_key
-        assert response.json()["s3_url"] == f"s3://test-bucket/{result_key}"
-        assert len(invocations) == 1
+        callback_key = uploaded_keys[0]
+        assert callback_key.startswith(f"benchmarks/{benchmark_row.id}/result-callbacks/results/")
+        assert response.json()["s3_url"] == f"s3://test-bucket/{callback_key}"
         function_name, payload = invocations[0]
         assert function_name == "subset-export-lambda"
+        assert payload["lambda_function"] == "subset-export-lambda"
         assert payload["task_ids"] == ["task_1"]
+        assert payload["benchmark_id"] == str(benchmark_row.id)
+        assert payload["benchmark_name"] == benchmark_row.name
         assert payload["s3_bucket"] == "test-bucket"
-        assert payload["s3_key"] == result_key
-        assert payload["idempotency_key"] == "callback-request-1"
+        assert payload["s3_key"] == callback_key
 
-        replay = client.post(
-            f"/invoke-results-lambda/{benchmark_row.id}",
-            json=request_body,
-            headers=harness_headers,
-        )
+        client.get("/retrieve-results", params=callback_params, headers=harness_headers)
+        assert uploaded_keys[1] != callback_key
 
-        assert replay.status_code == 200
-        assert replay.json()["s3_url"] == f"s3://test-bucket/{result_key}"
-        assert len(uploaded_result_keys) == 1
-        assert len(invocations) == 1
-
-        independent = client.post(
-            f"/invoke-results-lambda/{benchmark_row.id}",
-            json=request_body | {"idempotency_key": "callback-request-2"},
-            headers=harness_headers,
-        )
-
-        assert independent.status_code == 200
-        assert len(uploaded_result_keys) == 2
-        assert uploaded_result_keys[1] != result_key
-        assert len(invocations) == 2
-
-        conflict = client.post(
-            f"/invoke-results-lambda/{benchmark_row.id}",
-            json=request_body | {"lambda_function": "another-lambda"},
-            headers=harness_headers,
-        )
-
-        assert conflict.status_code == 409
-        assert len(invocations) == 2
-
-        get_response = client.get(
+        rejected = client.get(
             "/retrieve-results",
-            params={"benchmark_id": str(benchmark_row.id), "lambda_function": "ignored-lambda"},
+            params=callback_params[:-2] + (("lambda_function", "subset-export-lambda"),),
             headers=harness_headers,
         )
+        assert rejected.status_code == 400
 
-        assert get_response.status_code == 200
-        assert len(invocations) == 2
-
-    async def test_overlapping_result_callback_replay_observes_pending_claim(
-        self,
-        monkeypatch: MonkeyPatch,
-        database_session: Session,
-        example_benchmark_object: Benchmark,
-        harness_config: HarnessConfig,
-    ) -> None:
-        """Overlapping requests with one key allow one invocation and reject the pending replay."""
-        benchmark_row = example_benchmark_object
-        database_session.add(benchmark_row)
-        database_session.commit()
-        runtime = AWSRuntime.from_harness_config(harness_config)
-        request = cast(Request, MagicMock(headers={}))
-        starter = RequestIdentity(
-            org=Org(id=TEST_ORG_ID, name="default"),
-            access_key_id=None,
-            email=None,
-            name=None,
-        )
-        body = InvokeResultsLambdaRequest(
-            lambda_function="subset-export",
-            idempotency_key="overlapping-request",
-        )
-        final_view = main_module.create_final_view(benchmark_row, database_session, starter.org)
-        states: dict[str, bytes] = {}
-        build_started = asyncio.Event()
-        continue_build = asyncio.Event()
-        invocations: list[str] = []
-
-        async def _claim(content: bytes, key: str, _runtime: AWSRuntime) -> bool:
-            if key in states:
-                return False
-            states[key] = content
-            return True
-
-        async def _download(key: str, _runtime: AWSRuntime) -> bytes:
-            return states[key]
-
-        async def _upload(content: bytes, key: str, _runtime: AWSRuntime) -> None:
-            states[key] = content
-
-        async def _build(*_args: Any, **_kwargs: Any) -> FinalViewResponse:
-            build_started.set()
-            await continue_build.wait()
-            return final_view
-
-        async def _upload_view(*_args: Any, **_kwargs: Any) -> None:
-            return None
-
-        async def _create_presigned_url(*_args: Any, **_kwargs: Any) -> str:
-            return "https://example.test/results"
-
-        def _invoke_lambda(_clients: Any, function_name: str, *_args: Any, **_kwargs: Any) -> None:
-            invocations.append(function_name)
-
-        monkeypatch.setattr(main_module, "resolve_run_aws_runtime", lambda *_args, **_kwargs: runtime)
-        monkeypatch.setattr(main_module, "upload_to_s3_if_absent", _claim)
-        monkeypatch.setattr(main_module, "download_from_s3", _download)
-        monkeypatch.setattr(main_module, "upload_to_s3", _upload)
-        monkeypatch.setattr(main_module, "_create_results_view", _build)
-        monkeypatch.setattr(main_module, "upload_final_view_to_key", _upload_view)
-        monkeypatch.setattr(main_module, "create_presigned_url", _create_presigned_url)
-        monkeypatch.setattr(main_module, "create_console_url", lambda *_args, **_kwargs: "https://console.test")
-        monkeypatch.setattr(main_module, "invoke_lambda", _invoke_lambda)
-
-        first_request = asyncio.create_task(
-            main_module.invoke_results_lambda(
-                benchmark_row.id,
-                request,
-                body,
-                database_session,
-                starter,
-            )
-        )
-        await build_started.wait()
-
-        try:
-            with pytest.raises(HTTPException) as replay_error:
-                await main_module.invoke_results_lambda(
-                    benchmark_row.id,
-                    request,
-                    body,
-                    database_session,
-                    starter,
-                )
-
-            assert replay_error.value.status_code == 409
-            assert replay_error.value.detail == "Result callback is already pending"
-            assert invocations == []
-        finally:
-            continue_build.set()
-
-        result = await first_request
-
-        assert result.s3_url.startswith("s3://test-bucket/benchmarks/")
-        assert invocations == ["subset-export"]
-
-    async def test_results_callback_validates_name_and_starter_before_s3(
-        self,
-        monkeypatch: MonkeyPatch,
-        database_session: Session,
-        example_benchmark_object: Benchmark,
-        harness_headers: dict[str, str],
-    ) -> None:
-        """Invalid targets and non-starter credentials cannot create callback state.
-
-        Test cases:
-        - Invalid and oversized Lambda names fail request validation.
-        - A hosted credential other than the run starter receives 403.
-        - Every rejected request fails before an S3 claim.
-        """
-        benchmark_row = example_benchmark_object
-        benchmark_row.started_by_id = "starter-key"
-        database_session.add(benchmark_row)
-        database_session.commit()
-        claims: list[str] = []
-
-        async def _claim(_content: bytes, key: str, _runtime: AWSRuntime) -> bool:
-            claims.append(key)
-            return True
-
-        monkeypatch.setattr(main_module, "upload_to_s3_if_absent", _claim)
-        app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(
-            org=Org(id=TEST_ORG_ID, name="default"),
-            access_key_id="starter-key",
-            email="starter@example.com",
-            name="Starter",
-        )
-
-        for invalid_name in ["bad/name", "a" * 65]:
-            response = client.post(
-                f"/invoke-results-lambda/{benchmark_row.id}",
-                json={
+        for invalid_name in ("", "_bad", "bad/name", "a" * 65):
+            invalid = client.get(
+                "/retrieve-results",
+                params={
+                    "benchmark_id": str(benchmark_row.id),
+                    "s3": "true",
                     "lambda_function": invalid_name,
-                    "idempotency_key": "request-1",
                 },
                 headers=harness_headers,
             )
-            assert response.status_code == 422
+            assert invalid.status_code == 422
+        assert len(uploaded_keys) == 2
 
-        monkeypatch.setattr(main_module, "AUTH_REQUIRED", True)
-        app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(
-            org=Org(id=TEST_ORG_ID, name="default"),
-            access_key_id="other-key",
-            email="reader@example.com",
-            name="Reader",
-        )
-        response = client.post(
-            f"/invoke-results-lambda/{benchmark_row.id}",
-            json={
-                "lambda_function": "valid-lambda",
-                "idempotency_key": "request-1",
-            },
+        ordinary = client.get(
+            "/retrieve-results",
+            params=[("benchmark_id", str(benchmark_row.id)), ("s3", "true")],
             headers=harness_headers,
         )
+        assert ordinary.status_code == 200
+        assert uploaded_keys[-1] == canonical_key
+        assert len(invocations) == 2
 
-        assert response.status_code == 403
-        assert claims == []
-
-    async def test_results_callback_failure_cleans_up_without_masking_error(
-        self,
-        monkeypatch: MonkeyPatch,
-        database_session: Session,
-        example_benchmark_object: Benchmark,
-        harness_config: HarnessConfig,
-    ) -> None:
-        """Confirmed failures clean up, while ambiguous timeouts retain pending input.
-
-        Test cases:
-        - A confirmed callback error marks the request failed and preserves that error if cleanup fails.
-        - A Lambda read timeout leaves the request pending and keeps its immutable input.
-        """
-        benchmark_row = example_benchmark_object
+        benchmark_row.started_by_id = "starter-key"
         database_session.add(benchmark_row)
         database_session.commit()
-        runtime = AWSRuntime.from_harness_config(harness_config)
-        states: dict[str, bytes] = {}
-        uploaded_keys: list[str] = []
-        deleted_keys: list[str] = []
-        invocation_errors: list[Exception] = [
-            TrackerServiceError("callback failed"),
-            ReadTimeoutError(endpoint_url="https://lambda.example"),
-        ]
-        request = cast(Request, MagicMock(headers={}))
-        starter = RequestIdentity(
-            org=Org(id=TEST_ORG_ID, name="default"),
-            access_key_id=None,
-            email=None,
-            name=None,
+        monkeypatch.setattr(main_module, "AUTH_REQUIRED", True)
+
+        def _resolve_descope_identity(api_key: str) -> MagicMock:
+            return MagicMock(access_key_id=api_key)
+
+        monkeypatch.setattr(main_module, "resolve_descope_identity", _resolve_descope_identity)
+
+        forbidden = client.get(
+            "/retrieve-results",
+            params=callback_params,
+            headers={**harness_headers, "X-Api-Key": "other-key"},
         )
+        assert forbidden.status_code == 403
+        assert len(uploaded_keys) == 3
 
-        async def _claim(content: bytes, key: str, _runtime: AWSRuntime) -> bool:
-            states[key] = content
-            return True
-
-        async def _upload(content: bytes, key: str, _runtime: AWSRuntime) -> None:
-            states[key] = content
-
-        async def _upload_view(_view: FinalViewResponse, key: str, _runtime: AWSRuntime) -> None:
-            uploaded_keys.append(key)
-
-        async def _delete(key: str, _runtime: AWSRuntime) -> None:
-            deleted_keys.append(key)
-            raise TrackerServiceError("cleanup failed")
-
-        def _invoke_lambda(*_args: Any, **_kwargs: Any) -> None:
-            raise invocation_errors.pop(0)
-
-        monkeypatch.setattr(main_module, "resolve_run_aws_runtime", lambda *_args, **_kwargs: runtime)
-        monkeypatch.setattr(main_module, "upload_to_s3_if_absent", _claim)
-        monkeypatch.setattr(main_module, "upload_to_s3", _upload)
-        monkeypatch.setattr(main_module, "upload_final_view_to_key", _upload_view)
-        monkeypatch.setattr(main_module, "delete_from_s3", _delete)
-        monkeypatch.setattr(main_module, "invoke_lambda", _invoke_lambda)
-
-        with pytest.raises(TrackerServiceError, match="callback failed"):
-            await main_module.invoke_results_lambda(
-                benchmark_row.id,
-                request,
-                InvokeResultsLambdaRequest(
-                    lambda_function="subset-export",
-                    idempotency_key="callback-request-1",
-                ),
-                database_session,
-                starter,
-            )
-
-        assert len(deleted_keys) == 1
-        assert "/result-callbacks/results/" in deleted_keys[0]
-        failed_state = next(value for key, value in states.items() if "/requests/" in key)
-        assert b'"status":"failed"' in failed_state
-
-        with pytest.raises(ReadTimeoutError):
-            await main_module.invoke_results_lambda(
-                benchmark_row.id,
-                request,
-                InvokeResultsLambdaRequest(
-                    lambda_function="subset-export",
-                    idempotency_key="callback-request-2",
-                ),
-                database_session,
-                starter,
-            )
-
-        assert len(uploaded_keys) == 2
-        assert deleted_keys == [uploaded_keys[0]]
-        pending_states = [value for key, value in states.items() if "/requests/" in key and b'"pending"' in value]
-        assert len(pending_states) == 1
+        authorized = client.get(
+            "/retrieve-results",
+            params=callback_params,
+            headers={**harness_headers, "X-Api-Key": "starter-key"},
+        )
+        assert authorized.status_code == 200
+        assert len(uploaded_keys) == 4
+        assert len(invocations) == 3
 
     async def test_benchmark_error_handling(
         self,

@@ -27,7 +27,6 @@ from tracker.utils.reporting import (
     fetch_filtered_benchmark_rows,
     stream_benchmark_results,
     upload_final_view,
-    upload_final_view_to_key,
 )
 from tracker.utils.resources import (
     BenchmarkConcurrencyUpdate,
@@ -105,7 +104,6 @@ __all__ = [
     "stream_benchmark_results",
     "try_fetch_harness_config",
     "upload_final_view",
-    "upload_final_view_to_key",
     "update_benchmark_concurrency",
     "update_benchmark_resume_arguments",
 ]

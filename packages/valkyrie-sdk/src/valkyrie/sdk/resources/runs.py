@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from valkyrie.sdk.errors import ValkyrieConfigError, ValkyrieRunError, ValkyrieStreamError, handle_httpx_stream_errors
 from valkyrie.sdk.models import (
@@ -17,7 +17,6 @@ from valkyrie.sdk.models import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FinalViewResponse,
-    InvokeResultsLambdaRequest,
     RetrieveResultsResponse,
     ResultsExistResponse,
     RetryMode,
@@ -162,7 +161,6 @@ class RunsResource:
         task_ids: Sequence[str] | None = None,
         upload_to_s3: Literal[False] = False,
         lambda_function: None = None,
-        idempotency_key: None = None,
     ) -> FinalViewResponse: ...
 
     @overload
@@ -173,7 +171,6 @@ class RunsResource:
         task_ids: Sequence[str] | None = None,
         upload_to_s3: Literal[True],
         lambda_function: str | None = None,
-        idempotency_key: str | None = None,
     ) -> S3UploadResultsResponse: ...
 
     @overload
@@ -184,7 +181,6 @@ class RunsResource:
         task_ids: Sequence[str] | None = None,
         upload_to_s3: bool,
         lambda_function: str | None = None,
-        idempotency_key: str | None = None,
     ) -> RetrieveResultsResponse: ...
 
     async def results(
@@ -194,30 +190,13 @@ class RunsResource:
         task_ids: Sequence[str] | None = None,
         upload_to_s3: bool = False,
         lambda_function: str | None = None,
-        idempotency_key: str | None = None,
     ) -> RetrieveResultsResponse:
-        """Fetch results, upload them, or invoke a Lambda on an immutable upload."""
-        if lambda_function and not upload_to_s3:
-            raise ValueError("lambda_function requires upload_to_s3=True")
-        if idempotency_key and not lambda_function:
-            raise ValueError("idempotency_key requires lambda_function")
-
-        if lambda_function:
-            payload = InvokeResultsLambdaRequest(
-                lambda_function=lambda_function,
-                idempotency_key=idempotency_key or str(uuid4()),
-                task_ids=list(task_ids) if task_ids else None,
-            )
-            return await self._sdk.request_model(
-                "POST",
-                f"/invoke-results-lambda/{run_id}",
-                S3UploadResultsResponse,
-                json=payload.model_dump(),
-            )
-
+        """Fetch final results, or upload them to S3 and return links, optionally invoking a lambda on the upload."""
         params: dict[str, Any] = {"benchmark_id": str(run_id), "s3": upload_to_s3}
         if task_ids:
             params["task_ids"] = list(task_ids)
+        if lambda_function:
+            params["lambda_function"] = lambda_function
         response_model = S3UploadResultsResponse if upload_to_s3 else FinalViewResponse
         return await self._sdk.request_model("GET", "/retrieve-results", response_model, params=params)
 
