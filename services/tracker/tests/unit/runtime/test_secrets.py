@@ -7,6 +7,7 @@ import pytest
 from tracker.exceptions import SecretsError
 from tracker.runtime.secrets import (
     SecretValue,
+    direct_provider_routing_forced,
     gateway_routing_enabled,
     resolve_secrets,
     without_direct_provider_credentials,
@@ -76,12 +77,27 @@ def test_gateway_routing_enabled(secret_names: set[str], kwargs: dict[str, str],
     assert gateway_routing_enabled(secret_names, kwargs) is expected
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({}, False),
+        ({"no_model_gateway": "False"}, False),
+        ({"no_model_gateway": "True"}, True),
+    ],
+)
+def test_direct_provider_routing_forced(kwargs: dict[str, str], expected: bool) -> None:
+    assert direct_provider_routing_forced(kwargs) is expected
+
+
 def test_without_direct_provider_credentials_preserves_gateway_and_tool_keys() -> None:
     assert without_direct_provider_credentials(
         {
             "MODEL_GATEWAY_API_KEY": "gateway",
             "OPENAI_API_KEY": "provider",
             "GCP_CREDS": "provider-json",
+            "AWS_ACCESS_KEY_ID": "bedrock-provider",
+            "AWS_SECRET_ACCESS_KEY": "bedrock-provider",
+            "AWS_SESSION_TOKEN": "bedrock-provider",
             "TAVILY_API_KEY": "tool",
         }
     ) == {

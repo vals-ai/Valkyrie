@@ -480,6 +480,86 @@ def test_managed_execution_preflight_does_not_resolve_gateway_bypass_keys(
     ]
 
 
+def test_managed_execution_preflight_defers_provider_refs_until_task_route_is_known(
+    contract: AgentContractRequest,
+    aws_runtime: AWSRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = contract.model_copy(
+        update={
+            "secrets": {
+                "MODEL_GATEWAY_URL": "gateway-config",
+                "OPENAI_API_KEY": "unavailable-provider-bundle",
+                "TAVILY_API_KEY": "tool-secret",
+            },
+        }
+    )
+    request = _managed_request(contract)
+    execution = _parse_queued_execution(None, None, None, _execution_context(request, uuid4()))
+    provider_config = cast(SandboxProviderConfig, MagicMock())
+    resolved_inputs: list[dict[str, str]] = []
+
+    monkeypatch.setattr(
+        CloudWatchBenchmarkLogSink,
+        "create_benchmark",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "tracker.utils.run_orchestration.fetch_sandbox_provider_config",
+        lambda *_args, **_kwargs: provider_config,
+    )
+
+    def capture_secret_refs(secrets: dict[str, str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
+        resolved_inputs.append(secrets)
+        return {}
+
+    monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", capture_secret_refs)
+
+    assert _preflight_managed_aws(execution, aws_runtime) is provider_config
+    assert resolved_inputs == [
+        {
+            "MODEL_GATEWAY_URL": "gateway-config",
+            "TAVILY_API_KEY": "tool-secret",
+        }
+    ]
+
+
+def test_managed_execution_preflight_resolves_provider_refs_for_explicit_direct_route(
+    contract: AgentContractRequest,
+    aws_runtime: AWSRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = contract.model_copy(
+        update={
+            "kwargs": {"no_model_gateway": "True"},
+            "secrets": {"OPENAI_API_KEY": "provider-bundle"},
+        }
+    )
+    request = _managed_request(contract)
+    execution = _parse_queued_execution(None, None, None, _execution_context(request, uuid4()))
+    provider_config = cast(SandboxProviderConfig, MagicMock())
+    resolved_inputs: list[dict[str, str]] = []
+
+    monkeypatch.setattr(
+        CloudWatchBenchmarkLogSink,
+        "create_benchmark",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "tracker.utils.run_orchestration.fetch_sandbox_provider_config",
+        lambda *_args, **_kwargs: provider_config,
+    )
+
+    def capture_secret_refs(secrets: dict[str, str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
+        resolved_inputs.append(secrets)
+        return {}
+
+    monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", capture_secret_refs)
+
+    assert _preflight_managed_aws(execution, aws_runtime) is provider_config
+    assert resolved_inputs == [{"OPENAI_API_KEY": "provider-bundle"}]
+
+
 async def test_managed_preflight_failure_happens_before_sandbox(
     contract: AgentContractRequest,
     aws_runtime: AWSRuntime,

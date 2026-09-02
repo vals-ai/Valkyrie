@@ -22,7 +22,7 @@ from tracker.aws.resolver import deployment_aws_runtime
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.secrets import SecretsManagerStore
 from tracker.runtime.secrets import (
-    gateway_routing_enabled,
+    direct_provider_routing_forced,
     resolve_secrets,
     without_direct_provider_credentials,
 )
@@ -415,10 +415,13 @@ def _preflight_managed_aws(
         request.sandbox_provider,
     )
     contract = request.contract
+    # Benchmark-owned task secrets and recovery state can complete the gateway
+    # route later. Defer provider-reference validation until task execution
+    # unless the contract explicitly requires direct-provider routing.
     secret_refs = (
-        without_direct_provider_credentials(contract.secrets)
-        if gateway_routing_enabled(contract.secrets.keys(), contract.kwargs)
-        else contract.secrets
+        contract.secrets
+        if direct_provider_routing_forced(contract.kwargs)
+        else without_direct_provider_credentials(contract.secrets)
     )
     resolve_secrets(secret_refs, secret_store)
     if request.webhook_secret_name and request.webhook_intervals:

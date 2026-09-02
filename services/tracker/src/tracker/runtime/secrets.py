@@ -22,6 +22,9 @@ DIRECT_PROVIDER_CREDENTIAL_ENV_NAMES = frozenset(
         "ANTHROPIC_API_KEY_2",
         "ANT_API_KEY",
         "ARCEE_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
         "AZURE_API_KEY",
         "BASETEN_API_KEY",
         "COHERE_API_KEY",
@@ -63,6 +66,11 @@ _MODEL_GATEWAY_CLIENT_ENV_NAMES = frozenset({"MODEL_GATEWAY_URL", "MODEL_GATEWAY
 def gateway_routing_enabled(secret_names: Collection[str], kwargs: Mapping[str, str]) -> bool:
     """Return whether a run has selected a complete Model Gateway route."""
     return kwargs.get("no_model_gateway") != "True" and _MODEL_GATEWAY_CLIENT_ENV_NAMES <= set(secret_names)
+
+
+def direct_provider_routing_forced(kwargs: Mapping[str, str]) -> bool:
+    """Return whether the contract explicitly requires direct-provider routing."""
+    return kwargs.get("no_model_gateway") == "True"
 
 
 def without_direct_provider_credentials(values: Mapping[str, T]) -> dict[str, T]:
