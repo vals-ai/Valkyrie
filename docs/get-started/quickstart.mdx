@@ -7,10 +7,10 @@ description: Install Valkyrie, configure credentials, and start a benchmark run.
 
 - Python 3.12
 - [uv](https://docs.astral.sh/uv/) and Git, used by the install command below
-- An S3 bucket for benchmark artifacts and agents
-- AWS credentials with the [required permissions](/self-hosting/aws-permissions)
 - A configured [sandbox provider](/get-started/sandbox-providers)
 - A Vals API key when using hosted mode
+- Local AWS SDK credentials for agent uploads and artifact downloads
+- For self-hosted or access-key execution, an S3 bucket for benchmark artifacts and agents plus AWS credentials with the [required permissions](/self-hosting/aws-permissions). Managed hosted execution reads the Region and bucket from the tracker instead. See [AWS execution mode](/get-started/hosting#aws-execution-mode).
 
 ## Install the CLI
 

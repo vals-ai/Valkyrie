@@ -41,6 +41,16 @@ The checked-in CDK application contains Vals deployment defaults. A self-hoster 
 
 The target guard currently accepts only `us-east-1`. Supporting another Region requires changing `DEPLOYMENT_REGION` in `infra/deployment_target.py` and reviewing Region-specific infrastructure.
 
+Synthesis reads the deployment-owned inventory from the environment, so export it before planning. A `prod` or `dev` stage fails with `ValueError: prod deployments require AWS_DEPLOYMENT_ROLE_ORG_IDS.` when these are unset:
+
+```bash
+export AWS_DEPLOYMENT_ROLE_ORG_IDS=<organization-uuid>[,<organization-uuid>]
+export AWS_TRACKER_SECRET_NAME_PREFIXES=<secrets-manager-name-prefix>[,<prefix>]
+export SENTRY_DSN_SECRET_NAME=<secrets-manager-secret-name>
+```
+
+`AWS_DEPLOYMENT_ROLE_ORG_IDS` lists the organization ids allowed to submit managed runs, and `AWS_TRACKER_SECRET_NAME_PREFIXES` the Secrets Manager name prefixes the tracker may resolve for benchmark-service authentication. Authenticated deployments also require `DESCOPE_PROJECT_ID` and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`.
+
 Run these credentialed templates from `infra/`. Replace the angle-bracket placeholders before running them. First inspect all stack changes:
 
 ```bash

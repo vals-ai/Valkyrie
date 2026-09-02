@@ -47,7 +47,7 @@ valkyrie config provider set daytona DaytonaSecrets
 
 ## Modal
 
-1. Create an API token under `Settings → Tokens → API tokens` in the Modal workspace that should own the sandboxes, for example [the `vals-ai` workspace](https://modal.com/settings/vals-ai/tokens/api-tokens). Modal shows the token once, as a CLI command:
+1. [Create an API token](https://modal.com/docs/reference/modal.config#authentication) under `Settings → Tokens → API tokens`, in the Modal workspace that should own the sandboxes. Modal shows the token once, as a CLI command:
 
 ```bash
 modal token set --token-id ak-... --token-secret as-... --profile=your-profile

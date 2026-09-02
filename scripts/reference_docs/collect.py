@@ -40,7 +40,7 @@ def _format_value(value: object) -> str:
         return value.__name__
     if value is None or isinstance(value, (bool, str, int, float, list, tuple, dict)):
         return repr(typing.cast(object, value))
-    return type(value).__name__
+    raise TypeError(f"Unsupported default value of type {type(value).__name__!r}: {value!r}")
 
 
 def _format_annotation(annotation: object) -> str:

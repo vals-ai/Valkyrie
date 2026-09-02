@@ -15,11 +15,13 @@ import sys
 from pathlib import Path
 from typing import cast
 
+import click
 import pytest
 import valkyrie.sdk as sdk
 from valkyrie.sdk import resources as sdk_resources
 
 from scripts import reference_docs as generator
+from scripts.reference_docs import collect
 
 _EXPECTED_CLI_PATHS = (
     "run analyze",
@@ -229,6 +231,14 @@ class TestCLIReference:
         assert "# Example only, review before running" in start_section
         assert "valkyrie run stop $RUN_ID" in _section(rendered, "## `valkyrie run stop` {#stop}")
         assert "$BENCHMARK_CREDENTIAL" in _section(rendered, "## `valkyrie config auth set` {#auth-set}")
+
+    def test_unsupported_default_fails_collection(self) -> None:
+        class Opaque:
+            pass
+
+        option = click.Option(["--opaque"], default=Opaque())
+        with pytest.raises(TypeError, match="Unsupported default value of type 'Opaque'"):
+            collect._collect_click_parameter(option)
 
     def test_examples_are_shell_valid(self, rendered: dict[Path, str]) -> None:
         blocks = [
