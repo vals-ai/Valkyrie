@@ -22,7 +22,7 @@ Run configuration and choose **hosted**:
 valkyrie config init
 ```
 
-The CLI validates the Vals API key and configures the organization. When the organization can use managed AWS, it reads the Region and S3 bucket from the tracker instead of asking for access keys.
+Hosted setup also asks for the hosted environment, `bench` (`https://benchmark-tracker.vals.ai`) or `prod` (`https://benchmark-tracker-prod.vals.ai`), and saves that choice for later commands. The CLI validates the Vals API key against that environment and configures the organization. When the organization can use managed AWS, it reads the Region and S3 bucket from the tracker instead of asking for access keys.
 
 Set a Vals API key directly when needed:
 

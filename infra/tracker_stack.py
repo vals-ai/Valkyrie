@@ -31,24 +31,24 @@ from constants import (
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
     CONTAINER_HEALTH_TIMEOUT_SECONDS,
-    DEV_TRACKER_ALB_DNS_PARAMETER,
-    DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER,
-    DEV_TRACKER_SECURITY_GROUP_PARAMETER,
     DOCKER_ASSET_EXCLUDES,
     POSTGRES_DB,
     POSTGRES_PORT,
     POSTGRES_USER,
     REDIS_PORT,
     TRACKER_DOMAIN,
+    TRACKER_ALB_DNS_PARAMETER_PATH,
+    TRACKER_HOSTED_ZONE_ID_PARAMETER_PATH,
     TRACKER_LOG_GROUP_NAME,
     TRACKER_PORT,
     TRACKER_SCALING_CPU_PERCENT,
+    TRACKER_SECURITY_GROUP_PARAMETER_PATH,
     VPC_CIDR,
     stage_parameter_name,
 )
 from constructs import Construct
 from runtime_iam import create_tracker_task_role, managed_runtime_environment
-from stage import Stage
+from stage import PROD, Stage
 from stage_config import benchmark_service_base_url, config_for
 
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
@@ -142,7 +142,8 @@ class TrackerStack(Stack):
             credentials=aws_rds.Credentials.from_secret(db_credentials_secret),
             database_name=POSTGRES_DB,
             allocated_storage=stage_config.database.allocated_storage_gb,
-            publicly_accessible=stage.is_prod,
+            publicly_accessible=stage.is_bench,
+            storage_encrypted=stage.name == PROD,
             deletion_protection=True,
             removal_policy=cdk.RemovalPolicy.RETAIN,
             backup_retention=Duration.days(stage_config.database.backup_retention_days),
@@ -173,11 +174,12 @@ class TrackerStack(Stack):
             sentry_secrets["SENTRY_DSN"] = aws_ecs.Secret.from_secrets_manager(sentry_secret)
 
         auth_required = os.environ.get("AUTH_REQUIRED", "false")
+        benchmark_catalog_url = os.environ.get("BENCHMARK_CATALOG_URL", "")
         descope_project_id = os.environ.get("DESCOPE_PROJECT_ID", "")
-        if not stage.is_prod:
+        if not stage.is_bench:
             auth_required = "true"
             if not descope_project_id:
-                raise ValueError("Development deployments require DESCOPE_PROJECT_ID.")
+                raise ValueError(f"{stage.name} deployments require DESCOPE_PROJECT_ID.")
 
         descope_secrets: dict[str, aws_ecs.Secret] = {}
         if auth_required.lower() == "true":
@@ -226,7 +228,7 @@ class TrackerStack(Stack):
                 **db_env,
                 "REDIS_URL": redis_url,
                 "AUTH_REQUIRED": auth_required,
-                "BENCHMARK_CATALOG_URL": os.environ.get("BENCHMARK_CATALOG_URL", ""),
+                "BENCHMARK_CATALOG_URL": benchmark_catalog_url,
                 "DESCOPE_PROJECT_ID": descope_project_id,
                 "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
             },
@@ -247,19 +249,19 @@ class TrackerStack(Stack):
 
         tracker_domain: str | None = None
         tracker_hosted_zone: aws_route53.IHostedZone | None = None
-        if stage.is_prod:
+        if stage.is_bench:
             if hosted_zone is None:
-                raise ValueError("Production requires the vals.ai hosted zone")
-            tracker_domain = TRACKER_DOMAIN
+                raise ValueError("Bench requires the vals.ai hosted zone")
+            tracker_domain = stage.domain(TRACKER_DOMAIN)
             tracker_hosted_zone = hosted_zone
         elif not stage.is_release_test:
             tracker_domain = stage.domain(TRACKER_DOMAIN)
             tracker_hosted_zone = aws_route53.HostedZone.from_hosted_zone_attributes(
                 self,
-                "DevTrackerHostedZone",
+                "TrackerHostedZone",
                 hosted_zone_id=aws_ssm.StringParameter.value_for_string_parameter(
                     self,
-                    DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER,
+                    stage_parameter_name(stage.name, TRACKER_HOSTED_ZONE_ID_PARAMETER_PATH),
                 ),
                 zone_name=tracker_domain,
             )
@@ -289,9 +291,7 @@ class TrackerStack(Stack):
         # Expose the inner FargateService for cross-stack security group rules.
         self.tracker_fargate_service = self.service.service
 
-        # Cloud Map registration for internal access.
-        # Intentionally unstaged: dev gets its own namespace, and benchmark
-        # services reach the tracker by the same internal name in either env.
+        # The stage-specific namespace isolates the stable tracker service name.
         self.service.service.enable_cloud_map(
             name="tracker",
             cloud_map_namespace=namespace,
@@ -360,16 +360,16 @@ class TrackerStack(Stack):
             description="Allow VPC services to connect to RDS",
         )
 
-        if not stage.is_prod:
+        if not stage.is_bench:
             aws_ssm.StringParameter(
                 self,
                 "TrackerSecurityGroupParameter",
-                parameter_name=stage_parameter_name(DEV_TRACKER_SECURITY_GROUP_PARAMETER, stage.name),
+                parameter_name=stage_parameter_name(stage.name, TRACKER_SECURITY_GROUP_PARAMETER_PATH),
                 string_value=tracker_security_group.security_group_id,
             )
             aws_ssm.StringParameter(
                 self,
                 "TrackerAlbDnsParameter",
-                parameter_name=stage_parameter_name(DEV_TRACKER_ALB_DNS_PARAMETER, stage.name),
+                parameter_name=stage_parameter_name(stage.name, TRACKER_ALB_DNS_PARAMETER_PATH),
                 string_value=self.service.load_balancer.load_balancer_dns_name,
             )

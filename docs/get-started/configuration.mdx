@@ -54,13 +54,13 @@ The CLI reads these variables at startup, before any configuration file is loade
 
 | Variable | Effect |
 | --- | --- |
-| `VALKYRIE_ENV` | `prod` (default) or `dev`. Selects the hosted tracker URL and the default configuration file. Any other value fails immediately. |
-| `TRACKER_SERVICE_URL` | Overrides the tracker endpoint for both environments. |
+| `VALKYRIE_ENV` | Legacy override for the hosted environment saved by `config init`. Accepts `bench`, `dev`, `prod` (a compatibility alias for `bench`), and `external` (the production environment). Any other value fails immediately. |
+| `TRACKER_SERVICE_URL` | Overrides the tracker endpoint for every environment. |
 | `VALKYRIE_CONFIG_PATH` | Overrides the configuration file path. |
 | `VALKYRIE_API_KEY` | Supplies the Vals API key during `config init` in hosted mode instead of prompting for it. |
 | `VALKYRIE_CLI_LOGS` | Set to `true` to print library log output. Logs are suppressed otherwise. |
 
-With `VALKYRIE_ENV=dev` the CLI uses `https://benchmark-tracker-dev.vals.ai` and `~/.config/valkyrie/dev.yaml`, so a development profile never overwrites your production configuration.
+Hosted setup saves the selected environment in the configuration file, so leave `VALKYRIE_ENV` unset for normal use. With `VALKYRIE_ENV=dev` the CLI uses `https://benchmark-tracker-dev.vals.ai` and `~/.config/valkyrie/dev.yaml`, so a development profile never overwrites your hosted configuration.
 
 ## Configure benchmark services
 

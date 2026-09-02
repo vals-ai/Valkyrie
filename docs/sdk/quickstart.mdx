@@ -13,7 +13,7 @@ pip install valkyrie-sdk
 
 ## Configure
 
-`from_config()` reads a CLI-compatible YAML file, so run `valkyrie config init` first. It always defaults to `~/.config/valkyrie/valkyrie.yaml` and the hosted production tracker; unlike the CLI it ignores `VALKYRIE_ENV`, so pass `path` and `base_url` explicitly to target another environment, such as `path="~/.config/valkyrie/dev.yaml"` with `base_url="https://benchmark-tracker-dev.vals.ai"` for dev.
+`from_config()` reads a CLI-compatible YAML file, so run `valkyrie config init` first. It always defaults to `~/.config/valkyrie/valkyrie.yaml` and the `bench` tracker at `https://benchmark-tracker.vals.ai`; unlike the CLI it reads neither the saved hosted environment nor `VALKYRIE_ENV`, so pass `path` and `base_url` explicitly to target another environment, such as `path="~/.config/valkyrie/dev.yaml"` with `base_url="https://benchmark-tracker-dev.vals.ai"` for dev.
 
 ```python
 import asyncio
