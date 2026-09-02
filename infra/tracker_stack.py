@@ -143,7 +143,7 @@ class TrackerStack(Stack):
             database_name=POSTGRES_DB,
             allocated_storage=stage_config.database.allocated_storage_gb,
             publicly_accessible=stage.is_bench,
-            storage_encrypted=stage.name == PROD,
+            storage_encrypted=True if stage.name == PROD else None,
             deletion_protection=True,
             removal_policy=cdk.RemovalPolicy.RETAIN,
             backup_retention=Duration.days(stage_config.database.backup_retention_days),
