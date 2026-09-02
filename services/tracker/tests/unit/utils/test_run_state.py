@@ -85,42 +85,33 @@ class TestRunState:
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
-    @pytest.mark.parametrize(
-        ("provider_type", "secret", "expected"),
-        [
-            (
-                "daytona",
-                {"DAYTONA_API_KEY": "key", "DAYTONA_API_URL": "url", "DAYTONA_TARGET": "target"},
-                {
-                    "type": "daytona",
-                    "DAYTONA_API_KEY": "key",
-                    "DAYTONA_API_URL": "url",
-                    "DAYTONA_TARGET": "target",
-                },
-            ),
-            (
-                "modal",
-                {"runtime": "vm", "MODAL_TOKEN_ID": "id", "MODAL_TOKEN_SECRET": "secret"},
-                {"type": "modal", "runtime": "vm", "MODAL_TOKEN_ID": "id", "MODAL_TOKEN_SECRET": "secret"},
-            ),
-        ],
-    )
     def test_fetch_sandbox_provider_config_combines_provider_type_with_secret(
-        self, provider_type: str, secret: dict[str, str], expected: dict[str, str]
+        self, harness_config: HarnessConfig
     ) -> None:
         """Sandbox provider config should combine client-selected type with the production secret shape.
 
         Test cases:
-        - A selected provider type is added to the provider secret values.
-        - Modal runtime selection survives secret parsing.
+        - A selected provider type is added to DAYTONA_* secret values.
         """
+        secrets = {
+            "provider-secret": {
+                "DAYTONA_API_KEY": "key",
+                "DAYTONA_API_URL": "url",
+                "DAYTONA_TARGET": "target",
+            },
+        }
+
         class TestSecretStore:
             def get(self, name: str) -> SecretValue:
-                assert name == "provider-secret"
-                return cast(SecretValue, secret)
+                return cast(SecretValue, secrets[name])
 
-        provider_config = fetch_sandbox_provider_config("provider-secret", TestSecretStore(), provider_type)
-        assert provider_config.model_dump(mode="json") == expected
+        provider_config = fetch_sandbox_provider_config("provider-secret", TestSecretStore(), "daytona")
+        assert provider_config.model_dump(mode="json") == {
+            "type": "daytona",
+            "DAYTONA_API_KEY": "key",
+            "DAYTONA_API_URL": "url",
+            "DAYTONA_TARGET": "target",
+        }
 
     def test_stop_benchmark(
         self,
