@@ -9,6 +9,8 @@ Valkyrie orchestrates scalable, reproducible evaluations for AI agents. It suppo
 
 ## Quickstart
 
+> **Note:** Valkyrie can be invoked using either `valkyrie` or the alias `valk`. For example: `valkyrie run start` or `valk run start`.
+
 Install the CLI:
 
 ```bash
@@ -37,8 +39,6 @@ valkyrie run start \
   --slice "0:10" \
   --connect
 ```
-
-The `valk` alias invokes the same CLI.
 
 ## Documentation
 
