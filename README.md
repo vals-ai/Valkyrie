@@ -44,10 +44,15 @@ valkyrie run start \
 
 ## Contributing and operations
 
-- [Local development](https://docs.valkyrie.vals.ai/contributing/local-development)
-- [Tracker service](https://docs.valkyrie.vals.ai/contributing/tracker-service)
-- [Database and migrations](https://docs.valkyrie.vals.ai/contributing/database)
-- [Infrastructure operations](infra/README.md)
+| Topic | Location |
+| --- | --- |
+| Local development | [docs.valkyrie.vals.ai/contributing/local-development](https://docs.valkyrie.vals.ai/contributing/local-development) |
+| Tracker service | [docs.valkyrie.vals.ai/contributing/tracker-service](https://docs.valkyrie.vals.ai/contributing/tracker-service) |
+| Database and migrations | [docs.valkyrie.vals.ai/contributing/database](https://docs.valkyrie.vals.ai/contributing/database) |
+| Versioning a release | [`DEVELOPMENT.md`](DEVELOPMENT.md#versioning) |
+| Infrastructure operations | [`infra/README.md`](infra/README.md) |
+| Executor releases | [`infra/executor-releases/README.md`](infra/executor-releases/README.md) |
+| SDK release procedure | [`scripts/sdk/RELEASING.md`](scripts/sdk/RELEASING.md) |
 
 ## Citation
 
