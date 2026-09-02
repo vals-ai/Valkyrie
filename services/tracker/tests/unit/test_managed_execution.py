@@ -450,9 +450,7 @@ def test_managed_execution_preflight_does_not_resolve_gateway_bypass_keys(
         }
     )
     request = _managed_request(contract)
-    execution = _parse_queued_execution(
-        None, None, None, _execution_context(request, uuid4())
-    )
+    execution = _parse_queued_execution(None, None, None, _execution_context(request, uuid4()))
     provider_config = cast(SandboxProviderConfig, MagicMock())
     resolved_inputs: list[dict[str, str]] = []
 
@@ -466,15 +464,11 @@ def test_managed_execution_preflight_does_not_resolve_gateway_bypass_keys(
         lambda *_args, **_kwargs: provider_config,
     )
 
-    def capture_secret_refs(
-        secrets: dict[str, str], *_args: Any, **_kwargs: Any
-    ) -> dict[str, str]:
+    def capture_secret_refs(secrets: dict[str, str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
         resolved_inputs.append(secrets)
         return {}
 
-    monkeypatch.setattr(
-        "tracker.utils.run_orchestration.resolve_secrets", capture_secret_refs
-    )
+    monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", capture_secret_refs)
 
     assert _preflight_managed_aws(execution, aws_runtime) is provider_config
     assert resolved_inputs == [

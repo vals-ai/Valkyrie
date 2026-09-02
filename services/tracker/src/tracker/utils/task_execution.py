@@ -940,16 +940,10 @@ async def _process_task_attempt(
 
         contract = start_benchmark_request.contract
         gateway_backed = gateway_routing_enabled(
-            contract.secrets.keys()
-            | task_data.sandbox_secrets.keys()
-            | recovery_attempt.environment.keys(),
+            contract.secrets.keys() | task_data.sandbox_secrets.keys() | recovery_attempt.environment.keys(),
             contract.kwargs,
         )
-        secret_refs = (
-            without_direct_provider_credentials(contract.secrets)
-            if gateway_backed
-            else contract.secrets
-        )
+        secret_refs = without_direct_provider_credentials(contract.secrets) if gateway_backed else contract.secrets
         env_vars = {
             **resolve_secrets(secret_refs, SecretsManagerStore(aws_runtime.clients)),
             "RUN_ID": str(benchmark_id),

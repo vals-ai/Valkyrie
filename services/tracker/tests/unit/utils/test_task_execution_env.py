@@ -276,16 +276,12 @@ class TestProcessTaskEnvironment:
         captured: dict[str, dict[str, str]] = {}
         resolved_inputs: list[dict[str, str]] = []
 
-        def _mock_resolve_secrets(
-            secrets: dict[str, str], *_args: Any, **_kwargs: Any
-        ) -> dict[str, str]:
+        def _mock_resolve_secrets(secrets: dict[str, str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
             resolved_inputs.append(secrets)
             return {name: f"resolved-{name}" for name in secrets}
 
         @asynccontextmanager
-        async def _capture_sandbox(
-            *_args: Any, **kwargs: Any
-        ) -> AsyncGenerator[SimpleNamespace, None]:
+        async def _capture_sandbox(*_args: Any, **kwargs: Any) -> AsyncGenerator[SimpleNamespace, None]:
             captured["env_vars"] = kwargs["env_vars"]
             captured["sandbox_secrets"] = kwargs["sandbox_secrets"]
             yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
@@ -302,9 +298,7 @@ class TestProcessTaskEnvironment:
         monkeypatch.setattr(utils_module, "create_sandbox", _capture_sandbox)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
 
-        result = await run_process_task(
-            start_benchmark_request, task_row, benchmark_id, aws_runtime, authority
-        )
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert resolved_inputs == [
@@ -316,9 +310,7 @@ class TestProcessTaskEnvironment:
         ]
         assert "OPENAI_API_KEY" not in captured["env_vars"]
         assert captured["env_vars"]["TAVILY_API_KEY"] == "resolved-TAVILY_API_KEY"
-        assert captured["sandbox_secrets"] == {
-            "BENCHMARK_TOOL_API_KEY": "native-tool-secret"
-        }
+        assert captured["sandbox_secrets"] == {"BENCHMARK_TOOL_API_KEY": "native-tool-secret"}
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_direct_provider_escape_hatch_preserves_provider_credentials(
@@ -346,9 +338,7 @@ class TestProcessTaskEnvironment:
         )
         captured_env_vars: list[dict[str, str]] = []
 
-        def _resolve_direct_secrets(
-            secrets: dict[str, str], *_args: Any, **_kwargs: Any
-        ) -> dict[str, str]:
+        def _resolve_direct_secrets(secrets: dict[str, str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {name: f"resolved-{name}" for name in secrets}
 
         monkeypatch.setattr(
@@ -362,9 +352,7 @@ class TestProcessTaskEnvironment:
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        result = await run_process_task(
-            start_benchmark_request, task_row, benchmark_id, aws_runtime, authority
-        )
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert captured_env_vars[0]["OPENAI_API_KEY"] == "resolved-OPENAI_API_KEY"

@@ -72,9 +72,7 @@ def test_resolve_secrets_stringifies_non_object_values(value: SecretValue) -> No
         ({"MODEL_GATEWAY_URL"}, {}, False),
     ],
 )
-def test_gateway_routing_enabled(
-    secret_names: set[str], kwargs: dict[str, str], expected: bool
-) -> None:
+def test_gateway_routing_enabled(secret_names: set[str], kwargs: dict[str, str], expected: bool) -> None:
     assert gateway_routing_enabled(secret_names, kwargs) is expected
 
 
