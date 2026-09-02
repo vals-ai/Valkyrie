@@ -99,19 +99,16 @@ def test_terminal_sentry_failure_does_not_escape(monkeypatch: pytest.MonkeyPatch
     assert warning.call_count == 3
 
 
-def test_invalid_sentry_configuration_logs_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_invalid_production_sentry_configuration_logs_warning(monkeypatch: pytest.MonkeyPatch) -> None:
     error = RuntimeError("bad dsn")
     warning = Mock()
-    init_mock = Mock(side_effect=error)
     monkeypatch.setenv("SENTRY_DSN", "https://public@example.com/1")
     monkeypatch.setenv("ENVIRONMENT", "production")
-    monkeypatch.setenv("SENTRY_ENVIRONMENT", "bench")
-    monkeypatch.setattr(sentry_sdk, "init", init_mock)
+    monkeypatch.setattr(sentry_sdk, "init", Mock(side_effect=error))
     monkeypatch.setattr(observability.logger, "warning", warning)
 
     observability.configure_observability()
 
-    assert init_mock.call_args.kwargs["environment"] == "bench"
     warning.assert_called_once_with("Failed to initialize Sentry: %s: %s", "RuntimeError", error)
 
 

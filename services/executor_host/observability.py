@@ -70,7 +70,7 @@ def configure_observability() -> None:
     try:
         sentry_sdk.init(
             dsn=dsn,
-            environment=os.environ.get("SENTRY_ENVIRONMENT", os.environ.get("ENVIRONMENT", "development")),
+            environment=os.environ.get("ENVIRONMENT", "development"),
             release=os.environ.get("SENTRY_RELEASE") or None,
             server_name="valkyrie-executor-host",
             enable_logs=True,

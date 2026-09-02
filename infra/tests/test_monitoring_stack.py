@@ -799,10 +799,10 @@ class MonitoringStackTest(unittest.TestCase):
         )
 
     def test_service_environment_labels_follow_stage(self) -> None:
-        for stage_name, expected_environment, expected_sentry_environment, expected_namespace in (
-            (BENCH, "production", "bench", "local"),
-            (PROD, "prod", "production", "local-prod"),
-            (DEV, "dev", "dev", "local-dev"),
+        for stage_name, expected_environment, expected_namespace in (
+            (BENCH, "production", "local"),
+            (PROD, "production", "local-prod"),
+            (DEV, "dev", "local-dev"),
         ):
             environment = _stage_environment(stage_name)
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
@@ -812,7 +812,6 @@ class MonitoringStackTest(unittest.TestCase):
                     [
                         {"Name": "BROKER_ENVIRONMENT", "Value": expected_environment},
                         {"Name": "ENVIRONMENT", "Value": expected_environment},
-                        {"Name": "SENTRY_ENVIRONMENT", "Value": expected_sentry_environment},
                         {"Name": "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "Value": expected_namespace},
                     ]
                 )
