@@ -106,6 +106,7 @@ class TrackerStack(Stack):
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
+            "SENTRY_ENVIRONMENT": stage_config.sentry_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
             **({"BENCHMARK_SERVICE_BASE_URL": benchmark_service_url} if benchmark_service_url else {}),
@@ -176,8 +177,6 @@ class TrackerStack(Stack):
         auth_required = os.environ.get("AUTH_REQUIRED", "false")
         benchmark_catalog_url = os.environ.get("BENCHMARK_CATALOG_URL", "")
         descope_project_id = os.environ.get("DESCOPE_PROJECT_ID", "")
-        if stage.name == PROD and not benchmark_catalog_url:
-            raise ValueError("prod deployments require BENCHMARK_CATALOG_URL.")
         if not stage.is_bench:
             auth_required = "true"
             if not descope_project_id:

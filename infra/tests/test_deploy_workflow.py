@@ -99,7 +99,7 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn('AUTH_REQUIRED: "true"', prod_core)
         self.assertIn("DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}", prod_core)
         self.assertIn("BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}", prod_core)
-        self.assertIn("must define BENCHMARK_CATALOG_URL", prod_core)
+        self.assertNotIn("must define BENCHMARK_CATALOG_URL", prod_core)
         self.assertIn("needs: classify-deployment", dev_core)
         self.assertIn("group: valkyrie-dev-${{ github.event_name == 'push' && 'deploy' || github.run_id }}", dev_core)
         self.assertIn("core_maintenance_required != 'true'", dev_core)

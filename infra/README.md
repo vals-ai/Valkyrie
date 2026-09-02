@@ -211,7 +211,7 @@ required inputs and stay outside the repository.
 
 ## Benchmark Catalog
 
-`BENCHMARK_CATALOG_URL` points tracker-service at a benchmark catalog API. Set it for deployed tracker-service so `valkyrie config service list` can show the catalog of benchmarks hosted at that endpoint.
+`BENCHMARK_CATALOG_URL` optionally points tracker-service at a benchmark catalog API. When it is unset, `valkyrie config service list` returns an empty catalog.
 
 ```bash
 export BENCHMARK_CATALOG_URL=https://<api-id>.execute-api.us-east-1.amazonaws.com

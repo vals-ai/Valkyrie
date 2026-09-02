@@ -291,15 +291,11 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertTrue(stage.is_production)
         self.assertFalse(stage.is_bench)
 
-    def test_prod_requires_a_platform_catalog(self) -> None:
-        environment = {**TEST_PROD_ENV, "BENCHMARK_CATALOG_URL": ""}
-
-        with mock.patch.dict(os.environ, environment, clear=True):
-            with self.assertRaisesRegex(ValueError, "prod deployments require BENCHMARK_CATALOG_URL"):
-                service_templates(PROD)
-
     def test_prod_is_production_shaped_and_physically_isolated(self) -> None:
-        with mock.patch.dict(os.environ, TEST_PROD_ENV, clear=True):
+        prod_environment_without_catalog = {
+            name: value for name, value in TEST_PROD_ENV.items() if name != "BENCHMARK_CATALOG_URL"
+        }
+        with mock.patch.dict(os.environ, prod_environment_without_catalog, clear=True):
             tracker_template, executor_template, monitoring_template = service_templates(PROD)
 
         tracker_template.has_resource_properties(
@@ -323,7 +319,7 @@ class MonitoringStackTest(unittest.TestCase):
             tracker_environment,
         )
         self.assertIn(
-            {"Name": "BENCHMARK_CATALOG_URL", "Value": TEST_PROD_ENV["BENCHMARK_CATALOG_URL"]},
+            {"Name": "BENCHMARK_CATALOG_URL", "Value": ""},
             tracker_environment,
         )
         self.assertIn(
@@ -803,10 +799,10 @@ class MonitoringStackTest(unittest.TestCase):
         )
 
     def test_service_environment_labels_follow_stage(self) -> None:
-        for stage_name, expected_environment, expected_namespace in (
-            (BENCH, "production", "local"),
-            (PROD, "prod", "local-prod"),
-            (DEV, "dev", "local-dev"),
+        for stage_name, expected_environment, expected_sentry_environment, expected_namespace in (
+            (BENCH, "production", "bench", "local"),
+            (PROD, "prod", "production", "local-prod"),
+            (DEV, "dev", "dev", "local-dev"),
         ):
             environment = _stage_environment(stage_name)
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
@@ -816,6 +812,7 @@ class MonitoringStackTest(unittest.TestCase):
                     [
                         {"Name": "BROKER_ENVIRONMENT", "Value": expected_environment},
                         {"Name": "ENVIRONMENT", "Value": expected_environment},
+                        {"Name": "SENTRY_ENVIRONMENT", "Value": expected_sentry_environment},
                         {"Name": "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "Value": expected_namespace},
                     ]
                 )
