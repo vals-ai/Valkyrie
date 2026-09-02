@@ -11,6 +11,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from botocore.exceptions import ClientError
 from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
 from tracker.exceptions import S3Error
 
@@ -242,3 +243,35 @@ class TestPushAgent:
             UploadId="upload-failure",
         )
         failing_client.complete_multipart_upload.assert_not_awaited()
+
+    async def test_run_start_publish_atomically_refuses_alias_collision(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        archive = b"agent archive"
+        successful_client = AsyncMock()
+        conflicting_client = AsyncMock()
+        conflicting_client.put_object.side_effect = ClientError(
+            {
+                "Error": {"Code": "PreconditionFailed"},
+                "ResponseMetadata": {"HTTPStatusCode": 412},
+            },
+            "PutObject",
+        )
+        clients: list[AsyncMock] = [successful_client, conflicting_client]
+
+        def mock_zip_stream(**_kwargs: Any) -> nullcontext[io.BytesIO]:
+            return nullcontext(io.BytesIO(archive))
+
+        _configure_s3_clients(monkeypatch, clients)
+        monkeypatch.setattr(storage, "get_agent_zip_stream", mock_zip_stream)
+
+        assert await storage.push_agent_if_absent("demo", Path("/unused")) is True
+        assert await storage.push_agent_if_absent("demo", Path("/unused")) is False
+
+        successful_call = successful_client.put_object.await_args
+        assert successful_call is not None
+        assert successful_call.kwargs["Bucket"] == "agent-bucket"
+        assert successful_call.kwargs["Key"] == "agents/demo.zip"
+        assert successful_call.kwargs["ContentLength"] == len(archive)
+        assert successful_call.kwargs["IfNoneMatch"] == "*"
