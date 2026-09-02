@@ -119,6 +119,14 @@
           "self-hosting/infrastructure",
           "self-hosting/aws-permissions"
         ]
+      },
+      {
+        "group": "Contributing",
+        "pages": [
+          "contributing/local-development",
+          "contributing/tracker-service",
+          "contributing/database"
+        ]
       }
     ]
   },

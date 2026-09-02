@@ -1,138 +1,18 @@
 # Development
 
-Local development guide for the Agentic Harness.
+The local development guide is published at [docs.valkyrie.vals.ai/contributing/local-development](https://docs.valkyrie.vals.ai/contributing/local-development). Its source is [`docs/contributing/local-development.mdx`](docs/contributing/local-development.mdx).
 
-## Prerequisites
-
-- Python 3.12.x
-- [uv](https://github.com/astral-sh/uv) package manager (`brew install uv`)
-
-### Environment
-
-Add inside of `.env` when running against a local tracker service:
-
-```env
-TRACKER_SERVICE_URL=http://localhost:8000
-```
-
-## Installation
-
-### CLI
-
-```bash
-make install
-```
-
-Creates `.venv` and installs dependencies from `pyproject.toml`.
-
-### Install as a tool globally
-
-```bash
-make tool-install
-```
-
-Installs `valkyrie` as a standalone executable so you can run it without the `uv run` prefix. Uses editable install so code changes take effect immediately. If not added to your PATH, run `uv tool update-shell`.
-
-### Tracker service
-
-```bash
-make tracker-service   # Start Tracker, PostgreSQL, and Redis locally
-```
-
-The service will be available at `http://localhost:8000`. Local Compose does not run benchmark execution; use a deployed release environment for that workflow.
-
-## Environment Setup
-
-### CLI (valkyrie config)
-
-The CLI reads credentials from `~/.config/valkyrie/valkyrie.yaml`. Run `valkyrie config init` to create it.
-
-```bash
-valkyrie config init
-```
-
-### Testing with hosted mode (Descope auth)
-
-Start the tracker with auth enabled:
-
-```bash
-AUTH_REQUIRED=true \
-DESCOPE_PROJECT_ID=<your-project-id> \
-DESCOPE_MANAGEMENT_KEY=<your-management-key> \
-make tracker-service
-```
-
-`DESCOPE_MANAGEMENT_KEY` is server-side tracker config. It lets the local tracker
-resolve the access key's bound user email through Descope's management API when
-testing hosted-mode run attribution.
-
-The tracker expects Descope access-key exchange responses to expose the bound user
-id through custom claims. For example:
-
-```json
-{
-  "keyId": "K2abc",
-  "sessionToken": {
-    "sub": "K2abc",
-    "customClaims": {
-      "user_id": "U2abc"
-    }
-  }
-}
-```
-
-Then configure the CLI for hosted mode:
-
-```bash
-valkyrie config init
-# Choose "hosted", provide your Vals AI API key and AWS credentials
-```
-
-Without the env vars, the service runs in self-hosted mode (no auth, default org).
-
-## Code Quality
-
-```bash
-make style       # ruff format + ruff check --fix
-make typecheck   # basedpyright (strict mode)
-```
+- [Tracker service](https://docs.valkyrie.vals.ai/contributing/tracker-service)
+- [Database and migrations](https://docs.valkyrie.vals.ai/contributing/database)
+- [Infrastructure operations](infra/README.md)
+- [Releasing the Valkyrie SDK](scripts/sdk/RELEASING.md)
 
 ## Versioning
 
-Semantic versioning is used for the prod branch. Below demonstrates what is acceptable to include in the pr title for a deploy. Valkyrie uses [github-tag-action](https://github.com/anothrNick/github-tag-action) to automatically handle release versions as long as the pr title contains a required tag.  
+Semantic versioning is used for the prod branch. Valkyrie uses [github-tag-action](https://github.com/anothrNick/github-tag-action) to handle release versions, so a pull request title for a deploy must contain one of these tags.
 
 | Tag | Effect | Example |
 | --- | --- | --- |
 | `#patch` | Patch bump | v0.4.0 -> v0.4.1 |
 | `#minor` | Minor bump | v0.4.1 -> v0.5.0 |
 | `#major` | Major bump | v0.5.0 -> v1.0.0 |
-
-## Releases
-
-Binary versions are released when commits are tagged:
-
-- **Dev**: Must manually tag a commit to trigger a release
-- **Prod**: Automatically tagged and released on push
-
-`valkyrie-sdk` is versioned and published separately. See [Releasing the Valkyrie SDK](scripts/sdk/RELEASING.md).
-
-## Documentation
-
-The public documentation source is in `docs/`. Local preview requires Node.js 20.17 or newer. It does not require Mintlify credentials.
-
-```bash
-cd docs
-npx mint dev
-```
-
-Run `npx mint login` only to test account-backed features such as search and the assistant.
-
-`docs/reference/` is generated from the CLI and SDK source. Run `make docs-reference` after changing a public CLI or SDK surface; CI runs `make docs-reference-check` and fails on stale output.
-
-Contributor and operator references remain beside their code:
-
-| Topic | Link |
-| --- | --- |
-| Tracker service | [Tracker README](services/tracker/README.md) |
-| Database and migrations | [Database README](services/tracker/src/tracker/database/README.md) |
-| Infrastructure operations | [Infrastructure README](infra/README.md) |

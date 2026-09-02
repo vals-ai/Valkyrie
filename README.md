@@ -7,6 +7,8 @@
 
 Valkyrie orchestrates scalable, reproducible evaluations for AI agents. It supports Vals-hosted infrastructure and self-hosted AWS deployments.
 
+Guides, the CLI reference, the Python SDK reference, and contributor setup are published at [docs.valkyrie.vals.ai](https://docs.valkyrie.vals.ai/introduction/what-is-valkyrie). Their source lives in [`docs/`](docs).
+
 ## Quickstart
 
 > **Note:** Valkyrie can be invoked using either `valkyrie` or the alias `valk`. For example: `valkyrie run start` or `valk run start`.
@@ -40,15 +42,11 @@ valkyrie run start \
   --connect
 ```
 
-## Documentation
-
-Guides, the CLI reference, and the Python SDK reference are published at [docs.valkyrie.vals.ai](https://docs.valkyrie.vals.ai/introduction/what-is-valkyrie). Their source lives in [`docs/`](docs).
-
 ## Contributing and operations
 
-- [Local development](DEVELOPMENT.md)
-- [Tracker service](services/tracker/README.md)
-- [Database and migrations](services/tracker/src/tracker/database/README.md)
+- [Local development](https://docs.valkyrie.vals.ai/contributing/local-development)
+- [Tracker service](https://docs.valkyrie.vals.ai/contributing/tracker-service)
+- [Database and migrations](https://docs.valkyrie.vals.ai/contributing/database)
 - [Infrastructure operations](infra/README.md)
 
 ## Citation

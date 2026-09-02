@@ -16,14 +16,12 @@ Read this skill before editing `docs/`, the reference generator, documentation t
 | Public end-user documentation | `docs/` |
 | Public CLI and Python SDK reference generator | `scripts/generate_reference.py` entry point over the `scripts/reference_docs/` package: `collect` reads the public surface, `model` holds the manifest and `STATIC_REDIRECTS` for handwritten routes, `render` writes MDX, `generate` orchestrates |
 | Generated reference tests | `tests/unit/docs/test_generate_reference.py` |
-| Contributor setup | `DEVELOPMENT.md` |
-| Tracker operation | `services/tracker/README.md` and tracker-local docs |
-| Database operation and migrations | `services/tracker/src/tracker/database/README.md` |
+| Contributor setup, tracker operation, database and migrations | `docs/contributing/`. `DEVELOPMENT.md` and the service READMEs are pointers to those pages, plus the versioning table that CI links to |
 | Generic self-hosting | `docs/self-hosting/` |
 | Vals-specific infrastructure operation | `infra/README.md` |
 | SDK release procedure | `scripts/sdk/RELEASING.md` |
 
-Never publish contributor procedures, Vals-specific operations, release activation, protected-environment instructions, incident procedures, break-glass access, or internal automation instructions in Mintlify.
+Contributor setup and service operation belong in the `Contributing` group. Never publish Vals-specific operations, release activation, protected-environment instructions, incident procedures, break-glass access, or internal automation instructions in Mintlify.
 
 Never reference a private repository, issue, URL, hostname, credential, or internal item from public documentation. This includes configuration an external reader cannot use: document the self-contained path instead, such as an inline allowlist rather than a Vals-internal catalog service.
 
@@ -160,7 +158,7 @@ Restart the preview server after deleting or consolidating generated routes. Hot
 
 ## Validation
 
-Read the current `Makefile`, `DEVELOPMENT.md`, and documentation CI workflow before choosing commands. Do not copy tool versions or test counts into this skill.
+Read the current `Makefile`, `docs/contributing/local-development.mdx`, and documentation CI workflow before choosing commands. Do not copy tool versions or test counts into this skill.
 
 Before committing, run the current checks for:
 
@@ -173,7 +171,7 @@ Before committing, run the current checks for:
 
 A documentation-only change does not justify unrelated product tests. When documentation accompanies product code, run the smallest suites that own the changed behavior. Cross-layer changes need the union of their owning suites; live tests require explicit approval.
 
-Use the local preview command and runtime requirement currently documented in `DEVELOPMENT.md`. Basic preview needs no Mintlify credentials. Login is optional for account-backed features.
+Use the local preview command and runtime requirement currently documented in `docs/contributing/local-development.mdx`. Basic preview needs no Mintlify credentials. Login is optional for account-backed features.
 
 Any CI workflow edit requires explicit human attention.
 
