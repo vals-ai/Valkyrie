@@ -78,11 +78,13 @@ class TestSentrySetup:
     ) -> None:
         init_mock = Mock()
         monkeypatch.setenv("SENTRY_DSN", "https://public@example.com/1")
+        monkeypatch.setenv("SENTRY_ENVIRONMENT", "bench")
         monkeypatch.setattr(sentry_sdk, "init", init_mock)
         monkeypatch.setattr(sentry_sdk, "set_tag", Mock())
 
         sentry_module.init_sentry("valkyrie-worker", environment="test")
 
+        assert init_mock.call_args.kwargs["environment"] == "bench"
         integrations = init_mock.call_args.kwargs["integrations"]
         otlp_integrations = [i for i in integrations if isinstance(i, OTLPIntegration)]
         assert len(otlp_integrations) == 1, "expected exactly one OTLPIntegration in integrations="
