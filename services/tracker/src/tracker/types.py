@@ -4,11 +4,19 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -29,6 +37,15 @@ def _serialize_utc(value: datetime | None) -> str | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.isoformat()
+
+
+def _serialize_required_utc(value: datetime) -> str:
+    result = _serialize_utc(value)
+    assert result is not None
+    return result
+
+
+UTCDateTime = Annotated[datetime, PlainSerializer(_serialize_required_utc, return_type=str)]
 
 
 class BenchmarkDetails(BaseModel):
@@ -60,6 +77,7 @@ class StartBenchmarkRequest(BaseModel):
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
+    priority: int | None = Field(default=None, strict=True, ge=0, le=4)
     label: str | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None
@@ -486,3 +504,53 @@ class TaskArtifactsResponse(BaseModel):
     cloudwatch_url: str | None
     agent_output_url: str | None
     agent_output_expires_in: int | None
+
+
+class SchedulerSummaryResponse(BaseModel):
+    waiting: int = 0
+    building: int = 0
+    in_progress: int = 0
+    evaluating: int = 0
+
+
+class SchedulerActiveStatus(str, Enum):
+    BUILDING = "BUILDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    EVALUATING = "EVALUATING"
+
+
+class SchedulerPoolResponse(BaseModel):
+    pool_id: str
+    waiting: int
+
+
+class SchedulerWaitingEntryResponse(BaseModel):
+    benchmark_uuid: UUID
+    task_uuid: UUID
+    benchmark_name: str
+    external_task_id: str
+    started_by_email: str | None = None
+    pool_id: str
+    position: int
+    priority: int
+    enqueued_at: UTCDateTime
+
+
+class SchedulerActiveEntryResponse(BaseModel):
+    benchmark_uuid: UUID
+    task_uuid: UUID
+    benchmark_name: str
+    external_task_id: str
+    started_by_email: str | None = None
+    status: SchedulerActiveStatus
+    started_at: UTCDateTime
+
+
+class SchedulerOverviewResponse(BaseModel):
+    observed_at: UTCDateTime
+    summary: SchedulerSummaryResponse
+    pools: list[SchedulerPoolResponse]
+    waiting_entries: list[SchedulerWaitingEntryResponse]
+    active_entries: list[SchedulerActiveEntryResponse]
+    waiting_capped: bool
+    active_capped: bool

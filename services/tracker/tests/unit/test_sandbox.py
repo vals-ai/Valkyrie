@@ -1159,6 +1159,39 @@ class TestSandboxLifecycle:
         ]
         assert context_calls == [("sandbox-123", "ghcr.io/vals/swebench:latest")]
 
+    async def test_create_sandbox_randomizes_only_direct_names(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        created_names: list[str] = []
+        mock_sandbox = AsyncMock(id="sandbox-123", name="task-alias")
+
+        async def mock_create_sandbox(
+            _provider: Any,
+            sandbox_name: str,
+            *_args: Any,
+            **_kwargs: Any,
+        ) -> AsyncMock:
+            created_names.append(sandbox_name)
+
+            return mock_sandbox
+
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "delete_sandbox", AsyncMock())
+
+        common_arguments = {
+            "provider": AsyncMock(),
+            "sandbox_name": "task-alias",
+            "source": ImageSource(image="ghcr.io/vals/swebench:latest"),
+            "resources": Resources(vcpu=2, memory=4, disk=5),
+            "creation_semaphore": asyncio.Semaphore(1),
+        }
+        async with create_sandbox(**common_arguments):
+            pass
+        async with create_sandbox(**common_arguments, unique_name=False):
+            pass
+
+        assert created_names[0].startswith("task-alias_")
+        assert created_names[0] != "task-alias"
+        assert created_names[1] == "task-alias"
+
     async def test_targeted_snapshot_is_measured_and_deleted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_sandbox = AsyncMock()
         mock_sandbox.id = "sandbox-123"

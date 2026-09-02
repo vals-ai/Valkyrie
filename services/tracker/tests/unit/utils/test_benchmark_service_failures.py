@@ -28,7 +28,13 @@ import tracker.sandbox as sandbox_module
 import tracker.utils.run_orchestration as run_orchestration_module
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 import tracker.utils.task_execution as utils_module
-from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
+from tests.unit.utils.task_execution_support import (
+    TEST_ORG,
+    bind_task_to_dispatch,
+    create_task_environment,
+    install_sqlite_evaluation_lock,
+    run_process_task,
+)
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
@@ -241,6 +247,8 @@ class TestBenchmarkServiceFailures:
         task_row.status = TaskStatus.EVALUATING
         task_row.eval_resume_state = saved_state
         database_session.commit()
+        bind_task_to_dispatch(database_session, task_row, authority)
+        install_sqlite_evaluation_lock(database_session, monkeypatch)
         resume_calls = 0
 
         async def _mock_resume_evaluation(

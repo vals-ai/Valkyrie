@@ -215,6 +215,7 @@ jobs:
           BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
           DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}
           SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
           SENTRY_RELEASE: ${{ github.sha }}
         working-directory: infra
@@ -255,6 +256,7 @@ jobs:
       OPERATION: ${{ github.event_name == 'push' && 'deploy' || inputs.operation }}
       PRODUCTION_ACCOUNT_ID: "613431292675"
       SCOPE: ${{ github.event_name == 'push' && 'core' || inputs.scope }}
+      SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}
       SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
       SENTRY_RELEASE: ${{ github.sha }}
 

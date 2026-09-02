@@ -10,16 +10,18 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
-from benchmark_service import Resources, Sandbox, SandboxProvider, SandboxSource
+from benchmark_service import Resources, Sandbox, SandboxProvider, SandboxSource, TargetedSnapshotSource
 from sqlalchemy.engine import Connection, Engine
 from sqlmodel import Session, col, select, update
 
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
+from tracker.exceptions import ExecutionAuthorityRevoked, SandboxError
+from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.scheduler.store import (
-    PostgresPoolLock,
     claim_eligible_task,
     eligible_task_is,
     queue_pool_id,
+    queue_pool_lock,
     reset_abandoned_builds,
 )
 
@@ -89,7 +91,6 @@ def _start_claimed_task(
         .where(col(Task.benchmark).in_(active_benchmarks))
         .values(status=TaskStatus.IN_PROGRESS)
     )
-    session.commit()
 
     return result.rowcount == 1
 
@@ -103,7 +104,7 @@ def _reset_abandoned_pool_builds(connection: Connection, pool_id: str) -> None:
 async def recover_queued_pool(context: SandboxQueueContext) -> None:
     """Reset abandoned builds once while holding this provider pool's lock."""
     while True:
-        lock = PostgresPoolLock(context.engine, context.pool_id)
+        lock = queue_pool_lock(context.engine, context.pool_id)
         async with lock as acquired:
             if acquired:
                 _reset_abandoned_pool_builds(lock.connection, context.pool_id)
@@ -128,17 +129,26 @@ async def enter_queued_sandbox(
     context: SandboxQueueContext,
     task_row_id: UUID,
     expected_started_at: datetime,
+    authority: ExecutionAuthority,
     source: SandboxSource,
     resources: Resources,
     create: SandboxFactory,
 ) -> Sandbox | None:
     """Wait for this exact attempt's global turn and enter its sandbox context."""
+    if isinstance(source, TargetedSnapshotSource):
+        raise SandboxError("Queued admission does not support targeted snapshots")
+
     while True:
-        lock = PostgresPoolLock(context.engine, context.pool_id)
+        lock = queue_pool_lock(context.engine, context.pool_id)
         async with lock as acquired:
             if acquired:
                 _reset_abandoned_pool_builds(lock.connection, context.pool_id)
                 with Session(lock.connection) as session:
+                    try:
+                        lock_execution_authority(session, authority)
+                    except ExecutionAuthorityRevoked:
+                        session.rollback()
+                        return None
                     eligible = eligible_task_is(
                         session,
                         context.pool_id,
@@ -150,33 +160,54 @@ async def enter_queued_sandbox(
                         task_row_id,
                         expected_started_at,
                     ) == (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS)
+                    session.rollback()
 
                 if not waiting:
                     return None
 
                 if eligible and await context.provider.check_admission(source, resources):
                     with Session(lock.connection) as session:
+                        try:
+                            lock_execution_authority(session, authority)
+                        except ExecutionAuthorityRevoked:
+                            session.rollback()
+                            return None
                         claimed = claim_eligible_task(
                             session,
                             context.pool_id,
                             task_row_id=task_row_id,
                             expected_started_at=expected_started_at,
                         )
-                        if not claimed and _queued_task_state(
-                            session,
-                            task_row_id,
-                            expected_started_at,
-                        ) != (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS):
-                            return None
+                        if claimed:
+                            session.commit()
+                        else:
+                            waiting = _queued_task_state(
+                                session,
+                                task_row_id,
+                                expected_started_at,
+                            ) == (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS)
+                            session.rollback()
+                            if not waiting:
+                                return None
 
                     if claimed:
                         sandbox = await stack.enter_async_context(create())
                         with Session(lock.connection) as session:
-                            started = _start_claimed_task(
-                                session,
-                                task_row_id=task_row_id,
-                                expected_started_at=expected_started_at,
-                            )
+                            try:
+                                lock_execution_authority(session, authority)
+                            except ExecutionAuthorityRevoked:
+                                session.rollback()
+                                started = False
+                            else:
+                                started = _start_claimed_task(
+                                    session,
+                                    task_row_id=task_row_id,
+                                    expected_started_at=expected_started_at,
+                                )
+                                if started:
+                                    session.commit()
+                                else:
+                                    session.rollback()
                         if not started:
                             await _close_stack_before_cancellation(stack)
 

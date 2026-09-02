@@ -394,6 +394,7 @@ class Benchmark(SQLModel, table=True):
             contract=self.arguments.contract,
             benchmark_name=self.name,
             concurrency=self.arguments.concurrency,
+            priority=self.arguments.priority,
             task_ids=self.arguments.task_ids,
             slice_str=self.arguments.slice_str,
             lambda_function=self.arguments.lambda_function,

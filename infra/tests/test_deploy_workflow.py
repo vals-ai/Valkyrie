@@ -28,6 +28,7 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("core_maintenance_required != 'true'", production_core)
         self.assertIn("database_maintenance_required != 'true'", production_core)
         self.assertIn("SCOPE=core", production_core)
+        self.assertIn("SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}", production_core)
         self.assertIn(
             "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}",
             production_core,
@@ -46,6 +47,7 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("database_maintenance_required != 'true'", dev_core)
         self.assertIn("environment: dev", dev_core)
         self.assertIn("SCOPE: ${{ github.event_name == 'push' && 'core' || inputs.scope }}", dev_core)
+        self.assertIn("SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}", dev_core)
         self.assertIn(
             "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}",
             dev_core,

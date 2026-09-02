@@ -690,18 +690,20 @@ class MonitoringStackTest(unittest.TestCase):
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
                 tracker_template, executor_template, _ = service_templates(stage_name)
 
-                expected_env = assertions.Match.array_with(
-                    [
-                        {"Name": "BROKER_ENVIRONMENT", "Value": expected_environment},
-                        {"Name": "ENVIRONMENT", "Value": expected_environment},
-                        {"Name": "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "Value": expected_namespace},
-                    ]
+                expected_env = [
+                    {"Name": "BROKER_ENVIRONMENT", "Value": expected_environment},
+                    {"Name": "ENVIRONMENT", "Value": expected_environment},
+                    {"Name": "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "Value": expected_namespace},
+                ]
+                tracker_env = assertions.Match.array_with(
+                    [*expected_env, {"Name": "SANDBOX_QUEUE_ENABLED", "Value": "false"}]
                 )
+                worker_env = assertions.Match.array_with(expected_env)
                 tracker_template.has_resource_properties(
                     "AWS::ECS::TaskDefinition",
                     {
                         "ContainerDefinitions": assertions.Match.array_with(
-                            [assertions.Match.object_like({"Environment": expected_env})]
+                            [assertions.Match.object_like({"Environment": tracker_env})]
                         )
                     },
                 )
@@ -709,10 +711,28 @@ class MonitoringStackTest(unittest.TestCase):
                     "AWS::ECS::TaskDefinition",
                     {
                         "ContainerDefinitions": assertions.Match.array_with(
-                            [assertions.Match.object_like({"Environment": expected_env})]
+                            [assertions.Match.object_like({"Environment": worker_env})]
                         )
                     },
                 )
+
+    def test_tracker_receives_sandbox_queue_flag_from_deployment_environment(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {**TEST_PROD_ENV, "SANDBOX_QUEUE_ENABLED": "true"},
+            clear=True,
+        ):
+            tracker_template, _executor_template, _monitoring_template = service_templates(PROD)
+
+        expected_env = assertions.Match.array_with([{"Name": "SANDBOX_QUEUE_ENABLED", "Value": "true"}])
+        tracker_template.has_resource_properties(
+            "AWS::ECS::TaskDefinition",
+            {
+                "ContainerDefinitions": assertions.Match.array_with(
+                    [assertions.Match.object_like({"Environment": expected_env})]
+                )
+            },
+        )
 
     def test_dev_does_not_create_sandbox_cleanup_resources(self) -> None:
         with mock.patch.dict(

@@ -188,7 +188,12 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequ
 @pytest.fixture(autouse=True)
 def mock_secret_store(monkeypatch: pytest.MonkeyPatch) -> None:
     def get(_self: object, _name: str) -> dict[str, str]:
-        return {"DAYTONA_API_KEY": "test-key", "DAYTONA_API_URL": "http://localhost:8001", "DAYTONA_TARGET": "us"}
+        return {
+            "DAYTONA_API_KEY": "test-key",
+            "DAYTONA_API_URL": "http://localhost:8001",
+            "DAYTONA_ORGANIZATION_ID": "test-organization",
+            "DAYTONA_TARGET": "us",
+        }
 
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get)
 
@@ -242,9 +247,13 @@ def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Ses
     async def _mock_verify_task_ids(*_args: Any, task_ids: list[str], **_kwargs: Any) -> VerifyTaskIdsResponse:
         return VerifyTaskIdsResponse(task_ids=task_ids)
 
+    async def _mock_recover_queued_pool(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
     monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
     monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
     monkeypatch.setattr(TaskMonitor, "_TRACK_INTERVAL", 0)
+    monkeypatch.setattr("tracker.utils.run_orchestration.recover_queued_pool", _mock_recover_queued_pool)
     monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
     monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
     monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)

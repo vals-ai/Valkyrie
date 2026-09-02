@@ -3,10 +3,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from benchmark_service import (
-    SandboxProviderConfig,
-    sandbox_provider_config_from_mapping,
-)
+from benchmark_service import SandboxProviderConfig, sandbox_provider_config_from_mapping
 from benchmark_service.client import BenchmarkServiceClient
 from sqlmodel import Session, select
 
@@ -76,6 +73,7 @@ def start_benchmark_request_to_benchmark(
     run_starter: RequestIdentity,
     *,
     aws_managed: bool,
+    queue_pool_id: str | None = None,
 ) -> Benchmark:
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
     if aws_managed != (request.harness_config is None):
@@ -95,6 +93,8 @@ def start_benchmark_request_to_benchmark(
         arguments=BenchmarkArguments(
             contract=request.contract,
             concurrency=request.concurrency,
+            priority=request.priority,
+            queue_pool_id=queue_pool_id,
             task_ids=request.task_ids,
             slice_str=request.slice_str,
             lambda_function=request.lambda_function,

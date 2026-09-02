@@ -23,6 +23,7 @@
     },
     "benchmark_name": "swebench",
     "concurrency": 2,
+    "priority": null,
     "label": "nightly",
     "task_ids": [
       "task-1"

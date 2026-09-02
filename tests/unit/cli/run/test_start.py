@@ -128,6 +128,7 @@ class TestCountedStarts:
 
         assert result.exit_code == 0, result.output
         assert start_testbed.tracker.start_benchmark.call_count == 1
+        assert start_testbed.tracker.start_benchmark.call_args.args[2] == 5
         assert "requested runs successfully started" not in result.output
 
         # Exercise the short alias with the compatible connect mode.
@@ -355,6 +356,21 @@ class TestCountedStarts:
 
             assert result.exit_code == 2
             assert start_testbed.boundary_call_count() == 0
+
+    def test_priority_forwards_provider_and_numeric_zero(
+        self,
+        start_testbed: StartTestbed,
+    ) -> None:
+        start_testbed.set_responses([_start_response(_FIRST_RUN_ID)])
+        start_testbed.tracker_factory.validate_sandbox_provider.return_value = ("modal", "ModalSecrets")
+        queued_result = start_testbed.invoke(["--provider", "modal", "--priority", "0"])
+
+        assert queued_result.exit_code == 0, queued_result.output
+        assert "Priority override:" in queued_result.output
+        start_call = start_testbed.tracker.start_benchmark.call_args
+        assert start_call is not None
+        assert start_call.kwargs["priority"] == 0
+        assert start_call.kwargs["provider"] == "modal"
 
     @pytest.mark.parametrize(
         ("count", "prior_ids", "failure", "expected_detail", "unknown_outcome"),
