@@ -7,7 +7,17 @@
 
 Valkyrie orchestrates scalable, reproducible evaluations for AI agents. It supports Vals-hosted infrastructure and self-hosted AWS deployments.
 
-Guides, the CLI reference, the Python SDK reference, and contributor setup are published at [docs.valkyrie.vals.ai](https://docs.valkyrie.vals.ai/introduction/what-is-valkyrie).
+Guides, the CLI reference, the Python SDK reference, and contributor setup are published at [docs.valkyrie.vals.ai](https://docs.valkyrie.vals.ai/introduction/what-is-valkyrie). The pages most people start with:
+
+| Topic | Location |
+| --- | --- |
+| Install and run your first benchmark | [get-started/quickstart](https://docs.valkyrie.vals.ai/get-started/quickstart) |
+| Uploading agents and writing a contract | [agents/agent-contract](https://docs.valkyrie.vals.ai/agents/agent-contract) |
+| Starting, monitoring, and managing runs | [runs/start](https://docs.valkyrie.vals.ai/runs/start) |
+| Results and output artifacts | [runs/results-and-outputs](https://docs.valkyrie.vals.ai/runs/results-and-outputs) |
+| Hosting your own benchmark service | [benchmarks/custom-services](https://docs.valkyrie.vals.ai/benchmarks/custom-services) |
+| Every CLI command | [reference/cli/index](https://docs.valkyrie.vals.ai/reference/cli/index) |
+| Python SDK | [sdk/quickstart](https://docs.valkyrie.vals.ai/sdk/quickstart) |
 
 ## Quickstart
 
