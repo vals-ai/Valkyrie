@@ -70,6 +70,10 @@ class ValkyrieConfig(BaseModel):
     @property
     def tracker_url(self) -> str:
         """Tracker base URL for the configured environment."""
+        if self.environment not in TRACKER_URLS:
+            raise ValkyrieConfigError(
+                f"Unsupported environment {self.environment!r}; expected one of: {', '.join(TRACKER_URLS)}"
+            )
         return TRACKER_URLS[self.environment]
 
     @field_validator("custom_benchmark_services")
