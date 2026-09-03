@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 import tempfile
@@ -9,6 +10,24 @@ from classify_executor_template_change import ExecutorHostTemplateEffect
 
 _MIGRATION_DIRECTORY = "services/tracker/src/tracker/database/migrations/versions"
 _NO_EXECUTOR_EFFECT = ExecutorHostTemplateEffect(redeploy_required=False, reasons=())
+
+
+def _executor_template(stack_id: str, *, image: str) -> dict[str, object]:
+    task_id = "ExecutorHostTaskDef"
+    return {
+        "Resources": {
+            task_id: {
+                "Type": "AWS::ECS::TaskDefinition",
+                "Properties": {"ContainerDefinitions": [{"Name": "ExecutorHost", "Image": image}]},
+                "Metadata": {"aws:cdk:path": f"{stack_id}/ExecutorHostTaskDef/Resource"},
+            },
+            "ExecutorHostService": {
+                "Type": "AWS::ECS::Service",
+                "Properties": {"TaskDefinition": {"Ref": task_id}},
+                "Metadata": {"aws:cdk:path": f"{stack_id}/ExecutorHostService/Service"},
+            },
+        }
+    }
 
 
 class MaintenanceClassifierTest(unittest.TestCase):
@@ -419,6 +438,70 @@ def upgrade() -> None:
             result.reasons,
             ["executor-core-change", "executor-host-task-definition-changed"],
         )
+
+    def test_combined_bench_and_prod_templates_preserve_either_redeploy_effect(self) -> None:
+        bench = ExecutorHostTemplateEffect(redeploy_required=False, reasons=())
+        prod = ExecutorHostTemplateEffect(
+            redeploy_required=True,
+            reasons=("executor-host-service-changed",),
+        )
+
+        result = classify_repository_change.combine_executor_effects(bench, prod)
+
+        self.assertTrue(result.redeploy_required)
+        self.assertEqual(result.reasons, ("executor-host-service-changed",))
+
+    def test_cli_classifies_prod_worker_change_and_rejects_partial_secondary_input(self) -> None:
+        templates = {
+            "bench-base.json": _executor_template("WorkerStack", image="image:base"),
+            "bench-head.json": _executor_template("WorkerStack", image="image:base"),
+            "prod-base.json": _executor_template("ValkProdWorkerStack", image="image:base"),
+            "prod-head.json": _executor_template("ValkProdWorkerStack", image="image:changed"),
+        }
+        for name, template in templates.items():
+            (self.repository / name).write_text(json.dumps(template), encoding="utf-8")
+
+        output = self.repository / "classification.json"
+        command = [
+            sys.executable,
+            str(Path(classify_repository_change.__file__)),
+            "--base-sha",
+            self.base_sha,
+            "--head-sha",
+            self.base_sha,
+            "--repository-root",
+            str(self.repository),
+            "--executor-base-template",
+            str(self.repository / "bench-base.json"),
+            "--executor-head-template",
+            str(self.repository / "bench-head.json"),
+            "--expected-stack-id",
+            "WorkerStack",
+            "--secondary-executor-base-template",
+            str(self.repository / "prod-base.json"),
+            "--secondary-executor-head-template",
+            str(self.repository / "prod-head.json"),
+            "--secondary-expected-stack-id",
+            "ValkProdWorkerStack",
+            "--output",
+            str(output),
+        ]
+
+        completed = subprocess.run(command, cwd=self.repository, check=False, capture_output=True, text=True)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["classification"], "maintenance-required")
+
+        partial = subprocess.run(
+            command[: command.index("--secondary-executor-head-template")] + command[-2:],
+            cwd=self.repository,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(partial.returncode, 2)
+        self.assertIn("requires both templates and the stack ID", output.read_text(encoding="utf-8"))
 
     def test_executor_source_change_requires_stack_without_assuming_maintenance(self) -> None:
         head_sha = self._commit_file("services/executor_host/supervisor.py", "changed = True\n")

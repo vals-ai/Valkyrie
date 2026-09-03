@@ -1,0 +1,90 @@
+---
+title: Manage runs with Python
+description: Start, inspect, stream, recover, and download Valkyrie runs.
+---
+
+Each method's parameters, defaults, and return types are in the [`client.runs` reference](/reference/sdk/runs#start).
+
+## Start a run
+
+Use an uploaded agent name or an `AgentContractRequest`:
+
+```python
+run = await client.runs.start(
+    agent="sweagent",
+    benchmark="swebench",
+    model="anthropic/claude-sonnet-4-6",
+    concurrency=10,
+    dataset="default",
+    label="nightly-swebench",
+)
+```
+
+## Fetch or stream progress
+
+```python
+current = await client.runs.fetch(run.benchmark_id)
+
+async for update in client.runs.stream(run.benchmark_id):
+    print(update.details.status)
+```
+
+## List, score, and recover runs
+
+```python
+page = await client.runs.list()
+results = await client.runs.results(run.benchmark_id)
+await client.runs.stop(run.benchmark_id)
+await client.runs.resume(run.benchmark_id, concurrency=20)
+await client.runs.retry(
+    run.benchmark_id,
+    task_ids=["task-1"],
+    benchmark_url="https://new-benchmark.example",
+)
+```
+
+Use `benchmark_url` when a benchmark service does not have a stable URL. `resume` picks up work that never ran, while `retry` re-runs tasks that ended in `ERROR`. See [Manage a run](/runs/manage) for the lifecycle rules that apply to both.
+
+Fetch the stored launch metadata, or check whether the run's S3 results are there yet:
+
+```python
+metadata = await client.runs.metadata(run.benchmark_id)
+exists = await client.runs.results_exist(run.benchmark_id)
+```
+
+## Analyze a completed run
+
+Uncached analysis requires the analyzer Lambda name from the agent contract:
+
+```python
+async for event in client.runs.analyze(
+    run.benchmark_id,
+    lambda_function="my-agent-analyzer",
+):
+    print(event.event, event.data)
+```
+
+## Stream run outputs
+
+Stream the tar archive without loading it all into memory:
+
+```python
+from pathlib import Path
+
+with Path("run-outputs.tar").open("wb") as archive:
+    async for chunk in client.runs.stream_outputs(run.benchmark_id):
+        archive.write(chunk)
+```
+
+## Which executor release ran the work
+
+A run response reports both the release it started on and the one running it now:
+
+| Field | Meaning |
+| --- | --- |
+| `executor_release_id` | The release chosen when the run was first admitted, which never changes |
+| `current_execution_release_id` | The release running the work now, which a retry or resume of a finished run can move forward |
+| `executor_artifact_digest` | Digest of the artifact from that first release |
+| `executor_protocol_version` | Protocol version of that first release |
+
+Runs that predate these fields return `null` for all of them. The metadata endpoint also reports the first `executor_artifact_uri`, and each dispatch keeps its own snapshot of the exact artifact that invocation used.

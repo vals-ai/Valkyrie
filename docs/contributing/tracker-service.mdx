@@ -1,0 +1,68 @@
+---
+title: Tracker service
+description: Architecture, local commands, and test suites for the tracker backend.
+---
+
+The tracker is the FastAPI backend. It serves the CLI and SDK API, tracks run and task state in PostgreSQL, writes artifacts to S3, and publishes task dispatches through Redis. Each dispatch names an executor release. ExecutorHost picks the dispatch up and runs that release in a sandbox.
+
+Local Docker Compose starts the tracker, PostgreSQL, and Redis only. It does not run ExecutorHost or create an active executor release, so a locally started run never executes. Use a deployed environment to run benchmarks.
+
+## Benchmark-service authentication
+
+The tracker forwards its inbound Descope API key only when the benchmark-service origin matches the hosted origin derived from the benchmark name and tracker configuration. A custom origin never receives that key. Custom services authenticate with explicit headers or a stored service secret instead. See [Benchmark authentication](/benchmarks/authentication).
+
+## Run it locally
+
+```bash
+make tracker-service
+```
+
+This builds and starts the local API and infrastructure, then tails the tracker logs. The API is available at `http://localhost:8000`. No `.env` file is required: Docker Compose reads AWS credentials from your shell environment.
+
+Individual targets:
+
+```bash
+make build    # Build the tracker image
+make run      # Start the tracker, PostgreSQL, and Redis
+make stop     # Stop the local stack
+make clean    # Stop the stack and remove local images
+make logs     # Tail tracker logs
+```
+
+## Tests
+
+```bash
+make test                    # Unit and local integration tests, 85% total coverage
+make test-unit               # Unit tests and Alembic migrations
+make test-alembic            # Alembic migration tests only
+make test-integration-local  # Local API and Postgres tests
+make test-integration-live   # AWS, benchmark service, and sandbox tests
+```
+
+`tests/integration/live` requires `services/tracker/.env`:
+
+```env
+# AWS: fetches sandbox provider credentials from Secrets Manager and writes to S3 and CloudWatch
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+AWS_DEFAULT_REGION=us-east-1
+AWS_SESSION_TOKEN=              # Optional, required for temporary credentials
+
+# Test infrastructure
+TEST_AWS_S3_BUCKET=             # S3 bucket for agent artifacts
+TEST_LOG_GROUP=                 # CloudWatch log group
+TEST_DAYTONA_SECRET_NAME=       # Secrets Manager secret holding the Daytona provider config
+
+# Benchmark service
+BENCHMARK_SERVICE_BASE_URL=     # Domain of the benchmark service
+BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE=local  # Cloud Map namespace fallback when no base URL is set
+BENCHMARK_SERVICE_AUTH_KEY=     # Access key for authenticating with a benchmark service
+```
+
+## Migrations
+
+```bash
+make migrate-gen   # Generate a migration from model changes
+```
+
+See [Database and migrations](/contributing/database) for the full guide.

@@ -21,16 +21,16 @@ from aws_cdk import (
 from constants import (
     CLUSTER_NAME,
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV,
-    DEV_SHARED_ARTIFACT_BUCKET_PARAMETER,
-    DEV_SHARED_AVAILABILITY_ZONES_PARAMETER,
-    DEV_SHARED_CLUSTER_NAME_PARAMETER,
-    DEV_SHARED_EXECUTOR_HOST_REPOSITORY_URI_PARAMETER,
-    DEV_SHARED_NAMESPACE_ARN_PARAMETER,
-    DEV_SHARED_NAMESPACE_ID_PARAMETER,
-    DEV_SHARED_NAMESPACE_NAME_PARAMETER,
-    DEV_SHARED_PUBLIC_SUBNET_IDS_PARAMETER,
-    DEV_SHARED_TRACKER_REPOSITORY_URI_PARAMETER,
-    DEV_SHARED_VPC_ID_PARAMETER,
+    SHARED_ARTIFACT_BUCKET_PARAMETER_PATH,
+    SHARED_AVAILABILITY_ZONES_PARAMETER_PATH,
+    SHARED_CLUSTER_NAME_PARAMETER_PATH,
+    SHARED_EXECUTOR_HOST_REPOSITORY_URI_PARAMETER_PATH,
+    SHARED_NAMESPACE_ARN_PARAMETER_PATH,
+    SHARED_NAMESPACE_ID_PARAMETER_PATH,
+    SHARED_NAMESPACE_NAME_PARAMETER_PATH,
+    SHARED_PUBLIC_SUBNET_IDS_PARAMETER_PATH,
+    SHARED_TRACKER_REPOSITORY_URI_PARAMETER_PATH,
+    SHARED_VPC_ID_PARAMETER_PATH,
     ELASTICACHE_NODE_TYPE,
     NAMESPACE,
     RELEASE_TEST_EXECUTOR_HOST_REPOSITORY_NAME,
@@ -100,7 +100,7 @@ class SharedStack(Stack):
         )
 
         self.hosted_zone: aws_route53.IHostedZone | None = None
-        if self.stage.is_prod:
+        if self.stage.is_bench:
             self.hosted_zone = aws_route53.HostedZone.from_lookup(
                 self,
                 "HostedZone",
@@ -118,10 +118,10 @@ class SharedStack(Stack):
             bucket_name=bucket_name,
             removal_policy=cdk.RemovalPolicy.RETAIN,
             block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
-            encryption=None if self.stage.is_prod else aws_s3.BucketEncryption.S3_MANAGED,
-            enforce_ssl=None if self.stage.is_prod else True,
-            object_ownership=None if self.stage.is_prod else aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
-            versioned=None if self.stage.is_prod else True,
+            encryption=None if self.stage.is_bench else aws_s3.BucketEncryption.S3_MANAGED,
+            enforce_ssl=None if self.stage.is_bench else True,
+            object_ownership=None if self.stage.is_bench else aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+            versioned=None if self.stage.is_bench else True,
             lifecycle_rules=[
                 aws_s3.LifecycleRule(abort_incomplete_multipart_upload_after=cdk.Duration.days(1)),
             ],
@@ -191,7 +191,7 @@ class SharedStack(Stack):
             ],
         )
 
-        if not self.stage.is_prod:
+        if not self.stage.is_bench:
             self._publish_shared_contract()
 
     def _publish_shared_contract(self) -> None:
@@ -199,64 +199,64 @@ class SharedStack(Stack):
         aws_ssm.StringParameter(
             self,
             "SharedVpcIdParameter",
-            parameter_name=stage_parameter_name(DEV_SHARED_VPC_ID_PARAMETER, self.stage.name),
+            parameter_name=stage_parameter_name(self.stage.name, SHARED_VPC_ID_PARAMETER_PATH),
             string_value=self.vpc.vpc_id,
         )
         aws_ssm.StringListParameter(
             self,
             "SharedAvailabilityZonesParameter",
-            parameter_name=stage_parameter_name(DEV_SHARED_AVAILABILITY_ZONES_PARAMETER, self.stage.name),
+            parameter_name=stage_parameter_name(self.stage.name, SHARED_AVAILABILITY_ZONES_PARAMETER_PATH),
             string_list_value=self.vpc.availability_zones,
         )
         aws_ssm.StringListParameter(
             self,
             "SharedPublicSubnetIdsParameter",
-            parameter_name=stage_parameter_name(DEV_SHARED_PUBLIC_SUBNET_IDS_PARAMETER, self.stage.name),
+            parameter_name=stage_parameter_name(self.stage.name, SHARED_PUBLIC_SUBNET_IDS_PARAMETER_PATH),
             string_list_value=[subnet.subnet_id for subnet in self.vpc.public_subnets],
         )
         aws_ssm.StringParameter(
             self,
             "SharedClusterNameParameter",
-            parameter_name=stage_parameter_name(DEV_SHARED_CLUSTER_NAME_PARAMETER, self.stage.name),
+            parameter_name=stage_parameter_name(self.stage.name, SHARED_CLUSTER_NAME_PARAMETER_PATH),
             string_value=self.cluster.cluster_name,
         )
         aws_ssm.StringParameter(
             self,
             "SharedNamespaceNameParameter",
-            parameter_name=stage_parameter_name(DEV_SHARED_NAMESPACE_NAME_PARAMETER, self.stage.name),
+            parameter_name=stage_parameter_name(self.stage.name, SHARED_NAMESPACE_NAME_PARAMETER_PATH),
             string_value=self.namespace.namespace_name,
         )
         aws_ssm.StringParameter(
             self,
             "SharedNamespaceIdParameter",
-            parameter_name=stage_parameter_name(DEV_SHARED_NAMESPACE_ID_PARAMETER, self.stage.name),
+            parameter_name=stage_parameter_name(self.stage.name, SHARED_NAMESPACE_ID_PARAMETER_PATH),
             string_value=self.namespace.namespace_id,
         )
         aws_ssm.StringParameter(
             self,
             "SharedNamespaceArnParameter",
-            parameter_name=stage_parameter_name(DEV_SHARED_NAMESPACE_ARN_PARAMETER, self.stage.name),
+            parameter_name=stage_parameter_name(self.stage.name, SHARED_NAMESPACE_ARN_PARAMETER_PATH),
             string_value=self.namespace.namespace_arn,
         )
         aws_ssm.StringParameter(
             self,
             "SharedArtifactBucketParameter",
-            parameter_name=stage_parameter_name(DEV_SHARED_ARTIFACT_BUCKET_PARAMETER, self.stage.name),
+            parameter_name=stage_parameter_name(self.stage.name, SHARED_ARTIFACT_BUCKET_PARAMETER_PATH),
             string_value=self.bucket.bucket_name,
         )
         if self.tracker_repository is not None and self.executor_host_repository is not None:
             aws_ssm.StringParameter(
                 self,
                 "SharedTrackerRepositoryUriParameter",
-                parameter_name=stage_parameter_name(DEV_SHARED_TRACKER_REPOSITORY_URI_PARAMETER, self.stage.name),
+                parameter_name=stage_parameter_name(self.stage.name, SHARED_TRACKER_REPOSITORY_URI_PARAMETER_PATH),
                 string_value=self.tracker_repository.repository_uri,
             )
             aws_ssm.StringParameter(
                 self,
                 "SharedExecutorHostRepositoryUriParameter",
                 parameter_name=stage_parameter_name(
-                    DEV_SHARED_EXECUTOR_HOST_REPOSITORY_URI_PARAMETER,
                     self.stage.name,
+                    SHARED_EXECUTOR_HOST_REPOSITORY_URI_PARAMETER_PATH,
                 ),
                 string_value=self.executor_host_repository.repository_uri,
             )

@@ -1,0 +1,75 @@
+---
+title: Configure sandbox providers
+description: Store sandbox-provider credentials and select a provider for runs.
+---
+
+Valkyrie resolves sandbox-provider credentials from AWS Secrets Manager. Register each secret under a provider name in the CLI configuration. Full syntax is in the [`config provider set`](/reference/cli/config#provider-set) and [`config provider default`](/reference/cli/config#provider-default) reference.
+
+## Select a provider
+
+The first configured provider becomes the default. Set the default explicitly with:
+
+```bash
+valkyrie config provider default daytona
+```
+
+Select a configured provider for one run:
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench --provider daytona
+```
+
+Provider secret schemas are provider-specific. Registering a name does not make one provider's secret shape valid for another provider.
+
+## Daytona
+
+1. [Create a Daytona API key](https://app.daytona.io/dashboard/keys) with read, write, and delete access to sandboxes and snapshots.
+2. Choose a target from Daytona's [shared regions](https://www.daytona.io/docs/regions#shared-regions).
+3. Store the following JSON as an AWS Secrets Manager secret:
+
+```json
+{
+  "DAYTONA_API_KEY": "...",
+  "DAYTONA_API_URL": "https://app.daytona.io/api",
+  "DAYTONA_TARGET": "..."
+}
+```
+
+Register the secret:
+
+```bash
+valkyrie config provider set daytona DaytonaSecrets
+```
+
+<Note>
+  The legacy `DAYTONA_SECRET_NAME` configuration key remains supported only when `sandbox_providers` is not configured.
+</Note>
+
+## Modal
+
+1. [Create an API token](https://modal.com/docs/reference/modal.config#authentication) under `Settings → Tokens → API tokens`, in the Modal workspace that should own the sandboxes. Modal shows the token once, as a CLI command:
+
+```bash
+modal token set --token-id ak-... --token-secret as-... --profile=your-profile
+```
+
+2. Store the token id and secret from that command as an AWS Secrets Manager secret:
+
+```json
+{
+  "MODAL_TOKEN_ID": "ak-...",
+  "MODAL_TOKEN_SECRET": "as-..."
+}
+```
+
+Register the secret under the name `modal`:
+
+```bash
+valkyrie config provider set modal ModalSecrets
+```
+
+The provider name is sent to the benchmark service as the provider type, so Modal credentials must be registered under `modal`.
+
+<Note>
+  Modal support comes from the benchmark service, not the CLI. The service must pin `create-benchmark-service` `v0.14.0` or later; earlier releases fail the run with `Modal sandbox provider is not implemented`.
+</Note>

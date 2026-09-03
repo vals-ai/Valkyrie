@@ -9,14 +9,14 @@ import aws_cdk as cdk
 from aws_cdk import assertions, aws_s3
 
 from runtime_iam import create_executor_task_role, create_tracker_task_role
-from stage import DEV, PROD, RELEASE_TEST, Stage
-from stage_config import DEV_CONFIG, PROD_CONFIG, ManagedAWSRuntimeConfig
+from stage import BENCH, DEV, RELEASE_TEST, Stage
+from stage_config import BENCH_CONFIG, DEV_CONFIG, ManagedAWSRuntimeConfig
 from test_monitoring_stack import (
     TEST_AWS_ACCOUNT,
     TEST_AWS_REGION,
+    TEST_BENCH_ENV,
     TEST_DEV_ENV,
     TEST_MANAGED_ORG_ID,
-    TEST_PROD_ENV,
     TEST_RELEASE_TEST_ENV,
     TEST_TRACKER_SECRET_NAME_PREFIX,
     JsonObject,
@@ -289,9 +289,9 @@ class RuntimeIamTest(unittest.TestCase):
                     )
                     self.assertEqual(lambda_statement["Resource"], _lambda_function_resource("analysis-*"))
 
-    def test_prod_managed_runtime_uses_prod_inventory_and_task_roles(self) -> None:
-        with mock.patch.dict(os.environ, TEST_PROD_ENV, clear=True):
-            tracker_template, executor_template, _ = service_templates(PROD)
+    def test_bench_managed_runtime_uses_bench_inventory_and_task_roles(self) -> None:
+        with mock.patch.dict(os.environ, TEST_BENCH_ENV, clear=True):
+            tracker_template, executor_template, _ = service_templates(BENCH)
 
         expected_environment = assertions.Match.array_with(
             [
@@ -339,7 +339,7 @@ class RuntimeIamTest(unittest.TestCase):
                         lambda_statements[0]["Resource"],
                         [
                             _lambda_function_resource(pattern)
-                            for pattern in PROD_CONFIG.managed_aws.executor_lambda_function_name_patterns
+                            for pattern in BENCH_CONFIG.managed_aws.executor_lambda_function_name_patterns
                         ],
                     )
                 else:
