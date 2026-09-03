@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# PR classification runs this helper from the trusted base revision while
-# synthesizing candidate source with synthetic account IDs and no AWS access.
+# PR classification runs this helper from a trusted branch revision while
+# synthesizing source revisions with synthetic account IDs and no AWS access.
 revision="${1:?revision is required}"
 target_branch="${2:?target branch is required}"
 label="${3:?label is required}"

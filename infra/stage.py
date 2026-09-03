@@ -13,7 +13,10 @@ release-test -> stacks get a "ValkReleaseTest" prefix and "-release-test"
 
 from __future__ import annotations
 
-import aws_cdk as cdk
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import aws_cdk as cdk
 
 BENCH = "bench"
 PROD = "prod"

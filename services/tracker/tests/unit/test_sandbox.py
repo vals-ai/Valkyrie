@@ -633,6 +633,100 @@ class TestRunAgent:
 
         assert artifact_calls == ["benchmark-123:task_0:artifacts/result.json"]
 
+    async def test_run_agent_collects_outputs_before_reraising_agent_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        store = _mock_object_store()
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="",
+            run_cmd="exit 23",
+            final_output="/logs",
+            output_artifacts=["artifacts/result.json"],
+        )
+        archive_output = AsyncMock()
+        upload_artifacts = AsyncMock()
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command.startswith("mkdir -p") or command == "test -e /logs":
+                return ExecResult(exit_code=0, output="")
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fail_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            raise AgentRunFailedError("agent exited 23")
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fail_agent)
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive_output)
+        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", upload_artifacts)
+
+        sandbox = Mock(id="sandbox-123", name="task-alias")
+        with pytest.raises(AgentRunFailedError, match="agent exited 23"):
+            await run_agent(
+                sandbox,
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/testbed",
+                object_store=store,
+                agent_output_s3_key="benchmarks/benchmark-123/task_0/agent_output.tar.gz",
+                benchmark_id="benchmark-123",
+            )
+
+        archive_output.assert_awaited_once()
+        upload_artifacts.assert_awaited_once()
+
+    async def test_run_agent_preserves_agent_error_when_terminal_upload_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        store = _mock_object_store()
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="",
+            run_cmd="exit 23",
+            final_output="/logs",
+            output_artifacts=["artifacts/result.json"],
+        )
+        upload_artifacts = AsyncMock()
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command.startswith("mkdir -p") or command == "test -e /logs":
+                return ExecResult(exit_code=0, output="")
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fail_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            raise AgentRunFailedError("agent exited 23")
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fail_agent)
+        monkeypatch.setattr(
+            sandbox_module,
+            "archive_and_upload_output",
+            AsyncMock(side_effect=OutputArtifactError("terminal upload failed")),
+        )
+        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", upload_artifacts)
+
+        sandbox = Mock(id="sandbox-123", name="task-alias")
+        with pytest.raises(AgentRunFailedError, match="agent exited 23"):
+            await run_agent(
+                sandbox,
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/testbed",
+                object_store=store,
+                agent_output_s3_key="benchmarks/benchmark-123/task_0/agent_output.tar.gz",
+                benchmark_id="benchmark-123",
+            )
+
+        upload_artifacts.assert_awaited_once()
+
     async def test_run_agent_threads_benchmark_id_to_archive_and_upload(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1773,7 +1867,7 @@ class TestStreamCommandOutputAgentFailure:
         assert duration >= 0
 
     @pytest.mark.parametrize("exit_code", [1, 2, 127])
-    async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(
+    async def test_non_zero_exit_raises_prompt_free_agent_error_and_tags_exit_code(
         self, monkeypatch: pytest.MonkeyPatch, exit_code: int
     ) -> None:
         async def stream_command(_command: str) -> AsyncIterator[str]:
@@ -1797,22 +1891,14 @@ class TestStreamCommandOutputAgentFailure:
 
         assert isinstance(exc_info.value, SandboxError)
         assert not isinstance(exc_info.value, SandboxSetupError)
-        assert f"exit code: {exit_code}" in str(exc_info.value)
-        assert "last line" in str(exc_info.value)
+        assert str(exc_info.value) == f"Sandbox error: Agent command failed with exit code {exit_code}"
+        assert "last line" not in str(exc_info.value)
+        assert "run-agent.sh" not in str(exc_info.value)
         assert tagged == {"agent_exit_code": str(exit_code)}
 
-    async def test_output_tail_is_byte_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """
-        Test cases:
-        - Output retained for the failure message is capped by characters, not chunk count.
-        - The newest output survives while old output beyond the cap is dropped.
-        """
-        tail_cap = getattr(sandbox_module, "_OUTPUT_TAIL_MAX_CHARS")
-
+    async def test_arbitrary_agent_output_is_not_persisted_in_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def stream_command(_command: str) -> AsyncIterator[str]:
-            yield "old-marker\n"
-            yield "x" * (tail_cap + 1) + "\n"
-            yield "new-marker\n"
+            yield "prompt secret and attacker-controlled output\n"
             raise ProviderSandboxCommandError(1)
 
         mock_sandbox = Mock()
@@ -1827,7 +1913,13 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", fake_set_tag)
 
         with pytest.raises(AgentRunFailedError) as exc_info:
-            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+            await sandbox_module.stream_command_output(
+                mock_sandbox,
+                "run-agent.sh --secret value",
+                on_output=lambda _: None,
+            )
 
-        assert "new-marker" in str(exc_info.value)
-        assert "old-marker" not in str(exc_info.value)
+        assert str(exc_info.value) == "Sandbox error: Agent command failed with exit code 1"
+        assert "prompt" not in str(exc_info.value)
+        assert "secret" not in str(exc_info.value)
+        assert "run-agent.sh" not in str(exc_info.value)

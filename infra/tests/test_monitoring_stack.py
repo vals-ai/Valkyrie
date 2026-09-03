@@ -399,19 +399,21 @@ class MonitoringStackTest(unittest.TestCase):
                 {"Port": "443", "Protocol": "HTTPS", "StatusCode": "HTTP_301"},
             )
 
-        for stage_name, publicly_accessible, storage_encrypted in (
-            (BENCH, True, False),
-            (PROD, False, True),
-            (DEV, False, False),
-            (RELEASE_TEST, False, False),
+        for stage_name, publicly_accessible in (
+            (BENCH, True),
+            (PROD, False),
+            (DEV, False),
+            (RELEASE_TEST, False),
         ):
-            tracker_templates[stage_name].has_resource_properties(
-                "AWS::RDS::DBInstance",
-                {
-                    "PubliclyAccessible": publicly_accessible,
-                    "StorageEncrypted": storage_encrypted,
-                },
-            )
+            databases = tracker_templates[stage_name].find_resources("AWS::RDS::DBInstance")
+            self.assertEqual(len(databases), 1)
+
+            properties = next(iter(databases.values()))["Properties"]
+            self.assertEqual(properties["PubliclyAccessible"], publicly_accessible)
+            if stage_name == PROD:
+                self.assertIs(properties["StorageEncrypted"], True)
+            else:
+                self.assertNotIn("StorageEncrypted", properties)
 
         for stage_name in (BENCH, PROD, DEV):
             self.assertEqual(

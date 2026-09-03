@@ -412,7 +412,32 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("--secondary-executor-head-template", classification_workflow)
         self.assertIn("--secondary-expected-stack-id", classification_workflow)
         self.assertIn("ValkProdWorkerStack", classification_workflow)
-        self.assertEqual(classification_workflow.count("synthesize-worker-templates.sh"), 2)
+        self.assertEqual(
+            classification_workflow.count("bash workflow/.github/scripts/synthesize-worker-templates.sh"),
+            2,
+        )
+        self.assertIn("resolve-synthesis-helper:", classification_workflow)
+        resolver = classification_workflow.split("  resolve-synthesis-helper:", maxsplit=1)[1].split(
+            "  synthesize-base:", maxsplit=1
+        )[0]
+        self.assertIn("ref: ${{ env.BASE_SHA }}", resolver)
+        self.assertIn("if: steps.target-revision.outputs.sha == ''", resolver)
+        self.assertIn("ref: ${{ github.event.repository.default_branch }}", resolver)
+        self.assertLess(
+            resolver.index("ref: ${{ env.BASE_SHA }}"),
+            resolver.index("ref: ${{ github.event.repository.default_branch }}"),
+        )
+        self.assertIn(
+            "sha: ${{ steps.target-revision.outputs.sha || steps.default-revision.outputs.sha }}",
+            resolver,
+        )
+        self.assertEqual(classification_workflow.count("needs: resolve-synthesis-helper"), 2)
+        self.assertEqual(
+            classification_workflow.count("SYNTHESIS_HELPER_SHA: ${{ needs.resolve-synthesis-helper.outputs.sha }}"),
+            2,
+        )
+        self.assertEqual(classification_workflow.count("ref: ${{ env.SYNTHESIS_HELPER_SHA }}"), 2)
+        self.assertEqual(classification_workflow.count("git -C workflow rev-parse HEAD"), 2)
         self.assertIn("pull_request_target:", classification_workflow)
         self.assertIn("synthesize-base:", classification_workflow)
         self.assertIn("synthesize-head:", classification_workflow)
