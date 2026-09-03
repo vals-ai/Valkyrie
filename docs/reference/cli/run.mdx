@@ -267,7 +267,8 @@ valkyrie run results \
   [--path <PATH>] \
   [--s3] \
   [--task-ids <TEXT>] \
-  [--task-ids-file <TEXT>]
+  [--task-ids-file <TEXT>] \
+  [--lambda <TEXT>]
 ```
 
 ```bash Example
@@ -302,6 +303,11 @@ valkyrie run results \
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--task-ids-file"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"text"}</code> · default: <code>{"None"}</code></span></div>
   <p className="mb-0 mt-1">{"Path or http(s) URL to a text file with one task ID per line"}</p>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--lambda"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"text"}</code> · default: <code>{"None"}</code></span></div>
+  <p className="mb-0 mt-1">{"Lambda to invoke on the uploaded results, replacing the one the run was started with. Requires --s3."}</p>
 </div>
 
 Task guidance: [Run guides](/runs/start).

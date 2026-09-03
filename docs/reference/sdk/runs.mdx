@@ -162,7 +162,7 @@ For examples, see the [Python SDK guide](/sdk/runs).
 
 ## `client.runs.results` {#results}
 
-Fetch final results or upload them and return S3 links.
+Fetch final results, or upload them to S3 and return links, optionally invoking a lambda on the upload.
 
 ```python Overload 1
 async def results(
@@ -170,6 +170,7 @@ async def results(
     *,
     task_ids: Sequence[str] | None = None,
     upload_to_s3: Literal[False] = False,
+    lambda_function: None = None,
 ) -> FinalViewResponse
 ```
 
@@ -179,6 +180,7 @@ async def results(
     *,
     task_ids: Sequence[str] | None = None,
     upload_to_s3: Literal[True],
+    lambda_function: str | None = None,
 ) -> S3UploadResultsResponse
 ```
 
@@ -188,6 +190,7 @@ async def results(
     *,
     task_ids: Sequence[str] | None = None,
     upload_to_s3: bool,
+    lambda_function: str | None = None,
 ) -> RetrieveResultsResponse
 ```
 
@@ -203,6 +206,10 @@ async def results(
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"upload_to_s3"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · bool · default: <code>{"False"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"lambda_function"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · default: <code>{"None"}</code></span></div>
 </div>
 
 **Returns**
