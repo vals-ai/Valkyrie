@@ -1,0 +1,549 @@
+/* Licensed Vals webfonts, served from www.vals.ai. Mintlify fonts.source only
+   accepts one file per family, so the remaining faces live here. */
+@font-face {
+  font-family: "Söhne";
+  src: url("https://www.vals.ai/fonts/Soehne/soehne-leicht.woff2") format("woff2");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Söhne";
+  src: url("https://www.vals.ai/fonts/Soehne/soehne-buch.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Söhne";
+  src: url("https://www.vals.ai/fonts/Soehne/soehne-kraftig.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Söhne";
+  src: url("https://www.vals.ai/fonts/Soehne/soehne-halbfett.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Söhne";
+  src: url("https://www.vals.ai/fonts/Soehne/soehne-dreiviertelfett.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Martina Plantijn";
+  src: url("https://www.vals.ai/fonts/MartinaPlantijn/martina-plantijn-light.woff2") format("woff2");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Martina Plantijn";
+  src: url("https://www.vals.ai/fonts/MartinaPlantijn/martina-plantijn-light-italic.woff2") format("woff2");
+  font-weight: 300;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Martina Plantijn";
+  src: url("https://www.vals.ai/fonts/MartinaPlantijn/martina-plantijn-regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Martina Plantijn";
+  src: url("https://www.vals.ai/fonts/MartinaPlantijn/martina-plantijn-italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Martina Plantijn";
+  src: url("https://www.vals.ai/fonts/MartinaPlantijn/martina-plantijn-medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Martina Plantijn";
+  src: url("https://www.vals.ai/fonts/MartinaPlantijn/martina-plantijn-medium-italic.woff2") format("woff2");
+  font-weight: 500;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Martina Plantijn";
+  src: url("https://www.vals.ai/fonts/MartinaPlantijn/martina-plantijn-bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Martina Plantijn";
+  src: url("https://www.vals.ai/fonts/MartinaPlantijn/martina-plantijn-bold-italic.woff2") format("woff2");
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Berkeley Mono";
+  src: url("https://www.vals.ai/fonts/BerkeleyMono/BerkeleyMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Berkeley Mono";
+  src: url("https://www.vals.ai/fonts/BerkeleyMono/BerkeleyMono-Oblique.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Berkeley Mono";
+  src: url("https://www.vals.ai/fonts/BerkeleyMono/BerkeleyMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Berkeley Mono";
+  src: url("https://www.vals.ai/fonts/BerkeleyMono/BerkeleyMono-Bold-Oblique.woff2") format("woff2");
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+html,
+body,
+#navbar,
+#sidebar,
+#footer,
+#content-area {
+  font-family: "Söhne", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+#page-title,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: "Martina Plantijn", Georgia, serif;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+/* vals.ai scale: 36/40 page, 24/32 section, 20/32 sub, 14/20 reading, 13/16 meta. */
+#page-title,
+#content-area h1,
+.mdx-content h1 {
+  font-size: 36px;
+  line-height: 40px;
+}
+
+#content-area h2,
+.mdx-content h2 {
+  font-size: 24px;
+  line-height: 32px;
+}
+
+#content-area h3,
+.mdx-content h3 {
+  font-size: 20px;
+  line-height: 32px;
+  letter-spacing: normal;
+}
+
+#content-area h4,
+#content-area h5,
+#content-area h6,
+.mdx-content h4,
+.mdx-content h5,
+.mdx-content h6 {
+  font-size: 16px;
+  line-height: 24px;
+}
+
+#content-area p,
+#content-area li,
+.mdx-content p,
+.mdx-content li {
+  font-size: 16px;
+  line-height: 24px;
+}
+
+/* Page lede — vals.ai hero intro is 18/28, not body 14. */
+#header p {
+  font-size: 18px;
+  line-height: 28px;
+}
+
+[data-component-part="card-title"] {
+  font-size: 16px !important;
+  line-height: 24px !important;
+}
+
+[data-component-part="card-content"] {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.callout,
+.callout [data-component-part="callout-content"],
+[data-component-part="callout-content"] {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+#navbar a,
+#topbar-cta-button,
+#topbar-cta-button a,
+navbar-link {
+  font-size: 16px !important;
+  line-height: 24px !important;
+}
+
+#navbar a[href*="github.com"],
+#navbar a[href*="github.com"] span {
+  font-size: 14px !important;
+  font-weight: 400 !important;
+  line-height: 20px !important;
+}
+
+/* Icon + repo stay tight; extra space before the star count. */
+#navbar a[href*="github.com"] {
+  gap: 6px;
+}
+
+#navbar a[href*="github.com"] > span:last-of-type {
+  margin-inline-start: 12px !important;
+}
+
+#pagination,
+#pagination a,
+[data-component-part="pagination-prev"],
+[data-component-part="pagination-next"] {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+#sidebar,
+#sidebar-content,
+#sidebar-content a {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+#sidebar-content h3,
+sidebar-group-header {
+  font-family: "Söhne", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  line-height: 16px;
+  letter-spacing: 0.13px;
+  font-weight: 500;
+}
+
+#table-of-contents,
+toc-item {
+  font-size: 13px;
+  line-height: 16px;
+}
+
+eyebrow,
+breadcrumb-item {
+  font-size: 13px;
+  line-height: 16px;
+  letter-spacing: 0.13px;
+}
+
+code,
+kbd,
+samp,
+pre,
+pre code {
+  font-family: "Berkeley Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+
+pre,
+pre code,
+code-block {
+  font-size: 13px;
+  line-height: 20px;
+}
+
+/* Vals tokens. Marketing uses tight radii and warm taupe borders (#C7C4C1 /
+   rgb(62 59 56 / …)), not Mintlify's cool gray pills. */
+:root {
+  --vals-ink: #191917;
+  --vals-paper: #f3f2f2;
+  --vals-border: #c7c4c1;
+  --vals-border-subtle: rgb(62 59 56 / 0.15);
+  --vals-radius: 4px;
+  /* Mintlify's rounded-xt! utilities read --rounded-xl and beat unlayered CSS. */
+  --rounded-xl: 4px;
+  --rounded-2xl: 4px;
+}
+
+#navbar,
+#sidebar,
+#content-area {
+  color: var(--vals-ink);
+}
+
+#navbar {
+  border-bottom: 1px solid var(--vals-border);
+}
+
+/* Global 4px. !important beats Mintlify rounded-xl / rounded-2xl.
+   Icons and images stay as-is. The copy-page popover is a portal, so it is
+   not inside #page-context-menu — [role="menu"] is the stable hook. */
+#search-bar-entry,
+#search-bar-entry-mobile,
+#search-bar-entry *,
+#search-bar-entry-mobile *,
+#search-input,
+#topbar-cta-button,
+#topbar-cta-button *,
+#page-context-menu,
+#panel,
+#mobile-nav,
+#mobile-nav-content,
+#chat-assistant-sheet,
+#chat-assistant-textarea,
+tooltip,
+tile,
+step,
+steps,
+update,
+#sidebar-content a,
+#sidebar-content button,
+#sidebar-content li,
+toc-item[data-active],
+toc-item[data-active-deepest],
+[data-component-name="theme-toggle"],
+[data-component-name="theme-preference-menu"],
+[data-component-part="theme-preference-menu-trigger"],
+[data-component-part="card-icon"],
+[data-badge],
+.code-block,
+.code-block button,
+[data-component-part="code-block-root"],
+[data-component-part="code-block-header"],
+.code-block-fade-overlay,
+.code-block-copy-button,
+code-block,
+.code-group,
+.code-group [data-component-part="code-block-root"],
+.code-group [data-component-part="scroll-area"],
+.code-group [data-component-part="scroll-area-viewport"],
+.code-group button,
+code-group,
+.card,
+card,
+card-group,
+columns,
+.callout,
+callout,
+accordion,
+accordion-group,
+tabs,
+expandable,
+frame,
+#pagination,
+#pagination a,
+[data-component-part="pagination-prev"],
+[data-component-part="pagination-next"],
+[role="menu"],
+[role="menu"] *,
+[role="menuitem"],
+nav-dropdown-content,
+nav-dropdown-item,
+nav-dropdown-item-icon {
+  border-radius: var(--vals-radius) !important;
+}
+
+#content-area .code-group [data-component-part="code-block-root"],
+#content-area .code-group [data-component-part="scroll-area-viewport"] {
+  border-radius: var(--vals-radius) !important;
+}
+
+#page-context-menu-button {
+  border-radius: var(--vals-radius) 0 0 var(--vals-radius) !important;
+}
+
+#page-context-menu button:not(#page-context-menu-button) {
+  border-radius: 0 var(--vals-radius) var(--vals-radius) 0 !important;
+}
+
+#search-bar-entry,
+#search-bar-entry-mobile,
+card,
+.card,
+callout,
+.callout,
+accordion,
+accordion-group,
+code-block,
+.code-block,
+code-group,
+.code-group,
+tabs,
+frame,
+expandable {
+  border-color: var(--vals-border) !important;
+  box-shadow: none !important;
+}
+
+#search-bar-entry,
+#search-bar-entry-mobile {
+  border: 1px solid var(--vals-border) !important;
+}
+
+#sidebar-content li[data-active] {
+  background: rgb(72 137 89 / 0.1) !important;
+}
+
+.dark #navbar,
+.dark #sidebar,
+.dark #content-area {
+  color: #f3f2f2;
+}
+
+.dark #navbar {
+  border-bottom-color: rgb(255 255 255 / 0.14);
+}
+
+.dark #search-bar-entry,
+.dark #search-bar-entry-mobile,
+.dark card,
+.dark .card,
+.dark callout,
+.dark .callout,
+.dark accordion,
+.dark accordion-group,
+.dark code-block,
+.dark .code-block,
+.dark code-group,
+.dark .code-group,
+.dark tabs,
+.dark frame,
+.dark expandable {
+  border-color: rgb(255 255 255 / 0.14) !important;
+}
+
+.dark #sidebar-content li[data-active] {
+  background: rgb(72 137 89 / 0.22) !important;
+}
+
+/* The theme fills inline code with a translucent white that disappears against the neutral page
+   background set in docs.json, leaving only the link underline drawn across the chip's padding.
+   An opaque surface and no underline keep a code link reading as a single chip. */
+:not(pre) > code {
+  font-size: 12px !important;
+  line-height: 16px !important;
+  padding-block: 2px !important;
+  padding-inline: 4px !important;
+  background-color: #ffffff !important;
+  border: 1px solid var(--vals-border) !important;
+  border-radius: var(--vals-radius) !important;
+}
+
+.dark :not(pre) > code {
+  background-color: #262626 !important;
+  border-color: rgb(255 255 255 / 0.14) !important;
+}
+
+a:has(> code) {
+  border-bottom: none !important;
+}
+
+a > code {
+  color: #386b46 !important;
+}
+
+.dark a > code {
+  color: #6fd09f !important;
+}
+
+img.nav-logo {
+  height: 1.75rem !important;
+  width: auto !important;
+}
+
+/* Wrap long code lines instead of clipping them at the content edge, since generated signatures
+   are wider than the content column and an unwrapped block hides its tail behind the copy button.
+
+   Shiki emits one span.line per source line. Making the code element a grid puts each line on
+   its own row and drops the newline text nodes between lines, so the padding and negative
+   indent below hang wrapped continuations without shifting the block's left edge. Grid rows
+   collapse when a line is empty, so blank lines need an explicit height.
+
+   The width clamps are required because the theme lets the code element size to its longest
+   line; without them the block still grows past the column and wrapping never happens.
+   !important is required where the theme sets the same property through a higher-specificity
+   selector, such as html:not(.dark) .codeblock-light pre.shiki code { display: block }. */
+pre {
+  max-width: 100% !important;
+}
+
+pre code {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: break-word !important;
+}
+
+pre code .line {
+  padding-left: 2ch;
+  text-indent: -2ch;
+  min-height: 1lh;
+}
+
+/* Keep the native right table of contents usable when a page lists many commands. Targets
+   Mintlify's documented TOC ids rather than
+   generated class names. The theme's own sticky positioning and active-item scrolling continue
+   to work; this only bounds the height and gives the list its own scroll region. */
+#table-of-contents {
+  max-height: calc(100vh - 8rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+#table-of-contents-content,
+#table-of-contents-content ul,
+#table-of-contents-content li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#table-of-contents-content {
+  margin-top: 12px;
+}

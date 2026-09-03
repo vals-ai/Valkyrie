@@ -1,0 +1,71 @@
+---
+title: Monitor runs
+description: Stream progress, inspect status and errors, and list historical runs.
+---
+
+Stream updates until the run completes or disconnects.
+
+<CodeGroup>
+
+```bash CLI
+valkyrie run fetch <run-id> --connect
+```
+
+```python Python SDK
+async for update in client.runs.stream(run_id):
+    print(update.details.status)
+```
+
+</CodeGroup>
+
+Full syntax for each command below is in the [`run fetch`](/reference/cli/run#fetch), [`run status`](/reference/cli/run#status), [`run errors`](/reference/cli/run#errors), and [`run list`](/reference/cli/run#list) reference, and in [`client.runs.stream`](/reference/sdk/runs#stream) for Python.
+
+## Fetch one run
+
+Use a one-time text or machine-readable snapshot when streaming is not needed:
+
+```bash
+valkyrie run fetch <run-id>
+valkyrie run fetch <run-id> --format json
+valkyrie run fetch <run-id> --connect --format jsonl
+```
+
+Connected text output starts with the run's identity and metadata, then the progress updates. JSONL starts with a `snapshot` record and continues with `update` records until the stream ends, at which point it emits `complete`, `error`, `stopped`, `disconnect`, or `interrupted`.
+
+Exit code 0 only means the CLI handled the tracker response or stream event, not that the benchmark succeeded, so read the run `status` and each JSONL record's `event` to know how it went.
+
+### Machine-readable output
+
+When the JSONL stream ends cleanly but should not have, the CLI writes a final `disconnect` record and exits nonzero. Transport failures and malformed protocol output can also exit nonzero, but without any final record. Two field-level details are worth knowing: `metadata_available: false` means the run's identity metadata could not be loaded, and `finished_tasks` in batch output counts `FINISHED`, `ERROR`, and `STOPPED` tasks together.
+
+## Check several run IDs
+
+```bash
+valkyrie run status --ids <run-id-1>,<run-id-2> --format json
+```
+
+Batch status keeps the order you asked for, ignores duplicate IDs, and takes at most 50 IDs at a time. Any ID that is missing or that you cannot access is listed under `missing_run_ids`, and the command exits nonzero after writing the JSON document.
+
+## Inspect errors
+
+```bash
+valkyrie run errors <run-id>
+```
+
+This shows both the errors stored on the run and the current task errors. Add `--format json` to read them from a script.
+
+## List runs
+
+Filter the history to find a run:
+
+```bash
+valkyrie run list --benchmark-name swebench --status IN_PROGRESS
+```
+
+Runs can be filtered by `--agent-name`, `--benchmark-name`, `--model`, `--dataset`, `-l/--label`, `--status`, and `--started-by`, and ordered with `--order-by asc|desc`. Filters combine, and the interactive list supports `[h]` for previous, `[l]` for next, and `[q]` to quit. Emit all matching runs as one document with:
+
+```bash
+valkyrie run list --format json --all --status IN_PROGRESS
+```
+
+Machine-readable output is built from a versioned allowlist of fields, so it never carries stored agent secrets, kwargs, or raw error messages. Optional identity fields and scores may be `null`, timestamps are UTC ISO 8601 strings, and a non-finite score is reported as `null`.

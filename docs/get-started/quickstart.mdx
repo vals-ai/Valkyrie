@@ -1,0 +1,54 @@
+---
+title: Quickstart
+description: Install Valkyrie, configure credentials, and start a benchmark run.
+---
+
+## Prerequisites
+
+- Python 3.12
+- [uv](https://docs.astral.sh/uv/) and Git, used by the install command below
+- A configured [sandbox provider](/get-started/sandbox-providers)
+- A Vals API key when using hosted mode, requested at [contact@vals.ai](mailto:contact@vals.ai)
+- Local AWS SDK credentials for agent uploads and artifact downloads
+- For self-hosted or access-key execution, an S3 bucket for benchmark artifacts and agents plus AWS credentials with the [required permissions](/self-hosting/aws-permissions). Managed hosted execution reads the Region and bucket from the tracker instead. See [AWS execution mode](/get-started/hosting#aws-execution-mode).
+
+## Install the CLI
+
+```bash
+uv tool install git+https://github.com/vals-ai/Valkyrie@prod
+```
+
+Both `valkyrie` and `valk` invoke the same CLI.
+
+## Configure Valkyrie
+
+```bash
+valkyrie config init
+```
+
+Choose hosted or self-hosted mode when prompted. See [Choose a hosting mode](/get-started/hosting) for the credentials each mode requires.
+
+## Upload an agent
+
+Push a local agent directory that contains a valid `contract.yaml`:
+
+```bash
+valkyrie agent push ./agents/sweagent --name sweagent
+```
+
+See [Agent contract](/agents/agent-contract) to create a compatible agent.
+
+## Start your first run
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench --connect
+```
+
+`--connect` streams progress until the run finishes, so you can watch the first run end to end. The command prints the run id; use it with any other `run` command. Add `--model` when the agent contract requires one.
+
+## Next steps
+
+- [Start a run](/runs/start) for run scope, secrets, and repeated runs
+- [Monitor runs](/runs/monitor) for streaming, status, and history
+- [Results and outputs](/runs/results-and-outputs) for scores and agent files
+- [`valkyrie run start` reference](/reference/cli/run#start) for every option and default

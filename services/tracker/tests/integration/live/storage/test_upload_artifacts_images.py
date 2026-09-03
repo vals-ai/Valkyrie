@@ -19,7 +19,7 @@ from tracker.types import HarnessConfig
 # Images covering the major package families
 _IMAGES = [
     ("python:3.11-slim", "python-slim-apt"),
-    ("python:3.11-alpine", "python-alpine-apk"),
+    ("python:3.11-alpine3.20", "python-alpine-apk"),
     ("debian:bookworm-slim", "debian-apt"),
     ("ubuntu:24.04", "ubuntu-apt"),
     ("fedora:40", "fedora-dnf"),

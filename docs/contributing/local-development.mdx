@@ -1,0 +1,99 @@
+---
+title: Local development
+description: Install Valkyrie from source, run the tracker locally, and check your changes.
+---
+
+## Prerequisites
+
+- Python 3.12
+- [uv](https://github.com/astral-sh/uv), for example `brew install uv`
+- Docker, for the local tracker stack
+
+## Install the CLI from source
+
+```bash
+make install
+```
+
+This creates `.venv` and installs the dependencies declared in `pyproject.toml`.
+
+To run `valkyrie` without the `uv run` prefix, install it as a tool:
+
+```bash
+make tool-install
+```
+
+The tool install is editable, so code changes take effect immediately. Run `uv tool update-shell` if the executable is not on your PATH.
+
+## Point the CLI at a local tracker
+
+```env
+TRACKER_SERVICE_URL=http://localhost:8000
+```
+
+Set this in `.env` or your shell before running CLI commands against a local tracker. The CLI still reads credentials from `~/.config/valkyrie/valkyrie.yaml`, created by `valkyrie config init`. See [Configure the CLI](/get-started/configuration).
+
+## Run the tracker locally
+
+```bash
+make tracker-service
+```
+
+The API is available at `http://localhost:8000`. Local Compose runs the tracker, PostgreSQL, and Redis only. It does not execute benchmarks. See [Tracker service](/contributing/tracker-service) for the individual targets and test suites.
+
+### Run it with hosted-mode authentication
+
+```bash
+AUTH_REQUIRED=true \
+DESCOPE_PROJECT_ID=<your-project-id> \
+DESCOPE_MANAGEMENT_KEY=<your-management-key> \
+make tracker-service
+```
+
+`DESCOPE_MANAGEMENT_KEY` is server-side tracker configuration. It lets the local tracker resolve the access key's bound user email through Descope's management API when you are testing hosted-mode run attribution. The tracker expects the access-key exchange response to expose the bound user id through custom claims:
+
+```json
+{
+  "keyId": "K2abc",
+  "sessionToken": {
+    "sub": "K2abc",
+    "customClaims": {
+      "user_id": "U2abc"
+    }
+  }
+}
+```
+
+Then run `valkyrie config init` and choose hosted mode. Without these variables the service runs in self-hosted mode with no auth and a default organization.
+
+## Check your changes
+
+```bash
+make style       # ruff format and ruff check --fix
+make typecheck   # basedpyright in strict mode
+```
+
+## Preview the documentation
+
+The published documentation is generated from `docs/`. Local preview needs Node.js 20.17 or newer and no Mintlify credentials:
+
+```bash
+cd docs
+npx mint dev
+```
+
+Run `npx mint login` only to test account-backed features such as search and the assistant.
+
+`docs/reference/` is generated from the CLI and SDK source. Run `make docs-reference` after changing a public CLI or SDK surface. CI runs `make docs-reference-check` and fails on stale output.
+
+## Versioning and releases
+
+The `prod` branch uses semantic versioning through [github-tag-action](https://github.com/anothrNick/github-tag-action). Include the tag in the pull request title:
+
+| Tag | Effect | Example |
+| --- | --- | --- |
+| `#patch` | Patch bump | v0.4.0 to v0.4.1 |
+| `#minor` | Minor bump | v0.4.1 to v0.5.0 |
+| `#major` | Major bump | v0.5.0 to v1.0.0 |
+
+Binaries are released when a commit is tagged: dev requires tagging a commit manually, prod is tagged and released automatically on push. `valkyrie-sdk` is versioned and published separately.

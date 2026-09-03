@@ -1,0 +1,87 @@
+---
+title: Start a run
+description: Run an agent against a benchmark dataset.
+---
+
+Start a benchmark with an installed agent.
+
+<CodeGroup>
+
+```bash CLI
+valkyrie run start --agent sweagent --benchmark swebench
+```
+
+```python Python SDK
+run = await client.runs.start(
+    agent="sweagent",
+    benchmark="swebench",
+)
+```
+
+</CodeGroup>
+
+The tracker accepts the run and returns its id, which every other `run` command takes. Every option, alias, default, and constraint is in the [`valkyrie run start`](/reference/cli/run#start) and [`client.runs.start`](/reference/sdk/runs#start) reference.
+
+## Decide the run scope
+
+A run covers the whole dataset unless you narrow it. Narrow by task id when you know which tasks matter, or by slice for a cheap smoke run:
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench --slice "0:10"
+```
+
+To select ids explicitly, export the dataset's task ids first with [`valkyrie benchmark tasks`](/reference/cli/benchmark#tasks), then pass them with `--task-ids` or `--task-ids-file`.
+
+`--concurrency` sets how many sandboxes run at once, so raising it finishes the run sooner but runs up provider and model cost faster too.
+
+A benchmark that publishes several datasets defaults to `default`. Name another one with `--dataset`:
+
+```bash
+valkyrie run start --agent sweagent --benchmark terminal-bench --dataset terminal-bench-2.1
+```
+
+## Label a run
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench -l sweep-a
+```
+
+The label is stored on the run and can be filtered on with [`valkyrie run list`](/reference/cli/run#list), which is how you find every run from the same experiment later. Model and agent parameters are separate from labels: `--model` and `-k` fill in the agent contract's `kwargs`. See [Agent contract](/agents/agent-contract).
+
+## Ignore a configured custom service
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench --ignore-custom-services
+```
+
+When a benchmark has an endpoint registered with `config service set`, every run resolves tasks through it. This flag, aliased `--ics`, sends the run to the hosted service instead without removing the local registration. See [Custom benchmark services](/benchmarks/custom-services).
+
+## Map secrets instead of passing values
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench -s ANTHROPIC_API_KEY AnthropicApiKey
+```
+
+`-s` maps an environment variable to an AWS Secrets Manager secret name, and never takes the raw secret value itself. A mapping passed on the CLI wins over the agent contract's mapping for the same variable.
+
+## Stream progress as the run starts
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench --connect
+```
+
+Without `--connect`, attach later with [`valkyrie run fetch`](/reference/cli/run#fetch). See [Monitor runs](/runs/monitor) for reading the stream.
+
+## Start repeated runs
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench --count 3
+```
+
+The start requests are sent one after another, but the accepted runs are independent and can overlap. `--connect` is rejected when `count` is greater than 1, since there is no single stream to follow.
+
+<Warning>
+  Simultaneous task load and cost roughly scale with `count × concurrency`.
+</Warning>
+
+Starts are fail-fast, so once one request fails the CLI stops rather than sending the rest. A transport failure can leave the last request's outcome unclear, so check `valkyrie run list` before starting it again.
