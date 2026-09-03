@@ -11,14 +11,14 @@ from typing import Any, TypeVar
 import httpx
 from pydantic import BaseModel
 
-from valkyrie.sdk.config import DEFAULT_CONFIG_PATH, ValkyrieConfig
+from valkyrie.sdk.config import DEFAULT_CONFIG_PATH, TRACKER_URLS, ValkyrieConfig
 from valkyrie.sdk.errors import ValkyrieAPIError, ValkyrieTransportError
 from valkyrie.sdk.resources.agents import AgentsResource
 from valkyrie.sdk.resources.benchmarks import BenchmarksResource
 from valkyrie.sdk.resources.runs import RunsResource
 from valkyrie.sdk.resources.services import BenchmarkServicesResource
 
-DEFAULT_BASE_URL = "https://benchmark-tracker.vals.ai"
+DEFAULT_BASE_URL = TRACKER_URLS["bench"]
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
 
 
@@ -34,7 +34,7 @@ class ValkyrieClient:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.config = config
-        resolved_base_url = base_url or os.environ.get("TRACKER_SERVICE_URL", DEFAULT_BASE_URL)
+        resolved_base_url = base_url or os.environ.get("TRACKER_SERVICE_URL") or config.tracker_url
         self._timeout = timeout if isinstance(timeout, httpx.Timeout) else httpx.Timeout(timeout)
         self._client = httpx.AsyncClient(
             base_url=resolved_base_url.rstrip("/"),
