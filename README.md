@@ -57,4 +57,21 @@ valkyrie run start \
 
 ## Citation
 
-If you use Valkyrie in your research, cite [the paper](https://doi.org/10.1145/3786335.3813231). The BibTeX entry is at [docs.valkyrie.vals.ai/introduction/what-is-valkyrie#paper](https://docs.valkyrie.vals.ai/introduction/what-is-valkyrie#paper).
+If you use Valkyrie in your research, cite [the paper](https://doi.org/10.1145/3786335.3813231):
+
+```bibtex
+@inproceedings{forzano2026valkyrie,
+  author    = {Forzano, Jarett and Almatov, Omar and Nashold, Langston and Ravi, Nikil and Kassian, Orestes},
+  title     = {Valkyrie: A Microservice-Based Framework for Scalable Evaluation of AI Agents},
+  booktitle = {Proceedings of the 1st ACM Conference on Agentic and AI Systems},
+  series    = {CAIS '26},
+  year      = {2026},
+  month     = {may},
+  address   = {San Jose, CA, USA},
+  publisher = {ACM},
+  location  = {New York, NY, USA},
+  numpages  = {5},
+  doi       = {10.1145/3786335.3813231},
+  url       = {https://doi.org/10.1145/3786335.3813231}
+}
+```
