@@ -641,6 +641,7 @@ class TestRunRecovery:
         assert benchmark_row.status == BenchmarkStatus.FINISHED, benchmark_row.error_message
         assert len(captured_lambda_payloads) == 1
         assert captured_lambda_payloads[0]["benchmark_name"] == "swebench"
+        assert captured_lambda_payloads[0]["bucket"] == harness_config.s3_bucket
 
     @pytest.mark.parametrize(
         ("retry_mode", "eval_resume_state", "expected_status", "expected_state"),

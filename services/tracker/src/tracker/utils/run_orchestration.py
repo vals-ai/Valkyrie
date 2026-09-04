@@ -641,6 +641,10 @@ async def process_benchmark(
                 lambda_payload = benchmark_row.arguments.model_dump()
                 lambda_payload["benchmark_id"] = str(benchmark_id)
                 lambda_payload["benchmark_name"] = benchmark_row.name
+                # Completion callbacks must read and write artifacts in the same
+                # stage-specific bucket used by this run. Lambda defaults are not
+                # sufficient because dev and production use different buckets.
+                lambda_payload["bucket"] = aws_runtime.resources.s3_bucket
 
         async with hold_dispatch_authority(authority) as (_, benchmark_row):
             await upload_final_view(benchmark_row, final_view, aws_runtime)
