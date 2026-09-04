@@ -32,21 +32,24 @@ from tracker.runtime.logs import (
 )
 from tracker.types import LogEventResponse, LogPageResponse
 
-router = APIRouter(prefix="/benchmarks")
 
-
-def _validate_query(query: str | None) -> None:
+def _validate_log_filters(
+    _run_context: RunAWSDependency,
+    query: str | None = Query(default=None, min_length=1),
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+) -> None:
+    """Reject ambiguous log filters before handling a request."""
     if query is not None and not query.strip():
         raise HTTPException(status_code=422, detail="query must not be blank")
-
-
-def _validate_time_bounds(start_time: datetime | None, end_time: datetime | None) -> None:
-    """Reject ambiguous or reversed log time bounds."""
     for name, value in (("start_time", start_time), ("end_time", end_time)):
         if value is not None and value.utcoffset() is None:
             raise HTTPException(status_code=422, detail=f"{name} must include a timezone offset")
     if start_time is not None and end_time is not None and end_time <= start_time:
         raise HTTPException(status_code=422, detail="end_time must be later than start_time")
+
+
+router = APIRouter(prefix="/benchmarks", dependencies=[Depends(_validate_log_filters)])
 
 
 def _task_reference(
@@ -164,8 +167,6 @@ async def get_run_logs(
     limit: int = Query(default=1_000, ge=1, le=10_000),
 ) -> LogPageResponse:
     """Return one page of logs across every stream in a run."""
-    _validate_query(query)
-    _validate_time_bounds(start_time, end_time)
     try:
         page = await log_provider.fetch_run(
             reference,
@@ -191,8 +192,6 @@ async def get_task_logs(
     limit: int = Query(default=1_000, ge=1, le=10_000),
 ) -> LogPageResponse:
     """Return one page from a task's current log stream."""
-    _validate_query(query)
-    _validate_time_bounds(start_time, end_time)
     try:
         page = await log_provider.fetch_task(
             reference,
@@ -216,8 +215,6 @@ async def stream_task_logs(
     end_time: datetime | None = None,
 ) -> StreamingResponse:
     """Stream a task's current log stream as server-sent events."""
-    _validate_query(query)
-    _validate_time_bounds(start_time, end_time)
     events = _stream_events(
         log_provider,
         reference,
