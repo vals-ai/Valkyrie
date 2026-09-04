@@ -9,12 +9,14 @@ from opentelemetry import trace
 from sqlmodel import Session
 
 from tracker.auth import get_current_org
+from tracker.aws.cloudwatch_logs import CloudWatchLogProvider
 from tracker.aws.resolver import resolve_agent_library_aws_runtime, resolve_run_aws_runtime
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import Benchmark, Org
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.logging import benchmark_id_var
+from tracker.logs import LogProvider
 
 
 async def bind_benchmark_id(benchmark_id: UUID) -> UUID:
@@ -63,3 +65,12 @@ def get_run_aws_context(
 
 
 RunAWSDependency = Annotated[RunAWSContext, Depends(get_run_aws_context)]
+
+
+def get_log_provider(run_context: RunAWSDependency) -> LogProvider:
+    """Construct the log reader for an organization-scoped run."""
+    runtime = run_context.aws_runtime
+    return CloudWatchLogProvider(runtime.clients, runtime.resources.log_group)
+
+
+LogProviderDependency = Annotated[LogProvider, Depends(get_log_provider)]

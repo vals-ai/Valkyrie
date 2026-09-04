@@ -148,6 +148,23 @@ class FetchBenchmarkResponse(BaseModel):
     executor_protocol_version: str | None = None
 
 
+class LogEventResponse(BaseModel):
+    """One provider-neutral benchmark log event."""
+
+    timestamp: datetime
+    message: str
+    task_id: str | None = None
+    ingestion_time: datetime | None = None
+    event_id: str | None = None
+
+
+class LogPageResponse(BaseModel):
+    """A bounded page of benchmark log events."""
+
+    events: list[LogEventResponse]
+    next_cursor: str | None = None
+
+
 class AverageTaskBreakdown(BaseModel):
     sandbox_build_duration: float | None
     agent_run_duration: float | None

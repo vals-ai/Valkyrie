@@ -42,7 +42,7 @@ make test-integration-live   # AWS, benchmark service, and sandbox tests
 `tests/integration/live` requires `services/tracker/.env`:
 
 ```env
-# AWS: fetches sandbox provider credentials from Secrets Manager and writes to S3 and CloudWatch
+# AWS: uses Secrets Manager and performs live S3 and CloudWatch create/read/delete tests
 AWS_ACCESS_KEY_ID=
 AWS_SECRET_ACCESS_KEY=
 AWS_DEFAULT_REGION=us-east-1

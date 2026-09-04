@@ -27,6 +27,7 @@ from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
 from tracker.api.dependencies import RunAWSDependency
 from tracker.api.filter_options import router as filter_options_router
+from tracker.api.logs import router as logs_router
 from tracker.api.single_benchmark import router as single_benchmark_router
 from tracker.api.single_task import router as single_task_router
 from tracker.auth import (
@@ -180,6 +181,7 @@ app.include_router(agents_router)
 app.include_router(benchmark_services_router)
 app.include_router(benchmarks_status_router)
 app.include_router(filter_options_router)
+app.include_router(logs_router)
 app.include_router(single_benchmark_router)
 app.include_router(single_task_router)
 
