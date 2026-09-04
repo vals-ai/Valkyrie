@@ -82,9 +82,9 @@ class RunLogReference:
 class LogProvider(Protocol):
     """Read and search logs without exposing the backing service to callers."""
 
-    async def fetch_task(
+    async def fetch(
         self,
-        reference: TaskLogReference,
+        reference: RunLogReference | TaskLogReference,
         *,
         query: str | None = None,
         start_time: datetime | None = None,
@@ -92,7 +92,7 @@ class LogProvider(Protocol):
         cursor: str | None = None,
         limit: int = 1_000,
     ) -> LogPage:
-        """Return one page of a task's logs."""
+        """Return one page of logs for a run or one task."""
         raise NotImplementedError
 
     def stream_task(
@@ -105,17 +105,4 @@ class LogProvider(Protocol):
         poll_interval: float = 1.0,
     ) -> AsyncIterator[LogEvent]:
         """Yield existing and newly-arriving task logs."""
-        raise NotImplementedError
-
-    async def fetch_run(
-        self,
-        reference: RunLogReference,
-        *,
-        query: str | None = None,
-        start_time: datetime | None = None,
-        end_time: datetime | None = None,
-        cursor: str | None = None,
-        limit: int = 1_000,
-    ) -> LogPage:
-        """Return one page of logs across a run."""
         raise NotImplementedError

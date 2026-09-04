@@ -86,7 +86,18 @@ def _run_reference(
     )
 
 
-RunLogReferenceDependency = Annotated[RunLogReference, Depends(_run_reference)]
+def _log_reference(
+    run_context: RunAWSDependency,
+    task_id: str | None = Query(default=None, min_length=1),
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> RunLogReference | TaskLogReference:
+    if task_id is not None:
+        return _task_reference(run_context, task_id, org, session)
+    return _run_reference(run_context, org, session)
+
+
+LogReferenceDependency = Annotated[RunLogReference | TaskLogReference, Depends(_log_reference)]
 
 
 def _response(page: LogPage) -> LogPageResponse:
@@ -157,8 +168,8 @@ async def _stream_events(
 
 
 @router.get("/{benchmark_id}/logs", response_model=LogPageResponse)
-async def get_run_logs(
-    reference: RunLogReferenceDependency,
+async def get_logs(
+    reference: LogReferenceDependency,
     log_provider: LogProviderDependency,
     query: str | None = Query(default=None, min_length=1),
     start_time: datetime | None = None,
@@ -166,9 +177,9 @@ async def get_run_logs(
     cursor: str | None = None,
     limit: int = Query(default=1_000, ge=1, le=10_000),
 ) -> LogPageResponse:
-    """Return one page of logs across every stream in a run."""
+    """Return one page of logs for a run or one of its tasks."""
     try:
-        page = await log_provider.fetch_run(
+        page = await log_provider.fetch(
             reference,
             query=query,
             start_time=start_time,
@@ -181,32 +192,7 @@ async def get_run_logs(
     return _response(page)
 
 
-@router.get("/{benchmark_id}/logs/task", response_model=LogPageResponse)
-async def get_task_logs(
-    reference: TaskLogReferenceDependency,
-    log_provider: LogProviderDependency,
-    query: str | None = Query(default=None, min_length=1),
-    start_time: datetime | None = None,
-    end_time: datetime | None = None,
-    cursor: str | None = None,
-    limit: int = Query(default=1_000, ge=1, le=10_000),
-) -> LogPageResponse:
-    """Return one page from a task's current log stream."""
-    try:
-        page = await log_provider.fetch_task(
-            reference,
-            query=query,
-            start_time=start_time,
-            end_time=end_time,
-            cursor=cursor,
-            limit=limit,
-        )
-    except LogProviderError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
-    return _response(page)
-
-
-@router.get("/{benchmark_id}/logs/task/stream")
+@router.get("/{benchmark_id}/logs/stream")
 async def stream_task_logs(
     reference: TaskLogReferenceDependency,
     log_provider: LogProviderDependency,

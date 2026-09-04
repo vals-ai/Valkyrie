@@ -153,9 +153,9 @@ class CloudWatchLogProvider(LogProvider):
         self._clients = clients
         self._log_group = log_group
 
-    async def fetch_task(
+    async def fetch(
         self,
-        reference: TaskLogReference,
+        reference: RunLogReference | TaskLogReference,
         *,
         query: str | None = None,
         start_time: datetime | None = None,
@@ -163,32 +163,19 @@ class CloudWatchLogProvider(LogProvider):
         cursor: str | None = None,
         limit: int = 1_000,
     ) -> LogPage:
-        """Return one filtered page from a task's current stream."""
-        stream_name = task_log_stream_name(reference.task_id, reference.started_at)
-        response = await self._filter_events(
-            str(reference.run_id),
-            stream_names=[stream_name],
-            start_time=start_time,
-            end_time=end_time,
-            cursor=cursor,
-            limit=limit,
-        )
-        return self._page(response, cursor=cursor, query=query, task_id=reference.task_id)
+        """Return one filtered page for a run or one task."""
+        if isinstance(reference, TaskLogReference):
+            stream_names = [task_log_stream_name(reference.task_id, reference.started_at)]
+            task_id = reference.task_id
+            stream_task_ids = None
+        else:
+            stream_names = None
+            task_id = None
+            stream_task_ids = _stream_task_ids(reference)
 
-    async def fetch_run(
-        self,
-        reference: RunLogReference,
-        *,
-        query: str | None = None,
-        start_time: datetime | None = None,
-        end_time: datetime | None = None,
-        cursor: str | None = None,
-        limit: int = 1_000,
-    ) -> LogPage:
-        """Return one filtered page across every stream in a run's log group."""
         response = await self._filter_events(
             str(reference.run_id),
-            stream_names=None,
+            stream_names=stream_names,
             start_time=start_time,
             end_time=end_time,
             cursor=cursor,
@@ -198,7 +185,8 @@ class CloudWatchLogProvider(LogProvider):
             response,
             cursor=cursor,
             query=query,
-            stream_task_ids=_stream_task_ids(reference),
+            task_id=task_id,
+            stream_task_ids=stream_task_ids,
         )
 
     async def stream_task(

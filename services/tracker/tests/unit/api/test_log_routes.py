@@ -38,9 +38,9 @@ class MockLogProvider(LogProvider):
         self.stream_release: asyncio.Event | None = None
         self.stream_closed = False
 
-    async def fetch_task(
+    async def fetch(
         self,
-        reference: TaskLogReference,
+        reference: RunLogReference | TaskLogReference,
         *,
         query: str | None = None,
         start_time: datetime | None = None,
@@ -48,27 +48,21 @@ class MockLogProvider(LogProvider):
         cursor: str | None = None,
         limit: int = 1_000,
     ) -> LogPage:
-        self.task_reference = reference
         self.query = query
-        return LogPage(
-            events=[
-                LogEvent(timestamp=start_time or reference.started_at, message="task log", task_id=reference.task_id)
-            ],
-            next_cursor=cursor,
-        )
+        if isinstance(reference, TaskLogReference):
+            self.task_reference = reference
+            return LogPage(
+                events=[
+                    LogEvent(
+                        timestamp=start_time or reference.started_at,
+                        message="task log",
+                        task_id=reference.task_id,
+                    )
+                ],
+                next_cursor=cursor,
+            )
 
-    async def fetch_run(
-        self,
-        reference: RunLogReference,
-        *,
-        query: str | None = None,
-        start_time: datetime | None = None,
-        end_time: datetime | None = None,
-        cursor: str | None = None,
-        limit: int = 1_000,
-    ) -> LogPage:
         self.run_reference = reference
-        self.query = query
         timestamp = start_time or datetime(2026, 1, 1, tzinfo=timezone.utc)
         return LogPage(
             events=[
@@ -126,7 +120,7 @@ def test_client_construction_failure_uses_snapshot_and_sse_error_paths(
 
     snapshot_response = _client.get(f"/benchmarks/{benchmark.id}/logs", headers=harness_headers)
     stream_response = _client.get(
-        f"/benchmarks/{benchmark.id}/logs/task/stream",
+        f"/benchmarks/{benchmark.id}/logs/stream",
         params={"task_id": task.task_id},
         headers=harness_headers,
     )
@@ -154,7 +148,7 @@ def test_task_and_run_logs_use_scoped_provider_references(
     _override_provider(monkeypatch, provider)
 
     task_response = _client.get(
-        f"/benchmarks/{benchmark.id}/logs/task",
+        f"/benchmarks/{benchmark.id}/logs",
         params={
             "task_id": first_task.task_id,
             "query": "needle",
@@ -251,7 +245,7 @@ def test_task_log_stream_returns_sse_events(
     _override_provider(monkeypatch, provider)
 
     response = _client.get(
-        f"/benchmarks/{benchmark.id}/logs/task/stream",
+        f"/benchmarks/{benchmark.id}/logs/stream",
         params={"task_id": task.task_id, "query": "needle"},
         headers=harness_headers,
     )

@@ -80,7 +80,7 @@ async def test_snapshot_translates_client_construction_errors(failure: BaseExcep
     provider = CloudWatchLogProvider(cast(AWSClientProvider, FailingClients(failure)), "benchmarks")
 
     with pytest.raises(LogProviderError, match=message) as error:
-        await provider.fetch_run(RunLogReference(run_id=uuid4()))
+        await provider.fetch(RunLogReference(run_id=uuid4()))
 
     assert error.value.__cause__ is failure
 
@@ -116,7 +116,7 @@ async def test_run_fetch_uses_exact_stream_metadata_and_inclusive_millisecond_bo
         ]
     )
 
-    page = await _provider(logs_client).fetch_run(
+    page = await _provider(logs_client).fetch(
         RunLogReference(
             run_id=run_id,
             tasks=(
@@ -158,7 +158,7 @@ async def test_run_fetch_filters_cloudwatch_metacharacters_as_literal_substrings
         ]
     )
 
-    page = await _provider(logs_client).fetch_run(RunLogReference(run_id=run_id), query=query)
+    page = await _provider(logs_client).fetch(RunLogReference(run_id=run_id), query=query)
 
     assert [event.message for event in page.events] == [f"prefix {query} suffix"]
     assert "filterPattern" not in logs_client.filter_requests[0]
@@ -177,7 +177,7 @@ async def test_run_attribution_returns_none_for_sanitized_stream_collision() -> 
         [{"events": [{"timestamp": 1_000, "message": "ambiguous", "logStreamName": stream_name}]}]
     )
 
-    page = await _provider(logs_client).fetch_run(RunLogReference(run_id=run_id, tasks=(first, second)))
+    page = await _provider(logs_client).fetch(RunLogReference(run_id=run_id, tasks=(first, second)))
 
     assert page.events[0].task_id is None
 
@@ -195,8 +195,8 @@ async def test_task_fetch_keeps_empty_changing_page_and_stops_on_stable_cursor()
     )
     provider = _provider(logs_client)
 
-    first_page = await provider.fetch_task(reference)
-    final_page = await provider.fetch_task(reference, cursor=first_page.next_cursor)
+    first_page = await provider.fetch(reference)
+    final_page = await provider.fetch(reference, cursor=first_page.next_cursor)
 
     assert first_page.next_cursor == "advanced"
     assert final_page.next_cursor is None
@@ -232,7 +232,7 @@ async def test_follow_deduplicates_poll_results_and_translates_aws_errors() -> N
     denied = ClientError({"Error": {"Code": "AccessDeniedException", "Message": "denied"}}, "FilterLogEvents")
     failing_client = MockLogsClient([denied])
     with pytest.raises(LogProviderError, match="AccessDeniedException") as error:
-        await _provider(failing_client).fetch_run(RunLogReference(run_id=run_id))
+        await _provider(failing_client).fetch(RunLogReference(run_id=run_id))
     assert error.value.__cause__ is denied
 
 

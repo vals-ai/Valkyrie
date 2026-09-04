@@ -37,7 +37,7 @@ class LogsResource:
         params["task_id"] = task_id
         return await self._sdk.request_model(
             "GET",
-            f"/benchmarks/{run_id}/logs/task",
+            f"/benchmarks/{run_id}/logs",
             LogPage,
             params=params,
         )
@@ -133,7 +133,7 @@ class LogsResource:
         params["task_id"] = task_id
         async with self._sdk.stream_response(
             "GET",
-            f"/benchmarks/{run_id}/logs/task/stream",
+            f"/benchmarks/{run_id}/logs/stream",
             params=params,
         ) as response:
             if not response.is_success:

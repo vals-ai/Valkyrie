@@ -117,7 +117,7 @@ def test_log_routes_round_trip_real_cloudwatch(
 
         task_events = _wait_for_events(
             live_api_client,
-            f"/benchmarks/{benchmark.id}/logs/task",
+            f"/benchmarks/{benchmark.id}/logs",
             headers=harness_headers,
             params={"task_id": first_task.task_id, "query": "literal *", **bounds},
             expected_count=1,
@@ -125,7 +125,7 @@ def test_log_routes_round_trip_real_cloudwatch(
         assert [event["message"] for event in task_events] == [first_message]
 
         stream_response = live_api_client.get(
-            f"/benchmarks/{benchmark.id}/logs/task/stream",
+            f"/benchmarks/{benchmark.id}/logs/stream",
             headers=harness_headers,
             params={
                 "task_id": first_task.task_id,
