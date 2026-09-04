@@ -232,7 +232,7 @@ class CloudWatchLogProvider(LogProvider):
             if end_time is not None:
                 request["endTime"] = _epoch_milliseconds(end_time)
 
-            response = await self._request(client.get_log_events, request, missing_ok=True)
+            response = await self._request(client.get_log_events, request)
             if response is None:
                 if end_time is not None and datetime.now(timezone.utc) > end_time:
                     return
@@ -293,7 +293,7 @@ class CloudWatchLogProvider(LogProvider):
             request["nextToken"] = cursor
 
         client = await self._get_client()
-        return await self._request(client.filter_log_events, request, missing_ok=True)
+        return await self._request(client.filter_log_events, request)
 
     async def _get_client(self) -> Any:
         try:
@@ -308,14 +308,12 @@ class CloudWatchLogProvider(LogProvider):
         self,
         operation: Callable[..., Any],
         request: dict[str, Any],
-        *,
-        missing_ok: bool,
     ) -> dict[str, Any] | None:
         try:
             response = await asyncio.to_thread(operation, **request)
         except ClientError as error:
             code = error.response.get("Error", {}).get("Code")
-            if missing_ok and code == "ResourceNotFoundException":
+            if code == "ResourceNotFoundException":
                 return None
             raise LogProviderError(f"CloudWatch log request failed: {code or 'unknown error'}") from error
         except BotoCoreError as error:

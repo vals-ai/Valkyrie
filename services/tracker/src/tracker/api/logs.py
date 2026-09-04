@@ -12,7 +12,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, col, select
 
-from tracker.api.dependencies import LogProviderDependency, RunAWSDependency, TrackedBenchmarkId
+from tracker.api.dependencies import (
+    LogProviderDependency,
+    RunAWSDependency,
+    load_task_for_benchmark_or_404,
+)
 from tracker.auth import get_current_org
 from tracker.database.models import Org, Task
 from tracker.database.session import get_session
@@ -50,14 +54,7 @@ def _task_reference(
     org: Org,
     session: Session,
 ) -> TaskLogReference:
-    task = session.exec(
-        select(Task)
-        .where(Task.benchmark == run_context.benchmark.id)
-        .where(Task.org_id == org.id)
-        .where(Task.task_id == task_id)
-    ).first()
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+    task = load_task_for_benchmark_or_404(run_context.benchmark, task_id, org, session)
     return TaskLogReference(
         run_id=run_context.benchmark.id,
         task_id=task.task_id,
@@ -147,7 +144,6 @@ async def _stream_events(
 
 @router.get("/{benchmark_id}/logs", response_model=LogPageResponse)
 async def get_run_logs(
-    benchmark_id: TrackedBenchmarkId,
     run_context: RunAWSDependency,
     log_provider: LogProviderDependency,
     query: str | None = Query(default=None, min_length=1),
@@ -178,7 +174,6 @@ async def get_run_logs(
 
 @router.get("/{benchmark_id}/logs/task", response_model=LogPageResponse)
 async def get_task_logs(
-    benchmark_id: TrackedBenchmarkId,
     run_context: RunAWSDependency,
     log_provider: LogProviderDependency,
     task_id: str = Query(min_length=1),
@@ -210,7 +205,6 @@ async def get_task_logs(
 
 @router.get("/{benchmark_id}/logs/task/stream")
 async def stream_task_logs(
-    benchmark_id: TrackedBenchmarkId,
     run_context: RunAWSDependency,
     log_provider: LogProviderDependency,
     task_id: str = Query(min_length=1),

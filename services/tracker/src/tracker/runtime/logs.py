@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -80,10 +79,9 @@ class RunLogReference:
     tasks: tuple[RunTaskLogReference, ...] = ()
 
 
-class LogProvider(ABC):
+class LogProvider(Protocol):
     """Read and search logs without exposing the backing service to callers."""
 
-    @abstractmethod
     async def fetch_task(
         self,
         reference: TaskLogReference,
@@ -97,7 +95,6 @@ class LogProvider(ABC):
         """Return one page of a task's logs."""
         raise NotImplementedError
 
-    @abstractmethod
     def stream_task(
         self,
         reference: TaskLogReference,
@@ -110,7 +107,6 @@ class LogProvider(ABC):
         """Yield existing and newly-arriving task logs."""
         raise NotImplementedError
 
-    @abstractmethod
     async def fetch_run(
         self,
         reference: RunLogReference,
