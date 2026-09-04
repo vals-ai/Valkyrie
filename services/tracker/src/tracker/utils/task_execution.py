@@ -619,6 +619,10 @@ async def _process_task_attempt(
     task_id_var.set(task_id)
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
+    # Structured context so unexpected sandbox errors (e.g. VALKYRIE-6X container-IP) surface with
+    # the run identifiers on the Sentry event instead of a bare provider message.
+    sentry_sdk.set_tag("benchmark_id", str(benchmark_id))
+    sentry_sdk.set_tag("task_id", task_id)
 
     requested_attempt_started_at = task_row.started_at
     with Session(bind=engine) as task_session:
@@ -968,6 +972,10 @@ async def _process_task_attempt(
             sandbox_id_for_recovery = sandbox.id
             task_breakdown.sandbox_build_duration = time.perf_counter() - start_sandbox_build_time
             start_sandbox_run_time = time.perf_counter()
+            # Tagged on the current sentry scope so unexpected sandbox errors surface with the
+            # concrete sandbox id (previously only the provider's "name=..., id=..." string carried
+            # this, and only when the exception happened to originate below the sandbox layer).
+            sentry_sdk.set_tag("sandbox_id", sandbox.id)
 
             try:
                 with Session(bind=engine) as task_session:

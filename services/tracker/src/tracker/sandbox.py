@@ -78,6 +78,24 @@ SANDBOX_CREATE_TIMEOUT = 360
 AGENT_INSTALL_TIMEOUT_SECONDS = 10 * 60
 CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
 
+# Fallback classification for the case where a Daytona container is reclaimed between the moment
+# tracker starts an operation and the moment the toolbox tries to route to it. Daytona answers
+# with a generic 400 whose body carries these substrings -- no HTTP 404 and no NOT_FOUND
+# error_code, so create-benchmark-service <= v0.16.2 misclassifies it as a bare SandboxError.
+# Retrying exec against a container with no IP will never succeed, so surface it here as a
+# SandboxNotFoundError to engage the "sandbox is gone" benign path. Once the provider fix in
+# https://github.com/vals-ai/create-benchmark-service/pull/103 lands and the pin advances past it,
+# this fallback can be removed -- the provider will already classify not-found on our behalf.
+_REMOVED_CONTAINER_MESSAGES = (
+    "failed to resolve container ip",
+    "no ip address found",
+)
+
+
+def _is_removed_container_message(exc: BaseException) -> bool:
+    lower = str(exc).lower()
+    return any(marker in lower for marker in _REMOVED_CONTAINER_MESSAGES)
+
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
     """Get the path to a contract in the sandbox."""
@@ -496,6 +514,13 @@ async def _exec(sandbox: Sandbox, command: str) -> ExecResult:
     except SandboxNotFoundError:
         raise
     except ProviderSandboxError as e:
+        if _is_removed_container_message(e):
+            logger.warning(
+                "sandbox.exec.removed_container",
+                extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name},
+                exc_info=True,
+            )
+            raise SandboxNotFoundError(str(e)) from e
         raise SandboxError(str(e)) from e
 
 
@@ -575,14 +600,33 @@ async def stream_command_output(
         except SandboxNotFoundError:
             raise
         except ProviderSandboxError as e:
+            if _is_removed_container_message(e):
+                logger.warning(
+                    "sandbox.command.removed_container",
+                    extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name},
+                    exc_info=True,
+                )
+                raise SandboxNotFoundError(str(e)) from e
             raise SandboxError(str(e)) from e
 
         # Prefer the sandbox-measured duration; fall back to the tracker-side monotonic
         # duration if the timing files are missing/unparseable (e.g. the agent removed
         # /tmp/.valkyrie), rather than crashing on `int()` of a `cat` error string.
-        duration = await _read_sandbox_duration(
-            sandbox, start_ns_path, end_ns_path, fallback=time.monotonic() - monotonic_start
-        )
+        #
+        # The stream completed cleanly and the exit_code is authoritative; timing is auxiliary.
+        # If the sandbox is torn down between stream-end and these auxiliary reads (the common
+        # VALKYRIE-6X shape), don't flip a completed run to ERROR -- log and default duration.
+        try:
+            duration = await _read_sandbox_duration(
+                sandbox, start_ns_path, end_ns_path, fallback=time.monotonic() - monotonic_start
+            )
+        except SandboxNotFoundError:
+            logger.warning(
+                "sandbox.stream_command_output.timing_lost_sandbox_gone",
+                extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name, "exit_code": exit_code},
+                exc_info=True,
+            )
+            duration = 0.0
 
         if exit_code == _SUCCESS_EXIT_CODE:
             return None, duration
