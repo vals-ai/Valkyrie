@@ -7,7 +7,9 @@ from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.runtime_config import (
     ENVIRONMENT_CONFIG_KEY,
     TRACKER_SERVICE_URL_ENV_VAR,
+    VALKYRIE_ENV_ENV_VAR,
     config_location,
+    selected_environment,
     tracker_url_for_environment,
 )
 from valkyrie.cli.tracker_client import TrackerService
@@ -73,11 +75,15 @@ def init() -> None:
     environment_variables = _REQUIRED_ENVIRONMENT_VARIABLES
 
     if mode == "hosted":
-        environment = click.prompt(
-            "Hosted environment",
-            type=click.Choice(["bench", "prod"]),
-            default="bench",
-        )
+        if os.environ.get(VALKYRIE_ENV_ENV_VAR) is not None:
+            environment = selected_environment()
+            click.echo(f"Hosted environment: {environment} (from {VALKYRIE_ENV_ENV_VAR})")
+        else:
+            environment = click.prompt(
+                "Hosted environment",
+                type=click.Choice(["bench", "prod"]),
+                default="bench",
+            )
         current_config[ENVIRONMENT_CONFIG_KEY] = environment
         tracker_url = os.environ.get(TRACKER_SERVICE_URL_ENV_VAR) or tracker_url_for_environment(environment)
         api_key = (os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key")).strip()
@@ -119,8 +125,9 @@ def init() -> None:
             )
             if removed_static_credentials:
                 click.echo(
-                    "Existing static AWS credentials were removed. Restore them before retrying or resuming "
-                    "an access-key run.\n"
+                    "Existing static AWS credentials were removed. Keep this config keyless; use the legacy "
+                    "recovery console for existing access-key runs:\n"
+                    "https://dashboards.vals.ai/valkyrie/prod/legacy-recovery\n"
                 )
 
     collected_keys: dict[str, str] = {}
