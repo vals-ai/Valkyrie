@@ -1559,7 +1559,7 @@ class TestTrackerAPI:
         preview_prefix = f"benchmarks/{benchmark_row.id}/preview/4"
         assert body["preview_version"] == 4
         assert body["s3_url"].endswith(f"{preview_prefix}/{benchmark_row.name}.json")
-        assert body["vals_format_s3_url"].endswith(f"{preview_prefix}/vals_format/vals_format.json")
+        assert body["generated_artifact_urls"] == [f"s3://test-bucket/{preview_prefix}/vals_format/vals_format.json"]
         assert uploaded_keys == [f"{preview_prefix}/{benchmark_row.name}.json"]
         assert observed_results == {"finished-task": {"score": 1}, "pending-task": None}
         assert set(lambda_payloads[0]) == {

@@ -856,7 +856,7 @@ async def _reserve_next_preview_version(benchmark_id: UUID, aws_runtime: AWSRunt
                 preview_version += 1
 
 
-@app.get("/preview-results")
+@app.get("/preview-results", operation_id="preview_results")
 @app.get("/retrieve-results")
 async def retrieve_results(
     benchmark_id: TrackedBenchmarkId,
@@ -934,7 +934,7 @@ async def retrieve_results(
         preview_prefix: str | None = None
         reservation_key: str | None = None
         vals_format_key: str | None = None
-        vals_format_s3_url: str | None = None
+        generated_artifact_urls: list[str] = []
         s3_key: str | None = None
 
         if preview:
@@ -961,7 +961,7 @@ async def retrieve_results(
                     lambda_payload,
                     config=_COMPLETION_CALLBACK_CONFIG,
                 )
-                vals_format_s3_url = f"s3://{aws_runtime.resources.s3_bucket}/{vals_format_key}"
+                generated_artifact_urls.append(f"s3://{aws_runtime.resources.s3_bucket}/{vals_format_key}")
         except (LambdaError, S3Error):
             preview_keys = [key for key in (reservation_key, s3_key, vals_format_key) if key is not None]
             try:
@@ -983,7 +983,7 @@ async def retrieve_results(
             console_url=console_url,
             expires_in=expires_in,
             preview_version=preview_version,
-            vals_format_s3_url=vals_format_s3_url,
+            generated_artifact_urls=generated_artifact_urls,
         )
 
     return final_view

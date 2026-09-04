@@ -194,6 +194,15 @@ class RunsResource:
         response_model = S3UploadResultsResponse if upload_to_s3 else FinalViewResponse
         return await self._sdk.request_model("GET", "/retrieve-results", response_model, params=params)
 
+    async def preview(self, run_id: UUID) -> S3UploadResultsResponse:
+        """Create a numbered snapshot of current results and generated artifacts."""
+        return await self._sdk.request_model(
+            "GET",
+            "/preview-results",
+            S3UploadResultsResponse,
+            params={"benchmark_id": str(run_id), "s3": True, "preview": True},
+        )
+
     async def metadata(self, run_id: UUID) -> FetchBenchmarkMetadataResponse:
         """Fetch the stored launch metadata for a run."""
         return await self._sdk.request_model(

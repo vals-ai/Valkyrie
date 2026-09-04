@@ -181,7 +181,7 @@ class TestTrackerJsonEndpoints:
                         payload.update(
                             {
                                 "preview_version": 1,
-                                "vals_format_s3_url": "s3://bucket/preview/1/vals_format/vals_format.json",
+                                "generated_artifact_urls": ["s3://bucket/preview/1/vals_format/vals_format.json"],
                             }
                         )
 
@@ -215,7 +215,7 @@ class TestTrackerJsonEndpoints:
         assert inline_results.benchmark_id == _RUN_ID
         assert s3_results.presigned_url == "https://download.example/results"
         assert preview_results.preview_version == 1
-        assert preview_results.vals_format_s3_url == "s3://bucket/preview/1/vals_format/vals_format.json"
+        assert preview_results.generated_artifact_urls == ["s3://bucket/preview/1/vals_format/vals_format.json"]
         assert task_ids == ["task-a", "task-b"]
         assert results_exist is True
 

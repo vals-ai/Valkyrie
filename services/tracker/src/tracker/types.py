@@ -176,7 +176,7 @@ class S3UploadResultsResponse(BaseModel):
     console_url: str
     expires_in: int = 86400
     preview_version: int | None = None
-    vals_format_s3_url: str | None = None
+    generated_artifact_urls: list[str] = Field(default_factory=list)
 
 
 RetrieveResultsResponse = FinalViewResponse | S3UploadResultsResponse

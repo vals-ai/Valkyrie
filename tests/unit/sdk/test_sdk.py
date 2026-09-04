@@ -353,6 +353,17 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
             return httpx.Response(200, json={"benchmarks": [], "total_count": 0, "next_cursor": None})
         if request.url.path == f"/stop-benchmark/{run_id}":
             return httpx.Response(200, json={"status": "success"})
+        if request.url.path == "/preview-results":
+            return httpx.Response(
+                200,
+                json={
+                    "s3_url": "s3://runs-bucket/preview/1/results.json",
+                    "presigned_url": "https://download.test/preview.json",
+                    "console_url": "https://console.aws.test/preview.json",
+                    "preview_version": 1,
+                    "generated_artifact_urls": ["s3://runs-bucket/preview/1/generated.json"],
+                },
+            )
         if request.url.path == "/retrieve-results":
             if request.url.params["s3"] == "false":
                 return httpx.Response(
@@ -392,6 +403,7 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
         stopped = await client.runs.stop(run_id, force=True)
         inline_results = await client.runs.results(run_id)
         results = await client.runs.results(run_id, task_ids=["task-1"], upload_to_s3=True)
+        preview = await client.runs.preview(run_id)
 
     assert fetched.benchmark_id == run_id
     assert listed.total_count == 0
@@ -401,12 +413,15 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
     assert inline_results.benchmark_id == run_id
     assert results.s3_url == "s3://runs-bucket/results.json"
     assert results.expires_in == 86400
+    assert preview.preview_version == 1
+    assert preview.generated_artifact_urls == ["s3://runs-bucket/preview/1/generated.json"]
     assert paths == [
         "/fetch-benchmark",
         "/fetch-benchmarks",
         f"/stop-benchmark/{run_id}",
         "/retrieve-results",
         "/retrieve-results",
+        "/preview-results",
     ]
 
 

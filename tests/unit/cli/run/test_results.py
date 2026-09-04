@@ -151,7 +151,7 @@ class TestResultsCommand:
         preview_response = response.model_copy(
             update={
                 "preview_version": 2,
-                "vals_format_s3_url": "s3://bucket/preview/2/vals_format/vals_format.json",
+                "generated_artifact_urls": ["s3://bucket/preview/2/vals_format/vals_format.json"],
             }
         )
         preview_tracker = MockResultsTracker(preview_response, results_exist=True)
@@ -160,7 +160,7 @@ class TestResultsCommand:
         preview_result = cli_runner.invoke(results, [str(_RUN_ID), "--preview"])
 
         assert preview_result.exit_code == 0, preview_result.output
-        assert "Preview 2 Vals format:" in preview_result.output
+        assert "Preview 2 generated artifacts:" in preview_result.output
         assert "s3://bucket/preview/2/vals_format/vals_format.json" in preview_result.output
         assert preview_tracker.retrieve_calls == [(_RUN_ID, True, None, True)]
 

@@ -121,9 +121,14 @@ def results(
                 if results_response.preview_version is not None:
                     click.echo()
                     click.echo(
-                        click.style(f"Preview {results_response.preview_version} Vals format:", fg="cyan", bold=True)
+                        click.style(
+                            f"Preview {results_response.preview_version} generated artifacts:",
+                            fg="cyan",
+                            bold=True,
+                        )
                     )
-                    click.echo(f"  {results_response.vals_format_s3_url}")
+                    for artifact_url in results_response.generated_artifact_urls:
+                        click.echo(f"  {artifact_url}")
 
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
