@@ -12,18 +12,16 @@ import os
 import re
 import subprocess
 import sys
-from importlib import import_module
 from pathlib import Path
 from typing import cast
 
-import click  # pyright: ignore[reportMissingImports]
-import pytest  # pyright: ignore[reportMissingImports]
+import click
+import pytest
+import valkyrie.sdk as sdk
+from valkyrie.sdk import resources as sdk_resources
 
 from scripts import reference_docs as generator
 from scripts.reference_docs import collect
-
-sdk = import_module("valkyrie.sdk")
-sdk_resources = import_module("valkyrie.sdk.resources")
 
 _EXPECTED_CLI_PATHS = (
     "run analyze",
@@ -266,7 +264,7 @@ class TestSDKReference:
         sdk_reference: generator.SDKReference,
         rendered: dict[Path, str],
     ) -> None:
-        assert tuple(sdk_reference.exports) == tuple(getattr(sdk, "__all__"))
+        assert tuple(sdk_reference.exports) == tuple(sdk.__all__)
         assert {
             resource.name: tuple(method.name for method in resource.methods) for resource in sdk_reference.resources
         } == _EXPECTED_RESOURCES
@@ -299,17 +297,15 @@ class TestSDKReference:
             assert export_name in combined
 
     def test_docstrings_are_collected_at_runtime(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        runs_resource = getattr(sdk_resources, "RunsResource")
-        client = getattr(sdk, "ValkyrieClient")
         sources = (
-            runs_resource,
-            runs_resource.start,
-            getattr(sdk, "FetchBenchmarksRequest"),
-            getattr(sdk, "BenchmarkStatus"),
-            getattr(sdk, "ValkyrieAPIError"),
-            client,
-            client.from_config.__func__,
-            client.close,
+            sdk_resources.RunsResource,
+            sdk_resources.RunsResource.start,
+            sdk.FetchBenchmarksRequest,
+            sdk.BenchmarkStatus,
+            sdk.ValkyrieAPIError,
+            sdk.ValkyrieClient,
+            sdk.ValkyrieClient.from_config.__func__,
+            sdk.ValkyrieClient.close,
         )
         sentinels = tuple(f"DOCSTRING_SENTINEL_{index}" for index in range(len(sources)))
         for source, sentinel in zip(sources, sentinels, strict=True):
@@ -365,7 +361,7 @@ class TestSDKReference:
 
         errors = sorted(
             name
-            for name in getattr(sdk, "__all__")
+            for name in sdk.__all__
             if isinstance(getattr(sdk, name), type) and issubclass(getattr(sdk, name), Exception)
         )
         assert [error.name for error in sdk_reference.exceptions] == errors
