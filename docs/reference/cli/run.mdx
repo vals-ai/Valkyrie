@@ -266,6 +266,7 @@ valkyrie run results \
   <RUN_ID> \
   [--path <PATH>] \
   [--s3] \
+  [--preview] \
   [--task-ids <TEXT>] \
   [--task-ids-file <TEXT>]
 ```
@@ -292,6 +293,11 @@ valkyrie run results \
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--s3"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"boolean"}</code> · default: <code>{"False"}</code></span></div>
   <p className="mb-0 mt-1">{"Saves results to s3 instead of downloading them locally. Can be found at bucket://benchmarks/run_id/<benchmark>.json"}</p>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--preview"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"boolean"}</code> · default: <code>{"False"}</code></span></div>
+  <p className="mb-0 mt-1">{"Save a numbered S3 preview of current results."}</p>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">

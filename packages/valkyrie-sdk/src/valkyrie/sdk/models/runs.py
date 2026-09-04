@@ -266,12 +266,14 @@ class FinalViewResponse(ResponseModel):
 
 
 class S3UploadResultsResponse(ResponseModel):
-    """URLs returned when final results are uploaded to S3."""
+    """URLs returned when results are uploaded to S3."""
 
     s3_url: str
     presigned_url: str
     console_url: str
     expires_in: int = 86400
+    preview_version: int | None = None
+    generated_artifact_urls: list[str] = Field(default_factory=list)
 
 
 class ResultsExistResponse(ResponseModel):

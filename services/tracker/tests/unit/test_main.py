@@ -99,6 +99,56 @@ class TestTrackerAPI:
     async def _mock_verify_task_ids_error(self, *_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
         raise Exception("Error verifying task ids")
 
+    async def test_reserve_next_preview_version_skips_invalid_keys_and_retries_collisions(
+        self,
+        monkeypatch: MonkeyPatch,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        benchmark_id = uuid4()
+        preview_prefix = f"benchmarks/{benchmark_id}/preview/"
+
+        async def _preview_keys(*_args: Any, **_kwargs: Any) -> AsyncIterator[str]:
+            yield f"{preview_prefix}2/results.json"
+            yield f"{preview_prefix}invalid/results.json"
+            yield f"{preview_prefix}orphan"
+
+        s3_client = AsyncMock()
+        s3_client.put_object.side_effect = [
+            main_module.ClientError({"Error": {"Code": "PreconditionFailed"}}, "PutObject"),
+            {},
+        ]
+        client_context = MagicMock()
+        client_context.__aenter__ = AsyncMock(return_value=s3_client)
+        client_context.__aexit__ = AsyncMock(return_value=None)
+
+        def _s3_client(_self: Any) -> MagicMock:
+            return client_context
+
+        monkeypatch.setattr(main_module, "list_s3_objects", _preview_keys)
+        monkeypatch.setattr(type(aws_runtime.clients), "s3_client", _s3_client)
+
+        version, reservation_key = await main_module._reserve_next_preview_version(  # pyright: ignore[reportPrivateUsage]
+            benchmark_id,
+            aws_runtime,
+        )
+
+        assert version == 4
+        assert reservation_key == f"{preview_prefix}4/.reserved"
+        assert [call.kwargs["Key"] for call in s3_client.put_object.await_args_list] == [
+            f"{preview_prefix}3/.reserved",
+            f"{preview_prefix}4/.reserved",
+        ]
+
+        s3_client.put_object.side_effect = main_module.ClientError(
+            {"Error": {"Code": "AccessDenied"}},
+            "PutObject",
+        )
+        with pytest.raises(main_module.ClientError):
+            await main_module._reserve_next_preview_version(  # pyright: ignore[reportPrivateUsage]
+                benchmark_id,
+                aws_runtime,
+            )
+
     def test_health_check(self, monkeypatch: MonkeyPatch) -> None:
         """Test health check of the fastapi server.
 
@@ -1457,6 +1507,174 @@ class TestTrackerAPI:
         assert observed_results.keys() == {"task_1", "task_11"}
         assert observed_results["task_11"] is None
         assert response.json()["final_evaluation"]["final_score"] == 2.0
+
+    async def test_retrieve_results_writes_next_numbered_preview(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        harness_headers: dict[str, str],
+    ) -> None:
+        """Preview retrieval versions the current result without coupling Lambda output.
+
+        Test cases:
+        - Preview mode enables S3 without an explicit S3 query parameter.
+        - Unfinished tasks remain in the score input with a null result.
+        - A configured Lambda receives the preview input path without a forced output path.
+        - Lambda-returned generated artifact URLs are included in the response.
+        - A preview without a Lambda can score a selected task subset.
+        - Late failures clean every object under the reserved preview prefix.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.arguments.lambda_function = "vals-format-lambda"
+        finished_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="finished-task",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        pending_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="pending-task",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.PENDING,
+        )
+        database_session.add_all([benchmark_row, finished_task, pending_task])
+        database_session.flush()
+        database_session.add(
+            EvaluationResult(
+                org_id=TEST_ORG_ID,
+                task=finished_task.id,
+                instance_id=str(uuid4()),
+                result={"score": 1},
+            )
+        )
+        database_session.commit()
+
+        observed_results: dict[str, Any] = {}
+        uploaded_keys: list[str] = []
+        lambda_payloads: list[dict[str, Any]] = []
+
+        async def _mock_final_score(_client: BenchmarkServiceClient, **kwargs: Any) -> FinalScoreResponse:
+            observed_results.update(kwargs["evaluation_results"])
+
+            return FinalScoreResponse(tasks_evaluated=list(observed_results), final_score=0.5, metadata={})
+
+        async def _mock_reserve_preview_version(_benchmark_id: UUID, _runtime: AWSRuntime) -> tuple[int, str]:
+            reservation_key = f"benchmarks/{benchmark_row.id}/preview/4/.reserved"
+
+            return 4, reservation_key
+
+        async def _mock_upload_final_view(
+            _benchmark_row: Benchmark,
+            _final_view: FinalViewResponse,
+            _aws_runtime: AWSRuntime,
+            *,
+            s3_key: str | None = None,
+        ) -> str:
+            assert s3_key is not None
+            uploaded_keys.append(s3_key)
+
+            return s3_key
+
+        async def _mock_create_presigned_url(
+            s3_key: str,
+            _aws_runtime: AWSRuntime,
+            expiration: int = 86400,
+        ) -> str:
+            return f"https://download.example/{s3_key}?expires={expiration}"
+
+        def _mock_invoke_lambda(
+            _clients: object,
+            _function_name: str,
+            payload: dict[str, Any],
+            config: object,
+        ) -> dict[str, Any]:
+            lambda_payloads.append(payload)
+
+            return {
+                "statusCode": 200,
+                "generated_artifact_urls": ["s3://generated-bucket/preview-output.json"],
+            }
+
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
+        monkeypatch.setattr(main_module, "_reserve_next_preview_version", _mock_reserve_preview_version)
+        monkeypatch.setattr(main_module, "upload_final_view", _mock_upload_final_view)
+        monkeypatch.setattr(main_module, "create_presigned_url", _mock_create_presigned_url)
+        monkeypatch.setattr(main_module, "invoke_lambda", _mock_invoke_lambda)
+
+        response = client.get(
+            "/preview-results",
+            params={"benchmark_id": str(benchmark_row.id)},
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        preview_prefix = f"benchmarks/{benchmark_row.id}/preview/4"
+        preview_key = f"{preview_prefix}/{benchmark_row.name}.json"
+        assert body["preview_version"] == 4
+        assert body["s3_url"].endswith(preview_key)
+        assert body["generated_artifact_urls"] == ["s3://generated-bucket/preview-output.json"]
+        assert uploaded_keys == [preview_key]
+        assert observed_results == {"finished-task": {"score": 1}, "pending-task": None}
+        assert lambda_payloads[0]["benchmark_id"] == str(benchmark_row.id)
+        assert lambda_payloads[0]["benchmark_name"] == benchmark_row.name
+        assert lambda_payloads[0]["bucket"] == "test-bucket"
+        assert lambda_payloads[0]["places_where_result_data_is"] == [preview_key]
+        assert lambda_payloads[0]["preview"] is True
+        assert "output_key" not in lambda_payloads[0]
+        assert "contract" in lambda_payloads[0]
+
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"lambda_function": None})
+        database_session.add(benchmark_row)
+        database_session.commit()
+        observed_results.clear()
+
+        subset_response = client.get(
+            "/preview-results",
+            params=[
+                ("benchmark_id", str(benchmark_row.id)),
+                ("task_ids", "finished-task"),
+            ],
+            headers=harness_headers,
+        )
+
+        assert subset_response.status_code == 200
+        assert observed_results == {"finished-task": {"score": 1}}
+        assert len(lambda_payloads) == 1
+
+        deleted_keys: list[str] = []
+        generated_preview_key = f"{preview_prefix}/generated/output.json"
+
+        async def _late_presigned_failure(*_args: Any, **_kwargs: Any) -> str:
+            raise main_module.S3Error("presign failed")
+
+        async def _preview_keys(*_args: Any, **_kwargs: Any) -> AsyncIterator[str]:
+            yield generated_preview_key
+
+        async def _mock_delete_from_s3(s3_key: str, _aws_runtime: AWSRuntime) -> None:
+            deleted_keys.append(s3_key)
+
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"lambda_function": "preview-lambda"})
+        database_session.add(benchmark_row)
+        database_session.commit()
+        monkeypatch.setattr(main_module, "create_presigned_url", _late_presigned_failure)
+        monkeypatch.setattr(main_module, "list_s3_objects", _preview_keys)
+        monkeypatch.setattr(main_module, "delete_from_s3", _mock_delete_from_s3)
+
+        failed_response = client.get(
+            "/preview-results",
+            params={"benchmark_id": str(benchmark_row.id)},
+            headers=harness_headers,
+        )
+
+        assert failed_response.status_code == 500
+        assert set(deleted_keys) == {
+            f"benchmarks/{benchmark_row.id}/preview/4/.reserved",
+            preview_key,
+            generated_preview_key,
+        }
 
     async def test_retrieve_results_blocks_external_persisted_internal_destination(
         self,

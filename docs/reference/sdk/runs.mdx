@@ -217,6 +217,30 @@ The selected overload determines the return type.
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
+## `client.runs.preview` {#preview}
+
+Create a numbered S3 snapshot and return artifact URLs reported by its optional callback.
+
+```python Signature
+async def preview(run_id: UUID, *, task_ids: Sequence[str] | None = None) -> S3UploadResultsResponse
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · UUID</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"task_ids"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · Sequence[str] | None · default: <code>{"None"}</code></span></div>
+</div>
+
+**Returns**
+
+<a href="/reference/sdk/models/runs#s3-upload-results-response"><code>S3UploadResultsResponse</code></a>
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
 ## `client.runs.metadata` {#metadata}
 
 Fetch the stored launch metadata for a run.

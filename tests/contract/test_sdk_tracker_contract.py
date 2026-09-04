@@ -101,6 +101,7 @@ ROUTES = (
         "agent_name benchmark_name model dataset label status started_by started_after started_before order_by cursor limit offset",
     ),
     ("/retrieve-results", "get", "benchmark_id s3 task_ids"),
+    ("/preview-results", "get", "benchmark_id task_ids"),
     ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id force"),
     ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id retry retry_mode concurrency"),
     ("/benchmarks/status", "get", "ids"),
@@ -138,6 +139,7 @@ RESPONSE_MODELS = {
     ("/benchmark-services", "post"): "BenchmarkServicesResponse",
     ("/fetch-benchmark-tasks", "post"): "VerifyTaskIdsResponse",
     ("/fetch-benchmark-metadata/{benchmark_id}", "get"): "FetchBenchmarkMetadataResponse",
+    ("/preview-results", "get"): "S3UploadResultsResponse",
 }
 MODEL_PAIRS = (
     (OutputArtifact, SDKOutputArtifact),
@@ -368,6 +370,7 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
     for path, method, parameter_name in (
         ("/fetch-benchmark", "get", "benchmark_id"),
         ("/retrieve-results", "get", "benchmark_id"),
+        ("/preview-results", "get", "benchmark_id"),
         ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id"),
         ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id"),
         ("/analyze-benchmark/{benchmark_id}", "post", "benchmark_id"),

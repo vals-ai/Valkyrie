@@ -211,11 +211,14 @@ async def delete_from_s3(s3_key: str, runtime: AWSRuntime, *, version_id: str | 
     Raises:
         S3Error: If deletion fails due to AWS errors or network issues
     """
-    async with runtime.clients.s3_client() as client:
-        if version_id is None:
-            await client.delete_object(Bucket=runtime.resources.s3_bucket, Key=s3_key)
-        else:
-            await client.delete_object(Bucket=runtime.resources.s3_bucket, Key=s3_key, VersionId=version_id)
+    try:
+        async with runtime.clients.s3_client() as client:
+            if version_id is None:
+                await client.delete_object(Bucket=runtime.resources.s3_bucket, Key=s3_key)
+            else:
+                await client.delete_object(Bucket=runtime.resources.s3_bucket, Key=s3_key, VersionId=version_id)
+    except (ClientError, BotoCoreError) as error:
+        raise S3Error(f"Failed to delete object from S3: {error}") from error
 
 
 async def copy_s3_object(source_key: str, dest_key: str, runtime: AWSRuntime) -> str | None:
