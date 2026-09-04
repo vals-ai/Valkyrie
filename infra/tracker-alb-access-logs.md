@@ -1,6 +1,6 @@
 # Tracker ALB access logs
 
-Each production Tracker load balancer writes restricted request evidence to its own S3 bucket. The bucket uses SSE-S3, blocks public access, requires TLS, and expires objects after 90 days. Its bucket policy permits only the Elastic Load Balancing delivery service for load balancers in the same account and Region. The logs are not copied to CloudWatch Logs.
+The dev, bench, and external production Tracker load balancers each write restricted request evidence to their own S3 bucket. Each bucket uses SSE-S3, blocks public access, and requires TLS. Dev objects expire after 7 days; bench and external production objects expire after 365 days. The bucket policy permits only the Elastic Load Balancing delivery service for load balancers in the same account and Region. The logs are not copied to CloudWatch Logs.
 
 ALB access logs include client or upstream-proxy IP addresses, full request URIs, user agents, status codes, target addresses, latency fields, and `X-Amzn-Trace-Id`. Treat the bucket and Athena results as restricted operational data. Access comes from the responder's existing AWS IAM permissions; this stack grants no new read access.
 
@@ -10,9 +10,9 @@ AWS delivers access logs approximately every five minutes with eventual consiste
 
 1. Open the Tracker stack outputs.
 
-   **Why** -- Each production account has its own generated bucket name. The stack output identifies the bucket without relying on a copied value.
+   **Why** -- Each deployed account has its own generated bucket name. The stack output identifies the bucket without relying on a copied value.
 
-   In the AWS console, open **CloudFormation → Stacks → TrackerStack** for the internal production account or **ValkProdTrackerStack** for external production, then open **Outputs**. Find `TrackerAlbAccessLogBucketName`, `TrackerAlbAccessLogDatabaseName`, and `TrackerAlbAccessLogWorkGroupName`.
+   In the AWS console, open **CloudFormation → Stacks**, choose `ValkDevTrackerStack` for dev, `TrackerStack` for bench, or `ValkProdTrackerStack` for external production, then open **Outputs**. Find `TrackerAlbAccessLogBucketName`, `TrackerAlbAccessLogDatabaseName`, and `TrackerAlbAccessLogWorkGroupName`.
 
    CLI alternative:
 
@@ -23,7 +23,7 @@ AWS delivers access logs approximately every five minutes with eventual consiste
      --output table
    ```
 
-   Use `ValkProdTrackerStack` for external production and select the profile for the intended account.
+   Use `ValkDevTrackerStack` for dev or `ValkProdTrackerStack` for external production, and select the profile for the intended account.
 
    **Done when** -- The outputs show a dedicated access-log bucket, the `tracker_alb_access_logs` database, and the `tracker-alb-access-logs` workgroup in the expected account and Region.
 
@@ -97,7 +97,7 @@ AWS delivers access logs approximately every five minutes with eventual consiste
      --end-time <window-end-epoch-ms>
    ```
 
-   Use the stage-qualified Tracker log group name for external production.
+   Use the stage-qualified Tracker log group name for dev or external production.
 
    **Done when** -- One ALB row and one Tracker access record match on UTC time, method, unique path, and status, and the ALB trace ID is recorded with the evidence.
 

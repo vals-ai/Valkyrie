@@ -9,7 +9,8 @@ from constructs import Construct
 from stage import Stage
 
 ACCESS_LOG_PREFIX = "tracker-alb"
-ACCESS_LOG_RETENTION_DAYS = 90
+PRODUCTION_ACCESS_LOG_RETENTION_DAYS = 365
+DEV_ACCESS_LOG_RETENTION_DAYS = 7
 ATHENA_DATABASE_NAME = "tracker_alb_access_logs"
 ATHENA_TABLE_NAME = "requests"
 ATHENA_WORKGROUP_NAME = "tracker-alb-access-logs"
@@ -66,11 +67,12 @@ def create_tracker_access_logs(
     stage: Stage,
     load_balancer: aws_elasticloadbalancingv2.ApplicationLoadBalancer,
 ) -> None:
-    """Create production Tracker ALB access-log storage and its Athena catalog."""
-    if not stage.is_production:
+    """Create deployed Tracker ALB access-log storage and its Athena catalog."""
+    if stage.is_release_test:
         return
 
     stack = cdk.Stack.of(scope)
+    retention_days = PRODUCTION_ACCESS_LOG_RETENTION_DAYS if stage.is_production else DEV_ACCESS_LOG_RETENTION_DAYS
     bucket = aws_s3.Bucket(
         scope,
         "TrackerAlbAccessLogBucket",
@@ -80,7 +82,7 @@ def create_tracker_access_logs(
         object_ownership=aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
         lifecycle_rules=[
             aws_s3.LifecycleRule(
-                expiration=cdk.Duration.days(ACCESS_LOG_RETENTION_DAYS),
+                expiration=cdk.Duration.days(retention_days),
             )
         ],
         removal_policy=cdk.RemovalPolicy.RETAIN,

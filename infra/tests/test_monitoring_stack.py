@@ -432,8 +432,12 @@ class MonitoringStackTest(unittest.TestCase):
             1,
         )
 
-    def test_production_tracker_access_logs_are_restricted_and_queryable(self) -> None:
-        for stage_name, environment in ((BENCH, TEST_BENCH_ENV), (PROD, TEST_PROD_ENV)):
+    def test_deployed_tracker_access_logs_are_restricted_and_queryable(self) -> None:
+        for stage_name, environment, retention_days in (
+            (DEV, TEST_DEV_ENV, 7),
+            (BENCH, TEST_BENCH_ENV, 365),
+            (PROD, TEST_PROD_ENV, 365),
+        ):
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
                 tracker_template = service_templates(stage_name)[0]
 
@@ -463,7 +467,7 @@ class MonitoringStackTest(unittest.TestCase):
                             {"ServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}
                         ]
                     },
-                    "LifecycleConfiguration": {"Rules": [{"ExpirationInDays": 90, "Status": "Enabled"}]},
+                    "LifecycleConfiguration": {"Rules": [{"ExpirationInDays": retention_days, "Status": "Enabled"}]},
                     "OwnershipControls": {"Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]},
                     "PublicAccessBlockConfiguration": {
                         "BlockPublicAcls": True,
@@ -480,6 +484,10 @@ class MonitoringStackTest(unittest.TestCase):
                 statement
                 for statement in bucket_policy["Statement"]
                 if statement.get("Sid") == "AllowTrackerAlbLogDelivery"
+            )
+            self.assertEqual(
+                [statement for statement in bucket_policy["Statement"] if statement["Effect"] == "Allow"],
+                [delivery_statement],
             )
             self.assertEqual(delivery_statement["Action"], "s3:PutObject")
             self.assertEqual(
@@ -572,18 +580,19 @@ class MonitoringStackTest(unittest.TestCase):
             self.assertIn("s3://", result_location)
             self.assertIn("/athena-results/", result_location)
 
-        for stage_name, environment in ((DEV, TEST_DEV_ENV), (RELEASE_TEST, TEST_RELEASE_TEST_ENV)):
-            with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
-                tracker_template = service_templates(stage_name)[0]
+        with mock.patch.dict(os.environ, TEST_RELEASE_TEST_ENV, clear=True):
+            tracker_template = service_templates(RELEASE_TEST)[0]
 
-            self.assertFalse(tracker_template.find_resources("AWS::Glue::Table"))
-            self.assertFalse(tracker_template.find_resources("AWS::Athena::NamedQuery"))
-            self.assertFalse(tracker_template.find_resources("AWS::Athena::WorkGroup"))
-            load_balancer = next(
-                iter(tracker_template.find_resources("AWS::ElasticLoadBalancingV2::LoadBalancer").values())
-            )
-            attributes = load_balancer["Properties"].get("LoadBalancerAttributes", [])
-            self.assertNotIn("access_logs.s3.enabled", {attribute["Key"] for attribute in attributes})
+        self.assertFalse(tracker_template.find_resources("AWS::Glue::Table"))
+        self.assertFalse(tracker_template.find_resources("AWS::Athena::NamedQuery"))
+        self.assertFalse(tracker_template.find_resources("AWS::Athena::WorkGroup"))
+        self.assertFalse(tracker_template.find_resources("AWS::S3::Bucket"))
+        self.assertFalse(tracker_template.find_resources("AWS::S3::BucketPolicy"))
+        load_balancer = next(
+            iter(tracker_template.find_resources("AWS::ElasticLoadBalancingV2::LoadBalancer").values())
+        )
+        attributes = load_balancer["Properties"].get("LoadBalancerAttributes", [])
+        self.assertNotIn("access_logs.s3.enabled", {attribute["Key"] for attribute in attributes})
 
     def test_redis_ingress_is_limited_to_tracker_and_executor_host(self) -> None:
         for stage_name, environment in (
