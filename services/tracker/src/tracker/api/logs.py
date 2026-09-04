@@ -59,14 +59,30 @@ def _task_reference(
     session: Session = Depends(get_session),
 ) -> TaskLogReference:
     task = load_task_for_benchmark_or_404(run_context.benchmark, task_id, org, session)
+    run_tasks = _run_tasks(run_context, org, session)
     return TaskLogReference(
         run_id=run_context.benchmark.id,
         task_id=task.task_id,
         started_at=task.started_at,
+        siblings=tuple(run_task for run_task in run_tasks if run_task.task_id != task.task_id),
     )
 
 
 TaskLogReferenceDependency = Annotated[TaskLogReference, Depends(_task_reference)]
+
+
+def _run_tasks(
+    run_context: RunAWSDependency,
+    org: Org,
+    session: Session,
+) -> tuple[RunTaskLogReference, ...]:
+    tasks = session.exec(
+        select(Task)
+        .where(col(Task.benchmark) == run_context.benchmark.id)
+        .where(col(Task.org_id) == org.id)
+        .order_by(col(Task.task_id))
+    ).all()
+    return tuple(RunTaskLogReference(task_id=task.task_id, started_at=task.started_at) for task in tasks)
 
 
 def _run_reference(
@@ -74,15 +90,9 @@ def _run_reference(
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> RunLogReference:
-    tasks = session.exec(
-        select(Task)
-        .where(col(Task.benchmark) == run_context.benchmark.id)
-        .where(col(Task.org_id) == org.id)
-        .order_by(col(Task.task_id))
-    ).all()
     return RunLogReference(
         run_id=run_context.benchmark.id,
-        tasks=tuple(RunTaskLogReference(task_id=task.task_id, started_at=task.started_at) for task in tasks),
+        tasks=_run_tasks(run_context, org, session),
     )
 
 

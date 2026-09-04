@@ -13,9 +13,12 @@ from uuid import uuid4
 import pytest  # pyright: ignore[reportMissingImports]
 from botocore.exceptions import ClientError, EndpointConnectionError  # pyright: ignore[reportMissingImports]
 
+from tracker.aws import cloudwatch_logs
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchLogProvider, task_log_stream_name
 from tracker.runtime.logs import LogProviderError, RunLogReference, RunTaskLogReference, TaskLogReference
+
+_legacy_task_log_stream_name = getattr(cloudwatch_logs, "_legacy_task_log_stream_name")
 
 
 class MockLogsClient:
@@ -165,16 +168,19 @@ async def test_run_fetch_filters_cloudwatch_metacharacters_as_literal_substrings
     assert page.next_cursor == "next-page"
 
 
-async def test_run_attribution_returns_none_for_sanitized_stream_collision() -> None:
-    """Two task IDs resolving to one physical stream must never be guessed."""
+async def test_collision_resistant_names_do_not_attribute_ambiguous_legacy_stream() -> None:
+    """Colliding legacy names must remain aggregate-only while canonical names stay distinct."""
     run_id = uuid4()
     started_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     first = RunTaskLogReference(task_id="task:one", started_at=started_at)
     second = RunTaskLogReference(task_id="task*one", started_at=started_at)
-    stream_name = task_log_stream_name(first.task_id, first.started_at)
-    assert stream_name == task_log_stream_name(second.task_id, second.started_at)
+    legacy_name = _legacy_task_log_stream_name(first.task_id, first.started_at)
+    assert legacy_name == _legacy_task_log_stream_name(second.task_id, second.started_at)
+    assert task_log_stream_name(first.task_id, first.started_at) != task_log_stream_name(
+        second.task_id, second.started_at
+    )
     logs_client = MockLogsClient(
-        [{"events": [{"timestamp": 1_000, "message": "ambiguous", "logStreamName": stream_name}]}]
+        [{"events": [{"timestamp": 1_000, "message": "ambiguous", "logStreamName": legacy_name}]}]
     )
 
     page = await _provider(logs_client).fetch(RunLogReference(run_id=run_id, tasks=(first, second)))
@@ -182,11 +188,74 @@ async def test_run_attribution_returns_none_for_sanitized_stream_collision() -> 
     assert page.events[0].task_id is None
 
 
+async def test_task_fetch_excludes_canonical_name_shared_with_sibling_legacy_stream() -> None:
+    """A selected task must not read a canonical name used by a sibling's legacy stream."""
+    run_id = uuid4()
+    started_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    task_id = "task:one"
+    canonical_name = task_log_stream_name(task_id, started_at)
+    sibling = RunTaskLogReference(task_id=canonical_name.rsplit("_", 1)[0], started_at=started_at)
+    assert _legacy_task_log_stream_name(sibling.task_id, sibling.started_at) == canonical_name
+    reference = TaskLogReference(
+        run_id=run_id,
+        task_id=task_id,
+        started_at=started_at,
+        siblings=(sibling,),
+    )
+    logs_client = MockLogsClient([{"events": []}])
+
+    await _provider(logs_client).fetch(reference)
+
+    assert logs_client.filter_requests[0]["logStreamNames"] == [
+        _legacy_task_log_stream_name(reference.task_id, started_at)
+    ]
+
+
+async def test_task_fetch_rejects_when_all_names_are_ambiguous() -> None:
+    """A task read must fail instead of selecting a stream shared with a sibling."""
+    started_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    reference = TaskLogReference(
+        run_id=uuid4(),
+        task_id="task_one",
+        started_at=started_at,
+        siblings=(RunTaskLogReference(task_id="task:one", started_at=started_at),),
+    )
+    logs_client = MockLogsClient([{"events": []}])
+
+    with pytest.raises(LogProviderError, match="ambiguous"):
+        await _provider(logs_client).fetch(reference)
+
+    assert logs_client.filter_requests == []
+
+
+async def test_task_fetch_excludes_ambiguous_legacy_stream() -> None:
+    """A selected task must not read a legacy stream shared by a sibling task."""
+    run_id = uuid4()
+    started_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    sibling = RunTaskLogReference(task_id="task*one", started_at=started_at)
+    reference = TaskLogReference(
+        run_id=run_id,
+        task_id="task:one",
+        started_at=started_at,
+        siblings=(sibling,),
+    )
+    logs_client = MockLogsClient([{"events": []}])
+
+    await _provider(logs_client).fetch(reference)
+
+    assert logs_client.filter_requests[0]["logStreamNames"] == [task_log_stream_name(reference.task_id, started_at)]
+
+
 async def test_task_fetch_keeps_empty_changing_page_and_stops_on_stable_cursor() -> None:
     """An empty page only terminates when CloudWatch stops advancing its token."""
     run_id = uuid4()
     started_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    reference = TaskLogReference(run_id=run_id, task_id="provider/model:fast", started_at=started_at)
+    reference = TaskLogReference(
+        run_id=run_id,
+        task_id="provider/model:fast",
+        started_at=started_at,
+        siblings=(),
+    )
     logs_client = MockLogsClient(
         [
             {"events": [], "nextToken": "advanced"},
@@ -200,7 +269,10 @@ async def test_task_fetch_keeps_empty_changing_page_and_stops_on_stable_cursor()
 
     assert first_page.next_cursor == "advanced"
     assert final_page.next_cursor is None
-    assert logs_client.filter_requests[0]["logStreamNames"] == [task_log_stream_name(reference.task_id, started_at)]
+    assert logs_client.filter_requests[0]["logStreamNames"] == [
+        task_log_stream_name(reference.task_id, started_at),
+        _legacy_task_log_stream_name(reference.task_id, started_at),
+    ]
 
 
 async def test_follow_deduplicates_poll_results_and_translates_aws_errors() -> None:
@@ -228,12 +300,86 @@ async def test_follow_deduplicates_poll_results_and_translates_aws_errors() -> N
     ]
 
     assert [event.message for event in events] == ["hello"]
+    assert (
+        logs_client.get_requests[0]["endTime"] == int(datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp() * 1_000) + 1
+    )
 
     denied = ClientError({"Error": {"Code": "AccessDeniedException", "Message": "denied"}}, "FilterLogEvents")
     failing_client = MockLogsClient([denied])
     with pytest.raises(LogProviderError, match="AccessDeniedException") as error:
         await _provider(failing_client).fetch(RunLogReference(run_id=run_id))
     assert error.value.__cause__ is denied
+
+
+async def test_follow_falls_back_to_unique_legacy_stream_when_canonical_is_absent() -> None:
+    """Follow mode may select a unique legacy stream only after the canonical stream is missing."""
+    started_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    reference = TaskLogReference(
+        run_id=uuid4(),
+        task_id="task:one",
+        started_at=started_at,
+        siblings=(),
+    )
+    missing = ClientError(
+        {"Error": {"Code": "ResourceNotFoundException", "Message": "missing"}},
+        "GetLogEvents",
+    )
+    logs_client = MockLogsClient(
+        [
+            missing,
+            {
+                "events": [{"timestamp": 1_000, "message": "legacy", "eventId": "legacy"}],
+                "nextForwardToken": "tail",
+            },
+            {"events": [], "nextForwardToken": "tail"},
+        ]
+    )
+
+    events = [
+        event
+        async for event in _provider(logs_client).stream_task(
+            reference,
+            end_time=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            poll_interval=0,
+        )
+    ]
+
+    assert [event.message for event in events] == ["legacy"]
+    assert [request["logStreamName"] for request in logs_client.get_requests] == [
+        task_log_stream_name(reference.task_id, started_at),
+        _legacy_task_log_stream_name(reference.task_id, started_at),
+        _legacy_task_log_stream_name(reference.task_id, started_at),
+    ]
+
+
+async def test_follow_does_not_fall_back_to_ambiguous_legacy_stream() -> None:
+    """A missing canonical stream must not select a legacy stream shared by a sibling."""
+    started_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    reference = TaskLogReference(
+        run_id=uuid4(),
+        task_id="task:one",
+        started_at=started_at,
+        siblings=(RunTaskLogReference(task_id="task*one", started_at=started_at),),
+    )
+    missing = ClientError(
+        {"Error": {"Code": "ResourceNotFoundException", "Message": "missing"}},
+        "GetLogEvents",
+    )
+    logs_client = MockLogsClient([missing])
+
+    events = [
+        event
+        async for event in _provider(logs_client).stream_task(
+            reference,
+            end_time=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            poll_interval=0,
+        )
+    ]
+
+    assert events == []
+    assert [request["logStreamName"] for request in logs_client.get_requests] == [
+        task_log_stream_name(reference.task_id, started_at)
+    ]
 
 
 async def test_follow_deduplication_retains_only_a_recent_identity_window(monkeypatch: pytest.MonkeyPatch) -> None:

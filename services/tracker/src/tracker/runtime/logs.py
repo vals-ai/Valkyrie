@@ -55,20 +55,21 @@ class LogPage:
 
 
 @dataclass(frozen=True)
+class RunTaskLogReference:
+    """Provider-neutral identity for one task in an aggregate log read."""
+
+    task_id: str
+    started_at: datetime
+
+
+@dataclass(frozen=True)
 class TaskLogReference:
     """Provider-neutral identity for one task's current log stream."""
 
     run_id: UUID
     task_id: str
     started_at: datetime
-
-
-@dataclass(frozen=True)
-class RunTaskLogReference:
-    """Provider-neutral identity for one task in an aggregate log read."""
-
-    task_id: str
-    started_at: datetime
+    siblings: tuple[RunTaskLogReference, ...] | None = None
 
 
 @dataclass(frozen=True)

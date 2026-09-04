@@ -159,6 +159,9 @@ class LogsResource:
             event = _parse_stream_event(event_name, data_lines)
             if event is not None:
                 yield event
+            if event_name == "end":
+                return
+            raise ValkyrieStreamError("Valkyrie log stream ended before its end event")
 
 
 def _request_params(

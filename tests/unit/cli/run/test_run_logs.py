@@ -13,8 +13,10 @@ from importlib import import_module
 from typing import Any
 from uuid import UUID, uuid4
 
+import httpx  # pyright: ignore[reportMissingImports]
 import pytest  # pyright: ignore[reportMissingImports]
 from click.testing import CliRunner  # pyright: ignore[reportMissingImports]
+from valkyrie.sdk import ValkyrieClient, ValkyrieConfig  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.models.logs import LogEvent, LogPage  # pyright: ignore[reportMissingImports]
 
 from valkyrie.cli.run.logs import logs  # pyright: ignore[reportMissingImports]
@@ -134,6 +136,39 @@ def test_logs_fetches_one_task_as_jsonl_and_follows_it(monkeypatch: pytest.Monke
     assert follow_result.exit_code == 0, follow_result.output
     assert client.logs.operation == "follow"
     assert client.logs.arguments["query"] == "hello"
+
+
+def test_logs_follow_rejects_cleanly_truncated_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A truncated 200 SSE response must print its final record but exit unsuccessfully."""
+    run_id = uuid4()
+    payload = {
+        "timestamp": "2026-01-01T00:00:00Z",
+        "message": "final",
+        "task_id": "task-1",
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=f"event: log\ndata: {json.dumps(payload)}",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    config = ValkyrieConfig.model_validate(
+        {
+            "AWS_DEFAULT_REGION": "us-west-2",
+            "S3_BUCKET": "runs-bucket",
+            "sandbox_providers": {"modal": "ModalSecret"},
+        }
+    )
+    client = ValkyrieClient(config, base_url="https://tracker.test", transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(logs_module.ValkyrieClient, "from_config", lambda: client)
+
+    result = CliRunner().invoke(logs, [str(run_id), "--task-id", "task-1", "--follow"])
+
+    assert result.exit_code == 1
+    assert "final" in result.output
+    assert "ended before its end event" in result.output
 
 
 @pytest.mark.parametrize(

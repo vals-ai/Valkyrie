@@ -169,6 +169,7 @@ def test_task_and_run_logs_use_scoped_provider_references(
         run_id=benchmark.id,
         task_id=first_task.task_id,
         started_at=first_task.started_at,
+        siblings=(RunTaskLogReference(task_id=second_task.task_id, started_at=second_task.started_at),),
     )
     assert run_response.status_code == 200
     assert [event["task_id"] for event in run_response.json()["events"]] == ["task-1", "task-2"]

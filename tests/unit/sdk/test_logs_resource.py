@@ -142,3 +142,24 @@ async def test_stream_task_parses_log_and_error_events(make_client) -> None:
     async with failing_client:
         with pytest.raises(ValkyrieStreamError, match="denied"):
             _ = [event async for event in failing_client.logs.stream_task(run_id, "task-1")]
+
+
+async def test_stream_task_preserves_final_record_then_rejects_truncated_success(make_client) -> None:
+    """A clean HTTP EOF must yield its buffered log but cannot replace the explicit end event."""
+    run_id = uuid4()
+    payload = {
+        "timestamp": "2026-01-01T00:00:00Z",
+        "message": "final",
+        "task_id": "task-1",
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        body = f"event: log\ndata: {json.dumps(payload)}"
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    client = make_client(handler)
+    async with client:
+        events = client.logs.stream_task(run_id, "task-1").__aiter__()
+        assert (await anext(events)).message == "final"
+        with pytest.raises(ValkyrieStreamError, match="before its end event"):
+            await anext(events)

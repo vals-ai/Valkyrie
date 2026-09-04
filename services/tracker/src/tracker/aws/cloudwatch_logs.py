@@ -36,7 +36,16 @@ _R = TypeVar("_R")
 
 
 def _sanitize_log_stream_name(task_id: str) -> str:
-    """Make a task ID safe to use as a CloudWatch log stream name."""
+    """Escape rejected characters and distinguish the result from legacy names."""
+    escaped = task_id.replace("%", "%25").replace(":", "%3A").replace("*", "%2A")
+    if escaped == task_id:
+        return task_id
+    digest = hashlib.sha256(task_id.encode()).hexdigest()[:16]
+    return f"{escaped}-{digest}"
+
+
+def _legacy_sanitize_log_stream_name(task_id: str) -> str:
+    """Return the lossy stream name used before reversible escaping."""
     return re.sub(r"[:*]", "_", task_id)
 
 
@@ -50,7 +59,35 @@ def task_log_stream_name(task_id: str, started_at: datetime) -> str:
     if started_at.utcoffset() is None:
         started_at = started_at.replace(tzinfo=timezone.utc)
     suffix = f"{int(started_at.timestamp() * 1_000_000):x}"
-    return _sanitize_log_stream_name(f"{task_id}_{suffix}")
+    return f"{_sanitize_log_stream_name(task_id)}_{suffix}"
+
+
+def _legacy_task_log_stream_name(task_id: str, started_at: datetime) -> str:
+    """Return the versioned stream name used before reversible escaping."""
+    if started_at.utcoffset() is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    suffix = f"{int(started_at.timestamp() * 1_000_000):x}"
+    return f"{_legacy_sanitize_log_stream_name(task_id)}_{suffix}"
+
+
+def _task_log_stream_names(reference: TaskLogReference) -> list[str]:
+    canonical_name = task_log_stream_name(reference.task_id, reference.started_at)
+    legacy_name = _legacy_task_log_stream_name(reference.task_id, reference.started_at)
+    if reference.siblings is None:
+        return [canonical_name]
+
+    sibling_names = {
+        stream_name
+        for sibling in reference.siblings
+        for stream_name in (
+            task_log_stream_name(sibling.task_id, sibling.started_at),
+            _legacy_task_log_stream_name(sibling.task_id, sibling.started_at),
+        )
+    }
+    names = [name for name in dict.fromkeys((canonical_name, legacy_name)) if name not in sibling_names]
+    if not names:
+        raise LogProviderError("Task log stream is ambiguous")
+    return names
 
 
 def handle_cloudwatch_error(message: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
@@ -86,7 +123,7 @@ class CloudWatchBenchmarkLogLocations(BenchmarkLogLocations):
         base = f"https://{safe_region}.console.aws.amazon.com/cloudwatch/home?region={safe_region}"
         encoded_log_group = f"{safe_log_group}$252F{safe_benchmark_id}"
         if task_stream_id:
-            safe_task_id = quote(_sanitize_log_stream_name(task_stream_id), safe="-_.")
+            safe_task_id = quote(task_stream_id, safe="-_.")
             return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}/log-events/{safe_task_id}"
         return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}"
 
@@ -118,13 +155,12 @@ class CloudWatchBenchmarkLogSink(BenchmarkLogSink):
         if not message.strip():
             return
 
-        benchmark_id, task_id = stream_key.split(":", 1)
-        if not benchmark_id or not task_id:
-            raise CloudWatchError(f"Invalid stream key '{stream_key}', expected format 'benchmark_id:task_id'")
+        benchmark_id, stream_name = stream_key.split(":", 1)
+        if not benchmark_id or not stream_name:
+            raise CloudWatchError(f"Invalid stream key '{stream_key}', expected format 'benchmark_id:stream_name'")
 
         client = self._clients.cloudwatch_logs_client()
         log_group_name = benchmark_log_group_name(self._log_group, benchmark_id)
-        stream_name = _sanitize_log_stream_name(task_id)
 
         if stream_key not in _created_streams:
             try:
@@ -165,7 +201,7 @@ class CloudWatchLogProvider(LogProvider):
     ) -> LogPage:
         """Return one filtered page for a run or one task."""
         if isinstance(reference, TaskLogReference):
-            stream_names = [task_log_stream_name(reference.task_id, reference.started_at)]
+            stream_names = _task_log_stream_names(reference)
             task_id = reference.task_id
             stream_task_ids = None
         else:
@@ -201,7 +237,9 @@ class CloudWatchLogProvider(LogProvider):
         """Yield a task stream from its current start position, then poll for new events."""
         client = await self._get_client()
         log_group_name = benchmark_log_group_name(self._log_group, str(reference.run_id))
-        stream_name = task_log_stream_name(reference.task_id, reference.started_at)
+        stream_names = _task_log_stream_names(reference)
+        stream_name = stream_names[0]
+        legacy_stream_name = stream_names[1] if len(stream_names) > 1 else None
         cursor: str | None = None
         recent_event_ids: deque[str] = deque()
         seen_event_ids: set[str] = set()
@@ -218,10 +256,14 @@ class CloudWatchLogProvider(LogProvider):
             elif start_time is not None:
                 request["startTime"] = _epoch_milliseconds(start_time)
             if end_time is not None:
-                request["endTime"] = _epoch_milliseconds(end_time)
+                request["endTime"] = _epoch_milliseconds(end_time) + 1
 
             response = await self._request(client.get_log_events, request)
             if response is None:
+                if legacy_stream_name is not None and stream_name != legacy_stream_name:
+                    stream_name = legacy_stream_name
+                    cursor = None
+                    continue
                 if end_time is not None and datetime.now(timezone.utc) > end_time:
                     return
                 await asyncio.sleep(poll_interval)
@@ -385,11 +427,14 @@ def _parse_events(
 def _stream_task_ids(reference: RunLogReference) -> dict[str, str | None]:
     stream_task_ids: dict[str, str | None] = {}
     for task in reference.tasks:
-        stream_name = task_log_stream_name(task.task_id, task.started_at)
-        if stream_name in stream_task_ids and stream_task_ids[stream_name] != task.task_id:
-            stream_task_ids[stream_name] = None
-        else:
-            stream_task_ids[stream_name] = task.task_id
+        for stream_name in (
+            task_log_stream_name(task.task_id, task.started_at),
+            _legacy_task_log_stream_name(task.task_id, task.started_at),
+        ):
+            if stream_name in stream_task_ids and stream_task_ids[stream_name] != task.task_id:
+                stream_task_ids[stream_name] = None
+            else:
+                stream_task_ids[stream_name] = task.task_id
     return stream_task_ids
 
 
