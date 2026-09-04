@@ -908,12 +908,17 @@ def _generated_artifact_urls(lambda_response: Any) -> list[str]:
     if not isinstance(lambda_response, dict):
         return []
 
-    artifact_urls = lambda_response.get("generated_artifact_urls")
+    response = cast(dict[object, object], lambda_response)
+    artifact_urls = response.get("generated_artifact_urls")
     if artifact_urls is None:
         return []
-    if not isinstance(artifact_urls, list) or any(not isinstance(url, str) for url in artifact_urls):
+    if not isinstance(artifact_urls, list):
         raise LambdaError("Preview Lambda returned invalid generated_artifact_urls")
-    return [url for url in artifact_urls if isinstance(url, str)]
+
+    urls = cast(list[object], artifact_urls)
+    if any(not isinstance(url, str) for url in urls):
+        raise LambdaError("Preview Lambda returned invalid generated_artifact_urls")
+    return [url for url in urls if isinstance(url, str)]
 
 
 async def _invoke_preview_lambda(benchmark_row: Benchmark, s3_key: str, aws_runtime: AWSRuntime) -> list[str]:
