@@ -66,7 +66,7 @@ def init_sentry(service_name: str, environment: str) -> None:
     try:
         sentry_sdk.init(
             dsn=dsn,
-            environment=environment,
+            environment=os.environ.get("SENTRY_ENVIRONMENT", environment),
             release=os.environ.get("SENTRY_RELEASE", ""),
             server_name=service_name,
             # Sampling happens upstream in OTel; pass everything through.
