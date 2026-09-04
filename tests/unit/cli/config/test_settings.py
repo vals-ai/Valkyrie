@@ -167,7 +167,48 @@ def test_init_hosted_managed_aws_omits_static_keys(config_path: Path, monkeypatc
     assert config["LOG_RETENTION_POLICY"] == "365"
     assert not settings._STATIC_AWS_CREDENTIAL_KEYS.intersection(config)
     assert "Local AWS operations will use the AWS SDK credential chain" in result.output
-    assert "Restore them before retrying or resuming an access-key run" in result.output
+    assert "Keep this config keyless" in result.output
+    assert "https://dashboards.vals.ai/valkyrie/prod/legacy-recovery" in result.output
+
+
+@pytest.mark.parametrize(
+    ("selector", "environment", "tracker_url"),
+    [
+        ("dev", "dev", "https://benchmark-tracker-dev.vals.ai"),
+        ("prod", "bench", "https://benchmark-tracker.vals.ai"),
+        ("external", "prod", "https://benchmark-tracker-prod.vals.ai"),
+    ],
+)
+def test_managed_init_uses_selected_environment_resources(
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selector: str,
+    environment: str,
+    tracker_url: str,
+) -> None:
+    monkeypatch.setenv("VALKYRIE_ENV", selector)
+    monkeypatch.setenv("VALKYRIE_API_KEY", "assigned-key")
+    monkeypatch.delenv(settings.TRACKER_SERVICE_URL_ENV_VAR, raising=False)
+    calls: list[str] = []
+
+    def init_org(_api_key: str, base_url: str) -> dict[str, str]:
+        calls.append(base_url)
+        return {"org_name": "test-org"}
+
+    def runtime(_api_key: str, base_url: str) -> SimpleNamespace:
+        calls.append(base_url)
+        return SimpleNamespace(mode="managed", region="us-east-1", s3_bucket=f"{environment}-bucket")
+
+    monkeypatch.setattr(settings.TrackerService, "init_org", init_org)
+    monkeypatch.setattr(settings.TrackerService, "aws_runtime_metadata", runtime)
+    result = CliRunner().invoke(settings.init, input="hosted\n\n\n")
+
+    assert result.exit_code == 0, result.output
+    assert calls == [tracker_url, tracker_url]
+    saved = yaml.safe_load(config_path.read_text())
+    assert saved["environment"] == environment
+    assert saved["S3_BUCKET"] == f"{environment}-bucket"
+    assert not settings._STATIC_AWS_CREDENTIAL_KEYS.intersection(saved)
 
 
 @pytest.mark.usefixtures("config_path")
