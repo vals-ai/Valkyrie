@@ -117,6 +117,7 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FetchBenchmarkTasksRequest,
+    FinalViewResponse,
     HarnessConfig,
     ManagedExecutionContext,
     Order,
@@ -856,6 +857,111 @@ async def _reserve_next_preview_version(benchmark_id: UUID, aws_runtime: AWSRunt
                 preview_version += 1
 
 
+def _filter_final_view_to_tasks(final_view: FinalViewResponse, task_ids: set[str]) -> None:
+    def _filter_task_map(task_map: dict[str, Any] | None) -> dict[str, Any] | None:
+        return {task_id: value for task_id, value in (task_map or {}).items() if task_id in task_ids} or None
+
+    final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
+    final_view.task_errors = _filter_task_map(final_view.task_errors)
+
+
+async def _recompute_final_evaluation(
+    benchmark_row: Benchmark,
+    session: Session,
+    org: Org,
+    http_request: Request,
+    task_ids: set[str] | None,
+) -> FinalEvaluation:
+    scored_results = fetch_final_score_inputs(session, benchmark_row, org)
+    if task_ids is not None:
+        scored_results = {task_id: result for task_id, result in scored_results.items() if task_id in task_ids}
+
+    if benchmark_row.custom_benchmark_service is not None:
+        _authorize_custom_benchmark_destination(benchmark_row.custom_benchmark_service, org)
+
+    effective_service_headers = forward_tracker_api_key(
+        None,
+        http_request.headers.get("x-api-key"),
+        destination=classify_benchmark_service_destination(
+            benchmark_row.name,
+            benchmark_row.custom_benchmark_service,
+        ),
+    )
+    benchmark_service = benchmark_row.benchmark_service(service_headers=effective_service_headers)
+    try:
+        response = await benchmark_service.final_score(
+            evaluation_results=scored_results,
+            dataset=benchmark_row.arguments.dataset,
+        )
+    finally:
+        await benchmark_service.close()
+
+    return FinalEvaluation(
+        org_id=org.id,
+        benchmark=benchmark_row.id,
+        final_score=response.final_score,
+        properties=response.metadata,
+    )
+
+
+async def _invoke_preview_lambda(benchmark_row: Benchmark, s3_key: str, aws_runtime: AWSRuntime) -> None:
+    lambda_function = benchmark_row.arguments.lambda_function
+    if lambda_function is None:
+        return
+
+    lambda_payload = {
+        "benchmark_id": str(benchmark_row.id),
+        "benchmark_name": benchmark_row.name,
+        "bucket": aws_runtime.resources.s3_bucket,
+        "places_where_result_data_is": [s3_key],
+    }
+    await asyncio.to_thread(
+        invoke_lambda,
+        aws_runtime.clients,
+        lambda_function,
+        lambda_payload,
+        config=_COMPLETION_CALLBACK_CONFIG,
+    )
+
+
+async def _upload_retrieved_results(
+    benchmark_row: Benchmark,
+    final_view: FinalViewResponse,
+    aws_runtime: AWSRuntime,
+    *,
+    preview: bool,
+) -> S3UploadResultsResponse:
+    preview_version: int | None = None
+    reservation_key: str | None = None
+    s3_key: str | None = None
+
+    if preview:
+        preview_version, reservation_key = await _reserve_next_preview_version(benchmark_row.id, aws_runtime)
+        preview_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/preview/{preview_version}"
+        s3_key = f"{preview_prefix}/{benchmark_row.name}.json"
+
+    try:
+        s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime, s3_key=s3_key)
+        if preview:
+            await _invoke_preview_lambda(benchmark_row, s3_key, aws_runtime)
+    except (LambdaError, S3Error):
+        preview_keys = [key for key in (reservation_key, s3_key) if key is not None]
+        try:
+            await asyncio.gather(*(delete_from_s3(key, aws_runtime) for key in preview_keys))
+        except S3Error:
+            logger.warning("Failed to clean up incomplete preview for benchmark %s", benchmark_row.id, exc_info=True)
+        raise
+
+    expires_in = aws_runtime.clients.maximum_presign_ttl(86400)
+    return S3UploadResultsResponse(
+        s3_url=f"s3://{aws_runtime.resources.s3_bucket}/{s3_key}",
+        presigned_url=await create_presigned_url(s3_key, aws_runtime, expiration=expires_in),
+        console_url=create_console_url(s3_key, aws_runtime.resources),
+        expires_in=expires_in,
+        preview_version=preview_version,
+    )
+
+
 @app.get("/preview-results", operation_id="preview_results")
 @app.get("/retrieve-results")
 async def retrieve_results(
@@ -868,18 +974,12 @@ async def retrieve_results(
     org: Org = Depends(get_current_org),
 ) -> RetrieveResultsResponse:
     """Retrieve a benchmark's current, subset, or versioned preview results."""
-    if preview and not s3:
-        raise HTTPException(status_code=400, detail="Preview results must be saved to S3")
-    if preview and task_ids:
-        raise HTTPException(status_code=400, detail="Preview results cannot be limited to task IDs")
+    s3 = s3 or preview
 
     benchmark_row = assert_org(
         session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)]),
         org,
     )
-    lambda_function = benchmark_row.arguments.lambda_function
-    if preview and not lambda_function:
-        raise HTTPException(status_code=400, detail="Preview results require a configured Lambda function")
 
     aws_runtime = resolve_run_aws_runtime(
         http_request,
@@ -888,103 +988,22 @@ async def retrieve_results(
     )
 
     final_view = create_final_view(benchmark_row, session, org)
-    task_ids_set = set(task_ids or [])
+    task_ids_set = set(task_ids) if task_ids else None
 
-    if task_ids:
+    if task_ids_set is not None:
+        _filter_final_view_to_tasks(final_view, task_ids_set)
 
-        def _filter_task_map(task_map: dict[str, Any] | None) -> dict[str, Any] | None:
-            return {task_id: value for task_id, value in (task_map or {}).items() if task_id in task_ids_set} or None
-
-        final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
-        final_view.task_errors = _filter_task_map(final_view.task_errors)
-
-    if task_ids or preview:
-        scored_results = fetch_final_score_inputs(session, benchmark_row, org)
-        if task_ids:
-            scored_results = {task_id: result for task_id, result in scored_results.items() if task_id in task_ids_set}
-
-        if benchmark_row.custom_benchmark_service is not None:
-            _authorize_custom_benchmark_destination(benchmark_row.custom_benchmark_service, org)
-
-        effective_service_headers = forward_tracker_api_key(
-            None,
-            http_request.headers.get("x-api-key"),
-            destination=classify_benchmark_service_destination(
-                benchmark_row.name,
-                benchmark_row.custom_benchmark_service,
-            ),
-        )
-        benchmark_service = benchmark_row.benchmark_service(service_headers=effective_service_headers)
-        try:
-            resp = await benchmark_service.final_score(
-                evaluation_results=scored_results,
-                dataset=benchmark_row.arguments.dataset,
-            )
-        finally:
-            await benchmark_service.close()
-        final_view.final_evaluation = FinalEvaluation(
-            org_id=org.id,
-            benchmark=benchmark_row.id,
-            final_score=resp.final_score,
-            properties=resp.metadata,
+    if task_ids_set is not None or preview:
+        final_view.final_evaluation = await _recompute_final_evaluation(
+            benchmark_row,
+            session,
+            org,
+            http_request,
+            task_ids_set,
         )
 
     if s3:
-        preview_version: int | None = None
-        preview_prefix: str | None = None
-        reservation_key: str | None = None
-        vals_format_key: str | None = None
-        generated_artifact_urls: list[str] = []
-        s3_key: str | None = None
-
-        if preview:
-            preview_version, reservation_key = await _reserve_next_preview_version(benchmark_row.id, aws_runtime)
-            preview_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/preview/{preview_version}"
-            s3_key = f"{preview_prefix}/{benchmark_row.name}.json"
-            vals_format_key = f"{preview_prefix}/vals_format/vals_format.json"
-
-        try:
-            s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime, s3_key=s3_key)
-
-            if preview and vals_format_key is not None and lambda_function is not None:
-                lambda_payload = {
-                    "benchmark_id": str(benchmark_row.id),
-                    "benchmark_name": benchmark_row.name,
-                    "bucket": aws_runtime.resources.s3_bucket,
-                    "places_where_result_data_is": [s3_key],
-                    "output_key": vals_format_key,
-                }
-                await asyncio.to_thread(
-                    invoke_lambda,
-                    aws_runtime.clients,
-                    lambda_function,
-                    lambda_payload,
-                    config=_COMPLETION_CALLBACK_CONFIG,
-                )
-                generated_artifact_urls.append(f"s3://{aws_runtime.resources.s3_bucket}/{vals_format_key}")
-        except (LambdaError, S3Error):
-            preview_keys = [key for key in (reservation_key, s3_key, vals_format_key) if key is not None]
-            try:
-                await asyncio.gather(*(delete_from_s3(key, aws_runtime) for key in preview_keys))
-            except S3Error:
-                logger.warning(
-                    "Failed to clean up incomplete preview for benchmark %s", benchmark_row.id, exc_info=True
-                )
-            raise
-
-        s3_url = f"s3://{aws_runtime.resources.s3_bucket}/{s3_key}"
-        expires_in = aws_runtime.clients.maximum_presign_ttl(86400)
-        presigned_url = await create_presigned_url(s3_key, aws_runtime, expiration=expires_in)
-        console_url = create_console_url(s3_key, aws_runtime.resources)
-
-        return S3UploadResultsResponse(
-            s3_url=s3_url,
-            presigned_url=presigned_url,
-            console_url=console_url,
-            expires_in=expires_in,
-            preview_version=preview_version,
-            generated_artifact_urls=generated_artifact_urls,
-        )
+        return await _upload_retrieved_results(benchmark_row, final_view, aws_runtime, preview=preview)
 
     return final_view
 

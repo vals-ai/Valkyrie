@@ -157,12 +157,16 @@ class TestResultsCommand:
         preview_tracker = MockResultsTracker(preview_response, results_exist=True)
         monkeypatch.setattr(results_module, "TrackerService", lambda: preview_tracker)
 
-        preview_result = cli_runner.invoke(results, [str(_RUN_ID), "--preview"])
+        preview_result = cli_runner.invoke(
+            results,
+            [str(_RUN_ID), "--preview", "--task-ids", "task-a,task-b"],
+        )
 
         assert preview_result.exit_code == 0, preview_result.output
-        assert "Preview 2 generated artifacts:" in preview_result.output
+        assert "Preview 2 saved." in preview_result.output
+        assert "Generated artifacts:" in preview_result.output
         assert "s3://bucket/preview/2/vals_format/vals_format.json" in preview_result.output
-        assert preview_tracker.retrieve_calls == [(_RUN_ID, True, None, True)]
+        assert preview_tracker.retrieve_calls == [(_RUN_ID, True, ["task-a", "task-b"], True)]
 
     @pytest.mark.parametrize(
         ("path", "expected_message"),

@@ -594,6 +594,7 @@ class TrackerService:
         recomputed over those tasks (does not mutate the stored FinalEvaluation).
         """
         try:
+            s3 = s3 or preview
             params: dict[str, Any] = {"benchmark_id": str(benchmark_id), "s3": s3, "preview": preview}
             if task_ids:
                 params["task_ids"] = task_ids

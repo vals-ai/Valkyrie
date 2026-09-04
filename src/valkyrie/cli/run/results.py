@@ -41,7 +41,7 @@ def _format_expiration(seconds: int) -> str:
     "--preview",
     is_flag=True,
     default=False,
-    help="Save a numbered S3 preview and generate its Vals-format artifact.",
+    help="Save a numbered S3 preview of current results.",
 )
 @click.option(
     "--task-ids",
@@ -71,8 +71,8 @@ def results(
     Example:
         valkyrie run results e532551e-d51b-4912-983d-47695bd24174 --path ./results-e532551e-d51b-4912-983d-47695bd24174.json
     """
-    if preview and (path or task_ids or task_ids_file):
-        raise click.UsageError("--preview cannot be combined with --path or task selection")
+    if preview and path:
+        raise click.UsageError("--preview cannot be combined with --path")
 
     subset_task_ids = resolve_task_ids(task_ids, task_ids_file)
     save_to_s3 = s3 or preview
@@ -122,13 +122,15 @@ def results(
                     click.echo()
                     click.echo(
                         click.style(
-                            f"Preview {results_response.preview_version} generated artifacts:",
+                            f"Preview {results_response.preview_version} saved.",
                             fg="cyan",
                             bold=True,
                         )
                     )
-                    for artifact_url in results_response.generated_artifact_urls:
-                        click.echo(f"  {artifact_url}")
+                    if results_response.generated_artifact_urls:
+                        click.echo("Generated artifacts:")
+                        for artifact_url in results_response.generated_artifact_urls:
+                            click.echo(f"  {artifact_url}")
 
     except TrackerServiceError as e:
         raise click.ClickException(str(e))

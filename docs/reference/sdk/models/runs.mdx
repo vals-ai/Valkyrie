@@ -363,9 +363,9 @@ Runs model · 1 field
 
 ## `S3UploadResultsResponse` {#s3-upload-results-response}
 
-URLs returned when final results are uploaded to S3.
+URLs returned when results are uploaded to S3.
 
-Runs model · 4 fields
+Runs model · 6 fields
 
 **Fields**
 
@@ -383,6 +383,14 @@ Runs model · 4 fields
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"expires_in"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int · default: <code>{"86400"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"preview_version"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int | None · default: <code>{"None"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"generated_artifact_urls"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · list[str] · default: <code>{"[]"}</code></span></div>
 </div>
 
 ---

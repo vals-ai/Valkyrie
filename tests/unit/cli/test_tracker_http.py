@@ -198,7 +198,7 @@ class TestTrackerJsonEndpoints:
             metadata = tracker.fetch_benchmark_metadata(_RUN_ID)
             inline_results = tracker.retrieve_results(_RUN_ID, False, task_ids=["task-a"])
             s3_results = tracker.retrieve_results(_RUN_ID, True)
-            preview_results = tracker.retrieve_results(_RUN_ID, True, preview=True)
+            preview_results = tracker.retrieve_results(_RUN_ID, False, task_ids=["task-b"], preview=True)
             task_ids = tracker.fetch_benchmark_tasks(
                 "swebench",
                 dataset="verified",
@@ -232,6 +232,7 @@ class TestTrackerJsonEndpoints:
             if request.url.path == "/preview-results" and request.url.params["preview"] == "true"
         )
         assert preview_request.url.params["s3"] == "true"
+        assert preview_request.url.params.get_list("task_ids") == ["task-b"]
 
         task_request = next(request for request in requests if request.url.path == "/fetch-benchmark-tasks")
         assert json.loads(task_request.content) == {
