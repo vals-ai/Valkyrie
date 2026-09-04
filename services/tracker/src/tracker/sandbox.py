@@ -802,10 +802,11 @@ async def _upload_output_artifact(
         return None
 
     s3_key = task_artifact_key(benchmark_id, task_id, artifact_path)
-    file_content = await sandbox.download_file(sandbox_path)
-    if execution_is_current is not None and not execution_is_current():
-        return None
-    await object_store.put_bytes(s3_key, file_content)
+    await object_store.put_stream(
+        s3_key,
+        sandbox.stream_download(sandbox_path),
+        should_continue=execution_is_current,
+    )
 
     logger.info(
         "output_artifact.upload.complete",
