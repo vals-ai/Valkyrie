@@ -180,9 +180,9 @@ Guardrails:
 - Object `source` paths must be absolute sandbox paths. Glob sources must include a non-root directory prefix such as `/logs` or `/app/results/...`.
 - String entries and object entries without `required: false` are required. Missing files, unresolved glob sources, validation failures, size-limit failures, download failures, and upload failures fail the task clearly.
 - Optional artifacts are skipped and logged when collection fails. They are intended for non-scoring telemetry; their absence never changes the task result.
-- Individual files cannot exceed 50 MiB.
+- Individual files cannot exceed 250 MiB.
 - At most 10 output artifacts can be declared.
-- The total uploaded sidecar bytes per task cannot exceed 50 MiB.
+- The total uploaded sidecar bytes per task cannot exceed 250 MiB.
 
 For the examples above, task `task_0` in run `run_id` uploads to matching task-scoped keys such as:
 
