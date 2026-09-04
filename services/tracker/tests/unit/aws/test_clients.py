@@ -4,6 +4,7 @@ Run: uv run pytest tests/unit/aws/test_clients.py
 """
 
 import re
+from datetime import datetime, timezone
 from typing import cast
 from unittest.mock import ANY, MagicMock
 
@@ -21,6 +22,7 @@ from tracker.aws.cloudwatch_logs import (
     CloudWatchBenchmarkLogLocations,
     CloudWatchBenchmarkLogSink,
     handle_cloudwatch_error,
+    task_log_stream_name,
 )
 from tracker.aws.runtime import AWSResources
 from tracker.aws.s3 import handle_s3_error
@@ -217,13 +219,20 @@ class TestSanitizeLogStreamName:
     """logStreamName must satisfy AWS constraint [^:*]* (no ':' or '*')."""
 
     def test_replaces_colon(self) -> None:
-        assert _sanitize_log_stream_name("provider/model:fast") == "provider/model_fast"
+        assert _sanitize_log_stream_name("provider/model:fast").startswith("provider/model%3Afast-")
 
     def test_replaces_asterisk(self) -> None:
-        assert _sanitize_log_stream_name("task*glob") == "task_glob"
+        assert _sanitize_log_stream_name("task*glob").startswith("task%2Aglob-")
 
     def test_replaces_both_and_multiple(self) -> None:
-        assert _sanitize_log_stream_name("a:b:c*d") == "a_b_c_d"
+        assert _sanitize_log_stream_name("a:b:c*d").startswith("a%3Ab%3Ac%2Ad-")
+
+    def test_escapes_percent_before_cloudwatch_metacharacters(self) -> None:
+        percent_name = _sanitize_log_stream_name("task%3Aone:fast")
+        colon_name = _sanitize_log_stream_name("task:one:fast")
+
+        assert percent_name.startswith("task%253Aone%3Afast-")
+        assert percent_name != colon_name
 
     def test_preserves_clean_name(self) -> None:
         # plain ids and the allowed '/' are left intact
@@ -239,9 +248,10 @@ class TestGetBenchmarkLogUrl:
     """CloudWatch benchmark log URL construction."""
 
     def test_sanitizes_task_id_in_url(self) -> None:
-        url = CloudWatchBenchmarkLogLocations(_AWS_RESOURCES).task_location("bench123", "provider/model:fast")
-        # task id is sanitized before being URL-quoted into the log-events path.
-        assert "provider%2Fmodel_fast" in url
+        stream_name = task_log_stream_name("provider/model:fast", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        url = CloudWatchBenchmarkLogLocations(_AWS_RESOURCES).task_location("bench123", stream_name)
+
+        assert "provider%2Fmodel%253Afast-" in url
         assert "model:fast" not in url
 
     def test_no_task_id_omits_log_events(self) -> None:
@@ -272,13 +282,13 @@ class TestWriteBenchmarkLogEvent:
     def test_creates_stream_and_puts_event_with_sanitized_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, _, sink = self._sink_with_mock_client(monkeypatch)
 
-        # stream_key splits on the first ':' -> task_id keeps its own ':'
-        sink.write("bench123:provider/model:fast", "hello")
+        stream_name = task_log_stream_name("provider/model:fast", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        sink.write(f"bench123:{stream_name}", "hello")
 
         client.create_log_stream.assert_called_once_with(
-            logGroupName="/valkyrie/worker/bench123", logStreamName="provider/model_fast"
+            logGroupName="/valkyrie/worker/bench123", logStreamName=stream_name
         )
-        assert client.put_log_events.call_args.kwargs["logStreamName"] == "provider/model_fast"
+        assert client.put_log_events.call_args.kwargs["logStreamName"] == stream_name
 
     def test_create_stream_botocore_error_reports_sanitized_name(
         self,
@@ -287,10 +297,11 @@ class TestWriteBenchmarkLogEvent:
         client, _, sink = self._sink_with_mock_client(monkeypatch)
         client.create_log_stream.side_effect = BotoCoreError()
 
+        stream_name = task_log_stream_name("provider/model:fast", datetime(2026, 1, 1, tzinfo=timezone.utc))
         with pytest.raises(CloudWatchError) as exc_info:
-            sink.write("bench123:provider/model:fast", "hello")
+            sink.write(f"bench123:{stream_name}", "hello")
 
-        assert "provider/model_fast" in str(exc_info.value)
+        assert stream_name in str(exc_info.value)
         client.put_log_events.assert_not_called()
 
     def test_create_benchmark_configures_group_retention(self, monkeypatch: pytest.MonkeyPatch) -> None:

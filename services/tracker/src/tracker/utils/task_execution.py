@@ -28,7 +28,11 @@ from pydantic import ValidationError
 from sqlmodel import Session, col, select, update
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
-from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations, CloudWatchBenchmarkLogSink
+from tracker.aws.cloudwatch_logs import (
+    CloudWatchBenchmarkLogLocations,
+    CloudWatchBenchmarkLogSink,
+    task_log_stream_name,
+)
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3ObjectStore
 from tracker.runtime.artifacts import task_artifact_key
@@ -639,10 +643,9 @@ async def _process_task_attempt(
         benchmark_agent_name = benchmark_row.arguments.contract.name
         benchmark_started_by_email = benchmark_row.started_by_email
 
-    # Setup logging infrastructure before try block so it's always available
-    # Suffix is required to version control streams, never delete between retries
-    stream_suffix = f"{int(task_row.started_at.timestamp() * 1_000_000):x}"
-    task_stream_name = f"{task_id}_{stream_suffix}"
+    # Setup logging infrastructure before try block so it's always available.
+    # Version streams by task attempt so retries never overwrite earlier logs.
+    task_stream_name = task_log_stream_name(task_id, task_row.started_at)
     stream_key: str = f"{benchmark_id}:{task_stream_name}"
     log_sink = CloudWatchBenchmarkLogSink(aws_runtime.clients, aws_runtime.resources.log_group)
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)

@@ -20,6 +20,10 @@
     "destination": "/reference/cli/run#list"
   },
   {
+    "source": "/reference/cli/run/logs",
+    "destination": "/reference/cli/run#logs"
+  },
+  {
     "source": "/reference/cli/run/output",
     "destination": "/reference/cli/run#output"
   },
@@ -220,6 +224,26 @@
     "destination": "/reference/sdk/services#task-ids"
   },
   {
+    "source": "/reference/sdk/logs/page_task",
+    "destination": "/reference/sdk/logs#page-task"
+  },
+  {
+    "source": "/reference/sdk/logs/fetch_task",
+    "destination": "/reference/sdk/logs#fetch-task"
+  },
+  {
+    "source": "/reference/sdk/logs/page_run",
+    "destination": "/reference/sdk/logs#page-run"
+  },
+  {
+    "source": "/reference/sdk/logs/fetch_run",
+    "destination": "/reference/sdk/logs#fetch-run"
+  },
+  {
+    "source": "/reference/sdk/logs/stream_task",
+    "destination": "/reference/sdk/logs#stream-task"
+  },
+  {
     "source": "/reference/sdk/models/agents/agent-contract-request",
     "destination": "/reference/sdk/models/agents#agent-contract-request"
   },
@@ -290,6 +314,14 @@
   {
     "source": "/reference/sdk/models/runs/final-view-response",
     "destination": "/reference/sdk/models/runs#final-view-response"
+  },
+  {
+    "source": "/reference/sdk/models/logs/log-event",
+    "destination": "/reference/sdk/models/logs#log-event"
+  },
+  {
+    "source": "/reference/sdk/models/logs/log-page",
+    "destination": "/reference/sdk/models/logs#log-page"
   },
   {
     "source": "/reference/sdk/models/runs/order",

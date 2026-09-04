@@ -54,6 +54,24 @@ valkyrie run errors <run-id>
 
 This shows both the errors stored on the run and the current task errors. Add `--format json` to read them from a script.
 
+## Search logs
+
+View logs for a run, or filter them by text and time:
+
+```bash
+valkyrie run logs <run-id>
+valkyrie run logs <run-id> --query "rate limit" --since 2026-01-01T00:00:00Z --until 2026-01-01T01:00:00Z
+```
+
+Use `--task-id` to view one task. Add `--follow` to watch for new logs, or `--format jsonl` for machine-readable output:
+
+```bash
+valkyrie run logs <run-id> --task-id <task-id> --follow
+valkyrie run logs <run-id> --task-id <task-id> --query ERROR --format jsonl
+```
+
+Queries search log messages for the text you enter. Timestamps for `--since` and `--until` must include a timezone. Logs at those exact times are included.
+
 ## List runs
 
 Filter the history to find a run:

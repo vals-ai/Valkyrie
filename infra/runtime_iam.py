@@ -48,6 +48,7 @@ def create_tracker_task_role(
     )
     _add_secret_access(role, config.tracker_secret_name_prefixes)
     _add_lambda_access(role, config.tracker_lambda_function_name_patterns)
+    _add_benchmark_log_read_access(role, stage, config.benchmark_log_group_prefix)
     _add_kms_access(role, config.kms_key_arns)
     return role
 
@@ -110,14 +111,26 @@ def _add_s3_runtime_access(role: aws_iam.Role, bucket: aws_s3.IBucket) -> None:
     )
 
 
-def _add_benchmark_log_access(role: aws_iam.Role, stage: Stage, log_group_prefix: str) -> None:
-    stack = cdk.Stack.of(role)
-    log_group_arn = stack.format_arn(
+def _benchmark_log_group_arn(role: aws_iam.Role, stage: Stage, log_group_prefix: str) -> str:
+    return cdk.Stack.of(role).format_arn(
         service="logs",
         resource="log-group",
         resource_name=f"{stage.phys(log_group_prefix)}/*",
         arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
     )
+
+
+def _add_benchmark_log_read_access(role: aws_iam.Role, stage: Stage, log_group_prefix: str) -> None:
+    role.add_to_policy(
+        aws_iam.PolicyStatement(
+            actions=["logs:GetLogEvents", "logs:FilterLogEvents"],
+            resources=[_benchmark_log_group_arn(role, stage, log_group_prefix)],
+        )
+    )
+
+
+def _add_benchmark_log_access(role: aws_iam.Role, stage: Stage, log_group_prefix: str) -> None:
+    log_group_arn = _benchmark_log_group_arn(role, stage, log_group_prefix)
     # Executors create per-run log groups and apply the deployment-owned retention policy.
     # CreateLogStream authorizes against the log-group ARN (whose IAM form ends in
     # `:*`), which a `...:log-stream:*` pattern never matches; the group wildcard

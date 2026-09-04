@@ -4,17 +4,19 @@ from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 from opentelemetry import trace
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from tracker.auth import get_current_org
+from tracker.aws.cloudwatch_logs import CloudWatchLogProvider
 from tracker.aws.resolver import resolve_agent_library_aws_runtime, resolve_run_aws_runtime
 from tracker.aws.runtime import AWSRuntime
-from tracker.database.models import Benchmark, Org
+from tracker.database.models import Benchmark, Org, Task
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.logging import benchmark_id_var
+from tracker.runtime.logs import LogProvider
 
 
 async def bind_benchmark_id(benchmark_id: UUID) -> UUID:
@@ -63,3 +65,22 @@ def get_run_aws_context(
 
 
 RunAWSDependency = Annotated[RunAWSContext, Depends(get_run_aws_context)]
+
+
+def load_task_for_benchmark_or_404(benchmark: Benchmark, task_id: str, org: Org, session: Session) -> Task:
+    """Return a task from an already organization-scoped benchmark."""
+    task = session.exec(
+        select(Task).where(Task.benchmark == benchmark.id).where(Task.org_id == org.id).where(Task.task_id == task_id)
+    ).first()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+def get_log_provider(run_context: RunAWSDependency) -> LogProvider:
+    """Construct the log reader for an organization-scoped run."""
+    runtime = run_context.aws_runtime
+    return CloudWatchLogProvider(runtime.clients, runtime.resources.log_group)
+
+
+LogProviderDependency = Annotated[LogProvider, Depends(get_log_provider)]

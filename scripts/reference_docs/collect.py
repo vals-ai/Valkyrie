@@ -10,8 +10,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-import click
-from pydantic import BaseModel
+import click  # pyright: ignore[reportMissingImports]
+from pydantic import BaseModel  # pyright: ignore[reportMissingImports]
 
 from .model import (
     CLICommandReference,
@@ -328,22 +328,29 @@ def _validate_type_entries(entries: Sequence[SDKModelReference | SDKEnumReferenc
 
 def collect_sdk_reference() -> SDKReference:
     """Collect the tested top-level SDK contract."""
-    import valkyrie.sdk as sdk
-    from valkyrie.sdk.client import ValkyrieClient
-    from valkyrie.sdk.resources import AgentsResource, BenchmarksResource, BenchmarkServicesResource, RunsResource
+    import valkyrie.sdk as sdk  # pyright: ignore[reportMissingImports]
+    from valkyrie.sdk.client import ValkyrieClient  # pyright: ignore[reportMissingImports]
+    from valkyrie.sdk.resources.agents import AgentsResource  # pyright: ignore[reportMissingImports]
+    from valkyrie.sdk.resources.benchmarks import BenchmarksResource  # pyright: ignore[reportMissingImports]
+    from valkyrie.sdk.resources.logs import LogsResource  # pyright: ignore[reportMissingImports]
+    from valkyrie.sdk.resources.runs import RunsResource  # pyright: ignore[reportMissingImports]
+    from valkyrie.sdk.resources.services import BenchmarkServicesResource  # pyright: ignore[reportMissingImports]
+
+    sdk_exports: list[str] = getattr(sdk, "__all__")
 
     resource_types = (
         ("RunsResource", "client.runs", RunsResource),
         ("BenchmarksResource", "client.benchmarks", BenchmarksResource),
         ("AgentsResource", "client.agents", AgentsResource),
         ("BenchmarkServicesResource", "client.services", BenchmarkServicesResource),
+        ("LogsResource", "client.logs", LogsResource),
     )
     resources = tuple(_collect_resource(name, attribute, resource) for name, attribute, resource in resource_types)
 
     models: list[SDKModelReference] = []
     enums: list[SDKEnumReference] = []
     exceptions: list[SDKExceptionReference] = []
-    for name in sdk.__all__:
+    for name in sdk_exports:
         value = getattr(sdk, name)
         if inspect.isclass(value) and issubclass(value, Enum):
             enums.append(
@@ -376,7 +383,7 @@ def collect_sdk_reference() -> SDKReference:
         _collect_method("close", ValkyrieClient.close),
     )
     return SDKReference(
-        exports=tuple(sdk.__all__),
+        exports=tuple(sdk_exports),
         resources=resources,
         models=tuple(models),
         enums=tuple(enums),
