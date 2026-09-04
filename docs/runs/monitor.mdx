@@ -56,21 +56,21 @@ This shows both the errors stored on the run and the current task errors. Add `-
 
 ## Search logs
 
-Fetch every CloudWatch event for a run, or add a literal query and time bounds:
+View logs for a run, or filter them by text and time:
 
 ```bash
 valkyrie run logs <run-id>
 valkyrie run logs <run-id> --query "rate limit" --since 2026-01-01T00:00:00Z --until 2026-01-01T01:00:00Z
 ```
 
-Use `--task-id` to select the current stream for one task. Add `--follow` to keep that task stream open, or `--format jsonl` for machine-readable events:
+Use `--task-id` to view one task. Add `--follow` to watch for new logs, or `--format jsonl` for machine-readable output:
 
 ```bash
 valkyrie run logs <run-id> --task-id <task-id> --follow
 valkyrie run logs <run-id> --task-id <task-id> --query ERROR --format jsonl
 ```
 
-The tracker resolves CloudWatch groups and streams after checking run access. Clients never need AWS log locations or credentials. Task IDs containing `/` are supported. Snapshot output writes each bounded page as it arrives. Timestamps require a timezone offset, and both bounds are inclusive.
+Queries search log messages for the text you enter. Timestamps for `--since` and `--until` must include a timezone. Logs at those exact times are included.
 
 ## List runs
 
