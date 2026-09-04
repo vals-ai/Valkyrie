@@ -584,6 +584,8 @@ class TrackerService:
         benchmark_id: UUID,
         s3: bool,
         task_ids: list[str] | None = None,
+        *,
+        preview: bool = False,
     ) -> RetrieveResultsResponse:
         """
         Retrieve the results of a benchmark by its benchmark id.
@@ -592,11 +594,12 @@ class TrackerService:
         recomputed over those tasks (does not mutate the stored FinalEvaluation).
         """
         try:
-            params: dict[str, Any] = {"benchmark_id": str(benchmark_id), "s3": s3}
+            params: dict[str, Any] = {"benchmark_id": str(benchmark_id), "s3": s3, "preview": preview}
             if task_ids:
                 params["task_ids"] = task_ids
 
-            response = self._client.get(f"{self._base_url}/retrieve-results", params=params)
+            endpoint = "preview-results" if preview else "retrieve-results"
+            response = self._client.get(f"{self._base_url}/{endpoint}", params=params)
 
             if not s3:
                 return _parse_model_response(response, "Failed to retrieve results", FinalViewResponse)

@@ -34,7 +34,7 @@ class MockResultsTracker:
     ) -> None:
         self.response = response
         self.results_exist = results_exist
-        self.retrieve_calls: list[tuple[UUID, bool, list[str] | None]] = []
+        self.retrieve_calls: list[tuple[UUID, bool, list[str] | None, bool]] = []
 
     def __enter__(self) -> "MockResultsTracker":
         return self
@@ -50,8 +50,10 @@ class MockResultsTracker:
         run_id: UUID,
         s3: bool,
         task_ids: list[str] | None = None,
+        *,
+        preview: bool = False,
     ) -> RetrieveResultsResponse:
-        self.retrieve_calls.append((run_id, s3, task_ids))
+        self.retrieve_calls.append((run_id, s3, task_ids, preview))
         if isinstance(self.response, TrackerServiceError):
             raise self.response
 
@@ -93,7 +95,7 @@ class TestResultsCommand:
 
         assert result.exit_code == 0, result.output
         assert "Scored over 2 of 3 subset task ids" in result.output
-        assert tracker.retrieve_calls == [(_RUN_ID, False, ["task-a", "task-b", "missing"])]
+        assert tracker.retrieve_calls == [(_RUN_ID, False, ["task-a", "task-b", "missing"], False)]
 
         saved_payload = json.loads(output_path.read_text(encoding="utf-8"))
         assert saved_payload["benchmark_id"] == str(_RUN_ID)
@@ -127,7 +129,7 @@ class TestResultsCommand:
         assert "Download (expires in 1 day):" in result.output
         assert "https://download.example/results" in result.output
         assert "https://console.aws.amazon.com/s3/object/results" in result.output
-        assert tracker.retrieve_calls == [(_RUN_ID, True, None)]
+        assert tracker.retrieve_calls == [(_RUN_ID, True, None, False)]
 
         managed_tracker = MockResultsTracker(response.model_copy(update={"expires_in": 3600}))
         monkeypatch.setattr(results_module, "TrackerService", lambda: managed_tracker)
@@ -145,6 +147,22 @@ class TestResultsCommand:
         assert declined_result.exit_code == 1
         assert "Overwrite" in declined_result.output
         assert existing_tracker.retrieve_calls == []
+
+        preview_response = response.model_copy(
+            update={
+                "preview_version": 2,
+                "vals_format_s3_url": "s3://bucket/preview/2/vals_format/vals_format.json",
+            }
+        )
+        preview_tracker = MockResultsTracker(preview_response, results_exist=True)
+        monkeypatch.setattr(results_module, "TrackerService", lambda: preview_tracker)
+
+        preview_result = cli_runner.invoke(results, [str(_RUN_ID), "--preview"])
+
+        assert preview_result.exit_code == 0, preview_result.output
+        assert "Preview 2 Vals format:" in preview_result.output
+        assert "s3://bucket/preview/2/vals_format/vals_format.json" in preview_result.output
+        assert preview_tracker.retrieve_calls == [(_RUN_ID, True, None, True)]
 
     @pytest.mark.parametrize(
         ("path", "expected_message"),

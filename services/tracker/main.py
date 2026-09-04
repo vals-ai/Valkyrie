@@ -13,6 +13,8 @@ import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from benchmark_service.schemas import VerifyTaskIdsResponse
+from botocore.config import Config
+from botocore.exceptions import ClientError
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
@@ -21,6 +23,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, select
 
+from tracker._lambda import invoke_lambda
 from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
@@ -53,8 +56,11 @@ from tracker.aws.s3 import (
     create_benchmark_url,
     create_console_url,
     create_presigned_url,
+    delete_from_s3,
+    list_s3_objects,
     s3_object_exists,
 )
+from tracker.aws.runtime import AWSRuntime
 from tracker.runtime.artifacts import (
     agent_bundle_key,
     benchmark_agent_bundle_key,
@@ -95,7 +101,7 @@ from tracker.database.session import check_database_connection, get_session
 from tracker.docent_analysis import (
     analyze_event_stream,
 )
-from tracker.exceptions import TrackerServiceError
+from tracker.exceptions import LambdaError, S3Error, TrackerServiceError
 from executor_protocol import EXECUTOR_TASK_NAME, ExecutorTelemetryContext, executor_task_signature
 from tracker.logging import configure_logging, get_logger, request_id_var
 from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
@@ -148,6 +154,8 @@ configure_logging()
 configure_observability("valkyrie-tracker", environment=ENVIRONMENT)
 
 logger = get_logger(__name__)
+
+_COMPLETION_CALLBACK_CONFIG = Config(read_timeout=60, retries={"total_max_attempts": 1})
 
 # Tracker publishes the stable wire contract; ExecutorHost resolves the same
 # task name before launching the pinned executor artifact.
@@ -812,32 +820,67 @@ async def analyze_benchmark(
     )
 
 
+async def _reserve_next_preview_version(benchmark_id: UUID, aws_runtime: AWSRuntime) -> tuple[int, str]:
+    preview_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/preview/"
+    preview_version = 1
+
+    async for key in list_s3_objects(preview_prefix, aws_runtime):
+        version, separator, _ = key.removeprefix(preview_prefix).partition("/")
+        if not separator:
+            continue
+        try:
+            preview_version = max(preview_version, int(version) + 1)
+        except ValueError:
+            continue
+
+    async with aws_runtime.clients.s3_client() as client:
+        while True:
+            reservation_key = f"{preview_prefix}{preview_version}/.reserved"
+            try:
+                await client.put_object(
+                    Bucket=aws_runtime.resources.s3_bucket,
+                    Key=reservation_key,
+                    Body=b"",
+                    IfNoneMatch="*",
+                )
+
+                return preview_version, reservation_key
+            except ClientError as error:
+                if error.response.get("Error", {}).get("Code") not in {
+                    "409",
+                    "412",
+                    "ConditionalRequestConflict",
+                    "PreconditionFailed",
+                }:
+                    raise
+                preview_version += 1
+
+
+@app.get("/preview-results")
 @app.get("/retrieve-results")
 async def retrieve_results(
     benchmark_id: TrackedBenchmarkId,
     http_request: Request,
     s3: bool = Query(default=False),
+    preview: bool = Query(default=False),
     task_ids: list[str] | None = Query(default=None),
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> RetrieveResultsResponse:
-    """
-    Retrieve the results of a benchmark by its id. When task_ids is non-empty, the final view is
-    filtered to that subset and the final score is recomputed over the subset; the persisted
-    FinalEvaluation / per-task rows are left untouched.
+    """Retrieve a benchmark's current, subset, or versioned preview results."""
+    if preview and not s3:
+        raise HTTPException(status_code=400, detail="Preview results must be saved to S3")
+    if preview and task_ids:
+        raise HTTPException(status_code=400, detail="Preview results cannot be limited to task IDs")
 
-    Note: with `s3=True` the S3 final view at the canonical key is overwritten with whatever was
-    just computed (full or subset). The DB remains source of truth, so re-running without
-    task_ids re-uploads the canonical full view.
-
-    Usage:
-    curl -X GET http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=false
-    curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'
-    """
     benchmark_row = assert_org(
         session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)]),
         org,
     )
+    lambda_function = benchmark_row.arguments.lambda_function
+    if preview and not lambda_function:
+        raise HTTPException(status_code=400, detail="Preview results require a configured Lambda function")
+
     aws_runtime = resolve_run_aws_runtime(
         http_request,
         aws_managed=benchmark_row.aws_managed,
@@ -845,9 +888,9 @@ async def retrieve_results(
     )
 
     final_view = create_final_view(benchmark_row, session, org)
+    task_ids_set = set(task_ids or [])
 
     if task_ids:
-        task_ids_set = set(task_ids)
 
         def _filter_task_map(task_map: dict[str, Any] | None) -> dict[str, Any] | None:
             return {task_id: value for task_id, value in (task_map or {}).items() if task_id in task_ids_set} or None
@@ -855,13 +898,10 @@ async def retrieve_results(
         final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
         final_view.task_errors = _filter_task_map(final_view.task_errors)
 
-        # Include every requested task with its result or None, so tasks without a result
-        # (e.g. stopped/errored) still count toward the denominator instead of being dropped.
-        scored_results = {
-            task_id: result
-            for task_id, result in fetch_final_score_inputs(session, benchmark_row, org).items()
-            if task_id in task_ids_set
-        }
+    if task_ids or preview:
+        scored_results = fetch_final_score_inputs(session, benchmark_row, org)
+        if task_ids:
+            scored_results = {task_id: result for task_id, result in scored_results.items() if task_id in task_ids_set}
 
         if benchmark_row.custom_benchmark_service is not None:
             _authorize_custom_benchmark_destination(benchmark_row.custom_benchmark_service, org)
@@ -890,18 +930,60 @@ async def retrieve_results(
         )
 
     if s3:
-        s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime)
+        preview_version: int | None = None
+        preview_prefix: str | None = None
+        reservation_key: str | None = None
+        vals_format_key: str | None = None
+        vals_format_s3_url: str | None = None
+        s3_key: str | None = None
 
-        https_url = f"s3://{aws_runtime.resources.s3_bucket}/{s3_key}"
+        if preview:
+            preview_version, reservation_key = await _reserve_next_preview_version(benchmark_row.id, aws_runtime)
+            preview_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/preview/{preview_version}"
+            s3_key = f"{preview_prefix}/{benchmark_row.name}.json"
+            vals_format_key = f"{preview_prefix}/vals_format/vals_format.json"
+
+        try:
+            s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime, s3_key=s3_key)
+
+            if preview and vals_format_key is not None and lambda_function is not None:
+                lambda_payload = {
+                    "benchmark_id": str(benchmark_row.id),
+                    "benchmark_name": benchmark_row.name,
+                    "bucket": aws_runtime.resources.s3_bucket,
+                    "places_where_result_data_is": [s3_key],
+                    "output_key": vals_format_key,
+                }
+                await asyncio.to_thread(
+                    invoke_lambda,
+                    aws_runtime.clients,
+                    lambda_function,
+                    lambda_payload,
+                    config=_COMPLETION_CALLBACK_CONFIG,
+                )
+                vals_format_s3_url = f"s3://{aws_runtime.resources.s3_bucket}/{vals_format_key}"
+        except (LambdaError, S3Error):
+            preview_keys = [key for key in (reservation_key, s3_key, vals_format_key) if key is not None]
+            try:
+                await asyncio.gather(*(delete_from_s3(key, aws_runtime) for key in preview_keys))
+            except S3Error:
+                logger.warning(
+                    "Failed to clean up incomplete preview for benchmark %s", benchmark_row.id, exc_info=True
+                )
+            raise
+
+        s3_url = f"s3://{aws_runtime.resources.s3_bucket}/{s3_key}"
         expires_in = aws_runtime.clients.maximum_presign_ttl(86400)
         presigned_url = await create_presigned_url(s3_key, aws_runtime, expiration=expires_in)
         console_url = create_console_url(s3_key, aws_runtime.resources)
 
         return S3UploadResultsResponse(
-            s3_url=https_url,
+            s3_url=s3_url,
             presigned_url=presigned_url,
             console_url=console_url,
             expires_in=expires_in,
+            preview_version=preview_version,
+            vals_format_s3_url=vals_format_s3_url,
         )
 
     return final_view

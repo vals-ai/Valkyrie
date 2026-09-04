@@ -1458,6 +1458,120 @@ class TestTrackerAPI:
         assert observed_results["task_11"] is None
         assert response.json()["final_evaluation"]["final_score"] == 2.0
 
+    async def test_retrieve_results_writes_next_numbered_preview(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        harness_headers: dict[str, str],
+    ) -> None:
+        """
+        Verify that preview retrieval scores the current run and versions both artifacts.
+
+        Test cases:
+        - The reserved preview version determines both artifact paths.
+        - Unfinished tasks remain in the score input with a null result.
+        - The final view and Vals-format output share the selected preview folder.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.arguments.lambda_function = "vals-format-lambda"
+        finished_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="finished-task",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        pending_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="pending-task",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.PENDING,
+        )
+        database_session.add_all([benchmark_row, finished_task, pending_task])
+        database_session.flush()
+        database_session.add(
+            EvaluationResult(
+                org_id=TEST_ORG_ID,
+                task=finished_task.id,
+                instance_id=str(uuid4()),
+                result={"score": 1},
+            )
+        )
+        database_session.commit()
+
+        observed_results: dict[str, Any] = {}
+        uploaded_keys: list[str] = []
+        lambda_payloads: list[dict[str, Any]] = []
+
+        async def _mock_final_score(_client: BenchmarkServiceClient, **kwargs: Any) -> FinalScoreResponse:
+            observed_results.update(kwargs["evaluation_results"])
+
+            return FinalScoreResponse(tasks_evaluated=list(observed_results), final_score=0.5, metadata={})
+
+        async def _mock_reserve_preview_version(_benchmark_id: UUID, _runtime: AWSRuntime) -> tuple[int, str]:
+            reservation_key = f"benchmarks/{benchmark_row.id}/preview/4/.reserved"
+
+            return 4, reservation_key
+
+        async def _mock_upload_final_view(
+            _benchmark_row: Benchmark,
+            _final_view: FinalViewResponse,
+            _aws_runtime: AWSRuntime,
+            *,
+            s3_key: str | None = None,
+        ) -> str:
+            assert s3_key is not None
+            uploaded_keys.append(s3_key)
+
+            return s3_key
+
+        async def _mock_create_presigned_url(
+            s3_key: str,
+            _aws_runtime: AWSRuntime,
+            expiration: int = 86400,
+        ) -> str:
+            return f"https://download.example/{s3_key}?expires={expiration}"
+
+        def _mock_invoke_lambda(
+            _clients: object,
+            _function_name: str,
+            payload: dict[str, Any],
+            config: object,
+        ) -> dict[str, int]:
+            lambda_payloads.append(payload)
+
+            return {"statusCode": 200}
+
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
+        monkeypatch.setattr(main_module, "_reserve_next_preview_version", _mock_reserve_preview_version)
+        monkeypatch.setattr(main_module, "upload_final_view", _mock_upload_final_view)
+        monkeypatch.setattr(main_module, "create_presigned_url", _mock_create_presigned_url)
+        monkeypatch.setattr(main_module, "invoke_lambda", _mock_invoke_lambda)
+
+        response = client.get(
+            "/preview-results",
+            params={"benchmark_id": str(benchmark_row.id), "s3": "true", "preview": "true"},
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        preview_prefix = f"benchmarks/{benchmark_row.id}/preview/4"
+        assert body["preview_version"] == 4
+        assert body["s3_url"].endswith(f"{preview_prefix}/{benchmark_row.name}.json")
+        assert body["vals_format_s3_url"].endswith(f"{preview_prefix}/vals_format/vals_format.json")
+        assert uploaded_keys == [f"{preview_prefix}/{benchmark_row.name}.json"]
+        assert observed_results == {"finished-task": {"score": 1}, "pending-task": None}
+        assert set(lambda_payloads[0]) == {
+            "benchmark_id",
+            "benchmark_name",
+            "bucket",
+            "places_where_result_data_is",
+            "output_key",
+        }
+        assert lambda_payloads[0]["places_where_result_data_is"] == uploaded_keys
+        assert lambda_payloads[0]["output_key"] == f"{preview_prefix}/vals_format/vals_format.json"
+
     async def test_retrieve_results_blocks_external_persisted_internal_destination(
         self,
         example_benchmark_object: Benchmark,

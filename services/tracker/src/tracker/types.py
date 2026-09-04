@@ -175,6 +175,8 @@ class S3UploadResultsResponse(BaseModel):
     presigned_url: str
     console_url: str
     expires_in: int = 86400
+    preview_version: int | None = None
+    vals_format_s3_url: str | None = None
 
 
 RetrieveResultsResponse = FinalViewResponse | S3UploadResultsResponse
