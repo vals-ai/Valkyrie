@@ -7,6 +7,7 @@ import json
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import suppress
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -50,9 +51,9 @@ def _validate_time_bounds(start_time: datetime | None, end_time: datetime | None
 
 def _task_reference(
     run_context: RunAWSDependency,
-    task_id: str,
-    org: Org,
-    session: Session,
+    task_id: str = Query(min_length=1),
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
 ) -> TaskLogReference:
     task = load_task_for_benchmark_or_404(run_context.benchmark, task_id, org, session)
     return TaskLogReference(
@@ -62,7 +63,14 @@ def _task_reference(
     )
 
 
-def _run_reference(run_context: RunAWSDependency, org: Org, session: Session) -> RunLogReference:
+TaskLogReferenceDependency = Annotated[TaskLogReference, Depends(_task_reference)]
+
+
+def _run_reference(
+    run_context: RunAWSDependency,
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> RunLogReference:
     tasks = session.exec(
         select(Task)
         .where(col(Task.benchmark) == run_context.benchmark.id)
@@ -73,6 +81,9 @@ def _run_reference(run_context: RunAWSDependency, org: Org, session: Session) ->
         run_id=run_context.benchmark.id,
         tasks=tuple(RunTaskLogReference(task_id=task.task_id, started_at=task.started_at) for task in tasks),
     )
+
+
+RunLogReferenceDependency = Annotated[RunLogReference, Depends(_run_reference)]
 
 
 def _response(page: LogPage) -> LogPageResponse:
@@ -144,20 +155,17 @@ async def _stream_events(
 
 @router.get("/{benchmark_id}/logs", response_model=LogPageResponse)
 async def get_run_logs(
-    run_context: RunAWSDependency,
+    reference: RunLogReferenceDependency,
     log_provider: LogProviderDependency,
     query: str | None = Query(default=None, min_length=1),
     start_time: datetime | None = None,
     end_time: datetime | None = None,
     cursor: str | None = None,
     limit: int = Query(default=1_000, ge=1, le=10_000),
-    org: Org = Depends(get_current_org),
-    session: Session = Depends(get_session),
 ) -> LogPageResponse:
     """Return one page of logs across every stream in a run."""
     _validate_query(query)
     _validate_time_bounds(start_time, end_time)
-    reference = _run_reference(run_context, org, session)
     try:
         page = await log_provider.fetch_run(
             reference,
@@ -174,21 +182,17 @@ async def get_run_logs(
 
 @router.get("/{benchmark_id}/logs/task", response_model=LogPageResponse)
 async def get_task_logs(
-    run_context: RunAWSDependency,
+    reference: TaskLogReferenceDependency,
     log_provider: LogProviderDependency,
-    task_id: str = Query(min_length=1),
     query: str | None = Query(default=None, min_length=1),
     start_time: datetime | None = None,
     end_time: datetime | None = None,
     cursor: str | None = None,
     limit: int = Query(default=1_000, ge=1, le=10_000),
-    org: Org = Depends(get_current_org),
-    session: Session = Depends(get_session),
 ) -> LogPageResponse:
     """Return one page from a task's current log stream."""
     _validate_query(query)
     _validate_time_bounds(start_time, end_time)
-    reference = _task_reference(run_context, task_id, org, session)
     try:
         page = await log_provider.fetch_task(
             reference,
@@ -205,19 +209,15 @@ async def get_task_logs(
 
 @router.get("/{benchmark_id}/logs/task/stream")
 async def stream_task_logs(
-    run_context: RunAWSDependency,
+    reference: TaskLogReferenceDependency,
     log_provider: LogProviderDependency,
-    task_id: str = Query(min_length=1),
     query: str | None = Query(default=None, min_length=1),
     start_time: datetime | None = None,
     end_time: datetime | None = None,
-    org: Org = Depends(get_current_org),
-    session: Session = Depends(get_session),
 ) -> StreamingResponse:
     """Stream a task's current log stream as server-sent events."""
     _validate_query(query)
     _validate_time_bounds(start_time, end_time)
-    reference = _task_reference(run_context, task_id, org, session)
     events = _stream_events(
         log_provider,
         reference,
