@@ -16,7 +16,7 @@ from tracker.api.dependencies import LogProviderDependency, RunAWSDependency, Tr
 from tracker.auth import get_current_org
 from tracker.database.models import Org, Task
 from tracker.database.session import get_session
-from tracker.logs import (
+from tracker.runtime.logs import (
     LogEvent,
     LogPage,
     LogProvider,

@@ -20,8 +20,6 @@ config/**.yaml
 
 # fab
 logs
-!services/tracker/src/tracker/logs/
-!services/tracker/src/tracker/logs/*.py
 
 # mac
 .DS_Store

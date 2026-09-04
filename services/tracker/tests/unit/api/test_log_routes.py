@@ -23,7 +23,7 @@ from tracker.api.dependencies import get_log_provider
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchLogProvider
 from tracker.database.models import Benchmark, Org
-from tracker.logs import LogEvent, LogPage, LogProvider, RunLogReference, RunTaskLogReference, TaskLogReference
+from tracker.runtime.logs import LogEvent, LogPage, LogProvider, RunLogReference, RunTaskLogReference, TaskLogReference
 
 _client = TestClient(app)
 

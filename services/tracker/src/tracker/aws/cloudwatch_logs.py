@@ -18,8 +18,16 @@ from botocore.exceptions import BotoCoreError, ClientError
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.runtime import AWSResources
 from tracker.exceptions import CloudWatchError
-from tracker.logs import LogEvent, LogPage, LogProvider, LogProviderError, RunLogReference, TaskLogReference
-from tracker.runtime.logs import BenchmarkLogLocations, BenchmarkLogSink
+from tracker.runtime.logs import (
+    BenchmarkLogLocations,
+    BenchmarkLogSink,
+    LogEvent,
+    LogPage,
+    LogProvider,
+    LogProviderError,
+    RunLogReference,
+    TaskLogReference,
+)
 
 _created_streams: set[str] = set()
 _FOLLOW_DEDUPLICATION_WINDOW = 10_000

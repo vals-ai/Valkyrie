@@ -16,7 +16,7 @@ from tracker.database.models import Benchmark, Org
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.logging import benchmark_id_var
-from tracker.logs import LogProvider
+from tracker.runtime.logs import LogProvider
 
 
 async def bind_benchmark_id(benchmark_id: UUID) -> UUID:

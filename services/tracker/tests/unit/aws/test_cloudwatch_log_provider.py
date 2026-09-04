@@ -15,7 +15,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError  # pyright:
 
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchLogProvider, task_log_stream_name
-from tracker.logs import LogProviderError, RunLogReference, RunTaskLogReference, TaskLogReference
+from tracker.runtime.logs import LogProviderError, RunLogReference, RunTaskLogReference, TaskLogReference
 
 
 class MockLogsClient:
