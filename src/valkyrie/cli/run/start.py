@@ -213,7 +213,7 @@ def resolve_webhook_config(
     type=str,
     required=False,
     default=None,
-    help="Slice string to use for slicing the benchmark (e.g., 1-10)",
+    help="Dataset slice in Python slice syntax start:stop[:step] (e.g., 0:10)",
 )
 @click.option(
     "--dataset",

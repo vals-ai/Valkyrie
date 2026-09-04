@@ -1,0 +1,86 @@
+---
+title: Analyze runs with Docent
+description: Send a finished run's agent outputs to an analyzer Lambda and open the resulting Docent reading.
+---
+
+Valkyrie can hand a finished run's agent outputs to an AWS Lambda that you own. The Lambda converts those outputs into [Transluce Docent](https://docent.transluce.org) records and returns a reading URL. Valkyrie stores the URL on the run.
+
+Valkyrie does not analyze transcripts itself. The analyzer Lambda decides what is uploaded, how it is summarized, and which models it uses.
+
+## Declare the analyzer Lambda
+
+Add `ingest_lambda` to the agent's `contract.yaml` and push the agent:
+
+```yaml
+ingest_lambda: my-agent-analyzer
+```
+
+```bash
+valkyrie agent push ./agents/my_agent
+```
+
+Valkyrie reads `ingest_lambda` from the agent's **current** pushed contract, not from the contract stored on the run. Adding the field and re-pushing makes earlier runs of that agent analyzable.
+
+## Analyze a run
+
+```bash
+valkyrie run analyze <run-id>
+```
+
+The run must be `FINISHED`. In-progress, stopping, stopped, and errored runs are rejected with a message naming the current status. See the [`run analyze`](/reference/cli/run#analyze) reference for full syntax.
+
+The tracker invokes the Lambda with the run's stored AWS credentials and streams progress until it returns. On success the command prints the reading URL.
+
+Re-run the analysis after fixing the Lambda:
+
+```bash
+valkyrie run analyze <run-id> --no-cache
+```
+
+Without `--no-cache`, a run that already has a stored URL returns that URL without invoking the Lambda again.
+
+## Where the result is stored
+
+The reading URL and its status are stored on the run, so `valkyrie run fetch <run-id>` shows the URL once it exists.
+
+| Status | Meaning |
+| --- | --- |
+| `IDLE` | The run has never been analyzed |
+| `RUNNING` | An invocation is in flight |
+| `DONE` | The Lambda returned a reading URL |
+| `ERROR` | The Lambda failed; re-run `valkyrie run analyze` |
+
+An invocation can run for up to 15 minutes, the AWS Lambda ceiling. Valkyrie does not retry a failed invocation, because a second invocation would ingest the run twice.
+
+## Write an analyzer Lambda
+
+Each agent writes its outputs in its own shape, so each agent needs its own analyzer Lambda. Valkyrie invokes it with this payload:
+
+```json
+{
+  "benchmark_id": "e532551e-d51b-4912-983d-47695bd24174",
+  "benchmark_name": "swebench",
+  "s3_bucket": "my-benchmark-bucket",
+  "contract": {
+    "name": "my_agent"
+  }
+}
+```
+
+The Lambda should:
+
+1. Read the run's task outputs from `s3://<s3_bucket>/benchmarks/<benchmark_id>/`. Each task directory holds that task's `agent_output.tar.gz` and any [output artifacts](/agents/agent-contract#output_artifacts-list) the contract declared.
+2. Convert each task into a Docent record and upload it.
+3. Return a JSON object containing `reading_plan_url` so Valkyrie can store and display the reading.
+
+```json
+{
+  "reading_plan_url": "https://docent.transluce.org/..."
+}
+```
+
+Any other returned field is ignored. A successful response without `reading_plan_url` marks the analysis `DONE` without storing a URL. Raising an exception marks the run's analysis `ERROR`.
+
+Grant the Lambda read access to the run's S3 prefix, and give the credentials used by Valkyrie `lambda:InvokeFunction` on it. See [AWS permissions](/self-hosting/aws-permissions).
+
+For Docent's own record format and API, see the [Docent documentation](https://docs.transluce.org/quickstart#instructions).

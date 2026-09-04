@@ -84,7 +84,7 @@ class TestValidateKwargs:
 
 ### Documenting API keys
 
-Local integration tests must not require credentials. For a live test, reuse the existing non-secret variable name from the nearest fixture/workflow and document any new name in `services/tracker/README.md` plus the relevant CI secret mapping. Keep values only in the untracked local environment or approved secret store; do not invent a second `TEST_*` alias or a new committed env template.
+Local integration tests must not require credentials. For a live test, reuse the existing non-secret variable name from the nearest fixture/workflow and document any new name in `docs/contributing/tracker-service.mdx` plus the relevant CI secret mapping. Keep values only in the untracked local environment or approved secret store; do not invent a second `TEST_*` alias or a new committed env template.
 
 ### Spacing and inline comments
 
@@ -486,7 +486,7 @@ A test's suite is determined by its root and directory, not by a marker. Use the
 
 Behavior changes need existing or focused proof, and coverage should not regress. Registry, documentation, generated-output-only, and refactor-only changes need no new test when existing checks already prove them.
 
-Tracker commands and live environment variables are documented in `services/tracker/README.md`; suite ownership and final-head routing are defined here and in the Make/workflow targets.
+Tracker commands and live environment variables are documented in `docs/contributing/tracker-service.mdx`; suite ownership and final-head routing are defined here and in the Make/workflow targets.
 
 ## Unit tests
 

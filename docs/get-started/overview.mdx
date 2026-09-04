@@ -1,0 +1,32 @@
+---
+title: How Valkyrie works
+description: Run scalable, reproducible evaluations for AI agents.
+---
+
+Valkyrie runs agentic benchmarks by giving every task its own sandbox. You drive it from the CLI or the Python SDK to start runs, watch them progress, and pull the results back.
+
+<CardGroup cols={2}>
+  <Card title="Run your first benchmark" icon="rocket" href="/get-started/quickstart">
+    Install the CLI, configure credentials, and start a run.
+  </Card>
+  <Card title="Manage agents" icon="package" href="/agents/manage-agents">
+    Upload, list, download, and remove agent bundles.
+  </Card>
+  <Card title="Add a benchmark service" icon="plug" href="/benchmarks/custom-services">
+    Connect Valkyrie to a custom benchmark endpoint.
+  </Card>
+  <Card title="Self-host Valkyrie" icon="server" href="/self-hosting/infrastructure">
+    Review the AWS architecture and deployment requirements.
+  </Card>
+</CardGroup>
+
+## Core concepts
+
+- **Agent**: a bundled program with a contract that tells Valkyrie how to install and run it.
+- **Benchmark service**: an HTTP service that provides tasks and evaluates results.
+- **Run**: one execution of an agent against a benchmark dataset.
+- **Sandbox provider**: the service that creates isolated task environments.
+
+## Choose an interface
+
+The CLI is the better fit for interactive setup, packaging agents, and day-to-day run operations, while the [Python SDK](/sdk/quickstart) is there for driving runs from your own application.

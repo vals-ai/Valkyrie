@@ -1,5 +1,5 @@
 .PHONY: help install style format format-check lint typecheck \
-	tracker-service venv_check tool-install build test unit-test
+	tracker-service venv_check tool-install build test unit-test docs-reference docs-reference-check
 
 PYTHON_VERSION := 3.12
 
@@ -15,6 +15,8 @@ help:
 	@echo "  make test                Run CLI unit and local integration tests with coverage"
 	@echo "  make style               Lint & Format"
 	@echo "  make typecheck           Typecheck"
+	@echo "  make docs-reference      Generate CLI and SDK reference pages"
+	@echo "  make docs-reference-check  Check generated reference pages"
 	@echo ""
 	@echo "Build:"
 	@echo "  make build               Build valkyrie CLI binary to dist/"
@@ -64,6 +66,12 @@ test: venv_check
 		--cov=src/valkyrie --cov-report=xml --cov-report=term-missing --cov-fail-under=80
 
 unit-test: test
+
+docs-reference:
+	uv run python scripts/generate_reference.py
+
+docs-reference-check:
+	uv run python scripts/generate_reference.py --check
 
 style: format lint
 
