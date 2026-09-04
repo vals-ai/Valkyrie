@@ -594,15 +594,16 @@ class TrackerService:
         recomputed over those tasks (does not mutate the stored FinalEvaluation).
         """
         try:
-            s3 = s3 or preview
-            params: dict[str, Any] = {"benchmark_id": str(benchmark_id), "s3": s3, "preview": preview}
+            params: dict[str, Any] = {"benchmark_id": str(benchmark_id)}
+            if not preview:
+                params["s3"] = s3
             if task_ids:
                 params["task_ids"] = task_ids
 
             endpoint = "preview-results" if preview else "retrieve-results"
             response = self._client.get(f"{self._base_url}/{endpoint}", params=params)
 
-            if not s3:
+            if not (s3 or preview):
                 return _parse_model_response(response, "Failed to retrieve results", FinalViewResponse)
 
             return _parse_model_response(response, "Failed to retrieve results", S3UploadResultsResponse)

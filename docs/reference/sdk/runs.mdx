@@ -219,7 +219,7 @@ For examples, see the [Python SDK guide](/sdk/runs).
 
 ## `client.runs.preview` {#preview}
 
-Create a numbered S3 snapshot of current results.
+Create a numbered S3 snapshot and return artifact URLs reported by its optional callback.
 
 ```python Signature
 async def preview(run_id: UUID, *, task_ids: Sequence[str] | None = None) -> S3UploadResultsResponse

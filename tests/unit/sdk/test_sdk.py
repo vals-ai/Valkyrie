@@ -344,7 +344,7 @@ async def test_start_overlays_a_supplied_contract_without_mutating_it(make_clien
 async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_response) -> None:
     run_id = uuid4()
     paths: list[str] = []
-    preview_task_ids: list[str] = []
+    preview_query: list[tuple[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
@@ -355,7 +355,7 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
         if request.url.path == f"/stop-benchmark/{run_id}":
             return httpx.Response(200, json={"status": "success"})
         if request.url.path == "/preview-results":
-            preview_task_ids.extend(request.url.params.get_list("task_ids"))
+            preview_query.extend(request.url.params.multi_items())
             return httpx.Response(
                 200,
                 json={
@@ -417,7 +417,7 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
     assert results.expires_in == 86400
     assert preview.preview_version == 1
     assert preview.generated_artifact_urls == ["s3://runs-bucket/preview/1/generated.json"]
-    assert preview_task_ids == ["task-1"]
+    assert preview_query == [("benchmark_id", str(run_id)), ("task_ids", "task-1")]
     assert paths == [
         "/fetch-benchmark",
         "/fetch-benchmarks",

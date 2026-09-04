@@ -200,8 +200,8 @@ class RunsResource:
         *,
         task_ids: Sequence[str] | None = None,
     ) -> S3UploadResultsResponse:
-        """Create a numbered S3 snapshot of current results."""
-        params: dict[str, Any] = {"benchmark_id": str(run_id), "s3": True, "preview": True}
+        """Create a numbered S3 snapshot and return artifact URLs reported by its optional callback."""
+        params: dict[str, Any] = {"benchmark_id": str(run_id)}
         if task_ids:
             params["task_ids"] = list(task_ids)
         return await self._sdk.request_model("GET", "/preview-results", S3UploadResultsResponse, params=params)

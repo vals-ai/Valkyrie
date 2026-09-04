@@ -1521,7 +1521,9 @@ class TestTrackerAPI:
         - Preview mode enables S3 without an explicit S3 query parameter.
         - Unfinished tasks remain in the score input with a null result.
         - A configured Lambda receives the preview input path without a forced output path.
+        - Lambda-returned generated artifact URLs are included in the response.
         - A preview without a Lambda can score a selected task subset.
+        - Late failures clean every object under the reserved preview prefix.
         """
         benchmark_row = example_benchmark_object
         benchmark_row.arguments.lambda_function = "vals-format-lambda"
@@ -1587,10 +1589,13 @@ class TestTrackerAPI:
             _function_name: str,
             payload: dict[str, Any],
             config: object,
-        ) -> dict[str, int]:
+        ) -> dict[str, Any]:
             lambda_payloads.append(payload)
 
-            return {"statusCode": 200}
+            return {
+                "statusCode": 200,
+                "generated_artifact_urls": ["s3://generated-bucket/preview-output.json"],
+            }
 
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
         monkeypatch.setattr(main_module, "_reserve_next_preview_version", _mock_reserve_preview_version)
@@ -1600,7 +1605,7 @@ class TestTrackerAPI:
 
         response = client.get(
             "/preview-results",
-            params={"benchmark_id": str(benchmark_row.id), "preview": "true"},
+            params={"benchmark_id": str(benchmark_row.id)},
             headers=harness_headers,
         )
 
@@ -1610,16 +1615,16 @@ class TestTrackerAPI:
         preview_key = f"{preview_prefix}/{benchmark_row.name}.json"
         assert body["preview_version"] == 4
         assert body["s3_url"].endswith(preview_key)
-        assert body["generated_artifact_urls"] == []
+        assert body["generated_artifact_urls"] == ["s3://generated-bucket/preview-output.json"]
         assert uploaded_keys == [preview_key]
         assert observed_results == {"finished-task": {"score": 1}, "pending-task": None}
-        assert set(lambda_payloads[0]) == {
-            "benchmark_id",
-            "benchmark_name",
-            "bucket",
-            "places_where_result_data_is",
-        }
+        assert lambda_payloads[0]["benchmark_id"] == str(benchmark_row.id)
+        assert lambda_payloads[0]["benchmark_name"] == benchmark_row.name
+        assert lambda_payloads[0]["bucket"] == "test-bucket"
         assert lambda_payloads[0]["places_where_result_data_is"] == [preview_key]
+        assert lambda_payloads[0]["preview"] is True
+        assert "output_key" not in lambda_payloads[0]
+        assert "contract" in lambda_payloads[0]
 
         benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"lambda_function": None})
         database_session.add(benchmark_row)
@@ -1630,7 +1635,6 @@ class TestTrackerAPI:
             "/preview-results",
             params=[
                 ("benchmark_id", str(benchmark_row.id)),
-                ("preview", "true"),
                 ("task_ids", "finished-task"),
             ],
             headers=harness_headers,
@@ -1641,9 +1645,13 @@ class TestTrackerAPI:
         assert len(lambda_payloads) == 1
 
         deleted_keys: list[str] = []
+        generated_preview_key = f"{preview_prefix}/generated/output.json"
 
-        def _failing_lambda(*_args: Any, **_kwargs: Any) -> None:
-            raise main_module.LambdaError("preview failed")
+        async def _late_presigned_failure(*_args: Any, **_kwargs: Any) -> str:
+            raise main_module.S3Error("presign failed")
+
+        async def _preview_keys(*_args: Any, **_kwargs: Any) -> AsyncIterator[str]:
+            yield generated_preview_key
 
         async def _mock_delete_from_s3(s3_key: str, _aws_runtime: AWSRuntime) -> None:
             deleted_keys.append(s3_key)
@@ -1651,12 +1659,13 @@ class TestTrackerAPI:
         benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"lambda_function": "preview-lambda"})
         database_session.add(benchmark_row)
         database_session.commit()
-        monkeypatch.setattr(main_module, "invoke_lambda", _failing_lambda)
+        monkeypatch.setattr(main_module, "create_presigned_url", _late_presigned_failure)
+        monkeypatch.setattr(main_module, "list_s3_objects", _preview_keys)
         monkeypatch.setattr(main_module, "delete_from_s3", _mock_delete_from_s3)
 
         failed_response = client.get(
             "/preview-results",
-            params={"benchmark_id": str(benchmark_row.id), "preview": "true"},
+            params={"benchmark_id": str(benchmark_row.id)},
             headers=harness_headers,
         )
 
@@ -1664,6 +1673,7 @@ class TestTrackerAPI:
         assert set(deleted_keys) == {
             f"benchmarks/{benchmark_row.id}/preview/4/.reserved",
             preview_key,
+            generated_preview_key,
         }
 
     async def test_retrieve_results_blocks_external_persisted_internal_destination(

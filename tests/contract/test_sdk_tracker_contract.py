@@ -100,8 +100,8 @@ ROUTES = (
         "get",
         "agent_name benchmark_name model dataset label status started_by started_after started_before order_by cursor limit offset",
     ),
-    ("/retrieve-results", "get", "benchmark_id s3 preview task_ids"),
-    ("/preview-results", "get", "benchmark_id s3 preview task_ids"),
+    ("/retrieve-results", "get", "benchmark_id s3 task_ids"),
+    ("/preview-results", "get", "benchmark_id task_ids"),
     ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id force"),
     ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id retry retry_mode concurrency"),
     ("/benchmarks/status", "get", "ids"),
@@ -139,6 +139,7 @@ RESPONSE_MODELS = {
     ("/benchmark-services", "post"): "BenchmarkServicesResponse",
     ("/fetch-benchmark-tasks", "post"): "VerifyTaskIdsResponse",
     ("/fetch-benchmark-metadata/{benchmark_id}", "get"): "FetchBenchmarkMetadataResponse",
+    ("/preview-results", "get"): "S3UploadResultsResponse",
 }
 MODEL_PAIRS = (
     (OutputArtifact, SDKOutputArtifact),
@@ -386,12 +387,13 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
         response = schema["paths"][path][method]["responses"]["200"]["content"]["application/json"]["schema"]
         assert response == {"$ref": f"#/components/schemas/{model}"}
     assert schema["paths"]["/fetch-benchmark"]["get"]["responses"]["200"]["content"]["application/json"]["schema"] == {}
-    for path in ("/retrieve-results", "/preview-results"):
-        result_schema = schema["paths"][path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
-        assert {item["$ref"].rsplit("/", 1)[-1] for item in result_schema["anyOf"]} == {
-            "FinalViewResponse",
-            "S3UploadResultsResponse",
-        }
+    result_schema = schema["paths"]["/retrieve-results"]["get"]["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]
+    assert {item["$ref"].rsplit("/", 1)[-1] for item in result_schema["anyOf"]} == {
+        "FinalViewResponse",
+        "S3UploadResultsResponse",
+    }
 
 
 def test_every_tracker_route_is_classified_as_sdk_supported_or_internal() -> None:

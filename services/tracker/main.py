@@ -904,23 +904,77 @@ async def _recompute_final_evaluation(
     )
 
 
-async def _invoke_preview_lambda(benchmark_row: Benchmark, s3_key: str, aws_runtime: AWSRuntime) -> None:
+def _generated_artifact_urls(lambda_response: Any) -> list[str]:
+    if not isinstance(lambda_response, dict):
+        return []
+
+    artifact_urls = lambda_response.get("generated_artifact_urls")
+    if artifact_urls is None:
+        return []
+    if not isinstance(artifact_urls, list) or any(not isinstance(url, str) for url in artifact_urls):
+        raise LambdaError("Preview Lambda returned invalid generated_artifact_urls")
+    return [url for url in artifact_urls if isinstance(url, str)]
+
+
+async def _invoke_preview_lambda(benchmark_row: Benchmark, s3_key: str, aws_runtime: AWSRuntime) -> list[str]:
+    """Invoke the configured callback in preview mode and return the artifact URLs it reports."""
     lambda_function = benchmark_row.arguments.lambda_function
     if lambda_function is None:
-        return
+        return []
 
-    lambda_payload = {
-        "benchmark_id": str(benchmark_row.id),
-        "benchmark_name": benchmark_row.name,
-        "bucket": aws_runtime.resources.s3_bucket,
-        "places_where_result_data_is": [s3_key],
-    }
-    await asyncio.to_thread(
+    lambda_payload = benchmark_row.arguments.model_dump()
+    lambda_payload.update(
+        {
+            "benchmark_id": str(benchmark_row.id),
+            "benchmark_name": benchmark_row.name,
+            "bucket": aws_runtime.resources.s3_bucket,
+            "places_where_result_data_is": [s3_key],
+            "preview": True,
+        }
+    )
+    lambda_response = await asyncio.to_thread(
         invoke_lambda,
         aws_runtime.clients,
         lambda_function,
         lambda_payload,
         config=_COMPLETION_CALLBACK_CONFIG,
+    )
+    return _generated_artifact_urls(lambda_response)
+
+
+async def _cleanup_preview(
+    preview_prefix: str,
+    known_keys: set[str],
+    aws_runtime: AWSRuntime,
+    benchmark_id: UUID,
+) -> None:
+    try:
+        async for key in list_s3_objects(f"{preview_prefix}/", aws_runtime):
+            known_keys.add(key)
+    except S3Error:
+        logger.warning("Failed to list incomplete preview for benchmark %s", benchmark_id, exc_info=True)
+
+    try:
+        await asyncio.gather(*(delete_from_s3(key, aws_runtime) for key in known_keys))
+    except S3Error:
+        logger.warning("Failed to clean up incomplete preview for benchmark %s", benchmark_id, exc_info=True)
+
+
+async def _s3_results_response(
+    s3_key: str,
+    aws_runtime: AWSRuntime,
+    *,
+    preview_version: int | None = None,
+    generated_artifact_urls: list[str] | None = None,
+) -> S3UploadResultsResponse:
+    expires_in = aws_runtime.clients.maximum_presign_ttl(86400)
+    return S3UploadResultsResponse(
+        s3_url=f"s3://{aws_runtime.resources.s3_bucket}/{s3_key}",
+        presigned_url=await create_presigned_url(s3_key, aws_runtime, expiration=expires_in),
+        console_url=create_console_url(s3_key, aws_runtime.resources),
+        expires_in=expires_in,
+        preview_version=preview_version,
+        generated_artifact_urls=generated_artifact_urls or [],
     )
 
 
@@ -931,51 +985,36 @@ async def _upload_retrieved_results(
     *,
     preview: bool,
 ) -> S3UploadResultsResponse:
-    preview_version: int | None = None
-    reservation_key: str | None = None
-    s3_key: str | None = None
+    if not preview:
+        s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime)
+        return await _s3_results_response(s3_key, aws_runtime)
 
-    if preview:
-        preview_version, reservation_key = await _reserve_next_preview_version(benchmark_row.id, aws_runtime)
-        preview_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/preview/{preview_version}"
-        s3_key = f"{preview_prefix}/{benchmark_row.name}.json"
-
+    preview_version, reservation_key = await _reserve_next_preview_version(benchmark_row.id, aws_runtime)
+    preview_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/preview/{preview_version}"
+    s3_key = f"{preview_prefix}/{benchmark_row.name}.json"
     try:
-        s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime, s3_key=s3_key)
-        if preview:
-            await _invoke_preview_lambda(benchmark_row, s3_key, aws_runtime)
-    except (LambdaError, S3Error):
-        preview_keys = [key for key in (reservation_key, s3_key) if key is not None]
-        try:
-            await asyncio.gather(*(delete_from_s3(key, aws_runtime) for key in preview_keys))
-        except S3Error:
-            logger.warning("Failed to clean up incomplete preview for benchmark %s", benchmark_row.id, exc_info=True)
+        await upload_final_view(benchmark_row, final_view, aws_runtime, s3_key=s3_key)
+        generated_artifact_urls = await _invoke_preview_lambda(benchmark_row, s3_key, aws_runtime)
+        return await _s3_results_response(
+            s3_key,
+            aws_runtime,
+            preview_version=preview_version,
+            generated_artifact_urls=generated_artifact_urls,
+        )
+    except Exception:
+        await _cleanup_preview(preview_prefix, {reservation_key, s3_key}, aws_runtime, benchmark_row.id)
         raise
 
-    expires_in = aws_runtime.clients.maximum_presign_ttl(86400)
-    return S3UploadResultsResponse(
-        s3_url=f"s3://{aws_runtime.resources.s3_bucket}/{s3_key}",
-        presigned_url=await create_presigned_url(s3_key, aws_runtime, expiration=expires_in),
-        console_url=create_console_url(s3_key, aws_runtime.resources),
-        expires_in=expires_in,
-        preview_version=preview_version,
-    )
 
-
-@app.get("/preview-results", operation_id="preview_results")
-@app.get("/retrieve-results")
-async def retrieve_results(
-    benchmark_id: TrackedBenchmarkId,
+async def _retrieve_results(
+    benchmark_id: UUID,
     http_request: Request,
-    s3: bool = Query(default=False),
-    preview: bool = Query(default=False),
-    task_ids: list[str] | None = Query(default=None),
-    session: Session = Depends(get_session),
-    org: Org = Depends(get_current_org),
+    s3: bool,
+    preview: bool,
+    task_ids: list[str] | None,
+    session: Session,
+    org: Org,
 ) -> RetrieveResultsResponse:
-    """Retrieve a benchmark's current, subset, or versioned preview results."""
-    s3 = s3 or preview
-
     benchmark_row = assert_org(
         session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)]),
         org,
@@ -1006,6 +1045,32 @@ async def retrieve_results(
         return await _upload_retrieved_results(benchmark_row, final_view, aws_runtime, preview=preview)
 
     return final_view
+
+
+@app.get("/retrieve-results")
+async def retrieve_results(
+    benchmark_id: TrackedBenchmarkId,
+    http_request: Request,
+    s3: bool = Query(default=False),
+    task_ids: list[str] | None = Query(default=None),
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> RetrieveResultsResponse:
+    """Retrieve a benchmark's current results, optionally filtered or uploaded to S3."""
+    return await _retrieve_results(benchmark_id, http_request, s3, False, task_ids, session, org)
+
+
+@app.get("/preview-results")
+async def preview_results(
+    benchmark_id: TrackedBenchmarkId,
+    http_request: Request,
+    task_ids: list[str] | None = Query(default=None),
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> S3UploadResultsResponse:
+    """Create a numbered S3 preview of current results, optionally filtered to selected tasks."""
+    response = await _retrieve_results(benchmark_id, http_request, True, True, task_ids, session, org)
+    return cast(S3UploadResultsResponse, response)
 
 
 @app.get("/check-results-exist")

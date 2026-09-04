@@ -170,22 +170,29 @@ class TestTrackerJsonEndpoints:
                 return httpx.Response(200, json=_fetch_payload(), request=request)
             if request.url.path == f"/fetch-benchmark-metadata/{_RUN_ID}":
                 return httpx.Response(200, json=_metadata_payload(), request=request)
-            if request.url.path in {"/retrieve-results", "/preview-results"}:
+            if request.url.path == "/preview-results":
+                return httpx.Response(
+                    200,
+                    json={
+                        "s3_url": "s3://bucket/preview/1/results.json",
+                        "presigned_url": "https://download.example/preview",
+                        "console_url": "https://console.example/preview",
+                        "preview_version": 1,
+                        "generated_artifact_urls": ["s3://generated-bucket/preview-output.json"],
+                    },
+                    request=request,
+                )
+            if request.url.path == "/retrieve-results":
                 if request.url.params["s3"] == "true":
-                    payload: dict[str, object] = {
-                        "s3_url": "s3://bucket/results.json",
-                        "presigned_url": "https://download.example/results",
-                        "console_url": "https://console.example/results",
-                    }
-                    if request.url.params["preview"] == "true":
-                        payload.update(
-                            {
-                                "preview_version": 1,
-                                "generated_artifact_urls": ["s3://bucket/preview/1/vals_format/vals_format.json"],
-                            }
-                        )
-
-                    return httpx.Response(200, json=payload, request=request)
+                    return httpx.Response(
+                        200,
+                        json={
+                            "s3_url": "s3://bucket/results.json",
+                            "presigned_url": "https://download.example/results",
+                            "console_url": "https://console.example/results",
+                        },
+                        request=request,
+                    )
                 return httpx.Response(200, json=final_view, request=request)
             if request.url.path == "/fetch-benchmark-tasks":
                 return httpx.Response(200, json={"task_ids": ["task-a", "task-b"]}, request=request)
@@ -215,7 +222,7 @@ class TestTrackerJsonEndpoints:
         assert inline_results.benchmark_id == _RUN_ID
         assert s3_results.presigned_url == "https://download.example/results"
         assert preview_results.preview_version == 1
-        assert preview_results.generated_artifact_urls == ["s3://bucket/preview/1/vals_format/vals_format.json"]
+        assert preview_results.generated_artifact_urls == ["s3://generated-bucket/preview-output.json"]
         assert task_ids == ["task-a", "task-b"]
         assert results_exist is True
 
@@ -226,12 +233,9 @@ class TestTrackerJsonEndpoints:
         )
         assert result_request.url.params.get_list("task_ids") == ["task-a"]
 
-        preview_request = next(
-            request
-            for request in requests
-            if request.url.path == "/preview-results" and request.url.params["preview"] == "true"
-        )
-        assert preview_request.url.params["s3"] == "true"
+        preview_request = next(request for request in requests if request.url.path == "/preview-results")
+        assert "s3" not in preview_request.url.params
+        assert "preview" not in preview_request.url.params
         assert preview_request.url.params.get_list("task_ids") == ["task-b"]
 
         task_request = next(request for request in requests if request.url.path == "/fetch-benchmark-tasks")
