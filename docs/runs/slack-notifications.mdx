@@ -1,0 +1,39 @@
+---
+title: Slack notifications
+description: Notify a Slack webhook as runs cross progress thresholds or finish.
+---
+
+Valkyrie reads a Slack webhook URL from AWS Secrets Manager and sends notifications for configured progress thresholds and terminal states.
+
+## Store the webhook secret name
+
+```bash
+valkyrie config set webhook SlackWebhook
+```
+
+The selected AWS secret must contain the raw webhook URL as plain text, not JSON. Remove the setting with:
+
+```bash
+valkyrie config remove webhook
+```
+
+## Set progress thresholds
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench -i 25 -i 75
+```
+
+A run accepts at most three thresholds. The [`run start` reference](/reference/cli/run#start) states the accepted values for `-i`.
+
+When a webhook secret is configured without intervals, Valkyrie defaults to 100 and notifies only on completion. When intervals are provided without a webhook secret, the CLI ignores them with a warning.
+
+Webhook configuration is persisted on the run. Resume and retry use the original webhook secret and intervals without requiring local configuration.
+
+## Triggers
+
+| Trigger | Meaning |
+| --- | --- |
+| In progress | The run crossed a configured threshold |
+| Finished | All benchmark tasks completed; includes the final score |
+| Error | The run entered an error state |
+| Stopped | The run stopped |

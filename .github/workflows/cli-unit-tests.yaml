@@ -25,6 +25,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
 
+      - name: Check generated documentation reference
+        run: make docs-reference-check
+
+      - name: Test documentation reference
+        run: uv run pytest tests/unit/docs -q
+
       - name: Run CLI tests with coverage
         run: make test
 
@@ -34,3 +40,23 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
           flags: cli
+
+  docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Pinned so a Mintlify release cannot change the result of a rerun.
+      # The CLI is fetched on demand and is not a repository dependency.
+      - name: Validate the documentation build
+        working-directory: docs
+        run: npx --yes mint@4.2.801 validate
+
+      - name: Check for broken links
+        working-directory: docs
+        run: npx --yes mint@4.2.801 broken-links --check-anchors --check-redirects

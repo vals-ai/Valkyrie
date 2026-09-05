@@ -1,0 +1,59 @@
+---
+title: Python SDK quickstart
+description: Configure the async Valkyrie client and list runs from Python.
+---
+
+The `valkyrie-sdk` package is an async Python client for starting and inspecting runs from your own code. It needs Python 3.12 or newer, and it installs neither the CLI nor the tracker service.
+
+## Install
+
+```bash
+pip install valkyrie-sdk
+```
+
+## Configure
+
+`from_config()` reads a CLI-compatible YAML file, so run `valkyrie config init` first. It always defaults to `~/.config/valkyrie/valkyrie.yaml` and the `bench` tracker at `https://benchmark-tracker.vals.ai`; unlike the CLI it reads neither the saved hosted environment nor `VALKYRIE_ENV`, so pass `path` and `base_url` explicitly to target another environment, such as `path="~/.config/valkyrie/dev.yaml"` with `base_url="https://benchmark-tracker-dev.vals.ai"` for dev.
+
+```python
+import asyncio
+
+from valkyrie.sdk import ValkyrieClient
+
+
+async def main() -> None:
+    async with ValkyrieClient.from_config() as client:
+        runs = await client.runs.list()
+        print(runs)
+
+
+asyncio.run(main())
+```
+
+Pass `base_url` to `ValkyrieClient` for a self-hosted tracker. Otherwise, the SDK uses `TRACKER_SERVICE_URL` or the hosted tracker URL. The [`ValkyrieClient` reference](/reference/sdk/client) lists every constructor parameter and default.
+
+When both AWS access-key fields are configured, the SDK sends those credentials and AWS resources to the tracker for the run. When both are absent, start requests omit AWS credentials and request managed execution. See [AWS execution mode](/get-started/hosting#aws-execution-mode).
+
+<Warning>
+  In access-key execution, the SDK sends AWS credentials through `X-Harness-*` headers. Connect only to a trusted tracker and use HTTPS outside local development.
+</Warning>
+
+## Examples
+
+The repository includes complete scripts for common workflows:
+
+- [`run_lifecycle.py`](https://github.com/vals-ai/Valkyrie/blob/prod/docs/sdk/examples/run_lifecycle.py) starts, streams, and retrieves a run.
+- [`manage_run.py`](https://github.com/vals-ai/Valkyrie/blob/prod/docs/sdk/examples/manage_run.py) stops, resumes, or retries a run.
+
+From a Valkyrie checkout:
+
+```bash
+python docs/sdk/examples/run_lifecycle.py --help
+python docs/sdk/examples/manage_run.py --help
+```
+
+## Next steps
+
+- [Manage runs with Python](/sdk/runs) for the run lifecycle
+- [Inspect resources with Python](/sdk/resources) for tasks, agents, and services
+- [Python SDK reference](/reference/sdk) for every method, model, and field

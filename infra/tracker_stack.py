@@ -50,6 +50,7 @@ from constructs import Construct
 from runtime_iam import create_tracker_task_role, managed_runtime_environment
 from stage import PROD, Stage
 from stage_config import benchmark_service_base_url, config_for
+from tracker_access_logs import create_tracker_access_logs
 
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
@@ -286,6 +287,12 @@ class TrackerStack(Stack):
             open_listener=False,
             assign_public_ip=True,
             public_load_balancer=not stage.is_release_test,
+        )
+
+        create_tracker_access_logs(
+            self,
+            stage=stage,
+            load_balancer=self.service.load_balancer,
         )
 
         # Expose the inner FargateService for cross-stack security group rules.

@@ -1,0 +1,50 @@
+---
+title: Manage agents
+description: Install, upload, list, download, and remove agent bundles.
+---
+
+Valkyrie stores installed agent bundles under `agents/` in the S3 bucket configured by `valkyrie config init`. Every agent must contain a valid [agent contract](/agents/agent-contract).
+
+Browse compatible community agents in the [public agent registry](https://github.com/vals-ai/public-agent-registry).
+
+`--name` defaults to the `name` field in the agent's `contract.yaml` on both install and push. Full syntax for each command is in the [`agent install`](/reference/cli/agent#install), [`agent push`](/reference/cli/agent#push), [`agent list`](/reference/cli/agent#list), [`agent download`](/reference/cli/agent#download), and [`agent remove`](/reference/cli/agent#remove) reference.
+
+## Install from GitHub
+
+```bash
+valkyrie agent install https://github.com/user/my-agent --name my-agent
+```
+
+The CLI clones the repository, bundles it, and uploads it to S3.
+
+## Push a local agent
+
+```bash
+valkyrie agent push ./agents/sweagent --name sweagent
+```
+
+## List agents
+
+```bash
+valkyrie agent list
+```
+
+The interactive list supports `[h]` for previous, `[l]` for next, and `[q]` to quit.
+
+## Download an agent
+
+```bash
+valkyrie agent download sweagent --output-dir ./agents
+```
+
+The output directory defaults to the current directory.
+
+## Remove an agent
+
+```bash
+valkyrie agent remove sweagent
+```
+
+<Warning>
+  Removing an agent deletes its S3 bundle and cannot be reversed. The CLI asks for confirmation before deletion.
+</Warning>

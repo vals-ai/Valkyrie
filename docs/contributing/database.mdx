@@ -1,0 +1,75 @@
+---
+title: Database and migrations
+description: Add tables and generate Alembic migrations for the tracker database.
+---
+
+The tracker uses PostgreSQL through SQLModel, with Alembic for migrations.
+
+## Add a table
+
+Declare the model with `table=True`:
+
+```python
+# src/tracker/database/models.py
+
+class Benchmark(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    name: str
+    started_at: datetime = Field(default_factory=datetime.now)
+    finished_at: datetime | None = None
+    ...
+```
+
+Import it in `session.py` so SQLModel sees it:
+
+```python
+# src/tracker/database/session.py
+
+from tracker.database.models import Benchmark, FinalEvaluation, Task
+
+_exposed_models: list[type[SQLModel]] = [Benchmark, FinalEvaluation, Task]
+```
+
+## Generate and apply a migration
+
+From `services/tracker/`:
+
+```bash
+make migrate-gen
+```
+
+This runs `alembic revision --autogenerate` and writes a file to `src/tracker/database/migrations/versions/`. Apply it with:
+
+```bash
+uv run alembic upgrade head
+```
+
+Migration tests run through `pytest-alembic` on every push and pull request:
+
+```bash
+make test-alembic
+```
+
+## Known defect: a custom type is not imported
+
+Alembic sometimes generates a migration that refers to a custom type by its module path without importing it, which fails on upgrade:
+
+```text
+sa.Column('arguments', tracker.database.models.BenchmarkArgumentsType(), nullable=True),
+                           ^^^^^^^
+NameError: name 'tracker' is not defined
+```
+
+Import the type at the top of the generated migration:
+
+```python
+from tracker.database.models import BenchmarkArgumentsType
+```
+
+Then use the short name in the column:
+
+```python
+sa.Column('arguments', BenchmarkArgumentsType(), nullable=True),
+```
+
+Run `uv run alembic upgrade head` afterwards.

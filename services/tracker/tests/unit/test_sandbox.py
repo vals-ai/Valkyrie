@@ -80,6 +80,25 @@ def _capture_put_stream(store: Mock, upload: Callable[..., Any]) -> None:
     store.put_stream.side_effect = put_stream
 
 
+def _collect_put_stream(store: Mock, uploaded: list[tuple[bytes, str]]) -> None:
+    async def put_stream(key: str, chunks: AsyncIterator[bytes], **_kwargs: Any) -> int:
+        content = b"".join([chunk async for chunk in chunks])
+        uploaded.append((content, key))
+        return len(content)
+
+    store.put_stream.side_effect = put_stream
+
+
+def _fake_stream_download(content_for: Callable[[str], bytes]) -> Callable[[str], AsyncIterator[bytes]]:
+    def stream_download(remote_path: str) -> AsyncIterator[bytes]:
+        async def chunks() -> AsyncIterator[bytes]:
+            yield content_for(remote_path)
+
+        return chunks()
+
+    return stream_download
+
+
 _create_sandbox = getattr(sandbox_module, "_create_sandbox")
 _delete_sandbox = getattr(sandbox_module, "delete_sandbox")
 _exec = getattr(sandbox_module, "_exec")
@@ -94,19 +113,19 @@ _upload_output_artifact = getattr(sandbox_module, "_upload_output_artifact")
 class TestOutputArtifacts:
     """Declared output artifact collection and size validation."""
 
-    async def test_upload_output_artifacts_downloads_file_without_exec_output(
+    async def test_upload_output_artifacts_streams_file_without_exec_output(
         self,
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
-        store = _mock_object_store()
-        """
-        Verify artifact contents use the sandbox file-transfer API instead of command output.
+        """Artifact contents stream through the sandbox file-transfer API, never command output.
 
         Test cases:
-        - A 288,928-byte SkillsBench sidecar is downloaded without a base64 exec call.
+        - A 288,928-byte sidecar is streamed without a base64 exec call.
         - The exact bytes are uploaded to the task-scoped S3 key.
+        - The authority check is handed to the store so a revoked run aborts mid-upload.
         """
+        store = _mock_object_store()
         artifact = "artifacts/turns.jsonl"
         artifact_content = b"x" * 288_928
         uploaded: list[tuple[bytes, str]] = []
@@ -118,16 +137,14 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output=str(len(artifact_content)))
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
-            uploaded.append((file_content, s3_key))
-
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        _capture_put_bytes(store, fake_upload_to_s3)
+        _collect_put_stream(store, uploaded)
 
+        execution_is_current = Mock(return_value=True)
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
-        mock_sandbox.download_file = AsyncMock(return_value=artifact_content)
+        mock_sandbox.stream_download = _fake_stream_download(lambda _path: artifact_content)
 
         await upload_output_artifacts(
             mock_sandbox,
@@ -135,19 +152,20 @@ class TestOutputArtifacts:
             "benchmark-123",
             "task_0",
             store,
+            execution_is_current=execution_is_current,
         )
 
         assert uploaded == [(artifact_content, "benchmarks/benchmark-123/task_0/artifacts/turns.jsonl")]
+        assert store.put_stream.await_args.kwargs["should_continue"] is execution_is_current
 
-    async def test_upload_output_artifacts_rechecks_authority_after_download(
+    async def test_upload_output_artifacts_skips_upload_when_authority_revoked(
         self,
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
+        """A run that lost authority before transfer uploads nothing."""
         store = _mock_object_store()
         artifact = "artifacts/turns.jsonl"
-        authority_checks = iter([True, False])
-        uploaded: list[bytes] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
             if command == "test -f /tmp/valkyrie/artifacts/turns.jsonl":
@@ -156,13 +174,8 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="3")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, *_args: Any, **_kwargs: Any) -> None:
-            uploaded.append(file_content)
-
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        _capture_put_bytes(store, fake_upload_to_s3)
         mock_sandbox = Mock()
-        mock_sandbox.download_file = AsyncMock(return_value=b"old")
 
         await upload_output_artifacts(
             mock_sandbox,
@@ -170,11 +183,10 @@ class TestOutputArtifacts:
             "benchmark-123",
             "task_0",
             store,
-            execution_is_current=lambda: next(authority_checks),
+            execution_is_current=lambda: False,
         )
 
-        mock_sandbox.download_file.assert_awaited_once()
-        assert uploaded == []
+        store.put_stream.assert_not_awaited()
 
     async def test_upload_output_artifacts_can_upload_explicit_glob_sources(
         self,
@@ -195,16 +207,17 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="13")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
-            uploaded.append((file_content, s3_key))
-
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        _capture_put_bytes(store, fake_upload_to_s3)
+        _collect_put_stream(store, uploaded)
 
+        streamed_contents = {
+            "/logs/task/turns/init/config.json": b'{"llm":{}}\n',
+            "/logs/task/result.json": b'{"turns":[]}\n',
+        }
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
-        mock_sandbox.download_file = AsyncMock(side_effect=[b'{"llm":{}}\n', b'{"turns":[]}\n'])
+        mock_sandbox.stream_download = _fake_stream_download(lambda path: streamed_contents[path])
 
         await upload_output_artifacts(
             mock_sandbox,
@@ -237,16 +250,13 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="13")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
-            uploaded.append((file_content, s3_key))
-
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        _capture_put_bytes(store, fake_upload_to_s3)
+        _collect_put_stream(store, uploaded)
 
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
-        mock_sandbox.download_file = AsyncMock(return_value=b'{"turns":[]}\n')
+        mock_sandbox.stream_download = _fake_stream_download(lambda _path: b'{"turns":[]}\n')
 
         await upload_output_artifacts(
             mock_sandbox,
@@ -289,9 +299,7 @@ class TestOutputArtifacts:
 
         sandbox = Mock()
         exec_mock = AsyncMock(return_value=ExecResult(exit_code=1, output=""))
-        upload_mock = AsyncMock()
         monkeypatch.setattr(sandbox_module, "_exec", exec_mock)
-        _capture_put_bytes(store, upload_mock)
 
         await upload_output_artifacts(
             sandbox,
@@ -305,7 +313,7 @@ class TestOutputArtifacts:
             sandbox,
             "test -f /logs/artifacts/model.patch && ! test -L /logs/artifacts/model.patch",
         )
-        upload_mock.assert_not_awaited()
+        store.put_stream.assert_not_awaited()
 
     @pytest.mark.parametrize(
         ("required", "expected_uploads"),
@@ -321,7 +329,7 @@ class TestOutputArtifacts:
     ) -> None:
         store = _mock_object_store()
         source = "/logs/symlink result.json"
-        uploaded: list[bytes] = []
+        uploaded: list[tuple[bytes, str]] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
             if command == "test -f '/logs/symlink result.json'":
@@ -332,16 +340,13 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="6")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, _s3_key: str, _aws_runtime: AWSRuntime) -> None:
-            uploaded.append(file_content)
-
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        _capture_put_bytes(store, fake_upload_to_s3)
+        _collect_put_stream(store, uploaded)
 
         sandbox = Mock()
         sandbox.id = "sandbox-123"
         sandbox.name = "task-alias"
-        sandbox.download_file = AsyncMock(return_value=b"secret")
+        sandbox.stream_download = _fake_stream_download(lambda _path: b"secret")
         artifact = OutputArtifact(path="artifacts/result.json", source=source, required=required)
 
         await upload_output_artifacts(
@@ -352,7 +357,7 @@ class TestOutputArtifacts:
             store,
         )
 
-        assert uploaded == expected_uploads
+        assert [content for content, _key in uploaded] == expected_uploads
 
     async def test_upload_output_artifacts_prioritizes_required_artifacts_for_total_size_limit(
         self,
@@ -376,19 +381,13 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="1")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_download_file(path: str) -> bytes:
-            return path.encode()
-
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
-            uploaded.append((file_content, s3_key))
-
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        _capture_put_bytes(store, fake_upload_to_s3)
+        _collect_put_stream(store, uploaded)
 
         sandbox = Mock()
         sandbox.id = "sandbox-123"
         sandbox.name = "task-alias"
-        sandbox.download_file = fake_download_file
+        sandbox.stream_download = _fake_stream_download(lambda path: path.encode())
 
         await upload_output_artifacts(
             sandbox,
@@ -423,14 +422,12 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output=str(MAX_OUTPUT_ARTIFACT_BYTES + 1))
             raise AssertionError(f"unexpected command: {command}")
 
-        upload_mock = AsyncMock()
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        _capture_put_bytes(store, upload_mock)
 
         with pytest.raises(OutputArtifactError, match="too large"):
             await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", store)
 
-        upload_mock.assert_not_awaited()
+        store.put_stream.assert_not_awaited()
 
     @pytest.mark.parametrize(
         ("stat_result", "total_bytes", "error"),
@@ -454,7 +451,6 @@ class TestOutputArtifacts:
     ) -> None:
         store = _mock_object_store()
         sandbox = Mock()
-        sandbox.download_file = AsyncMock()
         exec_mock = AsyncMock(
             side_effect=[
                 ExecResult(exit_code=0, output=""),
@@ -473,7 +469,7 @@ class TestOutputArtifacts:
                 total_bytes,
             )
 
-        sandbox.download_file.assert_not_awaited()
+        store.put_stream.assert_not_awaited()
 
     async def test_upload_output_artifacts_skips_invalid_optional_file(
         self,
@@ -494,9 +490,7 @@ class TestOutputArtifacts:
                 ExecResult(exit_code=0, output=str(MAX_OUTPUT_ARTIFACT_BYTES + 1)),
             ]
         )
-        upload_mock = AsyncMock()
         monkeypatch.setattr(sandbox_module, "_exec", exec_mock)
-        _capture_put_bytes(store, upload_mock)
 
         await upload_output_artifacts(
             sandbox,
@@ -513,7 +507,7 @@ class TestOutputArtifacts:
             ),
             call(sandbox, "stat -c%s /logs/trajectory_atif.json"),
         ]
-        upload_mock.assert_not_awaited()
+        store.put_stream.assert_not_awaited()
 
 
 class TestArchiveAndUploadOutput:
