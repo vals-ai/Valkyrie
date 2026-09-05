@@ -16,6 +16,9 @@ router = APIRouter(prefix="/benchmarks")
 class FilterOptionsResponse(BaseModel):
     benchmark_names: list[str]
     agent_names: list[str]
+    models: list[str]
+    datasets: list[str]
+    started_by_emails: list[str]
 
 
 @router.get("/filter-options", response_model=FilterOptionsResponse)
@@ -23,16 +26,13 @@ def get_filter_options(
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> FilterOptionsResponse:
-    """Distinct benchmark + agent names in this org, for the runs-list filter dropdowns."""
+    """Distinct benchmark, agent, model, dataset, and starter values in this org, for the runs-list filter dropdowns."""
 
-    benchmark_names = sorted(
-        set(session.exec(select(Benchmark.name).where(Benchmark.org_id == org.id).distinct()).all())
-    )
-
-    rows = session.exec(select(Benchmark.arguments).where(Benchmark.org_id == org.id)).all()
-    agent_names = sorted({row.contract.name for row in rows if row and row.contract.name})
-
+    benchmarks = session.exec(select(Benchmark).where(Benchmark.org_id == org.id)).all()
     return FilterOptionsResponse(
-        benchmark_names=benchmark_names,
-        agent_names=agent_names,
+        benchmark_names=sorted({b.name for b in benchmarks}),
+        agent_names=sorted({b.arguments.contract.name for b in benchmarks}),
+        models=sorted({b.arguments.contract.model for b in benchmarks if b.arguments.contract.model}),
+        datasets=sorted({b.arguments.dataset for b in benchmarks if b.arguments.dataset}),
+        started_by_emails=sorted({b.started_by_email for b in benchmarks if b.started_by_email}),
     )
