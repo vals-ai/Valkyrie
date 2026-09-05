@@ -18,6 +18,7 @@ class TestFilterOptions:
 
         Test cases:
         - Authenticated results contain each available filter value once.
+        - Runs without a dataset are listed under "default", matching the run list and its dataset filter.
         """
         for benchmark_name, agent_name, model, dataset, email in [
             ("swebench", "mini_sweagent", "gateway/openai/gpt-5", "verified", "a@vals.ai"),
@@ -45,7 +46,7 @@ class TestFilterOptions:
         assert response_body["benchmark_names"] == ["fab", "swebench"]
         assert response_body["agent_names"] == ["claude_code", "mini_sweagent"]
         assert response_body["models"] == ["gateway/anthropic/claude-opus-5", "gateway/openai/gpt-5"]
-        assert response_body["datasets"] == ["lite", "verified"]
+        assert response_body["datasets"] == ["default", "lite", "verified"]
         assert response_body["started_by_emails"] == ["a@vals.ai", "b@vals.ai"]
 
     def test_filter_options_unauth_401(self, client: TestClient) -> None:

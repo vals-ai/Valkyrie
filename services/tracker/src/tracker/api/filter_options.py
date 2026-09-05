@@ -33,6 +33,6 @@ def get_filter_options(
         benchmark_names=sorted({b.name for b in benchmarks}),
         agent_names=sorted({b.arguments.contract.name for b in benchmarks}),
         models=sorted({b.arguments.contract.model for b in benchmarks if b.arguments.contract.model}),
-        datasets=sorted({b.arguments.dataset for b in benchmarks if b.arguments.dataset}),
+        datasets=sorted({b.arguments.dataset or "default" for b in benchmarks}),
         started_by_emails=sorted({b.started_by_email for b in benchmarks if b.started_by_email}),
     )
