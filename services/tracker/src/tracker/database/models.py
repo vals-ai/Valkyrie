@@ -267,6 +267,7 @@ class ExecutorDispatch(SQLModel, table=True):
     __table_args__ = (
         Index("ix_executordispatch_release_status", "executor_release_id", "status"),
         Index("ix_executordispatch_benchmark_kind", "benchmark_id", "kind"),
+        Index("ix_executordispatch_status_lease_expires", "status", "lease_expires_at"),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -280,6 +281,11 @@ class ExecutorDispatch(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    assigned_task_ids: list[str] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    claim_deadline_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    lease_expires_at: datetime | None = None
+    failure_reason: str | None = None
 
 
 class Benchmark(SQLModel, table=True):

@@ -50,6 +50,7 @@ class FakeDispatchStore:
         self.authority_checks: list[DispatchAuthority] = []
         self.terminalized: list[DispatchAuthority] = []
         self.finished: list[DispatchAuthority] = []
+        self.heartbeats: list[DispatchAuthority] = []
         self.authority: DispatchAuthority | None = None
 
     async def claim(
@@ -72,6 +73,10 @@ class FakeDispatchStore:
         if len(self.authority_results) == 1:
             return self.authority_results[0]
         return self.authority_results.pop(0)
+
+    async def heartbeat(self, authority: DispatchAuthority) -> bool:
+        self.heartbeats.append(authority)
+        return True
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
         _ = task_ids
@@ -327,9 +332,10 @@ async def test_postgres_claim_is_status_fenced_and_returns_authority(
     assert "FROM benchmark" in statement
     assert "benchmark.status = 'IN_PROGRESS'" in statement
     assert "dispatch.status = 'QUEUED'" in statement
+    assert "dispatch.claim_deadline_at > CURRENT_TIMESTAMP" in statement
     assert "SET status = 'RUNNING'" in statement
     assert "started_at = CURRENT_TIMESTAMP" in statement
-    assert parameters[:2] == ("dispatch-1", "benchmark-1")
+    assert parameters[1:3] == ("dispatch-1", "benchmark-1")
 
 
 @pytest.mark.asyncio

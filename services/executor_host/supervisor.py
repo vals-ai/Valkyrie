@@ -23,6 +23,8 @@ from redis.asyncio import Redis
 from taskiq import TaskiqEvents
 from taskiq_redis import RedisStreamBroker
 from executor_protocol import (
+    DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS,
+    DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
     DEFAULT_EXECUTOR_RELEASE_PREFIX,
     DEFAULT_STABLE_QUEUE_NAME,
     EXECUTOR_TASK_NAME,
@@ -240,6 +242,8 @@ class ExecutorDispatchStore(Protocol):
 
     async def is_current(self, authority: DispatchAuthority) -> bool: ...
 
+    async def heartbeat(self, authority: DispatchAuthority) -> bool: ...
+
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool: ...
 
     async def finish(self, authority: DispatchAuthority) -> bool: ...
@@ -312,7 +316,9 @@ class PostgresExecutorDispatchStore:
                 """
                 UPDATE executordispatch AS dispatch
                 SET status = 'RUNNING',
-                    started_at = CURRENT_TIMESTAMP
+                    started_at = CURRENT_TIMESTAMP,
+                    heartbeat_at = CURRENT_TIMESTAMP,
+                    lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second')
                 FROM benchmark
                 WHERE dispatch.id = %s::uuid
                   AND dispatch.benchmark_id = benchmark.id
@@ -323,9 +329,11 @@ class PostgresExecutorDispatchStore:
                   AND dispatch.executor_artifact_digest = %s
                   AND dispatch.executor_protocol_version = %s
                   AND dispatch.status = 'QUEUED'
+                  AND dispatch.claim_deadline_at > CURRENT_TIMESTAMP
                 RETURNING dispatch.id
                 """,
                 (
+                    DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
                     dispatch_id,
                     benchmark_id,
                     dispatch.release_id,
@@ -354,6 +362,25 @@ class PostgresExecutorDispatchStore:
             )
             return cursor.fetchone() is not None
 
+    async def heartbeat(self, authority: DispatchAuthority) -> bool:
+        return await asyncio.to_thread(self._heartbeat, authority)
+
+    def _heartbeat(self, authority: DispatchAuthority) -> bool:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE executordispatch
+                SET heartbeat_at = CURRENT_TIMESTAMP,
+                    lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second')
+                WHERE id = %s::uuid
+                  AND benchmark_id = %s::uuid
+                  AND status = 'RUNNING'
+                RETURNING id
+                """,
+                (DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS, authority.dispatch_id, authority.benchmark_id),
+            )
+            return cursor.fetchone() is not None
+
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
         return await asyncio.to_thread(self._terminalize, authority, task_ids)
 
@@ -374,7 +401,9 @@ class PostgresExecutorDispatchStore:
             cursor.execute(
                 """
                 UPDATE executordispatch
-                SET status = 'FAILED', finished_at = CURRENT_TIMESTAMP
+                SET status = 'FAILED',
+                    finished_at = CURRENT_TIMESTAMP,
+                    failure_reason = 'EXECUTOR_FAILED'
                 WHERE id = %s::uuid
                   AND benchmark_id = %s::uuid
                   AND status = 'RUNNING'
@@ -724,6 +753,30 @@ async def _terminalize_after_failure(
         )
 
 
+async def _heartbeat_loop(
+    store: ExecutorDispatchStore,
+    authority: DispatchAuthority,
+    *,
+    interval_seconds: float = DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS,
+) -> None:
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            if not await store.heartbeat(authority):
+                logger.warning(
+                    "Executor dispatch %s lost heartbeat authority",
+                    authority.dispatch_id,
+                )
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Failed to heartbeat executor dispatch %s",
+                authority.dispatch_id,
+            )
+
+
 async def run_executor_dispatch(
     executor_supervisor: ExecutorSupervisor,
     store: ExecutorDispatchStore,
@@ -764,6 +817,7 @@ async def run_executor_dispatch(
             )
             return
 
+        heartbeat_task = asyncio.create_task(_heartbeat_loop(store, authority))
         try:
             artifact_path = await executor_supervisor.prepare_artifact(dispatch)
             await executor_supervisor.run(
@@ -784,6 +838,9 @@ async def run_executor_dispatch(
         except BaseException:
             await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
             raise
+        finally:
+            heartbeat_task.cancel()
+            await _await_task_cancellation(heartbeat_task)
     finally:
         release_task = asyncio.create_task(_release_task_protection())
         await _await_task_completion(release_task)

@@ -20,6 +20,7 @@ from tracker.database.models import (
     ExecutorReleaseStatus,
 )
 from executor_protocol import (
+    DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS,
     SUPPORTED_PROTOCOL_VERSIONS,
     validate_executor_artifact_uri,
     validate_executor_digest,
@@ -172,8 +173,10 @@ def create_executor_dispatch(
     kind: ExecutorDispatchKind,
     *,
     dispatch_id: UUID,
+    task_ids: list[str] | None = None,
 ) -> ExecutorDispatch:
     """Snapshot one release identity for queued execution."""
+    created_at = datetime.now(UTC)
     return ExecutorDispatch(
         id=dispatch_id,
         benchmark_id=benchmark_id,
@@ -182,6 +185,9 @@ def create_executor_dispatch(
         executor_artifact_uri=release.artifact_uri,
         executor_artifact_digest=release.artifact_digest,
         executor_protocol_version=release.protocol_version,
+        created_at=created_at,
+        assigned_task_ids=list(task_ids) if task_ids is not None else None,
+        claim_deadline_at=created_at + timedelta(seconds=DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS),
     )
 
 
