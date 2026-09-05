@@ -3,7 +3,7 @@
 from pathlib import PurePosixPath
 from typing import Any
 
-from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, field_validator, model_serializer
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
 
 from valkyrie.sdk.models._base import ResponseModel
 
@@ -26,12 +26,22 @@ class OutputArtifact(BaseModel):
     path: str
     source: str | None = None
     required: bool = True
+    live: bool = False
+
+    @model_validator(mode="after")
+    def validate_live_path(self) -> "OutputArtifact":
+        """Reject unsupported live artifact paths before starting a run."""
+        if self.live and self.path != "trajectory/manifest.json":
+            raise ValueError("Live artifacts must use trajectory/manifest.json")
+        return self
 
     @model_serializer(mode="wrap")
     def serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         data = handler(self)
         if self.required:
             data.pop("required", None)
+        if not self.live:
+            data.pop("live", None)
         return data
 
     @field_validator("source")

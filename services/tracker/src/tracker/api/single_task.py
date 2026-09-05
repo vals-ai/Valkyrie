@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import cast
 from uuid import UUID
 
@@ -17,6 +18,7 @@ from tracker.database.models import (
     ErrorResult,
     EvaluationResult,
     Org,
+    OutputArtifact,
     Task,
     TaskStatus,
 )
@@ -24,6 +26,39 @@ from tracker.database.session import get_session
 from tracker.types import SingleTaskResponse, TaskArtifactsResponse
 
 router = APIRouter(prefix="/benchmarks")
+
+
+@router.get("/{benchmark_id}/tasks/{task_id}/artifact-file")
+async def get_task_artifact_file(
+    benchmark_id: TrackedBenchmarkId,
+    task_id: str,
+    path: str,
+    run_context: RunAWSDependency,
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> dict[str, str]:
+    """Read one task artifact without downloading the complete output archive."""
+    task = _load_task_for_benchmark_or_404(run_context.benchmark, task_id, org, session)
+    if not path or PurePosixPath(path).is_absolute() or any(part in {"", ".", ".."} for part in path.split("/")):
+        raise HTTPException(status_code=400, detail="Invalid artifact path")
+    prefix = _task_prefix(benchmark_id, task_id)
+    live = any(
+        isinstance(item, OutputArtifact) and item.live
+        for item in run_context.benchmark.arguments.contract.output_artifacts
+    )
+    if path == "trajectory/manifest.json" and not live:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if path.startswith("trajectory/") and live:
+        prefix += f"attempts/{int(task.started_at.timestamp() * 1_000_000):x}/"
+    key = prefix + path
+    runtime = run_context.aws_runtime
+    if not await s3_object_exists(key, runtime):
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return {
+        "download_url": await create_presigned_url(
+            s3_key=key, runtime=runtime, expiration=runtime.clients.maximum_presign_ttl(300)
+        )
+    }
 
 
 def _load_task_or_404(benchmark_id: UUID, task_id: str, org: Org, session: Session) -> tuple[Benchmark, Task]:
