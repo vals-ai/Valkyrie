@@ -1,6 +1,8 @@
 """Sandbox management utilities for the tracker service."""
 
 import asyncio
+import hashlib
+import json
 import shlex
 import time
 import uuid
@@ -49,6 +51,7 @@ from tracker.database.models import (
     MAX_OUTPUT_ARTIFACT_BYTES,
     AgentCausedExitReason,
     AgentContractRequest,
+    OutputArtifact,
     OutputArtifactSpec,
 )
 from tracker.exceptions import (
@@ -726,6 +729,7 @@ async def upload_output_artifacts(
     task_id: str,
     object_store: ObjectStore,
     execution_is_current: Callable[[], bool] | None = None,
+    live_root: str | None = None,
 ) -> None:
     """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
     total_bytes = 0
@@ -735,6 +739,20 @@ async def upload_output_artifacts(
     for artifact in [*required_artifacts, *optional_artifacts]:
         artifact_path = _output_artifact_path(artifact)
         try:
+            if isinstance(artifact, OutputArtifact) and artifact.live:
+                if live_root is None:
+                    raise OutputArtifactError("Live trajectory uploads require an attempt identity")
+                total_bytes += await publish_live_trajectory(
+                    sandbox,
+                    artifact,
+                    live_root,
+                    task_id,
+                    object_store,
+                    {},
+                    execution_is_current,
+                    OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES - total_bytes,
+                )
+                continue
             updated_total_bytes = await _upload_output_artifact(
                 sandbox,
                 artifact,
@@ -823,6 +841,95 @@ async def _upload_output_artifact(
     return new_total_bytes
 
 
+async def publish_live_trajectory(
+    sandbox: Sandbox,
+    artifact: OutputArtifact,
+    artifact_root: str,
+    task_id: str,
+    object_store: ObjectStore,
+    published: dict[str, tuple[str, int]],
+    execution_is_current: Callable[[], bool] | None,
+    budget: int = OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES,
+) -> int:
+    """Publish verified files before an attempt-scoped manifest."""
+    if artifact.path != "trajectory/manifest.json":
+        raise OutputArtifactError("Live artifacts must use trajectory/manifest.json")
+    source = await _resolve_output_artifact_sandbox_path(sandbox, artifact, task_id)
+    encoded = bytearray()
+    async for chunk in sandbox.stream_download(source):
+        encoded.extend(chunk)
+        if len(encoded) > 8 * 1024 * 1024:
+            raise OutputArtifactError("Live trajectory manifest exceeds 8 MiB")
+    manifest = json.loads(encoded)
+    if manifest["version"] not in {"pi-trajectory-shards-v1", "atif-trajectory-shards-v1"}:
+        raise OutputArtifactError("Unsupported live trajectory manifest")
+
+    files: dict[str, tuple[str, str, int]] = {}
+    total_bytes = len(encoded)
+    if total_bytes > budget:
+        raise OutputArtifactError("Live trajectory exceeds the artifact size limit")
+    for part in manifest["parts"]:
+        for file in [part, *part.get("attachments", [])]:
+            path = PurePosixPath(file["path"])
+            if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != "trajectory":
+                raise OutputArtifactError("Invalid trajectory part path")
+            if path.suffixes != [".jsonl", ".gz"]:
+                raise OutputArtifactError("Trajectory files must be gzip JSONL")
+            key = str(path)
+            digest = file["sha256"]
+            if key in files:
+                if files[key][1] != digest:
+                    raise OutputArtifactError("Conflicting trajectory file hashes")
+                continue
+            part_source = str(PurePosixPath(source).parent.parent / path)
+            if key in published and published[key][0] == digest:
+                size = published[key][1]
+            else:
+                await _resolve_output_artifact_sandbox_path(
+                    sandbox, OutputArtifact(path=key, source=part_source, required=False), task_id
+                )
+                stat = await _exec(sandbox, f"stat -c%s {shlex.quote(part_source)}")
+                if stat.exit_code != 0:
+                    raise OutputArtifactError("Cannot stat trajectory file")
+                size = int(stat.stdout.strip())
+            total_bytes += size
+            if size < 0 or size > MAX_OUTPUT_ARTIFACT_BYTES or total_bytes > budget:
+                raise OutputArtifactError("Live trajectory exceeds the artifact size limit")
+            files[key] = (part_source, digest, size)
+
+    for path, (part_source, digest, size) in files.items():
+        if published.get(path) == (digest, size):
+            continue
+        if execution_is_current is not None and not execution_is_current():
+            return 0
+
+        async def verified_chunks() -> AsyncGenerator[bytes, None]:
+            checksum = hashlib.sha256()
+            received = 0
+            async for chunk in sandbox.stream_download(part_source):
+                received += len(chunk)
+                if received > size:
+                    raise OutputArtifactError("Trajectory file grew during upload")
+                checksum.update(chunk)
+                yield chunk
+            if received != size or checksum.hexdigest() != digest:
+                raise OutputArtifactError("Trajectory file changed during upload")
+
+        await object_store.put_stream(artifact_root + path, verified_chunks(), should_continue=execution_is_current)
+        published[path] = (digest, size)
+
+    if execution_is_current is not None and not execution_is_current():
+        return 0
+
+    async def manifest_chunks() -> AsyncGenerator[bytes, None]:
+        yield bytes(encoded)
+
+    await object_store.put_stream(
+        artifact_root + artifact.path, manifest_chunks(), should_continue=execution_is_current
+    )
+    return total_bytes
+
+
 async def run_agent(
     sandbox: Sandbox,
     contract: AgentContractRequest,
@@ -837,6 +944,7 @@ async def run_agent(
     runtime_source: SandboxSource | None = None,
     dependency_setup_mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
     execution_is_current: Callable[[], bool] | None = None,
+    attempt_id: str | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
@@ -919,6 +1027,7 @@ async def run_agent(
                     task_id,
                     object_store,
                     execution_is_current,
+                    live_root,
                 )
             except Exception as error:
                 errors.append(error)
@@ -935,15 +1044,44 @@ async def run_agent(
         if errors and not preserve_agent_error:
             raise errors[0]
 
+    live_artifacts = [item for item in contract.output_artifacts if isinstance(item, OutputArtifact) and item.live]
+    live_root = None
+    if live_artifacts:
+        if benchmark_id is None or attempt_id is None:
+            raise SandboxError("Live trajectory uploads require a benchmark and attempt identity")
+        live_root = task_artifact_key(benchmark_id, task_id, f"attempts/{attempt_id}/")
+
+    async def publish_while_running() -> None:
+        published: dict[str, tuple[str, int]] = {}
+        assert live_root is not None
+        while execution_is_current is None or execution_is_current():
+            for artifact in live_artifacts:
+                try:
+                    await publish_live_trajectory(
+                        sandbox, artifact, live_root, task_id, object_store, published, execution_is_current
+                    )
+                except Exception:
+                    logger.warning("Live trajectory upload failed; retrying in 30 seconds", exc_info=True)
+            await asyncio.sleep(30)
+
+    publisher = asyncio.create_task(publish_while_running()) if live_artifacts else None
     # A nonzero exit is terminal evidence; collect declared outputs while the
     # sandbox is still available.
     try:
-        exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
-            sandbox,
-            f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
-            log_output,
-            contract.egress_allowlist,
-        )
+        try:
+            exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
+                sandbox,
+                f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
+                log_output,
+                contract.egress_allowlist,
+            )
+        finally:
+            if publisher is not None:
+                publisher.cancel()
+                try:
+                    await publisher
+                except asyncio.CancelledError:
+                    pass
     except Exception:
         await upload_outputs(preserve_agent_error=True)
         raise

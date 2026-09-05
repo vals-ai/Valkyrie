@@ -22,6 +22,7 @@ from tracker.database.models import (
     AgentCausedExitReason,
     Benchmark,
     Org,
+    OutputArtifact,
     TaskStatus,
 )
 
@@ -167,3 +168,57 @@ def test_task_artifacts_only_presign_existing_output(
     assert missing_response.json()["agent_output_url"] is None
     assert missing_response.json()["agent_output_expires_in"] is None
     assert create_presigned_url.await_count == 1
+
+    object_exists.return_value = True
+    create_presigned_url.reset_mock()
+    path = "trajectory/iteration_1/part-1.jsonl.gz"
+    file_response = _client.get(
+        f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifact-file",
+        params={"path": path},
+        headers=harness_headers,
+    )
+    assert file_response.status_code == 200
+    assert file_response.json() == {"download_url": "https://example.test/presigned"}
+    create_presigned_url.assert_awaited_once_with(
+        s3_key=f"benchmarks/{benchmark.id}/{task.task_id}/{path}",
+        runtime=ANY,
+        expiration=300,
+    )
+    create_presigned_url.reset_mock()
+    for invalid_path in ("../other-task/secret", "/private", "trajectory//part", "./part"):
+        response = _client.get(
+            f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifact-file",
+            params={"path": invalid_path},
+            headers=harness_headers,
+        )
+        assert response.status_code == 400
+    response = _client.get(
+        f"/benchmarks/{benchmark.id}/tasks/missing-task/artifact-file",
+        params={"path": path},
+        headers=harness_headers,
+    )
+    assert response.status_code == 404
+    create_presigned_url.assert_not_called()
+
+    benchmark.arguments = benchmark.arguments.model_copy(
+        update={
+            "contract": benchmark.arguments.contract.model_copy(
+                update={"output_artifacts": [OutputArtifact(path="trajectory/manifest.json", live=True)]}
+            )
+        }
+    )
+    database_session.add(benchmark)
+    database_session.commit()
+    old_key = f"benchmarks/{benchmark.id}/{task.task_id}/attempts/{int(task.started_at.timestamp() * 1_000_000):x}/trajectory/manifest.json"
+    object_exists.side_effect = lambda key, _runtime: key == old_key
+    task.started_at += timedelta(seconds=1)
+    database_session.add(task)
+    database_session.commit()
+    response = _client.get(
+        f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifact-file",
+        params={"path": "trajectory/manifest.json"},
+        headers=harness_headers,
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Artifact not found"
+    create_presigned_url.assert_not_called()

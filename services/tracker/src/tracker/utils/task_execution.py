@@ -1028,6 +1028,7 @@ async def _process_task_attempt(
                         runtime_source=task_data.source,
                         dependency_setup_mode=dependency_setup_recovery.mode,
                         execution_is_current=execution_is_current,
+                        attempt_id=stream_suffix,
                     )
                 except DependencySetupExhaustedError:
                     dependency_setup_recovery.mode = DependencySetupMode.FINAL_FRESH_SANDBOX
