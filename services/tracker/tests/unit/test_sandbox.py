@@ -4,6 +4,8 @@ Run: pytest services/tracker/tests/unit/test_sandbox.py
 """
 
 import asyncio
+import hashlib
+import json
 import shlex
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -51,11 +53,82 @@ from tracker.sandbox import (
     run_agent,
     upload_agent_artifacts,
     upload_output_artifacts,
+    publish_live_trajectory,
 )
 
 
 def _ignore_output(_message: str) -> None:
     pass
+
+
+async def test_live_manifest_publishes_verified_parts_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the old manifest on a page race, and stop uploads when authority is lost."""
+    content = b"compressed trajectory page"
+    part = "trajectory/iteration_1/part-1.jsonl.gz"
+    manifest = {
+        "version": "atif-trajectory-shards-v1",
+        "parts": [{"path": part, "sha256": hashlib.sha256(content).hexdigest()}],
+    }
+    artifact = OutputArtifact(
+        path="trajectory/manifest.json", source="/run/trajectory/manifest.json", required=False, live=True
+    )
+    files = {artifact.source: json.dumps(manifest).encode(), f"/run/{part}": content}
+    sandbox = Mock()
+
+    async def download(path: str) -> AsyncIterator[bytes]:
+        yield files[path]
+
+    sandbox.stream_download = download
+    monkeypatch.setattr(
+        sandbox_module,
+        "_exec",
+        AsyncMock(side_effect=lambda _s, command: Mock(exit_code=0, stdout=str(len(files[shlex.split(command)[-1]])))),
+    )
+    monkeypatch.setattr(
+        sandbox_module, "_resolve_output_artifact_sandbox_path", AsyncMock(side_effect=lambda _s, item, _t: item.source)
+    )
+    store = _mock_object_store()
+    uploaded = {}
+
+    async def upload(key, chunks, *, should_continue):
+        payload = bytearray()
+        async for chunk in chunks:
+            assert should_continue()
+            payload.extend(chunk)
+        uploaded[key] = bytes(payload)
+        return len(payload)
+
+    store.put_stream.side_effect = upload
+    root = "benchmarks/run/task/attempts/current/"
+    published: dict[str, tuple[str, int]] = {}
+    await publish_live_trajectory(sandbox, artifact, root, "task", store, published, lambda: True)
+    assert [call.args[0].removeprefix(root) for call in store.put_stream.call_args_list] == [part, artifact.path]
+    store.put_stream.reset_mock()
+    await publish_live_trajectory(sandbox, artifact, root, "task", store, published, lambda: True)
+    assert store.put_stream.await_count == 1
+    store.put_stream.reset_mock()
+    files[f"/run/{part}"] = b"page changed during upload"
+    with pytest.raises(OutputArtifactError, match="changed during upload"):
+        await publish_live_trajectory(sandbox, artifact, root, "task", store, {}, lambda: True)
+    assert uploaded[root + part] == content
+    assert uploaded[root + artifact.path] == files[artifact.source]
+    store.put_stream.reset_mock()
+    files[f"/run/{part}"] = content
+    await publish_live_trajectory(sandbox, artifact, root, "task", store, {}, lambda: False)
+    store.put_stream.assert_not_called()
+    second = "trajectory/iteration_1/part-2.jsonl.gz"
+    files[f"/run/{second}"] = content
+    manifest["parts"].append({"path": second, "sha256": hashlib.sha256(content).hexdigest()})
+    files[artifact.source] = json.dumps(manifest).encode()
+    with pytest.raises(OutputArtifactError, match="size limit"):
+        await publish_live_trajectory(
+            sandbox, artifact, root, "task", store, published, lambda: True, len(files[artifact.source]) + len(content)
+        )
+    store.put_stream.assert_not_called()
+    manifest["parts"][0]["path"] = "trajectory/../private.jsonl.gz"
+    files[artifact.source] = json.dumps(manifest).encode()
+    with pytest.raises(OutputArtifactError, match="Invalid trajectory part path"):
+        await publish_live_trajectory(sandbox, artifact, root, "task", store, {}, lambda: True)
 
 
 def _mock_object_store() -> Mock:
@@ -603,6 +676,7 @@ class TestRunAgent:
             task_id: str,
             _aws_runtime: AWSRuntime,
             _execution_is_current: Any,
+            _live_root: str,
         ) -> None:
             artifact_calls.append(f"{benchmark_id}:{task_id}:{artifacts[0]}")
 
