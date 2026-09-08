@@ -2,7 +2,6 @@ import hashlib
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from collections.abc import Mapping
@@ -108,7 +107,16 @@ class ExecutorReleaseTest(unittest.TestCase):
     def test_nested_cli_imports_in_workflow_environment(self) -> None:
         infra_directory = Path(__file__).parents[1]
         result = subprocess.run(
-            [sys.executable, "executor_release/main.py", "--help"],
+            [
+                "uv",
+                "run",
+                "--project",
+                "executor_release",
+                "--frozen",
+                "python",
+                "executor_release/main.py",
+                "--help",
+            ],
             cwd=infra_directory,
             env={**os.environ, "PYTHONPATH": "."},
             capture_output=True,

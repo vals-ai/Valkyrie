@@ -1,0 +1,20 @@
+[
+  "reference/sdk/index",
+  "reference/sdk/client",
+  "reference/sdk/runs",
+  "reference/sdk/benchmarks",
+  "reference/sdk/agents",
+  "reference/sdk/services",
+  {
+    "group": "Types",
+    "pages": [
+      "reference/sdk/models/index",
+      "reference/sdk/models/agents",
+      "reference/sdk/models/runs",
+      "reference/sdk/models/benchmarks",
+      "reference/sdk/models/services",
+      "reference/sdk/models/config",
+      "reference/sdk/errors"
+    ]
+  }
+]

@@ -1170,11 +1170,35 @@
             },
             "title": "Benchmark Names",
             "type": "array"
+          },
+          "datasets": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Datasets",
+            "type": "array"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "started_by_emails": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Started By Emails",
+            "type": "array"
           }
         },
         "required": [
           "benchmark_names",
-          "agent_names"
+          "agent_names",
+          "models",
+          "datasets",
+          "started_by_emails"
         ],
         "title": "FilterOptionsResponse",
         "type": "object"
@@ -2694,7 +2718,7 @@
     },
     "/benchmarks/filter-options": {
       "get": {
-        "description": "Distinct benchmark + agent names in this org, for the runs-list filter dropdowns.",
+        "description": "Distinct benchmark, agent, model, dataset, and starter values in this org, for the runs-list filter dropdowns.",
         "operationId": "get_filter_options",
         "responses": {
           "200": {

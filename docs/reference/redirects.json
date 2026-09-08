@@ -1,0 +1,350 @@
+[
+  {
+    "source": "/introduction",
+    "destination": "/get-started/overview"
+  },
+  {
+    "source": "/reference/cli/run/analyze",
+    "destination": "/reference/cli/run#analyze"
+  },
+  {
+    "source": "/reference/cli/run/errors",
+    "destination": "/reference/cli/run#errors"
+  },
+  {
+    "source": "/reference/cli/run/fetch",
+    "destination": "/reference/cli/run#fetch"
+  },
+  {
+    "source": "/reference/cli/run/list",
+    "destination": "/reference/cli/run#list"
+  },
+  {
+    "source": "/reference/cli/run/output",
+    "destination": "/reference/cli/run#output"
+  },
+  {
+    "source": "/reference/cli/run/outputs",
+    "destination": "/reference/cli/run#outputs"
+  },
+  {
+    "source": "/reference/cli/run/results",
+    "destination": "/reference/cli/run#results"
+  },
+  {
+    "source": "/reference/cli/run/resume",
+    "destination": "/reference/cli/run#resume"
+  },
+  {
+    "source": "/reference/cli/run/retry",
+    "destination": "/reference/cli/run#retry"
+  },
+  {
+    "source": "/reference/cli/run/start",
+    "destination": "/reference/cli/run#start"
+  },
+  {
+    "source": "/reference/cli/run/status",
+    "destination": "/reference/cli/run#status"
+  },
+  {
+    "source": "/reference/cli/run/stop",
+    "destination": "/reference/cli/run#stop"
+  },
+  {
+    "source": "/reference/cli/run/update",
+    "destination": "/reference/cli/run#update"
+  },
+  {
+    "source": "/reference/cli/agent/install",
+    "destination": "/reference/cli/agent#install"
+  },
+  {
+    "source": "/reference/cli/agent/push",
+    "destination": "/reference/cli/agent#push"
+  },
+  {
+    "source": "/reference/cli/agent/remove",
+    "destination": "/reference/cli/agent#remove"
+  },
+  {
+    "source": "/reference/cli/agent/download",
+    "destination": "/reference/cli/agent#download"
+  },
+  {
+    "source": "/reference/cli/agent/list",
+    "destination": "/reference/cli/agent#list"
+  },
+  {
+    "source": "/reference/cli/benchmark/tasks",
+    "destination": "/reference/cli/benchmark#tasks"
+  },
+  {
+    "source": "/reference/cli/config/auth/set",
+    "destination": "/reference/cli/config#auth-set"
+  },
+  {
+    "source": "/reference/cli/config/auth/remove",
+    "destination": "/reference/cli/config#auth-remove"
+  },
+  {
+    "source": "/reference/cli/config/auth/list",
+    "destination": "/reference/cli/config#auth-list"
+  },
+  {
+    "source": "/reference/cli/config/init",
+    "destination": "/reference/cli/config#init"
+  },
+  {
+    "source": "/reference/cli/config/set",
+    "destination": "/reference/cli/config#set"
+  },
+  {
+    "source": "/reference/cli/config/remove",
+    "destination": "/reference/cli/config#remove"
+  },
+  {
+    "source": "/reference/cli/config/provider/set",
+    "destination": "/reference/cli/config#provider-set"
+  },
+  {
+    "source": "/reference/cli/config/provider/default",
+    "destination": "/reference/cli/config#provider-default"
+  },
+  {
+    "source": "/reference/cli/config/provider/remove",
+    "destination": "/reference/cli/config#provider-remove"
+  },
+  {
+    "source": "/reference/cli/config/provider/list",
+    "destination": "/reference/cli/config#provider-list"
+  },
+  {
+    "source": "/reference/cli/config/service/set",
+    "destination": "/reference/cli/config#service-set"
+  },
+  {
+    "source": "/reference/cli/config/service/remove",
+    "destination": "/reference/cli/config#service-remove"
+  },
+  {
+    "source": "/reference/cli/config/service/list",
+    "destination": "/reference/cli/config#service-list"
+  },
+  {
+    "source": "/reference/sdk/runs/start",
+    "destination": "/reference/sdk/runs#start"
+  },
+  {
+    "source": "/reference/sdk/runs/fetch",
+    "destination": "/reference/sdk/runs#fetch"
+  },
+  {
+    "source": "/reference/sdk/runs/list",
+    "destination": "/reference/sdk/runs#list"
+  },
+  {
+    "source": "/reference/sdk/runs/stream",
+    "destination": "/reference/sdk/runs#stream"
+  },
+  {
+    "source": "/reference/sdk/runs/results",
+    "destination": "/reference/sdk/runs#results"
+  },
+  {
+    "source": "/reference/sdk/runs/metadata",
+    "destination": "/reference/sdk/runs#metadata"
+  },
+  {
+    "source": "/reference/sdk/runs/results_exist",
+    "destination": "/reference/sdk/runs#results-exist"
+  },
+  {
+    "source": "/reference/sdk/runs/analyze",
+    "destination": "/reference/sdk/runs#analyze"
+  },
+  {
+    "source": "/reference/sdk/runs/stream_outputs",
+    "destination": "/reference/sdk/runs#stream-outputs"
+  },
+  {
+    "source": "/reference/sdk/runs/stop",
+    "destination": "/reference/sdk/runs#stop"
+  },
+  {
+    "source": "/reference/sdk/runs/resume",
+    "destination": "/reference/sdk/runs#resume"
+  },
+  {
+    "source": "/reference/sdk/runs/retry",
+    "destination": "/reference/sdk/runs#retry"
+  },
+  {
+    "source": "/reference/sdk/benchmarks/fetch",
+    "destination": "/reference/sdk/benchmarks#fetch"
+  },
+  {
+    "source": "/reference/sdk/benchmarks/statuses",
+    "destination": "/reference/sdk/benchmarks#statuses"
+  },
+  {
+    "source": "/reference/sdk/benchmarks/tasks",
+    "destination": "/reference/sdk/benchmarks#tasks"
+  },
+  {
+    "source": "/reference/sdk/benchmarks/task",
+    "destination": "/reference/sdk/benchmarks#task"
+  },
+  {
+    "source": "/reference/sdk/benchmarks/artifacts",
+    "destination": "/reference/sdk/benchmarks#artifacts"
+  },
+  {
+    "source": "/reference/sdk/agents/list",
+    "destination": "/reference/sdk/agents#list"
+  },
+  {
+    "source": "/reference/sdk/agents/download_url",
+    "destination": "/reference/sdk/agents#download-url"
+  },
+  {
+    "source": "/reference/sdk/services/catalog",
+    "destination": "/reference/sdk/services#catalog"
+  },
+  {
+    "source": "/reference/sdk/services/list",
+    "destination": "/reference/sdk/services#list"
+  },
+  {
+    "source": "/reference/sdk/services/task_ids",
+    "destination": "/reference/sdk/services#task-ids"
+  },
+  {
+    "source": "/reference/sdk/models/agents/agent-contract-request",
+    "destination": "/reference/sdk/models/agents#agent-contract-request"
+  },
+  {
+    "source": "/reference/sdk/models/agents/agent-download-url-response",
+    "destination": "/reference/sdk/models/agents#agent-download-url-response"
+  },
+  {
+    "source": "/reference/sdk/models/agents/agent-entry",
+    "destination": "/reference/sdk/models/agents#agent-entry"
+  },
+  {
+    "source": "/reference/sdk/models/agents/agents-response",
+    "destination": "/reference/sdk/models/agents#agents-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/analyze-event",
+    "destination": "/reference/sdk/models/runs#analyze-event"
+  },
+  {
+    "source": "/reference/sdk/models/services/benchmark-service-catalog-response",
+    "destination": "/reference/sdk/models/services#benchmark-service-catalog-response"
+  },
+  {
+    "source": "/reference/sdk/models/services/benchmark-service-entry",
+    "destination": "/reference/sdk/models/services#benchmark-service-entry"
+  },
+  {
+    "source": "/reference/sdk/models/services/benchmark-service-health",
+    "destination": "/reference/sdk/models/services#benchmark-service-health"
+  },
+  {
+    "source": "/reference/sdk/models/services/benchmark-services-response",
+    "destination": "/reference/sdk/models/services#benchmark-services-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/benchmark-status",
+    "destination": "/reference/sdk/models/runs#benchmark-status"
+  },
+  {
+    "source": "/reference/sdk/models/benchmarks/benchmark-status-entry",
+    "destination": "/reference/sdk/models/benchmarks#benchmark-status-entry"
+  },
+  {
+    "source": "/reference/sdk/models/benchmarks/benchmark-status-response",
+    "destination": "/reference/sdk/models/benchmarks#benchmark-status-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/fetch-benchmark-response",
+    "destination": "/reference/sdk/models/runs#fetch-benchmark-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/fetch-benchmark-metadata-response",
+    "destination": "/reference/sdk/models/runs#fetch-benchmark-metadata-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/fetch-benchmarks-request",
+    "destination": "/reference/sdk/models/runs#fetch-benchmarks-request"
+  },
+  {
+    "source": "/reference/sdk/models/runs/fetch-benchmarks-response",
+    "destination": "/reference/sdk/models/runs#fetch-benchmarks-response"
+  },
+  {
+    "source": "/reference/sdk/models/benchmarks/fetch-tasks-request",
+    "destination": "/reference/sdk/models/benchmarks#fetch-tasks-request"
+  },
+  {
+    "source": "/reference/sdk/models/runs/final-view-response",
+    "destination": "/reference/sdk/models/runs#final-view-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/order",
+    "destination": "/reference/sdk/models/runs#order"
+  },
+  {
+    "source": "/reference/sdk/models/runs/retry-mode",
+    "destination": "/reference/sdk/models/runs#retry-mode"
+  },
+  {
+    "source": "/reference/sdk/models/runs/retry-or-resume-benchmark-response",
+    "destination": "/reference/sdk/models/runs#retry-or-resume-benchmark-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/results-exist-response",
+    "destination": "/reference/sdk/models/runs#results-exist-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/s3-upload-results-response",
+    "destination": "/reference/sdk/models/runs#s3-upload-results-response"
+  },
+  {
+    "source": "/reference/sdk/models/benchmarks/single-benchmark-response",
+    "destination": "/reference/sdk/models/benchmarks#single-benchmark-response"
+  },
+  {
+    "source": "/reference/sdk/models/benchmarks/single-task-response",
+    "destination": "/reference/sdk/models/benchmarks#single-task-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/start-benchmark-response",
+    "destination": "/reference/sdk/models/runs#start-benchmark-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/stop-benchmark-response",
+    "destination": "/reference/sdk/models/runs#stop-benchmark-response"
+  },
+  {
+    "source": "/reference/sdk/models/benchmarks/task-artifacts-response",
+    "destination": "/reference/sdk/models/benchmarks#task-artifacts-response"
+  },
+  {
+    "source": "/reference/sdk/models/benchmarks/tasks-response",
+    "destination": "/reference/sdk/models/benchmarks#tasks-response"
+  },
+  {
+    "source": "/reference/sdk/models/benchmarks/task-summary",
+    "destination": "/reference/sdk/models/benchmarks#task-summary"
+  },
+  {
+    "source": "/reference/sdk/models/runs/task-status",
+    "destination": "/reference/sdk/models/runs#task-status"
+  },
+  {
+    "source": "/reference/sdk/models/config/valkyrie-config",
+    "destination": "/reference/sdk/models/config#valkyrie-config"
+  }
+]

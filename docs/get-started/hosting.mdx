@@ -1,0 +1,91 @@
+---
+title: Choose a hosting mode
+description: Compare hosted and self-hosted Valkyrie deployments.
+---
+
+There are two separate choices here. Hosted or self-hosted decides who operates the tracker and executor host, while managed or access-key AWS decides which AWS account and credentials a run uses. Hosted mode works with either AWS execution mode: eligible organizations start on managed AWS, and can add access keys later to run against their own AWS resources instead.
+
+## Hosted mode
+
+In hosted mode, Vals operates the compute infrastructure and your Vals API key keeps each organization's data separate.
+
+### Requirements
+
+- A Vals API key provided by Vals. Request one at [contact@vals.ai](mailto:contact@vals.ai)
+- Local AWS SDK credentials for direct agent uploads and artifact downloads, including `AWS_PROFILE` with AWS SSO
+- A [sandbox-provider secret](/get-started/sandbox-providers)
+- For access-key execution, AWS credentials with the [required permissions](/self-hosting/aws-permissions) and an existing S3 bucket
+
+Run configuration and choose **hosted**:
+
+```bash
+valkyrie config init
+```
+
+Hosted setup also asks for the hosted environment, `bench` (`https://benchmark-tracker.vals.ai`) or `prod` (`https://benchmark-tracker-prod.vals.ai`), and saves that choice for later commands. The CLI validates the Vals API key against that environment and configures the organization. When the organization can use managed AWS, it reads the Region and S3 bucket from the tracker instead of asking for access keys.
+
+Set a Vals API key directly when needed:
+
+```bash
+valkyrie config set api_key <your-vals-api-key>
+```
+
+Contact `contact@vals.ai` for hosted access.
+
+### AWS execution mode
+
+The AWS credential fields in the selected config decide how new runs execute.
+
+| Configured fields | Run execution mode |
+| --- | --- |
+| Neither `AWS_ACCESS_KEY_ID` nor `AWS_SECRET_ACCESS_KEY` | Managed AWS. The tracker and executor host use deployment task roles. |
+| Both `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` | Access-key AWS. The tracker receives the configured AWS resources and credentials. |
+| Only one access-key field | Invalid. Valkyrie stops before sending the request. |
+
+Managed execution still leaves local AWS operations to you: agent uploads and artifact downloads go through the local AWS SDK credential chain.
+
+To use access-key AWS in hosted mode, run hosted setup first, then add a complete access-key configuration:
+
+```bash
+valkyrie config set AWS_ACCESS_KEY_ID <access-key-id>
+valkyrie config set AWS_SECRET_ACCESS_KEY <secret-access-key>
+valkyrie config set AWS_DEFAULT_REGION <region>
+valkyrie config set S3_BUCKET <bucket-name>
+valkyrie config set LOG_GROUP <log-group-prefix>
+valkyrie config set LOG_RETENTION_POLICY 365
+```
+
+Add `valkyrie config set AWS_SESSION_TOKEN <session-token>` for temporary credentials. Return to managed execution by removing the credential fields; the Region and bucket remain for local AWS operations.
+
+```bash
+valkyrie config remove AWS_ACCESS_KEY_ID
+valkyrie config remove AWS_SECRET_ACCESS_KEY
+valkyrie config remove AWS_SESSION_TOKEN
+```
+
+The tracker stores the AWS execution mode when a run starts. Retrying or resuming a run uses the stored mode rather than the current local config, so an access-key run still requires the access-key configuration it started with.
+
+## Self-hosted mode
+
+In self-hosted mode you run the tracker service and the AWS infrastructure yourself.
+
+### Requirements
+
+- A deployed tracker service
+- AWS credentials with the [required permissions](/self-hosting/aws-permissions); self-hosted mode always uses access-key execution
+- An existing S3 bucket for benchmark artifacts and agents
+- A [sandbox-provider secret](/get-started/sandbox-providers)
+
+Point the CLI at your tracker before configuration:
+
+```bash
+export TRACKER_SERVICE_URL=https://your-tracker.example.com
+```
+
+Then run configuration and choose **self-hosted**:
+
+```bash
+valkyrie config init
+```
+
+Self-hosted mode uses neither a Vals API key nor Descope authentication, so the tracker assigns all data to its default organization. Read the [infrastructure guide](/self-hosting/infrastructure) before deploying the included AWS CDK application.

@@ -1,0 +1,37 @@
+---
+title: Benchmark authentication
+description: Store benchmark-service credentials and send request-specific headers.
+---
+
+Benchmark-service credentials are separate from the Vals API key used to authenticate with the hosted tracker.
+
+## Store an Authorization credential
+
+```bash
+valkyrie config auth set <benchmark-name> <credential>
+```
+
+The CLI sends the stored value as the `Authorization` header on every request to that benchmark.
+
+List masked credentials or remove one:
+
+```bash
+valkyrie config auth list
+valkyrie config auth remove <benchmark-name>
+```
+
+Credentials are stored under `benchmark_auth` in `~/.config/valkyrie/valkyrie.yaml`. See the [`config auth set`](/reference/cli/config#auth-set), [`config auth list`](/reference/cli/config#auth-list), and [`config auth remove`](/reference/cli/config#auth-remove) reference for full syntax.
+
+## Send runtime headers
+
+Use repeatable `-H` or `--header` pairs:
+
+```bash
+valkyrie run start \
+  --benchmark my-benchmark \
+  --agent sweagent \
+  -H X-Custom-Header my-value \
+  -H X-Another-Header another-value
+```
+
+Runtime headers merge with the stored credential. An explicit `Authorization` runtime header overrides the stored value for that run.
