@@ -9,7 +9,7 @@ import tarfile
 from collections.abc import AsyncIterator
 from datetime import timezone
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock
 from uuid import UUID, uuid4
 
 import httpx
@@ -422,6 +422,172 @@ class TestTrackerAPI:
         assert response.status_code == 200
         assert response.json() == {"task_ids": ["task_1", "task_2"]}
 
+    @pytest.mark.parametrize(
+        (
+            "sandbox_queue_enabled",
+            "provider_pool_id",
+            "requested_priority",
+            "expected_priority",
+        ),
+        [
+            pytest.param(False, "shared-pool", None, None, id="queue-disabled-direct"),
+            pytest.param(True, "shared-pool", None, 3, id="queued-default-priority"),
+            pytest.param(True, "shared-pool", 0, 0, id="queued-explicit-zero-priority"),
+            pytest.param(True, None, None, None, id="unmanaged-provider-direct"),
+        ],
+    )
+    async def test_start_benchmark_persists_tasks_before_dispatch_and_sets_queue_fields(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        mock_kicker: Any,
+        sandbox_queue_enabled: bool,
+        provider_pool_id: str | None,
+        requested_priority: int | None,
+        expected_priority: int | None,
+    ) -> None:
+        monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", sandbox_queue_enabled, raising=False)
+        provider: Mock | None = None
+        if sandbox_queue_enabled:
+            provider = Mock(admission_pool_id=provider_pool_id, close=AsyncMock())
+            provider_config = Mock()
+            provider_config.create_provider.return_value = provider
+            monkeypatch.setattr("main.fetch_sandbox_provider_config", Mock(return_value=provider_config))
+        else:
+            monkeypatch.setattr(
+                "main.fetch_sandbox_provider_config",
+                Mock(side_effect=RuntimeError("provider resolution must not run")),
+            )
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            harness_config=harness_config,
+            priority=requested_priority,
+            sandbox_provider="daytona",
+        )
+
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_0", "task_1"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        response = client.post("/start-benchmark", json=request.model_dump(exclude={"concurrency"}))
+
+        assert response.status_code == 200
+        json_response = response.json()
+        benchmark_row = database_session.get(Benchmark, UUID(json_response["benchmark_id"]))
+        assert benchmark_row is not None
+        assert benchmark_row.arguments.priority == expected_priority
+        queued = expected_priority is not None
+        assert (benchmark_row.arguments.queue_pool_id is not None) is queued
+
+        task_rows = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        assert {task_row.task_id for task_row in task_rows} == {"task_0", "task_1"}
+
+        worker_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        assert {key: worker_request[key] for key in ("concurrency", "priority")} == {
+            "concurrency": 5,
+            "priority": expected_priority,
+        }
+        if provider is not None:
+            provider.close.assert_awaited_once_with()
+
+    async def test_start_benchmark_queue_resolves_daytona_provider_from_secret_store(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ) -> None:
+        """Queued Daytona admission should load provider configuration through the secret store."""
+        monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", True, raising=False)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            harness_config=harness_config,
+            sandbox_provider="daytona",
+        )
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 200
+        benchmark_row = database_session.get(Benchmark, UUID(response.json()["benchmark_id"]))
+        assert benchmark_row is not None
+        assert benchmark_row.arguments.priority == 3
+        assert benchmark_row.arguments.queue_pool_id is not None
+
+    @pytest.mark.parametrize(
+        ("priority", "expected_status"),
+        [
+            pytest.param(None, 200, id="direct"),
+            pytest.param(1, 400, id="priority-rejected"),
+        ],
+    )
+    async def test_start_benchmark_modal_skips_queue_provider_resolution(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+        priority: int | None,
+        expected_status: int,
+    ) -> None:
+        monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", True, raising=False)
+        monkeypatch.setattr(
+            "main.fetch_sandbox_provider_config",
+            Mock(side_effect=RuntimeError("Modal credentials must not be resolved for admission")),
+        )
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            harness_config=harness_config.model_copy(update={"sandbox_provider_secret_name": "ModalSecrets"}),
+            priority=priority,
+            sandbox_provider="modal",
+        )
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == expected_status
+        if priority is None:
+            assert response.json()["task_count"] == 1
+        else:
+            assert response.json() == {"detail": "Queue priority requires a sandbox provider configured for admission"}
+
+    async def test_start_benchmark_marks_persisted_queue_error_when_start_setup_fails(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        mock_kicker: Any,
+    ) -> None:
+        monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", True, raising=False)
+        provider_config = Mock()
+        provider_config.create_provider.return_value = Mock(admission_pool_id="shared-pool", close=AsyncMock())
+        monkeypatch.setattr("main.fetch_sandbox_provider_config", Mock(return_value=provider_config))
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        monkeypatch.setattr(
+            "main.copy_agent_to_benchmark",
+            AsyncMock(side_effect=RuntimeError("copy failed")),
+        )
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            harness_config=harness_config,
+        )
+
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/start-benchmark",
+            json=request.model_dump(),
+        )
+
+        assert response.status_code == 500
+        assert database_session.exec(select(Benchmark)).all() == []
+        assert database_session.exec(select(Task)).all() == []
+
     async def test_fetch_benchmark_tasks_forwards_tracker_key_only_to_hosted_origin(
         self,
         monkeypatch: MonkeyPatch,
@@ -486,16 +652,6 @@ class TestTrackerAPI:
         harness_config: HarnessConfig,
         mock_kicker: Any,
     ) -> None:
-        """Test start benchmark of the fastapi server.
-
-        Test Cases:
-            - Returns 200 OK
-            - Start timestamp is in UTC timezone
-            - Returning task count provided from the verify_task_ids function
-            - Benchmark row has been created and pushed to the database
-        """
-
-        # Example request sent from the cli to the fastapi server
         request = StartBenchmarkRequest(
             contract=contract,
             benchmark_name="swebench",
@@ -507,17 +663,9 @@ class TestTrackerAPI:
         async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
             return VerifyTaskIdsResponse(task_ids=[f"task_{i}" for i in range(500)])
 
-        monkeypatch.setattr(
-            BenchmarkServiceClient,
-            "verify_task_ids",
-            _mock_verify_task_ids,
-        )
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
 
-        # Send request to start the run and ensure that the start response is returned
-        response = client.post(
-            "/start-benchmark",
-            json=request.model_dump(),
-        )
+        response = client.post("/start-benchmark", json=request.model_dump())
 
         # Test case 1. Returns 200 OK
         assert response.status_code == 200
@@ -901,7 +1049,7 @@ class TestTrackerAPI:
         monkeypatch.setattr(main_module, "_start_admission_is_absent", verify_absent)
         monkeypatch.setattr(main_module.S3ObjectStore, "delete", delete_agent_copy)
 
-        await getattr(main_module, "_rollback_failed_start_admission")(
+        await main_module._rollback_failed_start_admission(  # pyright: ignore[reportPrivateUsage]
             database_session,
             benchmark_id=uuid4(),
             dispatch_id=uuid4(),
@@ -1101,6 +1249,14 @@ class TestTrackerAPI:
         )
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+
+        def fetch_modal_secret(_self: object, name: str) -> dict[str, str]:
+            return {"MODAL_TOKEN_ID": "test-id", "MODAL_TOKEN_SECRET": "test-secret"} if name == "ModalSecrets" else {}
+
+        monkeypatch.setattr(
+            "tracker.aws.secrets.SecretsManagerStore.get",
+            fetch_modal_secret,
+        )
 
         response = client.post(
             "/start-benchmark",

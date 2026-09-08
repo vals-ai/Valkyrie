@@ -15,10 +15,13 @@ run = await client.runs.start(
     benchmark="swebench",
     model="anthropic/claude-sonnet-4-6",
     concurrency=10,
+    priority=3,
     dataset="default",
     label="nightly-swebench",
 )
 ```
+
+`priority` accepts `0` (P0, highest) through `4` (P4, lowest). Managed shared-pool runs default to P3 when it is omitted. An explicit priority is rejected when the tracker queue is disabled or the selected provider uses direct execution. See [Start a run](/runs/start#prioritize-work-in-a-managed-sandbox-pool) for the queue behavior.
 
 ## Fetch or stream progress
 

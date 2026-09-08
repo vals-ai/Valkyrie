@@ -52,6 +52,34 @@ from tracker.utils.task_error_summary import summarize_task_errors
 from tracker.utils.task_execution import TaskMonitor
 
 
+async def _skip_cloud_operation(*_args: Any, **_kwargs: Any) -> None:
+    return None
+
+
+def _skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+    return "test-log-group"
+
+
+def _provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
+    return DaytonaProviderConfig(
+        DAYTONA_API_KEY="test-key",
+        DAYTONA_API_URL="https://example.com",
+        DAYTONA_TARGET="test-target",
+    )
+
+
+def _patch_process_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+    postgres_engine: Engine,
+    *,
+    upload: Any = _skip_cloud_operation,
+) -> None:
+    monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
+    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", _skip_log_group)
+    monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", _provider_config)
+    monkeypatch.setattr(run_orchestration_module, "upload_final_view", upload)
+
+
 class TestRunFinalization:
     """Run finalization and concurrent retry behavior."""
 
@@ -66,12 +94,14 @@ class TestRunFinalization:
 
         Test cases:
         - A concurrent retry leaves the run in progress and defers finalization.
+        - A resumed evaluation that finishes leaves the run in progress for fresh finalization.
         - A concurrent stop marks the run stopped without committing an error summary.
         """
         org = Org(id=uuid4(), name=f"error-finalization-race-{uuid4()}")
         contract = AgentContractRequest(name="error-race-agent", install_cmd="true", run_cmd="true")
         target_statuses = {
             "retry-during-summary": TaskStatus.PENDING,
+            "finish-during-summary": TaskStatus.FINISHED,
             "stop-during-summary": TaskStatus.STOPPED,
         }
 
@@ -102,6 +132,15 @@ class TestRunFinalization:
                 ).one()
                 task.status = target_statuses[task_id]
                 transition_session.add(task)
+                if task.status == TaskStatus.FINISHED:
+                    transition_session.add(
+                        EvaluationResult(
+                            org_id=org.id,
+                            task=task.id,
+                            instance_id=f"summary-race-{task.id}",
+                            result={"score": 1.0},
+                        )
+                    )
                 transition_session.commit()
 
             return summarize_task_errors(task_errors)
@@ -130,9 +169,10 @@ class TestRunFinalization:
         with Session(postgres_engine) as assertion_session:
             persisted_benchmarks = [assertion_session.get(Benchmark, benchmark.id) for benchmark in benchmarks]
 
-        assert deferred_results == [True, False]
+        assert deferred_results == [True, True, False]
         assert all(benchmark is not None for benchmark in persisted_benchmarks)
         assert [benchmark.status for benchmark in persisted_benchmarks if benchmark] == [
+            BenchmarkStatus.IN_PROGRESS,
             BenchmarkStatus.IN_PROGRESS,
             BenchmarkStatus.STOPPED,
         ]
@@ -212,10 +252,10 @@ class TestRunFinalization:
         monkeypatch: pytest.MonkeyPatch,
         executor_authority_kwargs: Any,
     ) -> None:
-        """A retry starting during finalization must leave the run active without a stale score.
+        """A retry finishing during finalization must leave the run active without a stale score.
 
         Test cases:
-        - A task becomes runnable after scoring and the worker's initial finalization check.
+        - A task advances attempt and writes a new result while final_score awaits.
         - The old worker leaves the benchmark in progress without writing its stale final score.
         """
         org = Org(id=uuid4(), name=f"finalization-race-{uuid4()}")
@@ -319,7 +359,6 @@ class TestRunFinalization:
         assert benchmark.current_execution_release_id is not None
         promote_release(postgres_session, benchmark.current_execution_release_id)
         postgres_session.commit()
-
         await process_benchmark(
             start_benchmark_request_json=request.model_dump(),
             benchmark_id_str=str(benchmark.id),
@@ -639,20 +678,7 @@ class TestRunFinalization:
             benchmarks.append((benchmark, expected_summary))
         postgres_session.commit()
 
-        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
-            return "test-log-group"
-
-        def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
-            return DaytonaProviderConfig(
-                DAYTONA_API_KEY="test-key",
-                DAYTONA_API_URL="https://example.com",
-                DAYTONA_TARGET="test-target",
-            )
-
-        monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
-
-        monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", skip_log_group)
-        monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", provider_config)
+        _patch_process_dependencies(monkeypatch, postgres_engine)
 
         for benchmark, expected_summary in benchmarks:
             request = StartBenchmarkRequest(
