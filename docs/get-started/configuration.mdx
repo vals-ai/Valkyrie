@@ -1,0 +1,67 @@
+---
+title: Configure the CLI
+description: Manage Valkyrie credentials, endpoints, and sandbox providers.
+---
+
+The CLI stores configuration in `~/.config/valkyrie/valkyrie.yaml`. Every `config` command is in the [`valkyrie config` reference](/reference/cli/config).
+
+## Initialize configuration
+
+```bash
+valkyrie config init
+```
+
+Initialization selects a [hosting mode](/get-started/hosting) and collects its required AWS and tracker credentials.
+
+## Set or remove a value
+
+```bash
+valkyrie config set <KEY> <VALUE>
+```
+
+```bash
+valkyrie config remove <KEY>
+```
+
+Use `config set api_key` only for the Vals API key used by hosted tracker authentication. Benchmark-service credentials use the separate [authentication commands](/benchmarks/authentication).
+
+## Configure sandbox providers
+
+Map a provider name to an AWS Secrets Manager secret:
+
+```bash
+valkyrie config provider set daytona DaytonaSecrets
+```
+
+The first configured provider becomes the default. Change it explicitly with:
+
+```bash
+valkyrie config provider default daytona
+```
+
+List or remove provider mappings with:
+
+```bash
+valkyrie config provider list
+valkyrie config provider remove <name>
+```
+
+Select another configured provider for one run with `valkyrie run start --provider <name>`. See [Configure sandbox providers](/get-started/sandbox-providers) for the Daytona secret shape.
+
+## Environment variables
+
+The CLI reads these variables at startup, before any configuration file is loaded.
+
+| Variable | Effect |
+| --- | --- |
+| `VALKYRIE_ENV` | Legacy override for the hosted environment saved by `config init`. Accepts `bench`, `dev`, `prod` (a compatibility alias for `bench`), and `external` (the production environment). Any other value fails immediately. |
+| `TRACKER_SERVICE_URL` | Overrides the tracker endpoint for every environment. |
+| `VALKYRIE_CONFIG_PATH` | Overrides the configuration file path. |
+| `VALKYRIE_API_KEY` | Supplies the Vals API key during `config init` in hosted mode instead of prompting for it. |
+| `VALKYRIE_CLI_LOGS` | Set to `true` to print library log output. Logs are suppressed otherwise. |
+
+Hosted setup saves the selected environment in the configuration file, so leave `VALKYRIE_ENV` unset for normal use. With `VALKYRIE_ENV=dev` the CLI uses `https://benchmark-tracker-dev.vals.ai` and `~/.config/valkyrie/dev.yaml`, so a development profile never overwrites your hosted configuration.
+
+## Configure benchmark services
+
+Custom benchmark endpoints and credentials use `config service` and `config auth`. See [Custom benchmark services](/benchmarks/custom-services) and [Benchmark authentication](/benchmarks/authentication).

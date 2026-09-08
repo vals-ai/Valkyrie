@@ -1,0 +1,98 @@
+---
+title: What is Valkyrie?
+description: Why Vals built Valkyrie, and how its pieces fit together.
+---
+
+Valkyrie is a cloud service for building and running agentic benchmarks. It came out of months of running evaluations at Vals AI and repeatedly hitting the places where the usual research workflow breaks down.
+
+Evaluation used to happen on each researcher's own machine: one large instance, one local copy of the benchmark, results written to local disk. Every run competed with every other run for the same machine, every benchmark change had to be pulled and reconfigured by hand, and the record of what happened disappeared with the instance. Comparing two results meant trusting that they were produced under the same conditions.
+
+At the volume we run benchmarks, that model stops working. We hit the unusual cases first: a benchmark that needs a GPU, a task that needs a snapshot restored, an agent that needs network egress rules, a run that has to survive a worker restart. Existing harnesses could not absorb those cases at our scale, so we moved the whole process into the cloud as a service. Researchers now create, host, and run benchmarks in parallel, and because the results land in shared storage rather than on one person's laptop, they stay around and stay comparable after the run is over.
+
+## The problems we hit
+
+**Maintainer scalability.** When every benchmark lives in one repository, adding a benchmark means a pull request the core team has to review, and every user has to pull the change and reconfigure. Version mismatches between users are silent and hard to diagnose.
+
+**Infrastructure scalability.** A single large instance has to be sized for peak load, sits idle between runs, and still caps parallelism far below what a benchmark with hundreds of tasks needs. Logs, results, and agent outputs live on that instance's disk, where they are easy to lose and hard to search.
+
+**Submission verification.** When generation happens on the submitter's machine, a maintainer can re-score the outputs but cannot verify the conditions that produced them, such as per-task time limits, turn budgets, or network restrictions. Results are only comparable when those constraints are actually enforced.
+
+**Agent integration.** Harnesses that require an agent to implement a class or function signature ask for far more code than the job needs, since the parts that actually differ between agents are the install command, the run command, where output lands, and which secrets and network access it needs.
+
+## How Valkyrie solves it
+
+Valkyrie splits the benchmark, the agent, and the infrastructure into pieces that are deployed and changed independently.
+
+<CardGroup cols={2}>
+  <Card title="Benchmarks as services" icon="plug">
+    Each benchmark is a small hosted service that its author maintains, so a new benchmark is usable as soon as it is deployed, with no change to the harness and no local copy to update.
+  </Card>
+  <Card title="Declarative agents" icon="file-code">
+    An agent is described by a contract: install command, run command, output location, secrets, and egress rules. Valkyrie does the rest.
+  </Card>
+  <Card title="Horizontal execution" icon="layers">
+    Tasks run in separate sandboxes created on demand, so how many run at once depends on your sandbox provider's limits instead of the size of one machine.
+  </Card>
+  <Card title="Results in your account" icon="database">
+    Runs, logs, and artifacts are written to your own AWS account, so a finished run is still there to read, compare, and re-score later.
+  </Card>
+</CardGroup>
+
+Because the agent runs inside infrastructure Valkyrie sets up, per-task time limits and network rules are actually applied rather than taken on trust, and each run stores the settings it ran under alongside its results.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph clients["Clients"]
+    CLI["CLI"]
+    SDK["Python SDK"]
+  end
+
+  subgraph platform["Valkyrie platform (your AWS account)"]
+    Tracker["Tracker<br/>run state, dispatch, API"]
+    Executor["Executor<br/>task execution workers"]
+    Storage["S3 + CloudWatch + PostgreSQL<br/>artifacts, logs, run history"]
+  end
+
+  Sandboxes["Sandbox provider<br/>Daytona / Modal"]
+  Services["Benchmark services<br/>tasks + evaluation"]
+
+  CLI --> Tracker
+  SDK --> Tracker
+  Tracker --> Executor
+  Tracker --> Storage
+  Executor --> Sandboxes
+  Executor --> Services
+  Executor --> Storage
+```
+
+| Piece | What it does |
+| --- | --- |
+| CLI and SDK | Start runs, upload agents, monitor progress, retrieve results |
+| Tracker | Tracks run state, hands out tasks, and serves the API |
+| Executor | Runs one task from start to finish: create the sandbox, install and run the agent, collect the outputs |
+| Sandbox provider | Supplies the isolated environment each task runs in |
+| Benchmark service | Serves the tasks and scores the results for one benchmark |
+| Storage | Keeps artifacts, logs, and run history in your account |
+
+For the AWS resources a deployment creates, see [self-hosting infrastructure](/self-hosting/infrastructure).
+
+## Paper
+
+Valkyrie is described in [Valkyrie: A Microservice-Based Framework for Scalable Evaluation of AI Agents](https://doi.org/10.1145/3786335.3813231) (CAIS '26), which tests the system by running four agents across SWE-bench Verified and Terminal-Bench 2.0. A reading copy is on [alphaXiv](https://www.alphaxiv.org/abs/valkyrie).
+
+```bibtex
+@inproceedings{forzano2026valkyrie,
+  author    = {Forzano, Jarett and Almatov, Omar and Nashold, Langston and Ravi, Nikil and Kassian, Orestes},
+  title     = {Valkyrie: A Microservice-Based Framework for Scalable Evaluation of AI Agents},
+  booktitle = {Proceedings of the 1st ACM Conference on Agentic and AI Systems},
+  series    = {CAIS '26},
+  year      = {2026},
+  month     = {may},
+  address   = {San Jose, CA, USA},
+  publisher = {ACM},
+  doi       = {10.1145/3786335.3813231},
+  url       = {https://doi.org/10.1145/3786335.3813231}
+}
+```

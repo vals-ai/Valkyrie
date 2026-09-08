@@ -1,7 +1,8 @@
 .PHONY: help install lint typecheck test venv_check validate-scope preflight \
 	plan diff deploy deploy-shared deploy-tracker deploy-driver deploy-executor hotswap destroy
 
-PRODUCTION_ACCOUNT_ID ?= 613431292675
+BENCH_ACCOUNT_ID ?=
+PRODUCTION_ACCOUNT_ID ?=
 
 STAGE ?=
 AWS_REGION ?=
@@ -9,8 +10,8 @@ DEV_ACCOUNT_ID ?=
 PROFILE ?=
 SCOPE ?= all
 
-EXPECTED_ACCOUNT_ID = $(if $(filter dev release-test,$(STAGE)),$(DEV_ACCOUNT_ID),$(if $(filter prod,$(STAGE)),$(PRODUCTION_ACCOUNT_ID),))
-STACK_PREFIX = $(if $(filter dev,$(STAGE)),ValkDev,$(if $(filter release-test,$(STAGE)),ValkReleaseTest,))
+EXPECTED_ACCOUNT_ID = $(if $(filter dev release-test,$(STAGE)),$(DEV_ACCOUNT_ID),$(if $(filter bench,$(STAGE)),$(BENCH_ACCOUNT_ID),$(if $(filter prod,$(STAGE)),$(PRODUCTION_ACCOUNT_ID),)))
+STACK_PREFIX = $(if $(filter dev,$(STAGE)),ValkDev,$(if $(filter release-test,$(STAGE)),ValkReleaseTest,$(if $(filter prod,$(STAGE)),ValkProd,)))
 STACKS_shared = $(STACK_PREFIX)SharedStack
 STACKS_tracker = $(STACK_PREFIX)TrackerStack
 STACKS_driver = $(STACK_PREFIX)DriverStack
@@ -29,14 +30,14 @@ CDK_DEFAULT_REGION ?= $(AWS_REGION)
 CDK_CTX = -c stage=$(STAGE)
 CDK_PROFILE = $(if $(strip $(PROFILE)),--profile "$(PROFILE)",)
 
-export STAGE AWS_REGION DEV_ACCOUNT_ID PRODUCTION_ACCOUNT_ID PROFILE
+export STAGE AWS_REGION BENCH_ACCOUNT_ID DEV_ACCOUNT_ID PRODUCTION_ACCOUNT_ID PROFILE
 export CDK_DEFAULT_ACCOUNT CDK_DEFAULT_REGION
 
 help:
 	@echo "Makefile for Valkyrie infrastructure"
 	@echo ""
 	@echo "  make install                                  - Install CDK dependencies"
-	@echo "  make plan STAGE=dev|release-test|prod AWS_REGION=us-east-1 - Show a CDK diff"
+	@echo "  make plan STAGE=dev|release-test|bench|prod AWS_REGION=us-east-1 - Show a CDK diff"
 	@echo "  make deploy STAGE=<stage> AWS_REGION=us-east-1 - Deploy a component"
 	@echo "  make test                                     - Run infrastructure tests"
 	@echo "  make lint                                     - Check infrastructure formatting and lint"

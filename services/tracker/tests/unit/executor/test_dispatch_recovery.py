@@ -4,9 +4,48 @@ from collections.abc import Callable
 from threading import Event
 from unittest.mock import Mock
 
+import pytest
 from pytest import MonkeyPatch
 
 from tracker.executor import dispatch_recovery
+
+
+class SessionContext:
+    def __init__(self, session: Mock) -> None:
+        self.session = session
+
+    def __enter__(self) -> Mock:
+        return self.session
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
+def test_reconcile_once_commits_a_successful_pass(monkeypatch: MonkeyPatch) -> None:
+    session = Mock()
+    monkeypatch.setattr(dispatch_recovery, "Session", lambda _engine: SessionContext(session))
+    monkeypatch.setattr(dispatch_recovery, "reconcile_expired_dispatches", lambda _session: 3)
+
+    assert dispatch_recovery.reconcile_expired_dispatches_once() == 3
+
+    session.commit.assert_called_once_with()
+    session.rollback.assert_not_called()
+
+
+def test_reconcile_once_rolls_back_and_reraises_failures(monkeypatch: MonkeyPatch) -> None:
+    session = Mock()
+    monkeypatch.setattr(dispatch_recovery, "Session", lambda _engine: SessionContext(session))
+
+    def fail_reconciliation(_session: Mock) -> int:
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(dispatch_recovery, "reconcile_expired_dispatches", fail_reconciliation)
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        dispatch_recovery.reconcile_expired_dispatches_once()
+
+    session.rollback.assert_called_once_with()
+    session.commit.assert_not_called()
 
 
 def test_recovery_loop_retries_after_a_failed_pass(monkeypatch: MonkeyPatch) -> None:
@@ -71,3 +110,30 @@ def test_automatic_recovery_starts_and_stops_owned_thread(monkeypatch: MonkeyPat
     recovery.stop()
 
     assert events == ["started", "joined"]
+
+
+def test_automatic_recovery_logs_if_owned_thread_does_not_stop(monkeypatch: MonkeyPatch) -> None:
+    logger = Mock()
+
+    class NeverStops:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def join(self, timeout: float) -> None:
+            assert timeout == 5
+
+        def is_alive(self) -> bool:
+            return True
+
+    monkeypatch.setattr(dispatch_recovery, "Thread", NeverStops)
+    monkeypatch.setattr(dispatch_recovery, "_logger", logger)
+
+    dispatch_recovery.AutomaticDispatchRecovery().stop()
+
+    logger.error.assert_called_once_with(
+        "executor_dispatch_recovery_shutdown_timeout",
+        extra={"event": "automatic_dispatch_recovery_shutdown_timeout"},
+    )

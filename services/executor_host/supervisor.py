@@ -784,6 +784,7 @@ async def run_executor_dispatch(
     executor_dispatch_id: str,
     dispatch: ArtifactDispatch,
     process_payload: ExecutorProcessPayload,
+    heartbeat_interval_seconds: float = DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS,
 ) -> None:
     protection_task = asyncio.create_task(_acquire_task_protection())
     try:
@@ -817,7 +818,9 @@ async def run_executor_dispatch(
             )
             return
 
-        heartbeat_task = asyncio.create_task(_heartbeat_loop(store, authority))
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_loop(store, authority, interval_seconds=heartbeat_interval_seconds)
+        )
         try:
             artifact_path = await executor_supervisor.prepare_artifact(dispatch)
             await executor_supervisor.run(

@@ -184,6 +184,7 @@ class TestConfigureLogging:
             ("development", "tracker.test_dev", "hello dev", False, False),
             ("release-test", "tracker.test_release_test", "hello release-test", False, False),
             ("production", "tracker.test_prod", "hello prod", True, True),
+            ("prod", "tracker.test_public_prod", "hello public prod", True, True),
             ("dev", "tracker.test_deployed_dev", "hello deployed dev", True, False),
         ],
     )

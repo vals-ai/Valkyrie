@@ -35,25 +35,40 @@ class StsClient(Protocol):
 def target_from_environment(environment: Mapping[str, str]) -> DeploymentTarget:
     """Build and validate a deployment target without calling AWS."""
     stage = _required(environment, "STAGE")
-    if stage not in ("dev", "release-test", "prod"):
-        raise DeploymentTargetError("STAGE must be 'dev', 'release-test', or 'prod'.")
+    if stage not in ("dev", "release-test", "bench", "prod"):
+        raise DeploymentTargetError("STAGE must be 'dev', 'release-test', 'bench', or 'prod'.")
 
     region = _required(environment, "AWS_REGION")
     if region != DEPLOYMENT_REGION:
         raise DeploymentTargetError(f"AWS_REGION must be {DEPLOYMENT_REGION}; got {region}.")
 
-    production_account_id = _required(environment, "PRODUCTION_ACCOUNT_ID")
-    if not _ACCOUNT_ID_PATTERN.fullmatch(production_account_id):
-        raise DeploymentTargetError("PRODUCTION_ACCOUNT_ID must be a 12-digit AWS account ID.")
-
-    if stage in ("dev", "release-test"):
-        account_id = _required(environment, "DEV_ACCOUNT_ID")
-        if not _ACCOUNT_ID_PATTERN.fullmatch(account_id):
-            raise DeploymentTargetError("DEV_ACCOUNT_ID must be a 12-digit AWS account ID.")
-        if stage == "dev" and account_id == production_account_id:
-            raise DeploymentTargetError("DEV_ACCOUNT_ID must not be the production AWS account.")
+    if stage == "bench":
+        account_variable = "BENCH_ACCOUNT_ID"
+    elif stage == "prod":
+        account_variable = "PRODUCTION_ACCOUNT_ID"
     else:
-        account_id = production_account_id
+        account_variable = "DEV_ACCOUNT_ID"
+
+    account_id = _required(environment, account_variable)
+    if not _ACCOUNT_ID_PATTERN.fullmatch(account_id):
+        raise DeploymentTargetError(f"{account_variable} must be a 12-digit AWS account ID.")
+
+    required_counterpart = (
+        "PRODUCTION_ACCOUNT_ID" if stage == "bench" else "BENCH_ACCOUNT_ID" if stage == "prod" else None
+    )
+    if required_counterpart is not None:
+        _required(environment, required_counterpart)
+
+    for other_variable in ("DEV_ACCOUNT_ID", "BENCH_ACCOUNT_ID", "PRODUCTION_ACCOUNT_ID"):
+        if other_variable == account_variable:
+            continue
+        other_account_id = environment.get(other_variable, "").strip()
+        if not other_account_id:
+            continue
+        if not _ACCOUNT_ID_PATTERN.fullmatch(other_account_id):
+            raise DeploymentTargetError(f"{other_variable} must be a 12-digit AWS account ID.")
+        if stage != "release-test" and account_id == other_account_id:
+            raise DeploymentTargetError(f"{account_variable} must not match {other_variable}.")
 
     cdk_account_id = _required(environment, "CDK_DEFAULT_ACCOUNT")
     if cdk_account_id != account_id:

@@ -1,0 +1,120 @@
+---
+title: Custom benchmark services
+description: Connect Valkyrie to a benchmark service endpoint.
+---
+
+A benchmark service supplies tasks and evaluates run outputs. A custom service overrides a built-in service with the same name.
+
+Full syntax is in the [`config service set`](/reference/cli/config#service-set), [`config service list`](/reference/cli/config#service-list), and [`config service remove`](/reference/cli/config#service-remove) reference.
+
+## Register an endpoint
+
+```bash
+valkyrie config service set swebench https://my-tunnel.ngrok.io
+```
+
+The tracker must be able to reach the endpoint, so a service running on your machine needs a [reverse tunnel](#expose-a-local-service).
+
+## List custom services
+
+```bash
+valkyrie config service list
+```
+
+The interactive list supports `[h]` for previous, `[l]` for next, and `[q]` to quit.
+
+## Remove a service
+
+```bash
+valkyrie config service remove swebench
+```
+
+## Build a service
+
+Use the public [create-benchmark-service](https://github.com/vals-ai/create-benchmark-service) utilities to implement a compatible service, or follow [convert a benchmark into a service](/benchmarks/convert-a-benchmark).
+
+## Expose a local service
+
+A service running locally can be tested against hosted Valkyrie through a reverse tunnel. ngrok is the shortest path, but any tunnel that gives you a public HTTPS URL works.
+
+1. [Sign up for ngrok](https://dashboard.ngrok.com/login) and follow its [setup and installation steps](https://dashboard.ngrok.com/get-started/setup).
+2. Start the service, either `make dev` or `make docker-build && make docker-run` (the container publishes port `8001`).
+3. Forward the port the service is listening on:
+
+```bash
+ngrok http 8001
+```
+
+4. Register the forwarding address ngrok prints:
+
+```bash
+valkyrie config service set <benchmark-name> https://hemagglutinative-vonnie-fungic.ngrok-free.dev
+```
+
+The forwarding address changes each time a free-tier tunnel restarts, so re-register it after every restart.
+
+## Deploy the service
+
+A tunnel is fine while iterating, but a service other people run against needs a stable HTTPS endpoint. The generated project ships a `Dockerfile` that serves `main:app` with uvicorn on container port `8001`, so any host that can run a container and route WebSocket traffic to it works.
+
+### Build and publish the image
+
+<Steps>
+  <Step title="Build the image">
+    ```bash
+    make docker-build
+    ```
+
+    This tags the image `benchmark-service:latest`. The build takes a `SERVICE_VERSION` argument that becomes the version reported by `GET /version`; CI passes the git tag.
+  </Step>
+  <Step title="Tag it for your registry">
+    ```bash
+    docker tag benchmark-service:latest <registry>/<benchmark-name>-benchmark-service:<tag>
+    ```
+  </Step>
+  <Step title="Push it">
+    ```bash
+    docker push <registry>/<benchmark-name>-benchmark-service:<tag>
+    ```
+  </Step>
+</Steps>
+
+Deployment guides for common container hosts: [AWS App Runner](https://docs.aws.amazon.com/apprunner/latest/dg/service-source-image.html), [ECS with an Application Load Balancer](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/service-load-balancing.html), [Google Cloud Run](https://cloud.google.com/run/docs/deploying), and [Fly.io](https://fly.io/docs/launch/deploy/).
+
+### Configure authentication
+
+| Variable | Purpose |
+| --- | --- |
+| `AUTH_DISABLED` | `true` serves every request without a credential. Local development only; `/v1/*` still refuses to serve. |
+| `DESCOPE_PROJECT_ID` | Descope project that issues and validates caller access keys. Required when auth is enabled. |
+| `DESCOPE_TENANT_ALLOWLIST_JSON` | Tenant allowlist, as inline JSON. This is how a self-hosted service declares who may call it. |
+| `DESCOPE_ALLOWLIST_PATH` | Path to the same structure as YAML, for local runs. |
+| `DESCOPE_AUTH_CACHE_TTL_SECONDS` | Positive-auth cache lifetime. Defaults to 3600. |
+
+Authenticated callers send their Descope access key in the `X-Descope-Api-Key` header. The key must resolve to exactly one tenant, and that tenant must appear in `DESCOPE_TENANT_ALLOWLIST_JSON`, so the allowlist is what actually grants access:
+
+```json
+{
+  "tenants": {
+    "T2abc...": {
+      "datasets": ["default", "hard"],
+      "evaluation_quota": { "limit": 500, "period": "week" },
+      "trial_mode": false
+    }
+  }
+}
+```
+
+`datasets` is an explicit list of the dataset variants the tenant may request. `default` has to be listed too, and an empty list grants nothing. `evaluation_quota` caps evaluation requests per period, and `trial_mode` sanitizes `/v1/evaluate` and `/v1/score` responses down to score-only fields. Unknown keys are rejected.
+
+<Warning>
+  With auth enabled and no allowlist source configured, the service starts and logs a warning but rejects every authenticated request. `AUTH_REQUIRED` is no longer supported: static bearer auth was removed, and setting it to a false value fails startup.
+</Warning>
+
+### Register the endpoint
+
+```bash
+valkyrie config service set <benchmark-name> https://benchmark.example.com
+```
+
+Store the caller credential with [`config auth set`](/benchmarks/authentication) so the CLI sends it on every request.

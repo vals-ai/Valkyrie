@@ -1,0 +1,155 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Valkyrie",
+  "description": "Run scalable, reproducible evaluations for AI agents.",
+  "colors": {
+    "primary": "#386B46",
+    "light": "#6FD09F",
+    "dark": "#488959"
+  },
+  "icons": {
+    "library": "lucide"
+  },
+  "appearance": {
+    "default": "system"
+  },
+  "fonts": {
+    "family": "Söhne",
+    "source": "https://www.vals.ai/fonts/Soehne/soehne-buch.woff2",
+    "format": "woff2",
+    "heading": {
+      "family": "Martina Plantijn",
+      "source": "https://www.vals.ai/fonts/MartinaPlantijn/martina-plantijn-regular.woff2",
+      "format": "woff2"
+    }
+  },
+  "background": {
+    "color": {
+      "light": "#F3F2F2",
+      "dark": "#171717"
+    }
+  },
+  "logo": {
+    "light": "/images/valkyrie-logo-light.png",
+    "dark": "/images/valkyrie-logo-dark.png",
+    "href": "https://www.vals.ai"
+  },
+  "favicon": {
+    "light": "/images/vals-icon-light.svg",
+    "dark": "/images/vals-icon-dark.svg"
+  },
+  "contextual": {
+    "options": ["copy", "view", "chatgpt", "claude", "cursor", "vscode"]
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Introduction",
+        "pages": [
+          "introduction/what-is-valkyrie"
+        ]
+      },
+      {
+        "group": "Get started",
+        "pages": [
+          "get-started/overview",
+          "get-started/quickstart",
+          "get-started/hosting",
+          "get-started/configuration",
+          "get-started/sandbox-providers"
+        ]
+      },
+      {
+        "group": "Agents",
+        "pages": [
+          "agents/manage-agents",
+          "agents/agent-contract"
+        ]
+      },
+      {
+        "group": "Runs",
+        "pages": [
+          "runs/start",
+          "runs/monitor",
+          "runs/manage",
+          "runs/results-and-outputs",
+          "runs/slack-notifications"
+        ]
+      },
+      {
+        "group": "Benchmarks",
+        "pages": [
+          "benchmarks/custom-services",
+          "benchmarks/authentication",
+          "benchmarks/convert-a-benchmark"
+        ]
+      },
+      {
+        "group": "Integrations",
+        "pages": [
+          "integrations/post-run-lambda",
+          "integrations/docent"
+        ]
+      },
+      {
+        "group": "Python SDK",
+        "pages": [
+          "sdk/quickstart",
+          "sdk/runs",
+          "sdk/resources",
+          "sdk/errors"
+        ]
+      },
+      {
+        "group": "CLI reference",
+        "pages": {
+          "$ref": "reference/cli/navigation.json"
+        }
+      },
+      {
+        "group": "Python SDK reference",
+        "pages": {
+          "$ref": "reference/sdk/navigation.json"
+        }
+      },
+      {
+        "group": "Self-hosting",
+        "pages": [
+          "self-hosting/infrastructure",
+          "self-hosting/aws-permissions"
+        ]
+      },
+      {
+        "group": "Contributing",
+        "pages": [
+          "contributing/local-development",
+          "contributing/tracker-service",
+          "contributing/database"
+        ]
+      }
+    ]
+  },
+  "redirects": {
+    "$ref": "reference/redirects.json"
+  },
+  "navbar": {
+    "links": [
+      {
+        "type": "github",
+        "href": "https://github.com/vals-ai/Valkyrie"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "vals.ai",
+      "href": "https://www.vals.ai"
+    }
+  },
+  "footer": {
+    "socials": {
+      "website": "https://www.vals.ai",
+      "github": "https://github.com/vals-ai/Valkyrie"
+    }
+  }
+}

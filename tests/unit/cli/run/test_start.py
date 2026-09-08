@@ -62,6 +62,7 @@ class StartTestbed:
         self.resolve_remote = AsyncMock(
             return_value=AgentContractRequest(name="remote-agent", install_cmd="echo install", run_cmd="echo run")
         )
+        self.publish_local_agent = AsyncMock(return_value=True)
         self.resolve_tasks = MagicMock(return_value=None)
         self.resolve_headers = MagicMock(return_value={})
         self.stream_status = MagicMock()
@@ -74,6 +75,7 @@ class StartTestbed:
             self.resolve_tasks,
             self.resolve_headers,
             self.stream_status,
+            self.publish_local_agent,
         ):
             boundary.reset_mock()
         self.tracker.start_benchmark.side_effect = responses
@@ -107,6 +109,11 @@ def start_testbed(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> Sta
     monkeypatch.setattr(start_module, "resolve_task_ids", testbed.resolve_tasks)
     monkeypatch.setattr(start_module, "benchmark_service_headers", testbed.resolve_headers)
     monkeypatch.setattr(start_module, "stream_benchmark_status", testbed.stream_status)
+    monkeypatch.setattr(
+        start_module,
+        "push_agent_if_absent",
+        testbed.publish_local_agent,
+    )
     testbed.set_responses([_start_response(_FIRST_RUN_ID)])
 
     return testbed
@@ -128,6 +135,7 @@ class TestCountedStarts:
 
         assert result.exit_code == 0, result.output
         assert start_testbed.tracker.start_benchmark.call_count == 1
+        assert start_testbed.tracker.start_benchmark.call_args.args[2] == 5
         assert "requested runs successfully started" not in result.output
 
         # Exercise the short alias with the compatible connect mode.
@@ -250,9 +258,8 @@ class TestCountedStarts:
         get_contract = MagicMock(
             return_value=AgentContractRequest(name="local-agent", install_cmd="echo install", run_cmd="echo run")
         )
-        push_agent = AsyncMock()
+        push_agent = start_testbed.publish_local_agent
         monkeypatch.setattr(start_module, "get_contract", get_contract)
-        monkeypatch.setattr(start_module, "push_agent", push_agent)
         start_testbed.set_responses([_start_response(_FIRST_RUN_ID), _start_response(_SECOND_RUN_ID)])
 
         # Start two runs from the local agent.
@@ -302,9 +309,8 @@ class TestCountedStarts:
                 run_cmd="echo run",
             )
         )
-        push_agent = AsyncMock()
+        push_agent = start_testbed.publish_local_agent
         monkeypatch.setattr(start_module, "get_contract", get_contract)
-        monkeypatch.setattr(start_module, "push_agent", push_agent)
         start_testbed.tracker_factory.parse_config_keys.return_value = {}
 
         result = start_testbed.cli_runner.invoke(
@@ -331,6 +337,42 @@ class TestCountedStarts:
             kwargs={"variant": "max"},
         )
 
+    def test_local_start_refuses_to_overwrite_published_agent(
+        self,
+        start_testbed: StartTestbed,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        local_agent = tmp_path / "local-agent"
+        local_agent.mkdir()
+        (local_agent / "contract.yaml").write_text(
+            "name: local-agent\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            start_module,
+            "get_contract",
+            MagicMock(
+                return_value=AgentContractRequest(
+                    name="local-agent",
+                    install_cmd="echo install",
+                    run_cmd="echo run",
+                )
+            ),
+        )
+        start_testbed.publish_local_agent.return_value = False
+
+        result = start_testbed.cli_runner.invoke(
+            start_command,
+            ["--agent", str(local_agent), "--benchmark", "swebench"],
+        )
+
+        assert result.exit_code == 2
+        assert "Refusing to overwrite it as a side effect of run start" in result.output
+        assert "Use --agent local-agent" in result.output
+        start_testbed.publish_local_agent.assert_awaited_once_with("local-agent", local_agent)
+        start_testbed.tracker.start_benchmark.assert_not_called()
+
     def test_invalid_options_precede_side_effects(self, start_testbed: StartTestbed) -> None:
         """
         Reject invalid start options before resolving configuration or agents.
@@ -355,6 +397,21 @@ class TestCountedStarts:
 
             assert result.exit_code == 2
             assert start_testbed.boundary_call_count() == 0
+
+    def test_priority_forwards_provider_and_numeric_zero(
+        self,
+        start_testbed: StartTestbed,
+    ) -> None:
+        start_testbed.set_responses([_start_response(_FIRST_RUN_ID)])
+        start_testbed.tracker_factory.validate_sandbox_provider.return_value = ("modal", "ModalSecrets")
+        queued_result = start_testbed.invoke(["--provider", "modal", "--priority", "0"])
+
+        assert queued_result.exit_code == 0, queued_result.output
+        assert "Priority override:" in queued_result.output
+        start_call = start_testbed.tracker.start_benchmark.call_args
+        assert start_call is not None
+        assert start_call.kwargs["priority"] == 0
+        assert start_call.kwargs["provider"] == "modal"
 
     @pytest.mark.parametrize(
         ("count", "prior_ids", "failure", "expected_detail", "unknown_outcome"),

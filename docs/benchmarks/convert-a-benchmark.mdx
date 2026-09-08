@@ -1,0 +1,260 @@
+---
+title: Convert a benchmark into a service
+description: Wrap an existing benchmark in a benchmark service that Valkyrie can run.
+---
+
+Valkyrie contains no benchmark logic of its own. It creates a sandbox, runs an agent inside it, and calls a benchmark service over HTTP and WebSocket to fetch tasks, prepare them, and score the results.
+
+Converting a benchmark means wrapping the dataset and grader you already have in that service. You do not reimplement the benchmark; you expose four things Valkyrie needs to know:
+
+1. Which tasks exist.
+2. What sandbox each task runs in.
+3. How a task is set up before the agent starts.
+4. How the agent's work is graded and turned into one score.
+
+## Before you start
+
+<Info>
+  This guide assumes Valkyrie is already installed and configured. See the [quickstart](/get-started/quickstart), [configuration](/get-started/configuration), and [sandbox providers](/get-started/sandbox-providers). You also need Docker to build the images your tasks run on.
+</Info>
+
+## Scaffold the service
+
+[create-benchmark-service](https://github.com/vals-ai/create-benchmark-service) supplies the FastAPI app, the wire protocol, and the sandbox abstraction, so the only code you write is one `BenchmarkService` subclass.
+
+<Steps>
+  <Step title="Install the generator">
+    ```bash
+    uv tool install git+https://github.com/vals-ai/create-benchmark-service.git@main
+    ```
+  </Step>
+
+  <Step title="Generate the project">
+    ```bash
+    create-benchmark-service <benchmark-name>
+    ```
+
+    The generator appends `-benchmark-service` to the name, so `create-benchmark-service swebench` writes `./swebench-benchmark-service/`.
+  </Step>
+
+  <Step title="Install dependencies">
+    ```bash
+    cd <benchmark-name>-benchmark-service
+    make install
+    ```
+  </Step>
+</Steps>
+
+The generated project is small:
+
+| Path | Purpose |
+| --- | --- |
+| `main.py` | Wires your class into the framework's FastAPI app. Nothing to change. |
+| `src/<benchmark_name>_benchmark_service/benchmark_service.py` | The example subclass you replace with your benchmark. |
+| `Dockerfile` | Builds the deployable image, serving `main:app` on port `8001`. |
+| `Makefile` | `make install`, `make dev`, `make test`, `make docker-build`, `make docker-run`. |
+| `pyproject.toml` | Pins `create-benchmark-service` to the version that generated the project. |
+
+`main.py` is the entire wiring, and stays as generated. `BenchmarkServiceApp` turns your class into the FastAPI application Valkyrie talks to, mounting the HTTP and WebSocket endpoints for task retrieval, setup, evaluation, and scoring on top of your method implementations:
+
+```python main.py
+from benchmark_service import BenchmarkServiceApp
+
+from my_benchmark_service.benchmark_service import MyBenchmark
+
+app = BenchmarkServiceApp(MyBenchmark)
+```
+
+## Implement the service
+
+Everything else happens in `benchmark_service.py`. Start from the generated `ExampleBenchmark` and replace it method by method; every abstract method carries a docstring describing its contract.
+
+```python
+import json
+from collections.abc import AsyncGenerator
+from pathlib import Path
+from typing import Any
+
+from benchmark_service import BenchmarkService, ImageSource, Resources, Sandbox
+from benchmark_service.schemas import (
+    FinalScoreResult,
+    RetrieveTaskResponse,
+    StreamChunk,
+    StreamMessageChunk,
+    StreamResultChunk,
+)
+from benchmark_service.utils import stream_command
+
+
+class MyBenchmark(BenchmarkService):
+    ...
+```
+
+### Load the dataset
+
+`load_datasets` runs once at startup and its return value is cached on `self.datasets`. Key it by dataset name, then by task id; the task value itself is whatever your benchmark needs: a problem statement, a repo and commit, a path to fixture files, the expected answer, a rubric.
+
+```python
+async def load_datasets(self) -> dict[str, dict[str, Any]]:
+    tasks = json.loads(Path("data/tasks.json").read_text())
+    return {"default": {task["id"]: task for task in tasks}}
+```
+
+Use `self.get_dataset(dataset)` inside the other methods to read it back. Multiple datasets are how variants live in one service, for example a baseline dataset and a `with-skills` dataset.
+
+<Warning>
+  Task values usually contain evaluator-only data such as answers, rubrics, and grader configuration. Nothing in them reaches the agent unless you return it from `retrieve_task`, `list_tasks`, or upload it in `setup_task`.
+</Warning>
+
+### Describe the sandbox
+
+`retrieve_task` tells Valkyrie how to build the sandbox for one task: the image, the working directory, where the problem statement will be, how long the agent may run, and how much hardware it gets.
+
+```python
+async def retrieve_task(
+    self, task_id: str, skip_validation: bool = False, dataset: str | None = None
+) -> RetrieveTaskResponse:
+    if not skip_validation:
+        await self.validate_task_ids([task_id], dataset=dataset)
+    task = self.get_dataset(dataset)[task_id]
+    return RetrieveTaskResponse(
+        source=ImageSource(image=task["image"]),
+        problem_path="/tmp/problem_statement.txt",
+        cwd="/workspace",
+        agent_timeout=1800.0,
+        resources=Resources(vcpu=4, memory=8, disk=20),
+    )
+```
+
+Decide your image strategy before writing this method, because it determines what `source` returns:
+
+- **One shared environment**: return the same `ImageSource` for every task and do the per-task work in `setup_task`.
+- **Per-task environments** (each task has its own Dockerfile): build and publish one image or snapshot per task ahead of time, and return the per-task reference here.
+
+Other `source` options are `SnapshotSource` for a provider snapshot and `ComposeSource` when the task needs Docker Compose services. GPUs are requested through resources, for example `Resources(vcpu=8, memory=32, disk=50, gpu=1, gpu_type="H100")`. Nested Docker is available in every sandbox, so a benchmark that runs containers only needs a Docker-capable image and to start `dockerd` itself during setup.
+
+<Warning>
+  Hosted sandboxes can only use `linux/amd64` images that pull anonymously. Build with `--platform linux/amd64` and confirm an anonymous pull works, since a private image usually surfaces as sandbox creation or retry errors rather than an image-pull error.
+</Warning>
+
+### Set up the task
+
+`setup_task` runs in the live sandbox before the agent starts: write the problem statement, fetch the repo, install dependencies, start services. It is an async generator: instead of returning, it yields chunks that stream to the Valkyrie user watching the run.
+
+```python
+async def setup_task(
+    self, task_id: str, sandbox: Sandbox, dataset: str | None = None
+) -> AsyncGenerator[StreamChunk, None]:
+    task = self.get_dataset(dataset)[task_id]
+
+    yield StreamMessageChunk(type="message", data=f"Preparing {task_id}")
+    await sandbox.upload_file("/tmp/problem_statement.txt", task["problem"].encode())
+
+    async for line in stream_command(sandbox, f"git clone {task['repo']} /workspace", cwd="/"):
+        yield StreamMessageChunk(type="message", data=line)
+
+    yield StreamResultChunk(type="result", data={"status": "ok"})
+```
+
+Three chunk types matter:
+
+| Chunk | Meaning |
+| --- | --- |
+| `StreamMessageChunk` | Progress text. This is what a Valkyrie user sees while the task runs. |
+| `StreamErrorChunk` | A problem worth reporting that does not stop the task. |
+| `StreamResultChunk` | The terminal chunk. In `setup_task` it reports whether setup succeeded; in `evaluate_instance` it carries the value passed to scoring. |
+
+The sandbox handle gives you `upload_file`, `download_file`, `exec` (returns `ExecResult` with `exit_code` and `output`), and `command` for line-by-line streaming. `stream_command(sandbox, command, cwd)` wraps `command` and raises on a non-zero exit code unless you pass `ignore_error=True`.
+
+### Grade the result
+
+Implement the hook that matches how your benchmark grades. Both may exist, but a benchmark normally uses one:
+
+- `evaluate_instance` grades the agent's live sandbox. Upload the tests now, run them, parse the output. This is also an async generator, and its single `StreamResultChunk` is the per-task result.
+- `evaluate_response` grades a plain text answer with no sandbox. It returns the per-task result directly.
+
+```python
+async def evaluate_instance(
+    self, task_id: str, sandbox: Sandbox, dataset: str | None = None
+) -> AsyncGenerator[StreamChunk, None]:
+    task = self.get_dataset(dataset)[task_id]
+
+    yield StreamMessageChunk(type="message", data="Uploading tests")
+    await sandbox.upload_file("/tmp/test.sh", task["test_script"].encode())
+
+    result = await sandbox.exec("bash /tmp/test.sh", cwd="/workspace", timeout=600)
+    yield StreamMessageChunk(type="message", data=result.output)
+    yield StreamResultChunk(type="result", data={"resolved": result.exit_code == 0})
+```
+
+A per-task result can be any JSON-compatible value, because the same service both produces it and aggregates it later.
+
+<Warning>
+  Uploading evaluation material during `setup_task` lets the agent read or overwrite it. Upload tests only inside `evaluate_instance`.
+</Warning>
+
+### Aggregate the score
+
+`calculate_final_score` receives `{task_id: result}`, the values your evaluation hook produced, and returns the benchmark's single score plus any metadata worth reporting.
+
+```python
+async def calculate_final_score(
+    self, evaluation_results: dict[str, Any], dataset: str | None = None
+) -> FinalScoreResult:
+    total = len(evaluation_results)
+    resolved = sum(1 for result in evaluation_results.values() if result and result.get("resolved"))
+    return FinalScoreResult(
+        score=(resolved / total * 100) if total else 0.0,
+        metadata={"total_tasks": total, "resolved_tasks": resolved},
+    )
+```
+
+<Note>
+  A task that errored arrives as `None`, so handle that case rather than assuming your own result shape.
+</Note>
+
+## Check for reward hacking
+
+Work through this before the first real run:
+
+- Tests are uploaded in `evaluate_instance`, never in `setup_task`.
+- Reference solutions, patches, and answer keys never enter the sandbox at any point.
+- The problem statement contains no evaluation criteria or expected output.
+- Hints, skills, or scaffolding are injected only for the datasets meant to have them.
+- `ls` the working directory of a live sandbox mid-run and confirm nothing evaluation-related is present.
+
+## Test against Valkyrie
+
+You do not need to deploy to test. Run the service locally, [expose it with a reverse tunnel](/benchmarks/custom-services#expose-a-local-service), and point Valkyrie at the tunnel.
+
+<Steps>
+  <Step title="Start the service">
+    ```bash
+    make dev
+    ```
+
+    <Note>
+      `make dev` runs with `AUTH_DISABLED=true`, which is local development only. A hosted service instead sets `DESCOPE_PROJECT_ID` plus a tenant allowlist and rejects unauthenticated requests.
+    </Note>
+  </Step>
+
+  <Step title="Register the tunnel">
+    ```bash
+    valkyrie config service set <benchmark-name> https://my-tunnel.ngrok-free.dev
+    ```
+
+    Re-register whenever the tunnel restarts with a new address. See [custom benchmark services](/benchmarks/custom-services) for how registration resolves, and [benchmark authentication](/benchmarks/authentication) once the service enforces auth.
+  </Step>
+
+  <Step title="Run one task">
+    ```bash
+    valkyrie run start --benchmark <benchmark-name> --agent <agent-name> --slice :1
+    ```
+
+    Start with `--slice :1` and scale up only once setup, evaluation, and scoring all behave. [Monitor the run](/runs/monitor) to watch your message chunks stream back.
+  </Step>
+</Steps>
+
+## Publish the service
+
+A port is finished once the service is listed in the [public benchmark services registry](https://github.com/vals-ai/public-benchmark-services-registry), which means the service lives in its own `<benchmark>-benchmark-service` repository and is added to the registry as a Git submodule with a matching `services.yaml` entry.

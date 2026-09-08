@@ -47,6 +47,7 @@ from tracker.utils import (
     fetch_harness_config,
     fetch_sandbox_provider_config,
     has_runnable_tasks,
+    save_eval_resume_state,
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
@@ -54,6 +55,7 @@ from tracker.utils import (
 _parse_log_retention_policy = getattr(harness_config_module, "_parse_log_retention_policy")
 
 client = TestClient(app)
+_ACTIVE_ATTEMPT = datetime(2026, 7, 1)
 
 
 @pytest.fixture
@@ -619,6 +621,7 @@ class TestRunState:
             benchmark=example_benchmark_object.id,
             status=TaskStatus.IN_PROGRESS,
         )
+        database_session.add(example_benchmark_object)
         database_session.add(task_row)
         database_session.commit()
 
@@ -652,6 +655,74 @@ class TestRunState:
         assert transition_record["entered"] and transition_record["exited"]
         assert transition_record["has_error_message"]
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
+
+    @pytest.mark.parametrize("status", [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED])
+    def test_commit_task_error_preserves_terminal_tasks(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        executor_authority: Any,
+        status: TaskStatus,
+    ) -> None:
+        task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=example_benchmark_object.id,
+            status=status,
+        )
+        database_session.add_all([example_benchmark_object, task])
+        database_session.commit()
+        authority = executor_authority(example_benchmark_object, session=database_session)
+
+        assert not commit_task_error(
+            task,
+            database_session,
+            "stale failure",
+            producer="tracker",
+            operation="process_task",
+            error_type="RuntimeError",
+            authority=authority,
+        )
+
+        database_session.refresh(task)
+        assert task.status == status
+        assert database_session.exec(select(ErrorResult.id).where(ErrorResult.task == task.id)).first() is None
+
+    @pytest.mark.parametrize(
+        "status",
+        [TaskStatus.PENDING, TaskStatus.ERROR, TaskStatus.FINISHED, TaskStatus.STOPPED, TaskStatus.EVALUATING],
+    )
+    def test_eval_resume_state_rejects_non_active_rows(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        executor_authority: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        status: TaskStatus,
+    ) -> None:
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=example_benchmark_object.id,
+            status=status,
+            started_at=datetime(2026, 6, 30) if status == TaskStatus.EVALUATING else _ACTIVE_ATTEMPT,
+        )
+        database_session.add_all([example_benchmark_object, task_row])
+        database_session.commit()
+        authority = executor_authority(example_benchmark_object, session=database_session)
+
+        updated = save_eval_resume_state(
+            task_row.id,
+            self._test_org,
+            {"cursor": "next"},
+            expected_started_at=_ACTIVE_ATTEMPT,
+            authority=authority,
+        )
+
+        database_session.refresh(task_row)
+        assert not updated
+        assert task_row.eval_resume_state is None
 
     def test_commit_task_error_rolls_back_when_started_at_is_stale(
         self,

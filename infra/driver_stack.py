@@ -18,11 +18,10 @@ from aws_cdk import (
     aws_ssm,
 )
 from constants import (
-    DEV_DRIVER_LOG_GROUP_PARAMETER,
-    DEV_DRIVER_OPERATOR_ROLE_PARAMETER,
-    DEV_DRIVER_SECURITY_GROUP_PARAMETER,
-    DEV_DRIVER_TASK_DEFINITION_PARAMETER,
-    DEV_TRACKER_ALB_DNS_PARAMETER,
+    DRIVER_LOG_GROUP_PARAMETER_PATH,
+    DRIVER_OPERATOR_ROLE_PARAMETER_PATH,
+    DRIVER_SECURITY_GROUP_PARAMETER_PATH,
+    DRIVER_TASK_DEFINITION_PARAMETER_PATH,
     DRIVER_LOG_GROUP_NAME,
     POSTGRES_DB,
     POSTGRES_PORT,
@@ -30,6 +29,7 @@ from constants import (
     RELEASE_TEST_DRIVER_SECRET_ARN_ENV,
     RELEASE_TEST_OPERATOR_PRINCIPAL_ARN_ENV,
     RELEASE_TEST_SANDBOX_PROVIDER_SECRET_ARN_ENV,
+    TRACKER_ALB_DNS_PARAMETER_PATH,
     VPC_CIDR,
     stage_parameter_name,
 )
@@ -83,7 +83,7 @@ class DriverStack(Stack):
         stage_config = config_for(stage)
         tracker_alb_dns = aws_ssm.StringParameter.value_for_string_parameter(
             self,
-            stage_parameter_name(DEV_TRACKER_ALB_DNS_PARAMETER, stage.name),
+            stage_parameter_name(stage.name, TRACKER_ALB_DNS_PARAMETER_PATH),
         )
         driver_image = aws_ecs.ContainerImage.from_ecr_repository(tracker_repository, image_tag)
         driver_secret = aws_secretsmanager.Secret.from_secret_complete_arn(
@@ -315,18 +315,18 @@ class DriverStack(Stack):
         parameters = (
             (
                 "DriverTaskDefinitionParameter",
-                DEV_DRIVER_TASK_DEFINITION_PARAMETER,
+                DRIVER_TASK_DEFINITION_PARAMETER_PATH,
                 self.task_definition.task_definition_arn,
             ),
             (
                 "DriverSecurityGroupParameter",
-                DEV_DRIVER_SECURITY_GROUP_PARAMETER,
+                DRIVER_SECURITY_GROUP_PARAMETER_PATH,
                 self.security_group.security_group_id,
             ),
-            ("DriverLogGroupParameter", DEV_DRIVER_LOG_GROUP_PARAMETER, self.log_group.log_group_name),
+            ("DriverLogGroupParameter", DRIVER_LOG_GROUP_PARAMETER_PATH, self.log_group.log_group_name),
             (
                 "DriverOperatorRoleParameter",
-                DEV_DRIVER_OPERATOR_ROLE_PARAMETER,
+                DRIVER_OPERATOR_ROLE_PARAMETER_PATH,
                 self.operator_role.role_arn,
             ),
         )
@@ -334,6 +334,6 @@ class DriverStack(Stack):
             aws_ssm.StringParameter(
                 self,
                 construct_id,
-                parameter_name=stage_parameter_name(parameter, stage.name),
+                parameter_name=stage_parameter_name(stage.name, parameter),
                 string_value=value,
             )

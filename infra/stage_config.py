@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from uuid import UUID
 
 from aws_cdk import aws_logs
-from stage import DEV, PROD, RELEASE_TEST, Stage
+from stage import BENCH, DEV, PROD, RELEASE_TEST, Stage
 
 
 _SECRET_NAME_PREFIX_PATTERN = re.compile(r"[A-Za-z0-9/_+=.@-]+")
@@ -16,6 +16,16 @@ _LAMBDA_FUNCTION_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\*?")
 _KMS_KEY_ARN_PATTERN = re.compile(r"arn:[^:]+:kms:[^:]+:[0-9]{12}:key/[A-Za-z0-9-]+")
 _OFFLINE_SYNTH_ORG_ID = "00000000-0000-0000-0000-000000000001"
 _OFFLINE_SYNTH_SECRET_PREFIX = "offline-synth"
+
+_TRACKER_ANALYZER_LAMBDA_PATTERNS = ("analysis-*",)
+_EXECUTOR_OUTPUT_LAMBDA_PATTERNS = (
+    "vals-format-lambda",
+    "harvey-legal-agent-final-view-lambda",
+    "programbench-final-view-lambda",
+    "snap-final-view-lambda",
+    "swebench-final-view-lambda",
+    "terminalbench-final-view-lambda",
+)
 
 
 @dataclass(frozen=True)
@@ -92,6 +102,27 @@ class StageConfig:
     managed_aws: ManagedAWSRuntimeConfig
 
 
+BENCH_CONFIG = StageConfig(
+    runtime_environment="production",
+    tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=1, max_tasks=2),
+    worker=ServiceConfig(cpu=8192, memory_mib=32768, min_tasks=4, max_tasks=8),
+    database=DatabaseConfig(
+        instance_class="r7g.large",
+        allocated_storage_gb=20,
+        backup_retention_days=7,
+        connection_alarm_threshold=135,
+    ),
+    service_log_retention=aws_logs.RetentionDays.ONE_YEAR,
+    managed_aws=ManagedAWSRuntimeConfig(
+        benchmark_log_group_prefix="/valkyrie/benchmarks",
+        benchmark_log_retention_days=365,
+        submissions_enabled=True,
+        executor_all_secret_access=True,
+        tracker_lambda_function_name_patterns=_TRACKER_ANALYZER_LAMBDA_PATTERNS,
+        executor_lambda_function_name_patterns=_EXECUTOR_OUTPUT_LAMBDA_PATTERNS,
+    ),
+)
+
 PROD_CONFIG = StageConfig(
     runtime_environment="production",
     tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=1, max_tasks=2),
@@ -128,7 +159,8 @@ DEV_CONFIG = StageConfig(
         benchmark_log_retention_days=7,
         submissions_enabled=True,
         executor_all_secret_access=True,
-        executor_lambda_function_name_patterns=("vals-format-lambda",),
+        tracker_lambda_function_name_patterns=_TRACKER_ANALYZER_LAMBDA_PATTERNS,
+        executor_lambda_function_name_patterns=_EXECUTOR_OUTPUT_LAMBDA_PATTERNS,
     ),
 )
 
@@ -148,6 +180,7 @@ RELEASE_TEST_BENCHMARK_SERVICE_BASE_URL = "benchmarks.vals.ai"
 
 
 _STAGE_CONFIGS = {
+    BENCH: BENCH_CONFIG,
     PROD: PROD_CONFIG,
     DEV: DEV_CONFIG,
     RELEASE_TEST: RELEASE_TEST_CONFIG,
@@ -158,9 +191,11 @@ def config_for(stage: Stage) -> StageConfig:
     try:
         config = _STAGE_CONFIGS[stage.name]
     except KeyError:
-        raise ValueError(f"unknown stage {stage.name!r}; expected {PROD!r}, {DEV!r}, or 'release-test'") from None
+        raise ValueError(
+            f"unknown stage {stage.name!r}; expected {BENCH!r}, {PROD!r}, {DEV!r}, or 'release-test'"
+        ) from None
 
-    if stage.name not in {DEV, PROD}:
+    if stage.name not in {BENCH, DEV, PROD}:
         return config
 
     deployment_role_org_ids = _csv_environment("AWS_DEPLOYMENT_ROLE_ORG_IDS")

@@ -16,7 +16,7 @@ from tracker_stack import TrackerStack
 
 app = cdk.App()
 stage = resolve(app)
-if not stage.is_prod:
+if not stage.is_bench:
     enforce_deployment_target(stage.name, os.environ)
 
 env = cdk.Environment(

@@ -1,0 +1,102 @@
+---
+title: Self-hosting infrastructure
+description: Review the AWS architecture and deployment boundaries for self-hosted Valkyrie.
+---
+
+Valkyrie ships an AWS CDK application under `infra/` that creates everything a deployment needs: the tracker, the executor, storage, networking, and monitoring.
+
+## Architecture
+
+- **Shared stack**: VPC, ECS cluster, service discovery, benchmark storage, and Redis
+- **Tracker stack**: public API, load balancer, and PostgreSQL
+- **Executor stack**: stable ExecutorHost, executor release storage, release control, and retained worker logs
+- **Monitoring stack**: tracker, load balancer, database, and Redis alarms
+
+The Python construct is named `ExecutorStack`, but its CloudFormation name is still `WorkerStack` so that existing deployments update their retained resources in place rather than replacing them.
+
+## Prerequisites
+
+- AWS CLI credentials for the deployment account
+- Python 3.12
+- [uv](https://docs.astral.sh/uv/)
+- AWS CDK CLI
+- A bootstrapped CDK deployment account
+
+Install the CDK CLI and locked Python dependencies:
+
+```bash
+brew install cdk
+make install
+```
+
+## Review before deployment
+
+The checked-in CDK application carries Vals deployment defaults, so review these values and replace or override them before you synthesize anything:
+
+- Override the `PRODUCTION_ACCOUNT_ID` default in `infra/Makefile` with the target 12-digit AWS account ID.
+- Replace `TRACKER_DOMAIN` in `infra/constants.py` and the `vals.ai` hosted-zone lookup in `infra/shared.py` with a domain and Route 53 zone owned by the deployment account.
+- Replace the globally unique `S3_BUCKET_NAME` in `infra/constants.py`.
+- Create or replace the production Sentry secret named `valkyrie/sentry-dsn` in `infra/tracker_stack.py`.
+- Keep `AUTH_REQUIRED=false` for self-hosted mode. If authentication is enabled, replace the checked-in Descope management-secret name and supply `DESCOPE_PROJECT_ID`.
+
+The target guard accepts only `us-east-1` today. To deploy elsewhere you have to change `DEPLOYMENT_REGION` in `infra/deployment_target.py` and go through the Region-specific parts of the infrastructure.
+
+Synthesis reads a few deployment-specific values from the environment, so export them before planning. Without them, a `prod` or `dev` stage stops with `ValueError: prod deployments require AWS_DEPLOYMENT_ROLE_ORG_IDS.`:
+
+```bash
+export AWS_DEPLOYMENT_ROLE_ORG_IDS=<organization-uuid>[,<organization-uuid>]
+export AWS_TRACKER_SECRET_NAME_PREFIXES=<secrets-manager-name-prefix>[,<prefix>]
+export SENTRY_DSN_SECRET_NAME=<secrets-manager-secret-name>
+```
+
+`AWS_DEPLOYMENT_ROLE_ORG_IDS` lists the organization ids allowed to submit managed runs, and `AWS_TRACKER_SECRET_NAME_PREFIXES` lists the Secrets Manager name prefixes the tracker is allowed to read for benchmark-service authentication. A deployment with authentication enabled also needs `DESCOPE_PROJECT_ID` and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`.
+
+Run the commands below from `infra/`, replacing the angle-bracket placeholders first. Start by inspecting every stack change:
+
+```bash
+make plan \
+  STAGE=prod \
+  SCOPE=all \
+  AWS_REGION=us-east-1 \
+  PRODUCTION_ACCOUNT_ID=<12-digit-aws-account-id> \
+  PROFILE=<aws-profile>
+```
+
+The supported scopes are `shared`, `tracker`, `executor`, `monitoring`, `core`, and `all`.
+
+Deploy one CDK scope only after reviewing the plan:
+
+```bash
+make deploy \
+  STAGE=prod \
+  SCOPE=shared \
+  AWS_REGION=us-east-1 \
+  PRODUCTION_ACCOUNT_ID=<12-digit-aws-account-id> \
+  PROFILE=<aws-profile>
+```
+
+<Warning>
+  `make deploy` changes the selected AWS account. It only runs the CDK deployment: it does not build, upload, or activate an executor release.
+</Warning>
+
+## Benchmark catalog
+
+Set `BENCHMARK_CATALOG_URL` on tracker-service so `valkyrie config service list` can show benchmarks from a catalog API:
+
+```bash
+export BENCHMARK_CATALOG_URL=https://<catalog-api-host>
+```
+
+## Sandbox cleanup
+
+The production infrastructure includes an hourly cleanup Lambda, and its schedule stays disabled unless `SANDBOX_CLEANUP_ENABLED` is exactly `true`.
+
+Cleanup only works with a provider that can list sandboxes by creation time. Daytona is the one supported today, and it reads `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET` from the configured Secrets Manager secret.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SANDBOX_CLEANUP_ENABLED` | `false` | Enables the hourly schedule |
+| `SANDBOX_CLEANUP_PROVIDER` | `daytona` | Selects a cleanup-compatible provider |
+| `SANDBOX_CLEANUP_SECRET_NAME` | `AgenticHarnessSecrets` | Selects the provider-credentials secret |
+
+Any sandbox older than 48 hours is deleted unless its `clean-up` label reads `false`, ignoring surrounding whitespace and letter case. Failed scheduler deliveries and failed asynchronous invocations land in an encrypted dead-letter queue.

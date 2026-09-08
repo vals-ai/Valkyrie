@@ -16,7 +16,9 @@ from benchmark_service.schemas import RetrieveTaskResponse, VolumeMount
 from sqlmodel import Session, col, desc, select
 
 from tests.unit.utils.task_execution_support import (
+    bind_task_to_dispatch,
     create_task_environment,
+    install_sqlite_evaluation_lock,
     make_retrieve_task_response,
     run_process_task,
 )
@@ -342,6 +344,8 @@ class TestTaskExecutionRetry:
         task_row.eval_resume_state = {"artifact_prefix": "s3://bucket/run"}
         database_session.add(task_row)
         database_session.commit()
+        bind_task_to_dispatch(database_session, task_row, authority)
+        install_sqlite_evaluation_lock(database_session, monkeypatch)
 
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("benchmark_service.client.time.time", lambda: 1_234.5)
@@ -395,6 +399,8 @@ class TestTaskExecutionRetry:
         task_row.eval_resume_state = {"artifact_prefix": "s3://bucket/run"}
         database_session.add(task_row)
         database_session.commit()
+        bind_task_to_dispatch(database_session, task_row, authority)
+        install_sqlite_evaluation_lock(database_session, monkeypatch)
 
         async def _failed_policy_lookup(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             raise BenchmarkServiceError("policy lookup failed")

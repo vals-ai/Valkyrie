@@ -11,7 +11,7 @@ from valkyrie.cli.agent.storage import download_agent, install_agent, list_agent
 from valkyrie.cli.display import format_table, local_time, paginate_cli_pages
 
 
-@click.command(name="install", help="Installs agent from a github project to the users aws environment")
+@click.command(name="install", help="Install an agent from a GitHub repository into your S3 bucket.")
 @click.argument("github_url", type=str)
 @click.option(
     "--name",
@@ -40,7 +40,7 @@ def install(github_url: str, name: str | None):
         raise click.ClickException(f"Unexpected error: {str(e)}")
 
 
-@click.command(name="push", help="Pushes agent to the users aws environment from the local filesystem")
+@click.command(name="push", help="Upload a local agent directory into your S3 bucket.")
 @click.argument("agent_path", type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True))
 @click.option(
     "--name",

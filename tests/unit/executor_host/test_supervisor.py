@@ -491,6 +491,45 @@ async def test_run_forwards_dispatch_authority_to_executor(
 
 
 @pytest.mark.asyncio
+async def test_run_renews_heartbeat_and_stops_it_after_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    heartbeat_seen = asyncio.Event()
+
+    class FakeExecutorSupervisor:
+        async def prepare_artifact(self, _dispatch: ArtifactDispatch) -> Path:
+            return tmp_path / "executor.pex"
+
+        async def run(self, *_args: object, **_kwargs: object) -> None:
+            await heartbeat_seen.wait()
+
+    store = FakeDispatchStore()
+    original_heartbeat = store.heartbeat
+
+    async def record_heartbeat(authority: DispatchAuthority) -> bool:
+        result = await original_heartbeat(authority)
+        heartbeat_seen.set()
+        return result
+
+    monkeypatch.setattr(store, "heartbeat", record_heartbeat)
+
+    await run_executor_dispatch(
+        FakeExecutorSupervisor(),  # type: ignore[arg-type]
+        store,
+        executor_dispatch_id="dispatch-1",
+        dispatch=_dispatch(digest="0" * 64),
+        process_payload=_process_payload(),
+        heartbeat_interval_seconds=0,
+    )
+
+    heartbeat_count_after_cleanup = len(store.heartbeats)
+    assert heartbeat_count_after_cleanup >= 1
+    await asyncio.sleep(0)
+    assert len(store.heartbeats) == heartbeat_count_after_cleanup
+
+
+@pytest.mark.asyncio
 async def test_non_claimable_dispatch_does_not_launch(tmp_path: Path) -> None:
     store = FakeDispatchStore(claim_result=False)
     artifact = b"unused"

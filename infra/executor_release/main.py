@@ -248,7 +248,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--maintenance-operation", choices=("begin", "finish"))
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--region", required=True)
-    parser.add_argument("--stage", choices=("dev", "prod", "release-test"), required=True)
+    parser.add_argument("--stage", choices=("bench", "dev", "prod", "release-test"), required=True)
     parser.add_argument("--target-sha")
     args = parser.parse_args(argv)
 
