@@ -4,6 +4,7 @@ AWS CDK infrastructure for Valkyrie's tracker, executor, storage, networking, an
 
 - [Public self-hosting guide](../docs/self-hosting/infrastructure.mdx)
 - [Executor release and deployment runbook](executor-releases/README.md)
+- [Tracker ALB access-log runbook](tracker-alb-access-logs.md)
 
 The self-hosting guide documents reusable architecture and configuration. The executor runbook contains Vals-specific deployment, release activation, recovery, and retirement procedures for maintainers.
 

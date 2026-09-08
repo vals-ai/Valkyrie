@@ -1,7 +1,7 @@
 """Typed configuration for the Valkyrie SDK."""
 
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import Literal, TypeVar, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
@@ -10,6 +10,11 @@ from valkyrie.sdk.errors import ValkyrieConfigError
 from valkyrie.sdk.models import AWSCredentials, HarnessConfig
 
 DEFAULT_CONFIG_PATH = Path("~/.config/valkyrie/valkyrie.yaml")
+TRACKER_URLS: dict[str, str] = {
+    "bench": "https://benchmark-tracker.vals.ai",
+    "prod": "https://benchmark-tracker-prod.vals.ai",
+    "dev": "https://benchmark-tracker-dev.vals.ai",
+}
 ConfigT = TypeVar("ConfigT", bound="ValkyrieConfig")
 
 
@@ -18,6 +23,7 @@ class ValkyrieConfig(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
+    environment: Literal["bench", "prod", "dev"] = "bench"
     api_key: SecretStr | None = Field(default=None, repr=False)
     aws_access_key_id: SecretStr | None = Field(default=None, alias="AWS_ACCESS_KEY_ID", repr=False)
     aws_secret_access_key: SecretStr | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY", repr=False)
@@ -60,6 +66,15 @@ class ValkyrieConfig(BaseModel):
         if self.aws_access_key_id is None and self.aws_session_token is not None:
             raise ValueError("AWS_SESSION_TOKEN requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
         return self
+
+    @property
+    def tracker_url(self) -> str:
+        """Tracker base URL for the configured environment."""
+        if self.environment not in TRACKER_URLS:
+            raise ValkyrieConfigError(
+                f"Unsupported environment {self.environment!r}; expected one of: {', '.join(TRACKER_URLS)}"
+            )
+        return TRACKER_URLS[self.environment]
 
     @field_validator("custom_benchmark_services")
     @classmethod

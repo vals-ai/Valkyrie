@@ -60,6 +60,30 @@ default_sandbox_provider: daytona
     assert config.request_headers()["X-Harness-Aws-Access-Key-Id"] == "aws-key"
 
 
+def test_config_environment_selects_tracker_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk_config) -> None:
+    monkeypatch.delenv("TRACKER_SERVICE_URL", raising=False)
+    config_path = tmp_path / "valkyrie.yaml"
+    config_path.write_text(
+        """
+environment: prod
+api_key: vals-key
+AWS_DEFAULT_REGION: us-west-2
+S3_BUCKET: runs-bucket
+sandbox_providers:
+  daytona: DaytonaSecret
+""".strip(),
+        encoding="utf-8",
+    )
+
+    client = ValkyrieClient.from_config(config_path)
+
+    assert client.config.tracker_url == "https://benchmark-tracker-prod.vals.ai"
+    assert str(client._client.base_url) == "https://benchmark-tracker-prod.vals.ai"
+    assert sdk_config().tracker_url == "https://benchmark-tracker.vals.ai"
+    with pytest.raises(ValidationError, match="environment"):
+        sdk_config(environment="staging")
+
+
 def test_config_redacts_secrets_and_unwraps_them_for_requests(sdk_config) -> None:
     config = sdk_config()
 
