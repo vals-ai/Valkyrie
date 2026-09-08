@@ -12,7 +12,7 @@ valkyrie run start \
   --lambda my-post-benchmark-handler
 ```
 
-The lambda is invoked once after all tasks finish and results are uploaded. If the lambda fails (uncaught exception or `statusCode >= 400`), the run will be marked as `ERROR`.
+The lambda is invoked once after all tasks finish and results are uploaded. By that point the run's status is already terminal, so a lambda that fails — an uncaught exception, or a `statusCode >= 400` — does **not** change it: the run stays `FINISHED` and the failure is recorded in the tracker logs. Check those logs to confirm your lambda ran; a green run is not evidence that it did.
 
 ## Payload
 
