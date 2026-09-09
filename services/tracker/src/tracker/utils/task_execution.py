@@ -754,6 +754,21 @@ async def _process_task_attempt(
     def task_is_stopped() -> bool:
         return not execution_is_current()
 
+    def return_queued_task_to_pending() -> bool:
+        """Release a queued task so a fresh-sandbox retry can re-admit it."""
+        if queue_context is None:
+            return True
+        with Session(bind=engine) as task_session:
+            return commit_task_status_transition(
+                task_row.id,
+                task_session,
+                org,
+                TaskStatus.PENDING,
+                expected_started_at=attempt_started_at,
+                expected_status=expected_failure_status,
+                authority=authority,
+            )
+
     def commit_terminal_error(
         exc: BaseException,
         error_message: str,
@@ -1244,18 +1259,8 @@ async def _process_task_attempt(
     except SandboxSetupError as e:
         if task_is_stopped():
             return {task_id: None}
-        if queue_context is not None:
-            with Session(bind=engine) as task_session:
-                if not commit_task_status_transition(
-                    task_row.id,
-                    task_session,
-                    org,
-                    TaskStatus.PENDING,
-                    expected_started_at=attempt_started_at,
-                    expected_status=expected_failure_status,
-                    authority=authority,
-                ):
-                    return {task_id: None}
+        if not return_queued_task_to_pending():
+            return {task_id: None}
         log_output(f"\n[ERROR] {_exception_message(e)}")
         raise
     except SandboxNotFoundError as e:
@@ -1376,6 +1381,13 @@ async def _process_task_attempt(
         if task_is_stopped():
             return {task_id: None}
         error_message = _exception_message(e)
+        # This is necessary because Daytona routes tasks to bad nodes. We should
+        # remove this when Daytona fixes their infrastructure.
+        if "docker daemon is not ready inside the sandbox" in error_message:
+            if not return_queued_task_to_pending():
+                return {task_id: None}
+            log_output(f"\n[ERROR] {error_message}")
+            raise SandboxSetupError(error_message) from e
         log_output(f"\n[ERROR] {error_message}")
 
         return commit_terminal_error(
