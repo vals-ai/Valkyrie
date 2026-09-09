@@ -1629,7 +1629,8 @@ class TestTrackerAPI:
         - An existing canonical result is copied under archive/ before being overwritten.
         - Unfinished tasks remain in the score input with a null result.
         - A configured Lambda receives the completion payload plus ``preview``.
-        - A preview without a Lambda or an existing result can score a selected task subset.
+        - A preview without a Lambda or an existing result can score an unfinished task subset.
+        - Unknown IDs reject the whole request before scoring, S3 writes, or callback invocation.
         """
         benchmark_row = example_benchmark_object
         benchmark_row.arguments.lambda_function = "vals-format-lambda"
@@ -1712,6 +1713,20 @@ class TestTrackerAPI:
         monkeypatch.setattr(main_module, "create_presigned_url", _mock_create_presigned_url)
         monkeypatch.setattr(main_module, "invoke_lambda", _mock_invoke_lambda)
 
+        for task_ids in [["unknown-task"], ["pending-task", "unknown-task"]]:
+            invalid_response = client.get(
+                "/preview-results",
+                params=[("benchmark_id", str(benchmark_row.id)), *[("task_ids", task_id) for task_id in task_ids]],
+                headers=harness_headers,
+            )
+
+            assert invalid_response.status_code == 400
+            assert invalid_response.json()["detail"] == "Task IDs not found in this run: unknown-task"
+            assert observed_results == {}
+            assert copied == []
+            assert uploaded_keys == []
+            assert lambda_payloads == []
+
         response = client.get(
             "/preview-results",
             params={"benchmark_id": str(benchmark_row.id)},
@@ -1747,13 +1762,13 @@ class TestTrackerAPI:
             "/preview-results",
             params=[
                 ("benchmark_id", str(benchmark_row.id)),
-                ("task_ids", "finished-task"),
+                ("task_ids", "pending-task"),
             ],
             headers=harness_headers,
         )
 
         assert subset_response.status_code == 200
-        assert observed_results == {"finished-task": {"score": 1}}
+        assert observed_results == {"pending-task": None}
         assert uploaded_keys == [canonical_key, canonical_key]
         assert len(copied) == 1
         assert len(lambda_payloads) == 1
@@ -1767,6 +1782,7 @@ class TestTrackerAPI:
     ) -> None:
         example_benchmark_object.custom_benchmark_service = "http://service.internal:8001"
         database_session.add(example_benchmark_object)
+        database_session.add(Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=example_benchmark_object.id))
         database_session.commit()
         monkeypatch.setattr(main_module, "AUTH_REQUIRED", True)
 

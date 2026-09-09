@@ -982,6 +982,18 @@ async def _retrieve_results(
     task_ids_set = set(task_ids) if task_ids else None
 
     if task_ids_set is not None:
+        run_task_ids = set(
+            session.exec(
+                select(col(Task.task_id)).where(col(Task.benchmark) == benchmark_id).where(col(Task.org_id) == org.id)
+            ).all()
+        )
+        unknown_task_ids = task_ids_set - run_task_ids
+        if unknown_task_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Task IDs not found in this run: {', '.join(sorted(unknown_task_ids))}",
+            )
+
         _filter_final_view_to_tasks(final_view, task_ids_set)
 
     if task_ids_set is not None or preview:
