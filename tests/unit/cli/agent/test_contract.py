@@ -408,19 +408,15 @@ class TestParseYamlContract:
         with pytest.raises(ValueError, match="is required but was not provided"):
             _parse_yaml_contract(path, AgentConfig())
 
-    def test_secrets_final_output_and_output_artifacts_passed_through(self, tmp_path: Path) -> None:
-        """
-        Validates that secrets, final_output, and output_artifacts from YAML are carried to the request.
-
-        Test Cases:
-        - YAML defines API_KEY secret, /artifacts final_output, and one direct output artifact
-        """
+    def test_output_and_finalization_settings_passed_through(self, tmp_path: Path) -> None:
+        """YAML output and finalization settings are carried to the resolved request."""
         path = self._write_yaml(
             tmp_path,
             """\
             name: my_agent
             install_cmd: bash setup.sh
             run_cmd: "agent --task {problem_statement_path}"
+            finalize_cmd: "python -m converter --task {task_id}"
             final_output: /artifacts
             output_artifacts:
               - artifacts/turns.jsonl
@@ -436,6 +432,7 @@ class TestParseYamlContract:
 
         result = _parse_yaml_contract(path, AgentConfig())
 
+        assert result.finalize_cmd == "python -m converter --task {task_id}"
         assert result.final_output == "/artifacts"
         assert result.output_artifacts[0] == "artifacts/turns.jsonl"
         artifact = cast(OutputArtifact, result.output_artifacts[1])

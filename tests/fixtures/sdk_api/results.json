@@ -12,6 +12,7 @@
         "model": "claude-sonnet",
         "install_cmd": "",
         "run_cmd": "",
+        "finalize_cmd": null,
         "final_output": null,
         "output_artifacts": [
           {
