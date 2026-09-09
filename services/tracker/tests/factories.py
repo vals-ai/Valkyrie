@@ -27,6 +27,8 @@ def make_benchmark(
     org_id: UUID = TEST_ORG_ID,
     contract: AgentContractRequest | None = None,
     agent_name: str = "a",
+    model: str | None = None,
+    dataset: str | None = None,
     concurrency: int = 1,
     started_at: datetime | None = None,
     started_by_id: str | None = None,
@@ -42,6 +44,8 @@ def make_benchmark(
     - org_id: Organization that owns the benchmark.
     - contract: Optional agent contract; a deterministic contract is used by default.
     - agent_name: Agent contract name stored with the benchmark.
+    - model: Optional agent contract model.
+    - dataset: Optional benchmark dataset.
     - concurrency: Requested task concurrency.
     - started_at: Optional fixed start time.
     - started_by_id: Optional starter identifier.
@@ -60,7 +64,8 @@ def make_benchmark(
         started_by_id=started_by_id,
         started_by_email=started_by_email,
         arguments=BenchmarkArguments(
-            contract=contract or AgentContractRequest(name=agent_name, install_cmd="i", run_cmd="r"),
+            contract=contract or AgentContractRequest(name=agent_name, model=model, install_cmd="i", run_cmd="r"),
+            dataset=dataset,
             concurrency=concurrency,
         ),
     )

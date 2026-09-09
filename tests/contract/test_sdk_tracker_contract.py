@@ -1,15 +1,20 @@
-"""Canonical V1 payloads accepted by the Tracker service models."""
+"""SDK and Tracker wire-contract tests.
+
+Run: uv run pytest tests/contract/test_sdk_tracker_contract.py
+
+Covers canonical payloads, mixed-version compatibility, and route schemas.
+"""
 
 from __future__ import annotations
 
 import json
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from benchmark_service.schemas import VerifyTaskIdsResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from services.tracker.main import app
 from tracker.database.models import (
     AgentContractRequest,
@@ -186,11 +191,36 @@ INTERNAL_ROUTES = {
     ("/benchmarks/filter-options", "get"),
     ("/health", "get"),
     ("/init", "post"),
+    ("/scheduler/overview", "get"),
 }
 
 
 def load_fixture(name: str) -> dict[str, Any]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+class _LegacyTrackerStartBenchmarkRequest(BaseModel):
+    """Start-request fields relevant before queue priority was introduced."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    contract: AgentContractRequest
+    benchmark_name: str
+    concurrency: int = 5
+    label: str | None = None
+    task_ids: list[str] | None = None
+    slice_str: str | None = None
+    lambda_function: str | None = None
+    dataset: str | None = None
+    harness_config: HarnessConfig
+    custom_benchmark_service: str | None = None
+    service_headers: dict[str, str] = Field(default_factory=dict)
+    sandbox_provider: str = "daytona"
+    sandbox_provider_secret_name: str | None = None
+    service_auth_header_name: str | None = None
+    service_auth_secret_name: str | None = None
+    webhook_secret_name: str | None = None
+    webhook_intervals: list[int] | None = None
 
 
 @pytest.mark.parametrize(
@@ -227,14 +257,25 @@ def test_sdk_and_tracker_accept_canonical_fixture(
 def test_sdk_and_tracker_wire_models_have_the_same_fields(
     tracker_model: type[BaseModel], sdk_model: type[BaseModel]
 ) -> None:
-    assert tracker_model.model_fields.keys() == sdk_model.model_fields.keys()
     tracker_schema = tracker_model.model_json_schema()
     sdk_schema = sdk_model.model_json_schema()
-    assert set(tracker_schema.get("required", [])) == set(sdk_schema.get("required", []))
+    tracker_properties = {
+        name: tracker_schema["properties"][name]
+        for name, field in tracker_model.model_fields.items()
+        if not field.exclude
+    }
+    sdk_properties = {
+        name: sdk_schema["properties"][name] for name, field in sdk_model.model_fields.items() if not field.exclude
+    }
+    assert tracker_properties.keys() == sdk_properties.keys()
+    assert (
+        set(tracker_schema.get("required", [])) & tracker_properties.keys()
+        == set(sdk_schema.get("required", [])) & sdk_properties.keys()
+    )
 
-    for name in tracker_model.model_fields:
-        tracker_property = _normalized_wire_schema(tracker_schema["properties"][name])
-        sdk_property = _normalized_wire_schema(sdk_schema["properties"][name])
+    for name in tracker_properties:
+        tracker_property = _normalized_wire_schema(tracker_properties[name])
+        sdk_property = _normalized_wire_schema(sdk_properties[name])
         assert tracker_property == sdk_property
 
         tracker_field = tracker_model.model_fields[name]
@@ -244,6 +285,42 @@ def test_sdk_and_tracker_wire_models_have_the_same_fields(
         tracker_default = tracker_field.get_default(call_default_factory=True)
         sdk_default = sdk_field.get_default(call_default_factory=True)
         assert _normalized_default(tracker_default) == _normalized_default(sdk_default)
+
+
+@pytest.mark.parametrize("model", [StartBenchmarkRequest, SDKStartBenchmarkRequest])
+def test_start_priority_override_is_optional_and_strict(model: type[BaseModel]) -> None:
+    payload = load_fixture("start.json")["request"]
+    default_request = cast(
+        StartBenchmarkRequest | SDKStartBenchmarkRequest,
+        model.model_validate(payload),
+    )
+
+    assert default_request.priority is None
+
+    for priority in range(5):
+        accepted = cast(
+            StartBenchmarkRequest | SDKStartBenchmarkRequest,
+            model.model_validate({**payload, "sandbox_provider": "modal", "priority": priority}),
+        )
+        assert accepted.priority == priority
+
+    for invalid in (False, True, "1", -1, 5):
+        with pytest.raises(ValidationError):
+            model.model_validate({**payload, "sandbox_provider": "modal", "priority": invalid})
+
+
+def test_sdk_default_start_request_is_accepted_by_legacy_tracker() -> None:
+    payload = load_fixture("start.json")["request"]
+    payload.pop("concurrency")
+    payload.pop("priority")
+    sdk_request = SDKStartBenchmarkRequest.model_validate(payload)
+
+    wire_payload = sdk_request.model_dump(mode="json", exclude={"priority"})
+    legacy_request = _LegacyTrackerStartBenchmarkRequest.model_validate(wire_payload)
+
+    assert wire_payload["concurrency"] == 5
+    assert "priority" not in wire_payload
+    assert legacy_request.concurrency == 5
 
 
 def _normalized_wire_schema(value: Any) -> Any:

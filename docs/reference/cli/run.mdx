@@ -503,6 +503,7 @@ valkyrie run start \
   [--slice <TEXT>] \
   [--dataset <TEXT>] \
   [--provider <TEXT>] \
+  [--priority <INTEGER>] \
   [--label|-l <TEXT>] \
   [--kwarg|-k <TEXT> <TEXT>...] \
   [--secret|-s <TEXT> <TEXT>...] \
@@ -540,7 +541,7 @@ valkyrie run start \
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--concurrency"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"integer"}</code> · default: <code>{"5"}</code> · constraints: {">= 1"}</span></div>
-  <p className="mb-0 mt-1">{"Number of concurrent tasks to run (e.g., 5)"}</p>
+  <p className="mb-0 mt-1">{"Maximum concurrent tasks; defaults to 5"}</p>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
@@ -571,6 +572,11 @@ valkyrie run start \
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--provider"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"text"}</code> · default: <code>{"None"}</code></span></div>
   <p className="mb-0 mt-1">{"Named sandbox provider from config (e.g., daytona, modal)"}</p>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--priority"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"integer"}</code> · default: <code>{"None"}</code> · constraints: {">= 0; <= 4"}</span></div>
+  <p className="mb-0 mt-1">{"Override configured queue priority: 0 (highest) through 4 (lowest); default is 3"}</p>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
