@@ -80,6 +80,11 @@ logger = get_logger(__name__)
 _PTY_TASK_RETRY_LIMIT: int = 1
 _SANDBOX_RETRY_DELAY_SECONDS: float = 2
 
+# Messages a benchmark service reports when the sandbox itself is unusable (e.g.
+# the provider provisioned a rootfs missing the snapshot's baked content). Only
+# a fresh sandbox can recover, so these retry as setup failures.
+_BROKEN_SANDBOX_ERROR_MESSAGES = ("docker daemon is not ready inside the sandbox",)
+
 
 class BenchmarkServiceWebSocketDNSResolutionError(BenchmarkServiceError):
     """A benchmark-service WebSocket could not resolve its destination host."""
@@ -754,6 +759,21 @@ async def _process_task_attempt(
     def task_is_stopped() -> bool:
         return not execution_is_current()
 
+    def return_queued_task_to_pending() -> bool:
+        """Release a queued task so a fresh-sandbox retry can re-admit it."""
+        if queue_context is None:
+            return True
+        with Session(bind=engine) as task_session:
+            return commit_task_status_transition(
+                task_row.id,
+                task_session,
+                org,
+                TaskStatus.PENDING,
+                expected_started_at=attempt_started_at,
+                expected_status=expected_failure_status,
+                authority=authority,
+            )
+
     def commit_terminal_error(
         exc: BaseException,
         error_message: str,
@@ -1244,18 +1264,8 @@ async def _process_task_attempt(
     except SandboxSetupError as e:
         if task_is_stopped():
             return {task_id: None}
-        if queue_context is not None:
-            with Session(bind=engine) as task_session:
-                if not commit_task_status_transition(
-                    task_row.id,
-                    task_session,
-                    org,
-                    TaskStatus.PENDING,
-                    expected_started_at=attempt_started_at,
-                    expected_status=expected_failure_status,
-                    authority=authority,
-                ):
-                    return {task_id: None}
+        if not return_queued_task_to_pending():
+            return {task_id: None}
         log_output(f"\n[ERROR] {_exception_message(e)}")
         raise
     except SandboxNotFoundError as e:
@@ -1376,6 +1386,11 @@ async def _process_task_attempt(
         if task_is_stopped():
             return {task_id: None}
         error_message = _exception_message(e)
+        if any(message in error_message for message in _BROKEN_SANDBOX_ERROR_MESSAGES):
+            if not return_queued_task_to_pending():
+                return {task_id: None}
+            log_output(f"\n[ERROR] {error_message}")
+            raise SandboxSetupError(error_message) from e
         log_output(f"\n[ERROR] {error_message}")
 
         return commit_terminal_error(
