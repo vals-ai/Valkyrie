@@ -1647,6 +1647,26 @@
         "title": "SchedulerActiveStatus",
         "type": "string"
       },
+      "SchedulerCapacityResponse": {
+        "properties": {
+          "cpu": {
+            "$ref": "#/components/schemas/SchedulerResourceCapacityResponse"
+          },
+          "disk": {
+            "$ref": "#/components/schemas/SchedulerResourceCapacityResponse"
+          },
+          "memory": {
+            "$ref": "#/components/schemas/SchedulerResourceCapacityResponse"
+          }
+        },
+        "required": [
+          "cpu",
+          "memory",
+          "disk"
+        ],
+        "title": "SchedulerCapacityResponse",
+        "type": "object"
+      },
       "SchedulerOverviewResponse": {
         "properties": {
           "active_capped": {
@@ -1700,9 +1720,30 @@
       },
       "SchedulerPoolResponse": {
         "properties": {
+          "capacity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SchedulerCapacityResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "pool_id": {
             "title": "Pool Id",
             "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
           },
           "waiting": {
             "title": "Waiting",
@@ -1714,6 +1755,26 @@
           "waiting"
         ],
         "title": "SchedulerPoolResponse",
+        "type": "object"
+      },
+      "SchedulerResourceCapacityResponse": {
+        "properties": {
+          "available": {
+            "minimum": 0.0,
+            "title": "Available",
+            "type": "number"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "number"
+          }
+        },
+        "required": [
+          "available",
+          "total"
+        ],
+        "title": "SchedulerResourceCapacityResponse",
         "type": "object"
       },
       "SchedulerSummaryResponse": {
@@ -4305,6 +4366,16 @@
               "minimum": 1,
               "title": "Active Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_capacity",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Capacity",
+              "type": "boolean"
             }
           }
         ],

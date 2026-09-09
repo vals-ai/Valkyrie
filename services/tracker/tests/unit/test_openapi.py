@@ -112,7 +112,21 @@ def test_openapi_includes_scheduler_overview_contract() -> None:
             "default": 100,
             "title": "Active Limit",
         },
+        "include_capacity": {
+            "type": "boolean",
+            "default": False,
+            "title": "Include Capacity",
+        },
     }
     assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/SchedulerOverviewResponse"
+    }
+
+    schemas = build_openapi()["components"]["schemas"]
+    pool_schema = schemas["SchedulerPoolResponse"]
+    assert pool_schema["required"] == ["pool_id", "waiting"]
+    assert set(pool_schema["properties"]) == {"pool_id", "waiting", "provider", "capacity"}
+    assert schemas["SchedulerResourceCapacityResponse"]["properties"] == {
+        "available": {"type": "number", "minimum": 0.0, "title": "Available"},
+        "total": {"type": "number", "minimum": 0.0, "title": "Total"},
     }

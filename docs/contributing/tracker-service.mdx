@@ -25,6 +25,8 @@ GET /scheduler/overview?waiting_limit=100&active_limit=100
 
 The endpoint uses the request's resolved organization and never returns rows from another organization. Its summary contains total waiting, building, in-progress, and evaluating counts. It also returns per-pool waiting counts plus bounded waiting and active entries. Each entry limit defaults to 100, accepts 1–200, and has a corresponding `waiting_capped` or `active_capped` flag when more rows exist. Active entries use `BUILDING`, `IN_PROGRESS`, or `EVALUATING` status.
 
+Add `include_capacity=true` to request a best-effort CPU, memory, and disk capacity observation for each waiting pool. Capacity is returned only when every waiting run in that pool uses the same managed sandbox-provider configuration and the reconstructed provider still matches the persisted pool. Access-key, ambiguous, unsupported, timed-out, or unavailable provider configurations return `capacity: null` without failing the queue snapshot. The response contains provider resource totals and availability only; provider credentials and configuration identifiers remain internal.
+
 ## Run it locally
 
 ```bash
