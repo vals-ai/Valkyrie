@@ -1381,8 +1381,8 @@ async def _process_task_attempt(
         if task_is_stopped():
             return {task_id: None}
         error_message = _exception_message(e)
-        # A service that found an unusable sandbox (e.g. a rootfs missing the
-        # snapshot's baked content) can only recover on a fresh sandbox.
+        # This is necessary because Daytona routes tasks to bad nodes. We should
+        # remove this when Daytona fixes their infrastructure.
         if "docker daemon is not ready inside the sandbox" in error_message:
             if not return_queued_task_to_pending():
                 return {task_id: None}
