@@ -88,6 +88,23 @@ SandboxDeleteInitiator = Literal["create_cancelled", "force_stop", "orphan_clean
 SandboxDeleteOutcome = Literal["deleted", "already_gone", "cancelled", "failed"]
 
 
+def audit_sandbox_create(sandbox: Sandbox) -> None:
+    # Mirrors audit_sandbox_delete; provider_metadata carries provider-reported
+    # allocation fields (e.g. runner id) that are unrecoverable after deletion.
+    labels = sandbox.labels or {}
+    logger.info(
+        "sandbox.create",
+        extra={
+            "sandbox_id": sandbox.id,
+            "sandbox_name": sandbox.name,
+            "benchmark_id": labels.get("Id"),
+            "benchmark_name": labels.get("Benchmark"),
+            "task_id": labels.get("Task"),
+            "provider_metadata": sandbox.provider_metadata,
+        },
+    )
+
+
 def audit_sandbox_delete(
     sandbox: Sandbox,
     initiated_by: SandboxDeleteInitiator,
@@ -311,6 +328,7 @@ async def create_sandbox(
         tags={"image": _metric_source_name(source)},
     )
     set_sandbox_context(sandbox, image=source_name)
+    audit_sandbox_create(sandbox)
 
     try:
         yield sandbox
