@@ -6,7 +6,7 @@ Run: uv run pytest tests/unit/aws/test_clients.py
 import re
 from datetime import datetime, timezone
 from typing import cast
-from unittest.mock import ANY, MagicMock
+from unittest.mock import ANY, MagicMock, call
 
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
@@ -71,6 +71,7 @@ class TestAWSClientProviders:
         provider.s3_client()
         provider.cloudwatch_logs_client()
         provider.secretsmanager_client()
+        provider.secretsmanager_async_client()
         provider.lambda_client()
 
         session_factory.assert_called_once_with(
@@ -79,7 +80,7 @@ class TestAWSClientProviders:
             aws_session_token=session_token,
             region_name=credentials.aws_default_region,
         )
-        session.client.assert_called_once_with("s3", config=ANY)
+        session.client.assert_has_calls([call("s3", config=ANY), call("secretsmanager")])
         assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
             "logs",
             "secretsmanager",
@@ -104,10 +105,11 @@ class TestAWSClientProviders:
         provider.s3_client()
         provider.cloudwatch_logs_client()
         provider.secretsmanager_client()
+        provider.secretsmanager_async_client()
         provider.lambda_client()
 
         session_factory.assert_called_once_with(region_name=region)
-        session.client.assert_called_once_with("s3", config=ANY)
+        session.client.assert_has_calls([call("s3", config=ANY), call("secretsmanager")])
         assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
             "logs",
             "secretsmanager",

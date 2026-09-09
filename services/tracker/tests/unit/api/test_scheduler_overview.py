@@ -2,7 +2,9 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from threading import Event
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
@@ -18,6 +20,7 @@ import tracker.api.scheduler_overview as scheduler_overview_api
 from tracker.api.scheduler_overview import _read_active_rows, read_scheduler_overview  # pyright: ignore[reportPrivateUsage]
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.scheduler.store import queue_pool_id
+from tracker.types import SchedulerOverviewResponse, SchedulerPoolResponse, SchedulerSummaryResponse
 
 
 _client = TestClient(app)
@@ -184,6 +187,63 @@ def test_default_route_preserves_legacy_pool_shape(
     assert payload["waiting_entries"][0]["started_by_email"] is None
 
 
+async def test_route_offloads_synchronous_database_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    overview_entered = Event()
+    overview_release = Event()
+    references_entered = Event()
+    references_release = Event()
+    timed_out_reads: list[str] = []
+    overview = SchedulerOverviewResponse(
+        observed_at=datetime.now(UTC),
+        summary=SchedulerSummaryResponse(),
+        pools=[],
+        waiting_entries=[],
+        active_entries=[],
+        waiting_capped=False,
+        active_capped=False,
+    )
+
+    def blocking_overview_read(**_kwargs: object) -> SchedulerOverviewResponse:
+        overview_entered.set()
+        if not overview_release.wait(timeout=1):
+            timed_out_reads.append("overview")
+        return overview
+
+    def blocking_reference_read(**_kwargs: object) -> dict[str, set[object]]:
+        references_entered.set()
+        if not references_release.wait(timeout=1):
+            timed_out_reads.append("references")
+        return {}
+
+    async def release_from_event_loop() -> None:
+        while not overview_entered.is_set():
+            await asyncio.sleep(0)
+        overview_release.set()
+        while not references_entered.is_set():
+            await asyncio.sleep(0)
+        references_release.set()
+
+    enrich = AsyncMock(return_value=overview)
+    monkeypatch.setattr(scheduler_overview_api, "read_scheduler_overview", blocking_overview_read)
+    monkeypatch.setattr(scheduler_overview_api, "_read_waiting_pool_references", blocking_reference_read)
+    monkeypatch.setattr(scheduler_overview_api, "_enrich_scheduler_capacity", enrich)
+
+    result, _ = await asyncio.gather(
+        scheduler_overview_api.get_scheduler_overview(
+            waiting_limit=100,
+            active_limit=100,
+            include_capacity=True,
+            org=Org(id=TEST_ORG_ID, name="test"),
+            session=cast(Session, Mock()),
+        ),
+        release_from_event_loop(),
+    )
+
+    assert result is overview
+    assert timed_out_reads == []
+    enrich.assert_awaited_once_with(overview, org_id=TEST_ORG_ID, references={})
+
+
 def test_capacity_route_projects_provider_values_and_uses_complete_pool_references(
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -208,8 +268,8 @@ def test_capacity_route_projects_provider_values_and_uses_complete_pool_referenc
         "deployment_aws_runtime",
         Mock(return_value=SimpleNamespace(clients=Mock())),
     )
-    fetch_config = Mock(return_value=provider_config)
-    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config", fetch_config)
+    fetch_config = AsyncMock(return_value=provider_config)
+    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config_async", fetch_config)
 
     response = _client.get(
         "/scheduler/overview",
@@ -230,7 +290,7 @@ def test_capacity_route_projects_provider_values_and_uses_complete_pool_referenc
             },
         }
     ]
-    fetch_config.assert_called_once()
+    fetch_config.assert_awaited_once()
     provider.get_capacity.assert_awaited_once()
     provider.close.assert_awaited_once()
 
@@ -282,7 +342,11 @@ async def test_capacity_timeout_closes_provider_and_pool_drift_skips_observation
         "deployment_aws_runtime",
         Mock(return_value=SimpleNamespace(clients=Mock())),
     )
-    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config", Mock(return_value=provider_config))
+    monkeypatch.setattr(
+        scheduler_overview_api,
+        "fetch_sandbox_provider_config_async",
+        AsyncMock(return_value=provider_config),
+    )
 
     drifted = await scheduler_overview_api._read_provider_capacity(  # pyright: ignore[reportPrivateUsage]
         org_id=TEST_ORG_ID,
@@ -315,6 +379,66 @@ async def test_capacity_timeout_closes_provider_and_pool_drift_skips_observation
     provider.close.assert_awaited_once()
 
 
+async def test_capacity_enrichment_bounds_concurrent_provider_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    active = 0
+    peak = 0
+    cancelled = 0
+
+    async def blocking_provider_config(*_args: object) -> None:
+        nonlocal active, peak, cancelled
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            active -= 1
+            cancelled += 1
+
+    pool_ids = [f"pool_{index}" for index in range(6)]
+    overview = SchedulerOverviewResponse(
+        observed_at=datetime.now(UTC),
+        summary=SchedulerSummaryResponse(waiting=len(pool_ids)),
+        pools=[SchedulerPoolResponse(pool_id=pool_id, waiting=1) for pool_id in pool_ids],
+        waiting_entries=[],
+        active_entries=[],
+        waiting_capped=False,
+        active_capped=False,
+    )
+    references = {
+        pool_id: {
+            scheduler_overview_api._PoolProviderReference(  # pyright: ignore[reportPrivateUsage]
+                aws_managed=True,
+                provider_type="daytona",
+                secret_name=f"secret-{index}",
+            )
+        }
+        for index, pool_id in enumerate(pool_ids)
+    }
+    monkeypatch.setattr(scheduler_overview_api, "_CAPACITY_MAX_CONCURRENCY", 2)
+    monkeypatch.setattr(scheduler_overview_api, "_CAPACITY_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        scheduler_overview_api,
+        "deployment_aws_runtime",
+        Mock(return_value=SimpleNamespace(clients=Mock())),
+    )
+    monkeypatch.setattr(
+        scheduler_overview_api,
+        "fetch_sandbox_provider_config_async",
+        blocking_provider_config,
+    )
+
+    result = await scheduler_overview_api._enrich_scheduler_capacity(  # pyright: ignore[reportPrivateUsage]
+        overview,
+        org_id=TEST_ORG_ID,
+        references=references,
+    )
+
+    assert peak == 2
+    assert active == 0
+    assert cancelled == 2
+    assert [pool.capacity for pool in result.pools] == [None] * len(pool_ids)
+
+
 def test_capacity_failure_keeps_overview_available(
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -332,7 +456,11 @@ def test_capacity_failure_keeps_overview_available(
         "deployment_aws_runtime",
         Mock(return_value=SimpleNamespace(clients=Mock())),
     )
-    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config", Mock(return_value=provider_config))
+    monkeypatch.setattr(
+        scheduler_overview_api,
+        "fetch_sandbox_provider_config_async",
+        AsyncMock(return_value=provider_config),
+    )
 
     response = _client.get("/scheduler/overview", params={"include_capacity": "true"})
 

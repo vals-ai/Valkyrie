@@ -14,6 +14,7 @@ from sqlalchemy import JSON, select as sa_select, type_coerce
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, col, func, select
 from sqlmodel.sql.expression import Select
+from starlette.concurrency import run_in_threadpool
 
 from tracker.auth import get_current_org
 from tracker.aws.resolver import deployment_aws_runtime
@@ -32,7 +33,7 @@ from tracker.types import (
     SchedulerSummaryResponse,
     SchedulerWaitingEntryResponse,
 )
-from tracker.utils.resources import fetch_sandbox_provider_config
+from tracker.utils.resources import fetch_sandbox_provider_config_async
 
 router = APIRouter(prefix="/scheduler")
 logger = get_logger(__name__)
@@ -40,6 +41,7 @@ logger = get_logger(__name__)
 _ACTIVE_STATUSES = (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
 _CAPACITY_TIMEOUT_SECONDS = 2.0
 _PROVIDER_CLOSE_TIMEOUT_SECONDS = 1.0
+_CAPACITY_MAX_CONCURRENCY = 4
 
 
 @dataclass(frozen=True)
@@ -287,29 +289,30 @@ async def _read_provider_capacity(
     provider: SandboxProvider | None = None
     try:
         async with asyncio.timeout(_CAPACITY_TIMEOUT_SECONDS):
-            runtime = deployment_aws_runtime(org_id)
-            provider_config = await asyncio.to_thread(
-                fetch_sandbox_provider_config,
-                secret_name,
-                SecretsManagerStore(runtime.clients),
-                provider_type,
-            )
-            provider = provider_config.create_provider()
-            provider_pool_id = provider.admission_pool_id
-            if provider_pool_id is None or queue_pool_id(provider_pool_id) != pool_id:
-                raise ValueError("Sandbox capacity provider does not match the queued pool")
-            capacity = await provider.get_capacity()
-            if capacity is None:
-                return None
-            return _capacity_response(capacity)
+            try:
+                runtime = deployment_aws_runtime(org_id)
+                provider_config = await fetch_sandbox_provider_config_async(
+                    secret_name,
+                    SecretsManagerStore(runtime.clients),
+                    provider_type,
+                )
+                created_provider = provider_config.create_provider()
+                provider = created_provider
+                provider_pool_id = created_provider.admission_pool_id
+                if provider_pool_id is None or queue_pool_id(provider_pool_id) != pool_id:
+                    raise ValueError("Sandbox capacity provider does not match the queued pool")
+                capacity = await created_provider.get_capacity()
+                if capacity is None:
+                    return None
+                return _capacity_response(capacity)
+            finally:
+                if provider is not None:
+                    await _close_provider(provider, pool_id)
     except asyncio.CancelledError:
         raise
     except Exception as error:
         logger.warning("Sandbox capacity unavailable for pool %s (%s)", pool_id, type(error).__name__)
         return None
-    finally:
-        if provider is not None:
-            await _close_provider(provider, pool_id)
 
 
 def _capacity_request(
@@ -335,21 +338,40 @@ async def _enrich_scheduler_capacity(
     org_id: UUID,
     references: dict[str, set[_PoolProviderReference]],
 ) -> SchedulerOverviewResponse:
-    async def enrich(pool: SchedulerPoolResponse) -> SchedulerPoolResponse:
+    pools: list[SchedulerPoolResponse] = []
+    requests: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
+    for index, pool in enumerate(overview.pools):
         provider_type, request = _capacity_request(references.get(pool.pool_id, set()))
-        capacity = (
-            await _read_provider_capacity(
+        pools.append(pool.model_copy(update={"provider": provider_type, "capacity": None}))
+        if request is not None:
+            requests.put_nowait((index, request[0], request[1]))
+
+    async def enrich() -> None:
+        while True:
+            try:
+                index, provider_type, secret_name = requests.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            pool = pools[index]
+            capacity = await _read_provider_capacity(
                 org_id=org_id,
                 pool_id=pool.pool_id,
-                provider_type=request[0],
-                secret_name=request[1],
+                provider_type=provider_type,
+                secret_name=secret_name,
             )
-            if request is not None
-            else None
-        )
-        return pool.model_copy(update={"provider": provider_type, "capacity": capacity})
+            pools[index] = pool.model_copy(update={"capacity": capacity})
 
-    pools = await asyncio.gather(*(enrich(pool) for pool in overview.pools))
+    workers = [asyncio.create_task(enrich()) for _ in range(min(_CAPACITY_MAX_CONCURRENCY, requests.qsize()))]
+    try:
+        async with asyncio.timeout(_CAPACITY_TIMEOUT_SECONDS):
+            await asyncio.gather(*workers)
+    except TimeoutError:
+        pass
+    finally:
+        for worker in workers:
+            if not worker.done():
+                worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
     return overview.model_copy(update={"pools": pools})
 
 
@@ -361,7 +383,8 @@ async def get_scheduler_overview(
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> SchedulerOverviewResponse:
-    overview = read_scheduler_overview(
+    overview = await run_in_threadpool(
+        read_scheduler_overview,
         session=session,
         org_id=org.id,
         now=datetime.now(UTC),
@@ -370,8 +393,9 @@ async def get_scheduler_overview(
     )
     if not include_capacity:
         return overview
+    references = await run_in_threadpool(_read_waiting_pool_references, session=session, org_id=org.id)
     return await _enrich_scheduler_capacity(
         overview,
         org_id=org.id,
-        references=_read_waiting_pool_references(session=session, org_id=org.id),
+        references=references,
     )
