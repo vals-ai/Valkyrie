@@ -316,6 +316,11 @@ async def create_sandbox(
                 sandbox = await asyncio.shield(creation_task)
             except asyncio.CancelledError:
                 sandbox = await creation_task
+                try:
+                    audit_sandbox_create(sandbox)
+                except Exception:
+                    # Must not replace the original cancellation.
+                    logger.exception("audit_sandbox_create failed for %s", sandbox.name)
                 await delete_sandbox(sandbox, provider, initiated_by="create_cancelled")
                 raise
     except Exception as e:
@@ -328,9 +333,9 @@ async def create_sandbox(
         tags={"image": _metric_source_name(source)},
     )
     set_sandbox_context(sandbox, image=source_name)
-    audit_sandbox_create(sandbox)
 
     try:
+        audit_sandbox_create(sandbox)
         yield sandbox
     except Exception as e:
         logger.error(f"Error during sandbox execution {sandbox.name}: {e}")
