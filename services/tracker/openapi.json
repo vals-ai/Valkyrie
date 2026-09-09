@@ -3677,9 +3677,69 @@
         "summary": "Init Org"
       }
     },
+    "/preview-results": {
+      "get": {
+        "description": "Archive the current S3 final view, replace it with a recomputed one, and run the completion callback.",
+        "operationId": "preview_results",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "task_ids",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Ids"
+            }
+          },
+          {
+            "in": "query",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/S3UploadResultsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Results"
+      }
+    },
     "/retrieve-results": {
       "get": {
-        "description": "Retrieve the results of a benchmark by its id. When task_ids is non-empty, the final view is\nfiltered to that subset and the final score is recomputed over the subset; the persisted\nFinalEvaluation / per-task rows are left untouched.\n\nNote: with `s3=True` the S3 final view at the canonical key is overwritten with whatever was\njust computed (full or subset). The DB remains source of truth, so re-running without\ntask_ids re-uploads the canonical full view.\n\nUsage:\ncurl -X GET http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=false\ncurl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'",
+        "description": "Retrieve a benchmark's current results, optionally filtered or uploaded to S3.",
         "operationId": "retrieve_results",
         "parameters": [
           {
