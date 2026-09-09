@@ -200,7 +200,7 @@ class RunsResource:
         *,
         task_ids: Sequence[str] | None = None,
     ) -> S3UploadResultsResponse:
-        """Create a numbered S3 snapshot and return artifact URLs reported by its optional callback."""
+        """Archive the current S3 results, replace them with a fresh snapshot, and run the optional callback."""
         params: dict[str, Any] = {"benchmark_id": str(run_id)}
         if task_ids:
             params["task_ids"] = list(task_ids)

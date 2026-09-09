@@ -359,11 +359,9 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
             return httpx.Response(
                 200,
                 json={
-                    "s3_url": "s3://runs-bucket/preview/1/results.json",
+                    "s3_url": "s3://runs-bucket/results.json",
                     "presigned_url": "https://download.test/preview.json",
                     "console_url": "https://console.aws.test/preview.json",
-                    "preview_version": 1,
-                    "generated_artifact_urls": ["s3://runs-bucket/preview/1/generated.json"],
                 },
             )
         if request.url.path == "/retrieve-results":
@@ -415,8 +413,7 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
     assert inline_results.benchmark_id == run_id
     assert results.s3_url == "s3://runs-bucket/results.json"
     assert results.expires_in == 86400
-    assert preview.preview_version == 1
-    assert preview.generated_artifact_urls == ["s3://runs-bucket/preview/1/generated.json"]
+    assert preview.presigned_url == "https://download.test/preview.json"
     assert preview_query == [("benchmark_id", str(run_id)), ("task_ids", "task-1")]
     assert paths == [
         "/fetch-benchmark",

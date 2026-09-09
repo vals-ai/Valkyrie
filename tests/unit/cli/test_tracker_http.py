@@ -174,11 +174,9 @@ class TestTrackerJsonEndpoints:
                 return httpx.Response(
                     200,
                     json={
-                        "s3_url": "s3://bucket/preview/1/results.json",
+                        "s3_url": "s3://bucket/results.json",
                         "presigned_url": "https://download.example/preview",
                         "console_url": "https://console.example/preview",
-                        "preview_version": 1,
-                        "generated_artifact_urls": ["s3://generated-bucket/preview-output.json"],
                     },
                     request=request,
                 )
@@ -221,8 +219,7 @@ class TestTrackerJsonEndpoints:
         assert isinstance(preview_results, S3UploadResultsResponse)
         assert inline_results.benchmark_id == _RUN_ID
         assert s3_results.presigned_url == "https://download.example/results"
-        assert preview_results.preview_version == 1
-        assert preview_results.generated_artifact_urls == ["s3://generated-bucket/preview-output.json"]
+        assert preview_results.presigned_url == "https://download.example/preview"
         assert task_ids == ["task-a", "task-b"]
         assert results_exist is True
 

@@ -41,7 +41,7 @@ def _format_expiration(seconds: int) -> str:
     "--preview",
     is_flag=True,
     default=False,
-    help="Save a numbered S3 preview of current results.",
+    help="Archive the current S3 results, replace them with a fresh snapshot, and run the completion callback.",
 )
 @click.option(
     "--task-ids",
@@ -117,20 +117,6 @@ def results(
                 click.echo()
                 click.echo(click.style("AWS Console:", fg="cyan", bold=True))
                 click.echo(f"  {results_response.console_url}")
-
-                if results_response.preview_version is not None:
-                    click.echo()
-                    click.echo(
-                        click.style(
-                            f"Preview {results_response.preview_version} saved.",
-                            fg="cyan",
-                            bold=True,
-                        )
-                    )
-                    if results_response.generated_artifact_urls:
-                        click.echo("Generated artifacts:")
-                        for artifact_url in results_response.generated_artifact_urls:
-                            click.echo(f"  {artifact_url}")
 
     except TrackerServiceError as e:
         raise click.ClickException(str(e))

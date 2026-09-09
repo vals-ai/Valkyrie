@@ -26,6 +26,7 @@ from tracker.utils.reporting import (
     fetch_evaluation_results,
     fetch_filtered_benchmark_rows,
     stream_benchmark_results,
+    final_view_s3_key,
     upload_final_view,
 )
 from tracker.utils.resources import (
@@ -103,6 +104,7 @@ __all__ = [
     "stop_sandbox",
     "stream_benchmark_results",
     "try_fetch_harness_config",
+    "final_view_s3_key",
     "upload_final_view",
     "update_benchmark_concurrency",
     "update_benchmark_resume_arguments",
