@@ -80,11 +80,6 @@ logger = get_logger(__name__)
 _PTY_TASK_RETRY_LIMIT: int = 1
 _SANDBOX_RETRY_DELAY_SECONDS: float = 2
 
-# Messages a benchmark service reports when the sandbox itself is unusable (e.g.
-# the provider provisioned a rootfs missing the snapshot's baked content). Only
-# a fresh sandbox can recover, so these retry as setup failures.
-_BROKEN_SANDBOX_ERROR_MESSAGES = ("docker daemon is not ready inside the sandbox",)
-
 
 class BenchmarkServiceWebSocketDNSResolutionError(BenchmarkServiceError):
     """A benchmark-service WebSocket could not resolve its destination host."""
@@ -1386,7 +1381,9 @@ async def _process_task_attempt(
         if task_is_stopped():
             return {task_id: None}
         error_message = _exception_message(e)
-        if any(message in error_message for message in _BROKEN_SANDBOX_ERROR_MESSAGES):
+        # A service that found an unusable sandbox (e.g. a rootfs missing the
+        # snapshot's baked content) can only recover on a fresh sandbox.
+        if "docker daemon is not ready inside the sandbox" in error_message:
             if not return_queued_task_to_pending():
                 return {task_id: None}
             log_output(f"\n[ERROR] {error_message}")
