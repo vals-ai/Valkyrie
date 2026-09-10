@@ -206,14 +206,18 @@ async def test_task_scope_isolates_concurrent_sandbox_events_and_outer_capture(
             )
 
         task_a = task_execution.TrackedTask(
-            body("task-a", "sandbox-a", fail=False), cast(Org, object()), cast(ExecutionAuthority, object()), datetime.now(UTC)
+            body("task-a", "sandbox-a", fail=False),
+            cast(Org, object()),
+            cast(ExecutionAuthority, object()),
+            datetime.now(UTC),
         )
         task_b = task_execution.TrackedTask(
-            body("task-b", "sandbox-b", fail=True), cast(Org, object()), cast(ExecutionAuthority, object()), datetime.now(UTC)
+            body("task-b", "sandbox-b", fail=True),
+            cast(Org, object()),
+            cast(ExecutionAuthority, object()),
+            datetime.now(UTC),
         )
-        await asyncio.gather(
-            task_a.run(None, cast(Task, rows["task-a"])), task_b.run(None, cast(Task, rows["task-b"]))
-        )
+        await asyncio.gather(task_a.run(None, cast(Task, rows["task-a"])), task_b.run(None, cast(Task, rows["task-b"])))
 
     with sentry_sdk.init(
         dsn="https://public@example.com/1",
