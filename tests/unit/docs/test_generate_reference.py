@@ -65,6 +65,7 @@ _EXPECTED_RESOURCES = {
         "list",
         "stream",
         "results",
+        "preview",
         "metadata",
         "results_exist",
         "analyze",

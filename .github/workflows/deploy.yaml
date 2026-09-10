@@ -204,6 +204,7 @@ jobs:
           AUTH_REQUIRED: "true"
           DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}
           SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
           SENTRY_RELEASE: ${{ github.sha }}
         working-directory: infra
@@ -392,6 +393,7 @@ jobs:
           AUTH_REQUIRED: "true"
           DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}
           SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
           SENTRY_RELEASE: ${{ github.sha }}
         working-directory: infra
@@ -531,6 +533,7 @@ jobs:
           BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
           DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}
           SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
           SENTRY_RELEASE: ${{ github.sha }}
         working-directory: infra
@@ -572,6 +575,7 @@ jobs:
       PRODUCTION_ACCOUNT_ID: ${{ secrets.VALKYRIE_PRODUCTION_ACCOUNT_ID }}
       OPERATION: ${{ github.event_name == 'push' && 'deploy' || inputs.operation }}
       SCOPE: ${{ github.event_name == 'push' && 'core' || inputs.scope }}
+      SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}
       SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
       SENTRY_RELEASE: ${{ github.sha }}
 
@@ -840,6 +844,8 @@ jobs:
           steps.freshness.outputs.current == 'true' &&
           (needs.classify-deployment.outputs.core_maintenance_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
+        env:
+          SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}
         working-directory: infra
         run: make deploy STAGE=dev SCOPE=core DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION="$AWS_REGION"
 
@@ -1060,6 +1066,7 @@ jobs:
           BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
           DESCOPE_MANAGEMENT_KEY_SECRET_NAME: ${{ secrets.DESCOPE_MANAGEMENT_KEY_SECRET_NAME }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}
           SENTRY_DSN_SECRET_NAME: ${{ secrets.SENTRY_DSN_SECRET_NAME }}
           SENTRY_RELEASE: ${{ github.sha }}
         working-directory: infra

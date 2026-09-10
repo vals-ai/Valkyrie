@@ -221,6 +221,27 @@ async def test_versioned_copy_can_be_deleted_exactly(
     )
 
 
+async def test_delete_from_s3_translates_aws_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+) -> None:
+    client = AsyncMock()
+    client.delete_object.side_effect = ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "denied"}},
+        "DeleteObject",
+    )
+    client_context = AsyncMock()
+    client_context.__aenter__.return_value = client
+
+    def s3_client(_provider: object) -> AsyncMock:
+        return client_context
+
+    monkeypatch.setattr(type(aws_runtime.clients), "s3_client", s3_client)
+
+    with pytest.raises(S3Error, match="Failed to delete object from S3"):
+        await delete_from_s3("benchmarks/run/demo.zip", aws_runtime)
+
+
 @pytest.fixture
 def mock_s3_client(monkeypatch: pytest.MonkeyPatch, aws_runtime: AWSRuntime) -> MockS3Client:
     client = MockS3Client()

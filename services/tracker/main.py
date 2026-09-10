@@ -4,7 +4,7 @@ import logging
 import tarfile
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -13,14 +13,16 @@ import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from benchmark_service.schemas import VerifyTaskIdsResponse
+from botocore.config import Config
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from opentelemetry.propagate import inject
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, select, update
 
+from tracker._lambda import invoke_lambda
 from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
@@ -28,6 +30,7 @@ from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
 from tracker.api.dependencies import RunAWSDependency
 from tracker.api.filter_options import router as filter_options_router
 from tracker.api.logs import router as logs_router
+from tracker.api.scheduler_overview import router as scheduler_overview_router
 from tracker.api.single_benchmark import router as single_benchmark_router
 from tracker.api.single_task import router as single_task_router
 from tracker.auth import (
@@ -53,9 +56,11 @@ from tracker.aws.s3 import (
     S3ObjectStore,
     create_benchmark_url,
     create_console_url,
+    copy_s3_object,
     create_presigned_url,
     s3_object_exists,
 )
+from tracker.aws.runtime import AWSRuntime
 from tracker.runtime.artifacts import (
     agent_bundle_key,
     benchmark_agent_bundle_key,
@@ -68,6 +73,7 @@ from tracker.agent.schemas import AgentConfig
 from tracker.config import (
     AUTH_REQUIRED,
     ENVIRONMENT,
+    SANDBOX_QUEUE_ENABLED,
     broker,
     classify_benchmark_service_destination,
     create_benchmark_service_url,
@@ -83,6 +89,7 @@ from tracker.database.models import (
     Org,
     RetryMode,
     Task,
+    TaskStatus,
 )
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.executor.dispatch_control import (
@@ -104,6 +111,7 @@ from tracker.executor.release_retirement import AutomaticReleaseRetirement
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.outbound_security import validate_custom_service_destination, validate_service_url_syntax
+from tracker.scheduler.store import queue_pool_id, try_task_evaluation_transaction_lock
 from tracker.types import (
     AnalyzeBenchmarkRequest,
     AWSRuntimeResponse,
@@ -112,6 +120,7 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FetchBenchmarkTasksRequest,
+    FinalViewResponse,
     HarnessConfig,
     ManagedExecutionContext,
     Order,
@@ -135,6 +144,7 @@ from tracker.utils import (
     fetch_benchmark_row,
     fetch_filtered_benchmark_rows,
     fetch_final_score_inputs,
+    final_view_s3_key,
     force_stop_sandboxes,
     initiate_stop_benchmark,
     reset_to_in_progress_status,
@@ -144,11 +154,14 @@ from tracker.utils import (
     update_benchmark_concurrency,
     update_benchmark_resume_arguments,
 )
+from tracker.utils.resources import fetch_sandbox_provider_config
 
 configure_logging()
 configure_observability("valkyrie-tracker", environment=ENVIRONMENT)
 
 logger = get_logger(__name__)
+
+_COMPLETION_CALLBACK_CONFIG = Config(read_timeout=60, retries={"total_max_attempts": 1})
 
 # Tracker publishes the stable wire contract; ExecutorHost resolves the same
 # task name before launching the pinned executor artifact.
@@ -182,6 +195,7 @@ app.include_router(benchmark_services_router)
 app.include_router(benchmarks_status_router)
 app.include_router(filter_options_router)
 app.include_router(logs_router)
+app.include_router(scheduler_overview_router)
 app.include_router(single_benchmark_router)
 app.include_router(single_task_router)
 
@@ -545,6 +559,49 @@ async def start_benchmark(
         update={"contract": request.contract.model_copy(update={"inference_settings_attested": False})}
     )
 
+    resolved_queue_pool_id: str | None = None
+    if not SANDBOX_QUEUE_ENABLED:
+        if request.priority is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Queue priority requires sandbox queue to be enabled",
+            )
+    elif request.sandbox_provider == "modal":
+        if request.priority is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Queue priority requires a sandbox provider configured for admission",
+            )
+    else:
+        provider_secret_name = (
+            request.sandbox_provider_secret_name
+            if aws_managed
+            else cast(HarnessConfig, request.harness_config).sandbox_provider_secret_name
+        )
+        assert provider_secret_name is not None
+        provider_config = await asyncio.to_thread(
+            fetch_sandbox_provider_config,
+            provider_secret_name,
+            SecretsManagerStore(aws_runtime.clients),
+            request.sandbox_provider,
+        )
+        provider = provider_config.create_provider()
+        try:
+            provider_pool_id = provider.admission_pool_id
+        finally:
+            await provider.close()
+
+        # Admission identity is configured per provider secret; unmanaged credentials remain direct.
+        if provider_pool_id is not None:
+            if request.priority is None:
+                request = request.model_copy(update={"priority": 3})
+            resolved_queue_pool_id = queue_pool_id(provider_pool_id)
+        elif request.priority is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Queue priority requires a sandbox provider configured for admission",
+            )
+
     if not request.contract.install_cmd and not request.contract.run_cmd:
         request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request, object_store)})
         if aws_managed:
@@ -593,6 +650,7 @@ async def start_benchmark(
         request,
         run_starter,
         aws_managed=aws_managed,
+        queue_pool_id=resolved_queue_pool_id,
     )
     dispatch_id = uuid4()
     created_agent_copy: StoredObjectCopy | None = None
@@ -623,7 +681,6 @@ async def start_benchmark(
         if isinstance(exc, ReleaseControlError):
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         raise TrackerServiceError("Failed to admit benchmark execution") from exc
-
     await bind_benchmark_id(benchmark_row.id)
 
     if run_starter.access_key_id is not None and run_starter.email is None:
@@ -814,6 +871,154 @@ async def analyze_benchmark(
     )
 
 
+def _filter_final_view_to_tasks(final_view: FinalViewResponse, task_ids: set[str]) -> None:
+    def _filter_task_map(task_map: dict[str, Any] | None) -> dict[str, Any] | None:
+        return {task_id: value for task_id, value in (task_map or {}).items() if task_id in task_ids} or None
+
+    final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
+    final_view.task_errors = _filter_task_map(final_view.task_errors)
+
+
+async def _recompute_final_evaluation(
+    benchmark_row: Benchmark,
+    session: Session,
+    org: Org,
+    http_request: Request,
+    task_ids: set[str] | None,
+) -> FinalEvaluation:
+    scored_results = fetch_final_score_inputs(session, benchmark_row, org)
+    if task_ids is not None:
+        scored_results = {task_id: result for task_id, result in scored_results.items() if task_id in task_ids}
+
+    if benchmark_row.custom_benchmark_service is not None:
+        _authorize_custom_benchmark_destination(benchmark_row.custom_benchmark_service, org)
+
+    effective_service_headers = forward_tracker_api_key(
+        None,
+        http_request.headers.get("x-api-key"),
+        destination=classify_benchmark_service_destination(
+            benchmark_row.name,
+            benchmark_row.custom_benchmark_service,
+        ),
+    )
+    benchmark_service = benchmark_row.benchmark_service(service_headers=effective_service_headers)
+    try:
+        response = await benchmark_service.final_score(
+            evaluation_results=scored_results,
+            dataset=benchmark_row.arguments.dataset,
+        )
+    finally:
+        await benchmark_service.close()
+
+    return FinalEvaluation(
+        org_id=org.id,
+        benchmark=benchmark_row.id,
+        final_score=response.final_score,
+        properties=response.metadata,
+    )
+
+
+async def _invoke_preview_lambda(benchmark_row: Benchmark, aws_runtime: AWSRuntime) -> None:
+    lambda_function = benchmark_row.arguments.lambda_function
+    if lambda_function is None:
+        return
+
+    lambda_payload = benchmark_row.arguments.model_dump()
+    lambda_payload.update(
+        {
+            "benchmark_id": str(benchmark_row.id),
+            "benchmark_name": benchmark_row.name,
+            "bucket": aws_runtime.resources.s3_bucket,
+            "preview": True,
+        }
+    )
+    await asyncio.to_thread(
+        invoke_lambda,
+        aws_runtime.clients,
+        lambda_function,
+        lambda_payload,
+        config=_COMPLETION_CALLBACK_CONFIG,
+    )
+
+
+async def _archive_final_view(benchmark_row: Benchmark, aws_runtime: AWSRuntime) -> None:
+    """Copy the current canonical final view under archive/<timestamp>/ before it is overwritten."""
+    s3_key = final_view_s3_key(benchmark_row)
+    if not await s3_object_exists(s3_key, aws_runtime):
+        return
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    archive_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/archive/{timestamp}/{benchmark_row.name}.json"
+    await copy_s3_object(s3_key, archive_key, aws_runtime)
+
+
+async def _s3_results_response(s3_key: str, aws_runtime: AWSRuntime) -> S3UploadResultsResponse:
+    expires_in = aws_runtime.clients.maximum_presign_ttl(86400)
+    return S3UploadResultsResponse(
+        s3_url=f"s3://{aws_runtime.resources.s3_bucket}/{s3_key}",
+        presigned_url=await create_presigned_url(s3_key, aws_runtime, expiration=expires_in),
+        console_url=create_console_url(s3_key, aws_runtime.resources),
+        expires_in=expires_in,
+    )
+
+
+async def _retrieve_results(
+    benchmark_id: UUID,
+    http_request: Request,
+    s3: bool,
+    preview: bool,
+    task_ids: list[str] | None,
+    session: Session,
+    org: Org,
+) -> RetrieveResultsResponse:
+    benchmark_row = assert_org(
+        session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)]),
+        org,
+    )
+
+    aws_runtime = resolve_run_aws_runtime(
+        http_request,
+        aws_managed=benchmark_row.aws_managed,
+        org_id=org.id,
+    )
+
+    final_view = create_final_view(benchmark_row, session, org)
+    task_ids_set = set(task_ids) if task_ids else None
+
+    if task_ids_set is not None:
+        run_task_ids = set(
+            session.exec(
+                select(col(Task.task_id)).where(col(Task.benchmark) == benchmark_id).where(col(Task.org_id) == org.id)
+            ).all()
+        )
+        unknown_task_ids = task_ids_set - run_task_ids
+        if unknown_task_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Task IDs not found in this run: {', '.join(sorted(unknown_task_ids))}",
+            )
+
+        _filter_final_view_to_tasks(final_view, task_ids_set)
+
+    if task_ids_set is not None or preview:
+        final_view.final_evaluation = await _recompute_final_evaluation(
+            benchmark_row,
+            session,
+            org,
+            http_request,
+            task_ids_set,
+        )
+
+    if not s3:
+        return final_view
+
+    if preview:
+        await _archive_final_view(benchmark_row, aws_runtime)
+    s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime)
+    if preview:
+        await _invoke_preview_lambda(benchmark_row, aws_runtime)
+    return await _s3_results_response(s3_key, aws_runtime)
+
+
 @app.get("/retrieve-results")
 async def retrieve_results(
     benchmark_id: TrackedBenchmarkId,
@@ -823,90 +1028,21 @@ async def retrieve_results(
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> RetrieveResultsResponse:
-    """
-    Retrieve the results of a benchmark by its id. When task_ids is non-empty, the final view is
-    filtered to that subset and the final score is recomputed over the subset; the persisted
-    FinalEvaluation / per-task rows are left untouched.
+    """Retrieve a benchmark's current results, optionally filtered or uploaded to S3."""
+    return await _retrieve_results(benchmark_id, http_request, s3, False, task_ids, session, org)
 
-    Note: with `s3=True` the S3 final view at the canonical key is overwritten with whatever was
-    just computed (full or subset). The DB remains source of truth, so re-running without
-    task_ids re-uploads the canonical full view.
 
-    Usage:
-    curl -X GET http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=false
-    curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'
-    """
-    benchmark_row = assert_org(
-        session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)]),
-        org,
-    )
-    aws_runtime = resolve_run_aws_runtime(
-        http_request,
-        aws_managed=benchmark_row.aws_managed,
-        org_id=org.id,
-    )
-
-    final_view = create_final_view(benchmark_row, session, org)
-
-    if task_ids:
-        task_ids_set = set(task_ids)
-
-        def _filter_task_map(task_map: dict[str, Any] | None) -> dict[str, Any] | None:
-            return {task_id: value for task_id, value in (task_map or {}).items() if task_id in task_ids_set} or None
-
-        final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
-        final_view.task_errors = _filter_task_map(final_view.task_errors)
-
-        # Include every requested task with its result or None, so tasks without a result
-        # (e.g. stopped/errored) still count toward the denominator instead of being dropped.
-        scored_results = {
-            task_id: result
-            for task_id, result in fetch_final_score_inputs(session, benchmark_row, org).items()
-            if task_id in task_ids_set
-        }
-
-        if benchmark_row.custom_benchmark_service is not None:
-            _authorize_custom_benchmark_destination(benchmark_row.custom_benchmark_service, org)
-
-        effective_service_headers = forward_tracker_api_key(
-            None,
-            http_request.headers.get("x-api-key"),
-            destination=classify_benchmark_service_destination(
-                benchmark_row.name,
-                benchmark_row.custom_benchmark_service,
-            ),
-        )
-        benchmark_service = benchmark_row.benchmark_service(service_headers=effective_service_headers)
-        try:
-            resp = await benchmark_service.final_score(
-                evaluation_results=scored_results,
-                dataset=benchmark_row.arguments.dataset,
-            )
-        finally:
-            await benchmark_service.close()
-        final_view.final_evaluation = FinalEvaluation(
-            org_id=org.id,
-            benchmark=benchmark_row.id,
-            final_score=resp.final_score,
-            properties=resp.metadata,
-        )
-
-    if s3:
-        s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime)
-
-        https_url = f"s3://{aws_runtime.resources.s3_bucket}/{s3_key}"
-        expires_in = aws_runtime.clients.maximum_presign_ttl(86400)
-        presigned_url = await create_presigned_url(s3_key, aws_runtime, expiration=expires_in)
-        console_url = create_console_url(s3_key, aws_runtime.resources)
-
-        return S3UploadResultsResponse(
-            s3_url=https_url,
-            presigned_url=presigned_url,
-            console_url=console_url,
-            expires_in=expires_in,
-        )
-
-    return final_view
+@app.get("/preview-results")
+async def preview_results(
+    benchmark_id: TrackedBenchmarkId,
+    http_request: Request,
+    task_ids: list[str] | None = Query(default=None),
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> S3UploadResultsResponse:
+    """Archive the current S3 final view, replace it with a recomputed one, and run the completion callback."""
+    response = await _retrieve_results(benchmark_id, http_request, True, True, task_ids, session, org)
+    return cast(S3UploadResultsResponse, response)
 
 
 @app.get("/check-results-exist")
@@ -1152,12 +1288,36 @@ async def retry_or_resume_benchmark(
     if effective_benchmark_url is not None:
         _authorize_custom_benchmark_destination(effective_benchmark_url, org)
 
+    queued_running_recovery = (
+        benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        and not retry
+        and concurrency is None
+        and benchmark_row.arguments.queue_pool_id is not None
+    )
+    recovery_task_ids: list[str] | None = None
+    if (
+        benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        and not retry
+        and concurrency is None
+        and not queued_running_recovery
+    ):
+        if secrets or benchmark_url is not None:
+            update_benchmark_resume_arguments(
+                benchmark_id,
+                session,
+                org,
+                secrets=secrets,
+                concurrency=None,
+                benchmark_url=benchmark_url,
+            )
+            session.commit()
+        return RetryOrResumeBenchmarkResponse(status="success")
+
     if concurrency is not None and concurrency < 1:
         raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
 
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
-        if concurrency is not None:
-            _update_benchmark_concurrency(benchmark_id, concurrency, session, org)
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and concurrency is not None:
+        _update_benchmark_concurrency(benchmark_id, concurrency, session, org)
         if secrets or benchmark_url is not None:
             update_benchmark_resume_arguments(
                 benchmark_id,
@@ -1194,6 +1354,35 @@ async def retry_or_resume_benchmark(
             )
         pre_action_status = benchmark_row.status
 
+        if queued_running_recovery and pre_action_status == BenchmarkStatus.IN_PROGRESS:
+            scheduler_rows = session.exec(
+                select(Task)
+                .where(Task.benchmark == benchmark_row.id)
+                .where(Task.org_id == org.id)
+                .where(
+                    col(Task.status).in_(
+                        [
+                            TaskStatus.PENDING,
+                            TaskStatus.BUILDING,
+                            TaskStatus.IN_PROGRESS,
+                            TaskStatus.EVALUATING,
+                        ]
+                    )
+                )
+                .order_by(col(Task.started_at), col(Task.id))
+                .with_for_update()
+            ).all()
+            if any(
+                task_row.status == TaskStatus.IN_PROGRESS
+                or (task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is None)
+                for task_row in scheduler_rows
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Run has active tasks that cannot be resumed safely; stop the run before resuming",
+                )
+            recovery_task_ids = [task_row.task_id for task_row in scheduler_rows]
+
         if benchmark_row.aws_managed:
             prospective_request = benchmark_row.managed_start_benchmark_request(
                 service_headers=effective_service_headers,
@@ -1208,20 +1397,22 @@ async def retry_or_resume_benchmark(
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        verified_task_ids = await reset_to_in_progress_status(
-            benchmark_row=benchmark_row,
-            session=session,
-            benchmark_service=benchmark_row.benchmark_service(
-                service_headers=effective_service_headers,
-                benchmark_url=benchmark_url,
-            ),
-            retry=retry,
-            retry_mode=retry_mode,
-            rerun_task_ids=task_ids,
-            org=org,
-        )
+        verified_task_ids = recovery_task_ids
+        if verified_task_ids is None:
+            verified_task_ids = await reset_to_in_progress_status(
+                benchmark_row=benchmark_row,
+                session=session,
+                benchmark_service=benchmark_row.benchmark_service(
+                    service_headers=effective_service_headers,
+                    benchmark_url=benchmark_url,
+                ),
+                retry=retry,
+                retry_mode=retry_mode,
+                rerun_task_ids=task_ids,
+                org=org,
+            )
 
-        if pre_action_status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
+        if pre_action_status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids and recovery_task_ids is None:
             if secrets or concurrency is not None or benchmark_url is not None:
                 update_benchmark_resume_arguments(
                     benchmark_id,
@@ -1235,6 +1426,22 @@ async def retry_or_resume_benchmark(
             else:
                 session.rollback()
             return RetryOrResumeBenchmarkResponse(status="success")
+
+        resumable_evaluations = session.exec(
+            select(Task)
+            .where(Task.benchmark == benchmark_row.id)
+            .where(Task.org_id == org.id)
+            .where(col(Task.task_id).in_(verified_task_ids))
+            .where(col(Task.status) == TaskStatus.EVALUATING)
+            .with_for_update()
+        ).all()
+        resumable_evaluations = [task for task in resumable_evaluations if task.eval_resume_state is not None]
+        for task in resumable_evaluations:
+            if not try_task_evaluation_transaction_lock(session, task.id):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Run has an evaluation that is already owned by an active executor",
+                )
 
         if secrets or concurrency is not None or benchmark_url is not None:
             benchmark_row = update_benchmark_resume_arguments(
@@ -1264,6 +1471,15 @@ async def retry_or_resume_benchmark(
             dispatch_id=dispatch_id,
             kind=dispatch_kind,
         )
+        if resumable_evaluations:
+            transferred = session.exec(
+                update(Task)
+                .where(col(Task.id).in_([task.id for task in resumable_evaluations]))
+                .where(col(Task.status) == TaskStatus.EVALUATING)
+                .values(started_at=executor_dispatch.created_at)
+            )
+            if transferred.rowcount != len(resumable_evaluations):
+                raise TrackerServiceError("Recovery evaluation ownership changed before dispatch admission")
         executor_payload = _process_benchmark_kwargs(benchmark_row, resume_request, verified_task_ids)
         session.commit()
     except ReleaseControlError as exc:
