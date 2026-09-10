@@ -152,6 +152,10 @@
     "destination": "/reference/sdk/runs#results"
   },
   {
+    "source": "/reference/sdk/runs/preview",
+    "destination": "/reference/sdk/runs#preview"
+  },
+  {
     "source": "/reference/sdk/runs/metadata",
     "destination": "/reference/sdk/runs#metadata"
   },

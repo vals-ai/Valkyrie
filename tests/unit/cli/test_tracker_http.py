@@ -170,6 +170,16 @@ class TestTrackerJsonEndpoints:
                 return httpx.Response(200, json=_fetch_payload(), request=request)
             if request.url.path == f"/fetch-benchmark-metadata/{_RUN_ID}":
                 return httpx.Response(200, json=_metadata_payload(), request=request)
+            if request.url.path == "/preview-results":
+                return httpx.Response(
+                    200,
+                    json={
+                        "s3_url": "s3://bucket/results.json",
+                        "presigned_url": "https://download.example/preview",
+                        "console_url": "https://console.example/preview",
+                    },
+                    request=request,
+                )
             if request.url.path == "/retrieve-results":
                 if request.url.params["s3"] == "true":
                     return httpx.Response(
@@ -193,6 +203,7 @@ class TestTrackerJsonEndpoints:
             metadata = tracker.fetch_benchmark_metadata(_RUN_ID)
             inline_results = tracker.retrieve_results(_RUN_ID, False, task_ids=["task-a"])
             s3_results = tracker.retrieve_results(_RUN_ID, True)
+            preview_results = tracker.retrieve_results(_RUN_ID, False, task_ids=["task-b"], preview=True)
             task_ids = tracker.fetch_benchmark_tasks(
                 "swebench",
                 dataset="verified",
@@ -205,8 +216,10 @@ class TestTrackerJsonEndpoints:
         assert metadata.benchmark_arguments.dataset == "verified"
         assert isinstance(inline_results, FinalViewResponse)
         assert isinstance(s3_results, S3UploadResultsResponse)
+        assert isinstance(preview_results, S3UploadResultsResponse)
         assert inline_results.benchmark_id == _RUN_ID
         assert s3_results.presigned_url == "https://download.example/results"
+        assert preview_results.presigned_url == "https://download.example/preview"
         assert task_ids == ["task-a", "task-b"]
         assert results_exist is True
 
@@ -216,6 +229,11 @@ class TestTrackerJsonEndpoints:
             if request.url.path == "/retrieve-results" and request.url.params["s3"] == "false"
         )
         assert result_request.url.params.get_list("task_ids") == ["task-a"]
+
+        preview_request = next(request for request in requests if request.url.path == "/preview-results")
+        assert "s3" not in preview_request.url.params
+        assert "preview" not in preview_request.url.params
+        assert preview_request.url.params.get_list("task_ids") == ["task-b"]
 
         task_request = next(request for request in requests if request.url.path == "/fetch-benchmark-tasks")
         assert json.loads(task_request.content) == {
