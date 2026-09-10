@@ -6,7 +6,7 @@ Cover task details and artifact-link behavior.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from unittest.mock import ANY, AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -16,7 +16,6 @@ from sqlmodel import Session
 
 import tracker.api.single_task as single_task_module
 from main import app
-from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tests.factories import make_error_result, make_evaluation_result, make_task
 from tracker.database.models import (
     AgentCausedExitReason,
@@ -116,7 +115,9 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     assert other_org_response.status_code == 404
 
 
+@pytest.mark.parametrize("task_id", ["task-with-output", "task:with-output", "task*with-output", "task%with-output"])
 def test_task_artifacts_only_presign_existing_output(
+    task_id: str,
     database_session: Session,
     example_benchmark_object: Benchmark,
     monkeypatch: pytest.MonkeyPatch,
@@ -127,18 +128,17 @@ def test_task_artifacts_only_presign_existing_output(
     Test cases:
     - Existing output receives a five-minute presigned URL and CloudWatch link.
     - Missing output returns no S3 URL and does not call the signer again.
+    - Renamed task streams link to the run instead of guessing the historical encoding.
     """
     benchmark = example_benchmark_object
-    task = make_task(benchmark, "task-with-output")
+    task = make_task(benchmark, task_id)
     database_session.add_all([benchmark, task])
     database_session.commit()
 
     object_exists = AsyncMock(return_value=True)
     create_presigned_url = AsyncMock(return_value="https://example.test/presigned")
-    get_log_url = Mock(return_value="https://example.test/cloudwatch")
     monkeypatch.setattr(single_task_module, "s3_object_exists", object_exists)
     monkeypatch.setattr(single_task_module, "create_presigned_url", create_presigned_url)
-    monkeypatch.setattr(CloudWatchBenchmarkLogLocations, "task_location", get_log_url)
 
     found_response = _client.get(
         f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts",
@@ -152,11 +152,12 @@ def test_task_artifacts_only_presign_existing_output(
 
     expected_key = f"benchmarks/{benchmark.id}/{task.task_id}/agent_output.tar.gz"
     assert found_response.status_code == 200
-    assert found_response.json() == {
-        "cloudwatch_url": "https://example.test/cloudwatch",
-        "agent_output_url": "https://example.test/presigned",
-        "agent_output_expires_in": 300,
-    }
+    assert found_response.json()["agent_output_url"] == "https://example.test/presigned"
+    assert found_response.json()["agent_output_expires_in"] == 300
+    cloudwatch_url = found_response.json()["cloudwatch_url"]
+    assert "logsV2:log-groups/log-group/" in cloudwatch_url
+    assert str(benchmark.id) in cloudwatch_url
+    assert ("/log-events/" in cloudwatch_url) is (task_id == "task-with-output")
     object_exists.assert_awaited_with(expected_key, ANY)
     create_presigned_url.assert_awaited_once_with(
         s3_key=expected_key,

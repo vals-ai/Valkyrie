@@ -4,6 +4,7 @@ from valkyrie.cli.run.analyze import analyze
 from valkyrie.cli.run.errors import errors
 from valkyrie.cli.run.fetch import fetch
 from valkyrie.cli.run.list_runs import list_runs
+from valkyrie.cli.run.logs import logs
 from valkyrie.cli.run.outputs import output_path, outputs
 from valkyrie.cli.run.results import results
 from valkyrie.cli.run.resume import resume, retry_command
@@ -23,6 +24,7 @@ run.add_command(analyze)
 run.add_command(errors)
 run.add_command(fetch)
 run.add_command(list_runs)
+run.add_command(logs)
 run.add_command(output_path)
 run.add_command(outputs)
 run.add_command(results)

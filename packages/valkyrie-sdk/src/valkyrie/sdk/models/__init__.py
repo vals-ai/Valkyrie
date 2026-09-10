@@ -19,6 +19,7 @@ from valkyrie.sdk.models.benchmarks import (
     TaskSummary,
 )
 from valkyrie.sdk.models.config import AWSCredentials, HarnessConfig
+from .logs import LogEvent, LogPage  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.models.runs import (
     AnalyzeBenchmarkRequest,
     AnalyzeEvent,
@@ -85,6 +86,8 @@ __all__ = [
     "FinalEvaluation",
     "FinalViewResponse",
     "HarnessConfig",
+    "LogEvent",
+    "LogPage",
     "Order",
     "OutputArtifact",
     "OutputArtifactSpec",
