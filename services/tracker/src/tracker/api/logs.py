@@ -203,14 +203,17 @@ async def get_logs(
 
 
 @router.get("/{benchmark_id}/logs/stream")
-async def stream_task_logs(
+def stream_task_logs(
     reference: TaskLogReferenceDependency,
     log_provider: LogProviderDependency,
     query: str | None = Query(default=None, min_length=1),
     start_time: datetime | None = None,
     end_time: datetime | None = None,
+    session: Session = Depends(get_session),
 ) -> StreamingResponse:
     """Stream a task's current log stream as server-sent events."""
+    # References are materialized; release the connection before long-lived polling.
+    session.close()
     events = _stream_events(
         log_provider,
         reference,

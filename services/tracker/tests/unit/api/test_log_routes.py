@@ -31,7 +31,9 @@ _client = TestClient(app)
 class MockLogProvider(LogProvider):
     """Return deterministic log pages while retaining provider-neutral references."""
 
-    def __init__(self) -> None:
+    def __init__(self, session: Session | None = None) -> None:
+        self.session = session
+        self.stream_transaction_open: bool | None = None
         self.task_reference: TaskLogReference | None = None
         self.run_reference: RunLogReference | None = None
         self.query: str | None = None
@@ -82,6 +84,8 @@ class MockLogProvider(LogProvider):
     ) -> AsyncIterator[LogEvent]:
         self.task_reference = reference
         self.query = query
+        if self.session is not None:
+            self.stream_transaction_open = self.session.in_transaction()
         try:
             if self.stream_release is not None:
                 await self.stream_release.wait()
@@ -237,12 +241,17 @@ def test_task_log_stream_returns_sse_events(
     harness_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The task stream must frame typed log events and pass literal queries to the provider."""
+    """The task stream must release its transaction before yielding typed log events.
+
+    Test cases:
+    - Literal queries and slash-containing task IDs reach the provider.
+    - CloudWatch polling starts without an open database transaction.
+    """
     benchmark = example_benchmark_object
     task = make_task(benchmark, "provider/model:fast")
     database_session.add_all([benchmark, task])
     database_session.commit()
-    provider = MockLogProvider()
+    provider = MockLogProvider(database_session)
     _override_provider(monkeypatch, provider)
 
     response = _client.get(
@@ -258,6 +267,7 @@ def test_task_log_stream_returns_sse_events(
     assert "event: end" in response.text
     assert provider.query == "needle"
     assert response.request.url.params["task_id"] == task.task_id
+    assert provider.stream_transaction_open is False
 
 
 async def test_task_log_stream_sends_keep_alives_without_closing_pending_provider() -> None:

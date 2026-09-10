@@ -114,10 +114,15 @@ async def get_task_artifacts(
 
     cloudwatch_url: str | None = None
     if aws_runtime.resources.log_group and aws_runtime.resources.region:
-        cloudwatch_url = CloudWatchBenchmarkLogLocations(aws_runtime.resources).task_location(
-            str(benchmark_id),
-            task_log_stream_name(task.task_id, task.started_at),
-        )
+        log_locations = CloudWatchBenchmarkLogLocations(aws_runtime.resources)
+        if any(character in task.task_id for character in ":*%"):
+            # Renamed streams may use either encoding; link to the run without guessing.
+            cloudwatch_url = log_locations.benchmark_location(str(benchmark_id))
+        else:
+            cloudwatch_url = log_locations.task_location(
+                str(benchmark_id),
+                task_log_stream_name(task.task_id, task.started_at),
+            )
 
     agent_output_url: str | None = None
     ttl_seconds: int | None = None

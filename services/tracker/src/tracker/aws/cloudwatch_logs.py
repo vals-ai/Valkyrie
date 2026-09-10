@@ -266,6 +266,8 @@ class CloudWatchLogProvider(LogProvider):
                     continue
                 if end_time is not None and datetime.now(timezone.utc) > end_time:
                     return
+                stream_name = stream_names[0]
+                cursor = None
                 await asyncio.sleep(poll_interval)
                 continue
 

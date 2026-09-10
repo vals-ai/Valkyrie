@@ -6,6 +6,7 @@ Run: uv run pytest services/tracker/tests/unit/aws/test_cloudwatch_log_provider.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 from uuid import uuid4
@@ -16,7 +17,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError  # pyright:
 from tracker.aws import cloudwatch_logs
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchLogProvider, task_log_stream_name
-from tracker.runtime.logs import LogProviderError, RunLogReference, RunTaskLogReference, TaskLogReference
+from tracker.runtime.logs import LogEvent, LogProviderError, RunLogReference, RunTaskLogReference, TaskLogReference
 
 _legacy_task_log_stream_name = getattr(cloudwatch_logs, "_legacy_task_log_stream_name")
 
@@ -350,6 +351,35 @@ async def test_follow_falls_back_to_unique_legacy_stream_when_canonical_is_absen
         _legacy_task_log_stream_name(reference.task_id, started_at),
         _legacy_task_log_stream_name(reference.task_id, started_at),
     ]
+
+
+async def test_follow_rechecks_canonical_stream_when_both_names_are_missing() -> None:
+    """Following before the first write must discover the new canonical stream.
+
+    Test cases:
+    - Both canonical and legacy streams are initially absent.
+    - The next poll reads the canonical stream without a stale cursor.
+    """
+    reference = TaskLogReference(
+        run_id=uuid4(),
+        task_id="task:one",
+        started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        siblings=(),
+    )
+    missing = ClientError({"Error": {"Code": "ResourceNotFoundException"}}, "GetLogEvents")
+    logs_client = MockLogsClient([missing, missing, {"events": [{"timestamp": 1_000, "message": "first write"}]}])
+    stream = cast(AsyncGenerator[LogEvent, None], _provider(logs_client).stream_task(reference, poll_interval=0))
+
+    try:
+        event = await anext(stream)
+    finally:
+        await stream.aclose()
+
+    assert event.message == "first write"
+    assert logs_client.get_requests[-1]["logStreamName"] == task_log_stream_name(
+        reference.task_id, reference.started_at
+    )
+    assert "nextToken" not in logs_client.get_requests[-1]
 
 
 async def test_follow_does_not_fall_back_to_ambiguous_legacy_stream() -> None:
