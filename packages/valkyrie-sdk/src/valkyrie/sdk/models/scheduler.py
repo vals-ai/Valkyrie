@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
-from pydantic import field_serializer
+from pydantic import Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 
@@ -83,6 +83,8 @@ class SchedulerOverviewResponse(ResponseModel):
     active_entries: list[SchedulerActiveEntryResponse]
     waiting_capped: bool
     active_capped: bool
+    waiting_next_offset: int | None = Field(description="Next waiting offset, or null when this list is exhausted.")
+    active_next_offset: int | None = Field(description="Next active offset, or null when this list is exhausted.")
 
     @field_serializer("observed_at")
     def serialize_observed_at(self, value: datetime) -> str:

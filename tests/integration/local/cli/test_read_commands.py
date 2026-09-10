@@ -99,4 +99,30 @@ def test_queue_status_reads_persisted_scheduler_state(
     assert payload["waiting_entries"][0]["priority"] == 1
     assert payload["active_entries"][0]["status"] == "IN_PROGRESS"
     assert payload["waiting_capped"] is False
+    assert payload["waiting_next_offset"] is payload["active_next_offset"] is None
     assert "must-not-leak" not in result.output
+
+    for exhausted, remaining in (("waiting", "active"), ("active", "waiting")):
+        page_result = cli_runner.invoke(cli, ["queue", "status", "--format", "json", f"--{exhausted}-offset", "1"])
+
+        assert page_result.exit_code == 0, page_result.output
+        page = json.loads(page_result.output)
+        assert page["summary"] == payload["summary"]
+        assert page[f"{exhausted}_entries"] == []
+        assert len(page[f"{remaining}_entries"]) == 1
+        assert page["waiting_next_offset"] is page["active_next_offset"] is None
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    [(name, value) for name in ("waiting_limit", "active_limit") for value in ("0", "201")]
+    + [(name, value) for name in ("waiting_offset", "active_offset") for value in ("-1", "1.5")],
+)
+async def test_queue_api_rejects_invalid_page_bounds(local_tracker_app: FastAPI, parameter: str, value: str) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=local_tracker_app), base_url="http://tracker.test"
+    ) as client:
+        response = await client.get("/scheduler/overview", params={parameter: value})
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", parameter]

@@ -20,10 +20,10 @@ Managed shared pools order waiting tasks by run priority, enqueue time, and task
 Users can inspect their organization's scheduler state with [`valkyrie queue status`](/reference/cli/queue#status) or [`client.scheduler.overview()`](/reference/sdk/scheduler#overview). Both use:
 
 ```text
-GET /scheduler/overview?waiting_limit=100&active_limit=100
+GET /scheduler/overview?waiting_limit=100&active_limit=100&waiting_offset=0&active_offset=0
 ```
 
-The endpoint uses the request's resolved organization and never returns rows from another organization. Its summary contains total waiting, building, in-progress, and evaluating counts. It also returns per-pool waiting counts plus bounded waiting and active entries. Each entry limit defaults to 100, accepts 1–200, and has a corresponding `waiting_capped` or `active_capped` flag when more rows exist. Active entries use `BUILDING`, `IN_PROGRESS`, or `EVALUATING` status.
+The endpoint uses the request's resolved organization and never returns rows from another organization. Its summary contains total waiting, building, in-progress, and evaluating counts. It also returns per-pool waiting counts plus bounded waiting and active entries. Each entry limit defaults to 100 and accepts 1–200. Independent nonnegative offsets default to zero. `waiting_next_offset` and `active_next_offset` identify the next page, or return `null` when exhausted. The corresponding capped flag indicates more rows after that page. Offsets apply after organization filtering and do not change global pool positions or totals. Pages reflect live state; queue changes between calls can repeat or skip entries. Active entries use `BUILDING`, `IN_PROGRESS`, or `EVALUATING` status.
 
 ## Run it locally
 

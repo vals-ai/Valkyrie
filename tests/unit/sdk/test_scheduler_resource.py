@@ -13,7 +13,9 @@ import pytest
 from valkyrie.sdk import SchedulerOverviewResponse, ValkyrieClient
 
 
-@pytest.mark.parametrize("limits", [{}, {"waiting_limit": 1, "active_limit": 200}])
+@pytest.mark.parametrize(
+    "limits", [{}, {"waiting_limit": 1, "active_limit": 200, "waiting_offset": 200, "active_offset": 10}]
+)
 async def test_overview_uses_typed_snapshot_and_query_limits(
     make_client: Callable[..., ValkyrieClient], limits: dict[str, int]
 ) -> None:
@@ -24,6 +26,8 @@ async def test_overview_uses_typed_snapshot_and_query_limits(
         assert request.url.path == "/scheduler/overview"
         assert request.url.params["waiting_limit"] == str(limits.get("waiting_limit", 100))
         assert request.url.params["active_limit"] == str(limits.get("active_limit", 100))
+        assert request.url.params["waiting_offset"] == str(limits.get("waiting_offset", 0))
+        assert request.url.params["active_offset"] == str(limits.get("active_offset", 0))
         return httpx.Response(
             200,
             json={
@@ -34,6 +38,8 @@ async def test_overview_uses_typed_snapshot_and_query_limits(
                 "active_entries": [],
                 "waiting_capped": True,
                 "active_capped": False,
+                "waiting_next_offset": 201,
+                "active_next_offset": None,
             },
         )
 
@@ -45,10 +51,15 @@ async def test_overview_uses_typed_snapshot_and_query_limits(
     assert result.summary.waiting == 3
     assert result.pools[0].pool_id == "shared"
     assert result.waiting_capped is True
+    assert result.waiting_next_offset == 201
+    assert result.active_next_offset is None
 
 
-@pytest.mark.parametrize("name", ["waiting_limit", "active_limit"])
-@pytest.mark.parametrize("value", [0, 201, True, 1.5])
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [(name, value) for name in ("waiting_limit", "active_limit") for value in (0, 201, True, 1.5)]
+    + [(name, value) for name in ("waiting_offset", "active_offset") for value in (-1, True, 1.5)],
+)
 async def test_overview_rejects_invalid_limits(
     make_client: Callable[..., ValkyrieClient], name: str, value: object
 ) -> None:

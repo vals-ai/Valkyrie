@@ -50,6 +50,8 @@ def overview() -> dict[str, object]:
         ],
         "waiting_capped": True,
         "active_capped": True,
+        "waiting_next_offset": 6,
+        "active_next_offset": 4,
     }
 
 
@@ -98,6 +100,26 @@ def test_status_shows_queue_details_and_capped_totals(
     assert "EVALUATING" in result.output
     assert "Showing 1 of 12 waiting tasks" in result.output
     assert "Showing 1 active tasks; entries are capped" in result.output
+    assert "Next waiting page: --waiting-offset 6" in result.output
+    assert "Next active page: --active-offset 4" in result.output
+    assert "Pages are live" in result.output
+
+
+@pytest.mark.parametrize(("exhausted", "remaining"), [("waiting", "active"), ("active", "waiting")])
+def test_status_guides_only_lists_with_more_pages(
+    invoke_queue: Callable[..., Result], overview: dict[str, object], exhausted: str, remaining: str
+) -> None:
+    overview[f"{exhausted}_next_offset"] = None
+    overview[f"{exhausted}_capped"] = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=overview)
+
+    result = invoke_queue(handler)
+
+    assert result.exit_code == 0, result.output
+    assert f"Next {exhausted} page" not in result.output
+    assert f"Next {remaining} page: --{remaining}-offset" in result.output
 
 
 def test_status_json_preserves_entries_and_limits(
@@ -108,11 +130,28 @@ def test_status_json_preserves_entries_and_limits(
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
         assert request.url.path == "/scheduler/overview"
-        assert dict(request.url.params) == {"waiting_limit": "1", "active_limit": "2"}
+        assert dict(request.url.params) == {
+            "waiting_limit": "1",
+            "active_limit": "2",
+            "waiting_offset": "5",
+            "active_offset": "3",
+        }
         assert request.headers["X-Api-Key"] == "test-key"
         return httpx.Response(200, json=overview)
 
-    result = invoke_queue(handler, "--format", "JSON", "--waiting-limit", "1", "--active-limit", "2")
+    result = invoke_queue(
+        handler,
+        "--format",
+        "JSON",
+        "--waiting-limit",
+        "1",
+        "--active-limit",
+        "2",
+        "--waiting-offset",
+        "5",
+        "--active-offset",
+        "3",
+    )
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
@@ -122,6 +161,8 @@ def test_status_json_preserves_entries_and_limits(
     assert payload["active_entries"][0]["status"] == "EVALUATING"
     assert payload["waiting_capped"] is True
     assert payload["active_capped"] is True
+    assert payload["waiting_next_offset"] == 6
+    assert payload["active_next_offset"] == 4
 
 
 def test_status_escapes_terminal_controls(invoke_queue: Callable[..., Result], overview: dict[str, object]) -> None:
@@ -166,6 +207,8 @@ def test_status_empty_queue(invoke_queue: Callable[..., Result]) -> None:
                 "active_entries": [],
                 "waiting_capped": False,
                 "active_capped": False,
+                "waiting_next_offset": None,
+                "active_next_offset": None,
             },
         )
 
@@ -176,10 +219,15 @@ def test_status_empty_queue(invoke_queue: Callable[..., Result]) -> None:
     assert "No waiting tasks found" in result.output
     assert "No active tasks found" in result.output
     assert "disabled" not in result.output
+    assert "Next waiting page" not in result.output
+    assert "Next active page" not in result.output
 
 
-@pytest.mark.parametrize("flag", ["--waiting-limit", "--active-limit"])
-@pytest.mark.parametrize("value", ["0", "201"])
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [(flag, value) for flag in ("--waiting-limit", "--active-limit") for value in ("0", "201")]
+    + [(flag, value) for flag in ("--waiting-offset", "--active-offset") for value in ("-1", "1.5")],
+)
 def test_status_rejects_invalid_limits(flag: str, value: str) -> None:
     """Reject out-of-range limits before loading credentials or contacting the tracker."""
     result = CliRunner().invoke(cli, ["queue", "status", flag, value])

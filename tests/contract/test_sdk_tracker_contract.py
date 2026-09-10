@@ -122,7 +122,7 @@ ROUTES = (
     ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id force"),
     ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id retry retry_mode concurrency"),
     ("/benchmarks/status", "get", "ids"),
-    ("/scheduler/overview", "get", "waiting_limit active_limit"),
+    ("/scheduler/overview", "get", "waiting_limit active_limit waiting_offset active_offset"),
     ("/benchmarks/{benchmark_id}", "get", "benchmark_id"),
     (
         "/benchmarks/{benchmark_id}/tasks",

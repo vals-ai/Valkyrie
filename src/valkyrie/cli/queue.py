@@ -22,17 +22,23 @@ def queue() -> None:
     "--active-limit", type=click.IntRange(1, 200), default=100, show_default=True, help="Maximum active task entries."
 )
 @click.option(
+    "--waiting-offset", type=click.IntRange(min=0), default=0, show_default=True, help="Waiting entries to skip."
+)
+@click.option(
+    "--active-offset", type=click.IntRange(min=0), default=0, show_default=True, help="Active entries to skip."
+)
+@click.option(
     "--format",
     "output_format",
     type=click.Choice(["text", "json"], case_sensitive=False),
     default="text",
     show_default=True,
-    help="Output format. JSON includes bounded task entries and truncation flags.",
+    help="Output format. JSON includes task pages, capped flags, and next offsets.",
 )
-def status(waiting_limit: int, active_limit: int, output_format: str) -> None:
-    """Show queue priorities, positions, and active tasks for your organization."""
+def status(waiting_limit: int, active_limit: int, waiting_offset: int, active_offset: int, output_format: str) -> None:
+    """Show live queue priorities, positions, and active tasks for your organization."""
     try:
-        response = asyncio.run(_fetch_overview(waiting_limit, active_limit))
+        response = asyncio.run(_fetch_overview(waiting_limit, active_limit, waiting_offset, active_offset))
     except (ValkyrieSDKError, ValueError) as error:
         raise click.ClickException(str(error)) from error
 
@@ -43,9 +49,16 @@ def status(waiting_limit: int, active_limit: int, output_format: str) -> None:
     _format_overview(response)
 
 
-async def _fetch_overview(waiting_limit: int, active_limit: int) -> SchedulerOverviewResponse:
+async def _fetch_overview(
+    waiting_limit: int, active_limit: int, waiting_offset: int, active_offset: int
+) -> SchedulerOverviewResponse:
     async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
-        return await client.scheduler.overview(waiting_limit=waiting_limit, active_limit=active_limit)
+        return await client.scheduler.overview(
+            waiting_limit=waiting_limit,
+            active_limit=active_limit,
+            waiting_offset=waiting_offset,
+            active_offset=active_offset,
+        )
 
 
 def _format_overview(response: SchedulerOverviewResponse) -> None:
@@ -85,6 +98,8 @@ def _format_overview(response: SchedulerOverviewResponse) -> None:
     )
     if response.waiting_capped:
         click.echo(f"Showing {len(response.waiting_entries)} of {summary.waiting} waiting tasks; entries are capped.")
+    if response.waiting_next_offset is not None:
+        click.echo(f"Next waiting page: --waiting-offset {response.waiting_next_offset}")
 
     click.echo("\nActive tasks")
     format_table(
@@ -102,3 +117,7 @@ def _format_overview(response: SchedulerOverviewResponse) -> None:
     )
     if response.active_capped:
         click.echo(f"Showing {len(response.active_entries)} active tasks; entries are capped.")
+    if response.active_next_offset is not None:
+        click.echo(f"Next active page: --active-offset {response.active_next_offset}")
+    if response.waiting_next_offset is not None or response.active_next_offset is not None:
+        click.echo("Pages are live; queue changes between calls can repeat or skip entries.")

@@ -10,12 +10,19 @@ Each method's parameters, defaults, and return types are in the [`client.benchma
 Inspect your organization's sandbox queue using [`client.scheduler.overview`](/reference/sdk/scheduler#overview):
 
 ```python
-snapshot = await client.scheduler.overview(waiting_limit=25, active_limit=25)
-for entry in snapshot.waiting_entries:
-    print(entry.benchmark_uuid, entry.external_task_id, entry.priority, entry.position)
+waiting_offset = 0
+while True:
+    page = await client.scheduler.overview(waiting_limit=200, waiting_offset=waiting_offset)
+    for entry in page.waiting_entries:
+        print(entry.benchmark_uuid, entry.external_task_id, entry.priority, entry.position)
+    if page.waiting_next_offset is None:
+        break
+    waiting_offset = page.waiting_next_offset
 ```
 
-Both limits default to 100 and accept integers from 1 to 200. Summary and per-pool counts are uncapped; `waiting_capped` and `active_capped` indicate incomplete entry lists. Queue positions are within each shared pool, not within the returned list. See [priority queue monitoring](/runs/monitor#inspect-the-priority-queue) for scheduling behavior.
+To iterate active tasks, use `active_entries`, `active_offset`, and `active_next_offset` instead. The two lists advance independently; stop consuming each when its next offset is `None`. Do not reset an exhausted list to offset zero while advancing the other.
+
+Summary and per-pool counts are uncapped. Capped flags indicate more entries after the current page. Queue positions are within each shared pool, not within the returned page. Pages are live, not a frozen snapshot: queue changes between calls can repeat or skip tasks. See [priority queue monitoring](/runs/monitor#inspect-the-priority-queue) for scheduling behavior.
 
 ## Benchmarks and tasks
 

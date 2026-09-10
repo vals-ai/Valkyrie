@@ -71,7 +71,7 @@ Scheduler enum · 3 members
 
 Scheduler totals and bounded task entries for the authenticated organization.
 
-Scheduler model · 7 fields
+Scheduler model · 9 fields
 
 **Fields**
 
@@ -101,6 +101,16 @@ Scheduler model · 7 fields
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"active_capped"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · bool</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"waiting_next_offset"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · int | None</span></div>
+  <p className="mb-0 mt-1">{"Next waiting offset, or null when this list is exhausted."}</p>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"active_next_offset"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · int | None</span></div>
+  <p className="mb-0 mt-1">{"Next active offset, or null when this list is exhausted."}</p>
 </div>
 
 ---

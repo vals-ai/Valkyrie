@@ -9,12 +9,18 @@ Access these methods through `client.scheduler`.
 
 ## `client.scheduler.overview` {#overview}
 
-Fetch totals and up to 1–200 entries per waiting or active list.
+Fetch live totals and up to 1–200 entries per waiting or active page.
 
-Totals are not capped. Check waiting_capped and active_capped before treating the returned entries as a complete inventory.
+Offsets are nonnegative integers, defaulting to zero. Advance each list with its waiting_next_offset or active_next_offset until null. Capped flags indicate more entries after this page. Totals are not capped. Pages are live: queue changes between calls can repeat or skip entries.
 
 ```python Signature
-async def overview(*, waiting_limit: int = 100, active_limit: int = 100) -> SchedulerOverviewResponse
+async def overview(
+    *,
+    waiting_limit: int = 100,
+    active_limit: int = 100,
+    waiting_offset: int = 0,
+    active_offset: int = 0,
+) -> SchedulerOverviewResponse
 ```
 
 **Parameters**
@@ -25,6 +31,14 @@ async def overview(*, waiting_limit: int = 100, active_limit: int = 100) -> Sche
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"active_limit"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int · default: <code>{"100"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"waiting_offset"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int · default: <code>{"0"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"active_offset"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int · default: <code>{"0"}</code></span></div>
 </div>
 
 **Returns**

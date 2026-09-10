@@ -65,7 +65,13 @@ print(snapshot.summary.waiting)
 
 Managed sandbox pools order waiting tasks by priority (P0 highest, P4 lowest), enqueue time, then task ID. Priority defaults to P3. Positions are within each shared pool; other organizations' tasks can occupy positions but are not listed. Wait time uses the snapshot's observation time.
 
-Each waiting or active list defaults to 100 entries. Use `--waiting-limit` and `--active-limit` to request 1–200 entries per list. Totals remain uncapped. Text output marks capped lists; `--format json` preserves `waiting_capped` and `active_capped` for scripts.
+Totals remain uncapped. Text output marks pages with more entries and prints the next `--waiting-offset` or `--active-offset`. Pass these offsets independently to advance either list:
+
+```bash
+valkyrie queue status --waiting-offset 100 --active-offset 100
+```
+
+`--format json` includes `waiting_next_offset` and `active_next_offset`; `null` means that list is exhausted. Capped flags indicate more entries after the current page, not tasks on earlier pages. Pages are live, not a frozen snapshot: queue changes between calls can repeat or skip tasks. See [SDK page iteration](/sdk/resources#scheduler) for a Python example.
 
 Queueing must be enabled for the selected provider's managed pool. An empty waiting list alone does not indicate whether queueing is enabled. This command only reads state; it does not change priorities or reserve capacity.
 

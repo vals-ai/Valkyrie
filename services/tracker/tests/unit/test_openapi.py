@@ -112,6 +112,8 @@ def test_openapi_includes_scheduler_overview_contract() -> None:
             "default": 100,
             "title": "Active Limit",
         },
+        "waiting_offset": {"type": "integer", "minimum": 0, "default": 0, "title": "Waiting Offset"},
+        "active_offset": {"type": "integer", "minimum": 0, "default": 0, "title": "Active Offset"},
     }
     assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/SchedulerOverviewResponse"
