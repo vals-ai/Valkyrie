@@ -8,7 +8,7 @@ import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -20,7 +20,7 @@ import tracker.observability.sentry as sentry_module
 import tracker.utils.task_execution as task_execution
 from tracker.database.models import Org, Task
 from tracker.executor.execution_authority import ExecutionAuthority
-from tracker.exceptions import SandboxError, SSLConnectionError
+from tracker.exceptions import SandboxError, SandboxSetupError, SSLConnectionError
 
 BeforeSend = Callable[[Event, Hint], Event | None]
 BeforeSendLog = Callable[[Log, Hint], Log | None]
@@ -245,3 +245,68 @@ async def test_task_scope_isolates_concurrent_sandbox_events_and_outer_capture(
         "sandbox_name": "sandbox-b-name",
     }
     assert events[-1].get("tags") == {}
+
+
+@pytest.mark.asyncio
+async def test_retry_attempt_clears_previous_sandbox_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[Event] = []
+
+    class FakeBenchmarkService:
+        async def run_with_sandbox_recovery(
+            self,
+            *,
+            operation: Callable[[Any], Any],
+            **_kwargs: object,
+        ) -> dict[str, dict[str, object] | None]:
+            try:
+                await operation(SimpleNamespace(number=1))
+            except SandboxSetupError:
+                pass
+            return await operation(SimpleNamespace(number=2))
+
+    async def process_attempt(**kwargs: Any) -> dict[str, dict[str, object] | None]:
+        if kwargs["recovery_attempt"].number == 1:
+            sentry_module.set_sandbox_context(
+                SimpleNamespace(id="sandbox-first", name="sandbox-first-name")
+            )
+            raise SandboxSetupError("retry after first sandbox")
+
+        sentry_sdk.capture_exception(RuntimeError("second attempt failed before sandbox assignment"))
+        return {"task-0": {"ok": True}}
+
+    monkeypatch.setattr(task_execution, "_process_task_attempt", process_attempt)
+
+    with sentry_sdk.init(
+        dsn="https://public@example.com/1",
+        transport=events.append,
+        default_integrations=False,
+        before_send=_before_send(),
+    ):
+        with sentry_module.task_scope("task-0"):
+            result = await task_execution.process_task(
+                task_row=cast(Any, object()),
+                start_benchmark_request=cast(
+                    Any,
+                    SimpleNamespace(
+                        benchmark_name="retry-sandbox-context",
+                        contract=SimpleNamespace(name="test-agent"),
+                        dataset=None,
+                    ),
+                ),
+                benchmark_service=cast(Any, FakeBenchmarkService()),
+                benchmark_id=cast(Any, "benchmark-0"),
+                task_id="task-0",
+                aws_runtime=cast(Any, object()),
+                org=cast(Any, object()),
+                sandbox_provider_config=cast(Any, object()),
+                creation_semaphore=cast(Any, object()),
+                authority=cast(Any, object()),
+            )
+
+    assert result == {"task-0": {"ok": True}}
+    retry_event = next(event for event in events if "exception" in event)
+    retry_tags = cast(dict[str, str], retry_event.get("tags", {}))
+    assert retry_tags == {"task_id": "task-0"}
+    assert "sandbox" not in retry_event.get("contexts", {})

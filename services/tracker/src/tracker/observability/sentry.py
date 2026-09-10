@@ -122,6 +122,17 @@ def capture_exception(error: BaseException) -> None:
         logger.warning("Failed to capture exception: %s: %s", type(telemetry_error).__name__, telemetry_error)
 
 
+def clear_sandbox_context() -> None:
+    """Remove sandbox identity before a task begins another attempt."""
+    try:
+        scope = sentry_sdk.get_isolation_scope()
+        scope.remove_tag("sandbox_id")
+        scope.remove_tag("sandbox_name")
+        scope.remove_context("sandbox")
+    except Exception as e:
+        logger.warning("clear_sandbox_context failed: %s: %s", type(e).__name__, e)
+
+
 def set_sandbox_context(sandbox: Any, *, image: str | None = None) -> None:
     """Attach sandbox identifiers to Sentry tags/context, not metric attributes."""
     try:

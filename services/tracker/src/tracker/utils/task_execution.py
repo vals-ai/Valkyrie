@@ -64,7 +64,7 @@ from tracker.executor.execution_authority import ExecutionAuthority, lock_execut
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, error_span, incr
-from tracker.observability.sentry import capture_exception, task_scope
+from tracker.observability.sentry import capture_exception, clear_sandbox_context, task_scope
 from tracker.observability.tracing import observability_span
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.scheduler.admission import SandboxQueueContext, enter_queued_sandbox
@@ -582,6 +582,7 @@ async def process_task(
     async def run_attempt(
         recovery_attempt: SandboxRecoveryAttempt,
     ) -> dict[str, dict[str, Any] | None]:
+        clear_sandbox_context()
         return await _process_task_attempt(
             task_row=task_row,
             start_benchmark_request=start_benchmark_request,
