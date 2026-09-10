@@ -11,6 +11,9 @@ def benchmark_service_headers(
     service_headers: dict[str, str] = {}
     auth_credential = TrackerService.get_benchmark_auth(benchmark_name)
     if auth_credential:
-        service_headers["Authorization"] = str(auth_credential)
+        if benchmark_name == "cyber-range":
+            service_headers["x-descope-api-key"] = str(auth_credential).removeprefix("Bearer ")
+        else:
+            service_headers["Authorization"] = str(auth_credential)
     service_headers.update(headers)
     return service_headers

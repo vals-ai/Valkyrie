@@ -1086,6 +1086,18 @@ def test_run_start_sends_configured_service_auth_and_cli_headers(
         assert start_kwargs["service_headers"] == expected_headers
 
 
+def test_cyber_range_auth_uses_descope_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        service_headers.TrackerService,
+        "get_benchmark_auth",
+        staticmethod(lambda _benchmark_name: "Bearer configured"),
+    )
+
+    assert service_headers.benchmark_service_headers("cyber-range") == {"x-descope-api-key": "configured"}
+
+
 def test_run_label_cli_options_and_client_requests(
     monkeypatch: pytest.MonkeyPatch,
     mock_client: MockClient,
