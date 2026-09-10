@@ -5,6 +5,7 @@ Cover agent listing and download-link routes.
 
 import io
 import stat
+import struct
 import zipfile
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
@@ -18,11 +19,18 @@ from tracker.exceptions import S3Error
 import tracker.api.agents as agents_api
 from main import app
 from tracker.aws.runtime import AWSRuntime
+from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
 
 _client = TestClient(app)
 
 
-def _agent_archive(member: str = "demo/run.py", contract: str | None = None, *, symlink: bool = False) -> bytes:
+def _agent_archive(
+    member: str = "demo/run.py",
+    contract: str | None = None,
+    *,
+    symlink: bool = False,
+    unsupported_compression: bool = False,
+) -> bytes:
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:
         archive.writestr(
@@ -36,7 +44,13 @@ def _agent_archive(member: str = "demo/run.py", contract: str | None = None, *, 
             info.external_attr = (stat.S_IFLNK | 0o777) << 16
         archive.writestr(info, "agent content")
 
-    return stream.getvalue()
+    body = bytearray(stream.getvalue())
+    if unsupported_compression:
+        # Set the local and central-directory compression fields to an unsupported method.
+        struct.pack_into("<H", body, 8, 99)
+        struct.pack_into("<H", body, body.index(b"PK\x01\x02") + 10, 99)
+
+    return bytes(body)
 
 
 class TestAgentWrites:
@@ -60,6 +74,7 @@ class TestAgentWrites:
             b"not a zip",
             _agent_archive(contract="name: demo"),
             _agent_archive(symlink=True),
+            _agent_archive(unsupported_compression=True),
             _agent_archive().replace(b"agent content", b"wrong content"),
         ],
     )
@@ -180,6 +195,25 @@ class TestAgentWrites:
 
 class TestAgentRoutes:
     """Agent catalog and download route behavior."""
+
+    @pytest.mark.parametrize("method, path", [("DELETE", "/agents/demo"), ("GET", "/agents/demo/download-url")])
+    def test_denied_head_returns_permission_error(
+        self, monkeypatch: pytest.MonkeyPatch, harness_headers: dict[str, str], method: str, path: str
+    ) -> None:
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.head_object.side_effect = ClientError({"Error": {"Code": "AccessDenied"}}, "HeadObject")
+
+        def s3_client(_provider: ExplicitCredentialsAWSClientProvider) -> AsyncMock:
+            return client
+
+        monkeypatch.setattr(ExplicitCredentialsAWSClientProvider, "s3_client", s3_client)
+
+        response = _client.request(method, path, headers=harness_headers)
+
+        assert response.status_code == 403
+        assert "permission denied" in response.json()["detail"]
+        client.head_object.assert_awaited_once()
 
     def test_list_agents_returns_storage_metadata(
         self,

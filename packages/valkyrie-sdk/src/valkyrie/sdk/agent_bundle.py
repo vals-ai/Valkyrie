@@ -12,6 +12,10 @@ from typing import BinaryIO, Generator, cast
 
 import yaml
 
+DEFAULT_MAX_ARCHIVE_BYTES = 1024**3
+DEFAULT_MAX_EXPANDED_BYTES = 5 * 1024**3
+DEFAULT_MAX_ENTRIES = 100_000
+
 
 def validate_agent_name(name: str) -> str:
     """Validate names used as archive roots and library keys."""
@@ -80,9 +84,23 @@ def get_agent_zip_stream(agent_name: str, agent_path: Path) -> Generator[BinaryI
         yield stream
 
 
-def extract_agent_archive(stream: BinaryIO, name: str, output_dir: Path, *, overwrite: bool) -> Path:
+def extract_agent_archive(
+    stream: BinaryIO,
+    name: str,
+    output_dir: Path,
+    *,
+    overwrite: bool,
+    max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
+    max_expanded_bytes: int = DEFAULT_MAX_EXPANDED_BYTES,
+    max_entries: int = DEFAULT_MAX_ENTRIES,
+) -> Path:
     """Validate every member and CRC in staging before replacing the named target directory."""
     validate_agent_name(name)
+    if min(max_archive_bytes, max_expanded_bytes, max_entries) <= 0:
+        raise ValueError("Agent archive limits must be positive")
+    if stream.seek(0, 2) > max_archive_bytes:
+        raise ValueError("Agent archive exceeds max_archive_bytes")
+    stream.seek(0)
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / name
     if target.is_symlink() or (target.exists() and (not overwrite or not target.is_dir())):
@@ -92,6 +110,10 @@ def extract_agent_archive(stream: BinaryIO, name: str, output_dir: Path, *, over
         staging = Path(temporary)
         with zipfile.ZipFile(stream) as archive:
             members = archive.infolist()
+            if len(members) > max_entries:
+                raise ValueError("Agent archive exceeds max_entries")
+            if sum(member.file_size for member in members) > max_expanded_bytes:
+                raise ValueError("Agent archive exceeds max_expanded_bytes")
             paths: set[str] = set()
             for member in members:
                 path = member.filename.rstrip("/")
@@ -114,6 +136,7 @@ def extract_agent_archive(stream: BinaryIO, name: str, output_dir: Path, *, over
                 for member in members
             ):
                 raise ValueError("Agent archive is missing its contract")
+            expanded_bytes = 0
             for member in members:
                 destination = staging / member.filename
                 if member.is_dir():
@@ -121,13 +144,34 @@ def extract_agent_archive(stream: BinaryIO, name: str, output_dir: Path, *, over
                 else:
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(member) as source, destination.open("xb") as output:
-                        shutil.copyfileobj(source, output, length=1024 * 1024)
+                        while chunk := source.read(1024 * 1024):
+                            expanded_bytes += len(chunk)
+                            if expanded_bytes > max_expanded_bytes:
+                                raise ValueError("Agent archive exceeds max_expanded_bytes")
+                            output.write(chunk)
                     destination.chmod((member.external_attr >> 16) & 0o777 or 0o644)
 
         if target.is_symlink() or (target.exists() and not overwrite):
             raise FileExistsError(f"Target already exists: {target}")
+        backup = None
         if target.exists():
-            shutil.rmtree(target)
-        (staging / name).rename(target)
+            backup = Path(tempfile.mkdtemp(prefix=f".{name}-backup-", dir=output_dir))
+            try:
+                target.rename(backup / name)
+            except BaseException:
+                backup.rmdir()
+                raise
+        try:
+            (staging / name).rename(target)
+        except BaseException:
+            if backup is not None:
+                try:
+                    (backup / name).rename(target)
+                except OSError as error:
+                    raise OSError(f"Agent replacement failed; previous files remain at {backup / name}") from error
+                backup.rmdir()
+            raise
+        if backup is not None:
+            shutil.rmtree(backup)
 
     return target

@@ -73,8 +73,18 @@ Download and safely extract an agent into output_dir/name.
 
 output_dir defaults to the current directory; overwrite replaces an existing agent directory only after archive validation succeeds.
 
+max_archive_bytes limits ZIP data; max_expanded_bytes and max_entries bound extraction. Limits must be positive.
+
 ```python Signature
-async def download(name: str, output_dir: str | Path | None = None, *, overwrite: bool = False) -> Path
+async def download(
+    name: str,
+    output_dir: str | Path | None = None,
+    *,
+    overwrite: bool = False,
+    max_archive_bytes: int = 1073741824,
+    max_expanded_bytes: int = 5368709120,
+    max_entries: int = 100000,
+) -> Path
 ```
 
 **Parameters**
@@ -89,6 +99,18 @@ async def download(name: str, output_dir: str | Path | None = None, *, overwrite
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"overwrite"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · bool · default: <code>{"False"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"max_archive_bytes"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int · default: <code>{"1073741824"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"max_expanded_bytes"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int · default: <code>{"5368709120"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"max_entries"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int · default: <code>{"100000"}</code></span></div>
 </div>
 
 **Returns**

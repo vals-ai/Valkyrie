@@ -10,7 +10,15 @@ from typing import TYPE_CHECKING, AsyncIterator, BinaryIO
 
 import httpx
 
-from valkyrie.sdk.agent_bundle import extract_agent_archive, get_agent_zip_stream, read_agent_name, validate_agent_name
+from valkyrie.sdk.agent_bundle import (
+    DEFAULT_MAX_ARCHIVE_BYTES,
+    DEFAULT_MAX_ENTRIES,
+    DEFAULT_MAX_EXPANDED_BYTES,
+    extract_agent_archive,
+    get_agent_zip_stream,
+    read_agent_name,
+    validate_agent_name,
+)
 from valkyrie.sdk.agent_install import checkout_agent
 from valkyrie.sdk.errors import ValkyrieTransportError
 from valkyrie.sdk.models import AgentDownloadURLResponse, AgentEntry, AgentsResponse
@@ -71,13 +79,21 @@ class AgentsResource:
         output_dir: str | Path | None = None,
         *,
         overwrite: bool = False,
+        max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
+        max_expanded_bytes: int = DEFAULT_MAX_EXPANDED_BYTES,
+        max_entries: int = DEFAULT_MAX_ENTRIES,
     ) -> Path:
         """Download and safely extract an agent into output_dir/name.
 
         output_dir defaults to the current directory; overwrite replaces an existing agent directory
         only after archive validation succeeds.
+
+        max_archive_bytes limits ZIP data; max_expanded_bytes and max_entries bound extraction.
+        Limits must be positive.
         """
         validate_agent_name(name)
+        if min(max_archive_bytes, max_expanded_bytes, max_entries) <= 0:
+            raise ValueError("Agent archive limits must be positive")
         directory = Path(output_dir) if output_dir is not None else Path.cwd()
         target = directory / name
         if target.is_symlink() or (target.exists() and (not overwrite or not target.is_dir())):
@@ -89,7 +105,11 @@ class AgentsResource:
                 with tempfile.TemporaryFile() as stream:
                     async with client.stream("GET", response.download_url) as download:
                         download.raise_for_status()
-                        async for chunk in download.aiter_bytes():
+                        downloaded_bytes = 0
+                        async for chunk in download.aiter_bytes(chunk_size=1024 * 1024):
+                            downloaded_bytes += len(chunk)
+                            if downloaded_bytes > max_archive_bytes:
+                                raise ValueError("Agent archive exceeds max_archive_bytes")
                             await asyncio.to_thread(stream.write, chunk)
                     await asyncio.to_thread(stream.seek, 0)
 
@@ -99,6 +119,9 @@ class AgentsResource:
                         name,
                         directory,
                         overwrite=overwrite,
+                        max_archive_bytes=max_archive_bytes,
+                        max_expanded_bytes=max_expanded_bytes,
+                        max_entries=max_entries,
                     )
         except httpx.HTTPError as error:
             raise ValkyrieTransportError("Agent archive download failed") from error

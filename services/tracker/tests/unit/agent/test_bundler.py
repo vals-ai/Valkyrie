@@ -19,11 +19,12 @@ from tracker.exceptions import BundlerError
 class TestGetContractFromZipBytes:
     """Contract loading from agent zip archives."""
 
-    def test_get_contract_from_zip_bytes_loads_yaml_contract(self) -> None:
+    @pytest.mark.parametrize("agent_name", ["agent-a", "library-alias"])
+    def test_get_contract_from_zip_bytes_loads_yaml_contract(self, agent_name: str) -> None:
         zip_buffer = BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
             zf.writestr(
-                "agent-a/contract.yaml",
+                f"{agent_name}/contract.yaml",
                 """
 name: agent-a
 install_cmd: echo install
@@ -42,9 +43,9 @@ secrets:
 """,
             )
 
-        contract = get_contract_from_zip_bytes("agent-a", zip_buffer.getvalue(), AgentConfig(model="gpt-4o"))
+        contract = get_contract_from_zip_bytes(agent_name, zip_buffer.getvalue(), AgentConfig(model="gpt-4o"))
 
-        assert contract.name == "agent-a"
+        assert contract.name == agent_name
         assert contract.model == "gpt-4o"
         assert contract.install_cmd == "echo install"
         assert contract.run_cmd == "python run.py --problem {problem_statement_path} --model gpt-4o"

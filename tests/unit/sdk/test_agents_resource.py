@@ -79,6 +79,9 @@ class TestAgentsResource:
             )
 
         async with make_client(download_url) as client:
+            with pytest.raises(ValueError, match="max_archive_bytes"):
+                await client.agents.download("demo", tmp_path, max_archive_bytes=1)
+            assert not (tmp_path / "demo").exists()
             path = await client.agents.download("demo", tmp_path)
 
             assert (path / "run.py").read_text() == "agent content"
@@ -116,6 +119,43 @@ class TestAgentsResource:
             )
 
         assert response.name == "alias"
+
+    @pytest.mark.parametrize("nested_url", ["https://github.com/example/nested", "https://example.test/nested"])
+    async def test_submodules_validate_each_level_before_fetch(
+        self, monkeypatch: pytest.MonkeyPatch, nested_url: str
+    ) -> None:
+        repositories: list[Path] = []
+        fetched: list[str] = []
+
+        async def git(repository: Path | None, *arguments: str) -> str:
+            if arguments[0] == "clone":
+                root = Path(arguments[-1])
+                root.mkdir()
+                (root / ".gitmodules").touch()
+                repositories.append(root)
+                return ""
+            assert repository is not None
+            if arguments[:3] == ("config", "--file", ".gitmodules"):
+                url = "../child" if repository == repositories[0] else nested_url
+                return f"submodule.child.path\nchild\0submodule.child.url\n{url}\0"
+            if arguments[0] == "submodule":
+                fetched.append(str(repository))
+                child = repository / "child"
+                child.mkdir()
+                if repository == repositories[0]:
+                    (child / ".gitmodules").touch()
+            return ""
+
+        monkeypatch.setattr(agent_install, "_run_git_command", git)
+        if nested_url.startswith("https://github.com/"):
+            async with agent_install.checkout_agent("https://github.com/example/parent") as path:
+                assert (path / "child" / "child").is_dir()
+            assert len(fetched) == 2
+        else:
+            with pytest.raises(ValueError, match="HTTPS GitHub"):
+                async with agent_install.checkout_agent("https://github.com/example/parent"):
+                    pytest.fail("unvalidated submodule accepted")
+            assert fetched == [str(repositories[0])]
 
     @pytest.mark.parametrize(
         "url",
@@ -193,3 +233,52 @@ class TestAgentArchive:
 
         with pytest.raises(FileExistsError):
             extract_agent_archive(io.BytesIO(_archive()), "demo", tmp_path, overwrite=True)
+
+    @pytest.mark.parametrize("limit", ["max_archive_bytes", "max_expanded_bytes", "max_entries"])
+    def test_limits_preserve_existing_target(self, tmp_path: Path, limit: str) -> None:
+        target = tmp_path / "demo"
+        target.mkdir()
+        (target / "keep").write_text("original")
+
+        with pytest.raises(ValueError, match=limit):
+            extract_agent_archive(io.BytesIO(_archive()), "demo", tmp_path, overwrite=True, **{limit: 1})
+
+        assert (target / "keep").read_text() == "original"
+        assert list(tmp_path.iterdir()) == [target]
+
+    @pytest.mark.parametrize("rollback_fails", [False, True])
+    def test_failed_overwrite_preserves_previous_copy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rollback_fails: bool
+    ) -> None:
+        target = tmp_path / "demo"
+        target.mkdir()
+        (target / "keep").write_text("original")
+        rename = Path.rename
+
+        def fail_replacement(path: Path, destination: str | Path) -> Path:
+            if path.name == "demo" and path.parent != tmp_path:
+                if rollback_fails or not path.parent.name.startswith(".demo-backup-"):
+                    raise OSError("rename failed")
+            return rename(path, destination)
+
+        monkeypatch.setattr(Path, "rename", fail_replacement)
+        with pytest.raises(OSError):
+            extract_agent_archive(io.BytesIO(_archive()), "demo", tmp_path, overwrite=True)
+
+        if rollback_fails:
+            backup = next(tmp_path.glob(".demo-backup-*/demo"))
+            assert (backup / "keep").read_text() == "original"
+        else:
+            assert (target / "keep").read_text() == "original"
+            assert list(tmp_path.iterdir()) == [target]
+
+    def test_actual_expanded_bytes_are_bounded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        def expanded(_source: zipfile.ZipExtFile, _size: int = -1) -> bytes:
+            return b"x" * 1001
+
+        monkeypatch.setattr(zipfile.ZipExtFile, "read", expanded)
+
+        with pytest.raises(ValueError, match="max_expanded_bytes"):
+            extract_agent_archive(io.BytesIO(_archive()), "demo", tmp_path, overwrite=False, max_expanded_bytes=1000)
+
+        assert not (tmp_path / "demo").exists()

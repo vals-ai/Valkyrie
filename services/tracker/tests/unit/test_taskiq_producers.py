@@ -4,6 +4,8 @@ Run: uv run pytest tests/unit/test_taskiq_producers.py
 """
 
 import json
+import io
+import zipfile
 from typing import Any, cast
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -199,19 +201,22 @@ def test_managed_start_and_resume_emit_credential_free_v2(
 
 async def test_resolving_a_contract_from_s3_attests_its_inference_settings(
     contract: AgentContractRequest,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Rebuilding from the bundle is what makes the settings trustworthy."""
     object_store = AsyncMock()
-    object_store.get_bytes.return_value = b"zip-bytes"
-    monkeypatch.setattr(
-        "main.get_contract_from_zip_bytes",
-        lambda *_args, **_kwargs: contract.model_copy(update={"kwargs": {"variant": "max"}}),
-    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr(
+            "dummy/contract.yaml",
+            "name: declared-name\ninstall_cmd: 'true'\nrun_cmd: 'echo {problem_statement_path} {variant}'\n"
+            "kwargs:\n  variant:\n    type: str\n    default: max\n    required: false\n",
+        )
+    object_store.get_bytes.return_value = archive.getvalue()
 
     resolved = await main._resolve_contract_from_s3(_start_request(contract, None), cast(ObjectStore, object_store))
 
     assert resolved.inference_settings_attested is True
+    assert resolved.name == "dummy"
     assert resolved.kwargs == {"variant": "max"}
     object_store.get_bytes.assert_awaited_once_with("agents/dummy.zip")
 

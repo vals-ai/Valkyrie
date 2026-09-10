@@ -40,7 +40,9 @@ def get_contract_from_zip_bytes(agent_name: str, zip_bytes: bytes, agent_config:
                     contract_member = f"{agent_name}/contract{ext}"
                     if contract_member in names:
                         zf.extract(contract_member, tmp_path)
-                        return get_contract(tmp_path / contract_member, agent_config)
+                        return get_contract(tmp_path / contract_member, agent_config).model_copy(
+                            update={"name": agent_name}
+                        )
 
             raise BundlerError(f"No contract file found in zip for agent '{agent_name}'")
     except BundlerError:
