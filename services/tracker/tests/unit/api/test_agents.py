@@ -125,11 +125,21 @@ class TestAgentWrites:
         assert response.status_code == 413
 
     @pytest.mark.parametrize("operation", ["put", "delete"])
+    @pytest.mark.parametrize(
+        "code, status, detail",
+        [("AccessDenied", 403, "permission denied"), ("InternalError", 502, "storage operation failed")],
+    )
     def test_storage_denial_is_actionable(
-        self, monkeypatch: pytest.MonkeyPatch, harness_headers: dict[str, str], operation: str
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_headers: dict[str, str],
+        operation: str,
+        code: str,
+        status: int,
+        detail: str,
     ) -> None:
         error = S3Error("storage failed")
-        error.__cause__ = ClientError({"Error": {"Code": "AccessDenied"}}, "PutObject")
+        error.__cause__ = ClientError({"Error": {"Code": code}}, "PutObject")
         monkeypatch.setattr(agents_api, "s3_object_exists", AsyncMock(return_value=True))
         monkeypatch.setattr(agents_api, "upload_stream_to_s3", AsyncMock(side_effect=error))
         monkeypatch.setattr(agents_api, "delete_from_s3", AsyncMock(side_effect=error))
@@ -141,8 +151,24 @@ class TestAgentWrites:
             content=_agent_archive(),
         )
 
-        assert response.status_code == 403
-        assert "permission denied" in response.json()["detail"]
+        assert response.status_code == status
+        assert detail in response.json()["detail"]
+
+    @pytest.mark.parametrize(
+        "name, headers, status",
+        [
+            ("invalid name", {"Content-Type": "application/zip"}, 400),
+            ("demo", {"Content-Type": "application/json"}, 415),
+            ("demo", {"Content-Type": "application/zip", "Content-Length": "invalid"}, 400),
+            ("demo", {"Content-Type": "application/zip", "Content-Length": "-1"}, 400),
+        ],
+    )
+    def test_upload_rejects_invalid_headers(
+        self, harness_headers: dict[str, str], name: str, headers: dict[str, str], status: int
+    ) -> None:
+        response = _client.put(f"/agents/{name}", headers={**harness_headers, **headers}, content=b"archive")
+
+        assert response.status_code == status
 
     @pytest.mark.parametrize("value", ["0", "-1", "invalid"])
     def test_operator_limits_must_be_positive(self, monkeypatch: pytest.MonkeyPatch, value: str) -> None:

@@ -25,6 +25,14 @@ def test_agent_library_round_trip(
     (source / "run.py").chmod(0o755)
     output = tmp_path / "download"
 
+    result = cli_runner.invoke(cli, ["agent", "push", str(source)])
+
+    assert result.exit_code == 0, result.output
+    assert "Agent 'demo' pushed successfully!" in result.output
+    assert "agents/demo.zip" in agent_library
+    result = cli_runner.invoke(cli, ["agent", "remove", "demo"], input="y\n")
+    assert result.exit_code == 0, result.output
+
     result = cli_runner.invoke(cli, ["agent", "push", str(source), "--name", "alias"])
 
     assert result.exit_code == 0, result.output

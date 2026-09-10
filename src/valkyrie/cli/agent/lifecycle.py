@@ -4,7 +4,6 @@ from pathlib import Path
 
 import click
 from valkyrie.sdk import ValkyrieSDKError
-from valkyrie.sdk.agent_bundle import read_agent_name, validate_agent_name
 
 from valkyrie.cli.agent.storage import download_agent, install_agent, list_agents, push_agent, remove_agent
 from valkyrie.cli.display import format_table, local_time, paginate_cli_pages
@@ -56,8 +55,7 @@ def push(agent_path: Path, name: str | None):
         valkyrie agent push ./agents/my-agent --name my-agent
     """
     try:
-        agent_name = validate_agent_name(name) if name else read_agent_name(agent_path)
-        asyncio.run(push_agent(agent_name, agent_path))
+        agent_name = asyncio.run(push_agent(name or None, agent_path))
         click.echo(click.style(f"✓ Agent '{agent_name}' pushed successfully!", fg="green", bold=True))
     except (ValkyrieSDKError, ValueError, OSError) as e:
         raise click.ClickException(str(e))

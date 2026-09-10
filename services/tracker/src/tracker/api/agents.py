@@ -43,17 +43,15 @@ def _storage_errors() -> Generator[None, None, None]:
     try:
         yield
     except S3Error as error:
-        cause: BaseException | None = error
-        while cause is not None:
-            if isinstance(cause, ClientError) and (
-                cause.response.get("Error", {}).get("Code") in {"AccessDenied", "Forbidden", "403"}
-                or cause.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 403
-            ):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Agent library storage permission denied; check the deployment's S3 permissions",
-                ) from error
-            cause = cause.__cause__
+        cause = error.__cause__
+        if isinstance(cause, ClientError) and (
+            cause.response.get("Error", {}).get("Code") in {"AccessDenied", "Forbidden", "403"}
+            or cause.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 403
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Agent library storage permission denied; check the deployment's S3 permissions",
+            ) from error
         logger.exception("Agent library storage operation failed")
         raise HTTPException(status_code=502, detail="Agent library storage operation failed") from error
 
@@ -150,10 +148,8 @@ async def push_agent_endpoint(
             ValueError,
             zipfile.BadZipFile,
             RuntimeError,
-            NotImplementedError,
             yaml.YAMLError,
             zlib.error,
-            RecursionError,
         ) as error:
             raise HTTPException(status_code=400, detail="Invalid agent archive or contract") from error
         with _storage_errors():

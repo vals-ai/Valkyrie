@@ -36,10 +36,12 @@ async def install_agent(agent_name: str | None, github_url: str) -> str:
     return result.name
 
 
-async def push_agent(agent_name: str, agent_path: Path) -> None:
+async def push_agent(agent_name: str | None, agent_path: Path) -> str:
     """Replace the named library agent through Tracker."""
     async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
-        await client.agents.push(agent_path, name=agent_name)
+        result = await client.agents.push(agent_path, name=agent_name)
+
+    return result.name
 
 
 @handle_s3_error(message="Failed to publish local agent without overwriting an alias")

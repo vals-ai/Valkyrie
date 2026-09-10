@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator, BinaryIO
 
@@ -51,9 +52,8 @@ class AgentsResource:
         path = Path(agent_path)
         contract_name = await asyncio.to_thread(read_agent_name, path)
         agent_name = validate_agent_name(name) if name is not None else contract_name
-        bundle = get_agent_zip_stream(agent_name, path)
-        stream = await asyncio.to_thread(bundle.__enter__)
-        try:
+        with ExitStack() as stack:
+            stream = await asyncio.to_thread(stack.enter_context, get_agent_zip_stream(agent_name, path))
             size = await asyncio.to_thread(stream.seek, 0, 2)
             await asyncio.to_thread(stream.seek, 0)
 
@@ -64,8 +64,6 @@ class AgentsResource:
                 content=_file_chunks(stream),
                 headers={"Content-Type": "application/zip", "Content-Length": str(size)},
             )
-        finally:
-            await asyncio.to_thread(bundle.__exit__, None, None, None)
 
     async def download(
         self,
