@@ -1,9 +1,21 @@
 ---
 title: Inspect resources with Python
-description: Query benchmark tasks, agent bundles, and benchmark services.
+description: Query benchmark tasks, scheduler queues, agent bundles, and benchmark services.
 ---
 
 Each method's parameters, defaults, and return types are in the [`client.benchmarks`](/reference/sdk/benchmarks#fetch), [`client.agents`](/reference/sdk/agents#list), and [`client.services`](/reference/sdk/services#catalog) reference.
+
+## Scheduler
+
+Inspect your organization's sandbox queue using [`client.scheduler.overview`](/reference/sdk/scheduler#overview):
+
+```python
+snapshot = await client.scheduler.overview(waiting_limit=25, active_limit=25)
+for entry in snapshot.waiting_entries:
+    print(entry.benchmark_uuid, entry.external_task_id, entry.priority, entry.position)
+```
+
+Both limits default to 100 and accept integers from 1 to 200. Summary and per-pool counts are uncapped; `waiting_capped` and `active_capped` indicate incomplete entry lists. Queue positions are within each shared pool, not within the returned list. See [priority queue monitoring](/runs/monitor#inspect-the-priority-queue) for scheduling behavior.
 
 ## Benchmarks and tasks
 

@@ -46,6 +46,31 @@ valkyrie run status --ids <run-id-1>,<run-id-2> --format json
 
 Batch status keeps the order you asked for, ignores duplicate IDs, and takes at most 50 IDs at a time. Any ID that is missing or that you cannot access is listed under `missing_run_ids`, and the command exits nonzero after writing the JSON document.
 
+## Inspect the priority queue
+
+See your organization's waiting tasks, pool positions, priorities, and active tasks:
+
+<CodeGroup>
+
+```bash CLI
+valkyrie queue status
+```
+
+```python Python SDK
+snapshot = await client.scheduler.overview()
+print(snapshot.summary.waiting)
+```
+
+</CodeGroup>
+
+Managed sandbox pools order waiting tasks by priority (P0 highest, P4 lowest), enqueue time, then task ID. Priority defaults to P3. Positions are within each shared pool; other organizations' tasks can occupy positions but are not listed. Wait time uses the snapshot's observation time.
+
+Each waiting or active list defaults to 100 entries. Use `--waiting-limit` and `--active-limit` to request 1–200 entries per list. Totals remain uncapped. Text output marks capped lists; `--format json` preserves `waiting_capped` and `active_capped` for scripts.
+
+Queueing must be enabled for the selected provider's managed pool. An empty waiting list alone does not indicate whether queueing is enabled. This command only reads state; it does not change priorities or reserve capacity.
+
+See [`queue status`](/reference/cli/queue#status) and [`client.scheduler.overview`](/reference/sdk/scheduler#overview) for the full reference.
+
 ## Inspect errors
 
 ```bash

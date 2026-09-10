@@ -17,7 +17,7 @@ The tracker forwards its inbound Descope API key only when the benchmark-service
 
 Managed shared pools order waiting tasks by run priority, enqueue time, and task ID. Priority ranges from P0 (highest) to P4 (lowest), and admitted runs default to P3 when no priority is supplied. Per-run `concurrency` still limits how many tasks from that run may be active.
 
-Authenticated clients can inspect their organization's scheduler state with:
+Users can inspect their organization's scheduler state with [`valkyrie queue status`](/reference/cli/queue#status) or [`client.scheduler.overview()`](/reference/sdk/scheduler#overview). Both use:
 
 ```text
 GET /scheduler/overview?waiting_limit=100&active_limit=100

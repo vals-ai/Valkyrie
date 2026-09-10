@@ -16,6 +16,7 @@ from valkyrie.sdk.resources.agents import AgentsResource  # pyright: ignore[repo
 from valkyrie.sdk.resources.benchmarks import BenchmarksResource  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.resources.logs import LogsResource  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.resources.runs import RunsResource  # pyright: ignore[reportMissingImports]
+from valkyrie.sdk.resources.scheduler import SchedulerResource  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.resources.services import BenchmarkServicesResource  # pyright: ignore[reportMissingImports]
 
 EXPECTED_ALL = [
@@ -44,6 +45,12 @@ EXPECTED_ALL = [
     "RetryOrResumeBenchmarkResponse",
     "ResultsExistResponse",
     "S3UploadResultsResponse",
+    "SchedulerActiveEntryResponse",
+    "SchedulerActiveStatus",
+    "SchedulerOverviewResponse",
+    "SchedulerPoolResponse",
+    "SchedulerSummaryResponse",
+    "SchedulerWaitingEntryResponse",
     "SingleBenchmarkResponse",
     "SingleTaskResponse",
     "StartBenchmarkResponse",
@@ -103,6 +110,7 @@ EXPECTED_SIGNATURES = {
     BenchmarksResource.tasks: "self, run_id, request=None",
     BenchmarksResource.task: "self, run_id, task_id",
     BenchmarksResource.artifacts: "self, run_id, task_id",
+    SchedulerResource.overview: "self, *, waiting_limit=100, active_limit=100",
     AgentsResource.list: "self",
     AgentsResource.download_url: "self, name",
     BenchmarkServicesResource.catalog: "self",
@@ -168,4 +176,5 @@ async def test_client_exposes_v2_resource_namespaces(make_client) -> None:
         assert isinstance(client.benchmarks, BenchmarksResource)
         assert isinstance(client.agents, AgentsResource)
         assert isinstance(client.services, BenchmarkServicesResource)
+        assert isinstance(client.scheduler, SchedulerResource)
         assert not hasattr(client.services, "check")

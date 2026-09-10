@@ -6,6 +6,7 @@
   "reference/sdk/agents",
   "reference/sdk/services",
   "reference/sdk/logs",
+  "reference/sdk/scheduler",
   {
     "group": "Types",
     "pages": [
@@ -16,6 +17,7 @@
       "reference/sdk/models/services",
       "reference/sdk/models/config",
       "reference/sdk/models/logs",
+      "reference/sdk/models/scheduler",
       "reference/sdk/errors"
     ]
   }
