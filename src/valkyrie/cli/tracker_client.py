@@ -425,6 +425,7 @@ class TrackerService:
         label: str | None = None,
         lambda_function: str | None = None,
         dataset: str | None = None,
+        priority: int | None = None,
         service_headers: dict[str, str] | None = None,
         provider: str | None = None,
         webhook_secret_name: str | None = None,
@@ -459,6 +460,7 @@ class TrackerService:
                 contract=contract,
                 benchmark_name=benchmark_name,
                 concurrency=concurrency,
+                priority=priority,
                 label=label,
                 task_ids=task_ids,
                 slice_str=slice_str,
@@ -584,6 +586,8 @@ class TrackerService:
         benchmark_id: UUID,
         s3: bool,
         task_ids: list[str] | None = None,
+        *,
+        preview: bool = False,
     ) -> RetrieveResultsResponse:
         """
         Retrieve the results of a benchmark by its benchmark id.
@@ -592,13 +596,16 @@ class TrackerService:
         recomputed over those tasks (does not mutate the stored FinalEvaluation).
         """
         try:
-            params: dict[str, Any] = {"benchmark_id": str(benchmark_id), "s3": s3}
+            params: dict[str, Any] = {"benchmark_id": str(benchmark_id)}
+            if not preview:
+                params["s3"] = s3
             if task_ids:
                 params["task_ids"] = task_ids
 
-            response = self._client.get(f"{self._base_url}/retrieve-results", params=params)
+            endpoint = "preview-results" if preview else "retrieve-results"
+            response = self._client.get(f"{self._base_url}/{endpoint}", params=params)
 
-            if not s3:
+            if not (s3 or preview):
                 return _parse_model_response(response, "Failed to retrieve results", FinalViewResponse)
 
             return _parse_model_response(response, "Failed to retrieve results", S3UploadResultsResponse)

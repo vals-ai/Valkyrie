@@ -60,6 +60,30 @@ default_sandbox_provider: daytona
     assert config.request_headers()["X-Harness-Aws-Access-Key-Id"] == "aws-key"
 
 
+def test_config_environment_selects_tracker_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk_config) -> None:
+    monkeypatch.delenv("TRACKER_SERVICE_URL", raising=False)
+    config_path = tmp_path / "valkyrie.yaml"
+    config_path.write_text(
+        """
+environment: prod
+api_key: vals-key
+AWS_DEFAULT_REGION: us-west-2
+S3_BUCKET: runs-bucket
+sandbox_providers:
+  daytona: DaytonaSecret
+""".strip(),
+        encoding="utf-8",
+    )
+
+    client = ValkyrieClient.from_config(config_path)
+
+    assert client.config.tracker_url == "https://benchmark-tracker-prod.vals.ai"
+    assert str(client._client.base_url) == "https://benchmark-tracker-prod.vals.ai"
+    assert sdk_config().tracker_url == "https://benchmark-tracker.vals.ai"
+    with pytest.raises(ValidationError, match="environment"):
+        sdk_config(environment="staging")
+
+
 def test_config_redacts_secrets_and_unwraps_them_for_requests(sdk_config) -> None:
     config = sdk_config()
 
@@ -275,6 +299,34 @@ async def test_start_can_omit_optional_run_configuration(make_client, sdk_config
     assert captured_body["service_headers"] == {}
     assert captured_body["webhook_secret_name"] is None
     assert captured_body["webhook_intervals"] is None
+    assert captured_body["concurrency"] == 5
+    assert "priority" not in captured_body
+
+
+async def test_start_serializes_explicit_queue_priority(make_client, sdk_config) -> None:
+    captured_body: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_body.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "benchmark_name": "swebench",
+                "agent_name": "sweagent",
+                "benchmark_id": str(uuid4()),
+                "concurrency": 5,
+                "started_at": "2026-07-08T12:00:00Z",
+                "task_count": 1,
+                "cloudwatch_url": "https://logs.test",
+                "s3_bucket_url": "s3://runs-bucket/run",
+            },
+        )
+
+    client = make_client(handler, config=sdk_config(default_sandbox_provider="daytona"))
+    async with client:
+        await client.runs.start("sweagent", "swebench", priority=3)
+
+    assert captured_body["priority"] == 3
 
 
 async def test_start_overlays_a_supplied_contract_without_mutating_it(make_client) -> None:
@@ -320,6 +372,7 @@ async def test_start_overlays_a_supplied_contract_without_mutating_it(make_clien
 async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_response) -> None:
     run_id = uuid4()
     paths: list[str] = []
+    preview_query: list[tuple[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
@@ -329,6 +382,16 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
             return httpx.Response(200, json={"benchmarks": [], "total_count": 0, "next_cursor": None})
         if request.url.path == f"/stop-benchmark/{run_id}":
             return httpx.Response(200, json={"status": "success"})
+        if request.url.path == "/preview-results":
+            preview_query.extend(request.url.params.multi_items())
+            return httpx.Response(
+                200,
+                json={
+                    "s3_url": "s3://runs-bucket/results.json",
+                    "presigned_url": "https://download.test/preview.json",
+                    "console_url": "https://console.aws.test/preview.json",
+                },
+            )
         if request.url.path == "/retrieve-results":
             if request.url.params["s3"] == "false":
                 return httpx.Response(
@@ -368,6 +431,7 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
         stopped = await client.runs.stop(run_id, force=True)
         inline_results = await client.runs.results(run_id)
         results = await client.runs.results(run_id, task_ids=["task-1"], upload_to_s3=True)
+        preview = await client.runs.preview(run_id, task_ids=["task-1"])
 
     assert fetched.benchmark_id == run_id
     assert listed.total_count == 0
@@ -377,12 +441,15 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
     assert inline_results.benchmark_id == run_id
     assert results.s3_url == "s3://runs-bucket/results.json"
     assert results.expires_in == 86400
+    assert preview.presigned_url == "https://download.test/preview.json"
+    assert preview_query == [("benchmark_id", str(run_id)), ("task_ids", "task-1")]
     assert paths == [
         "/fetch-benchmark",
         "/fetch-benchmarks",
         f"/stop-benchmark/{run_id}",
         "/retrieve-results",
         "/retrieve-results",
+        "/preview-results",
     ]
 
 
@@ -615,6 +682,8 @@ async def test_start_validates_inputs_before_request(make_client, sdk_config) ->
         with pytest.raises(ValkyrieSDKError, match="concurrency") as exc_info:
             await client.runs.start("agent", "swebench", concurrency=0)
         assert isinstance(exc_info.value, ValkyrieRunError)
+        with pytest.raises(ValkyrieSDKError, match="priority must be"):
+            await client.runs.start("agent", "swebench", priority=5)
         with pytest.raises(ValkyrieSDKError, match="agent must not be blank") as exc_info:
             await client.runs.start(" ", "swebench")
         assert isinstance(exc_info.value, ValkyrieRunError)
@@ -627,7 +696,6 @@ async def test_start_validates_inputs_before_request(make_client, sdk_config) ->
         with pytest.raises(ValkyrieSDKError, match="concurrency") as exc_info:
             await client.runs.retry(uuid4(), concurrency=0)
         assert isinstance(exc_info.value, ValkyrieRunError)
-
     no_webhook_client = make_client(handler, config=sdk_config(webhook=None))
     async with no_webhook_client:
         with pytest.raises(ValkyrieConfigError, match="webhook_intervals require"):

@@ -1,0 +1,19 @@
+---
+title: Handle SDK errors
+description: Catch transport, API, and validation failures from the Python SDK.
+---
+
+All SDK exceptions inherit from `ValkyrieSDKError`:
+
+```python
+from valkyrie.sdk import ValkyrieAPIError, ValkyrieSDKError
+
+try:
+    run = await client.runs.fetch(run_id)
+except ValkyrieAPIError as exc:
+    print(exc.status_code, exc.detail)
+except ValkyrieSDKError as exc:
+    print(exc)
+```
+
+Catch `ValkyrieAPIError` when the tracker returned an HTTP error and you need its status or detail. Catch `ValkyrieSDKError` for a common boundary around all SDK failures. The [errors reference](/reference/sdk/errors) lists every exception and its parent.

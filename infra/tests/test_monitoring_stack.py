@@ -399,19 +399,21 @@ class MonitoringStackTest(unittest.TestCase):
                 {"Port": "443", "Protocol": "HTTPS", "StatusCode": "HTTP_301"},
             )
 
-        for stage_name, publicly_accessible, storage_encrypted in (
-            (BENCH, True, False),
-            (PROD, False, True),
-            (DEV, False, False),
-            (RELEASE_TEST, False, False),
+        for stage_name, publicly_accessible in (
+            (BENCH, True),
+            (PROD, False),
+            (DEV, False),
+            (RELEASE_TEST, False),
         ):
-            tracker_templates[stage_name].has_resource_properties(
-                "AWS::RDS::DBInstance",
-                {
-                    "PubliclyAccessible": publicly_accessible,
-                    "StorageEncrypted": storage_encrypted,
-                },
-            )
+            databases = tracker_templates[stage_name].find_resources("AWS::RDS::DBInstance")
+            self.assertEqual(len(databases), 1)
+
+            properties = next(iter(databases.values()))["Properties"]
+            self.assertEqual(properties["PubliclyAccessible"], publicly_accessible)
+            if stage_name == PROD:
+                self.assertIs(properties["StorageEncrypted"], True)
+            else:
+                self.assertNotIn("StorageEncrypted", properties)
 
         for stage_name in (BENCH, PROD, DEV):
             self.assertEqual(
@@ -429,6 +431,168 @@ class MonitoringStackTest(unittest.TestCase):
             len(release_test_template.find_resources("AWS::ElasticLoadBalancingV2::Listener")),
             1,
         )
+
+    def test_deployed_tracker_access_logs_are_restricted_and_queryable(self) -> None:
+        for stage_name, environment, retention_days in (
+            (DEV, TEST_DEV_ENV, 7),
+            (BENCH, TEST_BENCH_ENV, 365),
+            (PROD, TEST_PROD_ENV, 365),
+        ):
+            with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
+                tracker_template = service_templates(stage_name)[0]
+
+            buckets = tracker_template.find_resources("AWS::S3::Bucket")
+            self.assertEqual(len(buckets), 1)
+            bucket_logical_id = next(iter(buckets))
+            _, load_balancer = next(
+                iter(tracker_template.find_resources("AWS::ElasticLoadBalancingV2::LoadBalancer").items())
+            )
+            bucket_policy_logical_id = next(iter(tracker_template.find_resources("AWS::S3::BucketPolicy")))
+            load_balancer_dependencies = load_balancer.get("DependsOn", [])
+            if isinstance(load_balancer_dependencies, str):
+                load_balancer_dependencies = [load_balancer_dependencies]
+            self.assertIn(bucket_policy_logical_id, load_balancer_dependencies)
+            load_balancer_attributes = {
+                attribute["Key"]: attribute["Value"]
+                for attribute in load_balancer["Properties"]["LoadBalancerAttributes"]
+            }
+            self.assertEqual(load_balancer_attributes["access_logs.s3.enabled"], "true")
+            self.assertEqual(load_balancer_attributes["access_logs.s3.bucket"], {"Ref": bucket_logical_id})
+            self.assertEqual(load_balancer_attributes["access_logs.s3.prefix"], "tracker-alb")
+            tracker_template.has_resource_properties(
+                "AWS::S3::Bucket",
+                {
+                    "BucketEncryption": {
+                        "ServerSideEncryptionConfiguration": [
+                            {"ServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}
+                        ]
+                    },
+                    "LifecycleConfiguration": {"Rules": [{"ExpirationInDays": retention_days, "Status": "Enabled"}]},
+                    "OwnershipControls": {"Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]},
+                    "PublicAccessBlockConfiguration": {
+                        "BlockPublicAcls": True,
+                        "BlockPublicPolicy": True,
+                        "IgnorePublicAcls": True,
+                        "RestrictPublicBuckets": True,
+                    },
+                },
+            )
+            bucket_policy = next(iter(tracker_template.find_resources("AWS::S3::BucketPolicy").values()))["Properties"][
+                "PolicyDocument"
+            ]
+            delivery_statement = next(
+                statement
+                for statement in bucket_policy["Statement"]
+                if statement.get("Sid") == "AllowTrackerAlbLogDelivery"
+            )
+            self.assertEqual(
+                [statement for statement in bucket_policy["Statement"] if statement["Effect"] == "Allow"],
+                [delivery_statement],
+            )
+            self.assertEqual(delivery_statement["Action"], "s3:PutObject")
+            self.assertEqual(
+                delivery_statement["Principal"],
+                {"Service": "logdelivery.elasticloadbalancing.amazonaws.com"},
+            )
+            self.assertEqual(
+                delivery_statement["Condition"]["StringEquals"]["aws:SourceAccount"],
+                TEST_AWS_ACCOUNT,
+            )
+            source_arn = json.dumps(delivery_statement["Condition"]["ArnLike"]["aws:SourceArn"])
+            self.assertIn("elasticloadbalancing", source_arn)
+            self.assertIn(TEST_AWS_REGION, source_arn)
+            self.assertIn(TEST_AWS_ACCOUNT, source_arn)
+            self.assertIn("loadbalancer/*", source_arn)
+            delivery_resource = json.dumps(delivery_statement["Resource"])
+            self.assertIn(f"tracker-alb/AWSLogs/{TEST_AWS_ACCOUNT}/*", delivery_resource)
+            self.assertTrue(
+                any(
+                    statement["Effect"] == "Deny"
+                    and statement["Action"] == "s3:*"
+                    and statement["Condition"] == {"Bool": {"aws:SecureTransport": "false"}}
+                    for statement in bucket_policy["Statement"]
+                )
+            )
+            glue_table = next(iter(tracker_template.find_resources("AWS::Glue::Table").values()))["Properties"]
+            table_input = glue_table["TableInput"]
+            self.assertEqual(table_input["Name"], "requests")
+            self.assertEqual(table_input["PartitionKeys"], [{"Name": "day", "Type": "string"}])
+            self.assertEqual(table_input["Parameters"]["projection.enabled"], "true")
+            self.assertEqual(table_input["Parameters"]["projection.day.type"], "date")
+            self.assertEqual(table_input["Parameters"]["projection.day.format"], "yyyy/MM/dd")
+            projected_location = json.dumps(table_input["Parameters"]["storage.location.template"])
+            self.assertIn("${day}/", projected_location)
+            storage_descriptor = table_input["StorageDescriptor"]
+            self.assertEqual(
+                storage_descriptor["SerdeInfo"]["SerializationLibrary"],
+                "org.apache.hadoop.hive.serde2.RegexSerDe",
+            )
+            self.assertTrue(storage_descriptor["SerdeInfo"]["Parameters"]["input.regex"])
+            self.assertTrue(
+                {
+                    "client_ip",
+                    "request_verb",
+                    "request_url",
+                    "user_agent",
+                    "elb_status_code",
+                    "target_status_code",
+                    "target_ip",
+                    "target_port",
+                    "request_processing_time",
+                    "target_processing_time",
+                    "response_processing_time",
+                    "trace_id",
+                }
+                <= {column["Name"] for column in storage_descriptor["Columns"]}
+            )
+
+            named_query = next(iter(tracker_template.find_resources("AWS::Athena::NamedQuery").values()))["Properties"]
+            self.assertEqual(named_query["Database"], "tracker_alb_access_logs")
+            self.assertEqual(named_query["Name"], "tracker-alb-request-window")
+            self.assertEqual(named_query["WorkGroup"], {"Ref": "TrackerAlbAccessLogWorkGroup"})
+            for query_fragment in (
+                "client_ip",
+                "request_verb",
+                "request_url",
+                "user_agent",
+                "elb_status_code",
+                "target_status_code",
+                "target_address",
+                "request_processing_time",
+                "target_processing_time",
+                "response_processing_time",
+                "trace_id",
+                "day BETWEEN date_format(start_utc",
+                "date_format(end_utc + interval '1' day",
+                "from_iso8601_timestamp(time) BETWEEN start_utc AND end_utc",
+            ):
+                self.assertIn(query_fragment, named_query["QueryString"])
+
+            workgroup = next(iter(tracker_template.find_resources("AWS::Athena::WorkGroup").values()))["Properties"]
+            self.assertEqual(workgroup["Name"], "tracker-alb-access-logs")
+            workgroup_configuration = workgroup["WorkGroupConfiguration"]
+            self.assertIs(workgroup_configuration["EnforceWorkGroupConfiguration"], True)
+            self.assertIs(workgroup_configuration["PublishCloudWatchMetricsEnabled"], False)
+            result_configuration = workgroup_configuration["ResultConfiguration"]
+            self.assertEqual(result_configuration["EncryptionConfiguration"], {"EncryptionOption": "SSE_S3"})
+            self.assertEqual(result_configuration["ExpectedBucketOwner"], TEST_AWS_ACCOUNT)
+            result_location = json.dumps(result_configuration["OutputLocation"])
+            self.assertIn("s3://", result_location)
+            self.assertIn("/athena-results/", result_location)
+
+        with mock.patch.dict(os.environ, TEST_RELEASE_TEST_ENV, clear=True):
+            tracker_template = service_templates(RELEASE_TEST)[0]
+
+        self.assertFalse(tracker_template.find_resources("AWS::Glue::Table"))
+        self.assertFalse(tracker_template.find_resources("AWS::Athena::NamedQuery"))
+        self.assertFalse(tracker_template.find_resources("AWS::Athena::WorkGroup"))
+        self.assertFalse(tracker_template.find_resources("AWS::S3::Bucket"))
+        self.assertFalse(tracker_template.find_resources("AWS::S3::BucketPolicy"))
+        load_balancer = next(
+            iter(tracker_template.find_resources("AWS::ElasticLoadBalancingV2::LoadBalancer").values())
+        )
+        attributes = load_balancer["Properties"].get("LoadBalancerAttributes", [])
+        self.assertNotIn("access_logs.s3.enabled", {attribute["Key"] for attribute in attributes})
 
     def test_redis_ingress_is_limited_to_tracker_and_executor_host(self) -> None:
         for stage_name, environment in (
@@ -808,19 +972,21 @@ class MonitoringStackTest(unittest.TestCase):
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
                 tracker_template, executor_template, _ = service_templates(stage_name)
 
-                expected_env = assertions.Match.array_with(
-                    [
-                        {"Name": "BROKER_ENVIRONMENT", "Value": expected_environment},
-                        {"Name": "ENVIRONMENT", "Value": expected_environment},
-                        {"Name": "SENTRY_ENVIRONMENT", "Value": expected_sentry_environment},
-                        {"Name": "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "Value": expected_namespace},
-                    ]
+                expected_env = [
+                    {"Name": "BROKER_ENVIRONMENT", "Value": expected_environment},
+                    {"Name": "ENVIRONMENT", "Value": expected_environment},
+                    {"Name": "SENTRY_ENVIRONMENT", "Value": expected_sentry_environment},
+                    {"Name": "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "Value": expected_namespace},
+                ]
+                tracker_env = assertions.Match.array_with(
+                    [*expected_env, {"Name": "SANDBOX_QUEUE_ENABLED", "Value": "false"}]
                 )
+                worker_env = assertions.Match.array_with(expected_env)
                 tracker_template.has_resource_properties(
                     "AWS::ECS::TaskDefinition",
                     {
                         "ContainerDefinitions": assertions.Match.array_with(
-                            [assertions.Match.object_like({"Environment": expected_env})]
+                            [assertions.Match.object_like({"Environment": tracker_env})]
                         )
                     },
                 )
@@ -828,10 +994,28 @@ class MonitoringStackTest(unittest.TestCase):
                     "AWS::ECS::TaskDefinition",
                     {
                         "ContainerDefinitions": assertions.Match.array_with(
-                            [assertions.Match.object_like({"Environment": expected_env})]
+                            [assertions.Match.object_like({"Environment": worker_env})]
                         )
                     },
                 )
+
+    def test_tracker_receives_sandbox_queue_flag_from_deployment_environment(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {**TEST_PROD_ENV, "SANDBOX_QUEUE_ENABLED": "true"},
+            clear=True,
+        ):
+            tracker_template, _executor_template, _monitoring_template = service_templates(PROD)
+
+        expected_env = assertions.Match.array_with([{"Name": "SANDBOX_QUEUE_ENABLED", "Value": "true"}])
+        tracker_template.has_resource_properties(
+            "AWS::ECS::TaskDefinition",
+            {
+                "ContainerDefinitions": assertions.Match.array_with(
+                    [assertions.Match.object_like({"Environment": expected_env})]
+                )
+            },
+        )
 
     def test_dev_does_not_create_sandbox_cleanup_resources(self) -> None:
         with mock.patch.dict(

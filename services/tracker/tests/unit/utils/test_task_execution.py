@@ -4,6 +4,7 @@ Run: uv run pytest tests/unit/utils/test_task_execution.py
 """
 
 import asyncio
+from datetime import timedelta
 from typing import Any
 from unittest.mock import MagicMock, Mock
 from uuid import uuid4
@@ -112,75 +113,66 @@ class TestTaskExecution:
         monkeypatch: pytest.MonkeyPatch,
         executor_authority: Any,
     ) -> None:
-        """The monitor must notice persisted stops and cancel active work.
-
-        Test cases:
-        - A pending database task remains valid.
-        - A stopped database task cancels its active asyncio task.
-        - Completed tasks are removed from the monitor.
-        """
+        """The monitor removes completed work and cancels invalid attempts once."""
         benchmark_row = example_benchmark_object
         database_session.add(benchmark_row)
         database_session.commit()
         authority = executor_authority(benchmark_row, session=database_session)
 
-        tasks_to_track: list[str] = ["task_id_1"]
-        for task_id in tasks_to_track:
-            task_row = Task(org_id=TEST_ORG_ID, task_id=task_id, benchmark=benchmark_row.id)
-            database_session.add(task_row)
-            database_session.commit()
+        stopped_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="stopped",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.STOPPED,
+        )
+        superseded_row = Task(org_id=TEST_ORG_ID, task_id="superseded", benchmark=benchmark_row.id)
+        database_session.add_all([stopped_row, superseded_row])
+        database_session.commit()
 
-        task_tracking: dict[str, TrackedTask] = {
-            task_id: TrackedTask(coro=asyncio.sleep(0), org=self._test_org, authority=authority)
-            for task_id in tasks_to_track
-        }
+        done = TrackedTask(asyncio.sleep(0), self._test_org, authority, stopped_row.started_at)
+        stopped = TrackedTask(asyncio.sleep(0), self._test_org, authority, stopped_row.started_at)
+        superseded = TrackedTask(asyncio.sleep(0), self._test_org, authority, superseded_row.started_at)
+        setattr(done, "_status", TrackedTaskStatus.DONE)
+        setattr(stopped, "_status", TrackedTaskStatus.RUNNING)
+        setattr(superseded, "_status", TrackedTaskStatus.RUNNING)
+
+        stopped_cancel = Mock()
+        superseded_cancel = Mock()
+        setattr(stopped, "_task", Mock(cancel=stopped_cancel, done=lambda: False))
+        setattr(superseded, "_task", Mock(cancel=superseded_cancel, done=lambda: False))
+
+        superseded_row.started_at += timedelta(seconds=1)
+        database_session.add(superseded_row)
+        database_session.commit()
+
+        task_tracking = {"done": done, "stopped": stopped, "superseded": superseded}
 
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monitor = TaskMonitor(
             benchmark_row.id,
-            task_tracking.copy(),
+            task_tracking,
             org=self._test_org,
             limiter=ResizableLimiter(limit=1),
             authority=authority,
         )
-        monkeypatch.setattr(monitor, "_TRACK_INTERVAL", 0)
+        sleep_count = 0
 
-        # Change task status to running and add a task to the object
-        tracked_task = task_tracking["task_id_1"]
-        setattr(tracked_task, "_status", TrackedTaskStatus.RUNNING)
-        cancel_mock = Mock()
+        async def complete_cancelled_tasks(_delay: float) -> None:
+            nonlocal sleep_count
+            sleep_count += 1
+            if sleep_count == 2:
+                setattr(stopped, "_status", TrackedTaskStatus.DONE)
+                setattr(superseded, "_status", TrackedTaskStatus.DONE)
 
-        def _cancel(*_args: Any, **_kwargs: Any) -> None:
-            setattr(tracked_task, "_status", TrackedTaskStatus.DONE)
+        monkeypatch.setattr("tracker.utils.task_execution.asyncio.sleep", complete_cancelled_tasks)
 
-        cancel_mock.side_effect = _cancel
-        setattr(tracked_task, "_task", Mock(cancel=cancel_mock, done=lambda: False))
-
-        # Test case 1. Validate task returns true if the task is not stopped
-        validate_task = getattr(monitor, "_validate_task")
-        assert validate_task("task_id_1")
-
-        # Change the task status to stopped to make sure that it gets invalidated inside of the validate task method
-        fetch_task_row = getattr(monitor, "_fetch_task_row")
-        task_row = fetch_task_row("task_id_1")
-
-        # Commit the changes to the database, will be available from any session
-        task_row.status = TaskStatus.STOPPED
-        database_session.add(task_row)
-        database_session.commit()
-
-        # Test case 2. Validate task returns false if the task status has been set to stopped
-        # NOTE: ensures that the database change gets picked up by the session
-        assert not validate_task("task_id_1")
-
-        # Test case 3. Running tasks stay tracked until they are done
         await monitor.track_tasks()
-        assert task_tracking["task_id_1"].task
-        cancel_mock.assert_called_once()
 
-        assert getattr(monitor, "_task_tracking") == {}
-        getattr(tracked_task, "_coro").close()
+        stopped_cancel.assert_called_once()
+        superseded_cancel.assert_called_once()
+        assert task_tracking == {}
+        for tracked_task in (done, stopped, superseded):
+            getattr(tracked_task, "_coro").close()
 
     async def test_tracked_task(self) -> None:
         """Tracked task states must match semaphore scheduling and cancellation.
@@ -213,11 +205,13 @@ class TestTaskExecution:
             controlled_result("task_id_1", running_started, release_running),
             self._test_org,
             authority,
+            running_row.started_at,
         )
         waiting = TrackedTask(
             controlled_result("task_id_2", waiting_started, release_waiting),
             self._test_org,
             authority,
+            waiting_row.started_at,
         )
 
         assert running.status == TrackedTaskStatus.WAITING

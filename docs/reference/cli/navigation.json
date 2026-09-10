@@ -1,0 +1,7 @@
+[
+  "reference/cli/index",
+  "reference/cli/run",
+  "reference/cli/agent",
+  "reference/cli/benchmark",
+  "reference/cli/config"
+]

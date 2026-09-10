@@ -50,6 +50,7 @@ from constructs import Construct
 from runtime_iam import create_tracker_task_role, managed_runtime_environment
 from stage import PROD, Stage
 from stage_config import benchmark_service_base_url, config_for
+from tracker_access_logs import create_tracker_access_logs
 
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
@@ -109,6 +110,7 @@ class TrackerStack(Stack):
             "SENTRY_ENVIRONMENT": stage_config.sentry_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
+            "SANDBOX_QUEUE_ENABLED": os.environ.get("SANDBOX_QUEUE_ENABLED") or "false",
             **({"BENCHMARK_SERVICE_BASE_URL": benchmark_service_url} if benchmark_service_url else {}),
             **managed_runtime_environment(self, stage, bucket, stage_config.managed_aws),
         }
@@ -144,7 +146,7 @@ class TrackerStack(Stack):
             database_name=POSTGRES_DB,
             allocated_storage=stage_config.database.allocated_storage_gb,
             publicly_accessible=stage.is_bench,
-            storage_encrypted=stage.name == PROD,
+            storage_encrypted=True if stage.name == PROD else None,
             deletion_protection=True,
             removal_policy=cdk.RemovalPolicy.RETAIN,
             backup_retention=Duration.days(stage_config.database.backup_retention_days),
@@ -287,6 +289,12 @@ class TrackerStack(Stack):
             open_listener=False,
             assign_public_ip=True,
             public_load_balancer=not stage.is_release_test,
+        )
+
+        create_tracker_access_logs(
+            self,
+            stage=stage,
+            load_balancer=self.service.load_balancer,
         )
 
         # Expose the inner FargateService for cross-stack security group rules.

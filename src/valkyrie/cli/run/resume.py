@@ -1,4 +1,5 @@
 import asyncio
+from copy import copy
 from uuid import UUID
 
 import click
@@ -155,11 +156,28 @@ def resume(
         raise click.ClickException(str(e))
 
 
+def _retry_alias_params() -> list[click.Parameter]:
+    """Copy resume's parameters, hiding the retry flag that this alias always forces on.
+
+    The callback sets ``retry`` from the invoked command name, so ``--retry`` is a no-op here.
+    It stays accepted for compatibility but is hidden from help and from generated docs.
+    """
+    parameters: list[click.Parameter] = []
+    for parameter in resume.params:
+        if isinstance(parameter, click.Option) and parameter.name == "retry":
+            forced = copy(parameter)
+            forced.hidden = True
+            parameters.append(forced)
+            continue
+        parameters.append(parameter)
+    return parameters
+
+
 # Alias for run resume, the logic is the same under the hood
 retry_command = click.Command(
     name="retry",
     callback=resume.callback,
-    params=resume.params,
-    help="Retry a run by its run id. \n\nExample:\nvalkyrie run retry 123e4567-e89b-12d3-a456-426614174000 --concurrency 20",
-    short_help="Retry a run by its run id.",
+    params=_retry_alias_params(),
+    help="Retry a run's errored tasks by its run id. \n\nExample:\nvalkyrie run retry 123e4567-e89b-12d3-a456-426614174000 --concurrency 20",
+    short_help="Retry a run's errored tasks by its run id.",
 )

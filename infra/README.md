@@ -1,6 +1,12 @@
 # Infrastructure
 
-AWS CDK infrastructure for the Agentic Harness benchmark platform.
+AWS CDK infrastructure for Valkyrie's tracker, executor, storage, networking, and monitoring resources.
+
+- [Public self-hosting guide](../docs/self-hosting/infrastructure.mdx)
+- [Executor release and deployment runbook](executor-releases/README.md)
+- [Tracker ALB access-log runbook](tracker-alb-access-logs.md)
+
+The self-hosting guide documents reusable architecture and configuration. The executor runbook contains Vals-specific deployment, release activation, recovery, and retirement procedures for maintainers.
 
 ## Architecture
 
@@ -107,7 +113,7 @@ release.
 Direct `make deploy` is CDK-only: it does not build, upload, or activate an
 executor release. The first executor-dispatch rollout uses the Monitoring-only
 pre-deployment, manual outage, legacy-queue drain, and separately authorized
-physical `WorkerStack` bootstrap documented in `docs/executor-releases/README.md`. Automated
+physical `WorkerStack` bootstrap documented in `executor-releases/README.md`. Automated
 executor work fails closed until the bootstrap publishes the stage's sealed
 release-control SSM parameter. Later workflow deployments keep existing
 executions pinned while previous releases drain normally.

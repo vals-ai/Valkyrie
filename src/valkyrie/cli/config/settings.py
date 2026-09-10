@@ -52,11 +52,7 @@ def _rotate_matching_benchmark_auth(config: dict[str, Any], new_api_key: str) ->
 
 @click.command()
 def init() -> None:
-    """
-    Initializes a config we can trust to have references to dependencies to run Valkyrie,
-    this becomes our source of truth for secrets required to run Valkyrie
-    """
-
+    """Create the Valkyrie config with the credentials and endpoints a run needs."""
     current_config: dict[str, Any] = {}
     config_path = config_location()
     if config_path.exists():

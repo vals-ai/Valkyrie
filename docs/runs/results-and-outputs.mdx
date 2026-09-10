@@ -1,0 +1,51 @@
+---
+title: Results and outputs
+description: Download scores, task artifacts, or a specific run path.
+---
+
+Valkyrie keeps two things apart: the evaluated results, and the files the agent produced along the way.
+
+<CodeGroup>
+
+```bash CLI
+valkyrie run results <run-id> --path ./results.json
+```
+
+```python Python SDK
+results = await client.runs.results(run_id)
+```
+
+</CodeGroup>
+
+Full syntax is in the [`run results`](/reference/cli/run#results), [`run outputs`](/reference/cli/run#outputs), and [`run output`](/reference/cli/run#output) reference, and in [`client.runs.results`](/reference/sdk/runs#results) for Python.
+
+## Download results
+
+The results file holds the scores and the per-task evaluation. Without `--path`, the CLI writes it to `./results-<run-id>.json`.
+
+Pass a task subset to recompute `final_score` over only those tasks. The stored full result stays as it was:
+
+```bash
+valkyrie run results <run-id> --task-ids task_1,task_2
+```
+
+<Warning>
+  Combining `--s3` with a task subset overwrites the run's S3 result file with that subset view. Run the command again without filters to put the full result back.
+</Warning>
+
+## Download outputs
+
+Outputs are the files the agent itself wrote. Fetch all of them, or only the tasks you care about:
+
+```bash
+valkyrie run outputs <run-id> --output-dir ./outputs
+valkyrie run outputs <run-id> --task-ids astropy__astropy-7606,django__django-10880
+```
+
+To pull one file or directory instead of the whole run, name a path inside the run's benchmark prefix:
+
+```bash
+valkyrie run output <run-id> <subpath> --output-dir ./output-dir
+```
+
+The output directory defaults to `./<run-id>`.

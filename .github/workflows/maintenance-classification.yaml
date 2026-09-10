@@ -17,8 +17,45 @@ env:
   TARGET_BRANCH: ${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}
 
 jobs:
-  synthesize-base:
+  resolve-synthesis-helper:
     runs-on: ubuntu-24.04-arm
+    outputs:
+      sha: ${{ steps.target-revision.outputs.sha || steps.default-revision.outputs.sha }}
+    steps:
+      - name: Checkout exact trusted target revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ env.BASE_SHA }}
+
+      - name: Select target synthesis helper
+        id: target-revision
+        run: |
+          if [[ -f .github/scripts/synthesize-worker-templates.sh ]]; then
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout default-branch synthesis helper fallback
+        if: steps.target-revision.outputs.sha == ''
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Select default-branch synthesis helper
+        if: steps.target-revision.outputs.sha == ''
+        id: default-revision
+        run: |
+          test -f .github/scripts/synthesize-worker-templates.sh
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  synthesize-base:
+    needs: resolve-synthesis-helper
+    runs-on: ubuntu-24.04-arm
+    env:
+      SYNTHESIS_HELPER_SHA: ${{ needs.resolve-synthesis-helper.outputs.sha }}
     outputs:
       artifact_id: ${{ steps.upload-base.outputs.artifact-id }}
       run_attempt: ${{ steps.identity.outputs.run_attempt }}
@@ -34,6 +71,14 @@ jobs:
           path: trusted
           persist-credentials: false
           ref: ${{ env.BASE_SHA }}
+
+      - name: Checkout trusted synthesis helper
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+          path: workflow
+          persist-credentials: false
+          ref: ${{ env.SYNTHESIS_HELPER_SHA }}
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -56,10 +101,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C trusted rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C workflow rev-parse HEAD)" = "$SYNTHESIS_HELPER_SHA"
           target_branch="${TARGET_BRANCH#refs/heads/}"
           npm install -g aws-cdk@2.1132.0
           artifact="$RUNNER_TEMP/worker-template-base"
-          bash trusted/.github/scripts/synthesize-worker-templates.sh \
+          bash workflow/.github/scripts/synthesize-worker-templates.sh \
             "$SOURCE_SHA" "$target_branch" base "$artifact" trusted
           mapfile -t stack_ids < "$artifact/stack-ids.txt"
           rm "$artifact/stack-ids.txt"
@@ -93,7 +139,10 @@ jobs:
           retention-days: 1
 
   synthesize-head:
+    needs: resolve-synthesis-helper
     runs-on: ubuntu-24.04-arm
+    env:
+      SYNTHESIS_HELPER_SHA: ${{ needs.resolve-synthesis-helper.outputs.sha }}
     outputs:
       artifact_id: ${{ steps.upload-head.outputs.artifact-id }}
       run_attempt: ${{ steps.identity.outputs.run_attempt }}
@@ -106,9 +155,9 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 1
-          path: trusted
+          path: workflow
           persist-credentials: false
-          ref: ${{ env.BASE_SHA }}
+          ref: ${{ env.SYNTHESIS_HELPER_SHA }}
 
       - name: Checkout exact candidate revision
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -138,12 +187,12 @@ jobs:
           SOURCE_SHA: ${{ env.HEAD_SHA }}
         run: |
           set -euo pipefail
-          test "$(git -C trusted rev-parse HEAD)" = "$BASE_SHA"
+          test "$(git -C workflow rev-parse HEAD)" = "$SYNTHESIS_HELPER_SHA"
           test "$(git -C candidate rev-parse HEAD)" = "$SOURCE_SHA"
           target_branch="${TARGET_BRANCH#refs/heads/}"
           npm install -g aws-cdk@2.1132.0
           artifact="$RUNNER_TEMP/worker-template-head"
-          bash trusted/.github/scripts/synthesize-worker-templates.sh \
+          bash workflow/.github/scripts/synthesize-worker-templates.sh \
             "$SOURCE_SHA" "$target_branch" head "$artifact" candidate
           mapfile -t stack_ids < "$artifact/stack-ids.txt"
           rm "$artifact/stack-ids.txt"
