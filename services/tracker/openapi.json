@@ -1404,6 +1404,88 @@
         "title": "HarnessConfig",
         "type": "object"
       },
+      "LogEventResponse": {
+        "description": "One provider-neutral benchmark log event.",
+        "properties": {
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "ingestion_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ingestion Time"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "message"
+        ],
+        "title": "LogEventResponse",
+        "type": "object"
+      },
+      "LogPageResponse": {
+        "description": "A bounded page of benchmark log events.",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/LogEventResponse"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "title": "LogPageResponse",
+        "type": "object"
+      },
       "Order": {
         "enum": [
           "asc",
@@ -2867,6 +2949,267 @@
         "summary": "Patch Benchmark Concurrency"
       }
     },
+    "/benchmarks/{benchmark_id}/logs": {
+      "get": {
+        "description": "Return one page of logs for a run or one of its tasks.",
+        "operationId": "get_logs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Query"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_time",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Time"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_time",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Time"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "maximum": 10000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Id"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogPageResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Logs"
+      }
+    },
+    "/benchmarks/{benchmark_id}/logs/stream": {
+      "get": {
+        "description": "Stream a task's current log stream as server-sent events.",
+        "operationId": "stream_task_logs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Query"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_time",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Time"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_time",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Time"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Task Logs"
+      }
+    },
     "/benchmarks/{benchmark_id}/tasks": {
       "get": {
         "description": "Paginated tasks for a benchmark, with optional status filter + task-id search.\n\nsort=status desc surfaces errors first (attention priority). Default: started_at desc.",
@@ -3677,9 +4020,69 @@
         "summary": "Init Org"
       }
     },
+    "/preview-results": {
+      "get": {
+        "description": "Archive the current S3 final view, replace it with a recomputed one, and run the completion callback.",
+        "operationId": "preview_results",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "task_ids",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Ids"
+            }
+          },
+          {
+            "in": "query",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/S3UploadResultsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Results"
+      }
+    },
     "/retrieve-results": {
       "get": {
-        "description": "Retrieve the results of a benchmark by its id. When task_ids is non-empty, the final view is\nfiltered to that subset and the final score is recomputed over the subset; the persisted\nFinalEvaluation / per-task rows are left untouched.\n\nNote: with `s3=True` the S3 final view at the canonical key is overwritten with whatever was\njust computed (full or subset). The DB remains source of truth, so re-running without\ntask_ids re-uploads the canonical full view.\n\nUsage:\ncurl -X GET http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=false\ncurl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'",
+        "description": "Retrieve a benchmark's current results, optionally filtered or uploaded to S3.",
         "operationId": "retrieve_results",
         "parameters": [
           {

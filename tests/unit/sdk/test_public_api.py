@@ -7,12 +7,16 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
+from importlib import import_module
 from pathlib import Path
 
-import valkyrie.sdk as sdk
-from valkyrie.sdk.client import DEFAULT_BASE_URL, ValkyrieClient
-from valkyrie.sdk.config import DEFAULT_CONFIG_PATH, ValkyrieConfig
-from valkyrie.sdk.resources import AgentsResource, BenchmarksResource, BenchmarkServicesResource, RunsResource
+from valkyrie.sdk.client import DEFAULT_BASE_URL, ValkyrieClient  # pyright: ignore[reportMissingImports]
+from valkyrie.sdk.config import DEFAULT_CONFIG_PATH, ValkyrieConfig  # pyright: ignore[reportMissingImports]
+from valkyrie.sdk.resources.agents import AgentsResource  # pyright: ignore[reportMissingImports]
+from valkyrie.sdk.resources.benchmarks import BenchmarksResource  # pyright: ignore[reportMissingImports]
+from valkyrie.sdk.resources.logs import LogsResource  # pyright: ignore[reportMissingImports]
+from valkyrie.sdk.resources.runs import RunsResource  # pyright: ignore[reportMissingImports]
+from valkyrie.sdk.resources.services import BenchmarkServicesResource  # pyright: ignore[reportMissingImports]
 
 EXPECTED_ALL = [
     "AgentContractRequest",
@@ -33,6 +37,8 @@ EXPECTED_ALL = [
     "FetchBenchmarksResponse",
     "FetchTasksRequest",
     "FinalViewResponse",
+    "LogEvent",
+    "LogPage",
     "Order",
     "RetryMode",
     "RetryOrResumeBenchmarkResponse",
@@ -71,6 +77,7 @@ EXPECTED_SIGNATURES = {
     RunsResource.list: "self, request=None",
     RunsResource.stream: "self, run_id",
     RunsResource.results: "self, run_id, *, task_ids=None, upload_to_s3=False",
+    RunsResource.preview: "self, run_id, *, task_ids=None",
     RunsResource.metadata: "self, run_id",
     RunsResource.results_exist: "self, run_id",
     RunsResource.analyze: "self, run_id, *, no_cache=False, lambda_function=None",
@@ -84,6 +91,13 @@ EXPECTED_SIGNATURES = {
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False, "
         "benchmark_url=None"
     ),
+    LogsResource.page_task: (
+        "self, run_id, task_id, *, query=None, start_time=None, end_time=None, cursor=None, limit=1000"
+    ),
+    LogsResource.fetch_task: "self, run_id, task_id, *, query=None, start_time=None, end_time=None",
+    LogsResource.page_run: "self, run_id, *, query=None, start_time=None, end_time=None, cursor=None, limit=1000",
+    LogsResource.fetch_run: "self, run_id, *, query=None, start_time=None, end_time=None",
+    LogsResource.stream_task: "self, run_id, task_id, *, query=None, start_time=None, end_time=None",
     BenchmarksResource.fetch: "self, run_id",
     BenchmarksResource.statuses: "self, run_ids",
     BenchmarksResource.tasks: "self, run_id, request=None",
@@ -126,11 +140,13 @@ def signature_text(callable_object: Callable[..., object]) -> str:
 
 
 def test_public_exports_and_constants_are_stable() -> None:
-    assert sdk.__all__ == EXPECTED_ALL
+    sdk = import_module("valkyrie.sdk")
+
+    assert getattr(sdk, "__all__") == EXPECTED_ALL
     assert DEFAULT_BASE_URL == "https://benchmark-tracker.vals.ai"
     assert str(DEFAULT_CONFIG_PATH) == "~/.config/valkyrie/valkyrie.yaml"
-    assert sdk.ValkyrieClient is ValkyrieClient
-    assert sdk.ValkyrieConfig is ValkyrieConfig
+    assert getattr(sdk, "ValkyrieClient") is ValkyrieClient
+    assert getattr(sdk, "ValkyrieConfig") is ValkyrieConfig
 
 
 def test_public_signatures_are_stable() -> None:
@@ -148,6 +164,7 @@ def test_signature_text_preserves_parameter_kinds() -> None:
 async def test_client_exposes_v2_resource_namespaces(make_client) -> None:
     async with make_client(lambda _request: None) as client:
         assert isinstance(client.runs, RunsResource)
+        assert isinstance(client.logs, LogsResource)
         assert isinstance(client.benchmarks, BenchmarksResource)
         assert isinstance(client.agents, AgentsResource)
         assert isinstance(client.services, BenchmarkServicesResource)

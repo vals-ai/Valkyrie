@@ -44,6 +44,7 @@ from valkyrie.sdk.errors import (
     ValkyrieStreamError,
     ValkyrieTransportError,
 )
+from .models.logs import LogEvent, LogPage
 
 __all__ = [
     "AgentContractRequest",
@@ -64,6 +65,8 @@ __all__ = [
     "FetchBenchmarksResponse",
     "FetchTasksRequest",
     "FinalViewResponse",
+    "LogEvent",
+    "LogPage",
     "Order",
     "RetryMode",
     "RetryOrResumeBenchmarkResponse",

@@ -5,6 +5,7 @@ Run: uv run pytest tests/unit/test_main.py
 
 import io
 import logging
+import re
 import tarfile
 from collections.abc import AsyncIterator
 from datetime import timezone
@@ -1614,6 +1615,165 @@ class TestTrackerAPI:
         assert observed_results["task_11"] is None
         assert response.json()["final_evaluation"]["final_score"] == 2.0
 
+    async def test_preview_results_archives_then_overwrites_canonical_result(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        harness_headers: dict[str, str],
+    ) -> None:
+        """Preview retrieval archives the canonical result, overwrites it, and runs the callback.
+
+        Test cases:
+        - Preview mode enables S3 without an explicit S3 query parameter.
+        - An existing canonical result is copied under archive/ before being overwritten.
+        - Unfinished tasks remain in the score input with a null result.
+        - A configured Lambda receives the completion payload plus ``preview``.
+        - A preview without a Lambda or an existing result can score an unfinished task subset.
+        - Unknown IDs reject the whole request before scoring, S3 writes, or callback invocation.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.arguments.lambda_function = "vals-format-lambda"
+        finished_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="finished-task",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        pending_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="pending-task",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.PENDING,
+        )
+        database_session.add_all([benchmark_row, finished_task, pending_task])
+        database_session.flush()
+        database_session.add(
+            EvaluationResult(
+                org_id=TEST_ORG_ID,
+                task=finished_task.id,
+                instance_id=str(uuid4()),
+                result={"score": 1},
+            )
+        )
+        database_session.commit()
+
+        canonical_key = f"benchmarks/{benchmark_row.id}/{benchmark_row.name}.json"
+        observed_results: dict[str, Any] = {}
+        uploaded_keys: list[str] = []
+        copied: list[tuple[str, str]] = []
+        lambda_payloads: list[dict[str, Any]] = []
+        canonical_exists = True
+
+        async def _mock_final_score(_client: BenchmarkServiceClient, **kwargs: Any) -> FinalScoreResponse:
+            observed_results.update(kwargs["evaluation_results"])
+
+            return FinalScoreResponse(tasks_evaluated=list(observed_results), final_score=0.5, metadata={})
+
+        async def _mock_s3_object_exists(s3_key: str, _aws_runtime: AWSRuntime) -> bool:
+            assert s3_key == canonical_key
+
+            return canonical_exists
+
+        async def _mock_copy_s3_object(source_key: str, dest_key: str, _aws_runtime: AWSRuntime) -> str | None:
+            copied.append((source_key, dest_key))
+
+            return None
+
+        async def _mock_upload_final_view(
+            _benchmark_row: Benchmark,
+            _final_view: FinalViewResponse,
+            _aws_runtime: AWSRuntime,
+        ) -> str:
+            uploaded_keys.append(canonical_key)
+
+            return canonical_key
+
+        async def _mock_create_presigned_url(
+            s3_key: str,
+            _aws_runtime: AWSRuntime,
+            expiration: int = 86400,
+        ) -> str:
+            return f"https://download.example/{s3_key}?expires={expiration}"
+
+        def _mock_invoke_lambda(
+            _clients: object,
+            _function_name: str,
+            payload: dict[str, Any],
+            config: object,
+        ) -> dict[str, Any]:
+            lambda_payloads.append(payload)
+
+            return {"statusCode": 200}
+
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
+        monkeypatch.setattr(main_module, "s3_object_exists", _mock_s3_object_exists)
+        monkeypatch.setattr(main_module, "copy_s3_object", _mock_copy_s3_object)
+        monkeypatch.setattr(main_module, "upload_final_view", _mock_upload_final_view)
+        monkeypatch.setattr(main_module, "create_presigned_url", _mock_create_presigned_url)
+        monkeypatch.setattr(main_module, "invoke_lambda", _mock_invoke_lambda)
+
+        for task_ids in [["unknown-task"], ["pending-task", "unknown-task"]]:
+            invalid_response = client.get(
+                "/preview-results",
+                params=[("benchmark_id", str(benchmark_row.id)), *[("task_ids", task_id) for task_id in task_ids]],
+                headers=harness_headers,
+            )
+
+            assert invalid_response.status_code == 400
+            assert invalid_response.json()["detail"] == "Task IDs not found in this run: unknown-task"
+            assert observed_results == {}
+            assert copied == []
+            assert uploaded_keys == []
+            assert lambda_payloads == []
+
+        response = client.get(
+            "/preview-results",
+            params={"benchmark_id": str(benchmark_row.id)},
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["s3_url"] == f"s3://test-bucket/{canonical_key}"
+        assert uploaded_keys == [canonical_key]
+        assert len(copied) == 1
+        source_key, archive_key = copied[0]
+        assert source_key == canonical_key
+        assert re.fullmatch(
+            rf"benchmarks/{benchmark_row.id}/archive/\d{{8}}T\d{{12}}Z/{re.escape(benchmark_row.name)}\.json",
+            archive_key,
+        )
+        assert observed_results == {"finished-task": {"score": 1}, "pending-task": None}
+        assert lambda_payloads[0]["benchmark_id"] == str(benchmark_row.id)
+        assert lambda_payloads[0]["benchmark_name"] == benchmark_row.name
+        assert lambda_payloads[0]["bucket"] == "test-bucket"
+        assert lambda_payloads[0]["preview"] is True
+        assert "places_where_result_data_is" not in lambda_payloads[0]
+        assert "output_key" not in lambda_payloads[0]
+        assert "contract" in lambda_payloads[0]
+
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"lambda_function": None})
+        database_session.add(benchmark_row)
+        database_session.commit()
+        observed_results.clear()
+        canonical_exists = False
+
+        subset_response = client.get(
+            "/preview-results",
+            params=[
+                ("benchmark_id", str(benchmark_row.id)),
+                ("task_ids", "pending-task"),
+            ],
+            headers=harness_headers,
+        )
+
+        assert subset_response.status_code == 200
+        assert observed_results == {"pending-task": None}
+        assert uploaded_keys == [canonical_key, canonical_key]
+        assert len(copied) == 1
+        assert len(lambda_payloads) == 1
+
     async def test_retrieve_results_blocks_external_persisted_internal_destination(
         self,
         example_benchmark_object: Benchmark,
@@ -1623,6 +1783,7 @@ class TestTrackerAPI:
     ) -> None:
         example_benchmark_object.custom_benchmark_service = "http://service.internal:8001"
         database_session.add(example_benchmark_object)
+        database_session.add(Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=example_benchmark_object.id))
         database_session.commit()
         monkeypatch.setattr(main_module, "AUTH_REQUIRED", True)
 

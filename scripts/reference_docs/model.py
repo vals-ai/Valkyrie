@@ -50,6 +50,7 @@ RESOURCE_CARDS = {
         "server",
         "discovering service catalogs, deployments, and task IDs",
     ),
+    "LogsResource": ("Logs", "scroll-text", "fetching, filtering, and following benchmark logs"),
 }
 
 TYPE_CARDS = {
@@ -58,6 +59,7 @@ TYPE_CARDS = {
     "Benchmarks": ("flask-conical", "benchmark, task, artifact, and status responses"),
     "Services": ("server", "benchmark service catalog and health responses"),
     "Config": ("sliders-horizontal", "validated SDK configuration and field aliases"),
+    "Logs": ("scroll-text", "benchmark log events and paginated responses"),
 }
 
 READ_ONLY_COMMANDS = frozenset(
@@ -70,6 +72,7 @@ READ_ONLY_COMMANDS = frozenset(
         ("run", "errors"),
         ("run", "fetch"),
         ("run", "list"),
+        ("run", "logs"),
         ("run", "output"),
         ("run", "outputs"),
         ("run", "results"),
