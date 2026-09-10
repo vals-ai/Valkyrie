@@ -1,5 +1,7 @@
 """Sentry SDK initialization for Valkyrie service processes."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 import logging
 import os
 from typing import Any, cast
@@ -12,9 +14,21 @@ from sentry_sdk.integrations.otlp import OTLPIntegration
 from sentry_sdk.types import Event, Hint, Log
 
 from tracker.exceptions import SSLConnectionError
+from tracker.logging import task_id_var
 from tracker.logging.context import get_context_tags
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def task_scope(task_id: str) -> Iterator[None]:
+    """Isolate Sentry events and logging context for one tracked task."""
+    with sentry_sdk.isolation_scope():
+        token = task_id_var.set(task_id)
+        try:
+            yield
+        finally:
+            task_id_var.reset(token)
 
 
 def _before_send(
