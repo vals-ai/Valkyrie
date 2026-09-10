@@ -273,7 +273,9 @@ async def test_retry_attempt_clears_previous_sandbox_identity(
             )
             raise SandboxSetupError("retry after first sandbox")
 
-        sentry_sdk.capture_exception(RuntimeError("second attempt failed before sandbox assignment"))
+        sentry_sdk.capture_exception(
+            RuntimeError("second attempt failed before sandbox assignment")
+        )
         return {"task-0": {"ok": True}}
 
     monkeypatch.setattr(task_execution, "_process_task_attempt", process_attempt)
