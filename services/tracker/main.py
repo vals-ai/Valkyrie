@@ -926,6 +926,7 @@ async def _invoke_preview_lambda(benchmark_row: Benchmark, aws_runtime: AWSRunti
         {
             "benchmark_id": str(benchmark_row.id),
             "benchmark_name": benchmark_row.name,
+            "bucket": aws_runtime.resources.s3_bucket,
             "preview": True,
         }
     )

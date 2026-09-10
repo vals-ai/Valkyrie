@@ -352,6 +352,8 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
 
     def invoke_post_run(clients: object, _function_name: str, _payload: object, **_kwargs: Any) -> dict[str, Any]:
         assert clients is aws_runtime.clients
+        assert isinstance(_payload, dict)
+        assert _payload["bucket"] == aws_runtime.resources.s3_bucket
         calls.append("lambda-post-run")
         return {}
 

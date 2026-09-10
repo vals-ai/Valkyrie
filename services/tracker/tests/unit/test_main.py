@@ -1747,6 +1747,7 @@ class TestTrackerAPI:
         assert observed_results == {"finished-task": {"score": 1}, "pending-task": None}
         assert lambda_payloads[0]["benchmark_id"] == str(benchmark_row.id)
         assert lambda_payloads[0]["benchmark_name"] == benchmark_row.name
+        assert lambda_payloads[0]["bucket"] == "test-bucket"
         assert lambda_payloads[0]["preview"] is True
         assert "places_where_result_data_is" not in lambda_payloads[0]
         assert "output_key" not in lambda_payloads[0]
