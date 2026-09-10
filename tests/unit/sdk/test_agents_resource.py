@@ -4,6 +4,7 @@ Run: uv run pytest tests/unit/sdk/test_agents_resource.py
 """
 
 import io
+import os
 import stat
 import zipfile
 from pathlib import Path
@@ -282,3 +283,27 @@ class TestAgentArchive:
             extract_agent_archive(io.BytesIO(_archive()), "demo", tmp_path, overwrite=False, max_expanded_bytes=1000)
 
         assert not (tmp_path / "demo").exists()
+
+    def test_backup_cleanup_failure_keeps_successful_replacement(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        target = tmp_path / "demo"
+        target.mkdir()
+        (target / "keep").write_text("original")
+        os_unlink = os.unlink
+
+        def fail_unlink(path: str, *, dir_fd: int | None = None) -> None:
+            if Path(path).name == "keep":
+                raise PermissionError("backup cleanup denied")
+            os_unlink(path, dir_fd=dir_fd)
+
+        monkeypatch.setattr(os, "unlink", fail_unlink)
+        result = extract_agent_archive(io.BytesIO(_archive()), "demo", tmp_path, overwrite=True)
+
+        assert result == target
+        assert (target / "run.py").read_text() == "agent content"
+        assert not (target / "keep").exists()
+        backup = next(tmp_path.glob(".demo-backup-*"))
+        assert (backup / "demo" / "keep").read_text() == "original"
+        assert str(backup) in caplog.text
+        assert "manually" in caplog.text

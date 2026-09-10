@@ -1,5 +1,6 @@
 """Client-side agent packaging and safe archive extraction."""
 
+import logging
 import os
 import re
 import shutil
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import BinaryIO, Generator, cast
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ARCHIVE_BYTES = 1024**3
 DEFAULT_MAX_EXPANDED_BYTES = 5 * 1024**3
@@ -172,6 +175,11 @@ def extract_agent_archive(
                 backup.rmdir()
             raise
         if backup is not None:
-            shutil.rmtree(backup)
+            try:
+                shutil.rmtree(backup)
+            except OSError:
+                logger.warning(
+                    "Agent installed at %s; remove leftover backup at %s manually", target, backup, exc_info=True
+                )
 
     return target
