@@ -11,6 +11,20 @@ Local Docker Compose starts the tracker, PostgreSQL, and Redis only. It does not
 
 The tracker forwards its inbound Descope API key only when the benchmark-service origin matches the hosted origin derived from the benchmark name and tracker configuration. A custom origin never receives that key. Custom services authenticate with explicit headers or a stored service secret instead. See [Benchmark authentication](/benchmarks/authentication).
 
+## Sandbox scheduling
+
+`SANDBOX_QUEUE_ENABLED` defaults to `false`. In that mode, runs create sandboxes directly and requests with an explicit priority are rejected. When the flag is `true`, the tracker queues runs only when the selected sandbox provider has a managed admission pool. Unmanaged providers continue to use direct execution and also reject explicit priority.
+
+Managed shared pools order waiting tasks by run priority, enqueue time, and task ID. Priority ranges from P0 (highest) to P4 (lowest), and admitted runs default to P3 when no priority is supplied. Per-run `concurrency` still limits how many tasks from that run may be active.
+
+Authenticated clients can inspect their organization's scheduler state with:
+
+```text
+GET /scheduler/overview?waiting_limit=100&active_limit=100
+```
+
+The endpoint uses the request's resolved organization and never returns rows from another organization. Its summary contains total waiting, building, in-progress, and evaluating counts. It also returns per-pool waiting counts plus bounded waiting and active entries. Each entry limit defaults to 100, accepts 1–200, and has a corresponding `waiting_capped` or `active_capped` flag when more rows exist. Active entries use `BUILDING`, `IN_PROGRESS`, or `EVALUATING` status.
+
 ## Run it locally
 
 ```bash
@@ -42,7 +56,7 @@ make test-integration-live   # AWS, benchmark service, and sandbox tests
 `tests/integration/live` requires `services/tracker/.env`:
 
 ```env
-# AWS: fetches sandbox provider credentials from Secrets Manager and writes to S3 and CloudWatch
+# AWS: uses Secrets Manager and performs live S3 and CloudWatch create/read/delete tests
 AWS_ACCESS_KEY_ID=
 AWS_SECRET_ACCESS_KEY=
 AWS_DEFAULT_REGION=us-east-1

@@ -38,6 +38,12 @@ def _format_expiration(seconds: int) -> str:
     help="Saves results to s3 instead of downloading them locally. Can be found at bucket://benchmarks/run_id/<benchmark>.json",
 )
 @click.option(
+    "--preview",
+    is_flag=True,
+    default=False,
+    help="Archive the current S3 results, replace them with a fresh snapshot, and run the completion callback.",
+)
+@click.option(
     "--task-ids",
     type=str,
     required=False,
@@ -55,6 +61,7 @@ def results(
     run_id: UUID,
     path: Path | None,
     s3: bool,
+    preview: bool,
     task_ids: str | None,
     task_ids_file: str | None,
 ):
@@ -64,18 +71,27 @@ def results(
     Example:
         valkyrie run results e532551e-d51b-4912-983d-47695bd24174 --path ./results-e532551e-d51b-4912-983d-47695bd24174.json
     """
+    if preview and path:
+        raise click.UsageError("--preview cannot be combined with --path")
+
     subset_task_ids = resolve_task_ids(task_ids, task_ids_file)
+    save_to_s3 = s3 or preview
 
     click.echo(f"Retrieving results for run: {run_id}")
 
     try:
         with TrackerService() as tracker:
-            if s3:
+            if s3 and not preview:
                 if tracker.check_results_exist_in_s3(run_id):
                     if not click.confirm("Results already exist in S3. Overwrite?"):
                         raise click.Abort()
 
-            results_response: RetrieveResultsResponse = tracker.retrieve_results(run_id, s3, task_ids=subset_task_ids)
+            results_response: RetrieveResultsResponse = tracker.retrieve_results(
+                run_id,
+                save_to_s3,
+                task_ids=subset_task_ids,
+                preview=preview,
+            )
 
             if isinstance(results_response, FinalViewResponse):
                 if subset_task_ids:

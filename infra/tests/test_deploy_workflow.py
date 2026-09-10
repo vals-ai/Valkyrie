@@ -23,6 +23,20 @@ def _job(workflow: str, job_id: str) -> str:
     return body[: next_job.start()] if next_job else body
 
 
+def _step(job: str, step_name: str) -> str:
+    """Return one step from a job without any following sibling steps."""
+    marker = f"      - name: {step_name}\n"
+    body = job.split(marker, maxsplit=1)[1]
+    next_step = body.find("\n      - name: ")
+    return marker + (body[:next_step] if next_step >= 0 else body)
+
+
+def _effective_step(job: str, step_name: str) -> str:
+    """Return one step together with the job environment inherited by it."""
+    job_config = job.split("\n    steps:", maxsplit=1)[0]
+    return f"{job_config}\n{_step(job, step_name)}"
+
+
 class DeployWorkflowTest(unittest.TestCase):
     def test_core_deployments_do_not_depend_on_executor_work(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -106,6 +120,7 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("database_maintenance_required != 'true'", dev_core)
         self.assertIn("environment: dev", dev_core)
         self.assertIn("SCOPE: ${{ github.event_name == 'push' && 'core' || inputs.scope }}", dev_core)
+        self.assertIn("SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}", dev_core)
         self.assertIn(
             "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}",
             dev_core,
@@ -121,6 +136,27 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertNotIn("maintenance-operation", dev_core)
         self.assertNotIn("submodules: recursive", workflow)
         self.assertNotIn("secrets.GH_PAT", workflow)
+
+    def test_core_deployment_steps_receive_sandbox_queue_setting(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        queue_setting = "SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}"
+        deployments = (
+            ("deploy-bench-core", "Deploy bench core stacks"),
+            ("deploy-prod-core", "Deploy prod core stacks"),
+            ("run-dev-operation", "Deploy dev core stacks"),
+            ("executor-bench", "Deploy bench core stacks under maintenance"),
+            ("executor-prod", "Deploy prod core stacks under maintenance"),
+            ("executor-development", "Deploy dev core stacks under maintenance"),
+        )
+
+        for job_id, step_name in deployments:
+            with self.subTest(step=step_name):
+                job = _job(workflow, job_id)
+                step = _step(job, step_name)
+                self.assertIn(queue_setting, _effective_step(job, step_name))
+                self.assertIn("SCOPE=core", step)
+                self.assertNotIn("SCOPE=executor", step)
+                self.assertNotIn("executor stack", step.lower())
 
     def test_executor_keeps_the_deployed_worker_stack_identity(self) -> None:
         app = (ROOT / "infra" / "app.py").read_text(encoding="utf-8")

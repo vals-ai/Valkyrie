@@ -9,7 +9,7 @@ dependencies = [
   "click>=8.1.0",
   "httpx>=0.28.1",
   "python-dotenv",
-  "valkyrie-sdk>=0.1.0,<1",
+  "valkyrie-sdk>=0.2.13,<1",
   "tracker",
   "aioboto3>=7.0.0",
   "pyyaml>=6.0.3",

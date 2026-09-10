@@ -34,6 +34,16 @@ To select ids explicitly, export the dataset's task ids first with [`valkyrie be
 
 `--concurrency` sets how many sandboxes run at once, so raising it finishes the run sooner but runs up provider and model cost faster too.
 
+## Prioritize work in a managed sandbox pool
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench --priority 3
+```
+
+Priority is optional and ranges from P0 (`0`, highest) to P4 (`4`, lowest). Runs admitted to a managed shared sandbox pool default to P3 when priority is omitted. Priority applies only when the tracker sandbox queue is enabled and the selected provider has a managed admission pool. Otherwise, the run uses direct execution and an explicit priority is rejected instead of implying queueing.
+
+Per-run `--concurrency` still limits how many tasks from that run may be active after admission.
+
 A benchmark that publishes several datasets defaults to `default`. Name another one with `--dataset`:
 
 ```bash

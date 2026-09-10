@@ -5,8 +5,8 @@ from dataclasses import replace
 from typing import cast
 from unittest import mock
 
-import aws_cdk as cdk
-from aws_cdk import assertions, aws_s3
+import aws_cdk as cdk  # pyright: ignore[reportMissingImports]
+from aws_cdk import assertions, aws_s3  # pyright: ignore[reportMissingImports]
 
 from runtime_iam import create_executor_task_role, create_tracker_task_role
 from stage import BENCH, DEV, RELEASE_TEST, Stage
@@ -150,6 +150,8 @@ class RuntimeIamTest(unittest.TestCase):
                     "s3:DeleteObjectVersion",
                     "secretsmanager:GetSecretValue",
                     "lambda:InvokeFunction",
+                    "logs:GetLogEvents",
+                    "logs:FilterLogEvents",
                 },
             ),
             (
@@ -282,6 +284,13 @@ class RuntimeIamTest(unittest.TestCase):
                     secret_resources = json.dumps(secret_statement["Resource"])
                     self.assertIn("secretsmanager", secret_resources)
                     self.assertIn(f"secret:{TEST_TRACKER_SECRET_NAME_PREFIX}*", secret_resources)
+                    log_statement = next(
+                        statement
+                        for statement in statements
+                        if _statement_actions(statement) == {"logs:GetLogEvents", "logs:FilterLogEvents"}
+                    )
+                    self.assertIn("/valkyrie/benchmarks-dev/*", json.dumps(log_statement["Resource"]))
+                    self.assertNotIn(":log-stream:", json.dumps(log_statement["Resource"]))
                     lambda_statement = next(
                         statement
                         for statement in statements
