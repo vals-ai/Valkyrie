@@ -947,25 +947,35 @@ async def run_agent(
         if errors and not preserve_agent_error:
             raise errors[0]
 
-    async def finalize_outputs() -> None:
+    async def run_finalizer() -> None:
         if finalize_cmd is None or (execution_is_current is not None and not execution_is_current()):
             return
 
-        log_output(f"Finalizing agent {contract.name}")
-        # This sequences after the tracked shell exits; it does not establish
-        # that every descendant process has stopped.
-        exit_reason, _ = await stream_command_output(
-            sandbox,
-            (
-                f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 "
-                f"timeout {_FINALIZATION_TIMEOUT_SECONDS} sh -c {shlex.quote(finalize_cmd)}"
-            ),
-            log_output,
-        )
-        if exit_reason == AgentCausedExitReason.TIMEOUT:
-            raise AgentRunFailedError("Agent finalization command timed out")
-        if exit_reason == AgentCausedExitReason.OS_KILLED:
-            raise AgentRunFailedError("Agent finalization command was killed by the OS")
+        try:
+            log_output(f"Finalizing agent {contract.name}")
+            # This sequences after the tracked shell exits; it does not establish
+            # that every descendant process has stopped.
+            exit_reason, _ = await stream_command_output(
+                sandbox,
+                (
+                    f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 "
+                    f"timeout {_FINALIZATION_TIMEOUT_SECONDS} sh -c {shlex.quote(finalize_cmd)}"
+                ),
+                log_output,
+            )
+            if exit_reason is not None:
+                raise AgentRunFailedError(f"Agent finalization command exited with reason {exit_reason.value}")
+        except Exception:
+            logger.exception(
+                "Failed to finalize agent outputs",
+                extra={
+                    "sandbox_id": sandbox.id,
+                    "sandbox_name": sandbox.name,
+                    "benchmark_id": benchmark_id,
+                    "task_id": task_id,
+                },
+            )
+            raise
 
     # A nonzero exit is terminal evidence; finalize and collect declared outputs
     # while the sandbox is still available. Unknown command loss skips finalization.
@@ -978,17 +988,9 @@ async def run_agent(
         )
     except AgentRunFailedError:
         try:
-            await finalize_outputs()
+            await run_finalizer()
         except Exception:
-            logger.exception(
-                "Failed to finalize agent outputs",
-                extra={
-                    "sandbox_id": sandbox.id,
-                    "sandbox_name": sandbox.name,
-                    "benchmark_id": benchmark_id,
-                    "task_id": task_id,
-                },
-            )
+            pass
         await upload_outputs(preserve_agent_error=True)
         raise
     except Exception:
@@ -1004,25 +1006,12 @@ async def run_agent(
             f"[WARNING]:`{contract.name}` was killed by the OS (exit code {_OS_KILL_EXIT_CODE}, likely out-of-memory). The process has been terminated and evaluation will proceed."
         )
 
-    finalization_error: Exception | None = None
     try:
-        await finalize_outputs()
-    except Exception as error:
-        finalization_error = error
-        logger.exception(
-            "Failed to finalize agent outputs",
-            extra={
-                "sandbox_id": sandbox.id,
-                "sandbox_name": sandbox.name,
-                "benchmark_id": benchmark_id,
-                "task_id": task_id,
-            },
-        )
-
-    preserve_finalization_error = finalization_error is not None and exit_reason is None
-    await upload_outputs(preserve_agent_error=preserve_finalization_error)
-    if finalization_error is not None and exit_reason is None:
-        raise finalization_error
+        await run_finalizer()
+    except Exception:
+        await upload_outputs(preserve_agent_error=True)
+        raise
+    await upload_outputs()
 
     # Return why the agent terminated abnormally, or None on clean exit
     return exit_reason, agent_run_time

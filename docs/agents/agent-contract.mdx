@@ -128,7 +128,7 @@ run_cmd: "my_agent --task {problem_statement_path} --id {task_id}"
 
 Optional command to run in the agent's sandbox and working directory after a known `run_cmd` exit and before output collection. It uses the same placeholders and contract kwargs as `run_cmd`, and has a five-minute timeout. The executable and its dependencies must already be available from the agent bundle or `install_cmd`.
 
-Finalization is skipped when execution ownership was revoked, the tracker was cancelled, or the sandbox/provider was lost before the agent exit was known. A finalization failure does not replace an existing agent failure, and Valkyrie still attempts output collection. This hook only follows the tracked shell's exit; it does not guarantee that descendant processes have stopped.
+Finalization is skipped when execution ownership was revoked, the tracker was cancelled, or the sandbox/provider was lost before the agent exit was known. Valkyrie still attempts output collection when finalization fails. The agent's failure takes precedence over a finalization failure; otherwise, the finalization failure is reported. This hook only follows the tracked shell's exit; it does not guarantee that descendant processes have stopped.
 
 ```yaml
 finalize_cmd: "python -m agent.finalize --task {task_id}"
