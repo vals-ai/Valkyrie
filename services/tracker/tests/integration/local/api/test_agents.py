@@ -6,7 +6,7 @@ Exercise authentication for agent routes through the real app.
 from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
-from pytest import MonkeyPatch
+from pytest import MonkeyPatch, mark
 
 
 def test_agents_empty_when_bucket_empty(client: TestClient, monkeypatch: MonkeyPatch) -> None:
@@ -28,12 +28,13 @@ def test_agents_empty_when_bucket_empty(client: TestClient, monkeypatch: MonkeyP
     assert response.json()["agents"] == []
 
 
-def test_agents_unauth_401(client: TestClient) -> None:
+@mark.parametrize(("method", "path"), [("GET", "/agents"), ("PUT", "/agents/demo"), ("DELETE", "/agents/demo")])
+def test_agents_unauth_401(client: TestClient, method: str, path: str) -> None:
     """The agents catalog must not be readable without authentication.
 
     Test cases:
     - A request without a bearer session receives 401.
     """
-    response = client.get("/agents")
+    response = client.request(method, path)
 
     assert response.status_code == 401

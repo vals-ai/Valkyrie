@@ -220,6 +220,22 @@
     "destination": "/reference/sdk/agents#download-url"
   },
   {
+    "source": "/reference/sdk/agents/push",
+    "destination": "/reference/sdk/agents#push"
+  },
+  {
+    "source": "/reference/sdk/agents/download",
+    "destination": "/reference/sdk/agents#download"
+  },
+  {
+    "source": "/reference/sdk/agents/remove",
+    "destination": "/reference/sdk/agents#remove"
+  },
+  {
+    "source": "/reference/sdk/agents/install",
+    "destination": "/reference/sdk/agents#install"
+  },
+  {
     "source": "/reference/sdk/services/catalog",
     "destination": "/reference/sdk/services#catalog"
   },

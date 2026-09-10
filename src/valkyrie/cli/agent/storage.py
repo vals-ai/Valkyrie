@@ -1,196 +1,45 @@
-import asyncio
+"""Tracker-backed library commands and internal run snapshot storage helpers."""
+
 import io
-import re
 import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
-import click
 import yaml
 from botocore.exceptions import ClientError
 from tracker import handle_s3_error
 from tracker.aws.s3 import (
     copy_s3_object,
-    delete_from_s3,
     download_from_s3,
     get_benchmark_contract_s3_key,
     get_contract_s3_key,
     s3_object_exists,
 )
-from tracker.aws.s3 import list_agents as list_s3_agents
-from tracker.agent.bundler import get_agent_zip_stream
-from tracker.agent.contract import get_contract_from_zip_bytes, read_agent_name
-from tracker.agent.schemas import AgentConfig, validate_agent_name
+from tracker.agent.contract import get_contract_from_zip_bytes
+from tracker.agent.schemas import AgentConfig
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
+from valkyrie.sdk import ValkyrieClient
+from valkyrie.sdk.agent_bundle import get_agent_zip_stream
 
 from valkyrie.cli import s3_config as cli_s3
-
-
-async def _run_git_command(repo_path: Path | None, *args: str) -> None:
-    """Execute a git command by building the command using the provided args"""
-    cmd = ["git"]
-
-    # Run git command without needing to be in the directory first
-    if repo_path:
-        cmd.extend(["-C", str(repo_path)])
-
-    cmd.extend(args)
-
-    # Run subprocess, collecting the error using the stderr
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-
-    _, stderr = await process.communicate()
-
-    # If the process error'd out we show the end user and do not proceed
-    if process.returncode != 0:
-        error_message = stderr.decode() if stderr else "No stderr returned"
-        raise RuntimeError(f"Git command failed: {error_message}")
+from valkyrie.cli.runtime_config import config_location, tracker_service_url
 
 
 async def install_agent(agent_name: str | None, github_url: str) -> str:
-    """Clone a GitHub repository and install it as an agent to S3. Returns the resolved agent name."""
+    """Clone a GitHub agent and upload it through Tracker."""
+    async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
+        result = await client.agents.install(github_url, name=agent_name)
 
-    # Parse the GitHub URL to detect subfolder specification
-    # Matches: https://github.com/user/repo or https://github.com/user/repo/tree/branch/path/to/folder
-    github_pattern = r"(https://github\.com/[^/]+/[^/]+?)(?:/tree/([^/]+)/(.+?))?(?:\.git)?/?$"
-    match = re.match(github_pattern, github_url.rstrip("/"))
-
-    # If user provides option other than a github url NOTE: Only support github, not gitlab
-    if not match:
-        raise RuntimeError(f"Invalid GitHub URL format: `{github_url}`. Only github is supported")
-
-    base_url = match.group(1)
-    branch = match.group(2)
-    subfolder = match.group(3)
-
-    # Clone the repo to a temporary directory
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir) / "temp_repo"
-
-        async def clone_repo() -> None:
-            """Clone the repository path specified by the user"""
-            clone_args = ["clone"]
-
-            # If subfolder we need to only bundle that directory
-            if subfolder:
-                clone_args.extend(["--no-checkout", "--filter=blob:none"])
-
-            clone_args.extend([base_url, str(temp_path)])
-
-            # Clone the repository using the direct path user specified
-            await _run_git_command(None, *clone_args)
-
-            # Setup sparse-checkout if installing a subfolder
-            if subfolder:
-                await _run_git_command(temp_path, "sparse-checkout", "init", "--cone")
-                await _run_git_command(temp_path, "sparse-checkout", "set", subfolder)
-
-            # Checkout specific branch is specified inside of the URL, else we just checkout the head
-            checkout_branch = branch or "HEAD"
-            await _run_git_command(temp_path, "checkout", checkout_branch)
-
-            # Initialize submodules for the checked-out content only
-            await _run_git_command(temp_path, "submodule", "update", "--init", "--recursive")
-
-        click.echo(f"Installing agent from {github_url}...", nl=False)
-        try:
-            await clone_repo()
-        finally:
-            click.echo("\r\033[K", nl=False)
-
-        # Push the agent to S3 after its installed
-        click.echo("Preparing upload...", nl=False)
-        agent_path = temp_path / subfolder if subfolder else temp_path
-
-        if subfolder and not agent_path.exists():
-            raise RuntimeError(f"Subfolder '{subfolder}' not found in repository")
-
-        resolved_name = validate_agent_name(agent_name) if agent_name else read_agent_name(agent_path)
-        await push_agent(resolved_name, agent_path)
-
-    return resolved_name
+    return result.name
 
 
-@handle_s3_error(message="Failed to push agent to S3")
-async def push_agent(agent_name: str, agent_path: Path):
-    """Zip and push an agent to S3 at agents/{agent_name}.zip"""
-
-    # fetch bucket name from config
-    bucket_name = cli_s3.fetch_bucket_name()
-
-    with get_agent_zip_stream(agent_name=agent_name, agent_path=agent_path) as file_stream:
-        # Get file size for progress bar
-        file_stream.seek(0, 2)  # Seek to end
-        file_size = file_stream.tell()
-        file_stream.seek(0)  # Seek back to start
-
-        async with cli_s3.s3_client() as client:
-            # Initiate multipart upload
-            key = get_contract_s3_key(agent_name)
-            now = datetime.now(timezone.utc).isoformat()
-
-            multipart = await client.create_multipart_upload(
-                Bucket=bucket_name,
-                Key=key,
-                Metadata={"uploaded_at": now},
-            )
-            upload_id = multipart["UploadId"]
-
-            try:
-                # Upload parts with progress tracking
-                chunk_size = 5 * 1024 * 1024  # 5MB chunks (S3 minimum for multipart)
-                parts: list[dict[str, int | str]] = []
-                part_number = 1
-                bytes_uploaded = 0
-
-                while True:
-                    chunk = file_stream.read(chunk_size)
-                    if not chunk:
-                        break
-
-                    response = await client.upload_part(
-                        Bucket=bucket_name,
-                        Key=key,
-                        PartNumber=part_number,
-                        UploadId=upload_id,
-                        Body=chunk,
-                    )
-
-                    parts.append({"ETag": response["ETag"], "PartNumber": part_number})
-                    bytes_uploaded += len(chunk)
-                    part_number += 1
-
-                    # Show progress bar
-                    progress_pct = (bytes_uploaded / file_size * 100) if file_size > 0 else 0
-                    bar_width = 30
-                    filled_width = int(bar_width * progress_pct / 100)
-                    bar = "█" * filled_width + "░" * (bar_width - filled_width)
-                    click.echo(f"\rUploading agent  [{bar}]  {progress_pct:.1f}%", nl=False)
-
-                click.echo()
-
-                # Complete the multipart upload
-                await client.complete_multipart_upload(
-                    Bucket=bucket_name,
-                    Key=key,
-                    UploadId=upload_id,
-                    MultipartUpload={"Parts": parts},
-                )
-            except Exception:
-                # Abort the upload on error
-                await client.abort_multipart_upload(
-                    Bucket=bucket_name,
-                    Key=key,
-                    UploadId=upload_id,
-                )
-                raise
+async def push_agent(agent_name: str, agent_path: Path) -> None:
+    """Replace the named library agent through Tracker."""
+    async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
+        await client.agents.push(agent_path, name=agent_name)
 
 
 @handle_s3_error(message="Failed to publish local agent without overwriting an alias")
@@ -242,60 +91,27 @@ async def _download_agent_zip(agent_name: str) -> bytes:
     return await download_from_s3(key, runtime)
 
 
-@handle_s3_error(message="Failed to remove agent from S3")
-async def remove_agent(agent_name: str):
-    """Remove an agent from S3. Raises an error if the agent doesn't exist"""
-    runtime = cli_s3.aws_runtime()
-    key = get_contract_s3_key(agent_name)
-
-    if not await s3_object_exists(key, runtime):
-        raise S3Error(f"Agent '{agent_name}' could not be found.")
-
-    await delete_from_s3(key, runtime)
+async def remove_agent(agent_name: str) -> None:
+    """Remove an existing agent through Tracker."""
+    async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
+        await client.agents.remove(agent_name)
 
 
 async def list_agents() -> list[tuple[str, datetime | None]]:
-    """List all agents in the S3 bucket's agents/ folder with the dates that they were added."""
-    runtime = cli_s3.aws_runtime()
+    """List shared agents through Tracker."""
+    async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
+        result = await client.agents.list()
 
-    click.echo(f"\r\033[KListing agents from bucket '{runtime.resources.s3_bucket}'...", nl=False)
+    return [
+        (agent.name, datetime.fromisoformat(agent.last_modified) if agent.last_modified else None)
+        for agent in result.agents
+    ]
 
-    return await list_s3_agents(runtime)
 
-
-@handle_s3_error(message="Failed to download agent from S3")
-async def download_agent(agent_name: str, output_dir: Path | None) -> None:
-    """Download an agent zip from S3, extract it, and show progress"""
-    zip_bytes = await _download_agent_zip(agent_name)
-
-    # Extract to the specified output directory or current directory
-    extract_dir = Path(output_dir) if output_dir else Path.cwd()
-    extract_dir.mkdir(parents=True, exist_ok=True)
-
-    # Extract zip with progress bar
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_file:
-        tmp_path = Path(tmp_file.name)
-        tmp_path.write_bytes(zip_bytes)
-
-    try:
-        with zipfile.ZipFile(tmp_path, "r") as zip_ref:
-            file_list = zip_ref.namelist()
-            total_files = len(file_list)
-
-            for idx, file_name in enumerate(file_list, 1):
-                zip_ref.extract(file_name, extract_dir)
-
-                # Show progress bar
-                progress_pct = (idx / total_files * 100) if total_files > 0 else 0
-                bar_width = 30
-                filled_width = int(bar_width * progress_pct / 100)
-                bar = "█" * filled_width + "░" * (bar_width - filled_width)
-                click.echo(f"\rExtracting agent [{bar}] {progress_pct:.1f}%", nl=False)
-
-            click.echo()
-    finally:
-        # Clean up temporary zip file
-        tmp_path.unlink()
+async def download_agent(agent_name: str, output_dir: Path | None, *, overwrite: bool = False) -> None:
+    """Download and safely extract the named agent through the SDK."""
+    async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
+        await client.agents.download(agent_name, output_dir, overwrite=overwrite)
 
 
 async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:

@@ -1,67 +1,195 @@
-"""Tests for hosted agent discovery workflows."""
+"""Agent management, GitHub checkout, and archive safety.
 
-from __future__ import annotations
+Run: uv run pytest tests/unit/sdk/test_agents_resource.py
+"""
+
+import io
+import stat
+import zipfile
+from pathlib import Path
 
 import httpx
 import pytest
 
+from tests.unit.sdk.conftest import ClientFactory
+from valkyrie.sdk import agent_install
+from valkyrie.sdk.agent_bundle import extract_agent_archive, get_agent_zip_stream
 
-async def test_list_returns_typed_hosted_agents(make_client) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.method == "GET"
-        assert request.url.path == "/agents"
-        return httpx.Response(
-            200,
-            json={
-                "agents": [
-                    {"name": "sweagent", "last_modified": "2026-07-08 12:00:00+00:00"},
-                    {"name": "terminal-agent", "last_modified": None},
-                ]
-            },
-        )
-
-    async with make_client(handler) as client:
-        result = await client.agents.list()
-
-    assert [agent.name for agent in result.agents] == ["sweagent", "terminal-agent"]
-    assert result.agents[0].last_modified == "2026-07-08 12:00:00+00:00"
+_CONTRACT = "name: demo\ninstall_cmd: 'true'\nrun_cmd: 'echo {problem_statement_path}'\n"
 
 
-async def test_download_url_escapes_agent_name_path_segment(make_client) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.method == "GET"
-        assert request.url.raw_path == b"/agents/agent%20one/download-url"
-        return httpx.Response(
-            200,
-            json={
-                "name": "agent one",
-                "download_url": "https://download.test/agent",
-                "expires_in": 300,
-            },
-        )
+def _archive(member: str = "demo/run.py", *, symlink: bool = False) -> bytes:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("demo/contract.yaml", _CONTRACT)
+        info = zipfile.ZipInfo(member)
+        if symlink:
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        archive.writestr(info, "agent content")
 
-    async with make_client(handler) as client:
-        result = await client.agents.download_url("agent one")
-
-    assert result.name == "agent one"
-    assert result.download_url == "https://download.test/agent"
-    assert result.expires_in == 300
+    return stream.getvalue()
 
 
-async def test_download_url_rejects_blank_agent_name(make_client) -> None:
-    async with make_client(lambda _request: pytest.fail("request should not be sent")) as client:
-        with pytest.raises(ValueError, match="agent name must not be blank"):
-            await client.agents.download_url("  ")
+def _unexpected_request(_request: httpx.Request) -> httpx.Response:
+    pytest.fail("invalid input reached tracker")
 
 
-async def test_download_url_rejects_path_separators(make_client) -> None:
-    async with make_client(lambda _request: pytest.fail("request should not be sent")) as client:
-        with pytest.raises(ValueError, match="agent name must not contain '/'"):
-            await client.agents.download_url("team/agent")
+class TestAgentsResource:
+    """SDK library requests and external archive transfers."""
+
+    async def test_list_returns_typed_agents(self, make_client: ClientFactory) -> None:
+        def listing(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"agents": [{"name": "demo"}]})
+
+        async with make_client(listing) as client:
+            response = await client.agents.list()
+
+        assert response.agents[0].name == "demo"
+
+    @pytest.mark.parametrize("name", ["", " ", "agent one", ".", "..", "team/agent", "a\\b", "agent\n"])
+    async def test_invalid_names_never_reach_tracker(self, make_client: ClientFactory, name: str) -> None:
+        async with make_client(_unexpected_request) as client:
+            for operation in (client.agents.download_url, client.agents.remove):
+                with pytest.raises(ValueError, match="Invalid agent name"):
+                    await operation(name)
+
+    async def test_download_never_forwards_tracker_credentials(
+        self,
+        make_client: ClientFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        async def download(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+            assert request.url.host == "download.test"
+            assert "authorization" not in request.headers
+            assert not any(header.startswith("x-harness") for header in request.headers)
+
+            return httpx.Response(200, content=_archive())
+
+        monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", download)
+
+        def download_url(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "name": "demo",
+                    "download_url": "https://download.test/demo.zip",
+                    "expires_in": 300,
+                },
+            )
+
+        async with make_client(download_url) as client:
+            path = await client.agents.download("demo", tmp_path)
+
+            assert (path / "run.py").read_text() == "agent content"
+            with pytest.raises(FileExistsError):
+                await client.agents.download("demo", tmp_path)
+            (path / "obsolete").touch()
+            await client.agents.download("demo", tmp_path, overwrite=True)
+
+        assert not (path / "obsolete").exists()
+
+    async def test_install_subfolder_pushes_override_without_rewriting_contract(
+        self,
+        make_client: ClientFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def git(_repository: Path | None, *arguments: str) -> None:
+            if arguments[0] == "clone":
+                folder = Path(arguments[-1]) / "agents" / "demo"
+                folder.mkdir(parents=True)
+                (folder / "contract.yaml").write_text(_CONTRACT)
+
+        def upload(request: httpx.Request) -> httpx.Response:
+            assert request.method == "PUT"
+            assert request.url.path == "/agents/alias"
+            assert request.headers["content-type"] == "application/zip"
+            with zipfile.ZipFile(io.BytesIO(request.content)) as archive:
+                assert archive.read("alias/contract.yaml").decode() == _CONTRACT
+
+            return httpx.Response(200, json={"name": "alias"})
+
+        monkeypatch.setattr(agent_install, "_run_git_command", git)
+        async with make_client(upload) as client:
+            response = await client.agents.install(
+                "https://github.com/example/agents/tree/main/agents/demo", name="alias"
+            )
+
+        assert response.name == "alias"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://gitlab.com/example/agent",
+            "https://github.com/example/repo/tree/main/../escape",
+            "https://github.com/example/repo/tree/-bad/agents",
+            "https://github.com/example/repo\n",
+        ],
+    )
+    async def test_install_rejects_unsafe_urls(self, make_client: ClientFactory, url: str) -> None:
+        async with make_client(_unexpected_request) as client:
+            with pytest.raises(ValueError):
+                await client.agents.install(url)
 
 
-@pytest.mark.parametrize("name", [".", ".."])
-async def test_download_url_rejects_normalized_dot_segments(make_client, name: str) -> None:
-    async with make_client(lambda _request: pytest.fail("request should not be sent")) as client:
-        with pytest.raises(ValueError, match=r"agent name must not be '\.' or '\.\.'"):
-            await client.agents.download_url(name)
+class TestAgentArchive:
+    """Bundle exclusions and extraction without filesystem escapes."""
+
+    def test_bundle_excludes_caches_and_rejects_symlinks(self, tmp_path: Path) -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        (source / "run.py").write_text("run")
+        (source / ".env").write_text("SECRET=excluded")
+        (source / "__pycache__").mkdir()
+        (source / "__pycache__" / "run.pyc").touch()
+        with get_agent_zip_stream("alias", source) as stream, zipfile.ZipFile(stream) as archive:
+            assert archive.namelist() == ["alias/run.py"]
+
+        (source / "link").symlink_to(tmp_path)
+
+        with pytest.raises(ValueError, match="symlinks"):
+            with get_agent_zip_stream("alias", source):
+                pytest.fail("symlink accepted")
+
+    @pytest.mark.parametrize(
+        "member",
+        [
+            "../escape",
+            "/escape",
+            "other/file",
+            "demo/../escape",
+            "demo\\escape",
+            "demo/C:escape",
+            "demo/contract.yaml",
+            "demo/CONTRACT.yaml",
+            "demo/./file",
+            "demo//file",
+        ],
+    )
+    def test_unsafe_archive_preserves_existing_target(self, tmp_path: Path, member: str) -> None:
+        target = tmp_path / "demo"
+        target.mkdir()
+        (target / "keep").write_text("original")
+
+        with pytest.raises(ValueError, match="Unsafe"):
+            extract_agent_archive(io.BytesIO(_archive(member)), "demo", tmp_path, overwrite=True)
+
+        assert (target / "keep").read_text() == "original"
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["demo"]
+
+    def test_symlinks_and_corruption_are_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="Unsafe"):
+            extract_agent_archive(io.BytesIO(_archive(symlink=True)), "demo", tmp_path, overwrite=False)
+
+        corrupted = _archive().replace(b"agent content", b"wrong content")
+
+        with pytest.raises(zipfile.BadZipFile, match="CRC"):
+            extract_agent_archive(io.BytesIO(corrupted), "demo", tmp_path, overwrite=False)
+
+        assert not (tmp_path / "demo").exists()
+
+    def test_existing_target_symlink_is_never_followed(self, tmp_path: Path) -> None:
+        (tmp_path / "demo").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+
+        with pytest.raises(FileExistsError):
+            extract_agent_archive(io.BytesIO(_archive()), "demo", tmp_path, overwrite=True)

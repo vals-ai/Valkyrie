@@ -76,7 +76,7 @@ _EXPECTED_RESOURCES = {
         "retry",
     ),
     "BenchmarksResource": ("fetch", "statuses", "tasks", "task", "artifacts"),
-    "AgentsResource": ("list", "download_url"),
+    "AgentsResource": ("list", "download_url", "push", "download", "remove", "install"),
     "BenchmarkServicesResource": ("catalog", "list", "task_ids"),
     "LogsResource": ("page_task", "fetch_task", "page_run", "fetch_run", "stream_task"),
     "SchedulerResource": ("overview",),

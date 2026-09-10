@@ -9,7 +9,7 @@ This page documents all 5 commands in the `agent` group in registration order. U
 
 ## `valkyrie agent install` {#install}
 
-Install an agent from a GitHub repository into your S3 bucket.
+Install a GitHub agent through Tracker, replacing an existing alias.
 
 ```bash Syntax
 valkyrie agent install \
@@ -36,7 +36,7 @@ Task guidance: [Agent guides](/agents/manage-agents).
 
 ## `valkyrie agent push` {#push}
 
-Upload a local agent directory into your S3 bucket.
+Upload a local agent through Tracker, replacing an existing alias.
 
 ```bash Syntax
 valkyrie agent push \
@@ -87,7 +87,8 @@ Download an installed agent
 ```bash Syntax
 valkyrie agent download \
   <AGENT_NAME> \
-  [--output-dir|-o <PATH>]
+  [--output-dir|-o <PATH>] \
+  [--overwrite]
 ```
 
 **Arguments**
@@ -101,6 +102,11 @@ valkyrie agent download \
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--output-dir, -o"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"path"}</code> · default: <code>{"None"}</code> · constraints: {"directory; readable"}</span></div>
   <p className="mb-0 mt-1">{"Output directory for downloaded agent (default: current directory)"}</p>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--overwrite"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"boolean"}</code> · default: <code>{"False"}</code></span></div>
+  <p className="mb-0 mt-1">{"Replace an existing agent directory after validating the download."}</p>
 </div>
 
 Task guidance: [Agent guides](/agents/manage-agents).

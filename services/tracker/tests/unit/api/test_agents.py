@@ -3,17 +3,153 @@
 Cover agent listing and download-link routes.
 """
 
+import io
+import stat
+import zipfile
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
+from botocore.exceptions import ClientError
+from tracker import config
+from tracker.exceptions import S3Error
 
 import tracker.api.agents as agents_api
 from main import app
 from tracker.aws.runtime import AWSRuntime
 
 _client = TestClient(app)
+
+
+def _agent_archive(member: str = "demo/run.py", contract: str | None = None, *, symlink: bool = False) -> bytes:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr(
+            "demo/contract.yaml",
+            contract
+            if contract is not None
+            else "name: demo\ninstall_cmd: 'true'\nrun_cmd: 'echo {problem_statement_path}'\n",
+        )
+        info = zipfile.ZipInfo(member)
+        if symlink:
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        archive.writestr(info, "agent content")
+
+    return stream.getvalue()
+
+
+class TestAgentWrites:
+    """Write validation and clean storage permission failures."""
+
+    @pytest.mark.parametrize(
+        "member", ["../escape", "/escape", "demo/../escape", "other/file", "demo\\file", "demo/C:file"]
+    )
+    def test_upload_rejects_unsafe_members(self, harness_headers: dict[str, str], member: str) -> None:
+        response = _client.put(
+            "/agents/demo",
+            headers={**harness_headers, "Content-Type": "application/zip"},
+            content=_agent_archive(member),
+        )
+
+        assert response.status_code == 400
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"not a zip",
+            _agent_archive(contract="name: demo"),
+            _agent_archive(symlink=True),
+            _agent_archive().replace(b"agent content", b"wrong content"),
+        ],
+    )
+    def test_upload_rejects_invalid_contract_symlink_and_crc(
+        self, harness_headers: dict[str, str], body: bytes
+    ) -> None:
+        response = _client.put(
+            "/agents/demo", headers={**harness_headers, "Content-Type": "application/zip"}, content=body
+        )
+
+        assert response.status_code == 400
+
+    @pytest.mark.parametrize(
+        "setting", ["AGENT_UPLOAD_MAX_BYTES", "AGENT_ARCHIVE_MAX_EXPANDED_BYTES", "AGENT_ARCHIVE_MAX_ENTRIES"]
+    )
+    def test_upload_limits_return_413(
+        self, monkeypatch: pytest.MonkeyPatch, harness_headers: dict[str, str], setting: str
+    ) -> None:
+        monkeypatch.setattr(config, setting, 1)
+        response = _client.put(
+            "/agents/demo", headers={**harness_headers, "Content-Type": "application/zip"}, content=_agent_archive()
+        )
+
+        assert response.status_code == 413
+        assert setting in response.json()["detail"]
+
+    def test_actual_upload_bytes_are_bounded(
+        self, monkeypatch: pytest.MonkeyPatch, harness_headers: dict[str, str]
+    ) -> None:
+        monkeypatch.setattr(config, "AGENT_UPLOAD_MAX_BYTES", 3)
+        response = _client.put(
+            "/agents/demo",
+            headers={**harness_headers, "Content-Type": "application/zip", "Content-Length": "1"},
+            content=b"oversized body",
+        )
+
+        assert response.status_code == 413
+
+    def test_metadata_limits_precede_decompression(
+        self, monkeypatch: pytest.MonkeyPatch, harness_headers: dict[str, str]
+    ) -> None:
+        body = _agent_archive()
+        monkeypatch.setattr(config, "AGENT_ARCHIVE_MAX_EXPANDED_BYTES", 1)
+        monkeypatch.setattr(zipfile.ZipFile, "open", MagicMock(side_effect=AssertionError("archive was decompressed")))
+
+        response = _client.put(
+            "/agents/demo", headers={**harness_headers, "Content-Type": "application/zip"}, content=body
+        )
+
+        assert response.status_code == 413
+
+    def test_actual_decompressed_bytes_are_bounded(
+        self, monkeypatch: pytest.MonkeyPatch, harness_headers: dict[str, str]
+    ) -> None:
+        body = _agent_archive()
+        monkeypatch.setattr(config, "AGENT_ARCHIVE_MAX_EXPANDED_BYTES", 1000)
+        monkeypatch.setattr(zipfile.ZipExtFile, "read", MagicMock(return_value=b"x" * 1001))
+
+        response = _client.put(
+            "/agents/demo", headers={**harness_headers, "Content-Type": "application/zip"}, content=body
+        )
+
+        assert response.status_code == 413
+
+    @pytest.mark.parametrize("operation", ["put", "delete"])
+    def test_storage_denial_is_actionable(
+        self, monkeypatch: pytest.MonkeyPatch, harness_headers: dict[str, str], operation: str
+    ) -> None:
+        error = S3Error("storage failed")
+        error.__cause__ = ClientError({"Error": {"Code": "AccessDenied"}}, "PutObject")
+        monkeypatch.setattr(agents_api, "s3_object_exists", AsyncMock(return_value=True))
+        monkeypatch.setattr(agents_api, "upload_stream_to_s3", AsyncMock(side_effect=error))
+        monkeypatch.setattr(agents_api, "delete_from_s3", AsyncMock(side_effect=error))
+
+        response = _client.request(
+            operation,
+            "/agents/demo",
+            headers={**harness_headers, "Content-Type": "application/zip"},
+            content=_agent_archive(),
+        )
+
+        assert response.status_code == 403
+        assert "permission denied" in response.json()["detail"]
+
+    @pytest.mark.parametrize("value", ["0", "-1", "invalid"])
+    def test_operator_limits_must_be_positive(self, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+        monkeypatch.setenv("AGENT_UPLOAD_MAX_BYTES", value)
+
+        with pytest.raises(ValueError):
+            getattr(config, "_positive_int_setting")("AGENT_UPLOAD_MAX_BYTES", 1073741824)
 
 
 class TestAgentRoutes:

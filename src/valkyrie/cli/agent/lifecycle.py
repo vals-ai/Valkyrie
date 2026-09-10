@@ -3,15 +3,14 @@ from datetime import datetime
 from pathlib import Path
 
 import click
-from tracker.agent.contract import read_agent_name
-from tracker.agent.schemas import validate_agent_name
-from tracker.exceptions import S3Error
+from valkyrie.sdk import ValkyrieSDKError
+from valkyrie.sdk.agent_bundle import read_agent_name, validate_agent_name
 
 from valkyrie.cli.agent.storage import download_agent, install_agent, list_agents, push_agent, remove_agent
 from valkyrie.cli.display import format_table, local_time, paginate_cli_pages
 
 
-@click.command(name="install", help="Install an agent from a GitHub repository into your S3 bucket.")
+@click.command(name="install", help="Install a GitHub agent through Tracker, replacing an existing alias.")
 @click.argument("github_url", type=str)
 @click.option(
     "--name",
@@ -34,13 +33,13 @@ def install(github_url: str, name: str | None):
     try:
         resolved_name = asyncio.run(install_agent(name, github_url))
         click.echo(click.style(f"✓ Agent '{resolved_name}' installed successfully!", fg="green", bold=True))
-    except (RuntimeError, S3Error) as e:
+    except (ValkyrieSDKError, ValueError, OSError) as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")
 
 
-@click.command(name="push", help="Upload a local agent directory into your S3 bucket.")
+@click.command(name="push", help="Upload a local agent through Tracker, replacing an existing alias.")
 @click.argument("agent_path", type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True))
 @click.option(
     "--name",
@@ -50,7 +49,7 @@ def install(github_url: str, name: str | None):
     help="Agent name (defaults to the contract name)",
 )
 def push(agent_path: Path, name: str | None):
-    """Push a local agent to S3.
+    """Push a local agent to the shared library through Tracker.
 
     Example:
         valkyrie agent push ./agents/my-agent
@@ -60,7 +59,7 @@ def push(agent_path: Path, name: str | None):
         agent_name = validate_agent_name(name) if name else read_agent_name(agent_path)
         asyncio.run(push_agent(agent_name, agent_path))
         click.echo(click.style(f"✓ Agent '{agent_name}' pushed successfully!", fg="green", bold=True))
-    except S3Error as e:
+    except (ValkyrieSDKError, ValueError, OSError) as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")
@@ -69,7 +68,7 @@ def push(agent_path: Path, name: str | None):
 @click.command(name="remove", help="Remove an installed agent")
 @click.argument("agent_name", type=str)
 def agent_remove(agent_name: str):
-    """Remove an agent from S3.
+    """Remove an agent from the shared library through Tracker.
 
     Example:
         valkyrie agent remove my-agent
@@ -81,7 +80,7 @@ def agent_remove(agent_name: str):
 
         asyncio.run(remove_agent(agent_name))
         click.echo(click.style(f"✓ Agent '{agent_name}' removed successfully!", fg="green", bold=True))
-    except S3Error as e:
+    except (ValkyrieSDKError, ValueError, OSError) as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")
@@ -97,16 +96,17 @@ def agent_remove(agent_name: str):
     required=False,
     help="Output directory for downloaded agent (default: current directory)",
 )
-def download(agent_name: str, output_dir: Path | None):
-    """Download an agent from S3.
+@click.option("--overwrite", is_flag=True, help="Replace an existing agent directory after validating the download.")
+def download(agent_name: str, output_dir: Path | None, overwrite: bool):
+    """Download and safely extract an agent through the SDK.
 
     Example:
         valkyrie agent download my-agent
     """
     try:
-        asyncio.run(download_agent(agent_name, output_dir))
+        asyncio.run(download_agent(agent_name, output_dir, overwrite=overwrite))
         click.echo(click.style(f"✓ Agent '{agent_name}' downloaded successfully!", fg="green", bold=True))
-    except S3Error as e:
+    except (ValkyrieSDKError, ValueError, OSError) as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")
@@ -114,7 +114,7 @@ def download(agent_name: str, output_dir: Path | None):
 
 @click.command(name="list", help="List installed agents")
 def list_installed_agents():
-    """List all installed agents in S3.
+    """List all installed agents through Tracker.
 
     Use vim keys to navigate: [h] previous page, [l] next page, [q] quit.
 
@@ -129,7 +129,7 @@ def list_installed_agents():
             return
 
         paginate_agents(agents)
-    except S3Error as e:
+    except (ValkyrieSDKError, ValueError, OSError) as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")
