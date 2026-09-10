@@ -88,6 +88,23 @@ SandboxDeleteInitiator = Literal["create_cancelled", "force_stop", "orphan_clean
 SandboxDeleteOutcome = Literal["deleted", "already_gone", "cancelled", "failed"]
 
 
+def audit_sandbox_create(sandbox: Sandbox) -> None:
+    # Mirrors audit_sandbox_delete; provider_metadata carries provider-reported
+    # allocation fields (e.g. runner id) that are unrecoverable after deletion.
+    labels = sandbox.labels or {}
+    logger.info(
+        "sandbox.create",
+        extra={
+            "sandbox_id": sandbox.id,
+            "sandbox_name": sandbox.name,
+            "benchmark_id": labels.get("Id"),
+            "benchmark_name": labels.get("Benchmark"),
+            "task_id": labels.get("Task"),
+            "provider_metadata": sandbox.provider_metadata,
+        },
+    )
+
+
 def audit_sandbox_delete(
     sandbox: Sandbox,
     initiated_by: SandboxDeleteInitiator,
@@ -299,6 +316,11 @@ async def create_sandbox(
                 sandbox = await asyncio.shield(creation_task)
             except asyncio.CancelledError:
                 sandbox = await creation_task
+                try:
+                    audit_sandbox_create(sandbox)
+                except Exception:
+                    # Must not replace the original cancellation.
+                    logger.exception("audit_sandbox_create failed for %s", sandbox.name)
                 await delete_sandbox(sandbox, provider, initiated_by="create_cancelled")
                 raise
     except Exception as e:
@@ -313,6 +335,7 @@ async def create_sandbox(
     set_sandbox_context(sandbox, image=source_name)
 
     try:
+        audit_sandbox_create(sandbox)
         yield sandbox
     except Exception as e:
         logger.error(f"Error during sandbox execution {sandbox.name}: {e}")

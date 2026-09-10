@@ -123,6 +123,10 @@ def set_sandbox_context(sandbox: Any, *, image: str | None = None) -> None:
         if image is not None:
             context["image"] = image
 
+        metadata = getattr(sandbox, "provider_metadata", None)
+        if metadata:
+            context["provider_metadata"] = metadata
+
         sentry_sdk.set_context("sandbox", context)
     except Exception as e:
         logger.warning("set_sandbox_context failed: %s: %s", type(e).__name__, e)
