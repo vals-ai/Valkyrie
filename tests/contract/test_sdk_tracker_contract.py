@@ -112,6 +112,8 @@ FIXTURES = Path(__file__).parents[1] / "fixtures" / "sdk_api"
 ROUTES = (
     ("/benchmarks/filter-options", "get", ""),
     ("/benchmarks/{benchmark_id}/concurrency", "patch", "benchmark_id"),
+    ("/benchmarks/{benchmark_id}/artifacts", "get", "benchmark_id prefix cursor limit"),
+    ("/benchmarks/{benchmark_id}/artifacts/download-url", "get", "benchmark_id path"),
     ("/start-benchmark", "post", ""),
     ("/fetch-benchmark", "get", "benchmark_id connect"),
     (

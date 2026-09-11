@@ -80,28 +80,28 @@ class TestOutputsCommands:
         assert extraction_calls == [(tracker.response, Path(f"swebench_agent_{_RUN_ID}"))]
         assert "Run outputs extracted" in result.output
 
-    def test_output_path_builds_scoped_s3_key_and_reports_failures(
+    def test_output_path_uses_tracker_and_reports_failures(
         self,
         monkeypatch: pytest.MonkeyPatch,
         cli_runner: CliRunner,
     ) -> None:
-        """Direct downloads must stay under the run prefix and keep failures visible.
+        """Artifact downloads must use Tracker and keep failures visible.
 
         Test cases:
-        - Surrounding subpath slashes are removed before constructing the S3 key.
+        - The requested relative path and run ID reach the SDK.
         - Download errors abort the command with the original failure message.
         """
-        mock_download = AsyncMock(return_value=2)
-        monkeypatch.setattr(outputs_module, "download_s3_path", mock_download)
+        mock_download = AsyncMock(return_value=Path("/tmp/output"))
+        monkeypatch.setattr(outputs_module, "_download_artifacts", mock_download)
 
-        result = cli_runner.invoke(output_path, [str(_RUN_ID), "/task-a/", "--output-dir", "/tmp/output"])
+        result = cli_runner.invoke(output_path, [str(_RUN_ID), "task-a", "--output-dir", "/tmp/output"])
 
         assert result.exit_code == 0, result.output
-        mock_download.assert_awaited_once_with(f"benchmarks/{_RUN_ID}/task-a", Path("/tmp/output"))
-        assert "2 file(s) downloaded" in result.output
+        mock_download.assert_awaited_once_with(_RUN_ID, "task-a", Path("/tmp/output"))
+        assert "Run artifacts downloaded" in result.output
 
         mock_download.reset_mock(side_effect=True)
-        mock_download.side_effect = RuntimeError("download unavailable")
+        mock_download.side_effect = OSError("download unavailable")
         failed_result = cli_runner.invoke(output_path, [str(_RUN_ID)])
 
         assert failed_result.exit_code == 1
