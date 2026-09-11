@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
+import httpx
 import pytest
 import yaml
 from click.testing import CliRunner
@@ -211,3 +212,14 @@ def seeded_runs(database_session: Session) -> tuple[Benchmark, Benchmark]:
     database_session.commit()
     database_session.expire_all()
     return running, finished
+
+
+@pytest.fixture
+def sdk_tracker_transport(local_tracker_app: FastAPI, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Send real SDK requests through the local Tracker app."""
+
+    async def handle(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        async with httpx.ASGITransport(app=local_tracker_app) as transport:
+            return await transport.handle_async_request(request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle)

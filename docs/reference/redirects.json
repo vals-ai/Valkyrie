@@ -60,6 +60,18 @@
     "destination": "/reference/cli/run#update"
   },
   {
+    "source": "/reference/cli/run/tasks",
+    "destination": "/reference/cli/run#tasks"
+  },
+  {
+    "source": "/reference/cli/run/task",
+    "destination": "/reference/cli/run#task"
+  },
+  {
+    "source": "/reference/cli/run/task-artifacts",
+    "destination": "/reference/cli/run#task-artifacts"
+  },
+  {
     "source": "/reference/cli/agent/install",
     "destination": "/reference/cli/agent#install"
   },

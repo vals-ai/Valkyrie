@@ -126,3 +126,50 @@ async def test_queue_api_rejects_invalid_page_bounds(local_tracker_app: FastAPI,
 
     assert response.status_code == 422
     assert response.json()["detail"][0]["loc"] == ["query", parameter]
+
+
+@pytest.mark.usefixtures("sdk_tracker_transport")
+def test_cli_task_inspection(cli_runner: CliRunner, seeded_runs: tuple[Benchmark, Benchmark]) -> None:
+    running, finished = seeded_runs
+    result = cli_runner.invoke(
+        cli,
+        [
+            "run",
+            "tasks",
+            str(running.id),
+            "--status",
+            "pending",
+            "--search",
+            "pend",
+            "--sort",
+            "task_id",
+            "--limit",
+            "1",
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["total_count"] == 1
+    assert [task["task_id"] for task in payload["tasks"]] == ["pending"]
+    detail = cli_runner.invoke(cli, ["run", "task", str(finished.id), "complete", "--format", "json"])
+    assert detail.exit_code == 0, detail.output
+    assert json.loads(detail.output)["evaluation_result"] == {"score": 1}
+    missing = cli_runner.invoke(cli, ["run", "task", str(running.id), "missing"])
+    assert missing.exit_code == 1
+    assert "404" in missing.output
+    text = cli_runner.invoke(cli, ["run", "tasks", str(running.id), "--offset", "50"])
+    assert text.exit_code == 0, text.output
+
+
+def test_cli_task_artifact_links(
+    cli_runner: CliRunner, seeded_runs: tuple[Benchmark, Benchmark], agent_library: dict[str, bytes]
+) -> None:
+    _, finished = seeded_runs
+    result = cli_runner.invoke(cli, ["run", "task-artifacts", str(finished.id), "complete", "--format", "json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["agent_output_url"] is None
+    text = cli_runner.invoke(cli, ["run", "task", str(finished.id), "complete"])
+    assert text.exit_code == 0, text.output
+    assert '"score": 1' in text.output
