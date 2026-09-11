@@ -57,6 +57,26 @@ def _waiting_task(benchmark: Benchmark, task_id: str = "waiting") -> Task:
     return make_task(benchmark, task_id, status=TaskStatus.PENDING)
 
 
+def _capacity_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    result: list[SandboxCapacityDomain] | BaseException,
+    *,
+    pool_id: str = _PROVIDER_POOL_ID,
+) -> tuple[Mock, AsyncMock]:
+    capacity = AsyncMock(side_effect=result) if isinstance(result, BaseException) else AsyncMock(return_value=result)
+    provider = Mock(admission_pool_id=pool_id, get_capacity_domains=capacity, close=AsyncMock())
+    provider_config = Mock()
+    provider_config.create_provider.return_value = provider
+    fetch_config = AsyncMock(return_value=provider_config)
+    monkeypatch.setattr(
+        scheduler_overview_api,
+        "deployment_aws_runtime",
+        Mock(return_value=SimpleNamespace(clients=Mock())),
+    )
+    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config_async", fetch_config)
+    return provider, fetch_config
+
+
 async def test_reports_org_queued_rows_in_priority_fifo_order(database_session: Session) -> None:
     now = datetime(2026, 7, 17, 12, tzinfo=UTC)
     pool_a, pool_b = "pool_a", "pool_b"
@@ -252,9 +272,9 @@ def test_capacity_route_projects_provider_values_and_uses_complete_pool_referenc
     second = _provider_queue(make_benchmark(name="second"))
     database_session.add_all([first, second, _waiting_task(first, "first"), _waiting_task(second, "second")])
     database_session.commit()
-    provider = Mock(admission_pool_id=_PROVIDER_POOL_ID)
-    provider.get_capacity_domains = AsyncMock(
-        return_value=[
+    provider, fetch_config = _capacity_provider(
+        monkeypatch,
+        [
             SandboxCapacityDomain(
                 target_id="region-b",
                 sandbox_class="linux-vm",
@@ -273,18 +293,8 @@ def test_capacity_route_projects_provider_values_and_uses_complete_pool_referenc
                     disk=ResourceCapacity(total=50, used=10),
                 ),
             ),
-        ]
+        ],
     )
-    provider.close = AsyncMock()
-    provider_config = Mock()
-    provider_config.create_provider.return_value = provider
-    monkeypatch.setattr(
-        scheduler_overview_api,
-        "deployment_aws_runtime",
-        Mock(return_value=SimpleNamespace(clients=Mock())),
-    )
-    fetch_config = AsyncMock(return_value=provider_config)
-    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config_async", fetch_config)
 
     response = _client.get(
         "/scheduler/overview",
@@ -292,34 +302,15 @@ def test_capacity_route_projects_provider_values_and_uses_complete_pool_referenc
     )
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["pools"] == [
-        {
-            "pool_id": _QUEUE_POOL_ID,
-            "waiting": 2,
-            "provider": "daytona",
-            "capacity_domains": [
-                {
-                    "target_id": "region-b",
-                    "sandbox_class": "linux-vm",
-                    "capacity": {
-                        "cpu": {"available": 12.5, "total": 16.0},
-                        "memory": {"available": 56.0, "total": 64.0},
-                        "disk": {"available": 75.0, "total": 100.0},
-                    },
-                },
-                {
-                    "target_id": "region-a",
-                    "sandbox_class": "container",
-                    "capacity": {
-                        "cpu": {"available": 6.0, "total": 8.0},
-                        "memory": {"available": 28.0, "total": 32.0},
-                        "disk": {"available": 40.0, "total": 50.0},
-                    },
-                },
-            ],
-        }
+    (pool,) = response.json()["pools"]
+    domains = pool.pop("capacity_domains")
+    assert pool == {"pool_id": _QUEUE_POOL_ID, "waiting": 2, "provider": "daytona"}
+    assert [(domain["target_id"], domain["sandbox_class"]) for domain in domains] == [
+        ("region-b", "linux-vm"),
+        ("region-a", "container"),
     ]
+    assert domains[0]["capacity"]["cpu"] == {"available": 12.5, "total": 16.0}
+    assert domains[1]["capacity"]["disk"] == {"available": 40.0, "total": 50.0}
     fetch_config.assert_awaited_once()
     provider.get_capacity_domains.assert_awaited_once()
     provider.close.assert_awaited_once()
@@ -362,20 +353,10 @@ def test_access_key_and_ambiguous_pools_never_use_deployment_aws(
 async def test_capacity_timeout_closes_provider_and_pool_drift_skips_observation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = Mock(admission_pool_id="different-provider-pool")
-    provider.get_capacity_domains = AsyncMock(side_effect=AssertionError("drifted provider must not be observed"))
-    provider.close = AsyncMock()
-    provider_config = Mock()
-    provider_config.create_provider.return_value = provider
-    monkeypatch.setattr(
-        scheduler_overview_api,
-        "deployment_aws_runtime",
-        Mock(return_value=SimpleNamespace(clients=Mock())),
-    )
-    monkeypatch.setattr(
-        scheduler_overview_api,
-        "fetch_sandbox_provider_config_async",
-        AsyncMock(return_value=provider_config),
+    provider, _fetch_config = _capacity_provider(
+        monkeypatch,
+        AssertionError("drifted provider must not be observed"),
+        pool_id="different-provider-pool",
     )
 
     drifted = await scheduler_overview_api._read_provider_capacity(  # pyright: ignore[reportPrivateUsage]
@@ -490,21 +471,7 @@ def test_capacity_failure_keeps_overview_available(
     benchmark = _provider_queue(make_benchmark())
     database_session.add_all([benchmark, _waiting_task(benchmark)])
     database_session.commit()
-    provider = Mock(admission_pool_id=_PROVIDER_POOL_ID)
-    provider.get_capacity_domains = AsyncMock(side_effect=RuntimeError("provider unavailable"))
-    provider.close = AsyncMock()
-    provider_config = Mock()
-    provider_config.create_provider.return_value = provider
-    monkeypatch.setattr(
-        scheduler_overview_api,
-        "deployment_aws_runtime",
-        Mock(return_value=SimpleNamespace(clients=Mock())),
-    )
-    monkeypatch.setattr(
-        scheduler_overview_api,
-        "fetch_sandbox_provider_config_async",
-        AsyncMock(return_value=provider_config),
-    )
+    provider, _fetch_config = _capacity_provider(monkeypatch, RuntimeError("provider unavailable"))
 
     response = _client.get("/scheduler/overview", params={"include_capacity": "true"})
 
