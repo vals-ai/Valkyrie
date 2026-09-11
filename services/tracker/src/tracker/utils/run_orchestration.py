@@ -13,6 +13,7 @@ from uuid import UUID
 import sentry_sdk
 from benchmark_service import SandboxProvider, SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
+from benchmark_service.schemas import ErrorTaskOutcome, EvaluatedTaskOutcome, TaskOutcome, UnavailableTaskOutcome
 from botocore.config import Config
 from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
@@ -68,7 +69,7 @@ logger = get_logger(__name__)
 _SANDBOX_CREATION_CAP: int = 10
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 _TERMINAL_BENCHMARK_STATUSES = (BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED)
-_TaskFingerprint = tuple[tuple[UUID, datetime, TaskStatus, UUID | None], ...]
+_TaskFingerprint = tuple[tuple[UUID, datetime, TaskStatus, UUID | None, UUID | None], ...]
 
 
 async def _run_queued_tasks(
@@ -424,7 +425,7 @@ def _fetch_final_score_state(
     org: Org,
     *,
     for_update: bool = False,
-) -> tuple[dict[str, dict[str, Any] | None], _TaskFingerprint]:
+) -> tuple[dict[str, dict[str, Any] | None], _TaskFingerprint, dict[str, TaskOutcome]]:
     # Fetch task rows which belong to the benchmark we are running
     task_rows_query = (
         select(Task.id, Task.task_id, Task.started_at, Task.status)
@@ -455,6 +456,36 @@ def _fetch_final_score_state(
     for task_row_id, result_id, result in result_rows:
         latest_results.setdefault(task_row_id, (result_id, result))
 
+    latest_errors: dict[UUID, ErrorResult] = {}
+    for error in session.exec(
+        select(ErrorResult)
+        .where(col(ErrorResult.task).in_(task_row_ids))
+        .where(ErrorResult.org_id == org.id)
+        .where(ErrorResult.retry_scheduled == False)  # noqa: E712
+        .order_by(desc(ErrorResult.created_at), desc(ErrorResult.id))
+    ).all():
+        latest_errors.setdefault(error.task, error)
+
+    outcomes: dict[str, TaskOutcome] = {}
+    for task_row_id, task_id, started_at, status in task_rows:
+        error = latest_errors.get(task_row_id)
+        if status == TaskStatus.ERROR:
+            # Previous attempts cannot supply provenance for the current failure.
+            if error is not None and error.created_at < started_at:
+                error = None
+            outcomes[task_id] = ErrorTaskOutcome(
+                producer=error.producer if error else None,
+                operation=error.operation if error else None,
+                error_type=error.error_type if error else None,
+                cause_code=error.cause_code if error else None,
+            )
+        elif status == TaskStatus.FINISHED and task_row_id in latest_results:
+            outcomes[task_id] = EvaluatedTaskOutcome()
+        else:
+            outcomes[task_id] = UnavailableTaskOutcome(
+                reason="missing_result" if status == TaskStatus.FINISHED else "not_finished"
+            )
+
     inputs = {
         task_id: latest_results[task_row_id][1]
         if status == TaskStatus.FINISHED and task_row_id in latest_results
@@ -467,10 +498,11 @@ def _fetch_final_score_state(
             started_at,
             status,
             latest_results[task_row_id][0] if task_row_id in latest_results else None,
+            latest_errors[task_row_id].id if task_row_id in latest_errors else None,
         )
         for task_row_id, _task_id, started_at, status in task_rows
     )
-    return inputs, fingerprint
+    return inputs, fingerprint, outcomes
 
 
 def fetch_final_score_inputs(session: Session, benchmark_row: Benchmark, org: Org) -> dict[str, dict[str, Any] | None]:
@@ -508,7 +540,7 @@ async def finalize_all_error_run(
         if has_stopped_tasks(session, benchmark_row, org):
             set_benchmark_final_status(benchmark_row, session, org, authority=authority)
             return False
-        _evaluation_results, task_fingerprint = _fetch_final_score_state(
+        _evaluation_results, task_fingerprint, _outcomes = _fetch_final_score_state(
             session,
             benchmark_row,
             org,
@@ -528,7 +560,7 @@ async def finalize_all_error_run(
         if has_stopped_tasks(session, benchmark_row, org):
             set_benchmark_final_status(benchmark_row, session, org, authority=authority)
             return False
-        _evaluation_results, current_fingerprint = _fetch_final_score_state(
+        _evaluation_results, current_fingerprint, _outcomes = _fetch_final_score_state(
             session,
             benchmark_row,
             org,
@@ -903,7 +935,7 @@ async def process_benchmark(
                 benchmark_id,
                 except_dispatch_id=authority.dispatch_id,
             )
-            evaluation_results, task_fingerprint = _fetch_final_score_state(
+            evaluation_results, task_fingerprint, task_outcomes = _fetch_final_score_state(
                 session,
                 benchmark_row,
                 org,
@@ -917,7 +949,7 @@ async def process_benchmark(
 
         # Calculate the final score based off the tasks that were ran
         final_score_response = await benchmark_service.final_score(
-            evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset
+            evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset, task_outcomes=task_outcomes
         )
 
         with Session(bind=engine) as session:
@@ -941,7 +973,7 @@ async def process_benchmark(
                 finalization_deferred = True
                 return
             lock_execution_authority(session, authority)
-            _current_results, current_fingerprint = _fetch_final_score_state(
+            _current_results, current_fingerprint, _outcomes = _fetch_final_score_state(
                 session,
                 benchmark_row,
                 org,

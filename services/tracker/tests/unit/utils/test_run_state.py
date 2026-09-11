@@ -3,7 +3,7 @@
 Run: uv run pytest tests/unit/utils/test_run_state.py
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Sequence, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -51,6 +51,7 @@ from tracker.utils import (
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
+from tracker.utils.run_orchestration import _fetch_final_score_state
 
 _parse_log_retention_policy = getattr(harness_config_module, "_parse_log_retention_policy")
 
@@ -578,6 +579,42 @@ class TestRunState:
             "task_stopped": None,
             "task_pending": None,
         }
+        database_session.add(
+            ErrorResult(
+                org_id=TEST_ORG_ID,
+                task=error_task.id,
+                error_message="Not used for attribution",
+                producer="tracker",
+                operation="evaluate",
+                error_type="EvaluationError",
+                cause_code="resumable_evaluation_infrastructure",
+            )
+        )
+        database_session.commit()
+        inputs, _, outcomes = _fetch_final_score_state(database_session, benchmark_row, self._test_org)
+        assert inputs["task_error"] is None
+        assert outcomes["task_finished"].kind == "evaluated"
+        assert outcomes["task_stopped"].kind == "unavailable"
+        error_outcome = outcomes["task_error"]
+        assert error_outcome.kind == "error"
+        assert error_outcome.cause_code == "resumable_evaluation_infrastructure"
+        unknown_outcome = outcomes["task_pending"]
+        assert unknown_outcome.kind == "error"
+        assert unknown_outcome.cause_code is None
+        database_session.add(
+            ErrorResult(
+                org_id=TEST_ORG_ID,
+                task=pending_task.id,
+                created_at=pending_task.started_at - timedelta(seconds=1),
+                error_message="Previous attempt",
+                cause_code="resumable_evaluation_infrastructure",
+            )
+        )
+        database_session.commit()
+        _, _, outcomes = _fetch_final_score_state(database_session, benchmark_row, self._test_org)
+        previous_attempt = outcomes["task_pending"]
+        assert previous_attempt.kind == "error"
+        assert previous_attempt.cause_code is None
 
     def test_commit_task_error_spans_status_transition(
         self,
