@@ -16,6 +16,10 @@
     "destination": "/reference/cli/run#fetch"
   },
   {
+    "source": "/reference/cli/run/filter-options",
+    "destination": "/reference/cli/run#filter-options"
+  },
+  {
     "source": "/reference/cli/run/list",
     "destination": "/reference/cli/run#list"
   },
@@ -158,6 +162,10 @@
   {
     "source": "/reference/sdk/runs/fetch",
     "destination": "/reference/sdk/runs#fetch"
+  },
+  {
+    "source": "/reference/sdk/runs/filter_options",
+    "destination": "/reference/sdk/runs#filter-options"
   },
   {
     "source": "/reference/sdk/runs/list",
@@ -358,6 +366,10 @@
   {
     "source": "/reference/sdk/models/runs/fetch-benchmarks-response",
     "destination": "/reference/sdk/models/runs#fetch-benchmarks-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/filter-options-response",
+    "destination": "/reference/sdk/models/runs#filter-options-response"
   },
   {
     "source": "/reference/sdk/models/benchmarks/fetch-tasks-request",

@@ -110,6 +110,7 @@ from valkyrie.sdk.models import (
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "sdk_api"
 ROUTES = (
+    ("/benchmarks/filter-options", "get", ""),
     ("/benchmarks/{benchmark_id}/concurrency", "patch", "benchmark_id"),
     ("/start-benchmark", "post", ""),
     ("/fetch-benchmark", "get", "benchmark_id connect"),
@@ -223,7 +224,6 @@ MODEL_PAIRS = (
 )
 INTERNAL_ROUTES = {
     ("/aws-runtime", "get"),
-    ("/benchmarks/filter-options", "get"),
     ("/health", "get"),
     ("/init", "post"),
 }

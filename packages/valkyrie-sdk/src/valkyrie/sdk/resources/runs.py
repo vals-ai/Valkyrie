@@ -17,6 +17,7 @@ from valkyrie.sdk.models import (
     FetchBenchmarkMetadataResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
+    FilterOptionsResponse,
     FinalViewResponse,
     RetrieveResultsResponse,
     ResultsExistResponse,
@@ -118,6 +119,10 @@ class RunsResource:
             FetchBenchmarkResponse,
             params={"benchmark_id": str(run_id)},
         )
+
+    async def filter_options(self) -> FilterOptionsResponse:
+        """Discover valid run-filter values from this organization's run history."""
+        return await self._sdk.request_model("GET", "/benchmarks/filter-options", FilterOptionsResponse)
 
     async def list(self, request: FetchBenchmarksRequest | None = None) -> FetchBenchmarksResponse:
         """List runs using typed filters and pagination."""
