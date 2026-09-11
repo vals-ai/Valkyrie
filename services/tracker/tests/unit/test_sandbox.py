@@ -892,6 +892,230 @@ class TestRunAgent:
 
         assert observed_commands == [f"cd /workspace && PYTHONSAFEPATH=1 timeout 2.5 sh -c {shlex.quote(run_cmd)}"]
 
+    @pytest.mark.parametrize(
+        "exit_reason",
+        [None, AgentCausedExitReason.TIMEOUT, AgentCausedExitReason.OS_KILLED],
+    )
+    async def test_run_agent_finalizes_known_exit_before_upload(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        exit_reason: AgentCausedExitReason | None,
+    ) -> None:
+        contract = AgentContractRequest(
+            name="test-agent",
+            run_cmd="python -m agent {problem_statement_path}",
+            finalize_cmd="python -m converter --task {task_id}",
+            output_artifacts=["artifacts/trajectory.json"],
+        )
+        events: list[str] = []
+        commands: list[str] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            assert command == "mkdir -p /workspace"
+            return ExecResult(exit_code=0)
+
+        async def fake_stream_command_output(
+            _sandbox: Any, command: str, _log_output: Any
+        ) -> tuple[AgentCausedExitReason | None, float]:
+            commands.append(command)
+            events.append("agent" if len(commands) == 1 else "finalizer")
+            return (exit_reason, 1.0) if len(commands) == 1 else (None, 0.0)
+
+        async def fake_upload_output_artifacts(*_args: Any, **_kwargs: Any) -> None:
+            events.append("upload")
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", fake_upload_output_artifacts)
+
+        result = await run_agent(
+            Mock(id="sandbox-123", name="task-alias"),
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            _ignore_output,
+            "/workspace",
+            object_store=_mock_object_store(),
+            benchmark_id="benchmark-123",
+        )
+
+        assert result == (exit_reason, 1.0)
+        assert events == ["agent", "finalizer", "upload"]
+        assert commands[1].startswith("cd /workspace && PYTHONSAFEPATH=1 timeout ")
+        assert commands[1].endswith(" sh -c 'python -m converter --task task_0'")
+
+    @pytest.mark.parametrize(
+        ("finalize_cmd", "execution_is_current"),
+        [(None, None), ("python -m converter", lambda: False)],
+        ids=["disabled", "execution-revoked"],
+    )
+    async def test_run_agent_skips_finalization(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        finalize_cmd: str | None,
+        execution_is_current: Callable[[], bool] | None,
+    ) -> None:
+        commands: list[str] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            assert command == "mkdir -p /workspace"
+            return ExecResult(exit_code=0)
+
+        async def fake_stream_command_output(_sandbox: Any, command: str, _log_output: Any) -> tuple[None, float]:
+            commands.append(command)
+            return None, 0.0
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+
+        await run_agent(
+            Mock(id="sandbox-123", name="task-alias"),
+            AgentContractRequest(name="test-agent", run_cmd="true", finalize_cmd=finalize_cmd),
+            "/tmp/problem.txt",
+            "task_0",
+            _ignore_output,
+            "/workspace",
+            object_store=_mock_object_store(),
+            execution_is_current=execution_is_current,
+        )
+
+        assert commands == ["cd /workspace && PYTHONSAFEPATH=1 true"]
+
+    @pytest.mark.parametrize(
+        ("agent_fails", "expected_error"),
+        [(False, "finalizer exited 1"), (True, "agent exited 23")],
+        ids=["clean-agent", "failed-agent"],
+    )
+    async def test_run_agent_preserves_error_precedence_when_finalization_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        agent_fails: bool,
+        expected_error: str,
+    ) -> None:
+        contract = AgentContractRequest(
+            name="test-agent",
+            run_cmd="exit 23" if agent_fails else "true",
+            finalize_cmd="python -m converter",
+            output_artifacts=["artifacts/trajectory.json"],
+        )
+        events: list[str] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            assert command == "mkdir -p /workspace"
+            return ExecResult(exit_code=0)
+
+        async def fake_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            if not events:
+                events.append("agent")
+                if agent_fails:
+                    raise AgentRunFailedError("agent exited 23")
+                return None, 1.0
+            events.append("finalizer")
+            raise AgentRunFailedError("finalizer exited 1")
+
+        async def fake_upload_output_artifacts(*_args: Any, **_kwargs: Any) -> None:
+            events.append("upload")
+            raise SandboxError("upload failed")
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", fake_upload_output_artifacts)
+
+        run = run_agent(
+            Mock(id="sandbox-123", name="task-alias"),
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            _ignore_output,
+            "/workspace",
+            object_store=_mock_object_store(),
+            benchmark_id="benchmark-123",
+        )
+        with pytest.raises(AgentRunFailedError, match=expected_error):
+            await run
+
+        assert events == ["agent", "finalizer", "upload"]
+
+    async def test_run_agent_collects_artifacts_before_failing_on_finalizer_timeout(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        contract = AgentContractRequest(
+            name="test-agent",
+            run_cmd="true",
+            finalize_cmd="python -m converter",
+            output_artifacts=["artifacts/trajectory.json"],
+        )
+        events: list[str] = []
+
+        async def fake_exec(_sandbox: Any, _command: str) -> ExecResult:
+            return ExecResult(exit_code=0)
+
+        async def fake_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[AgentCausedExitReason | None, float]:
+            events.append("agent" if not events else "finalizer")
+            return (None, 1.0) if len(events) == 1 else (AgentCausedExitReason.TIMEOUT, 300.0)
+
+        async def fake_upload_output_artifacts(*_args: Any, **_kwargs: Any) -> None:
+            events.append("upload")
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", fake_upload_output_artifacts)
+
+        with pytest.raises(AgentRunFailedError, match="finalization command exited with reason TIMEOUT"):
+            await run_agent(
+                Mock(id="sandbox-123", name="task-alias"),
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                benchmark_id="benchmark-123",
+            )
+
+        assert events == ["agent", "finalizer", "upload"]
+
+    @pytest.mark.parametrize(
+        "agent_error",
+        [
+            asyncio.CancelledError(),
+            SandboxNotFoundError("sandbox lost"),
+            SandboxError("provider transport lost"),
+        ],
+        ids=["cancellation", "sandbox-loss", "provider-transport-loss"],
+    )
+    async def test_run_agent_does_not_finalize_after_unknown_command_loss(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        agent_error: BaseException,
+    ) -> None:
+        commands: list[str] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            assert command == "mkdir -p /workspace"
+            return ExecResult(exit_code=0)
+
+        async def fail_agent(_sandbox: Any, command: str, _log_output: Any) -> tuple[None, float]:
+            commands.append(command)
+            raise agent_error
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fail_agent)
+
+        with pytest.raises(type(agent_error)):
+            await run_agent(
+                Mock(id="sandbox-123", name="task-alias"),
+                AgentContractRequest(name="test-agent", run_cmd="true", finalize_cmd="python -m converter"),
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+            )
+
+        assert len(commands) == 1
+
 
 class TestSandboxRetry:
     """Sandbox retry callbacks and dependency-install retries."""

@@ -267,6 +267,20 @@ def test_sdk_and_tracker_accept_canonical_fixture(
     assert sdk_value.model_dump(mode="json") == payload
 
 
+def test_agent_finalization_command_round_trips_from_sdk_to_tracker() -> None:
+    sdk_contract = SDKAgentContractRequest(
+        name="trajectory-agent",
+        run_cmd="python -m agent {problem_statement_path}",
+        finalize_cmd="python -m converter --task {task_id}",
+    )
+
+    payload = sdk_contract.model_dump(mode="json")
+    tracker_contract = AgentContractRequest.model_validate(payload)
+
+    assert payload["finalize_cmd"] == "python -m converter --task {task_id}"
+    assert tracker_contract.finalize_cmd == payload["finalize_cmd"]
+
+
 @pytest.mark.parametrize(("tracker_model", "sdk_model"), MODEL_PAIRS)
 def test_sdk_and_tracker_wire_models_have_the_same_fields(
     tracker_model: type[BaseModel], sdk_model: type[BaseModel]

@@ -129,6 +129,17 @@
             ],
             "title": "Final Output"
           },
+          "finalize_cmd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalize Cmd"
+          },
           "inference_settings_attested": {
             "default": false,
             "title": "Inference Settings Attested",
@@ -217,6 +228,17 @@
               }
             ],
             "title": "Final Output"
+          },
+          "finalize_cmd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalize Cmd"
           },
           "inference_settings_attested": {
             "default": false,
