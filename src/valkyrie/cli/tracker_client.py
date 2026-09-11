@@ -221,7 +221,11 @@ class TrackerService:
             harness_config = yaml.safe_load(f) or {}
 
         auth = harness_config.get("benchmark_auth") or {}
-        return auth.get(benchmark_name)
+        if credential := auth.get(benchmark_name):
+            return credential
+        if benchmark_name == "cyber-range" and harness_config.get("api_key"):
+            return f"Bearer {harness_config['api_key']}"
+        return None
 
     @staticmethod
     def get_webhook_secret() -> str | None:

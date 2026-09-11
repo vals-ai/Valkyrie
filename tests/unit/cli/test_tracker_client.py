@@ -48,6 +48,7 @@ from valkyrie.cli.runtime_config import (
     VALKYRIE_ENV_ENV_VAR,
 )
 from valkyrie.cli.tracker_client import TrackerService, TrackerServiceError
+import valkyrie.cli.tracker_client as tracker_client
 
 run_resume = import_module("valkyrie.cli.run.resume")
 run_start = import_module("valkyrie.cli.run.start")
@@ -1084,6 +1085,29 @@ def test_run_start_sends_configured_service_auth_and_cli_headers(
         start_kwargs = mock_tracker_service.start_calls[-1]["kwargs"]
         assert isinstance(start_kwargs, dict)
         assert start_kwargs["service_headers"] == expected_headers
+
+
+def test_cyber_range_auth_uses_descope_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        service_headers.TrackerService,
+        "get_benchmark_auth",
+        staticmethod(lambda _benchmark_name: "Bearer configured"),
+    )
+
+    assert service_headers.benchmark_service_headers("cyber-range") == {"x-descope-api-key": "configured"}
+
+
+def test_cyber_range_auth_falls_back_to_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dev.yaml"
+    config_path.write_text("api_key: managed\n")
+    monkeypatch.setattr(tracker_client, "config_location", lambda: config_path)
+
+    assert TrackerService.get_benchmark_auth("cyber-range") == "Bearer managed"
 
 
 def test_run_label_cli_options_and_client_requests(
