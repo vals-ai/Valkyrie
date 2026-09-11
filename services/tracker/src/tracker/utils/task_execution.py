@@ -65,10 +65,10 @@ from tracker.exceptions import (
     TrackerServiceError,
 )
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
-from tracker.logging import get_logger, task_id_var
+from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, error_span, incr
-from tracker.observability.sentry import capture_exception
+from tracker.observability.sentry import capture_exception, clear_sandbox_context, task_scope
 from tracker.observability.tracing import observability_span
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.scheduler.admission import SandboxQueueContext, enter_queued_sandbox
@@ -277,37 +277,38 @@ class TrackedTask:
                 self._status = TrackedTaskStatus.RUNNING
                 return await self._coro
 
-        try:
-            self._task = asyncio.create_task(_wrap_coro())
-            return await self._task
-        except asyncio.CancelledError:
-            logger.warning(f"Task {task_row.task_id} was cancelled")
-            # Need to clean up the coroutine if we cancelled the task
-            self._coro.close()
+        with task_scope(task_row.task_id):
+            try:
+                self._task = asyncio.create_task(_wrap_coro())
+                return await self._task
+            except asyncio.CancelledError:
+                logger.warning(f"Task {task_row.task_id} was cancelled")
+                # Need to clean up the coroutine if we cancelled the task
+                self._coro.close()
 
-            # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
-            return {task_row.task_id: None}
-        except Exception as e:
-            error_message = f"Task error was not handled: {_exception_message(e)}\n{traceback.format_exc()}"
-            logger.error(error_message)
-            logfire.exception("tracked_task_run failed")
-            capture_exception(e)
-            with Session(bind=engine) as session:
-                task = fetch_task_row(task_row.id, session, self._org)
-                commit_task_error(
-                    task,
-                    session,
-                    error_message,
-                    producer="sandbox_provider" if isinstance(e, SandboxSetupError) else "tracker",
-                    operation="setup" if isinstance(e, SandboxSetupError) else "process_task",
-                    error_type=type(e).__name__,
-                    expected_started_at=task_row.started_at,
-                    authority=self._authority,
-                )
+                # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
+                return {task_row.task_id: None}
+            except Exception as e:
+                error_message = f"Task error was not handled: {_exception_message(e)}\n{traceback.format_exc()}"
+                logger.error(error_message)
+                logfire.exception("tracked_task_run failed")
+                capture_exception(e)
+                with Session(bind=engine) as session:
+                    task = fetch_task_row(task_row.id, session, self._org)
+                    commit_task_error(
+                        task,
+                        session,
+                        error_message,
+                        producer="sandbox_provider" if isinstance(e, SandboxSetupError) else "tracker",
+                        operation="setup" if isinstance(e, SandboxSetupError) else "process_task",
+                        error_type=type(e).__name__,
+                        expected_started_at=task_row.started_at,
+                        authority=self._authority,
+                    )
 
-            return {task_row.task_id: None}
-        finally:
-            self._status = TrackedTaskStatus.DONE
+                return {task_row.task_id: None}
+            finally:
+                self._status = TrackedTaskStatus.DONE
 
 
 class TaskMonitor:
@@ -585,6 +586,7 @@ async def process_task(
     async def run_attempt(
         recovery_attempt: SandboxRecoveryAttempt,
     ) -> dict[str, dict[str, Any] | None]:
+        clear_sandbox_context()
         return await _process_task_attempt(
             task_row=task_row,
             start_benchmark_request=start_benchmark_request,
@@ -652,7 +654,6 @@ async def _process_task_attempt(
     NOTE: When we close the sandbox the agent process will be killed and we will instantly go to evaluating,
     the evaluation will fail since the instance no longer exists. We handle this inside of the exception caught.
     """
-    task_id_var.set(task_id)
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
 
