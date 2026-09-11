@@ -118,3 +118,7 @@ valkyrie run list --format json --all --status IN_PROGRESS
 ```
 
 Machine-readable output is built from a versioned allowlist of fields, so it never carries stored agent secrets, kwargs, or raw error messages. Optional identity fields and scores may be `null`, timestamps are UTC ISO 8601 strings, and a non-finite score is reported as `null`.
+
+## Inspect individual tasks
+
+Use `valkyrie run tasks <run_id> --status ERROR --format json` to inspect failed tasks. The command returns one page; use `--offset` to read later pages. Inspect a result with `valkyrie run task <run_id> <task_id>`, or obtain temporary download and log links with `valkyrie run task-artifacts <run_id> <task_id>`. See the [task command reference](/reference/cli/run#tasks) for filtering and sorting options.

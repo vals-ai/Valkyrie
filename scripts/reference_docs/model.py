@@ -68,6 +68,9 @@ TYPE_CARDS = {
 
 READ_ONLY_COMMANDS = frozenset(
     {
+        ("run", "task-artifacts"),
+        ("run", "task"),
+        ("run", "tasks"),
         ("agent", "list"),
         ("benchmark", "tasks"),
         ("config", "auth", "list"),
