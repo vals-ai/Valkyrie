@@ -122,3 +122,6 @@ Machine-readable output is built from a versioned allowlist of fields, so it nev
 ## Inspect individual tasks
 
 Use `valkyrie run tasks <run_id> --status ERROR --format json` to inspect failed tasks. The command returns one page; use `--offset` to read later pages. Inspect a result with `valkyrie run task <run_id> <task_id>`, or obtain temporary download and log links with `valkyrie run task-artifacts <run_id> <task_id>`. See the [task command reference](/reference/cli/run#tasks) for filtering and sorting options.
+
+
+For Python reports, use `async for run in client.runs.iter(request)` and `async for task in client.benchmarks.iter_tasks(run_id, request)` to fetch successive pages. Each iterator preserves its filters and page size. Run iteration uses cursors; task iteration uses offsets, so tasks can move between pages while their status changes.

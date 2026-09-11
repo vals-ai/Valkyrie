@@ -241,3 +241,15 @@ async def test_update_concurrency(make_client) -> None:
                 await client.runs.update_concurrency(run_id, concurrency=invalid)
     assert result.benchmark_id == run_id
     assert result.concurrency == 7
+
+
+async def test_run_iteration_rejects_repeated_cursor(make_client) -> None:
+    from valkyrie.sdk import FetchBenchmarksRequest
+
+    async with make_client(
+        lambda request: httpx.Response(200, json={"benchmarks": [], "next_cursor": "same"})
+    ) as client:
+        with pytest.raises(ValkyrieStreamError, match="repeated"):
+            _ = [run async for run in client.runs.iter()]
+        with pytest.raises(ValueError, match="offset"):
+            _ = [run async for run in client.runs.iter(FetchBenchmarksRequest(offset=1))]

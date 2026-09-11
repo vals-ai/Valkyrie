@@ -173,3 +173,33 @@ def test_cli_task_artifact_links(
     text = cli_runner.invoke(cli, ["run", "task", str(finished.id), "complete"])
     assert text.exit_code == 0, text.output
     assert '"score": 1' in text.output
+
+
+async def test_sdk_iterates_run_and_task_pages(
+    seeded_runs: tuple[Benchmark, Benchmark], local_tracker_app: FastAPI
+) -> None:
+    from valkyrie.cli.runtime_config import config_location
+    from valkyrie.sdk import FetchBenchmarksRequest, FetchTasksRequest
+
+    running, finished = seeded_runs
+    request = FetchBenchmarksRequest(limit=1)
+    async with ValkyrieClient(
+        ValkyrieConfig.from_yaml(config_location()),
+        base_url="http://tracker.test",
+        transport=httpx.ASGITransport(app=local_tracker_app),
+    ) as client:
+        runs = [run async for run in client.runs.iter(request)]
+        tasks = [
+            task async for task in client.benchmarks.iter_tasks(running.id, FetchTasksRequest(limit=1, sort="task_id"))
+        ]
+        skipped = [
+            task
+            async for task in client.benchmarks.iter_tasks(
+                running.id, FetchTasksRequest(limit=1, offset=2, sort="task_id")
+            )
+        ]
+    assert {run.id for run in runs} == {running.id, finished.id}
+    assert len(tasks) == 4
+    assert len({task.id for task in tasks}) == 4
+    assert [task.id for task in skipped] == [task.id for task in tasks[2:]]
+    assert request.cursor is None

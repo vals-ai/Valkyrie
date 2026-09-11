@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 from uuid import UUID
 
+from valkyrie.sdk.errors import ValkyrieStreamError
 from valkyrie.sdk.models import (
     BenchmarkStatusResponse,
     FetchTasksRequest,
@@ -14,6 +15,7 @@ from valkyrie.sdk.models import (
     SingleTaskResponse,
     TaskArtifactsResponse,
     TasksResponse,
+    TaskSummary,
 )
 
 if TYPE_CHECKING:
@@ -51,6 +53,27 @@ class BenchmarksResource:
             TasksResponse,
             params=params,
         )
+
+    async def iter_tasks(self, run_id: UUID, request: FetchTasksRequest | None = None) -> AsyncIterator[TaskSummary]:
+        """Iterate matching tasks from the requested offset, preserving filters and page size.
+
+        Task pages use offsets; concurrent status changes can move tasks between pages.
+        """
+        request = request or FetchTasksRequest()
+        offset = request.offset
+        seen: set[UUID] = set()
+        while True:
+            page = await self.tasks(run_id, request.model_copy(update={"offset": offset}))
+            if not page.tasks:
+                return
+            if page.tasks[0].id in seen:
+                raise ValkyrieStreamError("Tracker returned a repeated task page")
+            seen.add(page.tasks[0].id)
+            for task in page.tasks:
+                yield task
+            offset += len(page.tasks)
+            if offset >= page.total_count:
+                return
 
     async def task(self, run_id: UUID, task_id: str) -> SingleTaskResponse:
         """Fetch detailed state and evaluation output for one task."""
