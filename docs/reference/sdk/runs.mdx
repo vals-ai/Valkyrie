@@ -145,6 +145,28 @@ async def list(request: FetchBenchmarksRequest | None = None) -> FetchBenchmarks
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
+## `client.runs.iter` {#iter}
+
+Iterate matching runs using cursor pagination, starting at the supplied cursor.
+
+Use list() for explicit offset pagination. Filters and page size are preserved.
+
+```python Signature
+async def iter(request: FetchBenchmarksRequest | None = None) -> AsyncIterator[BenchmarkTableRow]
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"request"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <a href="/reference/sdk/models/runs#fetch-benchmarks-request"><code>FetchBenchmarksRequest</code></a> | None · default: <code>{"None"}</code></span></div>
+</div>
+
+**Returns**
+
+AsyncIterator[BenchmarkTableRow]
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
 ## `client.runs.stream` {#stream}
 
 Yield typed updates until the run completes or disconnects.

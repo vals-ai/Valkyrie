@@ -164,6 +164,10 @@
     "destination": "/reference/sdk/runs#list"
   },
   {
+    "source": "/reference/sdk/runs/iter",
+    "destination": "/reference/sdk/runs#iter"
+  },
+  {
     "source": "/reference/sdk/runs/stream",
     "destination": "/reference/sdk/runs#stream"
   },
@@ -218,6 +222,10 @@
   {
     "source": "/reference/sdk/benchmarks/tasks",
     "destination": "/reference/sdk/benchmarks#tasks"
+  },
+  {
+    "source": "/reference/sdk/benchmarks/iter_tasks",
+    "destination": "/reference/sdk/benchmarks#iter-tasks"
   },
   {
     "source": "/reference/sdk/benchmarks/task",

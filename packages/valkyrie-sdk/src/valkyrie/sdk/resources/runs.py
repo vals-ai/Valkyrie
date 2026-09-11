@@ -12,6 +12,7 @@ from valkyrie.sdk.models import (
     AgentContractRequest,
     AnalyzeBenchmarkRequest,
     AnalyzeEvent,
+    BenchmarkTableRow,
     FetchBenchmarkResponse,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarksRequest,
@@ -127,6 +128,27 @@ class RunsResource:
             FetchBenchmarksResponse,
             params=resolved_request.model_dump(exclude_none=True, mode="json"),
         )
+
+    async def iter(self, request: FetchBenchmarksRequest | None = None) -> AsyncIterator[BenchmarkTableRow]:
+        """Iterate matching runs using cursor pagination, starting at the supplied cursor.
+
+        Use list() for explicit offset pagination. Filters and page size are preserved.
+        """
+        request = request or FetchBenchmarksRequest()
+        if request.offset:
+            raise ValueError("Run iteration uses cursors; use list() for offset pagination")
+        cursor = request.cursor or ""
+        seen: set[str] = set()
+        while True:
+            if cursor in seen:
+                raise ValkyrieStreamError("Tracker returned a repeated run-list cursor")
+            seen.add(cursor)
+            page = await self.list(request.model_copy(update={"cursor": cursor}))
+            for run in page.benchmarks:
+                yield run
+            if page.next_cursor is None:
+                return
+            cursor = page.next_cursor
 
     @handle_httpx_stream_errors("Valkyrie stream failed")
     async def stream(self, run_id: UUID) -> AsyncIterator[FetchBenchmarkResponse]:
