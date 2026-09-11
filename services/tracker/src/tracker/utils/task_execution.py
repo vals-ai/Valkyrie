@@ -31,7 +31,11 @@ from sqlalchemy.engine import Connection
 from sqlmodel import Session, col, select, update
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
-from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations, CloudWatchBenchmarkLogSink
+from tracker.aws.cloudwatch_logs import (
+    CloudWatchBenchmarkLogLocations,
+    CloudWatchBenchmarkLogSink,
+    task_log_stream_name,
+)
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3ObjectStore
 from tracker.runtime.artifacts import task_artifact_key
@@ -61,10 +65,10 @@ from tracker.exceptions import (
     TrackerServiceError,
 )
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
-from tracker.logging import get_logger, task_id_var
+from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, error_span, incr
-from tracker.observability.sentry import capture_exception
+from tracker.observability.sentry import capture_exception, clear_sandbox_context, task_scope
 from tracker.observability.tracing import observability_span
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.scheduler.admission import SandboxQueueContext, enter_queued_sandbox
@@ -273,37 +277,38 @@ class TrackedTask:
                 self._status = TrackedTaskStatus.RUNNING
                 return await self._coro
 
-        try:
-            self._task = asyncio.create_task(_wrap_coro())
-            return await self._task
-        except asyncio.CancelledError:
-            logger.warning(f"Task {task_row.task_id} was cancelled")
-            # Need to clean up the coroutine if we cancelled the task
-            self._coro.close()
+        with task_scope(task_row.task_id):
+            try:
+                self._task = asyncio.create_task(_wrap_coro())
+                return await self._task
+            except asyncio.CancelledError:
+                logger.warning(f"Task {task_row.task_id} was cancelled")
+                # Need to clean up the coroutine if we cancelled the task
+                self._coro.close()
 
-            # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
-            return {task_row.task_id: None}
-        except Exception as e:
-            error_message = f"Task error was not handled: {_exception_message(e)}\n{traceback.format_exc()}"
-            logger.error(error_message)
-            logfire.exception("tracked_task_run failed")
-            capture_exception(e)
-            with Session(bind=engine) as session:
-                task = fetch_task_row(task_row.id, session, self._org)
-                commit_task_error(
-                    task,
-                    session,
-                    error_message,
-                    producer="sandbox_provider" if isinstance(e, SandboxSetupError) else "tracker",
-                    operation="setup" if isinstance(e, SandboxSetupError) else "process_task",
-                    error_type=type(e).__name__,
-                    expected_started_at=task_row.started_at,
-                    authority=self._authority,
-                )
+                # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
+                return {task_row.task_id: None}
+            except Exception as e:
+                error_message = f"Task error was not handled: {_exception_message(e)}\n{traceback.format_exc()}"
+                logger.error(error_message)
+                logfire.exception("tracked_task_run failed")
+                capture_exception(e)
+                with Session(bind=engine) as session:
+                    task = fetch_task_row(task_row.id, session, self._org)
+                    commit_task_error(
+                        task,
+                        session,
+                        error_message,
+                        producer="sandbox_provider" if isinstance(e, SandboxSetupError) else "tracker",
+                        operation="setup" if isinstance(e, SandboxSetupError) else "process_task",
+                        error_type=type(e).__name__,
+                        expected_started_at=task_row.started_at,
+                        authority=self._authority,
+                    )
 
-            return {task_row.task_id: None}
-        finally:
-            self._status = TrackedTaskStatus.DONE
+                return {task_row.task_id: None}
+            finally:
+                self._status = TrackedTaskStatus.DONE
 
 
 class TaskMonitor:
@@ -581,6 +586,7 @@ async def process_task(
     async def run_attempt(
         recovery_attempt: SandboxRecoveryAttempt,
     ) -> dict[str, dict[str, Any] | None]:
+        clear_sandbox_context()
         return await _process_task_attempt(
             task_row=task_row,
             start_benchmark_request=start_benchmark_request,
@@ -648,7 +654,6 @@ async def _process_task_attempt(
     NOTE: When we close the sandbox the agent process will be killed and we will instantly go to evaluating,
     the evaluation will fail since the instance no longer exists. We handle this inside of the exception caught.
     """
-    task_id_var.set(task_id)
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
 
@@ -676,10 +681,9 @@ async def _process_task_attempt(
         benchmark_agent_name = benchmark_row.arguments.contract.name
         benchmark_started_by_email = benchmark_row.started_by_email
 
-    # Setup logging infrastructure before try block so it's always available
-    # Suffix is required to version control streams, never delete between retries
-    stream_suffix = f"{int(task_row.started_at.timestamp() * 1_000_000):x}"
-    task_stream_name = f"{task_id}_{stream_suffix}"
+    # Setup logging infrastructure before try block so it's always available.
+    # Version streams by task attempt so retries never overwrite earlier logs.
+    task_stream_name = task_log_stream_name(task_id, task_row.started_at)
     stream_key: str = f"{benchmark_id}:{task_stream_name}"
     log_sink = CloudWatchBenchmarkLogSink(aws_runtime.clients, aws_runtime.resources.log_group)
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
@@ -753,6 +757,21 @@ async def _process_task_attempt(
 
     def task_is_stopped() -> bool:
         return not execution_is_current()
+
+    def return_queued_task_to_pending() -> bool:
+        """Release a queued task so a fresh-sandbox retry can re-admit it."""
+        if queue_context is None:
+            return True
+        with Session(bind=engine) as task_session:
+            return commit_task_status_transition(
+                task_row.id,
+                task_session,
+                org,
+                TaskStatus.PENDING,
+                expected_started_at=attempt_started_at,
+                expected_status=expected_failure_status,
+                authority=authority,
+            )
 
     def commit_terminal_error(
         exc: BaseException,
@@ -1244,18 +1263,8 @@ async def _process_task_attempt(
     except SandboxSetupError as e:
         if task_is_stopped():
             return {task_id: None}
-        if queue_context is not None:
-            with Session(bind=engine) as task_session:
-                if not commit_task_status_transition(
-                    task_row.id,
-                    task_session,
-                    org,
-                    TaskStatus.PENDING,
-                    expected_started_at=attempt_started_at,
-                    expected_status=expected_failure_status,
-                    authority=authority,
-                ):
-                    return {task_id: None}
+        if not return_queued_task_to_pending():
+            return {task_id: None}
         log_output(f"\n[ERROR] {_exception_message(e)}")
         raise
     except SandboxNotFoundError as e:
@@ -1376,6 +1385,13 @@ async def _process_task_attempt(
         if task_is_stopped():
             return {task_id: None}
         error_message = _exception_message(e)
+        # This is necessary because Daytona routes tasks to bad nodes. We should
+        # remove this when Daytona fixes their infrastructure.
+        if "docker daemon is not ready inside the sandbox" in error_message:
+            if not return_queued_task_to_pending():
+                return {task_id: None}
+            log_output(f"\n[ERROR] {error_message}")
+            raise SandboxSetupError(error_message) from e
         log_output(f"\n[ERROR] {error_message}")
 
         return commit_terminal_error(

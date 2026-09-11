@@ -5,6 +5,7 @@
   "reference/sdk/benchmarks",
   "reference/sdk/agents",
   "reference/sdk/services",
+  "reference/sdk/logs",
   {
     "group": "Types",
     "pages": [
@@ -14,6 +15,7 @@
       "reference/sdk/models/benchmarks",
       "reference/sdk/models/services",
       "reference/sdk/models/config",
+      "reference/sdk/models/logs",
       "reference/sdk/errors"
     ]
   }

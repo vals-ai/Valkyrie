@@ -12,7 +12,8 @@ from uuid import UUID
 import pytest
 from benchmark_service import SandboxNotFoundError, SandboxRecoveryPolicy
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
-from benchmark_service.schemas import RetrieveTaskResponse, VolumeMount
+from benchmark_service.schemas import RetrieveTaskResponse, SetupTaskResponse, VolumeMount
+from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, desc, select
 
 from tests.unit.utils.task_execution_support import (
@@ -22,6 +23,7 @@ from tests.unit.utils.task_execution_support import (
     make_retrieve_task_response,
     run_process_task,
 )
+from tracker.scheduler.admission import SandboxQueueContext
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
@@ -193,6 +195,227 @@ class TestTaskExecutionRetry:
             assert terminal_result.failed_attempt_number is None
         else:
             assert terminal_results == []
+
+    async def test_process_task_retries_when_service_reports_broken_sandbox(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        """A service-reported broken sandbox retries on a fresh sandbox instead of failing terminally.
+
+        Test cases:
+        - setup_task raises a service error matching the broken-sandbox signature on attempt 1
+        - process_task retries with a new sandbox and the task finishes
+        - The recorded failure is marked retry_scheduled as a sandbox setup failure
+        - A service error without the signature still commits a terminal error
+        """
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+
+        sandbox_entry_count = 0
+
+        @asynccontextmanager
+        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+            nonlocal sandbox_entry_count
+            sandbox_entry_count += 1
+            mock_sandbox = AsyncMock()
+            mock_sandbox.id = f"mock-sandbox-{sandbox_entry_count}"
+            mock_sandbox.name = f"mock-sandbox-{sandbox_entry_count}"
+            yield mock_sandbox
+
+        setup_call_count = 0
+        service_error = (
+            "docker daemon is not ready inside the sandbox: "
+            "nohup: failed to run command 'dockerd': No such file or directory"
+        )
+
+        async def _fails_first_setup_task(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
+            nonlocal setup_call_count
+            setup_call_count += 1
+            if setup_call_count == 1:
+                raise BenchmarkServiceError(service_error)
+            return SetupTaskResponse(status="ok")
+
+        async def _mock_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            return None, 0.0
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return make_retrieve_task_response(problem_path="/tmp/problem.txt")
+
+        async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {"status": "success", "score": 1.0}
+
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
+        monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _fails_first_setup_task)
+        monkeypatch.setattr("tracker.utils.task_execution.run_agent", _mock_run_agent)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        assert sandbox_entry_count == 2
+        assert setup_call_count == 2
+
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.FINISHED
+
+        error_results = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all()
+        retry_results = [result for result in error_results if result.retry_scheduled]
+        assert len(retry_results) == 1
+        assert retry_results[0].error_message == f"Sandbox error: {service_error}"
+        assert retry_results[0].producer == "sandbox_provider"
+        assert retry_results[0].operation == "setup"
+        assert retry_results[0].error_type == "SandboxSetupError"
+        assert retry_results[0].failed_attempt_number == 1
+        assert [result for result in error_results if not result.retry_scheduled] == []
+
+    async def test_process_task_still_terminates_on_other_service_errors(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        """A service error without the broken-sandbox signature stays terminal.
+
+        Test cases:
+        - setup_task raises an unrelated BenchmarkServiceError
+        - No retry is scheduled and the task ends in ERROR
+        """
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+
+        sandbox_entry_count = 0
+
+        @asynccontextmanager
+        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+            nonlocal sandbox_entry_count
+            sandbox_entry_count += 1
+            mock_sandbox = AsyncMock()
+            mock_sandbox.id = f"mock-sandbox-{sandbox_entry_count}"
+            mock_sandbox.name = mock_sandbox.id
+            yield mock_sandbox
+
+        service_error = "ProgramBench task container failed to start: task_cleanroom: Pulling from programbench/test"
+
+        async def _mock_setup_task(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
+            raise BenchmarkServiceError(service_error)
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return make_retrieve_task_response(problem_path="/tmp/problem.txt")
+
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
+        monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+
+        assert result == {"task_0": None}
+        assert sandbox_entry_count == 1
+
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        error_results = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all()
+        assert [result for result in error_results if result.retry_scheduled] == []
+
+    @pytest.mark.parametrize("failure_site", ["queued_admission", "service_setup"])
+    async def test_process_task_releases_queued_task_when_pending_transition_refused(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+        failure_site: str,
+    ) -> None:
+        """A queued task whose PENDING transition is refused ends without a retry.
+
+        Both retry-eligible failures must return a queued task to PENDING before
+        re-raising so the retry can be re-admitted; a refused transition means
+        the task is owned elsewhere and the attempt stops.
+
+        Test cases:
+        - the setup error surfaces during queued admission (SandboxSetupError)
+        - the setup error is reported by the benchmark service (BenchmarkServiceError)
+        """
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "mock-sandbox-queued"
+        mock_sandbox.name = mock_sandbox.id
+
+        async def _mock_enter_queued_sandbox(*_args: Any, **_kwargs: Any) -> AsyncMock:
+            if failure_site == "queued_admission":
+                raise SandboxSetupError("provisioner rejected the sandbox")
+            return mock_sandbox
+
+        async def _mock_setup_task(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
+            raise BenchmarkServiceError(
+                "docker daemon is not ready inside the sandbox: "
+                "nohup: failed to run command 'dockerd': No such file or directory"
+            )
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return make_retrieve_task_response(problem_path="/tmp/problem.txt")
+
+        transition_statuses: list[TaskStatus] = []
+
+        def _refuse_pending_transition(*args: Any, **_kwargs: Any) -> bool:
+            transition_statuses.append(args[3])
+            return False
+
+        task_engine = database_session.get_bind()
+        assert isinstance(task_engine, Engine)
+        queue_context = SandboxQueueContext(
+            provider=Mock(),
+            pool_id="pool_test",
+            engine=task_engine,
+        )
+        monkeypatch.setattr(task_execution_module, "enter_queued_sandbox", _mock_enter_queued_sandbox)
+        monkeypatch.setattr(task_execution_module, "commit_task_status_transition", _refuse_pending_transition)
+        monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+
+        result = await run_process_task(
+            start_benchmark_request,
+            task_row,
+            benchmark_id,
+            aws_runtime,
+            authority,
+            queue_context=queue_context,
+        )
+
+        assert result == {"task_0": None}
+        assert transition_statuses == [TaskStatus.PENDING]
+        error_results = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all()
+        assert [result for result in error_results if result.retry_scheduled] == []
 
     async def test_revoked_dispatch_does_not_begin_the_second_automatic_attempt(
         self,

@@ -1,5 +1,7 @@
 """Sentry SDK initialization for Valkyrie service processes."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 import logging
 import os
 from typing import Any, cast
@@ -12,9 +14,21 @@ from sentry_sdk.integrations.otlp import OTLPIntegration
 from sentry_sdk.types import Event, Hint, Log
 
 from tracker.exceptions import SSLConnectionError
+from tracker.logging import task_id_var
 from tracker.logging.context import get_context_tags
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def task_scope(task_id: str) -> Iterator[None]:
+    """Isolate Sentry events and logging context for one tracked task."""
+    with sentry_sdk.isolation_scope():
+        token = task_id_var.set(task_id)
+        try:
+            yield
+        finally:
+            task_id_var.reset(token)
 
 
 def _before_send(
@@ -66,7 +80,7 @@ def init_sentry(service_name: str, environment: str) -> None:
     try:
         sentry_sdk.init(
             dsn=dsn,
-            environment=environment,
+            environment=os.environ.get("SENTRY_ENVIRONMENT", environment),
             release=os.environ.get("SENTRY_RELEASE", ""),
             server_name=service_name,
             # Sampling happens upstream in OTel; pass everything through.
@@ -106,6 +120,17 @@ def capture_exception(error: BaseException) -> None:
         sentry_sdk.capture_exception(error)
     except Exception as telemetry_error:
         logger.warning("Failed to capture exception: %s: %s", type(telemetry_error).__name__, telemetry_error)
+
+
+def clear_sandbox_context() -> None:
+    """Remove sandbox identity before a task begins another attempt."""
+    try:
+        scope = sentry_sdk.get_isolation_scope()
+        scope.remove_tag("sandbox_id")
+        scope.remove_tag("sandbox_name")
+        scope.remove_context("sandbox")
+    except Exception as e:
+        logger.warning("clear_sandbox_context failed: %s: %s", type(e).__name__, e)
 
 
 def set_sandbox_context(sandbox: Any, *, image: str | None = None) -> None:

@@ -67,6 +67,8 @@ def test_openapi_declares_required_harness_headers() -> None:
         schema["paths"]["/agents"]["get"],
         schema["paths"]["/agents/{name}/download-url"]["get"],
         schema["paths"]["/analyze-benchmark/{benchmark_id}"]["post"],
+        schema["paths"]["/benchmarks/{benchmark_id}/logs"]["get"],
+        schema["paths"]["/benchmarks/{benchmark_id}/logs/stream"]["get"],
         schema["paths"]["/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts"]["get"],
         schema["paths"]["/check-results-exist"]["get"],
         schema["paths"]["/fetch-benchmark"]["get"],

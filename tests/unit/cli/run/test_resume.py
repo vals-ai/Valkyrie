@@ -43,6 +43,7 @@ class MockTrackerService:
         service_headers: dict[str, str] | None = None,
         secrets: dict[str, str] | None = None,
         benchmark_url: str | None = None,
+        lambda_function: str | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
         self.calls.append({"benchmark_id": benchmark_id, "service_headers": service_headers})
         return RetryOrResumeBenchmarkResponse(status="success")

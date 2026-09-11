@@ -695,6 +695,7 @@ def test_retry_or_resume_sends_retry_mode(
         task_ids=["task-1"],
         secrets={"ANTHROPIC_API_KEY": "new-secret"},
         benchmark_url="https://new.example",
+        lambda_function="vals-format-lambda",
     )
 
     assert result.status == "success"
@@ -704,6 +705,7 @@ def test_retry_or_resume_sends_retry_mode(
         "service_headers": {},
         "secrets": {"ANTHROPIC_API_KEY": "new-secret"},
         "benchmark_url": "https://new.example",
+        "lambda_function": "vals-format-lambda",
     }
 
     tracker.retry_or_resume_benchmark(
@@ -1018,11 +1020,12 @@ def test_run_retry_benchmark_url_reaches_tracker(
 
     result = CliRunner().invoke(
         cli_main.cli,
-        ["run", "retry", str(run_id), "--benchmark-url", "https://new.example"],
+        ["run", "retry", str(run_id), "--benchmark-url", "https://new.example", "--lambda", "vals-format-lambda"],
     )
 
     assert result.exit_code == 0, result.output
     assert mock_tracker_service.retry_or_resume_calls[0]["kwargs"]["benchmark_url"] == "https://new.example"
+    assert mock_tracker_service.retry_or_resume_calls[0]["kwargs"]["lambda_function"] == "vals-format-lambda"
 
 
 def test_run_start_provider_option_reaches_tracker(

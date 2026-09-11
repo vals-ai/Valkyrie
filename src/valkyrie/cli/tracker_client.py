@@ -586,6 +586,8 @@ class TrackerService:
         benchmark_id: UUID,
         s3: bool,
         task_ids: list[str] | None = None,
+        *,
+        preview: bool = False,
     ) -> RetrieveResultsResponse:
         """
         Retrieve the results of a benchmark by its benchmark id.
@@ -594,13 +596,16 @@ class TrackerService:
         recomputed over those tasks (does not mutate the stored FinalEvaluation).
         """
         try:
-            params: dict[str, Any] = {"benchmark_id": str(benchmark_id), "s3": s3}
+            params: dict[str, Any] = {"benchmark_id": str(benchmark_id)}
+            if not preview:
+                params["s3"] = s3
             if task_ids:
                 params["task_ids"] = task_ids
 
-            response = self._client.get(f"{self._base_url}/retrieve-results", params=params)
+            endpoint = "preview-results" if preview else "retrieve-results"
+            response = self._client.get(f"{self._base_url}/{endpoint}", params=params)
 
-            if not s3:
+            if not (s3 or preview):
                 return _parse_model_response(response, "Failed to retrieve results", FinalViewResponse)
 
             return _parse_model_response(response, "Failed to retrieve results", S3UploadResultsResponse)
@@ -713,6 +718,7 @@ class TrackerService:
         service_headers: dict[str, str] | None = None,
         secrets: dict[str, str] | None = None,
         benchmark_url: str | None = None,
+        lambda_function: str | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
         """
         Run a benchmark that has already been created by its benchmark id.
@@ -741,6 +747,8 @@ class TrackerService:
                 body["secrets"] = secrets
             if benchmark_url is not None:
                 body["benchmark_url"] = benchmark_url
+            if lambda_function is not None:
+                body["lambda_function"] = lambda_function
 
             response = self._client.post(
                 f"{self._base_url}/retry-or-resume-benchmark/{benchmark_id}",

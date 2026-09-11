@@ -425,8 +425,8 @@ wheels = [
 
 [[package]]
 name = "create-benchmark-service"
-version = "0.35.0"
-source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=v0.35.0#35ace8c30585b1bbe872b20b5078894ba818517d" }
+version = "0.38.0"
+source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=v0.38.0#de2a82eea283942d290e136cec4c80d5072e2fb7" }
 dependencies = [
     { name = "boto3" },
     { name = "cachetools" },
@@ -438,8 +438,10 @@ dependencies = [
     { name = "httpx" },
     { name = "jinja2" },
     { name = "modal" },
+    { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "sentry-sdk", extra = ["fastapi"] },
     { name = "starlette" },
     { name = "tenacity" },
     { name = "websockets" },
@@ -2312,7 +2314,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.42.20" },
     { name = "boto3-stubs", extras = ["s3"] },
     { name = "cachetools", specifier = ">=7.1.1,<8" },
-    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=v0.35.0" },
+    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=v0.38.0" },
     { name = "descope", specifier = ">=0.9.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.135.3" },
     { name = "httpx", specifier = ">=0.28.1" },
@@ -2538,7 +2540,7 @@ dev = [
 
 [[package]]
 name = "valkyrie-sdk"
-version = "0.2.12"
+version = "0.2.13"
 source = { editable = "packages/valkyrie-sdk" }
 dependencies = [
     { name = "httpx" },

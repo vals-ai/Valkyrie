@@ -45,6 +45,7 @@ from tracker.types import (
     FetchBenchmarksResponse,
     FinalViewResponse,
     HarnessConfig,
+    LogEventResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
     SingleBenchmarkResponse,
@@ -82,6 +83,7 @@ from valkyrie.sdk.models import (
     FinalEvaluation as SDKFinalEvaluation,
     FinalViewResponse as SDKFinalViewResponse,
     HarnessConfig as SDKHarnessConfig,
+    LogEvent as SDKLogEvent,
     OutputArtifact as SDKOutputArtifact,
     RetryOrResumeBenchmarkResponse as SDKRetryResponse,
     S3UploadResultsResponse as SDKS3ResultsResponse,
@@ -106,6 +108,7 @@ ROUTES = (
         "agent_name benchmark_name model dataset label status started_by started_after started_before order_by cursor limit offset",
     ),
     ("/retrieve-results", "get", "benchmark_id s3 task_ids"),
+    ("/preview-results", "get", "benchmark_id task_ids"),
     ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id force"),
     ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id retry retry_mode concurrency"),
     ("/benchmarks/status", "get", "ids"),
@@ -117,6 +120,16 @@ ROUTES = (
     ),
     ("/benchmarks/{benchmark_id}/tasks/{task_id}", "get", "benchmark_id task_id"),
     ("/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts", "get", "benchmark_id task_id"),
+    (
+        "/benchmarks/{benchmark_id}/logs",
+        "get",
+        "benchmark_id task_id query start_time end_time cursor limit",
+    ),
+    (
+        "/benchmarks/{benchmark_id}/logs/stream",
+        "get",
+        "benchmark_id task_id query start_time end_time",
+    ),
     ("/agents", "get", ""),
     ("/agents/{name}/download-url", "get", "name"),
     ("/benchmark-services", "get", ""),
@@ -137,18 +150,21 @@ RESPONSE_MODELS = {
     ("/benchmarks/{benchmark_id}/tasks", "get"): "TasksResponse",
     ("/benchmarks/{benchmark_id}/tasks/{task_id}", "get"): "SingleTaskResponse",
     ("/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts", "get"): "TaskArtifactsResponse",
+    ("/benchmarks/{benchmark_id}/logs", "get"): "LogPageResponse",
     ("/agents", "get"): "AgentsResponse",
     ("/agents/{name}/download-url", "get"): "AgentDownloadURLResponse",
     ("/benchmark-services", "get"): "BenchmarkServiceCatalogResponse",
     ("/benchmark-services", "post"): "BenchmarkServicesResponse",
     ("/fetch-benchmark-tasks", "post"): "VerifyTaskIdsResponse",
     ("/fetch-benchmark-metadata/{benchmark_id}", "get"): "FetchBenchmarkMetadataResponse",
+    ("/preview-results", "get"): "S3UploadResultsResponse",
 }
 MODEL_PAIRS = (
     (OutputArtifact, SDKOutputArtifact),
     (AgentContractRequest, SDKAgentContractRequest),
     (AWSCredentials, SDKAWSCredentials),
     (HarnessConfig, SDKHarnessConfig),
+    (LogEventResponse, SDKLogEvent),
     (StartBenchmarkRequest, SDKStartBenchmarkRequest),
     (BenchmarkDetails, SDKBenchmarkDetails),
     (StartBenchmarkResponse, SDKStartBenchmarkResponse),
@@ -397,7 +413,7 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
     retry_schema_ref = retry["requestBody"]["content"]["application/json"]["schema"]["$ref"]
     retry_schema = schema["components"]["schemas"][retry_schema_ref.rsplit("/", 1)[-1]]
     retry_fixture = load_fixture("retry_resume.json")
-    assert set(retry_schema["properties"]) == {*retry_fixture["body"], "benchmark_url"}
+    assert set(retry_schema["properties"]) == {*retry_fixture["body"], "benchmark_url", "lambda_function"}
     retry_properties = retry_schema["properties"]
     assert {
         name: (retry_properties[name]["type"], retry_properties[name]["default"])
@@ -408,6 +424,7 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
         "secrets": ("object", {}),
     }
     assert retry_properties["benchmark_url"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
+    assert retry_properties["lambda_function"]["anyOf"] == [{"type": "string", "minLength": 1}, {"type": "null"}]
 
     retry_parameters = {parameter["name"]: parameter for parameter in retry["parameters"]}
     assert retry_parameters["retry"]["schema"]["default"] == retry_fixture["query"]["retry"]
@@ -459,6 +476,7 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
     for path, method, parameter_name in (
         ("/fetch-benchmark", "get", "benchmark_id"),
         ("/retrieve-results", "get", "benchmark_id"),
+        ("/preview-results", "get", "benchmark_id"),
         ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id"),
         ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id"),
         ("/analyze-benchmark/{benchmark_id}", "post", "benchmark_id"),
