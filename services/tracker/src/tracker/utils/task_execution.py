@@ -25,7 +25,12 @@ from benchmark_service import (
     SandboxProviderConfig,
     SandboxRecoveryAttempt,
 )
-from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceStreamError
+from benchmark_service.client import (
+    BenchmarkServiceClient,
+    BenchmarkServiceError,
+    BenchmarkServiceResumableEvaluationError,
+    BenchmarkServiceStreamError,
+)
 from pydantic import ValidationError
 from sqlalchemy.engine import Connection
 from sqlmodel import Session, col, select, update
@@ -870,6 +875,9 @@ async def _process_task_attempt(
                 terminal_error,
                 producer="benchmark_service",
                 operation="resume_evaluation",
+                cause_code="resumable_evaluation_infrastructure"
+                if isinstance(resume_error, BenchmarkServiceResumableEvaluationError)
+                else None,
             )
 
         finished_at = time.perf_counter()
@@ -1334,6 +1342,20 @@ async def _process_task_attempt(
             producer="benchmark_service",
             operation="websocket",
             cause_code="websocket_connection_closed",
+        )
+    except BenchmarkServiceResumableEvaluationError as e:
+        if task_is_stopped():
+            return {task_id: None}
+        error_message = _exception_message(e)
+        recovered = await recover_evaluation_stream_failure(error_message)
+        if recovered is not None:
+            return recovered
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="benchmark_service",
+            operation="evaluate_instance",
+            cause_code="resumable_evaluation_infrastructure",
         )
     except BenchmarkServiceStreamError as e:
         if task_is_stopped():

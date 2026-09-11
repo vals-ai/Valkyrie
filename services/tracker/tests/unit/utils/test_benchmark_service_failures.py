@@ -15,6 +15,7 @@ from benchmark_service import ExecResult
 from benchmark_service.client import (
     BenchmarkServiceClient,
     BenchmarkServiceError,
+    BenchmarkServiceResumableEvaluationError,
     BenchmarkServiceStreamClosedError,
 )
 from benchmark_service.schemas import RetrieveTaskResponse
@@ -142,7 +143,7 @@ class TestBenchmarkServiceFailures:
         assert reason in error_message
         assert "last application message received" in error_message
 
-    @pytest.mark.parametrize("stream_failure", ["wrapped", "raw"])
+    @pytest.mark.parametrize("stream_failure", ["wrapped", "raw", "infrastructure", "candidate"])
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_stream_close_with_saved_state_resumes_evaluation(
         self,
@@ -161,8 +162,12 @@ class TestBenchmarkServiceFailures:
 
         async def _mock_evaluate_instance(*_args: Any, on_eval_resume_state: Any, **_kwargs: Any) -> dict[str, Any]:
             on_eval_resume_state(saved_state)
+            if stream_failure == "candidate":
+                raise BenchmarkServiceError("Candidate packaging failed")
             if stream_failure == "raw":
                 raise ConnectionClosedError(None, None)
+            if stream_failure == "infrastructure":
+                raise BenchmarkServiceResumableEvaluationError("Evaluation sandbox unavailable")
             raise BenchmarkServiceStreamClosedError(close_code=1011, close_reason="keepalive timeout", idle_s=30.0)
 
         async def _mock_resume_evaluation(
@@ -178,6 +183,12 @@ class TestBenchmarkServiceFailures:
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
 
+        if stream_failure == "candidate":
+            assert result == {"task_0": None}
+            assert resume_calls == 0
+            database_session.refresh(task_row)
+            assert task_row.status == TaskStatus.ERROR
+            return
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert resume_calls == 1
         database_session.refresh(task_row)
@@ -273,9 +284,11 @@ class TestBenchmarkServiceFailures:
         assert database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
         assert not database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).first()
 
+    @pytest.mark.parametrize("typed", [False, True])
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_stream_close_without_saved_state_produces_stream_error(
         self,
+        typed: bool,
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
@@ -287,6 +300,8 @@ class TestBenchmarkServiceFailures:
         )
 
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            if typed:
+                raise BenchmarkServiceResumableEvaluationError("Evaluation sandbox unavailable")
             raise BenchmarkServiceStreamClosedError(close_code=1011, close_reason="keepalive timeout", idle_s=30.0)
 
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
@@ -297,12 +312,19 @@ class TestBenchmarkServiceFailures:
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
         error_message = self._latest_task_error(database_session, task_row)
-        assert "Benchmark service WebSocket stream failed" in error_message
-        assert "keepalive timeout" in error_message
+        if typed:
+            assert "Evaluation sandbox unavailable" in error_message
+            error = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).one()
+            assert error.cause_code == "resumable_evaluation_infrastructure"
+        else:
+            assert "Benchmark service WebSocket stream failed" in error_message
+            assert "keepalive timeout" in error_message
 
+    @pytest.mark.parametrize("typed", [False, True])
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_stream_resume_failure_produces_terminal_error(
         self,
+        typed: bool,
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
@@ -313,13 +335,17 @@ class TestBenchmarkServiceFailures:
             contract, database_session, harness_config
         )
         saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
+        resume_calls = 0
 
         async def _mock_evaluate_instance(*_args: Any, on_eval_resume_state: Any, **_kwargs: Any) -> dict[str, Any]:
             on_eval_resume_state(saved_state)
             raise BenchmarkServiceStreamClosedError(close_code=1011, close_reason="keepalive timeout", idle_s=30.0)
 
         async def _mock_resume_evaluation(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-            raise BenchmarkServiceError("resume endpoint unavailable")
+            nonlocal resume_calls
+            resume_calls += 1
+            error = BenchmarkServiceResumableEvaluationError if typed else BenchmarkServiceError
+            raise error("resume endpoint unavailable")
 
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
         monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
@@ -332,6 +358,10 @@ class TestBenchmarkServiceFailures:
         error_message = self._latest_task_error(database_session, task_row)
         assert "resuming evaluation from durable benchmark state" in error_message
         assert "resume failed: resume endpoint unavailable" in error_message
+        assert resume_calls == 1
+        if typed:
+            error = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).one()
+            assert error.cause_code == "resumable_evaluation_infrastructure"
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_stream_resume_stops_when_task_is_stopped_during_retry(
