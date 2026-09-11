@@ -68,6 +68,9 @@ from valkyrie.sdk.models.services import (
 )
 
 __all__ = [
+    "RunArtifactEntry",
+    "RunArtifactsResponse",
+    "RunArtifactDownloadResponse",
     "AWSCredentials",
     "AgentContractRequest",
     "AgentDownloadURLResponse",
@@ -127,3 +130,5 @@ __all__ = [
     "TasksResponse",
     "TaskSummary",
 ]
+
+from valkyrie.sdk.models.artifacts import RunArtifactEntry, RunArtifactsResponse, RunArtifactDownloadResponse

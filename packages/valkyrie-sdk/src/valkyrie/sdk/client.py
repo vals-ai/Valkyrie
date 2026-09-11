@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from valkyrie.sdk.config import DEFAULT_CONFIG_PATH, TRACKER_URLS, ValkyrieConfig
 from valkyrie.sdk.errors import ValkyrieAPIError, ValkyrieTransportError
 from valkyrie.sdk.resources.agents import AgentsResource
+from valkyrie.sdk.resources.artifacts import ArtifactsResource
 from valkyrie.sdk.resources.benchmarks import BenchmarksResource
 from .resources.logs import LogsResource
 from valkyrie.sdk.resources.runs import RunsResource
@@ -49,6 +50,7 @@ class ValkyrieClient:
         self.logs = LogsResource(self)
         self.benchmarks = BenchmarksResource(self)
         self.agents = AgentsResource(self)
+        self.artifacts = ArtifactsResource(self)
         self.services = BenchmarkServicesResource(self)
         self.scheduler = SchedulerResource(self)
 

@@ -1,6 +1,7 @@
 [
   "reference/sdk/index",
   "reference/sdk/client",
+  "reference/sdk/artifacts",
   "reference/sdk/runs",
   "reference/sdk/benchmarks",
   "reference/sdk/agents",
@@ -11,6 +12,7 @@
     "group": "Types",
     "pages": [
       "reference/sdk/models/index",
+      "reference/sdk/models/artifacts",
       "reference/sdk/models/agents",
       "reference/sdk/models/runs",
       "reference/sdk/models/benchmarks",

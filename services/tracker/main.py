@@ -33,6 +33,7 @@ from tracker.api.logs import router as logs_router
 from tracker.api.scheduler_overview import router as scheduler_overview_router
 from tracker.api.single_benchmark import router as single_benchmark_router
 from tracker.api.single_task import router as single_task_router
+from tracker.api.run_artifacts import router as run_artifacts_router
 from tracker.auth import (
     RequestIdentity,
     extract_api_key,
@@ -198,6 +199,7 @@ app.include_router(logs_router)
 app.include_router(scheduler_overview_router)
 app.include_router(single_benchmark_router)
 app.include_router(single_task_router)
+app.include_router(run_artifacts_router)
 
 
 # Preserve health check log suppression after configure_logging() replaced handlers

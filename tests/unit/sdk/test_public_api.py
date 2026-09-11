@@ -20,6 +20,9 @@ from valkyrie.sdk.resources.scheduler import SchedulerResource  # pyright: ignor
 from valkyrie.sdk.resources.services import BenchmarkServicesResource  # pyright: ignore[reportMissingImports]
 
 EXPECTED_ALL = [
+    "RunArtifactEntry",
+    "RunArtifactsResponse",
+    "RunArtifactDownloadResponse",
     "AgentContractRequest",
     "AgentDownloadURLResponse",
     "AgentEntry",

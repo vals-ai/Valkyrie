@@ -6,10 +6,11 @@ from uuid import UUID
 
 import click
 from httpx import Response
-from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
+from valkyrie.sdk import RunArtifactsResponse, ValkyrieClient, ValkyrieSDKError
+from valkyrie.cli.display import format_table, terminal_safe
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run.artifacts import download_s3_path
+from valkyrie.cli.runtime_config import config_location, tracker_service_url
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -64,6 +65,44 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
         raise click.ClickException(str(e))
 
 
+@click.command(name="artifacts")
+@click.argument("run_id", type=UUID)
+@click.option("--prefix", default="", help="Relative file or directory path.")
+@click.option("--cursor", default=None, help="Continue from a previous next_cursor.")
+@click.option("--limit", type=click.IntRange(1, 1000), default=100, show_default=True)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"], case_sensitive=False),
+    default="text",
+    show_default=True,
+)
+def artifacts(run_id: UUID, prefix: str, cursor: str | None, limit: int, output_format: str) -> None:
+    """List one page of artifact paths available within a run."""
+    try:
+        response = asyncio.run(_list_artifacts(run_id, prefix, cursor, limit))
+    except (ValkyrieSDKError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    if output_format == "json":
+        click.echo(response.model_dump_json(indent=2))
+        return
+    format_table(
+        [
+            {"Path": terminal_safe(entry.path, preserve_newlines=False), "Bytes": str(entry.size)}
+            for entry in response.artifacts
+        ],
+        ["Path", "Bytes"],
+        item_name="artifact",
+    )
+    if response.next_cursor is not None:
+        click.echo(f"Next cursor: {terminal_safe(response.next_cursor, preserve_newlines=False)}")
+
+
+async def _list_artifacts(run_id: UUID, prefix: str, cursor: str | None, limit: int) -> RunArtifactsResponse:
+    async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
+        return await client.artifacts.list(run_id, prefix=prefix, cursor=cursor, limit=limit)
+
+
 @click.command(name="output", help="Download files from a benchmark run by its ID.")
 @click.argument("benchmark_id", type=UUID)
 @click.argument("subpath", type=str, default="", required=False)
@@ -76,27 +115,24 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
 )
 def output_path(benchmark_id: UUID, subpath: str, output_dir: Path | None):
     """
-    Download all files under a benchmark's S3 directory.
+    Download a run artifact path through Tracker into a new local directory.
 
     Example:
         valkyrie run output 6f176c17-7199-4ebc-b931-973e5600c1c9
         valkyrie run output 6f176c17-7199-4ebc-b931-973e5600c1c9 astropy__astropy-7606
-        valkyrie run output 6f176c17-7199-4ebc-b931-973e5600c1c9 swebench.json -o .
+        valkyrie run output 6f176c17-7199-4ebc-b931-973e5600c1c9 swebench.json -o ./downloaded-artifacts
     """
     try:
-        path = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}"
-        if subpath:
-            path = f"{path}/{subpath.strip('/')}"
+        destination = output_dir if output_dir is not None else Path(str(benchmark_id))
+        result = asyncio.run(_download_artifacts(benchmark_id, subpath, destination))
+        click.echo(click.style(f"✓ Run artifacts downloaded to: {result}", fg="green"))
+    except (ValkyrieSDKError, ValueError, OSError) as error:
+        raise click.ClickException(str(error)) from error
 
-        if output_dir is None:
-            output_dir = Path(str(benchmark_id))
 
-        click.echo(f"\r\033[KDownloading from s3://{path}...", nl=False)
-        count = asyncio.run(download_s3_path(path, output_dir))
-        click.echo(click.style(f"\r\033[K✓ {count} file(s) downloaded to: {output_dir}", fg="green"))
-    except Exception as e:
-        click.echo(click.style(f"✗ Error: {e}", fg="red"), err=True)
-        raise click.Abort()
+async def _download_artifacts(run_id: UUID, path: str, output_dir: Path) -> Path:
+    async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
+        return await client.artifacts.download(run_id, output_dir, path=path)
 
 
 def download_run_outputs(run_outputs_response: Response, output_dir: Path) -> None:

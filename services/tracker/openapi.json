@@ -1548,6 +1548,94 @@
         "title": "RetryOrResumeBenchmarkResponse",
         "type": "object"
       },
+      "RunArtifactDownloadResponse": {
+        "description": "A temporary URL for a single run artifact.",
+        "properties": {
+          "download_url": {
+            "title": "Download Url",
+            "type": "string"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "download_url",
+          "expires_in",
+          "size"
+        ],
+        "title": "RunArtifactDownloadResponse",
+        "type": "object"
+      },
+      "RunArtifactEntry": {
+        "description": "An object stored beneath one run's artifact directory.",
+        "properties": {
+          "last_modified": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Modified"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "size"
+        ],
+        "title": "RunArtifactEntry",
+        "type": "object"
+      },
+      "RunArtifactsResponse": {
+        "description": "One page of run artifacts.",
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/RunArtifactEntry"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "artifacts"
+        ],
+        "title": "RunArtifactsResponse",
+        "type": "object"
+      },
       "S3UploadResultsResponse": {
         "properties": {
           "console_url": {
@@ -3051,6 +3139,136 @@
           }
         },
         "summary": "Get Single Benchmark"
+      }
+    },
+    "/benchmarks/{benchmark_id}/artifacts": {
+      "get": {
+        "description": "List an exact artifact path or its descendants within the authorized run.",
+        "operationId": "list_run_artifacts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "prefix",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Prefix",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunArtifactsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Run Artifacts"
+      }
+    },
+    "/benchmarks/{benchmark_id}/artifacts/download-url": {
+      "get": {
+        "description": "Return a temporary download URL for an exact artifact in the authorized run.",
+        "operationId": "get_run_artifact_url",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunArtifactDownloadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Artifact Url"
       }
     },
     "/benchmarks/{benchmark_id}/concurrency": {
