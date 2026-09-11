@@ -197,3 +197,21 @@ def test_cli_exports_tracker_results_without_private_contract_values(
     assert "secrets" not in saved_payload["benchmark_arguments"]["contract"]
     assert "kwargs" not in saved_payload["benchmark_arguments"]["contract"]
     assert "finished-secret-must-not-leak" not in output_path.read_text(encoding="utf-8")
+
+
+async def test_sdk_updates_persisted_concurrency(
+    seeded_runs: tuple[Benchmark, Benchmark], database_session: Session, local_tracker_app
+) -> None:
+    import httpx
+    from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
+    from valkyrie.cli.runtime_config import config_location
+
+    running, _ = seeded_runs
+    async with ValkyrieClient(
+        ValkyrieConfig.from_yaml(config_location()),
+        base_url="http://tracker.test",
+        transport=httpx.ASGITransport(app=local_tracker_app),
+    ) as client:
+        result = await client.runs.update_concurrency(running.id, concurrency=3)
+    database_session.refresh(running)
+    assert running.arguments.concurrency == result.concurrency == 3

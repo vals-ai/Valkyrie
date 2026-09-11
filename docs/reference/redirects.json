@@ -192,6 +192,10 @@
     "destination": "/reference/sdk/runs#stream-outputs"
   },
   {
+    "source": "/reference/sdk/runs/update_concurrency",
+    "destination": "/reference/sdk/runs#update-concurrency"
+  },
+  {
     "source": "/reference/sdk/runs/stop",
     "destination": "/reference/sdk/runs#stop"
   },
@@ -422,6 +426,14 @@
   {
     "source": "/reference/sdk/models/runs/stop-benchmark-response",
     "destination": "/reference/sdk/models/runs#stop-benchmark-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/update-benchmark-concurrency-request",
+    "destination": "/reference/sdk/models/runs#update-benchmark-concurrency-request"
+  },
+  {
+    "source": "/reference/sdk/models/runs/update-benchmark-concurrency-response",
+    "destination": "/reference/sdk/models/runs#update-benchmark-concurrency-response"
   },
   {
     "source": "/reference/sdk/models/benchmarks/task-artifacts-response",

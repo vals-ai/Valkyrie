@@ -223,3 +223,21 @@ async def test_stream_outputs_raises_api_errors_before_streaming(make_client) ->
     async with make_client(handler) as client:
         with pytest.raises(ValkyrieAPIError, match="No outputs found"):
             _ = [chunk async for chunk in client.runs.stream_outputs(uuid4())]
+
+
+async def test_update_concurrency(make_client) -> None:
+    run_id = uuid4()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "PATCH"
+        assert request.url.path == f"/benchmarks/{run_id}/concurrency"
+        assert json.loads(request.content) == {"concurrency": 7}
+        return httpx.Response(200, json={"benchmark_id": str(run_id), "status": "IN_PROGRESS", "concurrency": 7})
+
+    async with make_client(handler) as client:
+        result = await client.runs.update_concurrency(run_id, concurrency=7)
+        for invalid in (0, -1, True):
+            with pytest.raises(ValueError):
+                await client.runs.update_concurrency(run_id, concurrency=invalid)
+    assert result.benchmark_id == run_id
+    assert result.concurrency == 7

@@ -25,6 +25,8 @@ from valkyrie.sdk.models import (
     StartBenchmarkRequest,
     StartBenchmarkResponse,
     StopBenchmarkResponse,
+    UpdateBenchmarkConcurrencyRequest,
+    UpdateBenchmarkConcurrencyResponse,
 )
 
 if TYPE_CHECKING:
@@ -298,6 +300,16 @@ class RunsResource:
                 self._sdk.raise_for_status(response)
             async for chunk in response.aiter_bytes():
                 yield chunk
+
+    async def update_concurrency(self, run_id: UUID, *, concurrency: int) -> UpdateBenchmarkConcurrencyResponse:
+        """Change an active run's concurrency limit. Existing tasks continue running."""
+        request = UpdateBenchmarkConcurrencyRequest(concurrency=concurrency)
+        return await self._sdk.request_model(
+            "PATCH",
+            f"/benchmarks/{run_id}/concurrency",
+            UpdateBenchmarkConcurrencyResponse,
+            json=request.model_dump(mode="json"),
+        )
 
     async def stop(
         self,
