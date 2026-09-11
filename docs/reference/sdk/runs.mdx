@@ -125,6 +125,20 @@ async def fetch(run_id: UUID) -> FetchBenchmarkResponse
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
+## `client.runs.filter_options` {#filter-options}
+
+Discover valid run-filter values from this organization's run history.
+
+```python Signature
+async def filter_options() -> FilterOptionsResponse
+```
+
+**Returns**
+
+<a href="/reference/sdk/models/runs#filter-options-response"><code>FilterOptionsResponse</code></a>
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
 ## `client.runs.list` {#list}
 
 List runs using typed filters and pagination.

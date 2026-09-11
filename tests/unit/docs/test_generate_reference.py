@@ -27,6 +27,7 @@ _EXPECTED_CLI_PATHS = (
     "run analyze",
     "run errors",
     "run fetch",
+    "run filter-options",
     "run list",
     "run logs",
     "run output",
@@ -66,6 +67,7 @@ _EXPECTED_RESOURCES = {
     "RunsResource": (
         "start",
         "fetch",
+        "filter_options",
         "list",
         "iter",
         "stream",
@@ -94,6 +96,7 @@ _EXPECTED_TYPES = {
         "FetchBenchmarkMetadataResponse",
         "FetchBenchmarksRequest",
         "FetchBenchmarksResponse",
+        "FilterOptionsResponse",
         "FinalViewResponse",
         "RetryOrResumeBenchmarkResponse",
         "ResultsExistResponse",

@@ -68,6 +68,7 @@ TYPE_CARDS = {
 
 READ_ONLY_COMMANDS = frozenset(
     {
+        ("run", "filter-options"),
         ("run", "task-artifacts"),
         ("run", "task"),
         ("run", "tasks"),

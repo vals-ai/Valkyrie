@@ -310,3 +310,13 @@ class UpdateBenchmarkConcurrencyResponse(ResponseModel):
     benchmark_id: UUID
     status: BenchmarkStatus
     concurrency: int
+
+
+class FilterOptionsResponse(ResponseModel):
+    """Values available for run filters in the caller's organization."""
+
+    benchmark_names: list[str]
+    agent_names: list[str]
+    models: list[str]
+    datasets: list[str]
+    started_by_emails: list[str]

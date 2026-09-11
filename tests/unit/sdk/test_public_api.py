@@ -36,6 +36,7 @@ EXPECTED_ALL = [
     "FetchBenchmarkMetadataResponse",
     "FetchBenchmarksRequest",
     "FetchBenchmarksResponse",
+    "FilterOptionsResponse",
     "FetchTasksRequest",
     "FinalViewResponse",
     "LogEvent",
