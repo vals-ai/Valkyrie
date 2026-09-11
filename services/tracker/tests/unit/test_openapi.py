@@ -125,7 +125,8 @@ def test_openapi_includes_scheduler_overview_contract() -> None:
     schemas = build_openapi()["components"]["schemas"]
     pool_schema = schemas["SchedulerPoolResponse"]
     assert pool_schema["required"] == ["pool_id", "waiting"]
-    assert set(pool_schema["properties"]) == {"pool_id", "waiting", "provider", "capacity"}
+    assert set(pool_schema["properties"]) == {"pool_id", "waiting", "provider", "capacity_domains"}
+    assert schemas["SchedulerCapacityDomainResponse"]["required"] == ["target_id", "sandbox_class", "capacity"]
     assert schemas["SchedulerResourceCapacityResponse"]["properties"] == {
         "available": {"type": "number", "minimum": 0.0, "title": "Available"},
         "total": {"type": "number", "minimum": 0.0, "title": "Total"},

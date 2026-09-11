@@ -8,7 +8,7 @@ from typing import cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
-from benchmark_service import ResourceCapacity, SandboxCapacity
+from benchmark_service import ResourceCapacity, SandboxCapacity, SandboxCapacityDomain
 from fastapi.testclient import TestClient
 import pytest
 from sqlmodel import Session
@@ -253,12 +253,27 @@ def test_capacity_route_projects_provider_values_and_uses_complete_pool_referenc
     database_session.add_all([first, second, _waiting_task(first, "first"), _waiting_task(second, "second")])
     database_session.commit()
     provider = Mock(admission_pool_id=_PROVIDER_POOL_ID)
-    provider.get_capacity = AsyncMock(
-        return_value=SandboxCapacity(
-            cpu=ResourceCapacity(total=16, used=3.5),
-            memory=ResourceCapacity(total=64, used=8),
-            disk=ResourceCapacity(total=100, used=25),
-        )
+    provider.get_capacity_domains = AsyncMock(
+        return_value=[
+            SandboxCapacityDomain(
+                target_id="region-b",
+                sandbox_class="linux-vm",
+                capacity=SandboxCapacity(
+                    cpu=ResourceCapacity(total=16, used=3.5),
+                    memory=ResourceCapacity(total=64, used=8),
+                    disk=ResourceCapacity(total=100, used=25),
+                ),
+            ),
+            SandboxCapacityDomain(
+                target_id="region-a",
+                sandbox_class="container",
+                capacity=SandboxCapacity(
+                    cpu=ResourceCapacity(total=8, used=2),
+                    memory=ResourceCapacity(total=32, used=4),
+                    disk=ResourceCapacity(total=50, used=10),
+                ),
+            ),
+        ]
     )
     provider.close = AsyncMock()
     provider_config = Mock()
@@ -283,15 +298,30 @@ def test_capacity_route_projects_provider_values_and_uses_complete_pool_referenc
             "pool_id": _QUEUE_POOL_ID,
             "waiting": 2,
             "provider": "daytona",
-            "capacity": {
-                "cpu": {"available": 12.5, "total": 16.0},
-                "memory": {"available": 56.0, "total": 64.0},
-                "disk": {"available": 75.0, "total": 100.0},
-            },
+            "capacity_domains": [
+                {
+                    "target_id": "region-b",
+                    "sandbox_class": "linux-vm",
+                    "capacity": {
+                        "cpu": {"available": 12.5, "total": 16.0},
+                        "memory": {"available": 56.0, "total": 64.0},
+                        "disk": {"available": 75.0, "total": 100.0},
+                    },
+                },
+                {
+                    "target_id": "region-a",
+                    "sandbox_class": "container",
+                    "capacity": {
+                        "cpu": {"available": 6.0, "total": 8.0},
+                        "memory": {"available": 28.0, "total": 32.0},
+                        "disk": {"available": 40.0, "total": 50.0},
+                    },
+                },
+            ],
         }
     ]
     fetch_config.assert_awaited_once()
-    provider.get_capacity.assert_awaited_once()
+    provider.get_capacity_domains.assert_awaited_once()
     provider.close.assert_awaited_once()
 
 
@@ -323,8 +353,8 @@ def test_access_key_and_ambiguous_pools_never_use_deployment_aws(
 
     assert response.status_code == 200
     assert response.json()["pools"] == [
-        {"pool_id": "pool_ambiguous", "waiting": 2, "provider": "daytona", "capacity": None},
-        {"pool_id": _QUEUE_POOL_ID, "waiting": 2, "provider": "daytona", "capacity": None},
+        {"pool_id": "pool_ambiguous", "waiting": 2, "provider": "daytona", "capacity_domains": None},
+        {"pool_id": _QUEUE_POOL_ID, "waiting": 2, "provider": "daytona", "capacity_domains": None},
     ]
     deployment_runtime.assert_not_called()
 
@@ -333,7 +363,7 @@ async def test_capacity_timeout_closes_provider_and_pool_drift_skips_observation
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = Mock(admission_pool_id="different-provider-pool")
-    provider.get_capacity = AsyncMock(side_effect=AssertionError("drifted provider must not be observed"))
+    provider.get_capacity_domains = AsyncMock(side_effect=AssertionError("drifted provider must not be observed"))
     provider.close = AsyncMock()
     provider_config = Mock()
     provider_config.create_provider.return_value = provider
@@ -356,14 +386,28 @@ async def test_capacity_timeout_closes_provider_and_pool_drift_skips_observation
     )
 
     assert drifted is None
-    provider.get_capacity.assert_not_awaited()
+    provider.get_capacity_domains.assert_not_awaited()
+    provider.close.assert_awaited_once()
+
+    provider.admission_pool_id = _PROVIDER_POOL_ID
+    provider.get_capacity_domains = AsyncMock(return_value=[])
+    provider.close.reset_mock()
+
+    empty = await scheduler_overview_api._read_provider_capacity(  # pyright: ignore[reportPrivateUsage]
+        org_id=TEST_ORG_ID,
+        pool_id=_QUEUE_POOL_ID,
+        provider_type="daytona",
+        secret_name="provider-secret",
+    )
+
+    assert empty == []
+    provider.get_capacity_domains.assert_awaited_once()
     provider.close.assert_awaited_once()
 
     async def wait_forever() -> None:
         await asyncio.Event().wait()
 
-    provider.admission_pool_id = _PROVIDER_POOL_ID
-    provider.get_capacity = AsyncMock(side_effect=wait_forever)
+    provider.get_capacity_domains = AsyncMock(side_effect=wait_forever)
     provider.close.reset_mock()
     monkeypatch.setattr(scheduler_overview_api, "_CAPACITY_TIMEOUT_SECONDS", 0.01)
 
@@ -375,7 +419,7 @@ async def test_capacity_timeout_closes_provider_and_pool_drift_skips_observation
     )
 
     assert timed_out is None
-    provider.get_capacity.assert_awaited_once()
+    provider.get_capacity_domains.assert_awaited_once()
     provider.close.assert_awaited_once()
 
 
@@ -436,7 +480,7 @@ async def test_capacity_enrichment_bounds_concurrent_provider_reads(monkeypatch:
     assert peak == 2
     assert active == 0
     assert cancelled == 2
-    assert [pool.capacity for pool in result.pools] == [None] * len(pool_ids)
+    assert [pool.capacity_domains for pool in result.pools] == [None] * len(pool_ids)
 
 
 def test_capacity_failure_keeps_overview_available(
@@ -447,7 +491,7 @@ def test_capacity_failure_keeps_overview_available(
     database_session.add_all([benchmark, _waiting_task(benchmark)])
     database_session.commit()
     provider = Mock(admission_pool_id=_PROVIDER_POOL_ID)
-    provider.get_capacity = AsyncMock(side_effect=RuntimeError("provider unavailable"))
+    provider.get_capacity_domains = AsyncMock(side_effect=RuntimeError("provider unavailable"))
     provider.close = AsyncMock()
     provider_config = Mock()
     provider_config.create_provider.return_value = provider
@@ -466,7 +510,7 @@ def test_capacity_failure_keeps_overview_available(
 
     assert response.status_code == 200
     assert response.json()["pools"] == [
-        {"pool_id": _QUEUE_POOL_ID, "waiting": 1, "provider": "daytona", "capacity": None}
+        {"pool_id": _QUEUE_POOL_ID, "waiting": 1, "provider": "daytona", "capacity_domains": None}
     ]
     provider.close.assert_awaited_once()
 

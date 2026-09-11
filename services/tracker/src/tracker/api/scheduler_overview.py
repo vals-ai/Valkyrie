@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
-from benchmark_service import SandboxCapacity, SandboxProvider
+from benchmark_service import SandboxCapacity, SandboxCapacityDomain, SandboxProvider
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import JSON, select as sa_select, type_coerce
 from sqlalchemy.sql.elements import ColumnElement
@@ -26,6 +26,7 @@ from tracker.scheduler.store import queue_pool_id
 from tracker.types import (
     SchedulerActiveEntryResponse,
     SchedulerActiveStatus,
+    SchedulerCapacityDomainResponse,
     SchedulerCapacityResponse,
     SchedulerOverviewResponse,
     SchedulerPoolResponse,
@@ -259,6 +260,14 @@ def _capacity_response(capacity: SandboxCapacity) -> SchedulerCapacityResponse:
     )
 
 
+def _capacity_domain_response(domain: SandboxCapacityDomain) -> SchedulerCapacityDomainResponse:
+    return SchedulerCapacityDomainResponse(
+        target_id=domain.target_id,
+        sandbox_class=domain.sandbox_class,
+        capacity=_capacity_response(domain.capacity),
+    )
+
+
 async def _cancel_and_drain(task: asyncio.Task[None]) -> None:
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
@@ -285,7 +294,7 @@ async def _read_provider_capacity(
     pool_id: str,
     provider_type: str,
     secret_name: str,
-) -> SchedulerCapacityResponse | None:
+) -> list[SchedulerCapacityDomainResponse] | None:
     provider: SandboxProvider | None = None
     try:
         async with asyncio.timeout(_CAPACITY_TIMEOUT_SECONDS):
@@ -301,10 +310,10 @@ async def _read_provider_capacity(
                 provider_pool_id = created_provider.admission_pool_id
                 if provider_pool_id is None or queue_pool_id(provider_pool_id) != pool_id:
                     raise ValueError("Sandbox capacity provider does not match the queued pool")
-                capacity = await created_provider.get_capacity()
-                if capacity is None:
+                domains = await created_provider.get_capacity_domains()
+                if domains is None:
                     return None
-                return _capacity_response(capacity)
+                return [_capacity_domain_response(domain) for domain in domains]
             finally:
                 if provider is not None:
                     await _close_provider(provider, pool_id)
@@ -342,7 +351,7 @@ async def _enrich_scheduler_capacity(
     requests: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
     for index, pool in enumerate(overview.pools):
         provider_type, request = _capacity_request(references.get(pool.pool_id, set()))
-        pools.append(pool.model_copy(update={"provider": provider_type, "capacity": None}))
+        pools.append(pool.model_copy(update={"provider": provider_type, "capacity_domains": None}))
         if request is not None:
             requests.put_nowait((index, request[0], request[1]))
 
@@ -353,13 +362,13 @@ async def _enrich_scheduler_capacity(
             except asyncio.QueueEmpty:
                 return
             pool = pools[index]
-            capacity = await _read_provider_capacity(
+            capacity_domains = await _read_provider_capacity(
                 org_id=org_id,
                 pool_id=pool.pool_id,
                 provider_type=provider_type,
                 secret_name=secret_name,
             )
-            pools[index] = pool.model_copy(update={"capacity": capacity})
+            pools[index] = pool.model_copy(update={"capacity_domains": capacity_domains})
 
     workers = [asyncio.create_task(enrich()) for _ in range(min(_CAPACITY_MAX_CONCURRENCY, requests.qsize()))]
     try:

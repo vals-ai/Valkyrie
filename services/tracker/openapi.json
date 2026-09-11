@@ -1647,6 +1647,30 @@
         "title": "SchedulerActiveStatus",
         "type": "string"
       },
+      "SchedulerCapacityDomainResponse": {
+        "properties": {
+          "capacity": {
+            "$ref": "#/components/schemas/SchedulerCapacityResponse"
+          },
+          "sandbox_class": {
+            "minLength": 1,
+            "title": "Sandbox Class",
+            "type": "string"
+          },
+          "target_id": {
+            "minLength": 1,
+            "title": "Target Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_id",
+          "sandbox_class",
+          "capacity"
+        ],
+        "title": "SchedulerCapacityDomainResponse",
+        "type": "object"
+      },
       "SchedulerCapacityResponse": {
         "properties": {
           "cpu": {
@@ -1720,15 +1744,19 @@
       },
       "SchedulerPoolResponse": {
         "properties": {
-          "capacity": {
+          "capacity_domains": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/SchedulerCapacityResponse"
+                "items": {
+                  "$ref": "#/components/schemas/SchedulerCapacityDomainResponse"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Capacity Domains"
           },
           "pool_id": {
             "title": "Pool Id",
