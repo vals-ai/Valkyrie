@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -111,7 +112,16 @@ def download(agent_name: str, output_dir: Path | None, overwrite: bool):
 
 
 @click.command(name="list", help="List installed agents")
-def list_installed_agents():
+@click.option("--all", "all_agents", is_flag=True, help="Show every agent without interactive paging.")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"], case_sensitive=False),
+    default="text",
+    show_default=True,
+    help="Output format. JSON includes every agent without interactive paging.",
+)
+def list_installed_agents(all_agents: bool, output_format: str):
     """List all installed agents through Tracker.
 
     Use vim keys to navigate: [h] previous page, [l] next page, [q] quit.
@@ -122,11 +132,27 @@ def list_installed_agents():
     try:
         agents = asyncio.run(list_agents())
 
-        if not agents:
-            click.echo(click.style("\r\033[KNo agents found.", fg="yellow"))
+        if output_format == "json":
+            click.echo(
+                json.dumps(
+                    {
+                        "agents": [
+                            {"name": name, "last_modified": modified.isoformat() if modified else None}
+                            for name, modified in agents
+                        ]
+                    }
+                )
+            )
             return
 
-        paginate_agents(agents)
+        if not agents:
+            click.echo(click.style("No agents found.", fg="yellow"))
+            return
+
+        if all_agents:
+            _format_agents_response(agents, 1, 1, len(agents))
+        else:
+            paginate_agents(agents)
     except (ValkyrieSDKError, ValueError, OSError) as e:
         raise click.ClickException(str(e))
     except Exception as e:

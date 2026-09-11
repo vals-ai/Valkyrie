@@ -43,6 +43,11 @@ def test_agent_library_round_trip(
     assert result.exit_code == 0, result.output
     assert "alias" in result.output
 
+    result = cli_runner.invoke(cli, ["agent", "list", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {"agents": [{"name": "alias", "last_modified": None}]}
+
     result = cli_runner.invoke(cli, ["agent", "download", "alias", "--output-dir", str(output)])
 
     assert result.exit_code == 0, result.output
