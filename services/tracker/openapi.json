@@ -938,6 +938,18 @@
             ],
             "title": "Benchmark Url"
           },
+          "lambda_function": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
           "secrets": {
             "additionalProperties": {
               "type": "string"
