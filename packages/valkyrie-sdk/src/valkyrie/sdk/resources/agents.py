@@ -1,37 +1,143 @@
-"""Hosted agent discovery operations."""
+"""Tracker-backed agent library management."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-from urllib.parse import quote
+import asyncio
+import tempfile
+from contextlib import ExitStack
+from pathlib import Path
+from typing import TYPE_CHECKING, AsyncIterator, BinaryIO
 
-from valkyrie.sdk.models import AgentDownloadURLResponse, AgentsResponse
+import httpx
+
+from valkyrie.sdk.agent_bundle import (
+    DEFAULT_MAX_ARCHIVE_BYTES,
+    DEFAULT_MAX_ENTRIES,
+    DEFAULT_MAX_EXPANDED_BYTES,
+    extract_agent_archive,
+    get_agent_zip_stream,
+    read_agent_name,
+    validate_agent_name,
+)
+from valkyrie.sdk.agent_install import checkout_agent
+from valkyrie.sdk.errors import ValkyrieTransportError
+from valkyrie.sdk.models import AgentDownloadURLResponse, AgentEntry, AgentsResponse
 
 if TYPE_CHECKING:
     from valkyrie.sdk.client import ValkyrieClient
 
 
+async def _file_chunks(stream: BinaryIO) -> AsyncIterator[bytes]:
+    while chunk := await asyncio.to_thread(stream.read, 1024 * 1024):
+        yield chunk
+
+
 class AgentsResource:
-    """Async operations for agents uploaded to the configured tenant."""
+    """Async operations for the configured deployment's shared agent library."""
 
     def __init__(self, client: ValkyrieClient) -> None:
         self._sdk = client
 
     async def list(self) -> AgentsResponse:
-        """List uploaded agents visible to the configured tenant."""
+        """List uploaded agents in the configured shared library."""
         return await self._sdk.request_model("GET", "/agents", AgentsResponse)
 
     async def download_url(self, name: str) -> AgentDownloadURLResponse:
         """Create a temporary download URL for an uploaded agent."""
-        if not name.strip():
-            raise ValueError("agent name must not be blank")
-        if name in {".", ".."}:
-            raise ValueError("agent name must not be '.' or '..'")
-        if "/" in name:
-            raise ValueError("agent name must not contain '/'")
-        name_segment = quote(name, safe="")
+        validate_agent_name(name)
+
         return await self._sdk.request_model(
             "GET",
-            f"/agents/{name_segment}/download-url",
+            f"/agents/{name}/download-url",
             AgentDownloadURLResponse,
         )
+
+    async def push(self, agent_path: str | Path, *, name: str | None = None) -> AgentEntry:
+        """Bundle a directory containing contract.yaml or contract.yml and upload it through Tracker.
+
+        name defaults to the contract name and replaces that library alias if it exists.
+        """
+        path = Path(agent_path)
+        contract_name = await asyncio.to_thread(read_agent_name, path)
+        agent_name = validate_agent_name(name) if name is not None else contract_name
+        with ExitStack() as stack:
+            stream = await asyncio.to_thread(stack.enter_context, get_agent_zip_stream(agent_name, path))
+            size = await asyncio.to_thread(stream.seek, 0, 2)
+            await asyncio.to_thread(stream.seek, 0)
+
+            return await self._sdk.request_model(
+                "PUT",
+                f"/agents/{agent_name}",
+                AgentEntry,
+                content=_file_chunks(stream),
+                headers={"Content-Type": "application/zip", "Content-Length": str(size)},
+            )
+
+    async def download(
+        self,
+        name: str,
+        output_dir: str | Path | None = None,
+        *,
+        overwrite: bool = False,
+        max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
+        max_expanded_bytes: int = DEFAULT_MAX_EXPANDED_BYTES,
+        max_entries: int = DEFAULT_MAX_ENTRIES,
+    ) -> Path:
+        """Download and safely extract an agent into output_dir/name.
+
+        output_dir defaults to the current directory; overwrite replaces an existing agent directory
+        only after archive validation succeeds.
+
+        max_archive_bytes limits ZIP data; max_expanded_bytes and max_entries bound extraction.
+        Limits must be positive.
+        """
+        validate_agent_name(name)
+        if min(max_archive_bytes, max_expanded_bytes, max_entries) <= 0:
+            raise ValueError("Agent archive limits must be positive")
+        directory = Path(output_dir) if output_dir is not None else Path.cwd()
+        target = directory / name
+        if target.is_symlink() or (target.exists() and (not overwrite or not target.is_dir())):
+            raise FileExistsError(f"Target already exists: {target}; use overwrite for an existing directory")
+        response = await self.download_url(name)
+        try:
+            # A separate client must never inherit Tracker credentials for presigned transfers.
+            async with httpx.AsyncClient(timeout=120) as client:
+                with tempfile.TemporaryFile() as stream:
+                    async with client.stream("GET", response.download_url) as download:
+                        download.raise_for_status()
+                        downloaded_bytes = 0
+                        async for chunk in download.aiter_bytes(chunk_size=1024 * 1024):
+                            downloaded_bytes += len(chunk)
+                            if downloaded_bytes > max_archive_bytes:
+                                raise ValueError("Agent archive exceeds max_archive_bytes")
+                            await asyncio.to_thread(stream.write, chunk)
+                    await asyncio.to_thread(stream.seek, 0)
+
+                    return await asyncio.to_thread(
+                        extract_agent_archive,
+                        stream,
+                        name,
+                        directory,
+                        overwrite=overwrite,
+                        max_archive_bytes=max_archive_bytes,
+                        max_expanded_bytes=max_expanded_bytes,
+                        max_entries=max_entries,
+                    )
+        except httpx.HTTPError as error:
+            raise ValkyrieTransportError("Agent archive download failed") from error
+
+    async def remove(self, name: str) -> AgentEntry:
+        """Remove an uploaded alias; missing agents return a 404 API error."""
+        validate_agent_name(name)
+
+        return await self._sdk.request_model("DELETE", f"/agents/{name}", AgentEntry)
+
+    async def install(self, github_url: str, *, name: str | None = None) -> AgentEntry:
+        """Use local Git to clone an HTTPS GitHub repository or /tree/branch/subfolder URL and push it.
+
+        name defaults to the contract name and replaces that library alias if it exists.
+        """
+        if name is not None:
+            validate_agent_name(name)
+        async with checkout_agent(github_url) as agent_path:
+            return await self.push(agent_path, name=name)

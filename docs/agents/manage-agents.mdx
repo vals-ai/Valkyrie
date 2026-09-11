@@ -3,9 +3,13 @@ title: Manage agents
 description: Install, upload, list, download, and remove agent bundles.
 ---
 
-Valkyrie stores installed agent bundles under `agents/` in the S3 bucket configured by `valkyrie config init`. Every agent must contain a valid [agent contract](/agents/agent-contract).
+The CLI and standalone SDK manage agents through Tracker. Bundles use the shared `agents/` layout in the bucket resolved by your existing configuration. Every agent must contain a valid [agent contract](/agents/agent-contract).
+
+Uploads and removals use the existing deployment permissions. A hosted deployment can allow reads but deny writes. Development and self-hosted deployments can permit writes without changing the CLI or SDK. A storage permission error requires an operator to check the deployment's S3 access; retrying with another alias does not grant access.
 
 Browse compatible community agents in the [public agent registry](https://github.com/vals-ai/public-agent-registry).
+
+Use `valkyrie agent list --all` to print the library without paging, or `valkyrie agent list --format json` for scripts.
 
 `--name` defaults to the `name` field in the agent's `contract.yaml` on both install and push. Full syntax for each command is in the [`agent install`](/reference/cli/agent#install), [`agent push`](/reference/cli/agent#push), [`agent list`](/reference/cli/agent#list), [`agent download`](/reference/cli/agent#download), and [`agent remove`](/reference/cli/agent#remove) reference.
 
@@ -15,7 +19,7 @@ Browse compatible community agents in the [public agent registry](https://github
 valkyrie agent install https://github.com/user/my-agent --name my-agent
 ```
 
-The CLI clones the repository, bundles it, and uploads it to S3.
+The SDK clones the repository with local Git, includes submodules, bundles it, and uploads it through Tracker. Submodules must resolve to HTTPS GitHub repositories, including nested submodules; Git redirects are disabled. GitHub `/tree/branch/subfolder` URLs install just that subfolder. Both install and push replace an existing library alias. `--name` changes the alias and archive root without rewriting the contract's name. Use that alias when starting runs.
 
 ## Push a local agent
 
@@ -37,7 +41,17 @@ The interactive list supports `[h]` for previous, `[l]` for next, and `[q]` to q
 valkyrie agent download sweagent --output-dir ./agents
 ```
 
-The output directory defaults to the current directory.
+The SDK extracts into `./agents/sweagent` in this example. The output directory defaults to the current directory. Downloads reject an existing target unless you pass `--overwrite`; that option replaces the agent directory only after the archive passes validation. If replacement fails, the SDK restores the previous directory. If restoration also fails, the error reports where the backup remains. An interrupted replacement can leave a `.sweagent-backup-*` directory beside the target. Other directories remain untouched.
+
+Archives reject path traversal, symlinks, duplicate paths, and corrupt content. Downloads use a temporary presigned URL without forwarding Tracker credentials.
+
+Downloads allow up to 1 GiB of ZIP data, 5 GiB of expanded content, and 100000 entries. The SDK's [`download` limits](/reference/sdk/agents#download) accept positive overrides for larger bundles.
+
+## Use the standalone SDK
+
+[`client.agents`](/reference/sdk/agents) provides `list`, `push`, `download`, `remove`, and GitHub `install`. The SDK requires no AWS or Tracker package. Use `name=` to override the library alias and `overwrite=True` to replace a downloaded directory.
+
+Tracker defaults to a 1 GiB upload, 5 GiB expanded content, and 100000 archive entries. Exceeded limits return HTTP 413. Operators can [configure archive limits](/contributing/tracker-service#agent-library-limits).
 
 ## Remove an agent
 

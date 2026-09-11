@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterable
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from types import TracebackType
@@ -91,10 +92,19 @@ class ValkyrieClient:
         *,
         params: dict[str, Any] | None = None,
         json: Any = None,
+        content: AsyncIterable[bytes] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> ResponseModel:
         """Send a request and validate its response as a Pydantic model."""
         try:
-            response = await self._client.request(method, path, params=params, json=json)
+            response = await self._client.request(
+                method,
+                path,
+                params=params,
+                json=json,
+                content=content,
+                headers=headers,
+            )
         except httpx.HTTPError as exc:
             raise ValkyrieTransportError(f"Valkyrie request failed: {exc}") from exc
 

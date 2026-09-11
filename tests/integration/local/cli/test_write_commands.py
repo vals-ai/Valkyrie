@@ -13,6 +13,78 @@ from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from valkyrie.cli.main import cli
 
 
+def test_agent_library_round_trip(
+    cli_runner: CliRunner,
+    agent_library: dict[str, bytes],
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "contract.yaml").write_text("name: demo\ninstall_cmd: 'true'\nrun_cmd: 'echo {problem_statement_path}'\n")
+    (source / "run.py").write_text("first version")
+    (source / "run.py").chmod(0o755)
+    output = tmp_path / "download"
+
+    result = cli_runner.invoke(cli, ["agent", "push", str(source)])
+
+    assert result.exit_code == 0, result.output
+    assert "Agent 'demo' pushed successfully!" in result.output
+    assert "agents/demo.zip" in agent_library
+    result = cli_runner.invoke(cli, ["agent", "remove", "demo"], input="y\n")
+    assert result.exit_code == 0, result.output
+
+    result = cli_runner.invoke(cli, ["agent", "push", str(source), "--name", "alias"])
+
+    assert result.exit_code == 0, result.output
+    assert "agents/alias.zip" in agent_library
+
+    result = cli_runner.invoke(cli, ["agent", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "alias" in result.output
+
+    result = cli_runner.invoke(cli, ["agent", "list", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {"agents": [{"name": "alias", "last_modified": None}]}
+
+    result = cli_runner.invoke(cli, ["agent", "download", "alias", "--output-dir", str(output)])
+
+    assert result.exit_code == 0, result.output
+    assert (output / "alias" / "run.py").read_text() == "first version"
+    assert (output / "alias" / "run.py").stat().st_mode & 0o111
+
+    (source / "run.py").write_text("replacement")
+    result = cli_runner.invoke(cli, ["agent", "push", str(source), "--name", "alias"])
+
+    assert result.exit_code == 0, result.output
+
+    result = cli_runner.invoke(cli, ["agent", "download", "alias", "--output-dir", str(output)])
+
+    assert result.exit_code == 1
+    assert (output / "alias" / "run.py").read_text() == "first version"
+
+    result = cli_runner.invoke(cli, ["agent", "download", "alias", "--output-dir", str(output), "--overwrite"])
+
+    assert result.exit_code == 0, result.output
+    assert (output / "alias" / "run.py").read_text() == "replacement"
+
+    cancelled = cli_runner.invoke(cli, ["agent", "remove", "alias"], input="n\n")
+
+    assert cancelled.exit_code == 0
+    assert "agents/alias.zip" in agent_library
+
+    result = cli_runner.invoke(cli, ["agent", "remove", "alias"], input="y\n")
+
+    assert result.exit_code == 0, result.output
+    assert not agent_library
+
+    missing = cli_runner.invoke(cli, ["agent", "remove", "alias"], input="y\n")
+
+    assert missing.exit_code == 1
+    assert "404" in missing.output
+
+
 def test_cli_stops_only_selected_pending_tasks(
     cli_runner: CliRunner,
     seeded_runs: tuple[Benchmark, Benchmark],

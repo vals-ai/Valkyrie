@@ -19,6 +19,8 @@ HARNESS_HEADERS = (
 HARNESS_OPERATIONS = (
     ("/agents", "get"),
     ("/agents/{name}/download-url", "get"),
+    ("/agents/{name}", "put"),
+    ("/agents/{name}", "delete"),
     ("/analyze-benchmark/{benchmark_id}", "post"),
     ("/benchmarks/{benchmark_id}/logs", "get"),
     ("/benchmarks/{benchmark_id}/logs/stream", "get"),

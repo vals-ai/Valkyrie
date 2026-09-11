@@ -590,41 +590,22 @@ class TestParseYamlContract:
 
 
 class TestPushCommand:
-    def _write_contract(self, agent_dir: Path) -> None:
-        (agent_dir / "contract.yaml").write_text(
-            dedent(
-                """\
-                name: my_agent
-                install_cmd: bash setup.sh
-                run_cmd: "agent --task {problem_statement_path}"
-                """
-            )
-        )
+    @pytest.mark.parametrize("name", [None, "override"])
+    def test_push_reports_resolved_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str | None
+    ) -> None:
+        async def mock_push(agent_name: str | None, agent_path: Path) -> str:
+            assert agent_name == name
+            assert agent_path == tmp_path
 
-    def test_push_uses_contract_name(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._write_contract(tmp_path)
-        pushed: dict[str, str] = {}
-
-        async def mock_push(agent_name: str, agent_path: Path) -> None:
-            pushed["name"] = agent_name
+            return agent_name or "my_agent"
 
         monkeypatch.setattr("valkyrie.cli.agent.lifecycle.push_agent", mock_push)
 
-        result = CliRunner().invoke(agent, ["push", str(tmp_path)])
+        arguments = ["push", str(tmp_path)]
+        if name is not None:
+            arguments.extend(["--name", name])
+        result = CliRunner().invoke(agent, arguments)
 
         assert result.exit_code == 0
-        assert pushed["name"] == "my_agent"
-
-    def test_push_name_flag_overrides_contract_name(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._write_contract(tmp_path)
-        pushed: dict[str, str] = {}
-
-        async def mock_push(agent_name: str, agent_path: Path) -> None:
-            pushed["name"] = agent_name
-
-        monkeypatch.setattr("valkyrie.cli.agent.lifecycle.push_agent", mock_push)
-
-        result = CliRunner().invoke(agent, ["push", str(tmp_path), "--name", "override"])
-
-        assert result.exit_code == 0
-        assert pushed["name"] == "override"
+        assert f"Agent '{name or 'my_agent'}' pushed successfully!" in result.output

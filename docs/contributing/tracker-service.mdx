@@ -25,6 +25,20 @@ GET /scheduler/overview?waiting_limit=100&active_limit=100&waiting_offset=0&acti
 
 The endpoint uses the request's resolved organization and never returns rows from another organization. Its summary contains total waiting, building, in-progress, and evaluating counts. It also returns per-pool waiting counts plus bounded waiting and active entries. Each entry limit defaults to 100 and accepts 1–200. Independent nonnegative offsets default to zero. `waiting_next_offset` and `active_next_offset` identify the next page, or return `null` when exhausted. The corresponding capped flag indicates more rows after that page. Offsets apply after organization filtering and do not change global pool positions or totals. Pages reflect live state; queue changes between calls can repeat or skip entries. Active entries use `BUILDING`, `IN_PROGRESS`, or `EVALUATING` status.
 
+## Agent library limits
+
+Agent upload and removal use the same authentication and AWS runtime as listing and downloading. Bundles remain in the shared `agents/` prefix. PUT replaces an existing alias; DELETE reports a missing alias as HTTP 404. Existing storage permissions can deny writes with HTTP 403. These endpoints do not grant additional permissions.
+
+Set these positive-integer environment variables on the Tracker process to override archive limits:
+
+| Variable | Default | Bound |
+| --- | --- | --- |
+| `AGENT_UPLOAD_MAX_BYTES` | `1073741824` (1 GiB) | Actual uploaded ZIP bytes |
+| `AGENT_ARCHIVE_MAX_EXPANDED_BYTES` | `5368709120` (5 GiB) | Declared and actual decompressed bytes |
+| `AGENT_ARCHIVE_MAX_ENTRIES` | `100000` | ZIP entries, including directories |
+
+Tracker rejects nonpositive or invalid settings at startup. Exceeded limits return HTTP 413 before storage publication. It checks Content-Length when present and always counts streamed bytes. It checks ZIP metadata before decompressing, then validates actual bytes, integrity, paths, symlinks, and the full agent contract. Temporary disk space must accommodate the upload; validation completes before replacing the stored ZIP.
+
 ## Run it locally
 
 ```bash

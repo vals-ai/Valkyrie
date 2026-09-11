@@ -46,7 +46,7 @@ CLI_CARDS = {
 RESOURCE_CARDS = {
     "RunsResource": ("Runs", "play", "starting, inspecting, streaming, controlling, and retrying runs"),
     "BenchmarksResource": ("Benchmarks", "flask-conical", "retrieving benchmark status, tasks, and artifacts"),
-    "AgentsResource": ("Agents", "package", "listing agents and retrieving bundle download URLs"),
+    "AgentsResource": ("Agents", "package", "installing, uploading, listing, downloading, and removing agent bundles"),
     "BenchmarkServicesResource": (
         "Benchmark services",
         "server",
