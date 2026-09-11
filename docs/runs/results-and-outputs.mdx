@@ -49,3 +49,8 @@ valkyrie run output <run-id> <subpath> --output-dir ./output-dir
 ```
 
 The output directory defaults to `./<run-id>`.
+
+
+## Download outputs from Python
+
+Use `await client.runs.download_outputs(run_id, "./outputs", task_ids=["task-id"])` to download and unpack run outputs, including nested task tarballs. Omit `task_ids` for the entire run. Choose a new output directory; existing directories are refused. Downloads and extraction enforce [configurable size and entry limits](/reference/sdk/runs#download-outputs) and reject links or unsafe archive paths.
