@@ -89,6 +89,7 @@ from valkyrie.cli.tracker_client import TrackerService
     required=False,
     help="Connect to the tracker service to stream run updates after resuming",
 )
+@click.option("--lambda", "lambda_function", type=str, default=None, help="Replace the post-run Lambda for this retry or resume.")
 @click.pass_context
 def resume(
     ctx: click.Context,
@@ -102,6 +103,7 @@ def resume(
     update_agent: bool,
     from_scratch: bool,
     benchmark_url: str | None,
+    lambda_function: str | None,
     connect: bool,
 ):
     """
@@ -137,6 +139,7 @@ def resume(
                 service_headers=service_headers,
                 secrets={key: value for key, value in secrets},
                 benchmark_url=benchmark_url,
+                lambda_function=lambda_function,
             )
             action_label = "retried" if retry else "resumed"
             click.echo(click.style(f"✓ Run {action_label} successfully!", fg="green", bold=True))

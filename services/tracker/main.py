@@ -1238,6 +1238,7 @@ async def retry_or_resume_benchmark(
     service_headers: dict[str, str] = Body(default={}),
     secrets: dict[str, str] = Body(default={}),
     benchmark_url: str | None = Body(default=None),
+    lambda_function: str | None = Body(default=None, min_length=1),
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> RetryOrResumeBenchmarkResponse:
@@ -1452,6 +1453,9 @@ async def retry_or_resume_benchmark(
                 concurrency=concurrency,
                 benchmark_url=benchmark_url,
             )
+
+        if lambda_function is not None:
+            benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"lambda_function": lambda_function})
 
         if benchmark_row.aws_managed:
             resume_request = benchmark_row.managed_start_benchmark_request(
