@@ -5,7 +5,10 @@ Run: pytest tests/unit/sdk/test_run_workflows_v2.py
 
 from __future__ import annotations
 
+import io
 import json
+import tarfile
+from pathlib import Path
 from collections.abc import AsyncIterator
 from uuid import UUID, uuid4
 
@@ -253,3 +256,39 @@ async def test_run_iteration_rejects_repeated_cursor(make_client) -> None:
             _ = [run async for run in client.runs.iter()]
         with pytest.raises(ValueError, match="offset"):
             _ = [run async for run in client.runs.iter(FetchBenchmarksRequest(offset=1))]
+
+
+@pytest.mark.parametrize("unsafe", [False, True])
+async def test_download_outputs_extracts_nested_archives(make_client, tmp_path: Path, unsafe: bool) -> None:
+    nested = io.BytesIO()
+    with tarfile.open(fileobj=nested, mode="w:gz") as archive:
+        member = tarfile.TarInfo("../escape" if unsafe else "result.txt")
+        member.size = 6
+        archive.addfile(member, io.BytesIO(b"result"))
+    outer = io.BytesIO()
+    with tarfile.open(fileobj=outer, mode="w") as archive:
+        member = tarfile.TarInfo("task/agent_output.tar.gz")
+        member.size = len(nested.getvalue())
+        archive.addfile(member, io.BytesIO(nested.getvalue()))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get_list("task_ids") == ["task"]
+        return httpx.Response(200, content=outer.getvalue())
+
+    destination = tmp_path / "outputs"
+    async with make_client(handler) as client:
+        if unsafe:
+            with pytest.raises(ValueError, match="Unsafe"):
+                await client.runs.download_outputs(uuid4(), destination, task_ids=["task"])
+            assert not destination.exists()
+            assert not (tmp_path / "escape").exists()
+        else:
+            result = await client.runs.download_outputs(uuid4(), destination, task_ids=["task"])
+            assert result == destination
+            assert (destination / "task/agent_output/result.txt").read_text() == "result"
+            with pytest.raises(FileExistsError):
+                await client.runs.download_outputs(uuid4(), destination)
+        for limits in ({"max_archive_bytes": 1}, {"max_expanded_bytes": 1}, {"max_entries": 1}):
+            with pytest.raises(ValueError, match="exceed"):
+                await client.runs.download_outputs(uuid4(), tmp_path / "limited", task_ids=["task"], **limits)
+            assert not (tmp_path / "limited").exists()

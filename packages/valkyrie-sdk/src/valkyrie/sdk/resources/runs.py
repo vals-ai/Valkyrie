@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import tempfile
+from pathlib import Path
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 from uuid import UUID
 
+from valkyrie.sdk.output_archive import extract_output_archive
 from valkyrie.sdk.errors import ValkyrieConfigError, ValkyrieRunError, ValkyrieStreamError, handle_httpx_stream_errors
 from valkyrie.sdk.models import (
     AgentContractRequest,
@@ -327,6 +331,42 @@ class RunsResource:
                 self._sdk.raise_for_status(response)
             async for chunk in response.aiter_bytes():
                 yield chunk
+
+    async def download_outputs(
+        self,
+        run_id: UUID,
+        output_dir: str | Path,
+        *,
+        task_ids: Sequence[str] | None = None,
+        max_archive_bytes: int = 1024**3,
+        max_expanded_bytes: int = 5 * 1024**3,
+        max_entries: int = 100_000,
+    ) -> Path:
+        """Download run outputs into a new directory and unpack nested task tarballs.
+
+        Existing directories are refused. Extraction accepts only regular files and directories.
+        Positive limits bound the downloaded archive, expanded bytes, and total member count.
+        """
+        if min(max_archive_bytes, max_expanded_bytes, max_entries) <= 0:
+            raise ValueError("Output archive limits must be positive")
+        output_dir = Path(output_dir)
+        if await asyncio.to_thread(lambda: output_dir.exists() or output_dir.is_symlink()):
+            raise FileExistsError(f"Output directory already exists: {output_dir}")
+        with tempfile.TemporaryFile() as stream:
+            size = 0
+            async for chunk in self.stream_outputs(run_id, task_ids=task_ids):
+                size += len(chunk)
+                if size > max_archive_bytes:
+                    raise ValueError("Run outputs exceed max_archive_bytes")
+                await asyncio.to_thread(stream.write, chunk)
+            await asyncio.to_thread(stream.seek, 0)
+            return await asyncio.to_thread(
+                extract_output_archive,
+                stream,
+                output_dir,
+                max_expanded_bytes=max_expanded_bytes,
+                max_entries=max_entries,
+            )
 
     async def update_concurrency(self, run_id: UUID, *, concurrency: int) -> UpdateBenchmarkConcurrencyResponse:
         """Change an active run's concurrency limit. Existing tasks continue running."""

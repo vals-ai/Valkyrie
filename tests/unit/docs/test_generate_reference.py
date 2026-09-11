@@ -77,6 +77,7 @@ _EXPECTED_RESOURCES = {
         "results_exist",
         "analyze",
         "stream_outputs",
+        "download_outputs",
         "update_concurrency",
         "stop",
         "resume",

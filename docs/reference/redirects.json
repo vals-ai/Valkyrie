@@ -204,6 +204,10 @@
     "destination": "/reference/sdk/runs#stream-outputs"
   },
   {
+    "source": "/reference/sdk/runs/download_outputs",
+    "destination": "/reference/sdk/runs#download-outputs"
+  },
+  {
     "source": "/reference/sdk/runs/update_concurrency",
     "destination": "/reference/sdk/runs#update-concurrency"
   },

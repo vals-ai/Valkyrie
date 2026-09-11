@@ -379,6 +379,56 @@ AsyncIterator[bytes]
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
+## `client.runs.download_outputs` {#download-outputs}
+
+Download run outputs into a new directory and unpack nested task tarballs.
+
+Existing directories are refused. Extraction accepts only regular files and directories. Positive limits bound the downloaded archive, expanded bytes, and total member count.
+
+```python Signature
+async def download_outputs(
+    run_id: UUID,
+    output_dir: str | Path,
+    *,
+    task_ids: Sequence[str] | None = None,
+    max_archive_bytes: int = 1073741824,
+    max_expanded_bytes: int = 5368709120,
+    max_entries: int = 100000,
+) -> Path
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · UUID</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"output_dir"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · str | Path</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"task_ids"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · Sequence[str] | None · default: <code>{"None"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"max_archive_bytes"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int · default: <code>{"1073741824"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"max_expanded_bytes"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int · default: <code>{"5368709120"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"max_entries"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int · default: <code>{"100000"}</code></span></div>
+</div>
+
+**Returns**
+
+Path
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
 ## `client.runs.update_concurrency` {#update-concurrency}
 
 Change an active run's concurrency limit. Existing tasks continue running.
