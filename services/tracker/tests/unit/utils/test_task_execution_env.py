@@ -9,9 +9,13 @@ from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
+from benchmark_service import SandboxSource, TargetedSnapshotSource
 from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.schemas import RetrieveTaskResponse
+from sqlalchemy.engine import Engine
 from sqlmodel import Session
 
 import tracker.utils.task_execution as utils_module
@@ -30,6 +34,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.scheduler.admission import SandboxQueueContext
 from tracker.types import HarnessConfig
 
 
@@ -42,6 +47,80 @@ async def _capture_sandbox_environment(
 ) -> AsyncGenerator[SimpleNamespace, None]:
     captured_env_vars.append(env_vars)
     yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
+
+
+class TestQueuedTaskSource:
+    """Source propagation through queued task execution."""
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_targeted_source_is_shared_by_admission_and_creation(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        source = TargetedSnapshotSource(snapshot="snapshot", target="us-west-3")
+        task_response = make_retrieve_task_response().model_copy(update={"source": source})
+        admission_sources: list[SandboxSource] = []
+        creation_sources: list[SandboxSource] = []
+
+        async def retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return task_response
+
+        @asynccontextmanager
+        async def capture_sandbox(
+            *_args: Any,
+            source: SandboxSource,
+            **_kwargs: Any,
+        ) -> AsyncGenerator[SimpleNamespace, None]:
+            creation_sources.append(source)
+            yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
+
+        async def enter_queue(
+            *,
+            stack: Any,
+            task_row_id: Any,
+            source: SandboxSource,
+            create: Callable[[], Any],
+            **_kwargs: Any,
+        ) -> Any:
+            admission_sources.append(source)
+            sandbox = await stack.enter_async_context(create())
+            with Session(task_engine) as task_session:
+                queued_task = task_session.get(Task, task_row_id)
+                assert queued_task is not None
+                queued_task.status = TaskStatus.IN_PROGRESS
+                task_session.add(queued_task)
+                task_session.commit()
+            return sandbox
+
+        task_engine = database_session.get_bind()
+        assert isinstance(task_engine, Engine)
+        queue_context = SandboxQueueContext(provider=Mock(), pool_id="pool_test", engine=task_engine)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve_task)
+        monkeypatch.setattr(utils_module, "create_sandbox", capture_sandbox)
+        monkeypatch.setattr(utils_module, "enter_queued_sandbox", enter_queue)
+
+        result = await run_process_task(
+            start_benchmark_request,
+            task_row,
+            benchmark_id,
+            aws_runtime,
+            authority,
+            queue_context=queue_context,
+        )
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        assert admission_sources == [source]
+        assert creation_sources == [source]
+        assert admission_sources[0] is creation_sources[0] is source
 
 
 class TestProcessTaskEnvironment:

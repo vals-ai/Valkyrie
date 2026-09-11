@@ -548,11 +548,17 @@ class SchedulerCapacityResponse(BaseModel):
     disk: SchedulerResourceCapacityResponse
 
 
+class SchedulerCapacityDomainResponse(BaseModel):
+    target_id: str = Field(min_length=1)
+    sandbox_class: str = Field(min_length=1)
+    capacity: SchedulerCapacityResponse
+
+
 class SchedulerPoolResponse(BaseModel):
     pool_id: str
     waiting: int
     provider: str | None = None
-    capacity: SchedulerCapacityResponse | None = None
+    capacity_domains: list[SchedulerCapacityDomainResponse] | None = None
 
 
 class SchedulerWaitingEntryResponse(BaseModel):
