@@ -55,6 +55,8 @@ EXPECTED_ALL = [
     "SingleTaskResponse",
     "StartBenchmarkResponse",
     "StopBenchmarkResponse",
+    "UpdateBenchmarkConcurrencyRequest",
+    "UpdateBenchmarkConcurrencyResponse",
     "TaskArtifactsResponse",
     "TasksResponse",
     "TaskSummary",

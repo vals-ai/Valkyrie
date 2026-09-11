@@ -44,6 +44,8 @@ from valkyrie.sdk.models.runs import (
     StartBenchmarkRequest,
     StartBenchmarkResponse,
     StopBenchmarkResponse,
+    UpdateBenchmarkConcurrencyRequest,
+    UpdateBenchmarkConcurrencyResponse,
     TaskStatus,
 )
 from valkyrie.sdk.models.scheduler import (
@@ -115,6 +117,8 @@ __all__ = [
     "StartBenchmarkRequest",
     "StartBenchmarkResponse",
     "StopBenchmarkResponse",
+    "UpdateBenchmarkConcurrencyRequest",
+    "UpdateBenchmarkConcurrencyResponse",
     "TaskStatus",
     "TaskArtifactsResponse",
     "TaskIDsResponse",
