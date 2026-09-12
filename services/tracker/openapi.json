@@ -1660,6 +1660,18 @@
             "title": "Active Entries",
             "type": "array"
           },
+          "active_next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Next active offset, or null when this list is exhausted.",
+            "title": "Active Next Offset"
+          },
           "observed_at": {
             "title": "Observed At",
             "type": "string"
@@ -1684,6 +1696,18 @@
             },
             "title": "Waiting Entries",
             "type": "array"
+          },
+          "waiting_next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Next waiting offset, or null when this list is exhausted.",
+            "title": "Waiting Next Offset"
           }
         },
         "required": [
@@ -1693,7 +1717,9 @@
           "waiting_entries",
           "active_entries",
           "waiting_capped",
-          "active_capped"
+          "active_capped",
+          "waiting_next_offset",
+          "active_next_offset"
         ],
         "title": "SchedulerOverviewResponse",
         "type": "object"
@@ -4304,6 +4330,28 @@
               "maximum": 200,
               "minimum": 1,
               "title": "Active Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "waiting_offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Waiting Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "active_offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Active Offset",
               "type": "integer"
             }
           }

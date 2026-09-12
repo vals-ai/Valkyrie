@@ -136,6 +136,10 @@
     "destination": "/reference/cli/config#service-list"
   },
   {
+    "source": "/reference/cli/queue/status",
+    "destination": "/reference/cli/queue#status"
+  },
+  {
     "source": "/reference/sdk/runs/start",
     "destination": "/reference/sdk/runs#start"
   },
@@ -248,6 +252,10 @@
     "destination": "/reference/sdk/logs#stream-task"
   },
   {
+    "source": "/reference/sdk/scheduler/overview",
+    "destination": "/reference/sdk/scheduler#overview"
+  },
+  {
     "source": "/reference/sdk/models/agents/agent-contract-request",
     "destination": "/reference/sdk/models/agents#agent-contract-request"
   },
@@ -346,6 +354,30 @@
   {
     "source": "/reference/sdk/models/runs/s3-upload-results-response",
     "destination": "/reference/sdk/models/runs#s3-upload-results-response"
+  },
+  {
+    "source": "/reference/sdk/models/scheduler/scheduler-active-entry-response",
+    "destination": "/reference/sdk/models/scheduler#scheduler-active-entry-response"
+  },
+  {
+    "source": "/reference/sdk/models/scheduler/scheduler-active-status",
+    "destination": "/reference/sdk/models/scheduler#scheduler-active-status"
+  },
+  {
+    "source": "/reference/sdk/models/scheduler/scheduler-overview-response",
+    "destination": "/reference/sdk/models/scheduler#scheduler-overview-response"
+  },
+  {
+    "source": "/reference/sdk/models/scheduler/scheduler-pool-response",
+    "destination": "/reference/sdk/models/scheduler#scheduler-pool-response"
+  },
+  {
+    "source": "/reference/sdk/models/scheduler/scheduler-summary-response",
+    "destination": "/reference/sdk/models/scheduler#scheduler-summary-response"
+  },
+  {
+    "source": "/reference/sdk/models/scheduler/scheduler-waiting-entry-response",
+    "destination": "/reference/sdk/models/scheduler#scheduler-waiting-entry-response"
   },
   {
     "source": "/reference/sdk/models/benchmarks/single-benchmark-response",

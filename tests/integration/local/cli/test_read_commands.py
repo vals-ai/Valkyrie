@@ -4,9 +4,15 @@ Run: uv run pytest tests/integration/local/cli/test_read_commands.py
 """
 
 import json
+from pathlib import Path
 
+import httpx
+import pytest
 from click.testing import CliRunner
+from fastapi import FastAPI
+from sqlmodel import Session
 from tracker.database.models import Benchmark
+from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
 
 from valkyrie.cli.main import cli
 
@@ -57,3 +63,66 @@ def test_cli_reads_persisted_tracker_state(
     assert fetch_payload["dataset"] == "verified"
     assert fetch_payload["max_concurrency"] == 2
     assert "must-not-leak" not in fetch_result.output
+
+
+def test_queue_status_reads_persisted_scheduler_state(
+    cli_runner: CliRunner,
+    seeded_runs: tuple[Benchmark, Benchmark],
+    database_session: Session,
+    local_tracker_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read a queued task through CLI, SDK, real tracker routing, and database queries."""
+    running, _ = seeded_runs
+    running.arguments = running.arguments.model_copy(update={"priority": 1, "queue_pool_id": "shared"})
+    database_session.add(running)
+    database_session.commit()
+
+    def from_config(path: Path, *, base_url: str) -> ValkyrieClient:
+        return ValkyrieClient(
+            ValkyrieConfig.from_yaml(path),
+            base_url=base_url,
+            transport=httpx.ASGITransport(app=local_tracker_app),
+        )
+
+    monkeypatch.setattr(ValkyrieClient, "from_config", from_config)
+
+    result = cli_runner.invoke(cli, ["queue", "status", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["summary"] == {"waiting": 1, "building": 0, "in_progress": 1, "evaluating": 0}
+    assert payload["pools"] == [{"pool_id": "shared", "waiting": 1}]
+    assert payload["waiting_entries"][0]["benchmark_uuid"] == str(running.id)
+    assert payload["waiting_entries"][0]["external_task_id"] == "pending"
+    assert payload["waiting_entries"][0]["position"] == 1
+    assert payload["waiting_entries"][0]["priority"] == 1
+    assert payload["active_entries"][0]["status"] == "IN_PROGRESS"
+    assert payload["waiting_capped"] is False
+    assert payload["waiting_next_offset"] is payload["active_next_offset"] is None
+    assert "must-not-leak" not in result.output
+
+    for exhausted, remaining in (("waiting", "active"), ("active", "waiting")):
+        page_result = cli_runner.invoke(cli, ["queue", "status", "--format", "json", f"--{exhausted}-offset", "1"])
+
+        assert page_result.exit_code == 0, page_result.output
+        page = json.loads(page_result.output)
+        assert page["summary"] == payload["summary"]
+        assert page[f"{exhausted}_entries"] == []
+        assert len(page[f"{remaining}_entries"]) == 1
+        assert page["waiting_next_offset"] is page["active_next_offset"] is None
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    [(name, value) for name in ("waiting_limit", "active_limit") for value in ("0", "201")]
+    + [(name, value) for name in ("waiting_offset", "active_offset") for value in ("-1", "1.5")],
+)
+async def test_queue_api_rejects_invalid_page_bounds(local_tracker_app: FastAPI, parameter: str, value: str) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=local_tracker_app), base_url="http://tracker.test"
+    ) as client:
+        response = await client.get("/scheduler/overview", params={parameter: value})
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", parameter]
