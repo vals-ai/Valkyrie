@@ -167,6 +167,11 @@ async def test_task_scope_isolates_concurrent_sandbox_events_and_outer_capture(
     events: list[Event] = []
     rows: dict[str, SimpleNamespace] = {}
 
+    attempt_starts = {
+        "task-a": datetime(2026, 4, 1, 12, tzinfo=UTC),
+        "task-b": datetime(2026, 4, 1, 13, tzinfo=UTC),
+    }
+
     class FakeSession:
         def __init__(self, **_kwargs: object) -> None:
             pass
@@ -204,20 +209,20 @@ async def test_task_scope_isolates_concurrent_sandbox_events_and_outer_capture(
             rows[task_id] = SimpleNamespace(
                 id=task_id,
                 task_id=task_id,
-                started_at=datetime.now(UTC),
+                started_at=attempt_starts[task_id],
             )
 
         task_a = task_execution.TrackedTask(
             body("task-a", "sandbox-a", fail=False),
             cast(Org, object()),
             cast(ExecutionAuthority, object()),
-            datetime.now(UTC),
+            attempt_starts["task-a"],
         )
         task_b = task_execution.TrackedTask(
             body("task-b", "sandbox-b", fail=True),
             cast(Org, object()),
             cast(ExecutionAuthority, object()),
-            datetime.now(UTC),
+            attempt_starts["task-b"],
         )
         await asyncio.gather(task_a.run(None, cast(Task, rows["task-a"])), task_b.run(None, cast(Task, rows["task-b"])))
 
@@ -233,14 +238,15 @@ async def test_task_scope_isolates_concurrent_sandbox_events_and_outer_capture(
     task_events = [event for event in events if event.get("tags", {}).get("task_id")]
     assert len(task_events) == 3
     task_tags = [cast(dict[str, str], event.get("tags", {})) for event in task_events]
-    assert {(tags["task_id"], tags["sandbox_id"]) for tags in task_tags} == {
-        ("task-a", "sandbox-a"),
-        ("task-b", "sandbox-b"),
+    assert {(tags["task_id"], tags["sandbox_id"], tags["attempt_started_at"]) for tags in task_tags} == {
+        ("task-a", "sandbox-a", attempt_starts["task-a"].isoformat()),
+        ("task-b", "sandbox-b", attempt_starts["task-b"].isoformat()),
     }
     exception_events = [event for event in task_events if "exception" in event]
     assert len(exception_events) == 1
     assert cast(dict[str, str], exception_events[0].get("tags")) == {
         "task_id": "task-b",
+        "attempt_started_at": attempt_starts["task-b"].isoformat(),
         "sandbox_id": "sandbox-b",
         "sandbox_name": "sandbox-b-name",
     }
@@ -282,7 +288,7 @@ async def test_retry_attempt_clears_previous_sandbox_identity(
         default_integrations=False,
         before_send=_before_send(),
     ):
-        with sentry_module.task_scope("task-0"):
+        with sentry_module.task_scope("task-0", attempt_started_at="2026-04-01T12:00:00+00:00"):
             result = await task_execution.process_task(
                 task_row=cast(Any, object()),
                 start_benchmark_request=cast(
@@ -306,5 +312,5 @@ async def test_retry_attempt_clears_previous_sandbox_identity(
     assert result == {"task-0": {"ok": True}}
     retry_event = next(event for event in events if "exception" in event)
     retry_tags = cast(dict[str, str], retry_event.get("tags", {}))
-    assert retry_tags == {"task_id": "task-0"}
+    assert retry_tags == {"task_id": "task-0", "attempt_started_at": "2026-04-01T12:00:00+00:00"}
     assert "sandbox" not in retry_event.get("contexts", {})

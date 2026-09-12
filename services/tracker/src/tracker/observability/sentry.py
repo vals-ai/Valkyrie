@@ -15,19 +15,21 @@ from sentry_sdk.types import Event, Hint, Log
 
 from tracker.exceptions import SSLConnectionError
 from tracker.logging import task_id_var
-from tracker.logging.context import get_context_tags
+from tracker.logging.context import attempt_started_at_var, get_context_tags
 
 logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def task_scope(task_id: str) -> Iterator[None]:
-    """Isolate Sentry events and logging context for one tracked task."""
+def task_scope(task_id: str, *, attempt_started_at: str) -> Iterator[None]:
+    """Isolate Sentry events and logging context for one tracked task execution epoch."""
     with sentry_sdk.isolation_scope():
         token = task_id_var.set(task_id)
+        attempt_token = attempt_started_at_var.set(attempt_started_at)
         try:
             yield
         finally:
+            attempt_started_at_var.reset(attempt_token)
             task_id_var.reset(token)
 
 

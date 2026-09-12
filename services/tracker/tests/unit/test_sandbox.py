@@ -1084,7 +1084,9 @@ class TestSandboxLifecycle:
             "valkyrie.sandbox_state": "started",
         }
 
-    async def test_create_sandbox_passes_request_to_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_create_sandbox_passes_request_and_records_returned_identity(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         span_calls: list[tuple[str, str, int]] = []
 
         def fake_create_span_attrs(sandbox_name: str, source: Any, resources: Any) -> None:
@@ -1092,7 +1094,15 @@ class TestSandboxLifecycle:
 
         monkeypatch.setattr(sandbox_module, "_set_sandbox_create_span_attributes", fake_create_span_attrs)
 
+        span_attributes: dict[str, str] = {}
+        span = Mock()
+        span.set_attribute.side_effect = lambda key, value: span_attributes.update({key: value})
+        monkeypatch.setattr(sandbox_module.trace, "get_current_span", lambda: span)
+
         mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sandbox-created-123"
+        mock_sandbox.name = "provider-returned-name"
+        mock_sandbox.state = "started"
         provider = AsyncMock()
         provider.create_sandbox = AsyncMock(return_value=mock_sandbox)
 
@@ -1118,6 +1128,11 @@ class TestSandboxLifecycle:
 
         assert sandbox is mock_sandbox
         assert span_calls == [("task-alias", "ghcr.io/vals/swebench:latest", 2)]
+        assert span_attributes == {
+            "valkyrie.sandbox_id": "sandbox-created-123",
+            "valkyrie.sandbox_name": "provider-returned-name",
+            "valkyrie.sandbox_state": "started",
+        }
         request = provider.create_sandbox.await_args.args[0]
         assert request.name == "task-alias"
         assert request.resources == resources
