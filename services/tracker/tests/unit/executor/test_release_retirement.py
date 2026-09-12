@@ -134,9 +134,17 @@ async def test_tracker_lifespan_starts_and_stops_automatic_retirement(monkeypatc
         def stop(self) -> None:
             events.append("stopped")
 
+    class FakeAutomaticDispatchRecovery:
+        def start(self) -> None:
+            events.append("recovery started")
+
+        def stop(self) -> None:
+            events.append("recovery stopped")
+
     monkeypatch.setattr(main_module, "AutomaticReleaseRetirement", FakeAutomaticReleaseRetirement)
+    monkeypatch.setattr(main_module, "AutomaticDispatchRecovery", FakeAutomaticDispatchRecovery)
 
     async with main_module.tracker_lifespan(main_module.app):
-        assert events == ["started"]
+        assert events == ["started", "recovery started"]
 
-    assert events == ["started", "stopped"]
+    assert events == ["started", "recovery started", "recovery stopped", "stopped"]

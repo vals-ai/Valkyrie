@@ -22,6 +22,7 @@ from tracker.executor.dispatch_control import (
     admit_recovery_dispatch,
     admit_start_dispatch,
     record_dispatch_failure,
+    reconcile_expired_dispatches,
     resolve_enqueue_failure,
     terminalize_active_dispatches,
 )
@@ -437,6 +438,225 @@ def test_running_dispatch_failure_preserves_active_sibling(
     assert error_result.error_type == "RuntimeError"
     assert error_result.retry_scheduled is False
     assert error_result.failed_attempt_number is None
+
+
+def test_expired_dispatch_failure_uses_persisted_assignment_and_reason(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    release = _release("active")
+    register_release(database_session, release)
+    pin_benchmark_to_release(example_benchmark_object, release)
+    dispatch = create_executor_dispatch(
+        example_benchmark_object.id,
+        release,
+        ExecutorDispatchKind.START,
+        dispatch_id=uuid4(),
+        task_ids=["owned-task", "newer-task"],
+    )
+    dispatch.status = ExecutorDispatchStatus.RUNNING
+    dispatch.started_at = datetime.now(UTC) - timedelta(minutes=6)
+    dispatch.heartbeat_at = dispatch.started_at
+    dispatch.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    owned_task = Task(
+        org_id=example_benchmark_object.org_id,
+        benchmark=example_benchmark_object.id,
+        task_id="owned-task",
+        status=TaskStatus.IN_PROGRESS,
+        started_at=dispatch.created_at - timedelta(seconds=1),
+    )
+    newer_task = Task(
+        org_id=example_benchmark_object.org_id,
+        benchmark=example_benchmark_object.id,
+        task_id="newer-task",
+        status=TaskStatus.PENDING,
+        started_at=dispatch.created_at + timedelta(seconds=1),
+    )
+    database_session.add_all([example_benchmark_object, dispatch, owned_task, newer_task])
+    database_session.commit()
+
+    assert reconcile_expired_dispatches(database_session) == 1
+    database_session.commit()
+    database_session.refresh(example_benchmark_object)
+    database_session.refresh(dispatch)
+    database_session.refresh(owned_task)
+    database_session.refresh(newer_task)
+
+    assert example_benchmark_object.status == BenchmarkStatus.ERROR
+    assert dispatch.status == ExecutorDispatchStatus.FAILED
+    assert dispatch.failure_reason == "LEASE_EXPIRED"
+    assert owned_task.status == TaskStatus.ERROR
+    assert newer_task.status == TaskStatus.PENDING
+
+    error_result = database_session.exec(select(ErrorResult).where(ErrorResult.task == owned_task.id)).one()
+    assert error_result.cause_code == "LEASE_EXPIRED"
+
+
+def test_fresh_heartbeat_wins_expiry_reconciliation(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    release = _release("active")
+    register_release(database_session, release)
+    pin_benchmark_to_release(example_benchmark_object, release)
+    dispatch = create_executor_dispatch(
+        example_benchmark_object.id,
+        release,
+        ExecutorDispatchKind.START,
+        dispatch_id=uuid4(),
+        task_ids=["task-1"],
+    )
+    dispatch.status = ExecutorDispatchStatus.RUNNING
+    dispatch.started_at = datetime.now(UTC) - timedelta(minutes=6)
+    dispatch.heartbeat_at = datetime.now(UTC)
+    dispatch.lease_expires_at = datetime.now(UTC) + timedelta(minutes=4)
+    database_session.add_all([example_benchmark_object, dispatch])
+    database_session.commit()
+
+    assert reconcile_expired_dispatches(database_session) == 0
+    database_session.refresh(dispatch)
+    assert dispatch.status == ExecutorDispatchStatus.RUNNING
+
+
+def test_reconciliation_does_not_rewrite_dispatch_finished_after_expiry_scan(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _release("active")
+    register_release(database_session, release)
+    pin_benchmark_to_release(example_benchmark_object, release)
+    dispatch = create_executor_dispatch(
+        example_benchmark_object.id,
+        release,
+        ExecutorDispatchKind.START,
+        dispatch_id=uuid4(),
+        task_ids=["task-1"],
+    )
+    dispatch.status = ExecutorDispatchStatus.RUNNING
+    dispatch.started_at = datetime.now(UTC) - timedelta(minutes=6)
+    dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(minutes=1)
+    dispatch.heartbeat_at = dispatch.started_at
+    dispatch.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    database_session.add_all([example_benchmark_object, dispatch])
+    database_session.commit()
+
+    original_exec = database_session.exec
+    exec_calls = 0
+
+    def finish_dispatch_before_reload(statement: object, *args: object, **kwargs: object) -> object:
+        nonlocal exec_calls
+        exec_calls += 1
+        if exec_calls == 3:
+            dispatch.status = ExecutorDispatchStatus.FINISHED
+            dispatch.finished_at = datetime.now(UTC)
+            database_session.add(dispatch)
+        return original_exec(statement, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(database_session, "exec", finish_dispatch_before_reload)
+
+    assert reconcile_expired_dispatches(database_session) == 0
+    database_session.commit()
+    database_session.refresh(example_benchmark_object)
+    database_session.refresh(dispatch)
+
+    assert exec_calls == 3
+    assert example_benchmark_object.status == BenchmarkStatus.IN_PROGRESS
+    assert dispatch.status == ExecutorDispatchStatus.FINISHED
+
+
+@pytest.mark.parametrize(
+    ("dispatch_status", "task_status", "failure_reason"),
+    [
+        (ExecutorDispatchStatus.RUNNING, TaskStatus.IN_PROGRESS, "LEASE_EXPIRED"),
+        (ExecutorDispatchStatus.QUEUED, TaskStatus.PENDING, "CLAIM_DEADLINE_EXPIRED"),
+    ],
+)
+def test_expired_last_dispatch_completes_graceful_stop(
+    dispatch_status: ExecutorDispatchStatus,
+    task_status: TaskStatus,
+    failure_reason: str,
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    release = _release("active")
+    register_release(database_session, release)
+    pin_benchmark_to_release(example_benchmark_object, release)
+    example_benchmark_object.status = BenchmarkStatus.STOPPING
+    dispatch = create_executor_dispatch(
+        example_benchmark_object.id,
+        release,
+        ExecutorDispatchKind.START,
+        dispatch_id=uuid4(),
+        task_ids=["task-1"],
+    )
+    dispatch.status = dispatch_status
+    dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(minutes=1)
+    if dispatch_status == ExecutorDispatchStatus.RUNNING:
+        dispatch.started_at = datetime.now(UTC) - timedelta(minutes=6)
+        dispatch.heartbeat_at = dispatch.started_at
+        dispatch.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    task = Task(
+        org_id=example_benchmark_object.org_id,
+        benchmark=example_benchmark_object.id,
+        task_id="task-1",
+        status=task_status,
+        started_at=dispatch.created_at - timedelta(seconds=1),
+    )
+    database_session.add_all([example_benchmark_object, dispatch, task])
+    database_session.commit()
+
+    assert reconcile_expired_dispatches(database_session) == 1
+    database_session.commit()
+    database_session.refresh(example_benchmark_object)
+    database_session.refresh(dispatch)
+    database_session.refresh(task)
+
+    assert example_benchmark_object.status == BenchmarkStatus.STOPPED
+    assert example_benchmark_object.finished_at is not None
+    assert dispatch.status == ExecutorDispatchStatus.FAILED
+    assert dispatch.failure_reason == failure_reason
+    assert task.status == TaskStatus.ERROR
+
+
+def test_expired_queued_dispatch_is_failed_before_it_can_block_completion(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    release = _release("active")
+    register_release(database_session, release)
+    pin_benchmark_to_release(example_benchmark_object, release)
+    dispatch = create_executor_dispatch(
+        example_benchmark_object.id,
+        release,
+        ExecutorDispatchKind.RETRY,
+        dispatch_id=uuid4(),
+        task_ids=["task-1"],
+    )
+    dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(minutes=1)
+    task = Task(
+        org_id=example_benchmark_object.org_id,
+        benchmark=example_benchmark_object.id,
+        task_id="task-1",
+        status=TaskStatus.PENDING,
+        started_at=dispatch.created_at - timedelta(seconds=1),
+    )
+    database_session.add_all([example_benchmark_object, dispatch, task])
+    database_session.commit()
+
+    assert reconcile_expired_dispatches(database_session) == 1
+    database_session.commit()
+    database_session.refresh(example_benchmark_object)
+    database_session.refresh(dispatch)
+    database_session.refresh(task)
+
+    assert example_benchmark_object.status == BenchmarkStatus.ERROR
+    assert dispatch.status == ExecutorDispatchStatus.FAILED
+    assert dispatch.failure_reason == "CLAIM_DEADLINE_EXPIRED"
+    assert task.status == TaskStatus.ERROR
+
+    error_result = database_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).one()
+    assert error_result.error_type == "ExecutorDispatchClaimDeadlineExpired"
 
 
 def test_terminal_recovery_terminalizes_active_dispatches(
