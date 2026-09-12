@@ -1,6 +1,7 @@
 """Tests for PostgreSQL-backed scheduler overview reads."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from threading import Event
 from types import SimpleNamespace
@@ -17,7 +18,11 @@ from main import app
 from tests.factories import make_benchmark, make_task
 from tests.utils import TEST_ORG_ID
 import tracker.api.scheduler_overview as scheduler_overview_api
-from tracker.api.scheduler_overview import _read_active_rows, read_scheduler_overview  # pyright: ignore[reportPrivateUsage]
+from tracker.api.scheduler_overview import (  # pyright: ignore[reportPrivateUsage]
+    _PoolProviderReference,
+    _read_active_rows,
+    read_scheduler_overview,
+)
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.scheduler.store import queue_pool_id
 from tracker.types import SchedulerOverviewResponse, SchedulerPoolResponse, SchedulerSummaryResponse
@@ -75,6 +80,63 @@ def _capacity_provider(
     )
     monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config_async", fetch_config)
     return provider, fetch_config
+
+
+def _capacity_enrichment_case(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    get_capacity_domains: Callable[[], Awaitable[None]] | None = None,
+    close: Callable[[], Awaitable[None]] | None = None,
+    fetch_config: AsyncMock | None = None,
+) -> tuple[asyncio.Task[SchedulerOverviewResponse], Mock | None, AsyncMock]:
+    provider: Mock | None = None
+    if fetch_config is None:
+        assert get_capacity_domains is not None and close is not None
+        provider = Mock(
+            admission_pool_id=_PROVIDER_POOL_ID,
+            get_capacity_domains=AsyncMock(side_effect=get_capacity_domains),
+            close=AsyncMock(side_effect=close),
+        )
+        provider_config = Mock()
+        provider_config.create_provider.return_value = provider
+        fetch_config = AsyncMock(return_value=provider_config)
+
+    monkeypatch.setattr(
+        scheduler_overview_api,
+        "deployment_aws_runtime",
+        Mock(return_value=SimpleNamespace(clients=Mock())),
+    )
+    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config_async", fetch_config)
+    monkeypatch.setattr(scheduler_overview_api, "_CAPACITY_READ_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(scheduler_overview_api, "_CAPACITY_REQUEST_TIMEOUT_SECONDS", 0.03)
+    monkeypatch.setattr(scheduler_overview_api, "_PROVIDER_CLOSE_TIMEOUT_SECONDS", 10.0)
+
+    overview = SchedulerOverviewResponse(
+        observed_at=datetime.now(UTC),
+        summary=SchedulerSummaryResponse(waiting=1),
+        pools=[SchedulerPoolResponse(pool_id=_QUEUE_POOL_ID, waiting=1)],
+        waiting_entries=[],
+        active_entries=[],
+        waiting_capped=False,
+        active_capped=False,
+    )
+    references = {
+        _QUEUE_POOL_ID: {
+            _PoolProviderReference(
+                aws_managed=True,
+                provider_type="daytona",
+                secret_name="provider-secret",
+            )
+        }
+    }
+    request = asyncio.create_task(
+        scheduler_overview_api._enrich_scheduler_capacity(  # pyright: ignore[reportPrivateUsage]
+            overview,
+            org_id=TEST_ORG_ID,
+            references=references,
+        )
+    )
+    return request, provider, fetch_config
 
 
 async def test_reports_org_queued_rows_in_priority_fifo_order(database_session: Session) -> None:
@@ -364,6 +426,8 @@ async def test_capacity_timeout_closes_provider_and_pool_drift_skips_observation
         pool_id=_QUEUE_POOL_ID,
         provider_type="daytona",
         secret_name="provider-secret",
+        read_deadline=asyncio.get_running_loop().time() + 1.0,
+        request_deadline=asyncio.get_running_loop().time() + 2.0,
     )
 
     assert drifted is None
@@ -379,6 +443,8 @@ async def test_capacity_timeout_closes_provider_and_pool_drift_skips_observation
         pool_id=_QUEUE_POOL_ID,
         provider_type="daytona",
         secret_name="provider-secret",
+        read_deadline=asyncio.get_running_loop().time() + 1.0,
+        request_deadline=asyncio.get_running_loop().time() + 2.0,
     )
 
     assert empty == []
@@ -390,13 +456,15 @@ async def test_capacity_timeout_closes_provider_and_pool_drift_skips_observation
 
     provider.get_capacity_domains = AsyncMock(side_effect=wait_forever)
     provider.close.reset_mock()
-    monkeypatch.setattr(scheduler_overview_api, "_CAPACITY_TIMEOUT_SECONDS", 0.01)
+    loop = asyncio.get_running_loop()
 
     timed_out = await scheduler_overview_api._read_provider_capacity(  # pyright: ignore[reportPrivateUsage]
         org_id=TEST_ORG_ID,
         pool_id=_QUEUE_POOL_ID,
         provider_type="daytona",
         secret_name="provider-secret",
+        read_deadline=loop.time() + 0.01,
+        request_deadline=loop.time() + 0.02,
     )
 
     assert timed_out is None
@@ -440,7 +508,8 @@ async def test_capacity_enrichment_bounds_concurrent_provider_reads(monkeypatch:
         for index, pool_id in enumerate(pool_ids)
     }
     monkeypatch.setattr(scheduler_overview_api, "_CAPACITY_MAX_CONCURRENCY", 2)
-    monkeypatch.setattr(scheduler_overview_api, "_CAPACITY_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(scheduler_overview_api, "_CAPACITY_READ_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(scheduler_overview_api, "_CAPACITY_REQUEST_TIMEOUT_SECONDS", 0.02)
     monkeypatch.setattr(
         scheduler_overview_api,
         "deployment_aws_runtime",
@@ -464,6 +533,137 @@ async def test_capacity_enrichment_bounds_concurrent_provider_reads(monkeypatch:
     assert [pool.capacity_domains for pool in result.pools] == [None] * len(pool_ids)
 
 
+async def test_capacity_enrichment_shared_deadline_cancels_close_and_drains_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    close_started = asyncio.Event()
+    close_cancelled = asyncio.Event()
+    close_cleanup_release = asyncio.Event()
+    close_finished = asyncio.Event()
+
+    async def get_capacity_domains() -> None:
+        await asyncio.Event().wait()
+
+    async def close() -> None:
+        close_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            close_cancelled.set()
+            await close_cleanup_release.wait()
+            close_finished.set()
+
+    request, provider, _fetch_config = _capacity_enrichment_case(
+        monkeypatch,
+        get_capacity_domains=get_capacity_domains,
+        close=close,
+    )
+    assert provider is not None
+    try:
+        async with asyncio.timeout(0.5):
+            await close_started.wait()
+            await close_cancelled.wait()
+            assert not request.done()
+            close_cleanup_release.set()
+            result = await request
+    finally:
+        close_cleanup_release.set()
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+
+    assert result.pools[0].capacity_domains is None
+    assert close_finished.is_set()
+    provider.get_capacity_domains.assert_awaited_once()
+    provider.close.assert_awaited_once()
+
+
+async def test_capacity_enrichment_request_deadline_cancels_secret_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_read_started = asyncio.Event()
+    secret_cleanup_started = asyncio.Event()
+    secret_cleanup_finished = asyncio.Event()
+
+    async def fetch_config(*_args: object) -> None:
+        secret_read_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            secret_cleanup_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                secret_cleanup_finished.set()
+
+    fetch_config_mock = AsyncMock(side_effect=fetch_config)
+    request, provider, _fetch_config = _capacity_enrichment_case(monkeypatch, fetch_config=fetch_config_mock)
+    assert provider is None
+    try:
+        async with asyncio.timeout(0.5):
+            await secret_read_started.wait()
+            await secret_cleanup_started.wait()
+            result = await request
+    finally:
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+
+    assert result.pools[0].capacity_domains is None
+    assert secret_cleanup_finished.is_set()
+    fetch_config_mock.assert_awaited_once()
+
+
+async def test_capacity_enrichment_repeated_cancellation_waits_for_terminal_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    close_started = asyncio.Event()
+    close_cleanup_started = asyncio.Event()
+    close_cleanup_release = asyncio.Event()
+    close_finished = asyncio.Event()
+
+    async def get_capacity_domains() -> None:
+        await asyncio.Event().wait()
+
+    async def close() -> None:
+        close_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            close_cleanup_started.set()
+            await close_cleanup_release.wait()
+            close_finished.set()
+
+    request, provider, _fetch_config = _capacity_enrichment_case(
+        monkeypatch,
+        get_capacity_domains=get_capacity_domains,
+        close=close,
+    )
+    assert provider is not None
+    try:
+        async with asyncio.timeout(0.5):
+            await close_started.wait()
+            await close_cleanup_started.wait()
+            request.cancel()
+            await asyncio.sleep(0)
+            assert not request.done()
+            request.cancel()
+            await asyncio.sleep(0)
+            assert not request.done()
+            close_cleanup_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+    finally:
+        close_cleanup_release.set()
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+
+    assert close_finished.is_set()
+    provider.get_capacity_domains.assert_awaited_once()
+    provider.close.assert_awaited_once()
+
+
 def test_capacity_failure_keeps_overview_available(
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -479,57 +679,4 @@ def test_capacity_failure_keeps_overview_available(
     assert response.json()["pools"] == [
         {"pool_id": _QUEUE_POOL_ID, "waiting": 1, "provider": "daytona", "capacity_domains": None}
     ]
-    provider.close.assert_awaited_once()
-
-
-async def test_provider_close_timeout_cancels_and_drains(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    close_started = asyncio.Event()
-    close_finished = asyncio.Event()
-
-    async def close() -> None:
-        close_started.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            close_finished.set()
-
-    provider = Mock()
-    provider.close = AsyncMock(side_effect=close)
-    monkeypatch.setattr(scheduler_overview_api, "_PROVIDER_CLOSE_TIMEOUT_SECONDS", 0.01)
-
-    await asyncio.wait_for(
-        scheduler_overview_api._close_provider(provider, _QUEUE_POOL_ID),  # pyright: ignore[reportPrivateUsage]
-        timeout=0.2,
-    )
-
-    assert close_started.is_set()
-    assert close_finished.is_set()
-    provider.close.assert_awaited_once()
-
-
-async def test_provider_close_is_terminal_before_caller_cancellation_propagates() -> None:
-    close_started = asyncio.Event()
-    close_finished = asyncio.Event()
-
-    async def close() -> None:
-        close_started.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            close_finished.set()
-
-    provider = Mock()
-    provider.close = AsyncMock(side_effect=close)
-    closing = asyncio.create_task(
-        scheduler_overview_api._close_provider(provider, _QUEUE_POOL_ID)  # pyright: ignore[reportPrivateUsage]
-    )
-    await close_started.wait()
-
-    closing.cancel()
-
-    with pytest.raises(asyncio.CancelledError):
-        await closing
-    assert close_finished.is_set()
     provider.close.assert_awaited_once()

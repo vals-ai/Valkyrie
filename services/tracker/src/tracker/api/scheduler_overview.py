@@ -40,7 +40,8 @@ router = APIRouter(prefix="/scheduler")
 logger = get_logger(__name__)
 
 _ACTIVE_STATUSES = (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
-_CAPACITY_TIMEOUT_SECONDS = 2.0
+_CAPACITY_READ_TIMEOUT_SECONDS = 2.0
+_CAPACITY_REQUEST_TIMEOUT_SECONDS = 3.0
 _PROVIDER_CLOSE_TIMEOUT_SECONDS = 1.0
 _CAPACITY_MAX_CONCURRENCY = 4
 
@@ -270,17 +271,26 @@ def _capacity_domain_response(domain: SandboxCapacityDomain) -> SchedulerCapacit
 
 async def _cancel_and_drain(task: asyncio.Task[None]) -> None:
     task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
+    drain = asyncio.gather(task, return_exceptions=True)
+    cancellation: asyncio.CancelledError | None = None
+    while not drain.done():
+        try:
+            await asyncio.shield(drain)
+        except asyncio.CancelledError as error:
+            cancellation = error
+    if cancellation is not None:
+        raise cancellation
 
 
-async def _close_provider(provider: SandboxProvider, pool_id: str) -> None:
+async def _close_provider(provider: SandboxProvider, pool_id: str, *, deadline: float) -> None:
     close_task = asyncio.create_task(provider.close())
+    close_deadline = min(deadline, asyncio.get_running_loop().time() + _PROVIDER_CLOSE_TIMEOUT_SECONDS)
     try:
-        async with asyncio.timeout(_PROVIDER_CLOSE_TIMEOUT_SECONDS):
+        async with asyncio.timeout_at(close_deadline):
             await asyncio.shield(close_task)
     except TimeoutError:
-        await _cancel_and_drain(close_task)
         logger.warning("Sandbox capacity provider close timed out for pool %s (%s)", pool_id, TimeoutError.__name__)
+        await _cancel_and_drain(close_task)
     except asyncio.CancelledError:
         await _cancel_and_drain(close_task)
         raise
@@ -294,11 +304,15 @@ async def _read_provider_capacity(
     pool_id: str,
     provider_type: str,
     secret_name: str,
+    read_deadline: float,
+    request_deadline: float,
 ) -> list[SchedulerCapacityDomainResponse] | None:
     provider: SandboxProvider | None = None
     try:
-        async with asyncio.timeout(_CAPACITY_TIMEOUT_SECONDS):
-            try:
+        if asyncio.get_running_loop().time() >= read_deadline:
+            return None
+        try:
+            async with asyncio.timeout_at(read_deadline):
                 runtime = deployment_aws_runtime(org_id)
                 provider_config = await fetch_sandbox_provider_config_async(
                     secret_name,
@@ -314,9 +328,9 @@ async def _read_provider_capacity(
                 if domains is None:
                     return None
                 return [_capacity_domain_response(domain) for domain in domains]
-            finally:
-                if provider is not None:
-                    await _close_provider(provider, pool_id)
+        finally:
+            if provider is not None:
+                await _close_provider(provider, pool_id, deadline=request_deadline)
     except asyncio.CancelledError:
         raise
     except Exception as error:
@@ -347,6 +361,10 @@ async def _enrich_scheduler_capacity(
     org_id: UUID,
     references: dict[str, set[_PoolProviderReference]],
 ) -> SchedulerOverviewResponse:
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+    read_deadline = started_at + _CAPACITY_READ_TIMEOUT_SECONDS
+    request_deadline = started_at + _CAPACITY_REQUEST_TIMEOUT_SECONDS
     pools: list[SchedulerPoolResponse] = []
     requests: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
     for index, pool in enumerate(overview.pools):
@@ -367,20 +385,32 @@ async def _enrich_scheduler_capacity(
                 pool_id=pool.pool_id,
                 provider_type=provider_type,
                 secret_name=secret_name,
+                read_deadline=read_deadline,
+                request_deadline=request_deadline,
             )
             pools[index] = pool.model_copy(update={"capacity_domains": capacity_domains})
 
     workers = [asyncio.create_task(enrich()) for _ in range(min(_CAPACITY_MAX_CONCURRENCY, requests.qsize()))]
+    worker_drain = asyncio.gather(*workers, return_exceptions=True)
+    cancellation: asyncio.CancelledError | None = None
     try:
-        async with asyncio.timeout(_CAPACITY_TIMEOUT_SECONDS):
-            await asyncio.gather(*workers)
+        async with asyncio.timeout_at(request_deadline):
+            await asyncio.shield(worker_drain)
     except TimeoutError:
         pass
-    finally:
+    except asyncio.CancelledError as error:
+        cancellation = error
+    if not worker_drain.done():
         for worker in workers:
             if not worker.done():
                 worker.cancel()
-        await asyncio.gather(*workers, return_exceptions=True)
+        while not worker_drain.done():
+            try:
+                await asyncio.shield(worker_drain)
+            except asyncio.CancelledError as repeated_error:
+                cancellation = repeated_error
+    if cancellation is not None:
+        raise cancellation
     return overview.model_copy(update={"pools": pools})
 
 
