@@ -662,9 +662,10 @@ class DeployWorkflowTest(unittest.TestCase):
                         error = HTTPError(expected_urls[failing_request or 0], 403, "Forbidden", Message(), None)
                         if failing_request is not None:
                             outcomes[failing_request] = error
-                        with patch.dict(os.environ, environment, clear=True), patch(
-                            "urllib.request.urlopen", side_effect=outcomes
-                        ) as transport:
+                        with (
+                            patch.dict(os.environ, environment, clear=True),
+                            patch("urllib.request.urlopen", side_effect=outcomes) as transport,
+                        ):
                             if failing_request is None:
                                 exec(compile(source, str(WORKFLOW), "exec"), {})
                             else:
