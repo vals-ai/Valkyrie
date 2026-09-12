@@ -5,7 +5,6 @@ Run: uv run pytest tests/unit/observability/test_sentry.py
 
 import asyncio
 import json
-
 from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import UTC, datetime
@@ -195,7 +194,8 @@ async def test_sentry_export_captures_task_identities_on_roots_and_children(
     tracer = provider.get_tracer(__name__)
     client = sentry_sdk.Client(
         dsn="https://public@example.com/1",
-        transport=CaptureTransport(),
+        # Let the SDK pass DSN options into Transport.__init__; the processor checks parsed_dsn.
+        transport=CaptureTransport,
         default_integrations=False,
         traces_sample_rate=1.0,
         instrumenter=INSTRUMENTER.OTEL,
@@ -252,7 +252,9 @@ async def test_sentry_export_captures_task_identities_on_roots_and_children(
     assert len(children) == (2 if client_is_root else 4)
     for task_id, identity in identities.items():
         if client_is_root:
-            event = next(event for event in transactions if event["contexts"]["trace"]["span_id"] == client_ids[task_id])
+            event = next(
+                event for event in transactions if event["contexts"]["trace"]["span_id"] == client_ids[task_id]
+            )
             captured_client = event["contexts"]["otel"]["attributes"]
             assert event["contexts"]["trace"]["op"] == "http.client"
             assert set(identity).isdisjoint(event.get("tags", {}))
@@ -343,7 +345,10 @@ async def test_task_scope_isolates_concurrent_sandbox_events_and_outer_capture(
             cast(ExecutionAuthority, object()),
             attempt_starts["task-b"],
         )
-        await asyncio.gather(task_a.run(None, cast(Task, rows["task-a"])), task_b.run(None, cast(Task, rows["task-b"])))
+        await asyncio.gather(
+            task_a.run(None, cast(Task, rows["task-a"])),
+            task_b.run(None, cast(Task, rows["task-b"])),
+        )
 
     with sentry_sdk.init(
         dsn="https://public@example.com/1",
@@ -358,14 +363,14 @@ async def test_task_scope_isolates_concurrent_sandbox_events_and_outer_capture(
     assert len(task_events) == 3
     task_tags = [cast(dict[str, str], event.get("tags", {})) for event in task_events]
     assert {(tags["task_id"], tags["sandbox_id"], tags["attempt_started_at"]) for tags in task_tags} == {
-        ("task-a", "sandbox-a", attempt_starts["task-a"].isoformat()),
-        ("task-b", "sandbox-b", attempt_starts["task-b"].isoformat()),
+        ("task-a", "sandbox-a", "2026-04-01T12:00:00"),
+        ("task-b", "sandbox-b", "2026-04-01T13:00:00"),
     }
     exception_events = [event for event in task_events if "exception" in event]
     assert len(exception_events) == 1
     assert cast(dict[str, str], exception_events[0].get("tags")) == {
         "task_id": "task-b",
-        "attempt_started_at": attempt_starts["task-b"].isoformat(),
+        "attempt_started_at": "2026-04-01T13:00:00",
         "sandbox_id": "sandbox-b",
         "sandbox_name": "sandbox-b-name",
     }

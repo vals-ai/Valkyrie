@@ -1095,9 +1095,10 @@ class TestSandboxLifecycle:
         monkeypatch.setattr(sandbox_module, "_set_sandbox_create_span_attributes", fake_create_span_attrs)
 
         span_attributes: dict[str, str] = {}
-        span = Mock()
+        span = Mock(spec=sandbox_module.trace.Span)
+        span.get_span_context.return_value = sandbox_module.trace.INVALID_SPAN_CONTEXT
         span.set_attribute.side_effect = lambda key, value: span_attributes.update({key: value})
-        monkeypatch.setattr(sandbox_module.trace, "get_current_span", lambda: span)
+        monkeypatch.setattr(sandbox_module.trace, "get_current_span", lambda context=None: span)
 
         mock_sandbox = AsyncMock()
         mock_sandbox.id = "sandbox-created-123"
