@@ -8,7 +8,6 @@ from benchmark_service.client import BenchmarkServiceClient
 from sqlmodel import Session, select
 
 from tracker.auth import RequestIdentity
-from tracker.runtime.secrets import SecretStore
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     Benchmark,
@@ -19,6 +18,7 @@ from tracker.database.models import (
 )
 from tracker.exceptions import TrackerServiceError
 from tracker.outbound_security import validate_service_headers, validate_service_url_syntax
+from tracker.runtime.secrets import AsyncSecretStore, SecretStore, SecretValue
 from tracker.types import (
     StartBenchmarkRequest,
 )
@@ -31,17 +31,28 @@ class BenchmarkConcurrencyUpdate:
     concurrency: int
 
 
+def _sandbox_provider_config_from_secret(secret: SecretValue, provider_type: str) -> SandboxProviderConfig:
+    if not isinstance(secret, dict):
+        raise TrackerServiceError("Expected sandbox provider secret to be a JSON object")
+    return sandbox_provider_config_from_mapping({**secret, "type": provider_type})
+
+
 def fetch_sandbox_provider_config(
     secret_name: str,
     secret_store: SecretStore,
     provider_type: str,
 ) -> SandboxProviderConfig:
     """Resolve sandbox provider config from the selected provider type and secret."""
-    secret = secret_store.get(secret_name)
-    if not isinstance(secret, dict):
-        raise TrackerServiceError("Expected sandbox provider secret to be a JSON object")
+    return _sandbox_provider_config_from_secret(secret_store.get(secret_name), provider_type)
 
-    return sandbox_provider_config_from_mapping({**secret, "type": provider_type})
+
+async def fetch_sandbox_provider_config_async(
+    secret_name: str,
+    secret_store: AsyncSecretStore,
+    provider_type: str,
+) -> SandboxProviderConfig:
+    """Resolve sandbox provider config without blocking the caller's event loop."""
+    return _sandbox_provider_config_from_secret(await secret_store.get_async(secret_name), provider_type)
 
 
 def create_benchmark_service_client(
