@@ -4,8 +4,10 @@ Run: uv run pytest tests/unit/observability/test_sentry.py
 """
 
 import asyncio
+import json
 
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -13,14 +15,23 @@ from unittest.mock import Mock
 
 import pytest
 import sentry_sdk
+import sentry_sdk.scope as sentry_scope
+from opentelemetry import trace
+from opentelemetry.context import Context
+from opentelemetry.sdk.trace import TracerProvider
+from sentry_sdk.consts import INSTRUMENTER
+from sentry_sdk.envelope import Envelope
 from sentry_sdk.integrations.otlp import OTLPIntegration
+from sentry_sdk.transport import Transport
 from sentry_sdk.types import Event, Hint, Log
 
 import tracker.observability.sentry as sentry_module
+import tracker.observability.tracing as tracing_module
 import tracker.utils.task_execution as task_execution
 from tracker.database.models import Org, Task
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.exceptions import SandboxError, SandboxSetupError, SSLConnectionError
+from tracker.logging.context import benchmark_id_var, request_id_var
 
 BeforeSend = Callable[[Event, Hint], Event | None]
 BeforeSendLog = Callable[[Log, Hint], Log | None]
@@ -158,6 +169,114 @@ class TestSentrySetup:
         sentry_module.init_sentry("valkyrie-worker", environment="production")
 
         init_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_is_root", [True, False], ids=["client-root", "client-child"])
+async def test_sentry_export_captures_task_identities_on_roots_and_children(
+    monkeypatch: pytest.MonkeyPatch,
+    client_is_root: bool,
+) -> None:
+    """Characterize SDK serialization, not Logfire registration or backend indexing."""
+    transactions: list[dict[str, Any]] = []
+
+    class CaptureTransport(Transport):
+        def capture_envelope(self, envelope: Envelope) -> None:
+            for item in envelope.items:
+                if item.type == "transaction":
+                    transactions.append(json.loads(item.get_bytes()))
+
+    # SentrySpanProcessor registers a global error processor on construction.
+    # Keep that registration local to this test; all test-owned spans finish normally.
+    monkeypatch.setattr(sentry_scope, "global_event_processors", list(sentry_scope.global_event_processors))
+    provider = TracerProvider()
+    provider.add_span_processor(tracing_module._ContextVarSpanProcessor())
+    provider.add_span_processor(tracing_module._FilteredSentrySpanProcessor())
+    tracer = provider.get_tracer(__name__)
+    client = sentry_sdk.Client(
+        dsn="https://public@example.com/1",
+        transport=CaptureTransport(),
+        default_integrations=False,
+        traces_sample_rate=1.0,
+        instrumenter=INSTRUMENTER.OTEL,
+        before_send=sentry_module._before_send,
+    )
+    identities = {
+        "task-a": {"request_id": "request-a", "benchmark_id": "benchmark-a", "task_id": "task-a"},
+        "task-b": {"request_id": "request-b", "benchmark_id": "benchmark-b", "task_id": "task-b"},
+    }
+    client_ids: dict[str, str] = {}
+    response_ids: dict[str, str] = {}
+    ready = 0
+    release = asyncio.Event()
+
+    async def request(task_id: str) -> None:
+        nonlocal ready
+        identity = identities[task_id]
+        request_token = request_id_var.set(identity["request_id"])
+        benchmark_token = benchmark_id_var.set(identity["benchmark_id"])
+        try:
+            with sentry_module.task_scope(task_id, attempt_started_at="2026-04-01T12:00:00+00:00"):
+                with tracer.start_as_current_span(
+                    "POST /execute",
+                    context=Context() if client_is_root else None,
+                    kind=trace.SpanKind.CLIENT,
+                    attributes={"http.method": "POST", "http.url": "https://benchmark.example/execute"},
+                ) as span:
+                    client_ids[task_id] = f"{span.get_span_context().span_id:016x}"
+                    ready += 1
+                    if ready == 2:
+                        release.set()
+                    await release.wait()
+                    with tracer.start_as_current_span("response.process") as response:
+                        response_ids[task_id] = f"{response.get_span_context().span_id:016x}"
+        finally:
+            benchmark_id_var.reset(benchmark_token)
+            request_id_var.reset(request_token)
+
+    try:
+        with sentry_sdk.new_scope() as scope:
+            scope.set_client(client)
+            parent = nullcontext() if client_is_root else tracer.start_as_current_span("dispatch", context=Context())
+            with parent:
+                await asyncio.gather(request("task-a"), request("task-b"))
+                # A shared transaction finishes after both isolated tasks have left.
+                # Its finishing scope must not replace the identities captured on children.
+                scope.set_tag("task_id", "finishing-scope-task")
+    finally:
+        provider.shutdown()
+        client.close()
+
+    assert len(transactions) == (2 if client_is_root else 1)
+    children = {span["span_id"]: span for event in transactions for span in event["spans"]}
+    assert len(children) == (2 if client_is_root else 4)
+    for task_id, identity in identities.items():
+        if client_is_root:
+            event = next(event for event in transactions if event["contexts"]["trace"]["span_id"] == client_ids[task_id])
+            captured_client = event["contexts"]["otel"]["attributes"]
+            assert event["contexts"]["trace"]["op"] == "http.client"
+            assert set(identity).isdisjoint(event.get("tags", {}))
+            trace_id = event["contexts"]["trace"]["trace_id"]
+        else:
+            event = transactions[0]
+            client_span = children[client_ids[task_id]]
+            captured_client = client_span["data"]
+            assert client_span["parent_span_id"] == event["contexts"]["trace"]["span_id"]
+            assert client_span["op"] == "http.client"
+            assert set(identity).isdisjoint(client_span.get("tags", {}))
+            trace_id = client_span["trace_id"]
+            assert trace_id == event["contexts"]["trace"]["trace_id"]
+
+        response = children[response_ids[task_id]]
+        assert response["parent_span_id"] == client_ids[task_id]
+        assert response["trace_id"] == trace_id
+        for key, value in identity.items():
+            assert captured_client[key] == value
+            assert response["data"][key] == value
+        assert set(identity).isdisjoint(response.get("tags", {}))
+
+    if not client_is_root:
+        assert transactions[0]["tags"]["task_id"] == "finishing-scope-task"
 
 
 @pytest.mark.asyncio
