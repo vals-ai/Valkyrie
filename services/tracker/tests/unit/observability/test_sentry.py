@@ -7,6 +7,7 @@ import asyncio
 import json
 from collections.abc import Callable
 from contextlib import nullcontext
+from copy import deepcopy
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -30,7 +31,13 @@ import tracker.utils.task_execution as task_execution
 from tracker.database.models import Org, Task
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.exceptions import SandboxError, SandboxSetupError, SSLConnectionError
-from tracker.logging.context import benchmark_id_var, request_id_var
+from tracker.logging.context import (
+    attempt_started_at_var,
+    benchmark_id_var,
+    executor_dispatch_id_var,
+    request_id_var,
+    task_id_var,
+)
 
 BeforeSend = Callable[[Event, Hint], Event | None]
 BeforeSendLog = Callable[[Log, Hint], Log | None]
@@ -85,6 +92,50 @@ class TestBeforeSend:
         assert event == {"message": "log event", "tags": {}}
 
 
+class TestBeforeSendTransaction:
+    """Only captured OTel root identities are promoted."""
+
+    def test_promotes_only_captured_owned_attributes_and_preserves_other_tags(self) -> None:
+        event: Event = {
+            "type": "transaction",
+            "contexts": {"otel": {"attributes": {"request_id": "captured-request", "http.method": "POST"}}},
+            "tags": {"request_id": "stale-request", "component": "tracker"},
+        }
+
+        with sentry_module.task_scope("late-task", attempt_started_at="2026-04-01T13:00:00+00:00"):
+            result = sentry_module._before_send_transaction(event, {})
+
+        assert result is event
+        assert event["tags"] == {"request_id": "captured-request", "component": "tracker"}
+        assert event["contexts"]["otel"]["attributes"] == {
+            "request_id": "captured-request",
+            "http.method": "POST",
+        }
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            {"type": "transaction"},
+            {
+                "type": "transaction",
+                "contexts": {
+                    "trace": {"trace_id": "019e04c6fbf0397e32a8d9601f98e45c00", "span_id": "a1f0f4fc15b83e82"},
+                },
+                "tags": {"component": "tracker"},
+            },
+        ],
+        ids=["without-contexts", "native-trace-context"],
+    )
+    def test_native_transactions_without_otel_context_are_unchanged(self, event: Event) -> None:
+        expected = deepcopy(event)
+
+        with sentry_module.task_scope("late-task", attempt_started_at="2026-04-01T13:00:00+00:00"):
+            result = sentry_module._before_send_transaction(event, {})
+
+        assert result is event
+        assert event == expected
+
+
 class TestSentrySetup:
     """Sentry initialization and log context behavior."""
 
@@ -101,6 +152,7 @@ class TestSentrySetup:
         sentry_module.init_sentry("valkyrie-worker", environment="test")
 
         assert init_mock.call_args.kwargs["environment"] == "bench"
+        assert init_mock.call_args.kwargs["before_send_transaction"] is sentry_module._before_send_transaction
         integrations = init_mock.call_args.kwargs["integrations"]
         otlp_integrations = [i for i in integrations if isinstance(i, OTLPIntegration)]
         assert len(otlp_integrations) == 1, "expected exactly one OTLPIntegration in integrations="
@@ -200,10 +252,23 @@ async def test_sentry_export_captures_task_identities_on_roots_and_children(
         traces_sample_rate=1.0,
         instrumenter=INSTRUMENTER.OTEL,
         before_send=sentry_module._before_send,
+        before_send_transaction=sentry_module._before_send_transaction,
     )
     identities = {
-        "task-a": {"request_id": "request-a", "benchmark_id": "benchmark-a", "task_id": "task-a"},
-        "task-b": {"request_id": "request-b", "benchmark_id": "benchmark-b", "task_id": "task-b"},
+        "task-a": {
+            "request_id": "request-a",
+            "benchmark_id": "benchmark-a",
+            "task_id": "task-a",
+            "executor_dispatch_id": "dispatch-a",
+            "attempt_started_at": "2026-04-01T12:00:00+00:00",
+        },
+        "task-b": {
+            "request_id": "request-b",
+            "benchmark_id": "benchmark-b",
+            "task_id": "task-b",
+            "executor_dispatch_id": "dispatch-b",
+            "attempt_started_at": "2026-04-01T12:01:00+00:00",
+        },
     }
     client_ids: dict[str, str] = {}
     response_ids: dict[str, str] = {}
@@ -215,8 +280,9 @@ async def test_sentry_export_captures_task_identities_on_roots_and_children(
         identity = identities[task_id]
         request_token = request_id_var.set(identity["request_id"])
         benchmark_token = benchmark_id_var.set(identity["benchmark_id"])
+        dispatch_token = executor_dispatch_id_var.set(identity["executor_dispatch_id"])
         try:
-            with sentry_module.task_scope(task_id, attempt_started_at="2026-04-01T12:00:00+00:00"):
+            with sentry_module.task_scope(task_id, attempt_started_at=identity["attempt_started_at"]):
                 with tracer.start_as_current_span(
                     "POST /execute",
                     context=Context() if client_is_root else None,
@@ -230,13 +296,22 @@ async def test_sentry_export_captures_task_identities_on_roots_and_children(
                     await release.wait()
                     with tracer.start_as_current_span("response.process") as response:
                         response_ids[task_id] = f"{response.get_span_context().span_id:016x}"
+                    # Root export must use the captured identities, not this later context.
+                    request_id_var.set("finishing-request")
+                    benchmark_id_var.set("finishing-benchmark")
+                    executor_dispatch_id_var.set("finishing-dispatch")
+                    task_id_var.set("finishing-scope-task")
+                    attempt_started_at_var.set("2026-04-01T13:00:00+00:00")
+                    sentry_sdk.set_tag("task_id", "finishing-scope-task")
         finally:
+            executor_dispatch_id_var.reset(dispatch_token)
             benchmark_id_var.reset(benchmark_token)
             request_id_var.reset(request_token)
 
     try:
         with sentry_sdk.new_scope() as scope:
             scope.set_client(client)
+            scope.set_tag("component", "tracker")
             parent = nullcontext() if client_is_root else tracer.start_as_current_span("dispatch", context=Context())
             with parent:
                 await asyncio.gather(request("task-a"), request("task-b"))
@@ -257,7 +332,8 @@ async def test_sentry_export_captures_task_identities_on_roots_and_children(
             )
             captured_client = event["contexts"]["otel"]["attributes"]
             assert event["contexts"]["trace"]["op"] == "http.client"
-            assert set(identity).isdisjoint(event.get("tags", {}))
+            assert {key: event["tags"][key] for key in identity} == identity
+            assert "http.url" not in event["tags"]
             trace_id = event["contexts"]["trace"]["trace_id"]
         else:
             event = transactions[0]
@@ -265,7 +341,6 @@ async def test_sentry_export_captures_task_identities_on_roots_and_children(
             captured_client = client_span["data"]
             assert client_span["parent_span_id"] == event["contexts"]["trace"]["span_id"]
             assert client_span["op"] == "http.client"
-            assert set(identity).isdisjoint(client_span.get("tags", {}))
             trace_id = client_span["trace_id"]
             assert trace_id == event["contexts"]["trace"]["trace_id"]
 
@@ -275,7 +350,7 @@ async def test_sentry_export_captures_task_identities_on_roots_and_children(
         for key, value in identity.items():
             assert captured_client[key] == value
             assert response["data"][key] == value
-        assert set(identity).isdisjoint(response.get("tags", {}))
+        assert event["tags"]["component"] == "tracker"
 
     if not client_is_root:
         assert transactions[0]["tags"]["task_id"] == "finishing-scope-task"

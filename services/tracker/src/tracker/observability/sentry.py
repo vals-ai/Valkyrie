@@ -51,6 +51,15 @@ def _before_send(
     return event
 
 
+def _before_send_transaction(event: Event, _hint: Hint) -> Event | None:
+    """Expose captured root identities as tags without using finishing-scope values."""
+    attributes = event.get("contexts", {}).get("otel", {}).get("attributes", {})
+    for key in get_context_tags():
+        if key in attributes:
+            event.setdefault("tags", {})[key] = attributes[key]
+    return event
+
+
 def _apply_current_otel_trace_context(telemetry: dict[str, Any]) -> None:
     span_context = get_current_span().get_span_context()
     if not span_context.is_valid:
@@ -91,6 +100,7 @@ def init_sentry(service_name: str, environment: str) -> None:
             enable_logs=True,
             send_default_pii=False,
             before_send=_before_send,
+            before_send_transaction=_before_send_transaction,
             before_send_log=_before_send_log,
             integrations=[
                 # INFO records become both searchable logs and breadcrumbs. Explicit exception
