@@ -595,37 +595,67 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("services/executor_artifact/uv.lock", workflow)
         self.assertIn("uv lock --project services/executor_artifact --check", workflow)
 
-    def test_dev_sentry_publication_requires_successful_component_deployment(self) -> None:
+    def test_sentry_publication_requires_successful_component_deployment(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        core = _job(workflow, "run-dev-operation")
-        executor = _job(workflow, "executor-development")
-        core_publication = _step(core, "Publish dev core Sentry release")
-        executor_publication = _step(executor, "Publish dev executor Sentry release")
+        for stage, core_job, executor_job, github_environment in (
+            ("dev", "run-dev-operation", "executor-development", "dev"),
+            ("prod", "deploy-prod-core", "executor-prod", "prod-external"),
+        ):
+            with self.subTest(stage=stage):
+                core = _job(workflow, core_job)
+                executor = _job(workflow, executor_job)
+                core_publication = _step(core, f"Publish {stage} core Sentry release")
+                executor_publication = _step(executor, f"Publish {stage} executor Sentry release")
 
-        self.assertIn("if: env.OPERATION == 'deploy'", core_publication)
-        self.assertLess(core.index("Deploy dev core stacks"), core.index("Publish dev core Sentry release"))
-        activation = _step(executor, "Publish and activate dev executor release")
-        activation_condition = activation.split("        if: >-\n", maxsplit=1)[1].split(
-            "        working-directory:", maxsplit=1
-        )[0]
-        self.assertIn(activation_condition, executor_publication)
-        self.assertLess(
-            executor.index("Publish and activate dev executor release"), executor.index("Finish dev maintenance")
-        )
-        self.assertLess(executor.index("Finish dev maintenance"), executor.index("Publish dev executor Sentry release"))
-        for publication in (core_publication, executor_publication):
-            self.assertIn("SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}", publication)
-            self.assertNotIn("always()", publication)
-            self.assertNotIn("continue-on-error:", publication)
+                self.assertIn(f"    environment: {github_environment}\n", core)
+                self.assertIn(f"    environment: {github_environment}\n", executor)
+                if stage == "dev":
+                    self.assertIn("if: env.OPERATION == 'deploy'", core_publication)
+                else:
+                    self.assertNotIn("        if:", core_publication)
+                self.assertLess(
+                    core.index(f"Deploy {stage} core stacks"), core.index(f"Publish {stage} core Sentry release")
+                )
+                activation = _step(executor, f"Publish and activate {stage} executor release")
+                activation_condition = activation.split("        if: >-\n", maxsplit=1)[1].split(
+                    "        working-directory:", maxsplit=1
+                )[0]
+                self.assertIn(activation_condition, executor_publication)
+                self.assertLess(
+                    executor.index(f"Publish and activate {stage} executor release"),
+                    executor.index(f"Finish {stage} maintenance"),
+                )
+                self.assertLess(
+                    executor.index(f"Finish {stage} maintenance"),
+                    executor.index(f"Publish {stage} executor Sentry release"),
+                )
+                for publication in (core_publication, executor_publication):
+                    self.assertIn("SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}", publication)
+                    self.assertNotIn("always()", publication)
+                    self.assertNotIn("continue-on-error:", publication)
 
-    def test_dev_sentry_publication_sends_deployed_identity_and_propagates_http_errors(self) -> None:
+    def test_sentry_publication_sends_deployed_identity_and_propagates_http_errors(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         core_revision = "4c2e9bc458e6ab0e458b95bc40bb38375802eabc"
         executor_revision = "81ecdaa948195d5d407287d09ff980951bc6d514"
         executor_release = f"git-{executor_revision[:12]}-{'a' * 16}"
         cases = (
-            ("run-dev-operation", "Publish dev core Sentry release", core_revision, core_revision),
-            ("executor-development", "Publish dev executor Sentry release", executor_release, executor_revision),
+            ("run-dev-operation", "Publish dev core Sentry release", core_revision, core_revision, "dev"),
+            (
+                "executor-development",
+                "Publish dev executor Sentry release",
+                executor_release,
+                executor_revision,
+                "dev",
+            ),
+            ("deploy-prod-core", "Publish prod core Sentry release", core_revision, core_revision, "production"),
+            (
+                "executor-prod",
+                "Publish prod executor Sentry release",
+                executor_release,
+                executor_revision,
+                "production",
+            ),
         )
         with TemporaryDirectory() as workspace:
             manifest = Path(workspace) / "executor-release" / "manifest.json"
@@ -640,7 +670,7 @@ class DeployWorkflowTest(unittest.TestCase):
                 "GITHUB_WORKSPACE": workspace,
                 "SENTRY_AUTH_TOKEN": "test-release-token",
             }
-            for job_id, step_name, release, revision in cases:
+            for job_id, step_name, release, revision, sentry_environment in cases:
                 step = _step(_job(workflow, job_id), step_name)
                 source = dedent(step.split("python - <<'PY'\n", maxsplit=1)[1].rsplit("\n          PY", maxsplit=1)[0])
                 expected_urls = [
@@ -653,7 +683,7 @@ class DeployWorkflowTest(unittest.TestCase):
                         "projects": ["valkyrie"],
                         "commits": [{"id": revision, "repository": "vals-ai/Valkyrie"}],
                     },
-                    {"environment": "dev", "projects": ["valkyrie"]},
+                    {"environment": sentry_environment, "projects": ["valkyrie"]},
                 ]
                 for failing_request in (None, 0, 1):
                     with self.subTest(component=job_id, failing_request=failing_request):

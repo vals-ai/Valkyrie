@@ -214,6 +214,42 @@ jobs:
           SCOPE=core
           AWS_REGION="$AWS_REGION"
 
+      - name: Publish prod core Sentry release
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          release = os.environ["GITHUB_SHA"]
+          base = "https://sentry.io/api/0/organizations/vals-ai"
+          for url, payload in (
+              (f"{base}/releases/", {
+                  "version": release,
+                  "projects": ["valkyrie"],
+                  "commits": [{"id": release, "repository": os.environ["GITHUB_REPOSITORY"]}],
+              }),
+              (f"{base}/releases/{quote(release, safe='')}/deploys/", {
+                  "environment": "production",
+                  "projects": ["valkyrie"],
+              }),
+          ):
+              request = Request(
+                  url,
+                  data=json.dumps(payload).encode(),
+                  headers={
+                      "Authorization": f"Bearer {os.environ['SENTRY_AUTH_TOKEN']}",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              with urlopen(request):
+                  pass
+          PY
+
   executor-prod:
     if: >-
       always() && github.event_name == 'push' && github.ref == 'refs/heads/prod' &&
@@ -456,6 +492,47 @@ jobs:
           --region "$AWS_REGION"
           --stage prod
           --target-sha "$GITHUB_SHA"
+
+      - name: Publish prod executor Sentry release
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_release_required == 'true'
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          manifest = json.loads((Path(os.environ["GITHUB_WORKSPACE"]) / "executor-release/manifest.json").read_text())
+          release = manifest["release_id"]
+          base = "https://sentry.io/api/0/organizations/vals-ai"
+          for url, payload in (
+              (f"{base}/releases/", {
+                  "version": release,
+                  "projects": ["valkyrie"],
+                  "commits": [{"id": manifest["source_revision"], "repository": os.environ["GITHUB_REPOSITORY"]}],
+              }),
+              (f"{base}/releases/{quote(release, safe='')}/deploys/", {
+                  "environment": "production",
+                  "projects": ["valkyrie"],
+              }),
+          ):
+              request = Request(
+                  url,
+                  data=json.dumps(payload).encode(),
+                  headers={
+                      "Authorization": f"Bearer {os.environ['SENTRY_AUTH_TOKEN']}",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              with urlopen(request):
+                  pass
+          PY
 
   deploy-bench-core:
     if: >-
