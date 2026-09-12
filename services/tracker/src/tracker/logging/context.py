@@ -6,14 +6,18 @@ import logging
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
 benchmark_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("benchmark_id", default="")
 task_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("task_id", default="")
+executor_dispatch_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("executor_dispatch_id", default="")
+attempt_started_at_var: contextvars.ContextVar[str] = contextvars.ContextVar("attempt_started_at", default="")
 
 
 def get_context_tags() -> dict[str, str]:
-    """Current request/benchmark/task context vars. Values may be empty strings if unset."""
+    """Current execution context vars. Values may be empty strings if unset."""
     return {
         "request_id": request_id_var.get(""),
         "benchmark_id": benchmark_id_var.get(""),
         "task_id": task_id_var.get(""),
+        "executor_dispatch_id": executor_dispatch_id_var.get(""),
+        "attempt_started_at": attempt_started_at_var.get(""),
     }
 
 

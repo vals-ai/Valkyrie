@@ -48,6 +48,11 @@ from tracker.types import (
     LogEventResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
+    SchedulerActiveEntryResponse,
+    SchedulerOverviewResponse,
+    SchedulerPoolResponse,
+    SchedulerSummaryResponse,
+    SchedulerWaitingEntryResponse,
     SingleBenchmarkResponse,
     SingleTaskResponse,
     StartBenchmarkRequest,
@@ -87,6 +92,11 @@ from valkyrie.sdk.models import (
     OutputArtifact as SDKOutputArtifact,
     RetryOrResumeBenchmarkResponse as SDKRetryResponse,
     S3UploadResultsResponse as SDKS3ResultsResponse,
+    SchedulerActiveEntryResponse as SDKSchedulerActiveEntryResponse,
+    SchedulerOverviewResponse as SDKSchedulerOverviewResponse,
+    SchedulerPoolResponse as SDKSchedulerPoolResponse,
+    SchedulerSummaryResponse as SDKSchedulerSummaryResponse,
+    SchedulerWaitingEntryResponse as SDKSchedulerWaitingEntryResponse,
     SingleBenchmarkResponse as SDKSingleBenchmarkResponse,
     SingleTaskResponse as SDKSingleTaskResponse,
     StartBenchmarkRequest as SDKStartBenchmarkRequest,
@@ -112,6 +122,7 @@ ROUTES = (
     ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id force"),
     ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id retry retry_mode concurrency"),
     ("/benchmarks/status", "get", "ids"),
+    ("/scheduler/overview", "get", "waiting_limit active_limit waiting_offset active_offset"),
     ("/benchmarks/{benchmark_id}", "get", "benchmark_id"),
     (
         "/benchmarks/{benchmark_id}/tasks",
@@ -146,6 +157,7 @@ RESPONSE_MODELS = {
     ("/stop-benchmark/{benchmark_id}", "post"): "StopBenchmarkResponse",
     ("/retry-or-resume-benchmark/{benchmark_id}", "post"): "RetryOrResumeBenchmarkResponse",
     ("/benchmarks/status", "get"): "BenchmarkStatusResponse",
+    ("/scheduler/overview", "get"): "SchedulerOverviewResponse",
     ("/benchmarks/{benchmark_id}", "get"): "SingleBenchmarkResponse",
     ("/benchmarks/{benchmark_id}/tasks", "get"): "TasksResponse",
     ("/benchmarks/{benchmark_id}/tasks/{task_id}", "get"): "SingleTaskResponse",
@@ -181,6 +193,11 @@ MODEL_PAIRS = (
     (RetryOrResumeBenchmarkResponse, SDKRetryResponse),
     (BenchmarkStatusEntry, SDKBenchmarkStatusEntry),
     (BenchmarkStatusResponse, SDKBenchmarkStatusResponse),
+    (SchedulerActiveEntryResponse, SDKSchedulerActiveEntryResponse),
+    (SchedulerOverviewResponse, SDKSchedulerOverviewResponse),
+    (SchedulerPoolResponse, SDKSchedulerPoolResponse),
+    (SchedulerSummaryResponse, SDKSchedulerSummaryResponse),
+    (SchedulerWaitingEntryResponse, SDKSchedulerWaitingEntryResponse),
     (SingleBenchmarkResponse, SDKSingleBenchmarkResponse),
     (TaskSummary, SDKTaskSummary),
     (TasksResponse, SDKTasksResponse),
@@ -205,7 +222,6 @@ INTERNAL_ROUTES = {
     ("/benchmarks/filter-options", "get"),
     ("/health", "get"),
     ("/init", "post"),
-    ("/scheduler/overview", "get"),
 }
 
 
@@ -399,7 +415,7 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
     retry_schema_ref = retry["requestBody"]["content"]["application/json"]["schema"]["$ref"]
     retry_schema = schema["components"]["schemas"][retry_schema_ref.rsplit("/", 1)[-1]]
     retry_fixture = load_fixture("retry_resume.json")
-    assert set(retry_schema["properties"]) == {*retry_fixture["body"], "benchmark_url"}
+    assert set(retry_schema["properties"]) == {*retry_fixture["body"], "benchmark_url", "lambda_function"}
     retry_properties = retry_schema["properties"]
     assert {
         name: (retry_properties[name]["type"], retry_properties[name]["default"])
@@ -410,6 +426,7 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
         "secrets": ("object", {}),
     }
     assert retry_properties["benchmark_url"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
+    assert retry_properties["lambda_function"]["anyOf"] == [{"type": "string", "minLength": 1}, {"type": "null"}]
 
     retry_parameters = {parameter["name"]: parameter for parameter in retry["parameters"]}
     assert retry_parameters["retry"]["schema"]["default"] == retry_fixture["query"]["retry"]

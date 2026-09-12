@@ -40,6 +40,7 @@ def _read_waiting_rows(
     session: Session,
     org_id: UUID,
     limit: int,
+    offset: int = 0,
 ) -> tuple[list[tuple[Task, Benchmark, int, str, int]], dict[str, int]]:
     arguments = type_coerce(col(Benchmark.arguments), JSON)
     priority = arguments["priority"].as_integer()
@@ -87,6 +88,7 @@ def _read_waiting_rows(
         .join(Benchmark, col(Benchmark.id) == col(Task.benchmark))
         .where(*scope)
         .order_by(queued_tasks.c.priority.asc(), col(Task.started_at).asc(), col(Task.id).asc())
+        .offset(offset)
         .limit(limit + 1),
     )
     rows = list(session.exec(rows_statement).all())
@@ -99,6 +101,7 @@ def _read_active_rows(
     session: Session,
     org_id: UUID,
     limit: int,
+    offset: int = 0,
 ) -> tuple[list[tuple[Task, Benchmark]], dict[TaskStatus, int]]:
     scope = (
         col(Task.org_id) == org_id,
@@ -121,6 +124,7 @@ def _read_active_rows(
         .join(Benchmark, col(Benchmark.id) == col(Task.benchmark))
         .where(*scope)
         .order_by(col(Task.started_at).asc(), col(Task.id).asc())
+        .offset(offset)
         .limit(limit + 1)
         .execution_options(populate_existing=True)
     ).all()
@@ -135,9 +139,15 @@ def read_scheduler_overview(
     now: datetime,
     waiting_limit: int,
     active_limit: int,
+    waiting_offset: int = 0,
+    active_offset: int = 0,
 ) -> SchedulerOverviewResponse:
-    waiting_rows, pool_counts = _read_waiting_rows(session=session, org_id=org_id, limit=waiting_limit)
-    active_rows, active_counts = _read_active_rows(session=session, org_id=org_id, limit=active_limit)
+    waiting_rows, pool_counts = _read_waiting_rows(
+        session=session, org_id=org_id, limit=waiting_limit, offset=waiting_offset
+    )
+    active_rows, active_counts = _read_active_rows(
+        session=session, org_id=org_id, limit=active_limit, offset=active_offset
+    )
     waiting_entries = [
         SchedulerWaitingEntryResponse(
             benchmark_uuid=benchmark.id,
@@ -180,6 +190,8 @@ def read_scheduler_overview(
         active_entries=active_entries,
         waiting_capped=len(waiting_rows) > waiting_limit,
         active_capped=len(active_rows) > active_limit,
+        waiting_next_offset=waiting_offset + waiting_limit if len(waiting_rows) > waiting_limit else None,
+        active_next_offset=active_offset + active_limit if len(active_rows) > active_limit else None,
     )
 
 
@@ -187,6 +199,8 @@ def read_scheduler_overview(
 def get_scheduler_overview(
     waiting_limit: int = Query(default=100, ge=1, le=200),
     active_limit: int = Query(default=100, ge=1, le=200),
+    waiting_offset: int = Query(default=0, ge=0),
+    active_offset: int = Query(default=0, ge=0),
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> SchedulerOverviewResponse:
@@ -196,4 +210,6 @@ def get_scheduler_overview(
         now=datetime.now(UTC),
         waiting_limit=waiting_limit,
         active_limit=active_limit,
+        waiting_offset=waiting_offset,
+        active_offset=active_offset,
     )

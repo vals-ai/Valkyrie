@@ -76,7 +76,7 @@ def error_span(name: str, exc: BaseException, **attributes: Any) -> Generator[No
 
 
 class _ContextVarSpanProcessor(SpanProcessor):
-    """Attaches request/benchmark/task context vars to every span as attributes."""
+    """Attaches execution context vars to every span as attributes."""
 
     def on_start(self, span: Span, parent_context: Context | None = None) -> None:
         existing = span.attributes or {}

@@ -3,5 +3,6 @@
   "reference/cli/run",
   "reference/cli/agent",
   "reference/cli/benchmark",
-  "reference/cli/config"
+  "reference/cli/config",
+  "reference/cli/queue"
 ]

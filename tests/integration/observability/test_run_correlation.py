@@ -174,6 +174,7 @@ def _run_executor(dsn: str, context_path: str) -> None:
         {
             "benchmark_id_str": _RUN_ID,
             "telemetry_context_json": telemetry_context,
+            "executor_dispatch_id": _DISPATCH_ID,
         }
     ):
         with logfire.span("observability.smoke.executor"):

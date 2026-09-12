@@ -1,5 +1,7 @@
 """Sentry SDK initialization for Valkyrie service processes."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 import logging
 import os
 from typing import Any, cast
@@ -12,9 +14,23 @@ from sentry_sdk.integrations.otlp import OTLPIntegration
 from sentry_sdk.types import Event, Hint, Log
 
 from tracker.exceptions import SSLConnectionError
-from tracker.logging.context import get_context_tags
+from tracker.logging import task_id_var
+from tracker.logging.context import attempt_started_at_var, get_context_tags
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def task_scope(task_id: str, *, attempt_started_at: str) -> Iterator[None]:
+    """Isolate Sentry events and logging context for one tracked task execution epoch."""
+    with sentry_sdk.isolation_scope():
+        token = task_id_var.set(task_id)
+        attempt_token = attempt_started_at_var.set(attempt_started_at)
+        try:
+            yield
+        finally:
+            attempt_started_at_var.reset(attempt_token)
+            task_id_var.reset(token)
 
 
 def _before_send(
@@ -32,6 +48,15 @@ def _before_send(
     for key, value in get_context_tags().items():
         if value:
             tags[key] = value
+    return event
+
+
+def _before_send_transaction(event: Event, _hint: Hint) -> Event | None:
+    """Expose captured root identities as tags without using finishing-scope values."""
+    attributes = event.get("contexts", {}).get("otel", {}).get("attributes", {})
+    for key in get_context_tags():
+        if key in attributes:
+            event.setdefault("tags", {})[key] = attributes[key]
     return event
 
 
@@ -75,6 +100,7 @@ def init_sentry(service_name: str, environment: str) -> None:
             enable_logs=True,
             send_default_pii=False,
             before_send=_before_send,
+            before_send_transaction=_before_send_transaction,
             before_send_log=_before_send_log,
             integrations=[
                 # INFO records become both searchable logs and breadcrumbs. Explicit exception
@@ -106,6 +132,17 @@ def capture_exception(error: BaseException) -> None:
         sentry_sdk.capture_exception(error)
     except Exception as telemetry_error:
         logger.warning("Failed to capture exception: %s: %s", type(telemetry_error).__name__, telemetry_error)
+
+
+def clear_sandbox_context() -> None:
+    """Remove sandbox identity before a task begins another attempt."""
+    try:
+        scope = sentry_sdk.get_isolation_scope()
+        scope.remove_tag("sandbox_id")
+        scope.remove_tag("sandbox_name")
+        scope.remove_context("sandbox")
+    except Exception as e:
+        logger.warning("clear_sandbox_context failed: %s: %s", type(e).__name__, e)
 
 
 def set_sandbox_context(sandbox: Any, *, image: str | None = None) -> None:
