@@ -21,6 +21,7 @@ from pytest import MonkeyPatch
 from tracker.config import ENVIRONMENT
 from tracker.executor import entrypoint as executor_entrypoint
 from tracker.logging import benchmark_id_var, request_id_var, task_id_var
+from tracker.logging.context import attempt_started_at_var, executor_dispatch_id_var
 
 
 @pytest.fixture(autouse=True)
@@ -89,6 +90,7 @@ async def test_unhandled_executor_error_is_captured_with_run_context(monkeypatch
         assert captured_error is error
         captured_context["benchmark_id"] = benchmark_id_var.get()
         captured_context["request_id"] = request_id_var.get()
+        captured_context["executor_dispatch_id"] = executor_dispatch_id_var.get()
 
     monkeypatch.setattr(executor_entrypoint, "process_benchmark", process_benchmark)
     monkeypatch.setattr(sentry_sdk, "capture_exception", capture_exception)
@@ -102,7 +104,11 @@ async def test_unhandled_executor_error_is_captured_with_run_context(monkeypatch
             }
         )
 
-    assert captured_context == {"benchmark_id": "benchmark-id", "request_id": "request-id"}
+    assert captured_context == {
+        "benchmark_id": "benchmark-id",
+        "request_id": "request-id",
+        "executor_dispatch_id": "dispatch-id",
+    }
 
 
 def test_main_forwards_executor_payload(
@@ -179,11 +185,14 @@ def test_executor_context_restores_run_and_trace_context(monkeypatch: MonkeyPatc
     request_token = request_id_var.set("outer-request")
     benchmark_token = benchmark_id_var.set("outer-benchmark")
     task_token = task_id_var.set("outer-task")
+    dispatch_token = executor_dispatch_id_var.set("outer-dispatch")
+    attempt_token = attempt_started_at_var.set("outer-attempt")
 
     try:
         with executor_entrypoint._executor_context(  # pyright: ignore[reportPrivateUsage]
             {
                 "execution_context_json": {"benchmark_id": "benchmark-id"},
+                "executor_dispatch_id": "dispatch-id",
                 "telemetry_context_json": {
                     "request_id": "request-id",
                     "trace_headers": {"sentry-trace": "trace-header", "baggage": "baggage-header"},
@@ -193,13 +202,19 @@ def test_executor_context_restores_run_and_trace_context(monkeypatch: MonkeyPatc
             assert request_id_var.get() == "request-id"
             assert benchmark_id_var.get() == "benchmark-id"
             assert task_id_var.get() == ""
+            assert executor_dispatch_id_var.get() == "dispatch-id"
+            assert attempt_started_at_var.get() == ""
             assert trace.get_current_span().get_span_context() == parent_span.get_span_context()
 
         assert request_id_var.get() == "outer-request"
         assert benchmark_id_var.get() == "outer-benchmark"
         assert task_id_var.get() == "outer-task"
+        assert executor_dispatch_id_var.get() == "outer-dispatch"
+        assert attempt_started_at_var.get() == "outer-attempt"
         assert not trace.get_current_span().get_span_context().is_valid
     finally:
+        attempt_started_at_var.reset(attempt_token)
+        executor_dispatch_id_var.reset(dispatch_token)
         task_id_var.reset(task_token)
         benchmark_id_var.reset(benchmark_token)
         request_id_var.reset(request_token)

@@ -23,6 +23,7 @@ from executor_protocol import (
 )
 from tracker.config import ENVIRONMENT
 from tracker.logging import benchmark_id_var, request_id_var, task_id_var
+from tracker.logging.context import attempt_started_at_var, executor_dispatch_id_var
 from tracker.observability import configure_observability
 from tracker.observability.sentry import capture_exception
 from tracker.utils.run_orchestration import process_benchmark
@@ -38,6 +39,8 @@ def _executor_context(payload: Mapping[str, object]) -> Generator[None, None, No
         request_id_var.set(telemetry_context["request_id"]),
         benchmark_id_var.set(executor_payload_benchmark_id(payload)),
         task_id_var.set(""),
+        executor_dispatch_id_var.set(cast(str, payload["executor_dispatch_id"])),
+        attempt_started_at_var.set(""),
     ]
     trace_headers = telemetry_context["trace_headers"]
     otel_token = attach(extract(trace_headers)) if trace_headers else None
