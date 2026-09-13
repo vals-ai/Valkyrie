@@ -567,6 +567,7 @@ class Task(SQLModel, table=True):
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     finished_at: datetime | None = None
     eval_resume_state: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    generation_id: UUID | None = Field(default=None)
     benchmark: UUID = Field(foreign_key="benchmark.id")
     task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")
 

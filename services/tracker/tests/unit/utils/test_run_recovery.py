@@ -723,8 +723,10 @@ class TestRunRecovery:
             (RetryMode.FROM_SCRATCH, {"artifact_prefix": "s3://bucket/run"}, TaskStatus.PENDING, None),
         ],
     )
+    @pytest.mark.parametrize("has_generation", [False, True])
     async def test_reset_handles_eval_resume_state(
         self,
+        has_generation: bool,
         retry_mode: RetryMode,
         eval_resume_state: dict[str, str] | None,
         expected_status: TaskStatus,
@@ -741,9 +743,13 @@ class TestRunRecovery:
             benchmark=benchmark_row.id,
             status=TaskStatus.STOPPED,
             eval_resume_state=eval_resume_state,
+            generation_id=UUID("00000000-0000-0000-0000-000000000001") if has_generation else None,
         )
+        old_generation = task_row.generation_id
+        other_task = Task(org_id=TEST_ORG_ID, task_id="unselected", benchmark=benchmark_row.id, status=TaskStatus.ERROR)
         database_session.add(benchmark_row)
         database_session.add(task_row)
+        database_session.add(other_task)
         database_session.commit()
 
         async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
@@ -766,6 +772,12 @@ class TestRunRecovery:
         assert verified_task_ids == [task_row.task_id]
         assert task_row.status == expected_status
         assert task_row.eval_resume_state == expected_state
+        if retry_mode == RetryMode.FROM_SCRATCH:
+            assert task_row.generation_id is not None and task_row.generation_id != old_generation
+        else:
+            assert task_row.generation_id == old_generation
+        database_session.refresh(other_task)
+        assert other_task.status == TaskStatus.ERROR and other_task.generation_id is None
 
     async def test_retry_preserves_previous_task_history_for_export(
         self,
@@ -2079,8 +2091,10 @@ class TestRunRecovery:
             assert persisted_task.status == TaskStatus.ERROR
             assert fresh_session.exec(select(ExecutorDispatch)).all() == []
 
+    @pytest.mark.parametrize("retry_mode", [RetryMode.AUTO, RetryMode.FROM_SCRATCH])
     async def test_release_resolution_failure_rolls_back_retry_mutation(
         self,
+        retry_mode: RetryMode,
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
@@ -2108,7 +2122,10 @@ class TestRunRecovery:
             _fail_release_resolution,
         )
 
-        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true", headers=harness_headers)
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true&retry_mode={retry_mode.value}",
+            headers=harness_headers,
+        )
 
         assert response.status_code == 409
         with Session(bind=database_session.get_bind()) as fresh_session:
@@ -2119,6 +2136,7 @@ class TestRunRecovery:
             assert persisted_benchmark.current_execution_release_id == "test-release"
             assert persisted_task is not None
             assert persisted_task.status == TaskStatus.ERROR
+            assert persisted_task.generation_id is None
             assert fresh_session.get(FinalEvaluation, old_evaluation_id) is not None
             assert persisted_benchmark.final_evaluation is not None
             assert persisted_benchmark.final_evaluation.id == old_evaluation_id

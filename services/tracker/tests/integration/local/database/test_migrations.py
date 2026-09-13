@@ -43,6 +43,21 @@ def test_migration_graph_has_single_head() -> None:
     assert len(heads) == 1, f"Expected one Alembic head, found {heads}"
 
 
+def test_task_generation_migration_round_trip(migration_database_url: str) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", "61d4162227ab")
+    assert upgrade.returncode == 0, upgrade.stderr
+    engine = create_engine(migration_database_url)
+    columns = {column["name"]: column for column in inspect(engine).get_columns("task")}
+    assert columns["generation_id"]["nullable"] is True
+    assert str(columns["generation_id"]["type"]) == "UUID"
+    downgrade = _run_alembic(migration_database_url, "downgrade", "50c3051116fa")
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert "generation_id" not in {column["name"] for column in inspect(engine).get_columns("task")}
+    upgrade = _run_alembic(migration_database_url, "upgrade", "head")
+    assert upgrade.returncode == 0, upgrade.stderr
+    engine.dispose()
+
+
 @pytest.fixture
 def migration_database_url() -> Generator[str, None, None]:
     with PostgresContainer("postgres:16-alpine") as postgres:
