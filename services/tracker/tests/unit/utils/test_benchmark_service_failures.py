@@ -170,6 +170,7 @@ class TestBenchmarkServiceFailures:
             outcome_metric.assert_called_once_with("valkyrie.task.outcome", tags={"outcome": "finished"})
             breakdown = database_session.get(TaskBreakdown, task_row.task_breakdown)
             assert breakdown is not None
+            database_session.refresh(breakdown)
             assert breakdown.evaluation_run_duration is not None
             assert breakdown.evaluation_run_duration > 0
             assert phase_metric.call_args_list == [
