@@ -8,6 +8,7 @@ import socket
 import time
 from typing import Any, Never
 from unittest.mock import Mock, call
+from uuid import UUID
 
 import httpx
 import pytest
@@ -18,6 +19,8 @@ from benchmark_service.client import (
     BenchmarkServiceStreamClosedError,
 )
 from benchmark_service.schemas import RetrieveTaskResponse
+from sqlalchemy import event, inspect
+from sqlalchemy.orm import ORMExecuteState
 from sqlmodel import Session, desc, select
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
@@ -42,6 +45,7 @@ from tracker.database.models import (
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
+    Org,
     Task,
     TaskBreakdown,
     TaskStatus,
@@ -66,6 +70,116 @@ class TestBenchmarkServiceFailures:
 
     def _latest_task_error(self, database_session: Session, task_row: Task) -> str:
         return self._latest_task_error_result(database_session, task_row).error_message
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.parametrize("completion_path", ["normal", "stream_recovery", "durable_resume"])
+    @pytest.mark.parametrize("commit_fails", [False, True])
+    async def test_finished_phase_metrics_use_loaded_values_only_after_successful_commit(
+        self,
+        completion_path: str,
+        commit_fails: bool,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        outcome_metric = Mock()
+        phase_metric = Mock()
+        phase_reload = Mock()
+        monkeypatch.setattr(utils_module, "incr", outcome_metric)
+        monkeypatch.setattr(utils_module, "distribution", phase_metric)
+        request, task_row, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
+        saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
+        if completion_path == "durable_resume":
+            breakdown = TaskBreakdown(sandbox_build_duration=2.0, agent_run_duration=3.0, sandbox_run_duration=11.0)
+            database_session.add(breakdown)
+            task_row.task_breakdown = breakdown.id
+            task_row.status = TaskStatus.EVALUATING
+            task_row.eval_resume_state = saved_state
+            database_session.commit()
+            bind_task_to_dispatch(database_session, task_row, authority)
+            install_sqlite_evaluation_lock(database_session, monkeypatch)
+
+        async def resume_evaluation(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {"status": "success", "score": 1.0}
+
+        async def close_evaluation(*_args: Any, on_eval_resume_state: Any, **_kwargs: Any) -> dict[str, Any]:
+            on_eval_resume_state(saved_state)
+            raise BenchmarkServiceStreamClosedError(close_code=1011, close_reason="keepalive timeout", idle_s=30.0)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", resume_evaluation)
+        if completion_path == "stream_recovery":
+            monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", close_evaluation)
+
+        commit_transition = utils_module.commit_task_status_transition
+        watched_sessions: list[Session] = []
+        commit_error = RuntimeError("terminal commit failed")
+
+        def observe_phase_reload(state: ORMExecuteState) -> None:
+            if state.is_column_load and inspect(TaskBreakdown) in state.all_mappers:
+                phase_reload()
+
+        def observe_finished_commit(
+            task_row_id: UUID, session: Session, org: Org, to_status: TaskStatus, **kwargs: Any
+        ) -> bool:
+            if to_status != TaskStatus.FINISHED:
+                return commit_transition(task_row_id, session, org, to_status, **kwargs)
+            phase_metric.assert_not_called()
+            outcome_metric.assert_not_called()
+            breakdown = next(row for row in session.identity_map.values() if isinstance(row, TaskBreakdown))
+            assert not inspect(breakdown).expired_attributes
+            watched_sessions.append(session)
+            event.listen(session, "do_orm_execute", observe_phase_reload)
+            if commit_fails:
+                with monkeypatch.context() as commit_patch:
+                    commit_patch.setattr(session, "commit", Mock(side_effect=commit_error))
+                    return commit_transition(task_row_id, session, org, to_status, **kwargs)
+            committed = commit_transition(task_row_id, session, org, to_status, **kwargs)
+            assert committed
+            assert inspect(breakdown).expired_attributes
+            return committed
+
+        monkeypatch.setattr(utils_module, "commit_task_status_transition", observe_finished_commit)
+
+        try:
+            if commit_fails and completion_path == "stream_recovery":
+                with pytest.raises(RuntimeError, match="terminal commit failed") as exc_info:
+                    await run_process_task(request, task_row, benchmark_id, aws_runtime, authority)
+                assert exc_info.value is commit_error
+            else:
+                result = await run_process_task(request, task_row, benchmark_id, aws_runtime, authority)
+                if commit_fails:
+                    assert result == {"task_0": None}
+                else:
+                    assert result == {"task_0": {"status": "success", "score": 1.0}}
+        finally:
+            for session in watched_sessions:
+                event.remove(session, "do_orm_execute", observe_phase_reload)
+
+        assert len(watched_sessions) == 1
+        phase_reload.assert_not_called()
+        database_session.refresh(task_row)
+        if commit_fails:
+            phase_metric.assert_not_called()
+            assert call("valkyrie.task.outcome", tags={"outcome": "finished"}) not in outcome_metric.call_args_list
+            assert task_row.status != TaskStatus.FINISHED
+            assert not database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).all()
+        else:
+            assert task_row.status == TaskStatus.FINISHED
+            outcome_metric.assert_called_once_with("valkyrie.task.outcome", tags={"outcome": "finished"})
+            breakdown = database_session.get(TaskBreakdown, task_row.task_breakdown)
+            assert breakdown is not None
+            assert breakdown.evaluation_run_duration is not None
+            assert breakdown.evaluation_run_duration > 0
+            assert phase_metric.call_args_list == [
+                call("valkyrie.task.phase.duration", breakdown.sandbox_build_duration, tags={"phase": "sandbox_build"}),
+                call("valkyrie.task.phase.duration", breakdown.agent_run_duration, tags={"phase": "agent_run"}),
+                call(
+                    "valkyrie.task.phase.duration", breakdown.evaluation_run_duration, tags={"phase": "evaluation_run"}
+                ),
+                call("valkyrie.task.phase.duration", breakdown.sandbox_run_duration, tags={"phase": "sandbox_run"}),
+            ]
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_normal_completion_publishes_finished_and_stored_phase_metrics(

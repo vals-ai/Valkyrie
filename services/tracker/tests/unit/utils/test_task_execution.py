@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, Mock, call
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import event, inspect
 from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
@@ -72,7 +73,9 @@ class TestTaskExecution:
         else:
             metric.assert_not_called()
 
-    def test_phase_metrics_publish_only_non_null_stored_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_phase_metrics_publish_only_non_null_stored_values_without_sql_after_commit(
+        self, database_session: Session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         metric = Mock()
         monkeypatch.setattr(utils_module, "distribution", metric)
         breakdown = TaskBreakdown(
@@ -82,7 +85,24 @@ class TestTaskExecution:
             sandbox_run_duration=None,
         )
 
-        utils_module._publish_task_phase_durations(breakdown)
+        with Session(bind=database_session.get_bind()) as session:
+            session.add(breakdown)
+            session.flush()
+            statements = Mock()
+            event.listen(session, "do_orm_execute", statements)
+            try:
+                durations = utils_module._capture_task_phase_durations(breakdown)
+                session.commit()
+                assert inspect(breakdown).expired_attributes
+                metric.assert_not_called()
+
+                utils_module._publish_task_phase_durations(durations)
+                utils_module._publish_task_phase_durations(utils_module._capture_task_phase_durations(None))
+
+                statements.assert_not_called()
+                assert inspect(breakdown).expired_attributes
+            finally:
+                event.remove(session, "do_orm_execute", statements)
 
         assert metric.call_args_list == [
             call(
