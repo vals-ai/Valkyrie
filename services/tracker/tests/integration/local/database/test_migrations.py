@@ -34,6 +34,7 @@ _CURRENT_OWNERSHIP_REVISION = "e9f0a1b2c3d4"
 _PREVIOUS_REVISION = "d8e9f0a1b2c3"
 _MAINTENANCE_REVISION = "f0a1b2c3d4e5"
 _ERROR_RESULT_PROVENANCE_REVISION = "a3f4b5c6d7e8"
+_DISPATCH_LEASE_REVISION = "6a7b8c9d0e1f"
 _MIGRATION_ADVISORY_LOCK_ID = 0x56414C4B59524945
 
 
@@ -41,6 +42,27 @@ def test_migration_graph_has_single_head() -> None:
     heads = ScriptDirectory.from_config(Config(str(_ALEMBIC_INI))).get_heads()
 
     assert len(heads) == 1, f"Expected one Alembic head, found {heads}"
+
+
+def test_dispatch_lease_migration_adds_recovery_state(migration_database_url: str) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", _DISPATCH_LEASE_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    engine = create_engine(migration_database_url)
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("executordispatch")}
+    assert {
+        "assigned_task_ids",
+        "claim_deadline_at",
+        "heartbeat_at",
+        "lease_expires_at",
+        "failure_reason",
+    } <= columns
+    assert any(
+        index["name"] == "ix_executordispatch_status_lease_expires"
+        for index in inspector.get_indexes("executordispatch")
+    )
+    engine.dispose()
 
 
 @pytest.fixture

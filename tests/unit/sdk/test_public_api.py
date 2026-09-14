@@ -47,8 +47,11 @@ EXPECTED_ALL = [
     "S3UploadResultsResponse",
     "SchedulerActiveEntryResponse",
     "SchedulerActiveStatus",
+    "SchedulerCapacityDomainResponse",
+    "SchedulerCapacityResponse",
     "SchedulerOverviewResponse",
     "SchedulerPoolResponse",
+    "SchedulerResourceCapacityResponse",
     "SchedulerSummaryResponse",
     "SchedulerWaitingEntryResponse",
     "SingleBenchmarkResponse",
@@ -112,7 +115,9 @@ EXPECTED_SIGNATURES = {
     BenchmarksResource.tasks: "self, run_id, request=None",
     BenchmarksResource.task: "self, run_id, task_id",
     BenchmarksResource.artifacts: "self, run_id, task_id",
-    SchedulerResource.overview: "self, *, waiting_limit=100, active_limit=100, waiting_offset=0, active_offset=0",
+    SchedulerResource.overview: (
+        "self, *, waiting_limit=100, active_limit=100, waiting_offset=0, active_offset=0, include_capacity=False"
+    ),
     AgentsResource.list: "self",
     AgentsResource.download_url: "self, name",
     BenchmarkServicesResource.catalog: "self",
