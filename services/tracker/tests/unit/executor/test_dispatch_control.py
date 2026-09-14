@@ -789,3 +789,76 @@ def test_terminal_authority_rejects_stopped_state(
         with pytest.raises(ExecutionAuthorityRevoked):
             lock_execution_authority(database_session, authority, require_in_progress=False)
         database_session.rollback()
+
+
+@pytest.mark.parametrize("task_status", [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS])
+@pytest.mark.parametrize("assignment", [None, ["owned-task", "sibling-task"], ["sibling-task"]])
+def test_expiry_only_preserves_tasks_an_active_sibling_can_run(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    task_status: TaskStatus,
+    assignment: list[str] | None,
+) -> None:
+    """Verify expiry respects sibling assignments and newer attempts.
+
+    Test cases:
+    - An unrelated sibling does not prevent cleanup of an expired assignment.
+    - Overlapping or unknown assignments preserve potentially shared tasks.
+    - A newer task attempt and the sibling's own task remain untouched.
+    """
+    release = _release("active")
+    register_release(database_session, release)
+    pin_benchmark_to_release(example_benchmark_object, release)
+    dispatch = create_executor_dispatch(
+        example_benchmark_object.id,
+        release,
+        ExecutorDispatchKind.START,
+        dispatch_id=uuid4(),
+        task_ids=["owned-task", "newer-task"],
+    )
+    dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(minutes=1)
+    sibling = create_executor_dispatch(
+        example_benchmark_object.id,
+        release,
+        ExecutorDispatchKind.RESUME,
+        dispatch_id=uuid4(),
+        task_ids=assignment,
+    )
+    task = Task(
+        org_id=example_benchmark_object.org_id,
+        benchmark=example_benchmark_object.id,
+        task_id="owned-task",
+        status=task_status,
+        started_at=dispatch.created_at - timedelta(seconds=1),
+    )
+    newer_task = Task(
+        org_id=example_benchmark_object.org_id,
+        benchmark=example_benchmark_object.id,
+        task_id="newer-task",
+        started_at=dispatch.created_at + timedelta(seconds=1),
+    )
+    sibling_task = Task(
+        org_id=example_benchmark_object.org_id,
+        benchmark=example_benchmark_object.id,
+        task_id="sibling-task",
+        status=TaskStatus.IN_PROGRESS,
+    )
+    database_session.add_all([example_benchmark_object, dispatch, sibling, task, newer_task, sibling_task])
+    database_session.commit()
+
+    assert reconcile_expired_dispatches(database_session) == 1
+    database_session.commit()
+    for row in [example_benchmark_object, dispatch, sibling, task, newer_task, sibling_task]:
+        database_session.refresh(row)
+
+    expected_status = TaskStatus.ERROR if assignment == ["sibling-task"] else task_status
+    assert task.status == expected_status
+    assert sibling_task.status == TaskStatus.IN_PROGRESS
+    assert newer_task.status == TaskStatus.PENDING
+    assert sibling.status == ExecutorDispatchStatus.QUEUED
+    assert dispatch.status == ExecutorDispatchStatus.FAILED
+    assert example_benchmark_object.status == BenchmarkStatus.IN_PROGRESS
+    errors = database_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).all()
+    assert len(errors) == (1 if expected_status == TaskStatus.ERROR else 0)
+    if errors:
+        assert errors[0].cause_code == "CLAIM_DEADLINE_EXPIRED"

@@ -176,7 +176,22 @@ def _terminalize_dispatch_tasks(
         col(Task.status) == TaskStatus.EVALUATING,
         col(Task.started_at) == dispatch.created_at,
     )
-    if not sibling_active:
+    sibling_task_ids: set[str] | None = set()
+    if sibling_active:
+        assignments = session.exec(
+            select(col(ExecutorDispatch.assigned_task_ids))
+            .where(ExecutorDispatch.benchmark_id == benchmark.id)
+            .where(ExecutorDispatch.id != dispatch.id)
+            .where(col(ExecutorDispatch.status).in_(_ACTIVE_DISPATCH_STATUSES))
+        ).all()
+        for assignment in assignments:
+            if assignment is None:
+                # Legacy dispatches do not identify which shared tasks they can run.
+                sibling_task_ids = None
+                break
+            sibling_task_ids.update(assignment)
+
+    if sibling_task_ids is not None:
         failed_task_attempts = or_(
             failed_task_attempts,
             and_(
@@ -184,6 +199,7 @@ def _terminalize_dispatch_tasks(
                     (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
                 ),
                 col(Task.started_at) <= dispatch.created_at,
+                col(Task.task_id).not_in(sibling_task_ids),
             ),
         )
 
@@ -230,8 +246,8 @@ def record_dispatch_failure(
 ) -> bool:
     """Record a dispatch failure without overwriting newer admitted work.
 
-    Resumable evaluations carry the dispatch creation time as their exact ownership token. Queued and running
-    attempts remain shared while a sibling dispatch is active, so only terminalize them when no sibling can proceed.
+    Resumable evaluations carry the dispatch creation time as their exact ownership token. Other attempts
+    remain protected while an active sibling can run them, or its persisted assignment is unavailable.
     """
     benchmark = session.exec(
         select(Benchmark)
