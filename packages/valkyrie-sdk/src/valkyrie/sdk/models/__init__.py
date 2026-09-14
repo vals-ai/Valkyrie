@@ -46,6 +46,14 @@ from valkyrie.sdk.models.runs import (
     StopBenchmarkResponse,
     TaskStatus,
 )
+from valkyrie.sdk.models.scheduler import (
+    SchedulerActiveEntryResponse,
+    SchedulerActiveStatus,
+    SchedulerOverviewResponse,
+    SchedulerPoolResponse,
+    SchedulerSummaryResponse,
+    SchedulerWaitingEntryResponse,
+)
 from valkyrie.sdk.models.services import (
     BenchmarkServiceCatalogResponse,
     BenchmarkServiceEntry,
@@ -96,6 +104,12 @@ __all__ = [
     "RetryMode",
     "RetryOrResumeBenchmarkResponse",
     "S3UploadResultsResponse",
+    "SchedulerActiveEntryResponse",
+    "SchedulerActiveStatus",
+    "SchedulerOverviewResponse",
+    "SchedulerPoolResponse",
+    "SchedulerSummaryResponse",
+    "SchedulerWaitingEntryResponse",
     "SingleBenchmarkResponse",
     "SingleTaskResponse",
     "StartBenchmarkRequest",

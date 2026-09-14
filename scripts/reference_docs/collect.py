@@ -334,6 +334,7 @@ def collect_sdk_reference() -> SDKReference:
     from valkyrie.sdk.resources.benchmarks import BenchmarksResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.logs import LogsResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.runs import RunsResource  # pyright: ignore[reportMissingImports]
+    from valkyrie.sdk.resources.scheduler import SchedulerResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.services import BenchmarkServicesResource  # pyright: ignore[reportMissingImports]
 
     sdk_exports: list[str] = getattr(sdk, "__all__")
@@ -344,6 +345,7 @@ def collect_sdk_reference() -> SDKReference:
         ("AgentsResource", "client.agents", AgentsResource),
         ("BenchmarkServicesResource", "client.services", BenchmarkServicesResource),
         ("LogsResource", "client.logs", LogsResource),
+        ("SchedulerResource", "client.scheduler", SchedulerResource),
     )
     resources = tuple(_collect_resource(name, attribute, resource) for name, attribute, resource in resource_types)
 

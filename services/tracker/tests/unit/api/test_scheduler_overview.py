@@ -1,8 +1,12 @@
-"""Tests for PostgreSQL-backed scheduler overview reads."""
+"""PostgreSQL-backed scheduler overview reads.
+
+Run: uv run pytest tests/unit/api/test_scheduler_overview.py
+"""
 
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import pytest
 from sqlmodel import Session
 
 from tests.factories import make_benchmark, make_task
@@ -105,6 +109,90 @@ async def test_reports_org_queued_rows_in_priority_fifo_order(database_session: 
     ]
     assert overview.waiting_capped
     assert overview.active_capped
+
+
+@pytest.mark.parametrize(("waiting_limit", "active_limit"), [(200, 100), (100, 200)])
+def test_pages_preserve_totals_positions_and_org_scope(
+    database_session: Session, waiting_limit: int, active_limit: int
+) -> None:
+    now = datetime(2026, 7, 17, 12, tzinfo=UTC)
+    other_org = Org(id=UUID(int=9000), name="other")
+    benchmark = _queue(make_benchmark(name="paged"), pool_id="shared", priority=3)
+    foreign = _queue(make_benchmark(name="foreign", org_id=other_org.id), pool_id="shared", priority=0)
+    tasks = [
+        Task(
+            org_id=benchmark.org_id,
+            benchmark=benchmark.id,
+            task_id=f"{status.value}-{index}",
+            id=UUID(int=base + index),
+            status=status,
+            started_at=now,
+        )
+        for status, base, count in [(TaskStatus.PENDING, 1, 205), (TaskStatus.IN_PROGRESS, 1000, 201)]
+        for index in range(count)
+    ]
+    database_session.add_all(
+        [
+            other_org,
+            benchmark,
+            foreign,
+            *tasks,
+            make_task(foreign, "foreign-waiting", started_at=now),
+            make_task(foreign, "foreign-active", status=TaskStatus.IN_PROGRESS, started_at=now),
+        ]
+    )
+    database_session.commit()
+    waiting_offset = active_offset = 0
+    waiting_ids: list[str] = []
+    active_ids: list[str] = []
+    positions: list[int] = []
+    exhaustion: set[tuple[bool, bool]] = set()
+
+    for _ in range(4):
+        page = read_scheduler_overview(
+            session=database_session,
+            org_id=TEST_ORG_ID,
+            now=now,
+            waiting_limit=waiting_limit,
+            active_limit=active_limit,
+            waiting_offset=waiting_offset,
+            active_offset=active_offset,
+        )
+
+        assert page.summary.model_dump() == {"waiting": 205, "building": 0, "in_progress": 201, "evaluating": 0}
+        assert [(pool.pool_id, pool.waiting) for pool in page.pools] == [("shared", 205)]
+        assert page.waiting_capped == (page.waiting_next_offset is not None)
+        assert page.active_capped == (page.active_next_offset is not None)
+        waiting_ids.extend(entry.external_task_id for entry in page.waiting_entries)
+        active_ids.extend(entry.external_task_id for entry in page.active_entries)
+        positions.extend(entry.position for entry in page.waiting_entries)
+        exhaustion.add((page.waiting_next_offset is None, page.active_next_offset is None))
+        if page.waiting_next_offset is None and page.active_next_offset is None:
+            break
+        waiting_offset = page.waiting_next_offset or waiting_offset + len(page.waiting_entries)
+        active_offset = page.active_next_offset or active_offset + len(page.active_entries)
+
+    assert waiting_ids == [f"PENDING-{index}" for index in range(205)]
+    assert active_ids == [f"IN_PROGRESS-{index}" for index in range(201)]
+    assert positions == list(range(2, 207))
+    assert (waiting_limit > active_limit, active_limit > waiting_limit) in exhaustion
+    assert (True, True) in exhaustion
+
+    beyond = read_scheduler_overview(
+        session=database_session,
+        org_id=TEST_ORG_ID,
+        now=now,
+        waiting_limit=200,
+        active_limit=200,
+        waiting_offset=999,
+        active_offset=999,
+    )
+
+    assert beyond.waiting_entries == beyond.active_entries == []
+    assert beyond.waiting_next_offset is beyond.active_next_offset is None
+    assert not beyond.waiting_capped and not beyond.active_capped
+    assert beyond.summary.waiting == 205
+    assert beyond.summary.in_progress == 201
 
 
 def test_active_read_refreshes_preloaded_task_state(database_session: Session) -> None:

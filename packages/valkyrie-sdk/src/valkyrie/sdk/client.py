@@ -17,6 +17,7 @@ from valkyrie.sdk.resources.agents import AgentsResource
 from valkyrie.sdk.resources.benchmarks import BenchmarksResource
 from .resources.logs import LogsResource
 from valkyrie.sdk.resources.runs import RunsResource
+from valkyrie.sdk.resources.scheduler import SchedulerResource
 from valkyrie.sdk.resources.services import BenchmarkServicesResource
 
 DEFAULT_BASE_URL = TRACKER_URLS["bench"]
@@ -48,6 +49,7 @@ class ValkyrieClient:
         self.benchmarks = BenchmarksResource(self)
         self.agents = AgentsResource(self)
         self.services = BenchmarkServicesResource(self)
+        self.scheduler = SchedulerResource(self)
 
     @classmethod
     def from_config(

@@ -32,6 +32,7 @@ GUIDE_LINKS = {
     "agent": "/agents/manage-agents",
     "benchmark": "/benchmarks/custom-services",
     "config": "/get-started/configuration",
+    "queue": "/runs/monitor#inspect-the-priority-queue",
 }
 
 CLI_CARDS = {
@@ -39,6 +40,7 @@ CLI_CARDS = {
     "agent": ("package", "installing, uploading, listing, downloading, and removing agent bundles"),
     "benchmark": ("flask-conical", "exporting the task IDs in a benchmark dataset"),
     "config": ("sliders-horizontal", "credentials, sandbox providers, and benchmark services"),
+    "queue": ("list-ordered", "inspecting sandbox queue priorities, positions, and active tasks"),
 }
 
 RESOURCE_CARDS = {
@@ -51,6 +53,7 @@ RESOURCE_CARDS = {
         "discovering service catalogs, deployments, and task IDs",
     ),
     "LogsResource": ("Logs", "scroll-text", "fetching, filtering, and following benchmark logs"),
+    "SchedulerResource": ("Scheduler", "list-ordered", "inspecting queue positions and active tasks"),
 }
 
 TYPE_CARDS = {
@@ -60,6 +63,7 @@ TYPE_CARDS = {
     "Services": ("server", "benchmark service catalog and health responses"),
     "Config": ("sliders-horizontal", "validated SDK configuration and field aliases"),
     "Logs": ("scroll-text", "benchmark log events and paginated responses"),
+    "Scheduler": ("list-ordered", "sandbox queue totals, positions, and active task responses"),
 }
 
 READ_ONLY_COMMANDS = frozenset(
@@ -77,6 +81,7 @@ READ_ONLY_COMMANDS = frozenset(
         ("run", "outputs"),
         ("run", "results"),
         ("run", "status"),
+        ("queue", "status"),
     }
 )
 
