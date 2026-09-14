@@ -43,7 +43,12 @@ def status(waiting_limit: int, active_limit: int, waiting_offset: int, active_of
         raise click.ClickException(str(error)) from error
 
     if output_format == "json":
-        click.echo(response.model_dump_json(indent=2))
+        click.echo(
+            response.model_dump_json(
+                indent=2,
+                exclude={"pools": {"__all__": {"provider", "capacity_domains"}}},
+            )
+        )
         return
 
     _format_overview(response)

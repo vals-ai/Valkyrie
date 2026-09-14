@@ -51,6 +51,7 @@ from tracker.utils import (
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
+from tracker.utils.resources import fetch_sandbox_provider_config_async
 
 _parse_log_retention_policy = getattr(harness_config_module, "_parse_log_retention_policy")
 
@@ -108,6 +109,32 @@ class TestRunState:
                 return cast(SecretValue, secrets[name])
 
         provider_config = fetch_sandbox_provider_config("provider-secret", TestSecretStore(), "daytona")
+        assert provider_config.model_dump(mode="json") == {
+            "type": "daytona",
+            "DAYTONA_API_KEY": "key",
+            "DAYTONA_API_URL": "url",
+            "DAYTONA_TARGET": "target",
+        }
+
+    async def test_fetch_sandbox_provider_config_async_uses_the_same_mapping(self) -> None:
+        secret = cast(
+            SecretValue,
+            {
+                "DAYTONA_API_KEY": "key",
+                "DAYTONA_API_URL": "url",
+                "DAYTONA_TARGET": "target",
+            },
+        )
+
+        class TestAsyncSecretStore:
+            async def get_async(self, name: str) -> SecretValue:
+                assert name == "provider-secret"
+                return secret
+
+        provider_config = await fetch_sandbox_provider_config_async(
+            "provider-secret", TestAsyncSecretStore(), "daytona"
+        )
+
         assert provider_config.model_dump(mode="json") == {
             "type": "daytona",
             "DAYTONA_API_KEY": "key",

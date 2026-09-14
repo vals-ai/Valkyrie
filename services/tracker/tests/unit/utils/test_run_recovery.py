@@ -2015,11 +2015,14 @@ class TestRunRecovery:
 
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",
+            json={"lambda_function": "vals-format-lambda"},
             headers=harness_headers,
         )
 
         assert response.status_code == 200
         admitted_payload = mock_kicker.queued_calls[0]
+        assert benchmark_row.arguments.lambda_function == "vals-format-lambda"
+        assert admitted_payload["start_benchmark_request_json"]["lambda_function"] == "vals-format-lambda"
         assert admitted_payload["verified_task_ids"] == ["task_error"]
         dispatch_id = UUID(admitted_payload["executor_dispatch_id"])
         dispatch = database_session.get(ExecutorDispatch, dispatch_id)

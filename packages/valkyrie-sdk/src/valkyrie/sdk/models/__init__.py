@@ -52,8 +52,11 @@ from valkyrie.sdk.models.runs import (
 from valkyrie.sdk.models.scheduler import (
     SchedulerActiveEntryResponse,
     SchedulerActiveStatus,
+    SchedulerCapacityDomainResponse,
+    SchedulerCapacityResponse,
     SchedulerOverviewResponse,
     SchedulerPoolResponse,
+    SchedulerResourceCapacityResponse,
     SchedulerSummaryResponse,
     SchedulerWaitingEntryResponse,
 )
@@ -110,8 +113,11 @@ __all__ = [
     "S3UploadResultsResponse",
     "SchedulerActiveEntryResponse",
     "SchedulerActiveStatus",
+    "SchedulerCapacityDomainResponse",
+    "SchedulerCapacityResponse",
     "SchedulerOverviewResponse",
     "SchedulerPoolResponse",
+    "SchedulerResourceCapacityResponse",
     "SchedulerSummaryResponse",
     "SchedulerWaitingEntryResponse",
     "SingleBenchmarkResponse",
