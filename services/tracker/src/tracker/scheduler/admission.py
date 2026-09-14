@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from sqlmodel import Session, col, select, update
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.exceptions import ExecutionAuthorityRevoked, SandboxError
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
+from tracker.observability import distribution, incr
 from tracker.scheduler.store import (
     claim_eligible_task,
     eligible_task_is,
@@ -114,6 +116,14 @@ async def recover_queued_pool(context: SandboxQueueContext) -> None:
         await asyncio.sleep(context.poll_interval_seconds)
 
 
+def _record_admission_metrics(started_at: float, *, outcome: str, reason: str | None = None) -> None:
+    tags = {"outcome": outcome}
+    if reason is not None:
+        tags["reason"] = reason
+    distribution("valkyrie.scheduler.admission.wait", time.monotonic() - started_at, tags=tags)
+    incr("valkyrie.scheduler.admission.outcome", tags=tags)
+
+
 async def _close_stack_before_cancellation(stack: AsyncExitStack) -> None:
     close_task = asyncio.create_task(stack.aclose())
     try:
@@ -137,6 +147,7 @@ async def enter_queued_sandbox(
     """Wait for this exact attempt's global turn and enter its sandbox context."""
     if isinstance(source, TargetedSnapshotSource):
         raise SandboxError("Queued admission does not support targeted snapshots")
+    started_at = time.monotonic()
 
     while True:
         lock = queue_pool_lock(context.engine, context.pool_id)
@@ -148,6 +159,7 @@ async def enter_queued_sandbox(
                         lock_execution_authority(session, authority)
                     except ExecutionAuthorityRevoked:
                         session.rollback()
+                        _record_admission_metrics(started_at, outcome="not_admitted", reason="authority_revoked")
                         return None
                     eligible = eligible_task_is(
                         session,
@@ -163,6 +175,7 @@ async def enter_queued_sandbox(
                     session.rollback()
 
                 if not waiting:
+                    _record_admission_metrics(started_at, outcome="not_admitted", reason="not_waiting")
                     return None
 
                 if eligible and await context.provider.check_admission(source, resources):
@@ -171,6 +184,7 @@ async def enter_queued_sandbox(
                             lock_execution_authority(session, authority)
                         except ExecutionAuthorityRevoked:
                             session.rollback()
+                            _record_admission_metrics(started_at, outcome="not_admitted", reason="authority_revoked")
                             return None
                         claimed = claim_eligible_task(
                             session,
@@ -188,6 +202,7 @@ async def enter_queued_sandbox(
                             ) == (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS)
                             session.rollback()
                             if not waiting:
+                                _record_admission_metrics(started_at, outcome="not_admitted", reason="not_waiting")
                                 return None
 
                     if claimed:
@@ -198,12 +213,14 @@ async def enter_queued_sandbox(
                             except ExecutionAuthorityRevoked:
                                 session.rollback()
                                 started = False
+                                refusal_reason = "authority_revoked"
                             else:
                                 started = _start_claimed_task(
                                     session,
                                     task_row_id=task_row_id,
                                     expected_started_at=expected_started_at,
                                 )
+                                refusal_reason = "start_refused"
                                 if started:
                                     session.commit()
                                 else:
@@ -211,8 +228,11 @@ async def enter_queued_sandbox(
                         if not started:
                             await _close_stack_before_cancellation(stack)
 
+                            _record_admission_metrics(
+                                started_at, outcome="not_admitted", reason=refusal_reason
+                            )
                             return None
-
+                        _record_admission_metrics(started_at, outcome="admitted")
                         return sandbox
 
         await asyncio.sleep(context.poll_interval_seconds)
