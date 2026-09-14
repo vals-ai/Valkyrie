@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import tempfile
 from pathlib import Path
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -360,13 +361,32 @@ class RunsResource:
                     raise ValueError("Run outputs exceed max_archive_bytes")
                 await asyncio.to_thread(stream.write, chunk)
             await asyncio.to_thread(stream.seek, 0)
-            return await asyncio.to_thread(
-                extract_output_archive,
-                stream,
-                output_dir,
-                max_expanded_bytes=max_expanded_bytes,
-                max_entries=max_entries,
+            extraction = asyncio.create_task(
+                asyncio.to_thread(
+                    extract_output_archive,
+                    stream,
+                    output_dir,
+                    max_expanded_bytes=max_expanded_bytes,
+                    max_entries=max_entries,
+                )
             )
+            try:
+                return await asyncio.shield(extraction)
+            except asyncio.CancelledError:
+                # Keep the input open until the worker finishes, then remove only its published output.
+                async def cleanup() -> None:
+                    result = await asyncio.gather(extraction, return_exceptions=True)
+                    if isinstance(result[0], Path):
+                        await asyncio.to_thread(shutil.rmtree, result[0])
+
+                cleanup_task = asyncio.create_task(cleanup())
+                while not cleanup_task.done():
+                    try:
+                        await asyncio.shield(cleanup_task)
+                    except asyncio.CancelledError:
+                        continue
+                cleanup_task.result()
+                raise
 
     async def update_concurrency(self, run_id: UUID, *, concurrency: int) -> UpdateBenchmarkConcurrencyResponse:
         """Change an active run's concurrency limit. Existing tasks continue running."""
