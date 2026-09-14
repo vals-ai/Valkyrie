@@ -387,7 +387,8 @@ valkyrie run resume \
   [--update-agent|-u] \
   [--from-scratch] \
   [--benchmark-url <TEXT>] \
-  [--connect]
+  [--connect] \
+  [--lambda <TEXT>]
 ```
 
 ```bash Example
@@ -456,6 +457,11 @@ valkyrie run resume \
   <p className="mb-0 mt-1">{"Connect to the tracker service to stream run updates after resuming"}</p>
 </div>
 
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--lambda"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"text"}</code> · default: <code>{"None"}</code></span></div>
+  <p className="mb-0 mt-1">{"Replace the post-run Lambda for this retry or resume."}</p>
+</div>
+
 Task guidance: [Run guides](/runs/start).
 
 ---
@@ -475,7 +481,8 @@ valkyrie run retry \
   [--update-agent|-u] \
   [--from-scratch] \
   [--benchmark-url <TEXT>] \
-  [--connect]
+  [--connect] \
+  [--lambda <TEXT>]
 ```
 
 ```bash Example
@@ -538,6 +545,11 @@ valkyrie run retry \
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--connect"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"boolean"}</code> · default: <code>{"False"}</code></span></div>
   <p className="mb-0 mt-1">{"Connect to the tracker service to stream run updates after resuming"}</p>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--lambda"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"text"}</code> · default: <code>{"None"}</code></span></div>
+  <p className="mb-0 mt-1">{"Replace the post-run Lambda for this retry or resume."}</p>
 </div>
 
 Task guidance: [Run guides](/runs/start).

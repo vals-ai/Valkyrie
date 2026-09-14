@@ -122,8 +122,11 @@ _EXPECTED_TYPES = {
     "Logs": ("LogEvent", "LogPage"),
     "Scheduler": (
         "SchedulerActiveEntryResponse",
+        "SchedulerCapacityDomainResponse",
+        "SchedulerCapacityResponse",
         "SchedulerOverviewResponse",
         "SchedulerPoolResponse",
+        "SchedulerResourceCapacityResponse",
         "SchedulerSummaryResponse",
         "SchedulerWaitingEntryResponse",
         "SchedulerActiveStatus",
