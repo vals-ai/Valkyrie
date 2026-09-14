@@ -85,15 +85,19 @@ _PTY_TASK_RETRY_LIMIT: int = 1
 _SANDBOX_RETRY_DELAY_SECONDS: float = 2
 
 
-def _publish_task_phase_durations(breakdown: TaskBreakdown | None) -> None:
+def _capture_task_phase_durations(breakdown: TaskBreakdown | None) -> tuple[tuple[str, float | None], ...]:
     if breakdown is None:
-        return
-    for phase, value in (
+        return ()
+    return (
         ("sandbox_build", breakdown.sandbox_build_duration),
         ("agent_run", breakdown.agent_run_duration),
         ("evaluation_run", breakdown.evaluation_run_duration),
         ("sandbox_run", breakdown.sandbox_run_duration),
-    ):
+    )
+
+
+def _publish_task_phase_durations(durations: tuple[tuple[str, float | None], ...]) -> None:
+    for phase, value in durations:
         if value is not None:
             distribution(
                 "valkyrie.task.phase.duration",
@@ -923,6 +927,7 @@ async def _process_task_attempt(
                 existing_breakdown.evaluation_run_duration = evaluation_run_duration
                 if sandbox_run_duration is not None:
                     existing_breakdown.sandbox_run_duration = sandbox_run_duration
+            phase_durations = _capture_task_phase_durations(existing_breakdown)
             if not commit_task_status_transition(
                 task_row.id,
                 task_session,
@@ -934,7 +939,7 @@ async def _process_task_attempt(
             ):
                 return {task_id: None}
             incr("valkyrie.task.outcome", tags={"outcome": "finished"})
-            _publish_task_phase_durations(existing_breakdown)
+            _publish_task_phase_durations(phase_durations)
 
         return {task_id: evaluation_result_value}
 
@@ -1001,6 +1006,7 @@ async def _process_task_attempt(
                         existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
                         assert existing_breakdown is not None
                         existing_breakdown.evaluation_run_duration = resume_eval_duration
+                    phase_durations = _capture_task_phase_durations(existing_breakdown)
                     if not commit_task_status_transition(
                         task_row.id,
                         task_session,
@@ -1012,7 +1018,7 @@ async def _process_task_attempt(
                     ):
                         return {task_id: None}
                     incr("valkyrie.task.outcome", tags={"outcome": "finished"})
-                    _publish_task_phase_durations(existing_breakdown)
+                    _publish_task_phase_durations(phase_durations)
 
                     return {task_id: evaluation_result_row.result}
             except SandboxNotFoundError:
@@ -1276,6 +1282,7 @@ async def _process_task_attempt(
                         raise TrackerServiceError(f"Missing task breakdown for task {task_row.id}")
                     existing_breakdown.evaluation_run_duration = task_breakdown.evaluation_run_duration
                     existing_breakdown.sandbox_run_duration = task_breakdown.sandbox_run_duration
+                    phase_durations = _capture_task_phase_durations(existing_breakdown)
                     if not commit_task_status_transition(
                         task_row.id,
                         task_session,
@@ -1287,7 +1294,7 @@ async def _process_task_attempt(
                     ):
                         return {task_id: None}
                     incr("valkyrie.task.outcome", tags={"outcome": "finished"})
-                    _publish_task_phase_durations(existing_breakdown)
+                    _publish_task_phase_durations(phase_durations)
 
                     return {task_id: evaluation_result_row.result}
             except Exception:
