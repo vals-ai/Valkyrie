@@ -122,6 +122,8 @@ def _capacity_enrichment_case(
         active_entries=[],
         waiting_capped=False,
         active_capped=False,
+        waiting_next_offset=None,
+        active_next_offset=None,
     )
     references = {
         _QUEUE_POOL_ID: {
@@ -370,6 +372,8 @@ async def test_route_offloads_synchronous_database_reads(monkeypatch: pytest.Mon
         active_entries=[],
         waiting_capped=False,
         active_capped=False,
+        waiting_next_offset=None,
+        active_next_offset=None,
     )
 
     def blocking_overview_read(**_kwargs: object) -> SchedulerOverviewResponse:
@@ -583,6 +587,8 @@ async def test_capacity_enrichment_bounds_concurrent_provider_reads(monkeypatch:
         active_entries=[],
         waiting_capped=False,
         active_capped=False,
+        waiting_next_offset=None,
+        active_next_offset=None,
     )
     references = {
         pool_id: {

@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
-from pydantic import Field, field_serializer
+from pydantic import Field, FiniteFloat, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 
@@ -26,11 +26,36 @@ class SchedulerActiveStatus(str, Enum):
     EVALUATING = "EVALUATING"
 
 
+class SchedulerResourceCapacityResponse(ResponseModel):
+    """Available and total capacity for one resource."""
+
+    available: FiniteFloat = Field(ge=0)
+    total: FiniteFloat = Field(ge=0)
+
+
+class SchedulerCapacityResponse(ResponseModel):
+    """CPU, memory, and disk capacity for one target and sandbox class."""
+
+    cpu: SchedulerResourceCapacityResponse
+    memory: SchedulerResourceCapacityResponse
+    disk: SchedulerResourceCapacityResponse
+
+
+class SchedulerCapacityDomainResponse(ResponseModel):
+    """Capacity scoped to one provider target and sandbox class."""
+
+    target_id: str = Field(min_length=1)
+    sandbox_class: str = Field(min_length=1)
+    capacity: SchedulerCapacityResponse
+
+
 class SchedulerPoolResponse(ResponseModel):
-    """Waiting task count for one sandbox admission pool."""
+    """Waiting task count and optional capacity for one sandbox admission pool."""
 
     pool_id: str
     waiting: int
+    provider: str | None = None
+    capacity_domains: list[SchedulerCapacityDomainResponse] | None = None
 
 
 class SchedulerWaitingEntryResponse(ResponseModel):
