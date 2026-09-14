@@ -72,9 +72,7 @@ class TestTaskExecution:
         else:
             metric.assert_not_called()
 
-    def test_phase_metrics_publish_only_non_null_stored_values(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_phase_metrics_publish_only_non_null_stored_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
         metric = Mock()
         monkeypatch.setattr(utils_module, "distribution", metric)
         breakdown = TaskBreakdown(
