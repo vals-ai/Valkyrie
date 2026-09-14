@@ -34,7 +34,10 @@ async def test_overview_uses_typed_snapshot_and_query_options(
         assert request.url.params["active_limit"] == str(active_limit)
         assert request.url.params["waiting_offset"] == str(waiting_offset)
         assert request.url.params["active_offset"] == str(active_offset)
-        assert request.url.params["include_capacity"] == str(include_capacity).lower()
+        if include_capacity:
+            assert request.url.params["include_capacity"] == "true"
+        else:
+            assert "include_capacity" not in request.url.params
         return httpx.Response(
             200,
             json={

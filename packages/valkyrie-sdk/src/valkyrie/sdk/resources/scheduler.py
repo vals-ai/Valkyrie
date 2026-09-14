@@ -42,15 +42,18 @@ class SchedulerResource:
         if type(include_capacity) is not bool:
             raise ValueError("include_capacity must be a boolean")
 
+        params: dict[str, int | bool] = {
+            "waiting_limit": waiting_limit,
+            "active_limit": active_limit,
+            "waiting_offset": waiting_offset,
+            "active_offset": active_offset,
+        }
+        if include_capacity:
+            params["include_capacity"] = True
+
         return await self._sdk.request_model(
             "GET",
             "/scheduler/overview",
             SchedulerOverviewResponse,
-            params={
-                "waiting_limit": waiting_limit,
-                "active_limit": active_limit,
-                "waiting_offset": waiting_offset,
-                "active_offset": active_offset,
-                "include_capacity": include_capacity,
-            },
+            params=params,
         )
