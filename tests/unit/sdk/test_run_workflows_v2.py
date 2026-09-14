@@ -5,7 +5,9 @@ Run: pytest tests/unit/sdk/test_run_workflows_v2.py
 
 from __future__ import annotations
 
+import asyncio
 import io
+import threading
 import json
 import tarfile
 from pathlib import Path
@@ -270,6 +272,9 @@ async def test_download_outputs_extracts_nested_archives(make_client, tmp_path: 
         member = tarfile.TarInfo("task/agent_output.tar.gz")
         member.size = len(nested.getvalue())
         archive.addfile(member, io.BytesIO(nested.getvalue()))
+        artifact = tarfile.TarInfo("task/model.tar.gz")
+        artifact.size = 6
+        archive.addfile(artifact, io.BytesIO(b"opaque"))
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params.get_list("task_ids") == ["task"]
@@ -286,6 +291,7 @@ async def test_download_outputs_extracts_nested_archives(make_client, tmp_path: 
             result = await client.runs.download_outputs(uuid4(), destination, task_ids=["task"])
             assert result == destination
             assert (destination / "task/agent_output/result.txt").read_text() == "result"
+            assert (destination / "task/model.tar.gz").read_bytes() == b"opaque"
             with pytest.raises(FileExistsError):
                 await client.runs.download_outputs(uuid4(), destination)
         for limits in ({"max_archive_bytes": 1}, {"max_expanded_bytes": 1}, {"max_entries": 1}):
@@ -326,3 +332,74 @@ async def test_artifact_download_validates_paths_and_omits_credentials(
             with pytest.raises(ValueError, match="limits"):
                 await client.artifacts.download(uuid4(), tmp_path / "limited", max_bytes=1)
             assert not (tmp_path / "limited").exists()
+
+
+async def test_task_iteration_continues_when_tasks_move_between_pages(make_client) -> None:
+    """A task moving to a later page must not hide the remaining tasks."""
+    first, second, third = uuid4(), uuid4(), uuid4()
+    offsets = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params["offset"])
+        offsets.append(offset)
+        ids = [first, second] if offset == 0 else [first, third]
+        return httpx.Response(
+            200,
+            json={
+                "tasks": [
+                    {
+                        "id": str(task_id),
+                        "task_id": str(task_id),
+                        "status": "PENDING",
+                        "started_at": "2026-01-01T00:00:00Z",
+                        "finished_at": None,
+                    }
+                    for task_id in ids
+                ],
+                "total_count": 4,
+            },
+        )
+
+    from valkyrie.sdk import FetchTasksRequest
+
+    async with make_client(handler) as client:
+        tasks = [task async for task in client.benchmarks.iter_tasks(uuid4(), FetchTasksRequest(limit=2))]
+
+    assert [task.id for task in tasks] == [first, second, first, third]
+    assert offsets == [0, 2]
+
+
+async def test_cancelled_output_extraction_finishes_before_cleanup(make_client, monkeypatch, tmp_path: Path) -> None:
+    """Cancellation must not close a worker's input or leave published output behind."""
+    from valkyrie.sdk.resources import runs
+
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    destination = tmp_path / "outputs"
+
+    def extract(stream, output_dir, **limits):
+        started.set()
+        assert release.wait(5)
+        assert stream.read() == b"archive"
+        output_dir.mkdir()
+        (output_dir / "result").write_text("complete")
+        finished.set()
+        return output_dir
+
+    monkeypatch.setattr(runs, "extract_output_archive", extract)
+    async with make_client(lambda request: httpx.Response(200, content=b"archive")) as client:
+        download = asyncio.create_task(client.runs.download_outputs(uuid4(), destination))
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            download.cancel()
+            await asyncio.sleep(0)
+            assert not download.done()
+            download.cancel()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await download
+
+    assert finished.is_set()
+    assert not destination.exists()
