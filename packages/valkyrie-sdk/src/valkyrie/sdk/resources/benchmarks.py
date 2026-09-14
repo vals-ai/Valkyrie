@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 from uuid import UUID
 
-from valkyrie.sdk.errors import ValkyrieStreamError
 from valkyrie.sdk.models import (
     BenchmarkStatusResponse,
     FetchTasksRequest,
@@ -61,14 +60,10 @@ class BenchmarksResource:
         """
         request = request or FetchTasksRequest()
         offset = request.offset
-        seen: set[UUID] = set()
         while True:
             page = await self.tasks(run_id, request.model_copy(update={"offset": offset}))
             if not page.tasks:
                 return
-            if page.tasks[0].id in seen:
-                raise ValkyrieStreamError("Tracker returned a repeated task page")
-            seen.add(page.tasks[0].id)
             for task in page.tasks:
                 yield task
             offset += len(page.tasks)
