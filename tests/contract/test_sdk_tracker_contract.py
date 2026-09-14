@@ -16,6 +16,7 @@ import pytest
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from services.tracker.main import app
+from tracker.api.filter_options import FilterOptionsResponse
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
@@ -86,6 +87,7 @@ from valkyrie.sdk.models import (
     FetchBenchmarksRequest as SDKFetchBenchmarksRequest,
     FetchBenchmarksResponse as SDKFetchBenchmarksResponse,
     FinalEvaluation as SDKFinalEvaluation,
+    FilterOptionsResponse as SDKFilterOptionsResponse,
     FinalViewResponse as SDKFinalViewResponse,
     HarnessConfig as SDKHarnessConfig,
     LogEvent as SDKLogEvent,
@@ -156,6 +158,7 @@ ROUTES = (
     ("/fetch-run-outputs/{benchmark_id}", "get", "benchmark_id task_ids"),
 )
 RESPONSE_MODELS = {
+    ("/benchmarks/filter-options", "get"): "FilterOptionsResponse",
     ("/start-benchmark", "post"): "StartBenchmarkResponse",
     ("/fetch-benchmarks", "get"): "FetchBenchmarksResponse",
     ("/stop-benchmark/{benchmark_id}", "post"): "StopBenchmarkResponse",
@@ -178,6 +181,7 @@ RESPONSE_MODELS = {
     ("/preview-results", "get"): "S3UploadResultsResponse",
 }
 MODEL_PAIRS = (
+    (FilterOptionsResponse, SDKFilterOptionsResponse),
     (OutputArtifact, SDKOutputArtifact),
     (AgentContractRequest, SDKAgentContractRequest),
     (AWSCredentials, SDKAWSCredentials),
