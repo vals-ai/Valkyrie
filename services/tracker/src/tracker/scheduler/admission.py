@@ -10,12 +10,12 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
-from benchmark_service import Resources, Sandbox, SandboxProvider, SandboxSource, TargetedSnapshotSource
+from benchmark_service import Resources, Sandbox, SandboxProvider, SandboxSource
 from sqlalchemy.engine import Connection, Engine
 from sqlmodel import Session, col, select, update
 
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
-from tracker.exceptions import ExecutionAuthorityRevoked, SandboxError
+from tracker.exceptions import ExecutionAuthorityRevoked
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.scheduler.store import (
     claim_eligible_task,
@@ -135,9 +135,6 @@ async def enter_queued_sandbox(
     create: SandboxFactory,
 ) -> Sandbox | None:
     """Wait for this exact attempt's global turn and enter its sandbox context."""
-    if isinstance(source, TargetedSnapshotSource):
-        raise SandboxError("Queued admission does not support targeted snapshots")
-
     while True:
         lock = queue_pool_lock(context.engine, context.pool_id)
         async with lock as acquired:

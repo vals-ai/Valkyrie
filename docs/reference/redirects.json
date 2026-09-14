@@ -380,12 +380,24 @@
     "destination": "/reference/sdk/models/scheduler#scheduler-active-status"
   },
   {
+    "source": "/reference/sdk/models/scheduler/scheduler-capacity-domain-response",
+    "destination": "/reference/sdk/models/scheduler#scheduler-capacity-domain-response"
+  },
+  {
+    "source": "/reference/sdk/models/scheduler/scheduler-capacity-response",
+    "destination": "/reference/sdk/models/scheduler#scheduler-capacity-response"
+  },
+  {
     "source": "/reference/sdk/models/scheduler/scheduler-overview-response",
     "destination": "/reference/sdk/models/scheduler#scheduler-overview-response"
   },
   {
     "source": "/reference/sdk/models/scheduler/scheduler-pool-response",
     "destination": "/reference/sdk/models/scheduler#scheduler-pool-response"
+  },
+  {
+    "source": "/reference/sdk/models/scheduler/scheduler-resource-capacity-response",
+    "destination": "/reference/sdk/models/scheduler#scheduler-resource-capacity-response"
   },
   {
     "source": "/reference/sdk/models/scheduler/scheduler-summary-response",

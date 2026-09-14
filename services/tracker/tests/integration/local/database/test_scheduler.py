@@ -20,6 +20,7 @@ from benchmark_service import (
     SandboxProvider,
     SandboxProviderConfig,
     SandboxSource,
+    TargetedSnapshotSource,
 )
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse
@@ -88,9 +89,11 @@ class MockProvider:
         self.events = events
         self.capacity = iter(capacity)
         self.on_check = on_check
+        self.sources: list[SandboxSource] = []
 
-    async def check_admission(self, _source: SandboxSource, _resources: Resources) -> bool:
+    async def check_admission(self, source: SandboxSource, _resources: Resources) -> bool:
         self.events.append("capacity")
+        self.sources.append(source)
         if self.on_check:
             await self.on_check()
         return next(self.capacity, True)
@@ -208,6 +211,37 @@ def test_queue_context_requires_managed_provider() -> None:
         )
 
 
+async def test_targeted_snapshot_reaches_admission_and_creation_unchanged(
+    postgres_engine: Engine,
+    postgres_session: Session,
+    executor_authority: Any,
+) -> None:
+    events: list[str] = []
+    source = TargetedSnapshotSource(snapshot="snapshot", target="us-west-3")
+    provider_pool_id = f"daytona:{uuid4()}"
+    context = _context(postgres_engine, provider_pool_id, events)
+    _, benchmark, (task,) = _run(postgres_session, context.pool_id, [("targeted", TaskStatus.PENDING, _ATTEMPT)])
+    authority = executor_authority(benchmark, session=postgres_session)
+
+    async with AsyncExitStack() as stack:
+        sandbox = await admission.enter_queued_sandbox(
+            stack=stack,
+            context=context,
+            task_row_id=task.id,
+            expected_started_at=task.started_at,
+            authority=authority,
+            source=source,
+            resources=_RESOURCES,
+            create=_sandbox(events),
+        )
+
+        assert sandbox is not None
+        provider = cast(MockProvider, context.provider)
+        assert provider.sources == [source]
+        assert provider.sources[0] is source
+        assert events == ["capacity", "create"]
+
+
 async def _enter(
     stack: AsyncExitStack,
     context: admission.SandboxQueueContext,
@@ -215,6 +249,7 @@ async def _enter(
     events: list[str],
     authority: Any,
     *,
+    source: SandboxSource = _SOURCE,
     on_create: Callable[[], Awaitable[None]] | None = None,
     on_cleanup: Callable[[], Awaitable[None]] | None = None,
 ) -> Sandbox | None:
@@ -224,7 +259,7 @@ async def _enter(
         task_row_id=task.id,
         expected_started_at=task.started_at,
         authority=authority,
-        source=_SOURCE,
+        source=source,
         resources=_RESOURCES,
         create=_sandbox(events, on_create=on_create, on_cleanup=on_cleanup),
     )
