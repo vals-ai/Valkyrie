@@ -272,7 +272,7 @@ async def test_task_iteration_continues_when_tasks_move_between_pages(make_clien
                         "id": str(task_id),
                         "task_id": str(task_id),
                         "status": "PENDING",
-                        "started_at": None,
+                        "started_at": "2026-01-01T00:00:00Z",
                         "finished_at": None,
                     }
                     for task_id in ids
