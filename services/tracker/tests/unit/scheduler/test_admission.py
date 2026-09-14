@@ -96,12 +96,8 @@ async def _enter(harness: SimpleNamespace) -> object | None:
 
 
 def _assert_metrics(harness: SimpleNamespace, tags: dict[str, str]) -> None:
-    harness.distribution.assert_called_once_with(
-        "valkyrie.scheduler.admission.wait", 2.5, tags=tags
-    )
-    harness.incr.assert_called_once_with(
-        "valkyrie.scheduler.admission.outcome", tags=tags
-    )
+    harness.distribution.assert_called_once_with("valkyrie.scheduler.admission.wait", 2.5, tags=tags)
+    harness.incr.assert_called_once_with("valkyrie.scheduler.admission.outcome", tags=tags)
 
 
 async def test_queued_admission_rejects_targeted_snapshots_before_provider_access(
@@ -186,9 +182,7 @@ async def test_queued_admission_preserves_third_authority_revocation_reason(
     assert harness.lock_authority.call_count == 3
     harness.start.assert_not_called()
     harness.sandbox_context.__aexit__.assert_awaited_once()
-    _assert_metrics(
-        harness, {"outcome": "not_admitted", "reason": "authority_revoked"}
-    )
+    _assert_metrics(harness, {"outcome": "not_admitted", "reason": "authority_revoked"})
 
 
 @pytest.mark.parametrize("error_type", [RuntimeError, asyncio.CancelledError])

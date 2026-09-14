@@ -228,9 +228,7 @@ async def enter_queued_sandbox(
                         if not started:
                             await _close_stack_before_cancellation(stack)
 
-                            _record_admission_metrics(
-                                started_at, outcome="not_admitted", reason=refusal_reason
-                            )
+                            _record_admission_metrics(started_at, outcome="not_admitted", reason=refusal_reason)
                             return None
                         _record_admission_metrics(started_at, outcome="admitted")
                         return sandbox
