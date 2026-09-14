@@ -86,6 +86,7 @@ EXPECTED_SIGNATURES = {
         "label=None, lambda_function=None, provider=None, agent_kwargs=None, secrets=None, service_headers=None, "
         "webhook_intervals=None, ignore_custom_services=False"
     ),
+    RunsResource.filter_options: "self",
     RunsResource.fetch: "self, run_id",
     RunsResource.list: "self, request=None",
     RunsResource.stream: "self, run_id",

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import tempfile
 from pathlib import Path
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -361,32 +360,42 @@ class RunsResource:
                     raise ValueError("Run outputs exceed max_archive_bytes")
                 await asyncio.to_thread(stream.write, chunk)
             await asyncio.to_thread(stream.seek, 0)
-            extraction = asyncio.create_task(
-                asyncio.to_thread(
-                    extract_output_archive,
-                    stream,
-                    output_dir,
-                    max_expanded_bytes=max_expanded_bytes,
-                    max_entries=max_entries,
+            await asyncio.to_thread(output_dir.parent.mkdir, parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=output_dir.parent) as temporary:
+                staging = Path(temporary) / "outputs"
+                extraction = asyncio.create_task(
+                    asyncio.to_thread(
+                        extract_output_archive,
+                        stream,
+                        staging,
+                        max_expanded_bytes=max_expanded_bytes,
+                        max_entries=max_entries,
+                    )
                 )
-            )
-            try:
-                return await asyncio.shield(extraction)
-            except asyncio.CancelledError:
-                # Keep the input open until the worker finishes, then remove only its published output.
-                async def cleanup() -> None:
-                    result = await asyncio.gather(extraction, return_exceptions=True)
-                    if isinstance(result[0], Path):
-                        await asyncio.to_thread(shutil.rmtree, result[0])
+                try:
+                    await asyncio.shield(extraction)
+                except asyncio.CancelledError:
+                    completion = asyncio.gather(extraction, return_exceptions=True)
+                    while not completion.done():
+                        try:
+                            await asyncio.shield(completion)
+                        except asyncio.CancelledError:
+                            continue
+                    raise
 
-                cleanup_task = asyncio.create_task(cleanup())
-                while not cleanup_task.done():
+                def publish() -> Path:
+                    if output_dir.exists() or output_dir.is_symlink():
+                        raise FileExistsError(f"Output directory already exists: {output_dir}")
+                    return staging.rename(output_dir)
+
+                # Once publication starts, return its result even if cancellation arrives during the rename.
+                publication = asyncio.create_task(asyncio.to_thread(publish))
+                while not publication.done():
                     try:
-                        await asyncio.shield(cleanup_task)
+                        await asyncio.shield(publication)
                     except asyncio.CancelledError:
                         continue
-                cleanup_task.result()
-                raise
+                return publication.result()
 
     async def update_concurrency(self, run_id: UUID, *, concurrency: int) -> UpdateBenchmarkConcurrencyResponse:
         """Change an active run's concurrency limit. Existing tasks continue running."""

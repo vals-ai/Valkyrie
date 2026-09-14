@@ -55,7 +55,7 @@ def extract_output_archive(stream: BinaryIO, output_dir: Path, *, max_expanded_b
         extract(stream, staging)
         for nested in list(staging.rglob("agent_output.tar.gz")):
             destination = nested.parent / nested.name.removesuffix(".tar.gz")
-            destination.mkdir()
+            destination.mkdir(exist_ok=True)
             with nested.open("rb") as source:
                 extract(source, destination)
             nested.unlink()

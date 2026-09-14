@@ -406,3 +406,64 @@ async def test_cancelled_output_extraction_finishes_before_cleanup(make_client, 
 
     assert finished.is_set()
     assert not destination.exists()
+
+
+@pytest.mark.parametrize("collision", [False, True])
+async def test_output_archive_merges_existing_directory_without_overwriting(make_client, tmp_path, collision):
+    nested = io.BytesIO()
+    with tarfile.open(fileobj=nested, mode="w:gz") as archive:
+        member = tarfile.TarInfo("result.txt")
+        member.size = 6
+        archive.addfile(member, io.BytesIO(b"result"))
+    outer = io.BytesIO()
+    with tarfile.open(fileobj=outer, mode="w") as archive:
+        for name, content in {
+            "task/agent_output.tar.gz": nested.getvalue(),
+            "task/agent_output/result.txt" if collision else "task/agent_output/summary.json": b"{}",
+        }.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+    destination = tmp_path / "outputs"
+    async with make_client(lambda request: httpx.Response(200, content=outer.getvalue())) as client:
+        if collision:
+            with pytest.raises(FileExistsError):
+                await client.runs.download_outputs(uuid4(), destination)
+            assert not destination.exists()
+        else:
+            await client.runs.download_outputs(uuid4(), destination)
+            assert (destination / "task/agent_output/result.txt").read_text() == "result"
+            assert (destination / "task/agent_output/summary.json").read_text() == "{}"
+
+
+async def test_cancelled_output_download_preserves_other_callers_destination(make_client, monkeypatch, tmp_path):
+    from valkyrie.sdk.resources import runs
+
+    started = threading.Event()
+    release = threading.Event()
+    destination = tmp_path / "outputs"
+
+    def extract(stream, output_dir, **limits):
+        started.set()
+        assert release.wait(5)
+        output_dir.mkdir()
+        (output_dir / "downloaded.txt").write_text("downloaded")
+        destination.mkdir(exist_ok=True)
+        (destination / "unrelated.txt").write_text("another caller")
+        return output_dir
+
+    monkeypatch.setattr(runs, "extract_output_archive", extract)
+    async with make_client(lambda request: httpx.Response(200, content=b"archive")) as client:
+        download = asyncio.create_task(client.runs.download_outputs(uuid4(), destination))
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            download.cancel()
+            await asyncio.sleep(0)
+            assert not download.done()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await download
+
+    assert (destination / "unrelated.txt").read_text() == "another caller"
+    assert list(tmp_path.iterdir()) == [destination]
