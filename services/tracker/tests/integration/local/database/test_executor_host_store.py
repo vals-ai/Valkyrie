@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.engine import Engine
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 
 from services.executor_host.supervisor import (  # pyright: ignore[reportMissingImports]
     ArtifactDispatch,
@@ -15,13 +15,26 @@ from tests.factories import make_benchmark, make_task
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkStatus,
+    ErrorResult,
+    ExecutorDispatch,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
     Org,
+    Task,
     TaskStatus,
 )
-from tracker.executor.release_control import create_executor_dispatch, pin_benchmark_to_release, register_release
+from tracker.executor.release_control import (
+    create_executor_dispatch,
+    pin_benchmark_to_release,
+    promote_release,
+    register_release,
+)
+from tracker.executor.dispatch_control import (
+    admit_recovery_dispatch,
+    admit_start_dispatch,
+    reconcile_expired_dispatches,
+)
 
 
 @pytest.mark.asyncio
@@ -68,6 +81,14 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
         dispatch_id=uuid4(),
     )
     postgres_session.add_all([first_dispatch, sibling_dispatch])
+    expired_dispatch = create_executor_dispatch(
+        benchmark.id,
+        release,
+        ExecutorDispatchKind.RESUME,
+        dispatch_id=uuid4(),
+    )
+    expired_dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(minutes=1)
+    postgres_session.add(expired_dispatch)
     newer_task.started_at = sibling_dispatch.created_at + timedelta(seconds=1)
     postgres_session.commit()
 
@@ -93,6 +114,9 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
         }
     )
 
+    assert await store.claim(str(expired_dispatch.id), str(benchmark.id), artifact) is None
+    assert reconcile_expired_dispatches(postgres_session) == 1
+    postgres_session.commit()
     first_authority = await store.claim(str(first_dispatch.id), str(benchmark.id), artifact)
     assert first_authority is not None
     assert await store.claim(str(first_dispatch.id), str(benchmark.id), artifact) is None
@@ -100,6 +124,13 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     assert sibling_authority is not None
     assert await store.is_current(first_authority)
     assert await store.is_current(sibling_authority)
+    postgres_session.expire_all()
+    claimed_dispatch = postgres_session.get(type(first_dispatch), first_dispatch.id)
+    assert claimed_dispatch is not None
+    assert claimed_dispatch.started_at is not None
+    assert claimed_dispatch.heartbeat_at is not None
+    assert claimed_dispatch.lease_expires_at is not None
+    assert await store.heartbeat(sibling_authority)
 
     assert await store.finish(first_authority)
     assert not await store.is_current(first_authority)
@@ -131,3 +162,71 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     assert persisted_first_dispatch.status == ExecutorDispatchStatus.FINISHED
     assert persisted_sibling_dispatch is not None
     assert persisted_sibling_dispatch.status == ExecutorDispatchStatus.FAILED
+    assert persisted_sibling_dispatch.failure_reason == "EXECUTOR_FAILED"
+
+
+@pytest.mark.parametrize("dispatch_count", [1, 2])
+@pytest.mark.parametrize("running", [False, True])
+def test_expiry_cleans_all_admitted_assignments(postgres_session: Session, dispatch_count: int, running: bool) -> None:
+    """Verify expired dispatches leave no assigned tasks active after recovery.
+
+    Test cases:
+    - Fresh START tasks use their normal model timestamp.
+    - Queued and running dispatches recover alone or with an expired sibling.
+    """
+    org = Org(id=uuid4(), name=f"review-{uuid4()}")
+    benchmark = make_benchmark(org_id=org.id)
+    release = ExecutorRelease(
+        id=f"review-{uuid4()}",
+        artifact_uri="s3://artifacts/review.pex",
+        artifact_digest="a" * 64,
+        protocol_version="1",
+        readiness_verified=True,
+    )
+    postgres_session.add(org)
+    postgres_session.flush()
+    register_release(postgres_session, release)
+    promote_release(postgres_session, release.id)
+    postgres_session.commit()
+    tasks: list[Task] = []
+    dispatches: list[ExecutorDispatch] = []
+    for index in range(dispatch_count):
+        task = Task(org_id=org.id, benchmark=benchmark.id, task_id=f"task-{index}")
+        postgres_session.add(task)
+        if index == 0:
+            dispatch = admit_start_dispatch(
+                postgres_session, benchmark=benchmark, dispatch_id=uuid4(), task_ids=[task.task_id]
+            )
+        else:
+            dispatch = admit_recovery_dispatch(
+                postgres_session,
+                benchmark=benchmark,
+                pre_action_status=benchmark.status,
+                dispatch_id=uuid4(),
+                kind=ExecutorDispatchKind.RESUME,
+                task_ids=[task.task_id],
+            )
+        assert task.started_at is not None
+        assert task.started_at <= dispatch.created_at
+        dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(minutes=1)
+        if running:
+            dispatch.status = ExecutorDispatchStatus.RUNNING
+            dispatch.started_at = datetime.now(UTC) - timedelta(minutes=6)
+            dispatch.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+            task.status = TaskStatus.IN_PROGRESS
+        tasks.append(task)
+        dispatches.append(dispatch)
+    postgres_session.commit()
+
+    assert reconcile_expired_dispatches(postgres_session) == dispatch_count
+    postgres_session.commit()
+    for row in [benchmark, *tasks, *dispatches]:
+        postgres_session.refresh(row)
+
+    assert benchmark.status == BenchmarkStatus.ERROR
+    assert all(row.status == ExecutorDispatchStatus.FAILED for row in dispatches)
+    assert [row.status for row in tasks] == [TaskStatus.ERROR] * dispatch_count
+    errors = postgres_session.exec(
+        select(ErrorResult).where(col(ErrorResult.task).in_([row.id for row in tasks]))
+    ).all()
+    assert len(errors) == dispatch_count

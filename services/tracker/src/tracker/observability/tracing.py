@@ -1,5 +1,6 @@
 """Tracing configuration: OTel instrumentation (via logfire) with Sentry as the backend."""
 
+import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
@@ -76,7 +77,7 @@ def error_span(name: str, exc: BaseException, **attributes: Any) -> Generator[No
 
 
 class _ContextVarSpanProcessor(SpanProcessor):
-    """Attaches request/benchmark/task context vars to every span as attributes."""
+    """Attaches execution context vars to every span as attributes."""
 
     def on_start(self, span: Span, parent_context: Context | None = None) -> None:
         existing = span.attributes or {}
@@ -129,6 +130,12 @@ def configure_tracing(service_name: str, environment: str) -> None:
         service_name=service_name,
         environment=environment,
         send_to_logfire=False,
+        # Keep Logfire's existing environment overrides available for fully traced probes.
+        sampling=(
+            None
+            if os.getenv("LOGFIRE_TRACE_SAMPLE_RATE") or os.getenv("OTEL_TRACES_SAMPLER_ARG")
+            else logfire.SamplingOptions(head=0.1)
+        ),
         # Opt in: trace context is propagated via TracingContextMiddleware.
         distributed_tracing=True,
         # configure_logging() owns stdout.

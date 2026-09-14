@@ -18,6 +18,14 @@ class SecretStore(Protocol):
         raise NotImplementedError
 
 
+class AsyncSecretStore(Protocol):
+    """Asynchronous access to named secret values."""
+
+    async def get_async(self, name: str) -> SecretValue:
+        """Return decoded JSON, or the raw string when the value is not JSON."""
+        raise NotImplementedError
+
+
 def resolve_secrets(secrets: dict[str, str], secret_store: SecretStore) -> dict[str, str]:
     """Resolve environment-variable secret references to their current values."""
     if not secrets:
