@@ -409,9 +409,7 @@ class TestBenchmarkServiceFailures:
         )
 
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-            raise BenchmarkServiceStreamClosedError(
-                close_code=1011, close_reason="keepalive timeout", idle_s=30.0
-            )
+            raise BenchmarkServiceStreamClosedError(close_code=1011, close_reason="keepalive timeout", idle_s=30.0)
 
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 

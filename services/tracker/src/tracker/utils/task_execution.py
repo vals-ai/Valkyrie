@@ -847,9 +847,7 @@ async def _process_task_attempt(
                 authority=authority,
             )
         if committed:
-            _publish_task_error_outcome(
-                producer=producer, operation=operation, cause_code=cause_code
-            )
+            _publish_task_error_outcome(producer=producer, operation=operation, cause_code=cause_code)
         return {task_id: None}
 
     async def recover_evaluation_stream_failure(error_message: str) -> dict[str, dict[str, Any] | None] | None:
