@@ -95,14 +95,9 @@ class ArtifactsResource:
                             url = await self.download_url(run_id, relative)
                             destination = staging / relative
                             await asyncio.to_thread(destination.parent.mkdir, parents=True, exist_ok=True)
-                            with destination.open("xb") as output:
-                                async with download_client.stream("GET", url.download_url) as response:
-                                    response.raise_for_status()
-                                    async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
-                                        size += len(chunk)
-                                        if size > max_bytes:
-                                            raise ValueError("Artifacts exceed download limits")
-                                        await asyncio.to_thread(output.write, chunk)
+                            size += await _download_file(
+                                download_client, url.download_url, destination, max_bytes - size
+                            )
                         if page.next_cursor is None:
                             break
                         if page.next_cursor in cursors:
@@ -117,3 +112,21 @@ class ArtifactsResource:
                 raise FileExistsError(f"Output directory already exists: {output_dir}")
             await asyncio.to_thread(staging.rename, output_dir)
         return output_dir
+
+
+async def _download_file(client: httpx.AsyncClient, url: str, destination: Path, max_bytes: int) -> int:
+    """Stream one artifact to disk and return its downloaded size."""
+    size = 0
+    output = await asyncio.to_thread(destination.open, "xb")
+    try:
+        async with client.stream("GET", url) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise ValueError("Artifacts exceed download limits")
+                await asyncio.to_thread(output.write, chunk)
+    finally:
+        await asyncio.to_thread(output.close)
+
+    return size
