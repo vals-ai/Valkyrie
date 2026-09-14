@@ -43,7 +43,7 @@ class RunArtifactDownloadResponse(BaseModel):
 def _path(value: str, *, allow_empty: bool = False) -> str:
     if not value and allow_empty:
         return value
-    if "\\" in value or ":" in value or any(part in {"", ".", ".."} for part in value.split("/")):
+    if "\\" in value or any(part in {"", ".", ".."} for part in value.split("/")):
         raise HTTPException(status_code=400, detail="Artifact path must be a relative file or directory path")
     return value
 

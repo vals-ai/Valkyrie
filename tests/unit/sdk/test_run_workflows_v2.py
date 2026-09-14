@@ -303,7 +303,7 @@ async def test_download_outputs_extracts_nested_archives(
             assert not (tmp_path / "limited").exists()
 
 
-@pytest.mark.parametrize("path", ["task/result.json", "../escape", "task/../../escape"])
+@pytest.mark.parametrize("path", ["task/result.json", "task:one/result.json", "../escape", "task/../../escape"])
 async def test_artifact_download_validates_paths_and_omits_credentials(
     make_client, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, path: str
 ) -> None:
@@ -328,7 +328,7 @@ async def test_artifact_download_validates_paths_and_omits_credentials(
                 await client.artifacts.download(uuid4(), destination)
             assert not destination.exists()
         else:
-            result = await client.artifacts.download(uuid4(), destination, path="task")
+            result = await client.artifacts.download(uuid4(), destination, path=path.split("/")[0])
             assert (result / path).read_bytes() == b"{}"
             with pytest.raises(FileExistsError):
                 await client.artifacts.download(uuid4(), destination)
@@ -467,3 +467,15 @@ async def test_cancelled_output_download_preserves_other_callers_destination(mak
 
     assert (destination / "unrelated.txt").read_text() == "another caller"
     assert list(tmp_path.iterdir()) == [destination]
+
+
+async def test_windows_artifact_download_rejects_colons_before_writing(make_client, monkeypatch, tmp_path):
+    from valkyrie.sdk.resources import artifacts
+
+    monkeypatch.setattr(artifacts.sys, "platform", "win32")
+    async with make_client(
+        lambda request: httpx.Response(200, json={"artifacts": [{"path": "task:one/result.json", "size": 2}]})
+    ) as client:
+        with pytest.raises(ValueError, match="Windows filenames"):
+            await client.artifacts.download(uuid4(), tmp_path / "outputs")
+    assert not (tmp_path / "outputs").exists()

@@ -170,7 +170,9 @@ def test_task_artifacts_only_presign_existing_output(
     assert create_presigned_url.await_count == 1
 
 
+@pytest.mark.parametrize("task_id", ["task", "task:one"])
 def test_run_artifacts_are_scoped_and_storage_errors_are_mapped(
+    task_id: str,
     database_session: Session,
     example_benchmark_object: Benchmark,
     monkeypatch: pytest.MonkeyPatch,
@@ -188,7 +190,10 @@ def test_run_artifacts_are_scoped_and_storage_errors_are_mapped(
     client = AsyncMock()
     client.__aenter__.return_value = client
     client.list_objects_v2.return_value = {
-        "Contents": [{"Key": root + "task/result.json", "Size": 2}, {"Key": root + "task-other/file", "Size": 1}],
+        "Contents": [
+            {"Key": root + f"{task_id}/result.json", "Size": 2},
+            {"Key": root + f"{task_id}-other/file", "Size": 1},
+        ],
         "NextContinuationToken": "next",
     }
     client.head_object.return_value = {"ContentLength": 2}
@@ -196,32 +201,32 @@ def test_run_artifacts_are_scoped_and_storage_errors_are_mapped(
     monkeypatch.setattr(ExplicitCredentialsAWSClientProvider, "s3_client", lambda _: client)
     response = _client.get(
         f"/benchmarks/{benchmark.id}/artifacts",
-        params={"prefix": "task", "cursor": "previous", "limit": 2},
+        params={"prefix": task_id, "cursor": "previous", "limit": 2},
         headers=harness_headers,
     )
     assert response.status_code == 200, response.text
     assert response.json() == {
-        "artifacts": [{"path": "task/result.json", "size": 2, "last_modified": None}],
+        "artifacts": [{"path": f"{task_id}/result.json", "size": 2, "last_modified": None}],
         "next_cursor": "next",
     }
     client.list_objects_v2.assert_awaited_once_with(
-        Bucket="test-bucket", Prefix=root + "task", MaxKeys=2, ContinuationToken="previous"
+        Bucket="test-bucket", Prefix=root + task_id, MaxKeys=2, ContinuationToken="previous"
     )
     response = _client.get(
         f"/benchmarks/{benchmark.id}/artifacts/download-url",
-        params={"path": "task/result.json"},
+        params={"path": f"{task_id}/result.json"},
         headers=harness_headers,
     )
     assert response.status_code == 200
     assert response.json()["download_url"] == "https://download.test/file"
     client.generate_presigned_url.assert_awaited_once_with(
-        "get_object", Params={"Bucket": "test-bucket", "Key": root + "task/result.json"}, ExpiresIn=300
+        "get_object", Params={"Bucket": "test-bucket", "Key": root + f"{task_id}/result.json"}, ExpiresIn=300
     )
     for endpoint, params in (("artifacts", {}), ("artifacts/download-url", {"path": "file"})):
         assert (
             _client.get(f"/benchmarks/{other.id}/{endpoint}", params=params, headers=harness_headers).status_code == 404
         )
-    for path in ("../other", "/outside", "task/../file", "a\\b", "a:b"):
+    for path in ("../other", "/outside", "task/../file", "a\\b"):
         assert (
             _client.get(
                 f"/benchmarks/{benchmark.id}/artifacts/download-url", params={"path": path}, headers=harness_headers

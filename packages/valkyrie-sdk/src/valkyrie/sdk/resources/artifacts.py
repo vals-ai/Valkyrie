@@ -1,6 +1,7 @@
 """Access run artifacts without direct storage credentials."""
 
 import asyncio
+import sys
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,7 +19,7 @@ if TYPE_CHECKING:
 def _path(value: str, *, allow_empty: bool = False) -> str:
     if not value and allow_empty:
         return value
-    if "\\" in value or ":" in value or any(part in {"", ".", ".."} for part in value.split("/")):
+    if "\\" in value or any(part in {"", ".", ".."} for part in value.split("/")):
         raise ValueError("Artifact path must be a relative file or directory path")
     return value
 
@@ -85,6 +86,8 @@ class ArtifactsResource:
                         page = await self.list(run_id, prefix=path, cursor=cursor, limit=1000)
                         for entry in page.artifacts:
                             relative = _path(entry.path)
+                            if sys.platform == "win32" and ":" in relative:
+                                raise ValueError("Artifact path contains a colon unsupported by Windows filenames")
                             if path and relative != path and not relative.startswith(path + "/"):
                                 raise ValueError("Tracker returned an artifact outside the requested path")
                             if relative.casefold() in paths:
