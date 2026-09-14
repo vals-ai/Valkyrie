@@ -7,7 +7,7 @@ import asyncio
 import socket
 import time
 from typing import Any, Never
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import httpx
 import pytest
@@ -66,6 +66,53 @@ class TestBenchmarkServiceFailures:
 
     def _latest_task_error(self, database_session: Session, task_row: Task) -> str:
         return self._latest_task_error_result(database_session, task_row).error_message
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_normal_completion_publishes_finished_and_stored_phase_metrics(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        outcome_metric = Mock()
+        phase_metric = Mock()
+        monkeypatch.setattr(utils_module, "incr", outcome_metric)
+        monkeypatch.setattr(utils_module, "distribution", phase_metric)
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        database_session.refresh(task_row)
+        breakdown = database_session.get(TaskBreakdown, task_row.task_breakdown)
+        assert breakdown is not None
+        outcome_metric.assert_called_once_with("valkyrie.task.outcome", tags={"outcome": "finished"})
+        assert phase_metric.call_args_list == [
+            call(
+                "valkyrie.task.phase.duration",
+                breakdown.sandbox_build_duration,
+                tags={"phase": "sandbox_build"},
+            ),
+            call(
+                "valkyrie.task.phase.duration",
+                breakdown.agent_run_duration,
+                tags={"phase": "agent_run"},
+            ),
+            call(
+                "valkyrie.task.phase.duration",
+                breakdown.evaluation_run_duration,
+                tags={"phase": "evaluation_run"},
+            ),
+            call(
+                "valkyrie.task.phase.duration",
+                breakdown.sandbox_run_duration,
+                tags={"phase": "sandbox_run"},
+            ),
+        ]
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_connection_closed_after_messages_produces_elapsed_error(
@@ -195,6 +242,10 @@ class TestBenchmarkServiceFailures:
         harness_config: HarnessConfig,
         aws_runtime: AWSRuntime,
     ) -> None:
+        outcome_metric = Mock()
+        phase_metric = Mock()
+        monkeypatch.setattr(utils_module, "incr", outcome_metric)
+        monkeypatch.setattr(utils_module, "distribution", phase_metric)
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
@@ -230,6 +281,29 @@ class TestBenchmarkServiceFailures:
         assert breakdown.evaluation_run_duration > 0
         assert breakdown.sandbox_run_duration is not None
         assert breakdown.sandbox_run_duration > 0
+        outcome_metric.assert_called_once_with("valkyrie.task.outcome", tags={"outcome": "finished"})
+        assert phase_metric.call_args_list == [
+            call(
+                "valkyrie.task.phase.duration",
+                breakdown.sandbox_build_duration,
+                tags={"phase": "sandbox_build"},
+            ),
+            call(
+                "valkyrie.task.phase.duration",
+                breakdown.agent_run_duration,
+                tags={"phase": "agent_run"},
+            ),
+            call(
+                "valkyrie.task.phase.duration",
+                breakdown.evaluation_run_duration,
+                tags={"phase": "evaluation_run"},
+            ),
+            call(
+                "valkyrie.task.phase.duration",
+                breakdown.sandbox_run_duration,
+                tags={"phase": "sandbox_run"},
+            ),
+        ]
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_durable_resume_without_breakdown_can_recover(
@@ -240,6 +314,10 @@ class TestBenchmarkServiceFailures:
         harness_config: HarnessConfig,
         aws_runtime: AWSRuntime,
     ) -> None:
+        outcome_metric = Mock()
+        phase_metric = Mock()
+        monkeypatch.setattr(utils_module, "incr", outcome_metric)
+        monkeypatch.setattr(utils_module, "distribution", phase_metric)
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
@@ -272,6 +350,8 @@ class TestBenchmarkServiceFailures:
         assert task_row.task_breakdown is None
         assert database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
         assert not database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).first()
+        outcome_metric.assert_called_once_with("valkyrie.task.outcome", tags={"outcome": "finished"})
+        phase_metric.assert_not_called()
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_stream_close_without_saved_state_produces_stream_error(
@@ -282,6 +362,8 @@ class TestBenchmarkServiceFailures:
         harness_config: HarnessConfig,
         aws_runtime: AWSRuntime,
     ) -> None:
+        outcome_metric = Mock()
+        monkeypatch.setattr(utils_module, "incr", outcome_metric)
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
@@ -299,6 +381,45 @@ class TestBenchmarkServiceFailures:
         error_message = self._latest_task_error(database_session, task_row)
         assert "Benchmark service WebSocket stream failed" in error_message
         assert "keepalive timeout" in error_message
+        outcome_metric.assert_called_once_with(
+            "valkyrie.task.outcome",
+            tags={
+                "outcome": "error",
+                "producer": "benchmark_service",
+                "operation": "websocket",
+                "cause_code": "websocket_connection_closed",
+            },
+        )
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_terminal_error_rejected_commit_emits_no_outcome_metric(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        outcome_metric = Mock()
+        commit_error = Mock(return_value=False)
+        monkeypatch.setattr(utils_module, "incr", outcome_metric)
+        monkeypatch.setattr(utils_module, "commit_task_error", commit_error)
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+
+        async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise BenchmarkServiceStreamClosedError(
+                close_code=1011, close_reason="keepalive timeout", idle_s=30.0
+            )
+
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+
+        assert result == {"task_0": None}
+        commit_error.assert_called_once()
+        outcome_metric.assert_not_called()
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_stream_resume_failure_produces_terminal_error(
@@ -378,6 +499,10 @@ class TestBenchmarkServiceFailures:
         harness_config: HarnessConfig,
         aws_runtime: AWSRuntime,
     ) -> None:
+        outcome_metric = Mock()
+        phase_metric = Mock()
+        monkeypatch.setattr(utils_module, "incr", outcome_metric)
+        monkeypatch.setattr(utils_module, "distribution", phase_metric)
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
@@ -405,6 +530,8 @@ class TestBenchmarkServiceFailures:
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.STOPPED
         assert not database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).first()
+        outcome_metric.assert_not_called()
+        phase_metric.assert_not_called()
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_stream_recovery_does_not_finish_a_stale_task(
@@ -415,6 +542,10 @@ class TestBenchmarkServiceFailures:
         harness_config: HarnessConfig,
         aws_runtime: AWSRuntime,
     ) -> None:
+        outcome_metric = Mock()
+        phase_metric = Mock()
+        monkeypatch.setattr(utils_module, "incr", outcome_metric)
+        monkeypatch.setattr(utils_module, "distribution", phase_metric)
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
@@ -446,6 +577,8 @@ class TestBenchmarkServiceFailures:
         assert commit_calls == 4
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.EVALUATING
+        outcome_metric.assert_not_called()
+        phase_metric.assert_not_called()
 
     @pytest.mark.parametrize("failure", ["dns", "raw", "stream"])
     @pytest.mark.usefixtures("process_benchmark_env")

@@ -1084,6 +1084,8 @@ class TestRunRecovery:
 
         create_sandbox = Mock(side_effect=AssertionError("eval resume should not create a sandbox"))
 
+        outcome_metric = Mock()
+        phase_metric = Mock()
         sandbox_provider_config = DaytonaProviderConfig(
             DAYTONA_API_KEY="key",
             DAYTONA_API_URL="url",
@@ -1122,6 +1124,8 @@ class TestRunRecovery:
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+        monkeypatch.setattr("tracker.utils.task_execution.incr", outcome_metric)
+        monkeypatch.setattr("tracker.utils.task_execution.distribution", phase_metric)
         monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", create_sandbox)
         monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
 
@@ -1149,6 +1153,9 @@ class TestRunRecovery:
         assert result == {"task_0": {"score": 1.0}}
         create_sandbox.assert_not_called()
         assert task_row.status == TaskStatus.FINISHED
+        assert task_row.task_breakdown is None
+        outcome_metric.assert_called_once_with("valkyrie.task.outcome", tags={"outcome": "finished"})
+        phase_metric.assert_not_called()
         assert task_row.eval_resume_state == {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
         assert evaluation.instance_id is None
         assert error.error_message == "duplicate evaluation failed"

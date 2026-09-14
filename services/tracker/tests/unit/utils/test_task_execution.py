@@ -6,14 +6,16 @@ Run: uv run pytest tests/unit/utils/test_task_execution.py
 import asyncio
 from datetime import timedelta
 from typing import Any
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock, Mock, call
 from uuid import uuid4
 
 import pytest
 from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
-from tracker.database.models import Benchmark, Org, Task, TaskStatus
+import tracker.utils.task_execution as utils_module
+from tracker.database.models import Benchmark, Org, Task, TaskBreakdown, TaskStatus
+from tracker.exceptions import SandboxSetupError
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.utils import ResizableLimiter, TaskMonitor, TrackedTask, TrackedTaskStatus
 
@@ -22,6 +24,80 @@ class TestTaskExecution:
     """Task monitoring and tracked task state transitions."""
 
     _test_org = Org(id=TEST_ORG_ID, name="default")
+
+    @pytest.mark.parametrize(
+        ("error_type", "producer", "operation"),
+        [
+            (RuntimeError, "tracker", "process_task"),
+            (SandboxSetupError, "sandbox_provider", "setup"),
+        ],
+    )
+    @pytest.mark.parametrize("committed", [True, False])
+    async def test_tracked_task_error_metric_requires_guarded_commit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        error_type: type[Exception],
+        producer: str,
+        operation: str,
+        committed: bool,
+    ) -> None:
+        async def fail() -> dict[str, dict[str, Any] | None]:
+            raise error_type("failed")
+
+        commit = Mock(return_value=committed)
+        metric = Mock()
+        persisted_task = MagicMock(spec=Task)
+        session_context = MagicMock()
+        monkeypatch.setattr(utils_module, "Session", Mock(return_value=session_context))
+        monkeypatch.setattr(utils_module, "fetch_task_row", Mock(return_value=persisted_task))
+        monkeypatch.setattr(utils_module, "commit_task_error", commit)
+        monkeypatch.setattr(utils_module, "incr", metric)
+        monkeypatch.setattr(utils_module, "capture_exception", Mock())
+
+        authority = ExecutionAuthority(benchmark_id=uuid4(), dispatch_id=uuid4())
+        task_row = MagicMock(spec=Task, id=uuid4(), task_id="task_id", started_at=MagicMock())
+        tracked = TrackedTask(fail(), self._test_org, authority, task_row.started_at)
+
+        assert await tracked.run(None, task_row) == {"task_id": None}
+        assert tracked.status is TrackedTaskStatus.DONE
+        commit.assert_called_once()
+        assert commit.call_args.kwargs["producer"] == producer
+        assert commit.call_args.kwargs["operation"] == operation
+        assert commit.call_args.kwargs["error_type"] == error_type.__name__
+        if committed:
+            metric.assert_called_once_with(
+                "valkyrie.task.outcome",
+                tags={"outcome": "error", "producer": producer, "operation": operation},
+            )
+        else:
+            metric.assert_not_called()
+
+    def test_phase_metrics_publish_only_non_null_stored_values(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        metric = Mock()
+        monkeypatch.setattr(utils_module, "distribution", metric)
+        breakdown = TaskBreakdown(
+            sandbox_build_duration=1.0,
+            agent_run_duration=None,
+            evaluation_run_duration=2.0,
+            sandbox_run_duration=None,
+        )
+
+        utils_module._publish_task_phase_durations(breakdown)
+
+        assert metric.call_args_list == [
+            call(
+                "valkyrie.task.phase.duration",
+                1.0,
+                tags={"phase": "sandbox_build"},
+            ),
+            call(
+                "valkyrie.task.phase.duration",
+                2.0,
+                tags={"phase": "evaluation_run"},
+            ),
+        ]
 
     async def test_resizable_limiter_increase_wakes_waiting_admission(self) -> None:
         limiter = ResizableLimiter(limit=1)

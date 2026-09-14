@@ -67,7 +67,7 @@ from tracker.exceptions import (
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
-from tracker.observability import elapsed_ms, error_span, incr
+from tracker.observability import distribution, elapsed_ms, error_span, incr
 from tracker.observability.sentry import capture_exception, clear_sandbox_context, task_scope
 from tracker.observability.tracing import observability_span
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
@@ -83,6 +83,30 @@ logger = get_logger(__name__)
 
 _PTY_TASK_RETRY_LIMIT: int = 1
 _SANDBOX_RETRY_DELAY_SECONDS: float = 2
+
+
+def _publish_task_phase_durations(breakdown: TaskBreakdown | None) -> None:
+    if breakdown is None:
+        return
+    for phase, value in (
+        ("sandbox_build", breakdown.sandbox_build_duration),
+        ("agent_run", breakdown.agent_run_duration),
+        ("evaluation_run", breakdown.evaluation_run_duration),
+        ("sandbox_run", breakdown.sandbox_run_duration),
+    ):
+        if value is not None:
+            distribution(
+                "valkyrie.task.phase.duration",
+                value,
+                tags={"phase": phase},
+            )
+
+
+def _publish_task_error_outcome(*, producer: str, operation: str, cause_code: str | None = None) -> None:
+    tags = {"outcome": "error", "producer": producer, "operation": operation}
+    if cause_code is not None:
+        tags["cause_code"] = cause_code
+    incr("valkyrie.task.outcome", tags=tags)
 
 
 class BenchmarkServiceWebSocketDNSResolutionError(BenchmarkServiceError):
@@ -293,18 +317,22 @@ class TrackedTask:
                 logger.error(error_message)
                 logfire.exception("tracked_task_run failed")
                 capture_exception(e)
+                producer = "sandbox_provider" if isinstance(e, SandboxSetupError) else "tracker"
+                operation = "setup" if isinstance(e, SandboxSetupError) else "process_task"
                 with Session(bind=engine) as session:
                     task = fetch_task_row(task_row.id, session, self._org)
-                    commit_task_error(
+                    committed = commit_task_error(
                         task,
                         session,
                         error_message,
-                        producer="sandbox_provider" if isinstance(e, SandboxSetupError) else "tracker",
-                        operation="setup" if isinstance(e, SandboxSetupError) else "process_task",
+                        producer=producer,
+                        operation=operation,
                         error_type=type(e).__name__,
                         expected_started_at=task_row.started_at,
                         authority=self._authority,
                     )
+                if committed:
+                    _publish_task_error_outcome(producer=producer, operation=operation)
 
                 return {task_row.task_id: None}
             finally:
@@ -806,7 +834,7 @@ async def _process_task_attempt(
             capture_exception(exc)
         with open_task_session() as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
+            committed = commit_task_error(
                 task,
                 task_session,
                 error_message,
@@ -817,6 +845,10 @@ async def _process_task_attempt(
                 expected_started_at=attempt_started_at,
                 expected_status=expected_failure_status,
                 authority=authority,
+            )
+        if committed:
+            _publish_task_error_outcome(
+                producer=producer, operation=operation, cause_code=cause_code
             )
         return {task_id: None}
 
@@ -886,6 +918,7 @@ async def _process_task_attempt(
         with open_task_session() as task_session:
             task_session.add(evaluation_result_row)
             task_in_session = fetch_task_row(task_row.id, task_session, org)
+            existing_breakdown: TaskBreakdown | None = None
             if task_in_session.task_breakdown:
                 existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
                 assert existing_breakdown is not None
@@ -902,6 +935,8 @@ async def _process_task_attempt(
                 authority=authority,
             ):
                 return {task_id: None}
+            incr("valkyrie.task.outcome", tags={"outcome": "finished"})
+            _publish_task_phase_durations(existing_breakdown)
 
         return {task_id: evaluation_result_value}
 
@@ -963,6 +998,7 @@ async def _process_task_attempt(
                 with open_task_session() as task_session:
                     task_session.add(evaluation_result_row)
                     task_in_session = fetch_task_row(task_row.id, task_session, org)
+                    existing_breakdown: TaskBreakdown | None = None
                     if task_in_session.task_breakdown:
                         existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
                         assert existing_breakdown is not None
@@ -977,6 +1013,8 @@ async def _process_task_attempt(
                         authority=authority,
                     ):
                         return {task_id: None}
+                    incr("valkyrie.task.outcome", tags={"outcome": "finished"})
+                    _publish_task_phase_durations(existing_breakdown)
 
                     return {task_id: evaluation_result_row.result}
             except SandboxNotFoundError:
@@ -1250,6 +1288,8 @@ async def _process_task_attempt(
                         authority=authority,
                     ):
                         return {task_id: None}
+                    incr("valkyrie.task.outcome", tags={"outcome": "finished"})
+                    _publish_task_phase_durations(existing_breakdown)
 
                     return {task_id: evaluation_result_row.result}
             except Exception:
