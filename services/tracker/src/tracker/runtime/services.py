@@ -3,12 +3,12 @@
 from asyncio import Lock, Task, create_task, to_thread
 from dataclasses import dataclass, field
 
-from benchmark_service import SandboxProvider, SandboxProviderConfig
+from benchmark_service import SandboxProvider, SandboxProviderConfig, sandbox_provider_config_from_mapping
 
 from tracker.exceptions import InvalidSandboxConfigurationError, TrackerServiceError
 from tracker.runtime.lifecycle import finish_cleanup
 from tracker.runtime.logs import BenchmarkLogLocations, BenchmarkLogSink, LogProvider
-from tracker.runtime.secrets import AsyncSecretStore, SecretStore, fetch_sandbox_provider_config_async, resolve_secrets
+from tracker.runtime.secrets import AsyncSecretStore, SecretStore, resolve_secrets
 from tracker.runtime.storage import ArtifactLocations, ObjectStore
 
 
@@ -40,11 +40,15 @@ class RuntimeServices:
         async with self._config_lock:
             self._require_open()
             if self._sandbox_config is None:
-                self._sandbox_config = await fetch_sandbox_provider_config_async(
-                    self.sandbox_provider_secret_name, self.async_secrets, self.sandbox_provider
-                )
+                self._sandbox_config = await self._load_sandbox_provider_config(self.sandbox_provider_secret_name)
             self._require_open()
             return self._sandbox_config
+
+    async def _load_sandbox_provider_config(self, secret_name: str) -> SandboxProviderConfig:
+        secret = await self.async_secrets.get_async(secret_name)
+        if not isinstance(secret, dict):
+            raise InvalidSandboxConfigurationError("Expected sandbox provider secret to be a JSON object")
+        return sandbox_provider_config_from_mapping({**secret, "type": self.sandbox_provider})
 
     async def get_sandbox_provider(self) -> SandboxProvider:
         """Reuse one provider for this runtime's lifetime."""

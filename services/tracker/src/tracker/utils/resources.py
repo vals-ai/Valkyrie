@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 
+from benchmark_service import SandboxProviderConfig, sandbox_provider_config_from_mapping
 from benchmark_service.client import BenchmarkServiceClient
 from sqlmodel import Session, select
 
@@ -17,10 +18,7 @@ from tracker.database.models import (
 )
 from tracker.exceptions import TrackerServiceError
 from tracker.outbound_security import validate_service_headers, validate_service_url_syntax
-from tracker.runtime.secrets import (
-    fetch_sandbox_provider_config as fetch_sandbox_provider_config,
-    fetch_sandbox_provider_config_async as fetch_sandbox_provider_config_async,
-)
+from tracker.runtime.secrets import AsyncSecretStore, SecretStore, SecretValue
 from tracker.types import (
     StartBenchmarkRequest,
 )
@@ -31,6 +29,30 @@ class BenchmarkConcurrencyUpdate:
     benchmark_id: UUID
     status: BenchmarkStatus
     concurrency: int
+
+
+def _sandbox_provider_config_from_secret(secret: SecretValue, provider_type: str) -> SandboxProviderConfig:
+    if not isinstance(secret, dict):
+        raise TrackerServiceError("Expected sandbox provider secret to be a JSON object")
+    return sandbox_provider_config_from_mapping({**secret, "type": provider_type})
+
+
+def fetch_sandbox_provider_config(
+    secret_name: str,
+    secret_store: SecretStore,
+    provider_type: str,
+) -> SandboxProviderConfig:
+    """Resolve sandbox provider config from the selected provider type and secret."""
+    return _sandbox_provider_config_from_secret(secret_store.get(secret_name), provider_type)
+
+
+async def fetch_sandbox_provider_config_async(
+    secret_name: str,
+    secret_store: AsyncSecretStore,
+    provider_type: str,
+) -> SandboxProviderConfig:
+    """Resolve sandbox provider config without blocking the caller's event loop."""
+    return _sandbox_provider_config_from_secret(await secret_store.get_async(secret_name), provider_type)
 
 
 def create_benchmark_service_client(
