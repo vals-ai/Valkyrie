@@ -215,3 +215,35 @@ async def test_sdk_updates_persisted_concurrency(
         result = await client.runs.update_concurrency(running.id, concurrency=3)
     database_session.refresh(running)
     assert running.arguments.concurrency == result.concurrency == 3
+
+
+def test_cli_downloads_run_artifacts_through_tracker(
+    cli_runner: CliRunner, seeded_runs: tuple[Benchmark, Benchmark], local_tracker_app, monkeypatch, tmp_path: Path
+) -> None:
+    import httpx
+    from unittest.mock import AsyncMock
+    from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
+
+    running, _ = seeded_runs
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.list_objects_v2.return_value = {"Contents": [{"Key": f"benchmarks/{running.id}/task/result.txt", "Size": 6}]}
+    client.head_object.return_value = {"ContentLength": 6}
+    client.generate_presigned_url.return_value = "https://download.test/artifact"
+    monkeypatch.setattr(ExplicitCredentialsAWSClientProvider, "s3_client", lambda _: client)
+
+    async def handle(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if request.url.host == "download.test":
+            assert not any(name.startswith("x-harness") for name in request.headers)
+            return httpx.Response(200, content=b"result")
+        async with httpx.ASGITransport(app=local_tracker_app) as transport:
+            return await transport.handle_async_request(request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle)
+    listing = cli_runner.invoke(cli, ["run", "artifacts", str(running.id), "--format", "json"])
+    assert listing.exit_code == 0, listing.output
+    assert json.loads(listing.output)["artifacts"][0]["path"] == "task/result.txt"
+    destination = tmp_path / "download"
+    result = cli_runner.invoke(cli, ["run", "output", str(running.id), "task", "-o", str(destination)])
+    assert result.exit_code == 0, result.output
+    assert (destination / "task/result.txt").read_text() == "result"

@@ -16,6 +16,7 @@ import pytest
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from services.tracker.main import app
+from tracker.api.filter_options import FilterOptionsResponse
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
@@ -86,6 +87,7 @@ from valkyrie.sdk.models import (
     FetchBenchmarksRequest as SDKFetchBenchmarksRequest,
     FetchBenchmarksResponse as SDKFetchBenchmarksResponse,
     FinalEvaluation as SDKFinalEvaluation,
+    FilterOptionsResponse as SDKFilterOptionsResponse,
     FinalViewResponse as SDKFinalViewResponse,
     HarnessConfig as SDKHarnessConfig,
     LogEvent as SDKLogEvent,
@@ -110,7 +112,10 @@ from valkyrie.sdk.models import (
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "sdk_api"
 ROUTES = (
+    ("/benchmarks/filter-options", "get", ""),
     ("/benchmarks/{benchmark_id}/concurrency", "patch", "benchmark_id"),
+    ("/benchmarks/{benchmark_id}/artifacts", "get", "benchmark_id prefix cursor limit"),
+    ("/benchmarks/{benchmark_id}/artifacts/download-url", "get", "benchmark_id path"),
     ("/start-benchmark", "post", ""),
     ("/fetch-benchmark", "get", "benchmark_id connect"),
     (
@@ -155,6 +160,7 @@ ROUTES = (
     ("/fetch-run-outputs/{benchmark_id}", "get", "benchmark_id task_ids"),
 )
 RESPONSE_MODELS = {
+    ("/benchmarks/filter-options", "get"): "FilterOptionsResponse",
     ("/start-benchmark", "post"): "StartBenchmarkResponse",
     ("/fetch-benchmarks", "get"): "FetchBenchmarksResponse",
     ("/stop-benchmark/{benchmark_id}", "post"): "StopBenchmarkResponse",
@@ -177,6 +183,7 @@ RESPONSE_MODELS = {
     ("/preview-results", "get"): "S3UploadResultsResponse",
 }
 MODEL_PAIRS = (
+    (FilterOptionsResponse, SDKFilterOptionsResponse),
     (OutputArtifact, SDKOutputArtifact),
     (AgentContractRequest, SDKAgentContractRequest),
     (AWSCredentials, SDKAWSCredentials),
@@ -223,7 +230,6 @@ MODEL_PAIRS = (
 )
 INTERNAL_ROUTES = {
     ("/aws-runtime", "get"),
-    ("/benchmarks/filter-options", "get"),
     ("/health", "get"),
     ("/init", "post"),
 }

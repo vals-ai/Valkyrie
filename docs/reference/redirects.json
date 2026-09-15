@@ -16,12 +16,20 @@
     "destination": "/reference/cli/run#fetch"
   },
   {
+    "source": "/reference/cli/run/filter-options",
+    "destination": "/reference/cli/run#filter-options"
+  },
+  {
     "source": "/reference/cli/run/list",
     "destination": "/reference/cli/run#list"
   },
   {
     "source": "/reference/cli/run/logs",
     "destination": "/reference/cli/run#logs"
+  },
+  {
+    "source": "/reference/cli/run/artifacts",
+    "destination": "/reference/cli/run#artifacts"
   },
   {
     "source": "/reference/cli/run/output",
@@ -152,6 +160,18 @@
     "destination": "/reference/cli/queue#status"
   },
   {
+    "source": "/reference/sdk/artifacts/list",
+    "destination": "/reference/sdk/artifacts#list"
+  },
+  {
+    "source": "/reference/sdk/artifacts/download_url",
+    "destination": "/reference/sdk/artifacts#download-url"
+  },
+  {
+    "source": "/reference/sdk/artifacts/download",
+    "destination": "/reference/sdk/artifacts#download"
+  },
+  {
     "source": "/reference/sdk/runs/start",
     "destination": "/reference/sdk/runs#start"
   },
@@ -160,8 +180,16 @@
     "destination": "/reference/sdk/runs#fetch"
   },
   {
+    "source": "/reference/sdk/runs/filter_options",
+    "destination": "/reference/sdk/runs#filter-options"
+  },
+  {
     "source": "/reference/sdk/runs/list",
     "destination": "/reference/sdk/runs#list"
+  },
+  {
+    "source": "/reference/sdk/runs/iter",
+    "destination": "/reference/sdk/runs#iter"
   },
   {
     "source": "/reference/sdk/runs/stream",
@@ -192,6 +220,10 @@
     "destination": "/reference/sdk/runs#stream-outputs"
   },
   {
+    "source": "/reference/sdk/runs/download_outputs",
+    "destination": "/reference/sdk/runs#download-outputs"
+  },
+  {
     "source": "/reference/sdk/runs/update_concurrency",
     "destination": "/reference/sdk/runs#update-concurrency"
   },
@@ -218,6 +250,10 @@
   {
     "source": "/reference/sdk/benchmarks/tasks",
     "destination": "/reference/sdk/benchmarks#tasks"
+  },
+  {
+    "source": "/reference/sdk/benchmarks/iter_tasks",
+    "destination": "/reference/sdk/benchmarks#iter-tasks"
   },
   {
     "source": "/reference/sdk/benchmarks/task",
@@ -288,6 +324,18 @@
     "destination": "/reference/sdk/scheduler#overview"
   },
   {
+    "source": "/reference/sdk/models/artifacts/run-artifact-entry",
+    "destination": "/reference/sdk/models/artifacts#run-artifact-entry"
+  },
+  {
+    "source": "/reference/sdk/models/artifacts/run-artifacts-response",
+    "destination": "/reference/sdk/models/artifacts#run-artifacts-response"
+  },
+  {
+    "source": "/reference/sdk/models/artifacts/run-artifact-download-response",
+    "destination": "/reference/sdk/models/artifacts#run-artifact-download-response"
+  },
+  {
     "source": "/reference/sdk/models/agents/agent-contract-request",
     "destination": "/reference/sdk/models/agents#agent-contract-request"
   },
@@ -350,6 +398,10 @@
   {
     "source": "/reference/sdk/models/runs/fetch-benchmarks-response",
     "destination": "/reference/sdk/models/runs#fetch-benchmarks-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/filter-options-response",
+    "destination": "/reference/sdk/models/runs#filter-options-response"
   },
   {
     "source": "/reference/sdk/models/benchmarks/fetch-tasks-request",
