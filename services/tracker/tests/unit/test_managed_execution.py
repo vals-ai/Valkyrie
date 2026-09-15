@@ -15,8 +15,8 @@ from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.resolver import ManagedAWSEligibilityError
-from tracker.aws.runtime import AWSRuntime
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org
+from tracker.aws.runtime import AWSRuntime, CloudRuntimeConfig
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, BenchmarkStatus, Org
 from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmarkRequest
 from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
 from tracker.utils.run_orchestration import (
@@ -323,7 +323,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
     calls: list[str] = []
     spans: list[tuple[str, dict[str, Any]]] = []
-    provider_config = cast(SandboxProviderConfig, MagicMock())
+    provider_config = cast(SandboxProviderConfig, MagicMock(create_provider=MagicMock(return_value=AsyncMock())))
 
     def deployment_runtime(_org_id: UUID) -> AWSRuntime:
         return aws_runtime
@@ -332,7 +332,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         assert retention_days == aws_runtime.resources.log_retention_days
         calls.append("logs")
 
-    def fetch_provider(_name: str, secret_store: object, _provider: str) -> SandboxProviderConfig:
+    async def fetch_provider(_name: str, secret_store: object, _provider: str) -> SandboxProviderConfig:
         assert secret_store is not aws_runtime.clients
         calls.append("provider-secret")
         return provider_config
@@ -363,7 +363,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
 
     monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
-    monkeypatch.setattr("tracker.utils.run_orchestration.fetch_sandbox_provider_config", fetch_provider)
+    monkeypatch.setattr("tracker.utils.resources.fetch_sandbox_provider_config_async", fetch_provider)
     monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
@@ -388,7 +388,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     assert finalized_span["status"] == "FINISHED"
 
 
-def test_managed_execution_preflight_checks_aws_dependencies_in_order(
+async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     contract: AgentContractRequest,
     aws_runtime: AWSRuntime,
     monkeypatch: pytest.MonkeyPatch,
@@ -402,13 +402,13 @@ def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     )
     execution = _parse_queued_execution(None, None, None, _execution_context(request, uuid4()))
     calls: list[str] = []
-    provider_config = cast(SandboxProviderConfig, MagicMock())
+    provider_config = cast(SandboxProviderConfig, MagicMock(create_provider=MagicMock(return_value=AsyncMock())))
 
     def create_log_group(*_args: Any, **_kwargs: Any) -> str:
         calls.append("logs")
         return "benchmark-log-group"
 
-    def fetch_provider(*_args: Any, **_kwargs: Any) -> SandboxProviderConfig:
+    async def fetch_provider(*_args: Any, **_kwargs: Any) -> SandboxProviderConfig:
         calls.append("sandbox_provider_secret")
         return provider_config
 
@@ -424,12 +424,22 @@ def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         calls.append("lambda")
 
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
-    monkeypatch.setattr("tracker.utils.run_orchestration.fetch_sandbox_provider_config", fetch_provider)
+    monkeypatch.setattr("tracker.utils.resources.fetch_sandbox_provider_config_async", fetch_provider)
     monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get_webhook_secret)
     monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
 
-    result = _preflight_managed_aws(execution, aws_runtime)
+    arguments = BenchmarkArguments(
+        contract=request.contract,
+        concurrency=request.concurrency,
+        sandbox_provider=request.sandbox_provider,
+        sandbox_provider_secret_name=request.sandbox_provider_secret_name,
+    )
+    async with CloudRuntimeConfig(properties=aws_runtime.resources).create_runtime(
+        clients=aws_runtime.clients,
+        arguments=arguments,
+    ) as runtime:
+        result = await _preflight_managed_aws(execution, aws_runtime, runtime)
 
     assert result is provider_config
     assert calls == ["logs", "sandbox_provider_secret", "agent_secrets", "webhook_secret", "lambda"]

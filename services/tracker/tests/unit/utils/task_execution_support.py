@@ -13,7 +13,7 @@ from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.runtime import AWSRuntime, CloudRuntimeConfig
 from tracker.aws.secrets import SecretsManagerStore
 from tracker.database.models import (
     AgentContractRequest,
@@ -189,17 +189,20 @@ async def run_process_task(
         SecretsManagerStore(aws_runtime.clients),
         start_benchmark_request.sandbox_provider,
     )
-    return await process_task(
-        task_row=task_row,
-        start_benchmark_request=start_benchmark_request,
-        benchmark_service=benchmark_service,
-        benchmark_id=benchmark_id,
-        task_id="task_0",
-        aws_runtime=aws_runtime,
-        org=TEST_ORG,
-        sandbox_provider_config=sandbox_provider_config,
-        sandbox_provider=benchmark_service.get_sandbox_provider(sandbox_provider_config),
-        creation_semaphore=Semaphore(1),
-        queue_context=queue_context,
-        authority=authority,
-    )
+    async with CloudRuntimeConfig(properties=aws_runtime.resources).create_runtime(
+        clients=aws_runtime.clients,
+    ) as runtime:
+        return await process_task(
+            task_row=task_row,
+            start_benchmark_request=start_benchmark_request,
+            benchmark_service=benchmark_service,
+            benchmark_id=benchmark_id,
+            task_id="task_0",
+            runtime=runtime,
+            org=TEST_ORG,
+            sandbox_provider_config=sandbox_provider_config,
+            sandbox_provider=benchmark_service.get_sandbox_provider(sandbox_provider_config),
+            creation_semaphore=Semaphore(1),
+            queue_context=queue_context,
+            authority=authority,
+        )

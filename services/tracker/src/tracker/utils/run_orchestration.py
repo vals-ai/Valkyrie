@@ -4,7 +4,7 @@ import asyncio
 import traceback
 from asyncio import Semaphore, gather
 from collections.abc import AsyncGenerator, Callable, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
@@ -18,11 +18,10 @@ from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
 from tracker._lambda import dry_run_lambda, invoke_lambda
-from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.resolver import deployment_aws_runtime
-from tracker.aws.runtime import AWSRuntime
-from tracker.aws.secrets import SecretsManagerStore
+from tracker.aws.runtime import AWSRuntime, CloudRuntimeConfig
 from tracker.runtime.secrets import resolve_secrets
+from tracker.runtime.services import RuntimeServices
 from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
     Benchmark,
@@ -57,7 +56,6 @@ from tracker.types import (
 from tracker.utils.resources import (
     create_benchmark_service_client_from_request,
     fetch_benchmark_row,
-    fetch_sandbox_provider_config,
 )
 from tracker.utils.reporting import create_final_view, upload_final_view
 from tracker.utils.task_error_summary import summarize_task_errors
@@ -77,7 +75,7 @@ async def _run_queued_tasks(
     task_rows: Sequence[tuple[str, Task]],
     start_benchmark_request: StartBenchmarkRequest,
     benchmark_service: BenchmarkServiceClient,
-    aws_runtime: AWSRuntime,
+    runtime: RuntimeServices,
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
     sandbox_provider: SandboxProvider,
@@ -114,7 +112,7 @@ async def _run_queued_tasks(
                 benchmark_service,
                 benchmark_id,
                 task_row.task_id,
-                aws_runtime,
+                runtime,
                 org,
                 sandbox_provider_config=sandbox_provider_config,
                 sandbox_provider=sandbox_provider,
@@ -622,30 +620,24 @@ def _queued_benchmark_id(
         raise ValueError("Queued benchmark request has no valid benchmark ID.") from None
 
 
-def _preflight_managed_aws(
+async def _preflight_managed_aws(
     execution: _QueuedExecution,
-    runtime: AWSRuntime,
+    aws_runtime: AWSRuntime,
+    runtime: RuntimeServices,
 ) -> SandboxProviderConfig:
     """Verify executor-owned AWS access before starting sandbox work."""
-    CloudWatchBenchmarkLogSink(runtime.clients, runtime.resources.log_group).create_benchmark(
+    await asyncio.to_thread(
+        runtime.logs.create_benchmark,
         str(execution.benchmark_id),
-        retention_days=runtime.resources.log_retention_days,
+        retention_days=aws_runtime.resources.log_retention_days,
     )
     request = execution.request
-    provider_secret_name = request.sandbox_provider_secret_name
-    if provider_secret_name is None:
-        raise ValueError("Queued managed benchmark request has no sandbox provider secret name.")
-    secret_store = SecretsManagerStore(runtime.clients)
-    sandbox_provider_config = fetch_sandbox_provider_config(
-        provider_secret_name,
-        secret_store,
-        request.sandbox_provider,
-    )
-    resolve_secrets(request.contract.secrets, secret_store)
+    sandbox_provider_config = await runtime.get_sandbox_provider_config()
+    await asyncio.to_thread(resolve_secrets, request.contract.secrets, runtime.secrets)
     if request.webhook_secret_name and request.webhook_intervals:
-        secret_store.get(request.webhook_secret_name)
+        await runtime.async_secrets.get_async(request.webhook_secret_name)
     if request.lambda_function:
-        dry_run_lambda(runtime.clients, request.lambda_function)
+        await asyncio.to_thread(dry_run_lambda, aws_runtime.clients, request.lambda_function)
     return sandbox_provider_config
 
 
@@ -702,6 +694,7 @@ async def process_benchmark(
     limiter: ResizableLimiter | None = None
     sandbox_provider_config: SandboxProviderConfig | None = None
     sandbox_provider: SandboxProvider | None = None
+    runtime_stack = AsyncExitStack()
 
     def record_queued_cancellation(owned_attempts: dict[UUID, datetime]) -> None:
         nonlocal queued_cancellation_recorded
@@ -753,33 +746,45 @@ async def process_benchmark(
 
         if execution.aws_managed:
             aws_runtime = deployment_aws_runtime(org.id)
-            sandbox_provider_config = _preflight_managed_aws(execution, aws_runtime)
         else:
             harness_config = cast(HarnessConfig, start_benchmark_request.harness_config)
             aws_runtime = AWSRuntime.from_harness_config(harness_config)
-            sandbox_provider_config = fetch_sandbox_provider_config(
-                harness_config.sandbox_provider_secret_name,
-                SecretsManagerStore(aws_runtime.clients),
-                start_benchmark_request.sandbox_provider,
+
+        runtime_arguments = benchmark_row.arguments.model_copy(
+            update={
+                "sandbox_provider": start_benchmark_request.sandbox_provider,
+                "sandbox_provider_secret_name": (
+                    start_benchmark_request.sandbox_provider_secret_name
+                    if execution.aws_managed
+                    else cast(HarnessConfig, start_benchmark_request.harness_config).sandbox_provider_secret_name
+                ),
+            }
+        )
+        runtime = await runtime_stack.enter_async_context(
+            CloudRuntimeConfig(properties=aws_runtime.resources).create_runtime(
+                clients=aws_runtime.clients,
+                arguments=runtime_arguments,
             )
+        )
+        if execution.aws_managed:
+            sandbox_provider_config = await _preflight_managed_aws(execution, aws_runtime, runtime)
+        else:
+            sandbox_provider_config = await runtime.get_sandbox_provider_config()
 
         benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
-        try:
-            sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
-        except BaseException:
-            await benchmark_service.close()
-            benchmark_service = None
-            raise
+        runtime_stack.push_async_callback(benchmark_service.close)
+        sandbox_provider = await runtime.get_sandbox_provider()
 
         if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
             notifier = SlackNotifier(
                 secret_name=start_benchmark_request.webhook_secret_name,
-                secret_store=SecretsManagerStore(aws_runtime.clients),
+                secret_store=runtime.secrets,
                 intervals=start_benchmark_request.webhook_intervals,
             )
 
         if not execution.aws_managed:
-            CloudWatchBenchmarkLogSink(aws_runtime.clients, aws_runtime.resources.log_group).create_benchmark(
+            await asyncio.to_thread(
+                runtime.logs.create_benchmark,
                 str(benchmark_id),
                 retention_days=aws_runtime.resources.log_retention_days,
             )
@@ -841,7 +846,7 @@ async def process_benchmark(
                 task_rows=run_task_rows,
                 start_benchmark_request=start_benchmark_request,
                 benchmark_service=benchmark_service,
-                aws_runtime=aws_runtime,
+                runtime=runtime,
                 org=org,
                 sandbox_provider_config=sandbox_provider_config,
                 sandbox_provider=sandbox_provider,
@@ -861,7 +866,7 @@ async def process_benchmark(
                         benchmark_service,
                         benchmark_id,
                         task_id,
-                        aws_runtime,
+                        runtime,
                         org,
                         sandbox_provider_config=sandbox_provider_config,
                         sandbox_provider=sandbox_provider,
@@ -1060,38 +1065,43 @@ async def process_benchmark(
                 task_ids=verified_task_ids,
             )
     finally:
-        authority_current = False
-        if not finalization_deferred:
-            with Session(bind=engine) as session:
-                # Handle any misalignments between the benchmark status and tasks
-                authority_current = catch_errors_during_cleanup(
-                    benchmark_id,
-                    session,
-                    org,
-                    authority=authority,
-                    task_ids=verified_task_ids,
-                )
-
-        if notifier and not finalization_deferred and authority_current:
-            try:
-                async with hold_dispatch_authority(authority) as (notification_session, benchmark_row):
-                    notification_context = NotificationContext.from_benchmark(benchmark_row, notification_session, org)
-                    final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
-                    notification_status = benchmark_row.status
-                    notification_error_message = benchmark_row.error_message
-                    await notifier.send_terminal_notification(
-                        notification_context,
-                        status=notification_status,
-                        final_score=final_score,
-                        error_message=notification_error_message,
+        try:
+            authority_current = False
+            if not finalization_deferred:
+                with Session(bind=engine) as session:
+                    # Handle any misalignments between the benchmark status and tasks
+                    authority_current = catch_errors_during_cleanup(
+                        benchmark_id,
+                        session,
+                        org,
+                        authority=authority,
+                        task_ids=verified_task_ids,
                     )
-            except ExecutionAuthorityRevoked:
-                pass
-            except Exception as notification_error:
-                logger.warning(f"Failed to send terminal notification: {notification_error}")
 
-        if benchmark_service is not None:
-            await benchmark_service.close()
+            if notifier and not finalization_deferred and authority_current:
+                try:
+                    async with hold_dispatch_authority(authority) as (notification_session, benchmark_row):
+                        notification_context = NotificationContext.from_benchmark(
+                            benchmark_row, notification_session, org
+                        )
+                        final_score = (
+                            benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
+                        )
+                        notification_status = benchmark_row.status
+                        notification_error_message = benchmark_row.error_message
+                        await notifier.send_terminal_notification(
+                            notification_context,
+                            status=notification_status,
+                            final_score=final_score,
+                            error_message=notification_error_message,
+                        )
+                except ExecutionAuthorityRevoked:
+                    pass
+                except Exception as notification_error:
+                    logger.warning(f"Failed to send terminal notification: {notification_error}")
+
+        finally:
+            await runtime_stack.aclose()
 
 
 def commit_benchmark_error(

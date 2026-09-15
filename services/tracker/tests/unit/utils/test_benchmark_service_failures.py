@@ -749,9 +749,8 @@ class TestBenchmarkServiceFailures:
         )
         monkeypatch.setattr(run_orchestration_module, "AUTH_REQUIRED", True)
         monkeypatch.setattr(
-            run_orchestration_module,
-            "fetch_sandbox_provider_config",
-            lambda *_args, **_kwargs: pytest.fail("sandbox config resolved before destination validation"),
+            "tracker.utils.resources.fetch_sandbox_provider_config_async",
+            AsyncMock(side_effect=AssertionError("sandbox config resolved before destination validation")),
         )
 
         await process_benchmark(

@@ -39,6 +39,7 @@ from tests.utils import TEST_ORG_ID
 from tracker import config
 from tracker.auth import RequestIdentity
 from tracker.aws.runtime import AWSRuntime
+from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -427,6 +428,7 @@ class TestRunRecovery:
         harness_config: HarnessConfig,
         harness_headers: dict[str, str],
         executor_authority: Any,
+        runtime_services: RuntimeServices,
     ) -> None:
         """Keep an old worker from continuing after force stop and immediate resume.
 
@@ -514,7 +516,7 @@ class TestRunRecovery:
                 benchmark_service,
                 benchmark_row.id,
                 selected_task.task_id,
-                AWSRuntime.from_harness_config(harness_config),
+                runtime_services,
                 self._test_org,
                 sandbox_provider_config=DaytonaProviderConfig(
                     DAYTONA_API_KEY="key",
@@ -1053,6 +1055,7 @@ class TestRunRecovery:
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
         executor_authority: Any,
+        runtime_services: RuntimeServices,
     ) -> None:
         request = StartBenchmarkRequest(
             benchmark_name="vcb",
@@ -1132,7 +1135,7 @@ class TestRunRecovery:
                 benchmark_service,
                 benchmark_row.id,
                 task_row.task_id,
-                AWSRuntime.from_harness_config(harness_config),
+                runtime_services,
                 self._test_org,
                 sandbox_provider_config=sandbox_provider_config,
                 sandbox_provider=cast(SandboxProvider, MockSubsetSandboxProvider([])),
@@ -1159,6 +1162,7 @@ class TestRunRecovery:
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
         executor_authority: Any,
+        runtime_services: RuntimeServices,
     ) -> None:
         request = StartBenchmarkRequest(
             benchmark_name="vcb",
@@ -1216,7 +1220,7 @@ class TestRunRecovery:
                 benchmark_service,
                 benchmark_row.id,
                 task_row.task_id,
-                AWSRuntime.from_harness_config(harness_config),
+                runtime_services,
                 self._test_org,
                 sandbox_provider_config=DaytonaProviderConfig(
                     DAYTONA_API_KEY="key",
@@ -1243,6 +1247,7 @@ class TestRunRecovery:
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
         executor_authority: Any,
+        runtime_services: RuntimeServices,
     ) -> None:
         request = StartBenchmarkRequest(
             benchmark_name="vcb",
@@ -1283,7 +1288,7 @@ class TestRunRecovery:
             cast(BenchmarkServiceClient, service),
             benchmark_row.id,
             task_row.task_id,
-            AWSRuntime.from_harness_config(harness_config),
+            runtime_services,
             self._test_org,
             sandbox_provider_config=cast(DaytonaProviderConfig, object()),
             sandbox_provider=cast(SandboxProvider, object()),

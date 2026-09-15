@@ -3,12 +3,14 @@
 Run: uv run pytest tests/unit/utils/test_task_execution_env.py
 """
 
+import asyncio
 import json
+import threading
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -384,3 +386,40 @@ class TestProcessTaskEnvironment:
 
         assert output_authority_checks == [False]
         assert result == {task_row.task_id: None}
+
+
+@pytest.mark.usefixtures("process_benchmark_env")
+async def test_task_waits_for_final_log_write(
+    contract: AgentContractRequest,
+    database_session: Session,
+    harness_config: HarnessConfig,
+    aws_runtime: AWSRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task completion must not race a buffered write still running in a thread."""
+    request, task, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
+    loop = asyncio.get_running_loop()
+    writing = asyncio.Event()
+    release_write = threading.Event()
+    written: list[str] = []
+
+    async def run_agent(*args: Any, **_kwargs: Any) -> tuple[None, float]:
+        cast(Callable[[str], None], args[4])("final agent message")
+        return None, 0.0
+
+    def write(_self: object, _stream: str, message: str) -> None:
+        loop.call_soon_threadsafe(writing.set)
+        if not release_write.wait(timeout=5):
+            raise TimeoutError("test did not release the log write")
+        written.append(message)
+
+    monkeypatch.setattr(utils_module, "run_agent", run_agent)
+    monkeypatch.setattr("tracker.aws.cloudwatch_logs.CloudWatchBenchmarkLogSink.write", write)
+    execution = asyncio.create_task(run_process_task(request, task, benchmark_id, aws_runtime, authority))
+    try:
+        await asyncio.wait_for(writing.wait(), timeout=2)
+        assert not execution.done()
+    finally:
+        release_write.set()
+        await asyncio.wait_for(execution, timeout=2)
+    assert any("final agent message" in message for message in written)

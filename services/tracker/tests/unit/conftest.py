@@ -24,6 +24,8 @@ from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.database.models import Org
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
+from tracker.aws.runtime import AWSRuntime, CloudRuntimeConfig
+from tracker.runtime.services import RuntimeServices
 from tracker.utils import TaskMonitor
 
 # Set the default AWS credentials before importing modules that create clients.
@@ -33,7 +35,6 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 
 # Import the app after configuring the AWS environment.
 from main import app
-from tracker.aws.runtime import AWSRuntime
 
 
 @pytest.fixture
@@ -199,6 +200,13 @@ def mock_secret_store(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get)
 
+    async def get_async(self: object, name: str) -> object:
+        from tracker.aws.secrets import SecretsManagerStore
+
+        return SecretsManagerStore.get(cast(SecretsManagerStore, self), name)
+
+    monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get_async", get_async)
+
 
 @pytest.fixture(autouse=True)
 def mock_sandbox_operations(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -226,10 +234,14 @@ def mock_kicker(monkeypatch: pytest.MonkeyPatch) -> MockKicker:
 def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Session) -> None:
     """Use deterministic local dependencies for run-orchestration behavior tests."""
 
+    sandbox_count = 0
+
     @asynccontextmanager
     async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
         mock_sandbox = AsyncMock()
-        mock_sandbox.id = "mock-sandbox-id"
+        nonlocal sandbox_count
+        sandbox_count += 1
+        mock_sandbox.id = "mock-sandbox-id" if sandbox_count == 1 else f"mock-sandbox-id-{sandbox_count}"
         yield mock_sandbox
 
     async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
@@ -261,3 +273,12 @@ def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Ses
     monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
     monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+
+@pytest.fixture
+async def runtime_services(aws_runtime: AWSRuntime) -> AsyncGenerator[RuntimeServices, None]:
+    """Compose the task runtime using the shared deterministic AWS configuration."""
+    async with CloudRuntimeConfig(properties=aws_runtime.resources).create_runtime(
+        clients=aws_runtime.clients,
+    ) as runtime:
+        yield runtime
