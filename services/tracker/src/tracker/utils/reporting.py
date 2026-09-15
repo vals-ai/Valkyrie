@@ -8,6 +8,7 @@ import io
 import json
 from collections.abc import AsyncGenerator, Buffer
 from datetime import datetime
+from decimal import Decimal
 from functools import cached_property
 from typing import Any, NamedTuple, Sequence, cast
 from uuid import UUID
@@ -117,6 +118,21 @@ class BenchmarkContext:
         return {TaskStatus(status): count for status, count in result}
 
     @cached_property
+    def _model_api_cost_usd(self) -> Decimal | None:
+        untracked_tasks, total_cost = self._session.exec(
+            select(
+                func.count(col(Task.id)) - func.count(col(Task.model_api_cost_usd)),
+                func.sum(col(Task.model_api_cost_usd)),
+            )
+            .select_from(Task)
+            .where(Task.benchmark == self._benchmark_row.id)
+            .where(Task.org_id == self._org.id)
+        ).one()
+        if untracked_tasks:
+            return None
+        return total_cost if total_cost is not None else Decimal("0")
+
+    @cached_property
     def benchmark_details(self) -> BenchmarkDetails:
         return BenchmarkDetails(
             status=self._status,
@@ -124,6 +140,7 @@ class BenchmarkContext:
             total_tasks=self._task_counts.total_tasks,
             finished_tasks=self._task_counts.finished_tasks,
             task_breakdown=self._task_breakdown,
+            model_api_cost_usd=self._model_api_cost_usd,
             docent_reading_status=self._benchmark_row.docent_reading_status,
             docent_reading_url=self._benchmark_row.docent_reading_url,
         )

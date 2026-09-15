@@ -5,6 +5,7 @@ import subprocess
 import sys
 from collections.abc import Generator
 from datetime import UTC, datetime
+from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic, sleep
@@ -13,8 +14,8 @@ from uuid import uuid4
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import inspect, text
-from sqlmodel import Session, create_engine
+from sqlalchemy import inspect, literal, text
+from sqlmodel import Session, col, create_engine, select, update
 from testcontainers.postgres import PostgresContainer
 
 from tracker.database.models import (
@@ -24,6 +25,7 @@ from tracker.database.models import (
     ExecutorRelease,
     ExecutorReleaseStatus,
     Org,
+    Task,
 )
 
 _TRACKER_ROOT = Path(__file__).resolve().parents[4]
@@ -35,6 +37,8 @@ _PREVIOUS_REVISION = "d8e9f0a1b2c3"
 _MAINTENANCE_REVISION = "f0a1b2c3d4e5"
 _ERROR_RESULT_PROVENANCE_REVISION = "a3f4b5c6d7e8"
 _DISPATCH_LEASE_REVISION = "6a7b8c9d0e1f"
+_MODEL_API_COST_REVISION = "a44de47ddcd0"
+_MODEL_API_COST_PREDECESSOR = _DISPATCH_LEASE_REVISION
 _MIGRATION_ADVISORY_LOCK_ID = 0x56414C4B59524945
 
 
@@ -62,6 +66,86 @@ def test_dispatch_lease_migration_adds_recovery_state(migration_database_url: st
         index["name"] == "ix_executordispatch_status_lease_expires"
         for index in inspector.get_indexes("executordispatch")
     )
+    engine.dispose()
+
+
+def test_model_api_cost_migration_preserves_legacy_task(migration_database_url: str) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", _MODEL_API_COST_PREDECESSOR)
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    org_id = uuid4()
+    benchmark_id = uuid4()
+    task_id = uuid4()
+    started_at = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
+    engine = create_engine(migration_database_url)
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO org (id, name) VALUES (:id, :name)"), {"id": org_id, "name": "legacy"})
+        connection.execute(
+            text(
+                "INSERT INTO benchmark (id, org_id, name, started_at, status) "
+                "VALUES (:id, :org_id, :name, :started_at, 'IN_PROGRESS')"
+            ),
+            {"id": benchmark_id, "org_id": org_id, "name": "legacy-run", "started_at": started_at},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO task (id, org_id, benchmark, task_id, started_at, status) "
+                "VALUES (:id, :org_id, :benchmark, :task_id, :started_at, 'IN_PROGRESS')"
+            ),
+            {
+                "id": task_id,
+                "org_id": org_id,
+                "benchmark": benchmark_id,
+                "task_id": "legacy-task",
+                "started_at": started_at,
+            },
+        )
+    engine.dispose()
+
+    upgrade = _run_alembic(migration_database_url, "upgrade", _MODEL_API_COST_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    engine = create_engine(migration_database_url)
+    cost_columns = {
+        column["name"]: column
+        for column in inspect(engine).get_columns("task")
+        if column["name"].startswith("model_api_cost_")
+    }
+    assert set(cost_columns) == {
+        "model_api_cost_usd",
+    }
+    assert all(column["nullable"] for column in cost_columns.values())
+    with engine.connect() as connection:
+        legacy_cost = connection.execute(
+            text("SELECT model_api_cost_usd FROM task WHERE id = :id"),
+            {"id": task_id},
+        ).one()
+    assert legacy_cost == (None,)
+    # PostgreSQL must add beyond Python's default 28-digit Decimal precision exactly.
+    with Session(engine) as session:
+        session.exec(
+            update(Task)
+            .where(col(Task.id) == task_id)
+            .values(
+                model_api_cost_usd=literal(Decimal("1.12345678901234567890123456789"))
+                + Decimal("0.00000000000000000000000000001")
+            )
+        )
+        assert session.exec(select(col(Task.model_api_cost_usd)).where(col(Task.id) == task_id)).one() == Decimal(
+            "1.12345678901234567890123456790"
+        )
+        session.commit()
+    engine.dispose()
+
+    downgrade = _run_alembic(migration_database_url, "downgrade", _MODEL_API_COST_PREDECESSOR)
+    assert downgrade.returncode == 0, downgrade.stderr
+
+    engine = create_engine(migration_database_url)
+    task_columns = {column["name"] for column in inspect(engine).get_columns("task")}
+    assert task_columns.isdisjoint(cost_columns)
+    with engine.connect() as connection:
+        preserved_task_id = connection.execute(text("SELECT id FROM task WHERE id = :id"), {"id": task_id}).scalar_one()
+    assert preserved_task_id == task_id
     engine.dispose()
 
 

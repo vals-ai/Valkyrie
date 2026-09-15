@@ -10,6 +10,7 @@ from collections.abc import Coroutine
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from enum import Enum
 from types import TracebackType
 from typing import Any, cast
@@ -27,6 +28,7 @@ from benchmark_service import (
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceStreamError
 from pydantic import ValidationError
+from sqlalchemy import ColumnElement, literal
 from sqlalchemy.engine import Connection
 from sqlmodel import Session, col, select, update
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
@@ -120,6 +122,34 @@ def _normalized_attempt_time(value: datetime) -> datetime:
 
 def _exception_message(exc: BaseException) -> str:
     return str(exc).strip() or type(exc).__name__
+
+
+class _StaleTaskAttempt(Exception):
+    """Stop a superseded task worker before it launches an agent command."""
+
+
+def _set_model_api_cost(
+    task: Task,
+    expected_started_at: datetime,
+    authority: ExecutionAuthority,
+    amount: ColumnElement[Decimal] | None = None,
+) -> Decimal | None:
+    """Replace a current attempt's total, returning its previous value under lock."""
+    with Session(bind=engine) as session:
+        lock_execution_authority(session, authority)
+        conditions = (
+            col(Task.id) == task.id,
+            col(Task.org_id) == task.org_id,
+            col(Task.benchmark) == authority.benchmark_id,
+            col(Task.status) == TaskStatus.IN_PROGRESS,
+            col(Task.started_at) == expected_started_at,
+        )
+        previous = session.exec(select(col(Task.model_api_cost_usd)).where(*conditions).with_for_update()).first()
+        result = session.exec(update(Task).where(*conditions).values(model_api_cost_usd=amount))
+        if result.rowcount == 0:
+            raise _StaleTaskAttempt
+        session.commit()
+        return previous
 
 
 def _record_failure_before_retry(
@@ -755,6 +785,21 @@ async def _process_task_attempt(
             task_session.rollback()
             return is_current
 
+    previous_model_api_cost: Decimal | None = None
+
+    async def begin_model_api_cost_attempt() -> None:
+        nonlocal previous_model_api_cost
+        # Persist unknown before dispatch so crashes and missing reports cannot undercount.
+        try:
+            previous_model_api_cost = _set_model_api_cost(task_row, attempt_started_at, authority)
+        except ExecutionAuthorityRevoked as error:
+            raise _StaleTaskAttempt from error
+
+    async def record_model_api_cost_report(amount_usd: Decimal) -> None:
+        if previous_model_api_cost is not None:
+            # Add in PostgreSQL to preserve decimal precision independently of Python's context.
+            _set_model_api_cost(task_row, attempt_started_at, authority, literal(previous_model_api_cost) + amount_usd)
+
     def task_is_stopped() -> bool:
         return not execution_is_current()
 
@@ -1159,7 +1204,11 @@ async def _process_task_attempt(
                         runtime_source=task_data.source,
                         dependency_setup_mode=dependency_setup_recovery.mode,
                         execution_is_current=execution_is_current,
+                        on_agent_start=begin_model_api_cost_attempt,
+                        on_model_api_cost=record_model_api_cost_report,
                     )
+                except _StaleTaskAttempt:
+                    return {task_id: None}
                 except DependencySetupExhaustedError:
                     dependency_setup_recovery.mode = DependencySetupMode.FINAL_FRESH_SANDBOX
                     raise

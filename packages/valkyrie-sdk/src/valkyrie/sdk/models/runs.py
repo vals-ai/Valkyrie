@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
@@ -122,6 +123,7 @@ class BenchmarkDetails(ResponseModel):
     total_tasks: int
     finished_tasks: int
     task_breakdown: dict[TaskStatus, int]
+    model_api_cost_usd: Decimal | None = None
     docent_reading_status: DocentReadingStatus
     docent_reading_url: str | None = None
 
