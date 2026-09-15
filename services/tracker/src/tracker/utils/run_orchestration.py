@@ -750,6 +750,9 @@ async def process_benchmark(
             harness_config = cast(HarnessConfig, start_benchmark_request.harness_config)
             aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
+        aws_runtime = aws_runtime.with_resources(
+            start_benchmark_request.properties or benchmark_row.arguments.properties
+        )
         runtime_arguments = benchmark_row.arguments.model_copy(
             update={
                 "sandbox_provider": start_benchmark_request.sandbox_provider,

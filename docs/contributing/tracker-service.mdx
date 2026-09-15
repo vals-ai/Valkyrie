@@ -7,6 +7,14 @@ The tracker is the FastAPI backend. It serves the CLI and SDK API, tracks run an
 
 Local Docker Compose starts the tracker, PostgreSQL, and Redis only. It does not run ExecutorHost or create an active executor release, so a locally started run never executes. Use a deployed environment to run benchmarks.
 
+## Runtime services
+
+`CloudRuntimeConfig.create_runtime()` composes the existing AWS storage, secret, and log adapters. API dependencies keep services alive for the request. Executors open a separate runtime and create sandbox providers on first use. Task cleanup waits for pending log writes before the executor closes its provider.
+
+Run requests default to `environment: "aws"`; AWS is currently the only supported environment. Optional `properties` contains `region`, `s3_bucket`, `log_group`, and `log_retention_days`. New runs save the resolved resource settings with their arguments. Retry, resume, and artifact reads reuse those settings with freshly resolved AWS credentials. Managed submissions cannot override deployment resources. Caller-credential submissions may supply resource properties separately from the legacy harness configuration.
+
+Older runs without properties retain legacy resource resolution. Do not infer their original bucket or region from today's defaults.
+
 ## Benchmark-service authentication
 
 The tracker forwards its inbound Descope API key only when the benchmark-service origin matches the hosted origin derived from the benchmark name and tracker configuration. A custom origin never receives that key. Custom services authenticate with explicit headers or a stored service secret instead. See [Benchmark authentication](/benchmarks/authentication).
@@ -96,3 +104,9 @@ make migrate-gen   # Generate a migration from model changes
 ```
 
 See [Database and migrations](/contributing/database) for the full guide.
+
+### Runtime configuration rollout
+
+Stop admission of starts, retries, and resumes. Stop and drain active runs before deploying Tracker and a compatible executor release. Activate that release, verify a new run and a stopped-run resume, then reopen admission.
+
+The new fields use the existing arguments JSON column; no database column migration is required. Older executors reject the new argument fields. Do not roll back to those executors after new-format arguments have been saved without converting the affected records and preserving their resource settings.

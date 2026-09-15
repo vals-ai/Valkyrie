@@ -380,3 +380,80 @@ def test_managed_results_report_capped_presign_expiry(
     assert response.status_code == 200
     assert response.json()["expires_in"] == 3600
     observed_expiration.assert_called_once_with(3600)
+
+
+@pytest.mark.parametrize("aws_managed", [False, True])
+def test_saved_resources_survive_new_defaults_and_refreshed_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_managed: bool,
+) -> None:
+    """Resume uses the saved region and locations with the current credential source."""
+    _configure_managed_runtime(monkeypatch)
+    request = _request(None if aws_managed else _COMPLETE_HARNESS_HEADERS)
+    original = resolve_run_aws_runtime(request, aws_managed=aws_managed, org_id=_ORG_ID)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "new-deployment-region")
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "new-deployment-bucket")
+    refreshed_headers = {
+        **_COMPLETE_HARNESS_HEADERS,
+        "x-harness-aws-access-key-id": "refreshed-test-key",
+        "x-harness-aws-default-region": "new-header-region",
+        "x-harness-s3-bucket": "new-header-bucket",
+    }
+    resumed = resolve_run_aws_runtime(
+        _request(None if aws_managed else refreshed_headers),
+        aws_managed=aws_managed,
+        org_id=_ORG_ID,
+        properties=original.resources,
+    )
+
+    assert resumed.resources == original.resources
+    if aws_managed:
+        assert isinstance(resumed.clients, DefaultChainAWSClientProvider)
+        assert resumed.clients.region == original.resources.region
+    else:
+        assert isinstance(resumed.clients, ExplicitCredentialsAWSClientProvider)
+        assert resumed.clients.credentials.aws_access_key_id == "refreshed-test-key"
+        assert resumed.clients.credentials.aws_default_region == original.resources.region
+
+
+def test_managed_start_cannot_override_deployment_resources(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resource properties cannot give managed callers a different deployment bucket."""
+    from dataclasses import replace
+
+    _configure_managed_runtime(monkeypatch)
+    original = resolve_start_aws_runtime(_request(), None, _ORG_ID)
+    with pytest.raises(HTTPException) as error:
+        resolve_start_aws_runtime(_request(), None, _ORG_ID, replace(original.runtime.resources, s3_bucket="other"))
+    assert error.value.status_code == 400
+
+
+def test_local_start_is_rejected_before_aws_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The AWS-only stack must not silently accept local execution."""
+    resolve = MagicMock(side_effect=AssertionError("AWS resolution should not run"))
+    monkeypatch.setattr("main.resolve_start_aws_runtime", resolve)
+    response = TestClient(app).post(
+        "/start-benchmark",
+        json={"environment": "local", "benchmark_name": "test", "contract": {"name": "agent", "run_cmd": "run"}},
+    )
+    assert response.status_code == 422
+    resolve.assert_not_called()
+
+
+@pytest.mark.parametrize("invalid_property", [{"region": ""}, {"s3_bucket": ""}, {"log_retention_days": 0}])
+def test_start_rejects_invalid_resource_properties(invalid_property: dict[str, object]) -> None:
+    """Reject unusable resource settings before admitting a run."""
+    response = TestClient(app).post(
+        "/start-benchmark",
+        json={
+            "benchmark_name": "test",
+            "contract": {"name": "agent", "run_cmd": "run"},
+            "properties": {
+                "region": "us-east-1",
+                "s3_bucket": "bucket",
+                "log_group": "logs",
+                "log_retention_days": 30,
+                **invalid_property,
+            },
+        },
+    )
+    assert response.status_code == 422

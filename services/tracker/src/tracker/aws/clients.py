@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, cast
 
@@ -26,6 +26,11 @@ def _boto3_client(service_name: str, **kwargs: Any) -> Any:
 
 class AWSClientProvider(ABC):
     """Construct AWS service clients for one authentication source."""
+
+    @abstractmethod
+    def with_region(self, region: str) -> "AWSClientProvider":
+        """Select a resource region while retaining this authentication source."""
+        raise NotImplementedError
 
     @abstractmethod
     def _client_kwargs(self) -> dict[str, Any]:
@@ -71,6 +76,9 @@ class ExplicitCredentialsAWSClientProvider(AWSClientProvider):
 
     credentials: AWSCredentials = field(repr=False)
 
+    def with_region(self, region: str) -> AWSClientProvider:
+        return replace(self, credentials=self.credentials.model_copy(update={"aws_default_region": region}))
+
     def _client_kwargs(self) -> dict[str, Any]:
         return {
             "aws_access_key_id": self.credentials.aws_access_key_id,
@@ -85,6 +93,9 @@ class DefaultChainAWSClientProvider(AWSClientProvider):
     """Construct AWS clients through the SDK default credential chain."""
 
     region: str
+
+    def with_region(self, region: str) -> AWSClientProvider:
+        return replace(self, region=region)
 
     def _client_kwargs(self) -> dict[str, Any]:
         return {"region_name": self.region}
