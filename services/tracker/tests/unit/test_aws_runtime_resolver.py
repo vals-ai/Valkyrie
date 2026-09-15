@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 from typing import Any, Literal, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
@@ -337,19 +337,17 @@ def test_agent_list_uses_deployment_runtime_for_eligible_org(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_managed_runtime(monkeypatch, submissions_enabled=False)
-    captured_runtime: AWSRuntime | None = None
+    from tracker.aws.s3 import S3ObjectStore
 
-    async def list_agents(runtime: AWSRuntime) -> list[object]:
-        nonlocal captured_runtime
-        captured_runtime = runtime
-        return []
-
-    monkeypatch.setattr("tracker.api.agents.list_agents", list_agents)
+    create_store = MagicMock(wraps=S3ObjectStore)
+    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore", create_store)
+    monkeypatch.setattr("tracker.api.agents.list_agents", AsyncMock(return_value=[]))
     response = TestClient(app).get("/agents")
 
     assert response.status_code == 200
-    assert captured_runtime is not None
-    assert captured_runtime.resources.s3_bucket == "deployment-bucket"
+    create_store.assert_called_once()
+    runtime = cast(AWSRuntime, create_store.call_args.args[0])
+    assert runtime.resources.s3_bucket == "deployment-bucket"
 
 
 def test_managed_results_report_capped_presign_expiry(

@@ -18,9 +18,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from tracker import config
 from tracker.agent.archive import ArchiveLimitError, validate_agent_archive
 from tracker.agent.schemas import validate_agent_name
-from tracker.api.dependencies import get_agent_library_aws_runtime
+from tracker.api.dependencies import AgentLibraryRuntimeDependency, get_agent_library_aws_runtime
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import create_presigned_url, delete_from_s3, list_agents, s3_object_exists, upload_stream_to_s3
+from tracker.runtime.artifacts import list_agents
 from tracker.exceptions import S3Error
 from tracker.types import AgentDownloadURLResponse, AgentEntry, AgentsResponse
 
@@ -63,11 +63,11 @@ async def _file_chunks(stream: BinaryIO) -> AsyncIterator[bytes]:
 
 @router.get("", response_model=AgentsResponse)
 async def list_agents_endpoint(
-    aws_runtime: AWSRuntime = Depends(get_agent_library_aws_runtime),
+    runtime: AgentLibraryRuntimeDependency,
 ) -> AgentsResponse:
     """List agent zips in the configured shared library."""
     with _storage_errors():
-        agents = await list_agents(aws_runtime)
+        agents = await list_agents(runtime.objects)
 
     return AgentsResponse(
         agents=[
@@ -80,15 +80,16 @@ async def list_agents_endpoint(
 @router.get("/{name}/download-url", response_model=AgentDownloadURLResponse)
 async def get_agent_download_url(
     name: str,
+    runtime: AgentLibraryRuntimeDependency,
     aws_runtime: AWSRuntime = Depends(get_agent_library_aws_runtime),
 ) -> AgentDownloadURLResponse:
     """Return a 5-minute presigned URL to download agents/<name>.zip."""
     key = _agent_key(name)
     with _storage_errors():
-        if not await s3_object_exists(key, aws_runtime):
+        if not await runtime.objects.exists(key):
             raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")
         expires_in = aws_runtime.clients.maximum_presign_ttl(PRESIGNED_URL_EXPIRES_SECONDS)
-        url = await create_presigned_url(key, aws_runtime, expiration=expires_in)
+        url = await runtime.objects.temporary_download_url(key, expires_in=expires_in)
 
     return AgentDownloadURLResponse(name=name, download_url=url, expires_in=expires_in)
 
@@ -115,7 +116,7 @@ async def get_agent_download_url(
 async def push_agent_endpoint(
     name: str,
     request: Request,
-    aws_runtime: AWSRuntime = Depends(get_agent_library_aws_runtime),
+    runtime: AgentLibraryRuntimeDependency,
 ) -> AgentEntry:
     """Validate and upload a ZIP, replacing agents/<name>.zip if it exists."""
     key = _agent_key(name)
@@ -153,7 +154,7 @@ async def push_agent_endpoint(
         ) as error:
             raise HTTPException(status_code=400, detail="Invalid agent archive or contract") from error
         with _storage_errors():
-            await upload_stream_to_s3(_file_chunks(stream), key, aws_runtime)
+            await runtime.objects.put_stream(key, _file_chunks(stream))
 
     return AgentEntry(name=name)
 
@@ -165,13 +166,13 @@ async def push_agent_endpoint(
 )
 async def remove_agent_endpoint(
     name: str,
-    aws_runtime: AWSRuntime = Depends(get_agent_library_aws_runtime),
+    runtime: AgentLibraryRuntimeDependency,
 ) -> AgentEntry:
     """Remove an existing ZIP from the configured shared agent library."""
     key = _agent_key(name)
     with _storage_errors():
-        if not await s3_object_exists(key, aws_runtime):
+        if not await runtime.objects.exists(key):
             raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")
-        await delete_from_s3(key, aws_runtime)
+        await runtime.objects.delete(key)
 
     return AgentEntry(name=name)

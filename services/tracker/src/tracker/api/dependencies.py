@@ -1,5 +1,6 @@
 """Shared API dependencies."""
 
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
@@ -9,14 +10,14 @@ from opentelemetry import trace
 from sqlmodel import Session, select
 
 from tracker.auth import get_current_org
-from tracker.aws.cloudwatch_logs import CloudWatchLogProvider
 from tracker.aws.resolver import resolve_agent_library_aws_runtime, resolve_run_aws_runtime
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.runtime import AWSRuntime, CloudRuntimeConfig
 from tracker.database.models import Benchmark, Org, Task
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.logging import benchmark_id_var
 from tracker.runtime.logs import LogProvider
+from tracker.runtime.services import RuntimeServices
 
 
 async def bind_benchmark_id(benchmark_id: UUID) -> UUID:
@@ -67,6 +68,32 @@ def get_run_aws_context(
 RunAWSDependency = Annotated[RunAWSContext, Depends(get_run_aws_context)]
 
 
+async def get_run_runtime(run_context: RunAWSDependency) -> AsyncGenerator[RuntimeServices]:
+    """Keep services alive for one authorized run operation."""
+    aws_runtime = run_context.aws_runtime
+    config = CloudRuntimeConfig(properties=aws_runtime.resources)
+    async with config.create_runtime(
+        clients=aws_runtime.clients,
+        arguments=run_context.benchmark.arguments,
+    ) as runtime:
+        yield runtime
+
+
+RunRuntimeDependency = Annotated[RuntimeServices, Depends(get_run_runtime)]
+
+
+async def get_agent_library_runtime(
+    aws_runtime: Annotated[AWSRuntime, Depends(get_agent_library_aws_runtime)],
+) -> AsyncGenerator[RuntimeServices]:
+    """Open agent storage without constructing sandbox access."""
+    config = CloudRuntimeConfig(properties=aws_runtime.resources)
+    async with config.create_runtime(clients=aws_runtime.clients) as runtime:
+        yield runtime
+
+
+AgentLibraryRuntimeDependency = Annotated[RuntimeServices, Depends(get_agent_library_runtime)]
+
+
 def load_task_for_benchmark_or_404(benchmark: Benchmark, task_id: str, org: Org, session: Session) -> Task:
     """Return a task from an already organization-scoped benchmark."""
     task = session.exec(
@@ -77,10 +104,9 @@ def load_task_for_benchmark_or_404(benchmark: Benchmark, task_id: str, org: Org,
     return task
 
 
-def get_log_provider(run_context: RunAWSDependency) -> LogProvider:
+def get_log_provider(runtime: RunRuntimeDependency) -> LogProvider:
     """Construct the log reader for an organization-scoped run."""
-    runtime = run_context.aws_runtime
-    return CloudWatchLogProvider(runtime.clients, runtime.resources.log_group)
+    return runtime.log_reader
 
 
 LogProviderDependency = Annotated[LogProvider, Depends(get_log_provider)]
