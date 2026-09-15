@@ -303,6 +303,40 @@ async def test_download_outputs_extracts_nested_archives(
             assert not (tmp_path / "limited").exists()
 
 
+@pytest.mark.parametrize("path", ["task/result.json", "task:one/result.json", "../escape", "task/../../escape"])
+async def test_artifact_download_validates_paths_and_omits_credentials(
+    make_client, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, path: str
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("download-url"):
+            return httpx.Response(
+                200, json={"path": path, "download_url": "https://download.test/file", "expires_in": 300, "size": 2}
+            )
+        return httpx.Response(200, json={"artifacts": [{"path": path, "size": 2}]})
+
+    async def download(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "download.test"
+        assert not any(name.lower().startswith("x-") for name in request.headers)
+        assert "authorization" not in request.headers
+        return httpx.Response(200, content=b"{}")
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", download)
+    destination = tmp_path / "outputs"
+    async with make_client(handler) as client:
+        if ".." in path:
+            with pytest.raises(ValueError, match="relative"):
+                await client.artifacts.download(uuid4(), destination)
+            assert not destination.exists()
+        else:
+            result = await client.artifacts.download(uuid4(), destination, path=path.split("/")[0])
+            assert (result / path).read_bytes() == b"{}"
+            with pytest.raises(FileExistsError):
+                await client.artifacts.download(uuid4(), destination)
+            with pytest.raises(ValueError, match="limits"):
+                await client.artifacts.download(uuid4(), tmp_path / "limited", max_bytes=1)
+            assert not (tmp_path / "limited").exists()
+
+
 async def test_task_iteration_continues_when_tasks_move_between_pages(make_client) -> None:
     """A task moving to a later page must not hide the remaining tasks."""
     first, second, third = uuid4(), uuid4(), uuid4()
@@ -433,3 +467,15 @@ async def test_cancelled_output_download_preserves_other_callers_destination(mak
 
     assert (destination / "unrelated.txt").read_text() == "another caller"
     assert list(tmp_path.iterdir()) == [destination]
+
+
+async def test_windows_artifact_download_rejects_colons_before_writing(make_client, monkeypatch, tmp_path):
+    from valkyrie.sdk.resources import artifacts
+
+    monkeypatch.setattr(artifacts.sys, "platform", "win32")
+    async with make_client(
+        lambda request: httpx.Response(200, json={"artifacts": [{"path": "task:one/result.json", "size": 2}]})
+    ) as client:
+        with pytest.raises(ValueError, match="Windows filenames"):
+            await client.artifacts.download(uuid4(), tmp_path / "outputs")
+    assert not (tmp_path / "outputs").exists()

@@ -28,6 +28,10 @@
     "destination": "/reference/cli/run#logs"
   },
   {
+    "source": "/reference/cli/run/artifacts",
+    "destination": "/reference/cli/run#artifacts"
+  },
+  {
     "source": "/reference/cli/run/output",
     "destination": "/reference/cli/run#output"
   },
@@ -154,6 +158,18 @@
   {
     "source": "/reference/cli/queue/status",
     "destination": "/reference/cli/queue#status"
+  },
+  {
+    "source": "/reference/sdk/artifacts/list",
+    "destination": "/reference/sdk/artifacts#list"
+  },
+  {
+    "source": "/reference/sdk/artifacts/download_url",
+    "destination": "/reference/sdk/artifacts#download-url"
+  },
+  {
+    "source": "/reference/sdk/artifacts/download",
+    "destination": "/reference/sdk/artifacts#download"
   },
   {
     "source": "/reference/sdk/runs/start",
@@ -306,6 +322,18 @@
   {
     "source": "/reference/sdk/scheduler/overview",
     "destination": "/reference/sdk/scheduler#overview"
+  },
+  {
+    "source": "/reference/sdk/models/artifacts/run-artifact-entry",
+    "destination": "/reference/sdk/models/artifacts#run-artifact-entry"
+  },
+  {
+    "source": "/reference/sdk/models/artifacts/run-artifacts-response",
+    "destination": "/reference/sdk/models/artifacts#run-artifacts-response"
+  },
+  {
+    "source": "/reference/sdk/models/artifacts/run-artifact-download-response",
+    "destination": "/reference/sdk/models/artifacts#run-artifact-download-response"
   },
   {
     "source": "/reference/sdk/models/agents/agent-contract-request",

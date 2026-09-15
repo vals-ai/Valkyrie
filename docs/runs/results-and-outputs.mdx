@@ -54,3 +54,13 @@ The output directory defaults to `./<run-id>`.
 ## Download outputs from Python
 
 Use `await client.runs.download_outputs(run_id, "./outputs", task_ids=["task-id"])` to download and unpack run outputs, including nested task tarballs. Omit `task_ids` for the entire run. Choose a new output directory; existing directories are refused. Downloads and extraction enforce [configurable size and entry limits](/reference/sdk/runs#download-outputs) and reject links or unsafe archive paths.
+
+## Download a specific artifact path
+
+Use `valkyrie run artifacts <run_id> --format json` to list one page of available paths. Continue with the returned `next_cursor` using `--cursor`.
+
+`valkyrie run output <run_id> task-id -o ./artifacts` downloads that task's stored files through Tracker. Pass a complete relative file path to download one file. Paths remain relative to the run inside the destination, which must be a new directory.
+
+Python callers can inspect a page with `await client.artifacts.list(run_id, prefix="task-id")`, request an individual temporary URL with `await client.artifacts.download_url(run_id, "task-id/result.json")`, or download a path with `await client.artifacts.download(run_id, "./artifacts", path="task-id")`. See the [artifact SDK reference](/reference/sdk/artifacts) for limits and pagination.
+
+Hosted runs use the deployment's storage permissions. Legacy runs started with caller-supplied AWS credentials still require that configuration. Tracker checks access to the run before listing or signing an artifact.
