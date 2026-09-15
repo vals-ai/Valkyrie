@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 from benchmark_service import SandboxProvider, SandboxProviderConfig
 
 from tracker.exceptions import InvalidSandboxConfigurationError, TrackerServiceError
+from tracker.runtime.lifecycle import finish_cleanup
 from tracker.runtime.logs import BenchmarkLogLocations, BenchmarkLogSink, LogProvider
 from tracker.runtime.secrets import AsyncSecretStore, SecretStore, fetch_sandbox_provider_config_async, resolve_secrets
-from tracker.runtime.lifecycle import finish_cleanup
 from tracker.runtime.storage import ArtifactLocations, ObjectStore
 
 

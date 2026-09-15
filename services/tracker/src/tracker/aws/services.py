@@ -2,26 +2,26 @@
 
 from asyncio import to_thread
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
-from uuid import UUID
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel
 
-from tracker.aws.clients import AWSClientProvider
-from tracker.aws.runtime import AWSResources, AWSRuntime
-from tracker.aws.resolver import deployment_aws_runtime
 from tracker._lambda import dry_run_lambda
-from tracker.types import StartBenchmarkRequest
+from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import (
     CloudWatchBenchmarkLogLocations,
     CloudWatchBenchmarkLogSink,
     CloudWatchLogProvider,
 )
+from tracker.aws.resolver import deployment_aws_runtime
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.s3 import S3ArtifactLocations, S3ObjectStore
 from tracker.aws.secrets import SecretsManagerStore
 from tracker.runtime.services import RuntimeServices
+from tracker.types import StartBenchmarkRequest
 
 
 @dataclass(kw_only=True)
@@ -49,7 +49,7 @@ class CloudRuntimeServices(RuntimeServices):
 
 
 class CloudRuntimeConfig(BaseModel):
-    """Non-secret configuration for services using resolved AWS authority."""
+    """Non-secret configuration for AWS runtime services."""
 
     environment: Literal["aws"] = "aws"
     properties: AWSResources
