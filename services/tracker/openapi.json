@@ -72,6 +72,7 @@
       "AWSResources": {
         "properties": {
           "log_group": {
+            "minLength": 1,
             "title": "Log Group",
             "type": "string"
           },

@@ -43,6 +43,17 @@ class AWSRuntimeResolution:
         """Return whether deployment-managed AWS authority was selected."""
         return self.access_key_harness_config is None
 
+    def with_submission_properties(self, properties: AWSResources | None) -> "AWSRuntimeResolution":
+        """Apply caller resources while keeping managed submissions on deployment resources."""
+        if properties is None:
+            return self
+        if self.aws_managed and properties != self.runtime.resources:
+            raise HTTPException(
+                status_code=400, detail="Managed run properties must match the deployment AWS resources"
+            )
+
+        return AWSRuntimeResolution(self.runtime.with_resources(properties), self.access_key_harness_config)
+
 
 @dataclass(frozen=True)
 class HarnessHeaderInspection:
@@ -191,23 +202,23 @@ def organization_can_use_managed_aws(org_id: UUID) -> bool:
     return org_id in _eligible_org_ids()
 
 
-def deployment_aws_runtime(org_id: UUID) -> AWSRuntime:
+def deployment_aws_runtime(org_id: UUID, properties: AWSResources | None = None) -> AWSRuntime:
     """Build a default-chain runtime for an eligible organization."""
     if not organization_can_use_managed_aws(org_id):
         raise ManagedAWSEligibilityError(
             "Managed AWS access is not available for this organization. Configure AWS access keys and try again."
         )
-    resources = _managed_resources()
+    resources = properties or _managed_resources()
     return AWSRuntime(
         resources=resources,
         clients=DefaultChainAWSClientProvider(resources.region),
     )
 
 
-def _http_deployment_runtime(org_id: UUID) -> AWSRuntime:
+def _http_deployment_runtime(org_id: UUID, properties: AWSResources | None = None) -> AWSRuntime:
     """Translate managed-runtime configuration failures into HTTP errors."""
     try:
-        return deployment_aws_runtime(org_id)
+        return deployment_aws_runtime(org_id, properties)
     except ManagedAWSEligibilityError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ManagedAWSConfigurationError as exc:
@@ -224,19 +235,15 @@ def resolve_start_aws_runtime(
     harness_config = resolve_start_harness_config(request, body_config)
     if harness_config is not None:
         return AWSRuntimeResolution(
-            AWSRuntime.from_harness_config(harness_config).with_resources(properties), harness_config
-        )
+            AWSRuntime.from_harness_config(harness_config), harness_config
+        ).with_submission_properties(properties)
     if not config.AWS_MANAGED_SUBMISSIONS_ENABLED:
         raise HTTPException(
             status_code=503,
             detail="Managed AWS submissions are temporarily unavailable. Configure AWS access keys and try again.",
         )
 
-    runtime = _http_deployment_runtime(org_id)
-    if properties is not None and properties != runtime.resources:
-        raise HTTPException(status_code=400, detail="Managed run properties must match the deployment AWS resources")
-
-    return AWSRuntimeResolution(runtime, None)
+    return AWSRuntimeResolution(_http_deployment_runtime(org_id), None).with_submission_properties(properties)
 
 
 def resolve_run_aws_runtime(
@@ -264,7 +271,7 @@ def resolve_run_aws_runtime_and_access_key_config(
 ) -> AWSRuntimeResolution:
     """Resolve AWS authority and retain any access-key harness configuration."""
     if aws_managed:
-        return AWSRuntimeResolution(_http_deployment_runtime(org_id).with_resources(properties), None)
+        return AWSRuntimeResolution(_http_deployment_runtime(org_id, properties), None)
 
     header_inspection = inspect_harness_headers(request)
     if not header_inspection.present:
@@ -291,7 +298,7 @@ def resolve_run_metadata_aws_runtime(
 ) -> AWSRuntime | None:
     """Resolve AWS authority when access-key metadata links may be omitted."""
     if aws_managed:
-        return _http_deployment_runtime(org_id).with_resources(properties)
+        return _http_deployment_runtime(org_id, properties)
 
     harness_config = try_fetch_harness_config(request)
     if harness_config is None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, cast
 
@@ -77,7 +77,7 @@ class ExplicitCredentialsAWSClientProvider(AWSClientProvider):
     credentials: AWSCredentials = field(repr=False)
 
     def with_region(self, region: str) -> AWSClientProvider:
-        return replace(self, credentials=self.credentials.model_copy(update={"aws_default_region": region}))
+        return ExplicitCredentialsAWSClientProvider(self.credentials.model_copy(update={"aws_default_region": region}))
 
     def _client_kwargs(self) -> dict[str, Any]:
         return {
@@ -95,7 +95,7 @@ class DefaultChainAWSClientProvider(AWSClientProvider):
     region: str
 
     def with_region(self, region: str) -> AWSClientProvider:
-        return replace(self, region=region)
+        return DefaultChainAWSClientProvider(region)
 
     def _client_kwargs(self) -> dict[str, Any]:
         return {"region_name": self.region}

@@ -15,7 +15,7 @@ from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.resolver import ManagedAWSEligibilityError
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.services import CloudRuntimeConfig
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org
 from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmarkRequest
@@ -286,7 +286,7 @@ async def test_ineligible_managed_execution_marks_run_error(
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
     spans: list[tuple[str, dict[str, Any]]] = []
 
-    def reject_managed_runtime(_org_id: UUID) -> AWSRuntime:
+    def reject_managed_runtime(_org_id: UUID, properties: AWSResources | None = None) -> AWSRuntime:
         raise ManagedAWSEligibilityError("Managed AWS access is not available for this organization")
 
     def record_span(name: str, **attributes: Any) -> MagicMock:
@@ -325,7 +325,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     spans: list[tuple[str, dict[str, Any]]] = []
     provider_config = cast(SandboxProviderConfig, MagicMock(create_provider=MagicMock(return_value=AsyncMock())))
 
-    def deployment_runtime(_org_id: UUID) -> AWSRuntime:
+    def deployment_runtime(_org_id: UUID, properties: AWSResources | None = None) -> AWSRuntime:
         return aws_runtime
 
     def create_log_group(_self: object, _benchmark_id: str, *, retention_days: int) -> None:
@@ -453,7 +453,7 @@ async def test_managed_preflight_failure_happens_before_sandbox(
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
     create_sandbox = AsyncMock()
 
-    def deployment_runtime(_org_id: UUID) -> AWSRuntime:
+    def deployment_runtime(_org_id: UUID, properties: AWSResources | None = None) -> AWSRuntime:
         return aws_runtime
 
     def fail_log_preflight(*_args: Any, **_kwargs: Any) -> str:

@@ -95,12 +95,12 @@ class CloudRuntimeConfig(BaseModel):
         properties: AWSResources | None = None,
     ) -> AsyncGenerator[CloudRuntimeServices]:
         """Select AWS access and keep execution services alive for one dispatch."""
+        properties = request.properties or properties
         aws_runtime = (
-            deployment_aws_runtime(org_id)
+            deployment_aws_runtime(org_id, properties)
             if request.harness_config is None
-            else AWSRuntime.from_harness_config(request.harness_config)
+            else AWSRuntime.from_harness_config(request.harness_config).with_resources(properties)
         )
-        aws_runtime = aws_runtime.with_resources(request.properties or properties)
         config = cls(properties=aws_runtime.resources)
 
         async with config.create_runtime(

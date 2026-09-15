@@ -383,9 +383,11 @@ def test_managed_results_report_capped_presign_expiry(
 
 
 @pytest.mark.parametrize("aws_managed", [False, True])
+@pytest.mark.parametrize("remove_defaults", [False, True])
 def test_saved_resources_survive_new_defaults_and_refreshed_credentials(
     monkeypatch: pytest.MonkeyPatch,
     aws_managed: bool,
+    remove_defaults: bool,
 ) -> None:
     """Resume uses the saved region and locations with the current credential source."""
     _configure_managed_runtime(monkeypatch)
@@ -393,6 +395,15 @@ def test_saved_resources_survive_new_defaults_and_refreshed_credentials(
     original = resolve_run_aws_runtime(request, aws_managed=aws_managed, org_id=_ORG_ID)
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "new-deployment-region")
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "new-deployment-bucket")
+    if remove_defaults:
+        for setting in (
+            "AWS_DEPLOYMENT_REGION",
+            "AWS_DEPLOYMENT_S3_BUCKET",
+            "AWS_DEPLOYMENT_LOG_GROUP",
+            "AWS_DEPLOYMENT_LOG_RETENTION_DAYS",
+        ):
+            monkeypatch.setattr(config, setting, None)
+
     refreshed_headers = {
         **_COMPLETE_HARNESS_HEADERS,
         "x-harness-aws-access-key-id": "refreshed-test-key",
@@ -439,7 +450,9 @@ def test_local_start_is_rejected_before_aws_resolution(monkeypatch: pytest.Monke
     resolve.assert_not_called()
 
 
-@pytest.mark.parametrize("invalid_property", [{"region": ""}, {"s3_bucket": ""}, {"log_retention_days": 0}])
+@pytest.mark.parametrize(
+    "invalid_property", [{"region": ""}, {"s3_bucket": ""}, {"log_group": ""}, {"log_retention_days": 0}]
+)
 def test_start_rejects_invalid_resource_properties(invalid_property: dict[str, object]) -> None:
     """Reject unusable resource settings before admitting a run."""
     response = TestClient(app).post(
