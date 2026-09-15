@@ -28,7 +28,7 @@ from tests.unit.utils.task_execution_support import (
     run_process_task,
 )
 from tracker.auth import RequestIdentity
-from tracker.aws.runtime import AWSRuntime
+from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
     ExecutorDispatch,
@@ -61,7 +61,7 @@ class TestQueuedTaskSource:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
@@ -114,7 +114,7 @@ class TestQueuedTaskSource:
             start_benchmark_request,
             task_row,
             benchmark_id,
-            aws_runtime,
+            runtime_services,
             authority,
             queue_context=queue_context,
         )
@@ -135,7 +135,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         contract = contract.model_copy(
             update={
@@ -184,7 +184,7 @@ class TestProcessTaskEnvironment:
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert len(captured_env_vars) == 1
@@ -210,7 +210,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         """A caller-supplied contract must not reach setup as trusted settings."""
         contract = contract.model_copy(
@@ -236,7 +236,7 @@ class TestProcessTaskEnvironment:
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
         assert len(captured_env_vars) == 1
         env_vars = captured_env_vars[0]
@@ -250,7 +250,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         contract = contract.model_copy(update={"inference_settings_attested": True})
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
@@ -270,7 +270,7 @@ class TestProcessTaskEnvironment:
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert len(captured_env_vars) == 1
@@ -291,7 +291,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         contract = contract.model_copy(update={"secrets": {"LEGACY_API_KEY": "aws-secret"}})
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
@@ -321,7 +321,7 @@ class TestProcessTaskEnvironment:
         monkeypatch.setattr(utils_module, "create_sandbox", _capture_sandbox)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert resolved_inputs == [{"LEGACY_API_KEY": "aws-secret"}]
@@ -336,7 +336,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
@@ -380,7 +380,7 @@ class TestProcessTaskEnvironment:
             start_benchmark_request,
             task_row,
             benchmark_id,
-            aws_runtime,
+            runtime_services,
             authority,
         )
 
@@ -393,7 +393,7 @@ async def test_task_waits_for_final_log_write(
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
-    aws_runtime: AWSRuntime,
+    runtime_services: RuntimeServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Task completion must not race a buffered write still running in a thread."""
@@ -415,7 +415,7 @@ async def test_task_waits_for_final_log_write(
 
     monkeypatch.setattr(utils_module, "run_agent", run_agent)
     monkeypatch.setattr("tracker.aws.cloudwatch_logs.CloudWatchBenchmarkLogSink.write", write)
-    execution = asyncio.create_task(run_process_task(request, task, benchmark_id, aws_runtime, authority))
+    execution = asyncio.create_task(run_process_task(request, task, benchmark_id, runtime_services, authority))
     try:
         await asyncio.wait_for(writing.wait(), timeout=2)
         assert not execution.done()
