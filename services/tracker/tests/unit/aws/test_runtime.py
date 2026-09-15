@@ -25,6 +25,7 @@ async def test_runtime_reuses_and_closes_provider(
     monkeypatch.setattr(resources, "fetch_sandbox_provider_config_async", resolve)
     clients = MagicMock(spec=AWSClientProvider)
     config = CloudRuntimeConfig(properties=AWSResources("us-east-1", "bucket", "logs", 30))
+
     async def execute() -> None:
         async with config.create_runtime(
             clients=cast(AWSClientProvider, clients),
