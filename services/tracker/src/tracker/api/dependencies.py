@@ -11,7 +11,8 @@ from sqlmodel import Session, select
 
 from tracker.auth import get_current_org
 from tracker.aws.resolver import resolve_agent_library_aws_runtime, resolve_run_aws_runtime
-from tracker.aws.runtime import AWSRuntime, CloudRuntimeConfig
+from tracker.aws.runtime import AWSRuntime
+from tracker.aws.services import CloudRuntimeConfig
 from tracker.database.models import Benchmark, Org, Task
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
