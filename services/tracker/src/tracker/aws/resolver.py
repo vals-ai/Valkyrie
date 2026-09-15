@@ -164,8 +164,11 @@ def _eligible_org_ids() -> frozenset[UUID]:
         raise ManagedAWSConfigurationError("AWS_DEPLOYMENT_ROLE_ORG_IDS contains an invalid organization ID") from exc
 
 
-def _managed_resources() -> AWSResources:
-    """Build non-secret AWS resources from deployment configuration."""
+def _managed_resources(properties: AWSResources | None = None) -> AWSResources:
+    """Use saved resources, or resolve and validate deployment defaults."""
+    if properties is not None:
+        return properties
+
     missing = [
         name
         for name, value in (
@@ -208,7 +211,7 @@ def deployment_aws_runtime(org_id: UUID, properties: AWSResources | None = None)
         raise ManagedAWSEligibilityError(
             "Managed AWS access is not available for this organization. Configure AWS access keys and try again."
         )
-    resources = properties or _managed_resources()
+    resources = _managed_resources(properties)
     return AWSRuntime(
         resources=resources,
         clients=DefaultChainAWSClientProvider(resources.region),
