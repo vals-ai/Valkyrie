@@ -231,9 +231,11 @@ def resolve_start_aws_runtime(
             status_code=503,
             detail="Managed AWS submissions are temporarily unavailable. Configure AWS access keys and try again.",
         )
+
     runtime = _http_deployment_runtime(org_id)
     if properties is not None and properties != runtime.resources:
         raise HTTPException(status_code=400, detail="Managed run properties must match the deployment AWS resources")
+
     return AWSRuntimeResolution(runtime, None)
 
 
@@ -290,12 +292,11 @@ def resolve_run_metadata_aws_runtime(
     """Resolve AWS authority when access-key metadata links may be omitted."""
     if aws_managed:
         return _http_deployment_runtime(org_id).with_resources(properties)
+
     harness_config = try_fetch_harness_config(request)
-    return (
-        AWSRuntime.from_harness_config(harness_config).with_resources(properties)
-        if harness_config is not None
-        else None
-    )
+    if harness_config is None:
+        return None
+    return AWSRuntime.from_harness_config(harness_config).with_resources(properties)
 
 
 def resolve_agent_library_aws_runtime(
