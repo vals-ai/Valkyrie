@@ -19,13 +19,19 @@ from tracker.database.models import (
     EvaluationResult,
     Org,
     OutputArtifact,
+    OutputArtifactSpec,
     Task,
     TaskStatus,
 )
 from tracker.database.session import get_session
+from tracker.runtime.artifacts import task_attempt_id
 from tracker.types import SingleTaskResponse, TaskArtifactsResponse
 
 router = APIRouter(prefix="/benchmarks")
+
+
+def _is_live(item: OutputArtifactSpec) -> bool:
+    return isinstance(item, OutputArtifact) and item.live
 
 
 @router.get("/{benchmark_id}/tasks/{task_id}/artifact-file")
@@ -38,18 +44,17 @@ async def get_task_artifact_file(
     session: Session = Depends(get_session),
 ) -> dict[str, str]:
     """Read one task artifact without downloading the complete output archive."""
-    task = _load_task_for_benchmark_or_404(run_context.benchmark, task_id, org, session)
+    task = load_task_for_benchmark_or_404(run_context.benchmark, task_id, org, session)
     if not path or PurePosixPath(path).is_absolute() or any(part in {"", ".", ".."} for part in path.split("/")):
         raise HTTPException(status_code=400, detail="Invalid artifact path")
     prefix = _task_prefix(benchmark_id, task_id)
-    live = any(
-        isinstance(item, OutputArtifact) and item.live
-        for item in run_context.benchmark.arguments.contract.output_artifacts
-    )
+    artifacts = run_context.benchmark.arguments.contract.output_artifacts
+    live = any(_is_live(item) for item in artifacts)
+    declared = {item if isinstance(item, str) else item.path for item in artifacts if not _is_live(item)}
     if path == "trajectory/manifest.json" and not live:
         raise HTTPException(status_code=404, detail="Not Found")
-    if path.startswith("trajectory/") and live:
-        prefix += f"attempts/{int(task.started_at.timestamp() * 1_000_000):x}/"
+    if live and path.startswith("trajectory/") and path not in declared:
+        prefix += f"attempts/{task_attempt_id(task.started_at)}/"
     key = prefix + path
     runtime = run_context.aws_runtime
     if not await s3_object_exists(key, runtime):

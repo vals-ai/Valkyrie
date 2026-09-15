@@ -879,7 +879,7 @@ async def publish_live_trajectory(
             path = PurePosixPath(file["path"])
             if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != "trajectory":
                 raise OutputArtifactError("Invalid trajectory part path")
-            if path.suffixes != [".jsonl", ".gz"]:
+            if not path.name.endswith(".jsonl.gz"):
                 raise OutputArtifactError("Trajectory files must be gzip JSONL")
             key = str(path)
             digest = file["sha256"]

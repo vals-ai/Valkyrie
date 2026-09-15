@@ -204,7 +204,12 @@ def test_task_artifacts_only_presign_existing_output(
     benchmark.arguments = benchmark.arguments.model_copy(
         update={
             "contract": benchmark.arguments.contract.model_copy(
-                update={"output_artifacts": [OutputArtifact(path="trajectory/manifest.json", live=True)]}
+                update={
+                    "output_artifacts": [
+                        OutputArtifact(path="trajectory/manifest.json", live=True),
+                        OutputArtifact(path="trajectory/full.json", required=False),
+                    ]
+                }
             )
         }
     )
@@ -223,6 +228,16 @@ def test_task_artifacts_only_presign_existing_output(
     assert response.status_code == 404
     assert response.json()["detail"] == "Artifact not found"
     create_presigned_url.assert_not_called()
+
+    declared_key = f"benchmarks/{benchmark.id}/{task.task_id}/trajectory/full.json"
+    object_exists.side_effect = lambda key, _runtime: key == declared_key
+    response = _client.get(
+        f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifact-file",
+        params={"path": "trajectory/full.json"},
+        headers=harness_headers,
+    )
+    assert response.status_code == 200
+    create_presigned_url.assert_awaited_once_with(s3_key=declared_key, runtime=ANY, expiration=300)
 
 
 @pytest.mark.parametrize("task_id", ["task", "task:one"])
@@ -297,3 +312,4 @@ def test_run_artifacts_are_scoped_and_storage_errors_are_mapped(
             == status
         )
 ||||||| parent of 374dfcbd (Publish live trajectory parts through Tracker)
+||||||| parent of 7b493ef6 (fix(tracker): scope only live trajectory files per attempt)

@@ -1,6 +1,6 @@
 """Artifact key and lifecycle policy."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from tracker.runtime.storage import ObjectStore, StoredObjectCopy
 
@@ -14,6 +14,12 @@ def agent_bundle_key(agent_name: str) -> str:
 
 def benchmark_prefix(benchmark_id: str) -> str:
     return f"{BENCHMARKS_PREFIX}/{benchmark_id}/"
+
+
+def task_attempt_id(started_at: datetime) -> str:
+    if started_at.utcoffset() is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return f"{int(started_at.timestamp() * 1_000_000):x}"
 
 
 def benchmark_agent_bundle_key(benchmark_id: str, agent_name: str) -> str:

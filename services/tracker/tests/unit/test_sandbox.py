@@ -116,7 +116,7 @@ async def test_live_manifest_publishes_verified_parts_first(monkeypatch: pytest.
     files[f"/run/{part}"] = content
     await publish_live_trajectory(sandbox, artifact, root, "task", store, {}, lambda: False)
     store.put_stream.assert_not_called()
-    second = "trajectory/iteration_1/part-2.jsonl.gz"
+    second = "trajectory/iteration_1/part-2.v1.jsonl.gz"
     files[f"/run/{second}"] = content
     manifest["parts"].append({"path": second, "sha256": hashlib.sha256(content).hexdigest()})
     files[artifact.source] = json.dumps(manifest).encode()
@@ -128,6 +128,10 @@ async def test_live_manifest_publishes_verified_parts_first(monkeypatch: pytest.
     manifest["parts"][0]["path"] = "trajectory/../private.jsonl.gz"
     files[artifact.source] = json.dumps(manifest).encode()
     with pytest.raises(OutputArtifactError, match="Invalid trajectory part path"):
+        await publish_live_trajectory(sandbox, artifact, root, "task", store, {}, lambda: True)
+    manifest["parts"][0]["path"] = "trajectory/iteration_1/part-1.json.gz"
+    files[artifact.source] = json.dumps(manifest).encode()
+    with pytest.raises(OutputArtifactError, match="gzip JSONL"):
         await publish_live_trajectory(sandbox, artifact, root, "task", store, {}, lambda: True)
 
 
