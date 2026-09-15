@@ -340,7 +340,7 @@ def test_agent_list_uses_deployment_runtime_for_eligible_org(
     from tracker.aws.s3 import S3ObjectStore
 
     create_store = MagicMock(wraps=S3ObjectStore)
-    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore", create_store)
+    monkeypatch.setattr("tracker.aws.services.S3ObjectStore", create_store)
     monkeypatch.setattr("tracker.api.agents.list_agents", AsyncMock(return_value=[]))
     response = TestClient(app).get("/agents")
 
