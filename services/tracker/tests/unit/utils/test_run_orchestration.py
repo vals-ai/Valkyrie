@@ -347,12 +347,14 @@ async def test_queued_coordinator_retires_stale_evaluation_runner(
 
 
 @pytest.mark.usefixtures("process_benchmark_env")
+@pytest.mark.parametrize("close_fails", [False, True])
 async def test_direct_provider_setup_failure_closes_client(
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
     executor_authority_kwargs: Any,
+    close_fails: bool,
 ) -> None:
     request = StartBenchmarkRequest(
         benchmark_name="swebench",
@@ -361,14 +363,22 @@ async def test_direct_provider_setup_failure_closes_client(
         harness_config=harness_config,
     )
     benchmark = _persist_benchmark(request, database_session)
-    close_client = AsyncMock()
+    close_client = AsyncMock(side_effect=RuntimeError("client close failed") if close_fails else None)
+    close_runtime = AsyncMock()
+    monkeypatch.setattr(RuntimeServices, "close", close_runtime)
     monkeypatch.setattr(
         RuntimeServices, "get_sandbox_provider", AsyncMock(side_effect=RuntimeError("provider setup failed"))
     )
     monkeypatch.setattr(BenchmarkServiceClient, "close", close_client)
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
 
-    await process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"], **authority_kwargs)
+    if close_fails:
+        with pytest.raises(RuntimeError, match="client close failed"):
+            await process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"], **authority_kwargs)
+    else:
+        await process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"], **authority_kwargs)
+
+    close_runtime.assert_awaited_once_with()
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR

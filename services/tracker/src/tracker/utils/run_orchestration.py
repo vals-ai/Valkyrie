@@ -20,7 +20,7 @@ from sqlmodel import Session, col, desc, func, select
 from tracker._lambda import invoke_lambda
 from tracker.aws.services import CloudRuntimeServices
 from taskiq_dependencies import DependencyGraph, Depends
-from tracker.executor.dependencies import get_execution_runtime, get_benchmark_service
+from tracker.executor.dependencies import get_execution_runtime
 from tracker.runtime.services import RuntimeServices
 from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
@@ -742,8 +742,16 @@ async def _process_benchmark(
                 initial_cache={StartBenchmarkRequest: start_benchmark_request, Benchmark: benchmark_row, Org: org}
             )
         )
+        runtime_dependencies = await dependencies.resolve_kwargs()
+        benchmark_service = await runtime_stack.enter_async_context(start_benchmark_request.benchmark_service)
         await _execute_benchmark(
-            execution, org, authority, state, record_queued_cancellation, **await dependencies.resolve_kwargs()
+            execution,
+            org,
+            authority,
+            state,
+            record_queued_cancellation,
+            benchmark_service=benchmark_service,
+            **runtime_dependencies,
         )
 
     except asyncio.CancelledError:
@@ -864,7 +872,7 @@ async def _execute_benchmark(
     *,
     benchmark: Benchmark = Depends(),
     runtime: CloudRuntimeServices = Depends(get_execution_runtime),
-    benchmark_service: BenchmarkServiceClient = Depends(get_benchmark_service),
+    benchmark_service: BenchmarkServiceClient,
 ) -> None:
     benchmark_id = execution.benchmark_id
     start_benchmark_request = execution.request
