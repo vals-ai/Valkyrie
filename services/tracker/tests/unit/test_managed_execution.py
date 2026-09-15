@@ -16,7 +16,7 @@ from tracker.auth import RequestIdentity
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.resolver import ManagedAWSEligibilityError
 from tracker.aws.runtime import AWSRuntime, CloudRuntimeConfig
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, BenchmarkStatus, Org
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org
 from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmarkRequest
 from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
 from tracker.utils.run_orchestration import (
@@ -429,15 +429,10 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get_webhook_secret)
     monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
 
-    arguments = BenchmarkArguments(
-        contract=request.contract,
-        concurrency=request.concurrency,
-        sandbox_provider=request.sandbox_provider,
-        sandbox_provider_secret_name=request.sandbox_provider_secret_name,
-    )
     async with CloudRuntimeConfig(properties=aws_runtime.resources).create_runtime(
         clients=aws_runtime.clients,
-        arguments=arguments,
+        sandbox_provider=request.sandbox_provider,
+        sandbox_provider_secret_name=request.get_sandbox_provider_secret_name(),
     ) as runtime:
         result = await _preflight_managed_aws(execution, aws_runtime, runtime)
 

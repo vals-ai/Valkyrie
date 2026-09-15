@@ -1094,7 +1094,6 @@ async def process_benchmark(
                     logger.warning(f"Failed to send terminal notification: {notification_error}")
 
 
-
 def commit_benchmark_error(
     benchmark_row: Benchmark,
     session: Session,
