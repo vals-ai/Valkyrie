@@ -7,7 +7,7 @@ import asyncio
 import socket
 import time
 from typing import Any, Never
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest

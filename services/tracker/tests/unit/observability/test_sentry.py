@@ -501,7 +501,7 @@ async def test_retry_attempt_clears_previous_sandbox_identity(
                 benchmark_service=cast(Any, FakeBenchmarkService()),
                 benchmark_id=cast(Any, "benchmark-0"),
                 task_id="task-0",
-                aws_runtime=cast(Any, object()),
+                runtime=cast(Any, object()),
                 org=cast(Any, object()),
                 sandbox_provider_config=cast(Any, object()),
                 creation_semaphore=cast(Any, object()),
