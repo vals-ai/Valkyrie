@@ -5,6 +5,7 @@ import subprocess
 import sys
 from collections.abc import Generator
 from datetime import UTC, datetime
+from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic, sleep
@@ -13,8 +14,8 @@ from uuid import uuid4
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import inspect, text
-from sqlmodel import Session, create_engine
+from sqlalchemy import inspect, literal, text
+from sqlmodel import Session, col, create_engine, select, update
 from testcontainers.postgres import PostgresContainer
 
 from tracker.database.models import (
@@ -24,6 +25,7 @@ from tracker.database.models import (
     ExecutorRelease,
     ExecutorReleaseStatus,
     Org,
+    Task,
 )
 
 _TRACKER_ROOT = Path(__file__).resolve().parents[4]
@@ -111,19 +113,28 @@ def test_model_api_cost_migration_preserves_legacy_task(migration_database_url: 
     }
     assert set(cost_columns) == {
         "model_api_cost_usd",
-        "model_api_cost_attempt_count",
-        "model_api_cost_report_count",
     }
     assert all(column["nullable"] for column in cost_columns.values())
     with engine.connect() as connection:
         legacy_cost = connection.execute(
-            text(
-                "SELECT model_api_cost_usd, model_api_cost_attempt_count, model_api_cost_report_count "
-                "FROM task WHERE id = :id"
-            ),
+            text("SELECT model_api_cost_usd FROM task WHERE id = :id"),
             {"id": task_id},
         ).one()
-    assert legacy_cost == (None, None, None)
+    assert legacy_cost == (None,)
+    # PostgreSQL must add beyond Python's default 28-digit Decimal precision exactly.
+    with Session(engine) as session:
+        session.exec(
+            update(Task)
+            .where(col(Task.id) == task_id)
+            .values(
+                model_api_cost_usd=literal(Decimal("1.12345678901234567890123456789"))
+                + Decimal("0.00000000000000000000000000001")
+            )
+        )
+        assert session.exec(select(col(Task.model_api_cost_usd)).where(col(Task.id) == task_id)).one() == Decimal(
+            "1.12345678901234567890123456790"
+        )
+        session.commit()
     engine.dispose()
 
     downgrade = _run_alembic(migration_database_url, "downgrade", _MODEL_API_COST_PREDECESSOR)

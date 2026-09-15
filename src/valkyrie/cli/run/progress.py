@@ -10,7 +10,6 @@ from tracker.types import (
     BenchmarkDetails,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
-    format_model_api_cost_usd,
 )
 
 from valkyrie.cli.display import local_time, terminal_safe
@@ -65,9 +64,11 @@ class BenchmarkFormatter:
 
 
 def _format_model_api_cost(value: Decimal | None) -> str:
+    """Display at least cents without rounding away fractional costs."""
     if value is None:
         return "Unavailable"
-    return f"${format_model_api_cost_usd(value)}"
+    whole, _, fraction = format(value, "f").partition(".")
+    return f"${whole}.{fraction.rstrip('0').ljust(2, '0')}"
 
 
 def _display_run_error(benchmark_response: FetchBenchmarkResponse) -> None:

@@ -575,8 +575,6 @@ class Task(SQLModel, table=True):
     finished_at: datetime | None = None
     eval_resume_state: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     model_api_cost_usd: Decimal | None = Field(default=Decimal("0"), sa_column=Column(Numeric(), nullable=True))
-    model_api_cost_attempt_count: int | None = Field(default=0, nullable=True)
-    model_api_cost_report_count: int | None = Field(default=0, nullable=True)
     benchmark: UUID = Field(foreign_key="benchmark.id")
     task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")
 

@@ -119,11 +119,9 @@ class BenchmarkContext:
 
     @cached_property
     def _model_api_cost_usd(self) -> Decimal | None:
-        untracked_tasks, attempts, reports, total_cost = self._session.exec(
+        untracked_tasks, total_cost = self._session.exec(
             select(
                 func.count(col(Task.id)) - func.count(col(Task.model_api_cost_usd)),
-                func.sum(col(Task.model_api_cost_attempt_count)),
-                func.sum(col(Task.model_api_cost_report_count)),
                 func.sum(col(Task.model_api_cost_usd)),
             )
             .select_from(Task)
@@ -131,8 +129,6 @@ class BenchmarkContext:
             .where(Task.org_id == self._org.id)
         ).one()
         if untracked_tasks:
-            return None
-        if attempts != reports:
             return None
         return total_cost if total_cost is not None else Decimal("0")
 

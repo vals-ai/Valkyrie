@@ -141,22 +141,19 @@ class TestBenchmarkStatusStream:
         assert streamed_statuses[1]["details"]["task_breakdown"] == {"FINISHED": 1}
 
     @pytest.mark.parametrize(
-        ("report_count", "expected_cost"),
-        [(1, "0.123456789"), (0, None)],
+        "expected_cost",
+        ["0.1234567890", None],
     )
     def test_terminal_benchmark_streams_status_and_completes(
         self,
         client: TestClient,
         database_session: Session,
-        report_count: int,
         expected_cost: str | None,
     ) -> None:
         """Terminal GET and SSE payloads must agree on exact and incomplete cost."""
         benchmark = make_benchmark(name="streamed-benchmark", status=BenchmarkStatus.FINISHED, session=database_session)
         task = make_task(benchmark, "completed-task", status=TaskStatus.FINISHED)
-        task.model_api_cost_usd = Decimal("0.123456789")
-        task.model_api_cost_attempt_count = 1
-        task.model_api_cost_report_count = report_count
+        task.model_api_cost_usd = Decimal(expected_cost) if expected_cost is not None else None
         database_session.add_all(
             [
                 task,

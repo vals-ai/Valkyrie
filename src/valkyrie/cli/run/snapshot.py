@@ -13,7 +13,6 @@ from tracker.types import (
     BenchmarkTableRow,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
-    format_model_api_cost_usd,
 )
 
 from valkyrie.cli.exceptions import TrackerServiceError
@@ -78,7 +77,7 @@ def build_run_snapshot(
         },
         "progress_percent": round(progress_percent, 4),
         "model_api_cost_usd": (
-            format_model_api_cost_usd(details.model_api_cost_usd) if details.model_api_cost_usd is not None else None
+            str(details.model_api_cost_usd) if details.model_api_cost_usd is not None else None
         ),
         "max_concurrency": arguments.concurrency if arguments is not None else None,
         "final_score": _finite_score_or_none(response.final_score),

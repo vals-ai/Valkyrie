@@ -28,6 +28,7 @@ from benchmark_service import (
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceStreamError
 from pydantic import ValidationError
+from sqlalchemy import ColumnElement, literal
 from sqlalchemy.engine import Connection
 from sqlmodel import Session, col, select, update
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
@@ -127,66 +128,28 @@ class _StaleTaskAttempt(Exception):
     """Stop a superseded task worker before it launches an agent command."""
 
 
-def _begin_model_api_cost_attempt(
+def _set_model_api_cost(
     task: Task,
-    org: Org,
     expected_started_at: datetime,
     authority: ExecutionAuthority,
-) -> bool:
+    amount: ColumnElement[Decimal] | None = None,
+) -> Decimal | None:
+    """Replace a current attempt's total, returning its previous value under lock."""
     with Session(bind=engine) as session:
-        try:
-            lock_execution_authority(session, authority)
-        except ExecutionAuthorityRevoked:
-            session.rollback()
-            return False
-        statement = (
-            update(Task)
-            .where(col(Task.id) == task.id)
-            .where(col(Task.org_id) == org.id)
-            .where(col(Task.benchmark) == authority.benchmark_id)
-            .where(col(Task.status) == TaskStatus.IN_PROGRESS)
-            .where(col(Task.started_at) == expected_started_at)
-            .values(model_api_cost_attempt_count=col(Task.model_api_cost_attempt_count) + 1)
+        lock_execution_authority(session, authority)
+        conditions = (
+            col(Task.id) == task.id,
+            col(Task.org_id) == task.org_id,
+            col(Task.benchmark) == authority.benchmark_id,
+            col(Task.status) == TaskStatus.IN_PROGRESS,
+            col(Task.started_at) == expected_started_at,
         )
-        result = session.exec(statement)
+        previous = session.exec(select(col(Task.model_api_cost_usd)).where(*conditions).with_for_update()).first()
+        result = session.exec(update(Task).where(*conditions).values(model_api_cost_usd=amount))
         if result.rowcount == 0:
-            session.rollback()
-            return False
+            raise _StaleTaskAttempt
         session.commit()
-        return True
-
-
-def _record_model_api_cost_report(
-    task: Task,
-    org: Org,
-    expected_started_at: datetime,
-    authority: ExecutionAuthority,
-    amount_usd: Decimal,
-) -> bool:
-    with Session(bind=engine) as session:
-        try:
-            lock_execution_authority(session, authority)
-        except ExecutionAuthorityRevoked:
-            session.rollback()
-            return False
-        statement = (
-            update(Task)
-            .where(col(Task.id) == task.id)
-            .where(col(Task.org_id) == org.id)
-            .where(col(Task.benchmark) == authority.benchmark_id)
-            .where(col(Task.status) == TaskStatus.IN_PROGRESS)
-            .where(col(Task.started_at) == expected_started_at)
-            .values(
-                model_api_cost_usd=col(Task.model_api_cost_usd) + amount_usd,
-                model_api_cost_report_count=col(Task.model_api_cost_report_count) + 1,
-            )
-        )
-        result = session.exec(statement)
-        if result.rowcount == 0:
-            session.rollback()
-            return False
-        session.commit()
-        return True
+        return previous
 
 
 def _record_failure_before_retry(
@@ -822,16 +785,20 @@ async def _process_task_attempt(
             task_session.rollback()
             return is_current
 
+    previous_model_api_cost: Decimal | None = None
+
     async def begin_model_api_cost_attempt() -> None:
-        if not _begin_model_api_cost_attempt(task_row, org, attempt_started_at, authority):
-            raise _StaleTaskAttempt
+        nonlocal previous_model_api_cost
+        # Persist unknown before dispatch so crashes and missing reports cannot undercount.
+        try:
+            previous_model_api_cost = _set_model_api_cost(task_row, attempt_started_at, authority)
+        except ExecutionAuthorityRevoked as error:
+            raise _StaleTaskAttempt from error
 
     async def record_model_api_cost_report(amount_usd: Decimal) -> None:
-        if not _record_model_api_cost_report(task_row, org, attempt_started_at, authority, amount_usd):
-            logger.info(
-                "model_api_cost.report.stale",
-                extra={"benchmark_id": str(benchmark_id), "task_id": task_row.task_id},
-            )
+        if previous_model_api_cost is not None:
+            # Add in PostgreSQL to preserve decimal precision independently of Python's context.
+            _set_model_api_cost(task_row, attempt_started_at, authority, literal(previous_model_api_cost) + amount_usd)
 
     def task_is_stopped() -> bool:
         return not execution_is_current()

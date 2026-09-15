@@ -1029,10 +1029,15 @@ async def run_agent(
         if errors and not preserve_agent_error:
             raise errors[0]
 
-    quoted_cost_report_path = shlex.quote(MODEL_API_COST_REPORT_PATH)
-    clear_result = await _exec(sandbox, f"rm -f -- {quoted_cost_report_path}")
-    if clear_result.exit_code != _SUCCESS_EXIT_CODE:
-        raise SandboxError("Failed to clear the previous model/API cost report")
+    cost_report_cleared = False
+    if on_model_api_cost is not None:
+        try:
+            result = await _exec(sandbox, f"rm -f -- {shlex.quote(MODEL_API_COST_REPORT_PATH)}")
+            cost_report_cleared = result.exit_code == _SUCCESS_EXIT_CODE
+        except Exception:
+            logger.warning("Failed to clear model/API cost report", exc_info=True)
+        if not cost_report_cleared:
+            log_output("[WARNING]: Model/API cost unavailable: previous report could not be cleared")
 
     agent_started = False
 
@@ -1042,36 +1047,20 @@ async def run_agent(
             await on_agent_start()
         agent_started = True
 
+    # Collect declared outputs even when the agent command fails.
     try:
-        # A nonzero exit is terminal evidence; collect declared outputs while the
-        # sandbox is still available.
-        try:
-            exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
-                sandbox,
-                f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
-                log_output,
-                contract.egress_allowlist,
-                on_command_start=mark_agent_started,
-            )
-        except Exception:
-            await upload_outputs(preserve_agent_error=True)
-            raise
-
-        if exit_reason == AgentCausedExitReason.TIMEOUT:
-            log_output(
-                f"[WARNING]:`{contract.name}` has reached the designated timeout provided by the benchmark service for this task: `{agent_timeout}`. The process has been terminated and evaluation will proceed."
-            )
-        elif exit_reason == AgentCausedExitReason.OS_KILLED:
-            log_output(
-                f"[WARNING]:`{contract.name}` was killed by the OS (exit code {_OS_KILL_EXIT_CODE}, likely out-of-memory). The process has been terminated and evaluation will proceed."
-            )
-
-        await upload_outputs()
-
-        # Return why the agent terminated abnormally, or None on clean exit
-        return exit_reason, agent_run_time
+        exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
+            sandbox,
+            f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
+            log_output,
+            contract.egress_allowlist,
+            on_command_start=mark_agent_started,
+        )
+    except Exception:
+        await upload_outputs(preserve_agent_error=True)
+        raise
     finally:
-        if agent_started and on_model_api_cost is not None:
+        if agent_started and cost_report_cleared and on_model_api_cost is not None:
             model_api_cost = await read_model_api_cost_report(sandbox, log_output)
             if model_api_cost is not None:
                 try:
@@ -1079,3 +1068,17 @@ async def run_agent(
                 except Exception:
                     logger.warning("Failed to persist model/API cost report", exc_info=True)
                     log_output("[WARNING]: Model/API cost report could not be persisted")
+
+    if exit_reason == AgentCausedExitReason.TIMEOUT:
+        log_output(
+            f"[WARNING]:`{contract.name}` has reached the designated timeout provided by the benchmark service for this task: `{agent_timeout}`. The process has been terminated and evaluation will proceed."
+        )
+    elif exit_reason == AgentCausedExitReason.OS_KILLED:
+        log_output(
+            f"[WARNING]:`{contract.name}` was killed by the OS (exit code {_OS_KILL_EXIT_CODE}, likely out-of-memory). The process has been terminated and evaluation will proceed."
+        )
+
+    await upload_outputs()
+
+    # Return why the agent terminated abnormally, or None on clean exit
+    return exit_reason, agent_run_time
