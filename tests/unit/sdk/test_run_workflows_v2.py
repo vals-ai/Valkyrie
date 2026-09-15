@@ -5,7 +5,12 @@ Run: pytest tests/unit/sdk/test_run_workflows_v2.py
 
 from __future__ import annotations
 
+import asyncio
+import io
+import threading
 import json
+import tarfile
+from pathlib import Path
 from collections.abc import AsyncIterator
 from uuid import UUID, uuid4
 
@@ -255,6 +260,83 @@ async def test_run_iteration_rejects_repeated_cursor(make_client) -> None:
             _ = [run async for run in client.runs.iter(FetchBenchmarksRequest(offset=1))]
 
 
+@pytest.mark.parametrize("unsafe", [False, True])
+@pytest.mark.parametrize("task_id", ["task", "group/task"])
+async def test_download_outputs_extracts_nested_archives(
+    make_client, tmp_path: Path, unsafe: bool, task_id: str
+) -> None:
+    nested = io.BytesIO()
+    with tarfile.open(fileobj=nested, mode="w:gz") as archive:
+        member = tarfile.TarInfo("../escape" if unsafe else "result.txt")
+        member.size = 6
+        archive.addfile(member, io.BytesIO(b"result"))
+    outer = io.BytesIO()
+    with tarfile.open(fileobj=outer, mode="w") as archive:
+        member = tarfile.TarInfo(f"{task_id}/agent_output.tar.gz")
+        member.size = len(nested.getvalue())
+        archive.addfile(member, io.BytesIO(nested.getvalue()))
+        artifact = tarfile.TarInfo(f"{task_id}/model.tar.gz")
+        artifact.size = 6
+        archive.addfile(artifact, io.BytesIO(b"opaque"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get_list("task_ids") == [task_id]
+        return httpx.Response(200, content=outer.getvalue())
+
+    destination = tmp_path / "outputs"
+    async with make_client(handler) as client:
+        if unsafe:
+            with pytest.raises(ValueError, match="Unsafe"):
+                await client.runs.download_outputs(uuid4(), destination, task_ids=[task_id])
+            assert not destination.exists()
+            assert not (tmp_path / "escape").exists()
+        else:
+            result = await client.runs.download_outputs(uuid4(), destination, task_ids=[task_id])
+            assert result == destination
+            assert (destination / f"{task_id}/agent_output/result.txt").read_text() == "result"
+            assert (destination / f"{task_id}/model.tar.gz").read_bytes() == b"opaque"
+            with pytest.raises(FileExistsError):
+                await client.runs.download_outputs(uuid4(), destination)
+        for limits in ({"max_archive_bytes": 1}, {"max_expanded_bytes": 1}, {"max_entries": 1}):
+            with pytest.raises(ValueError, match="exceed"):
+                await client.runs.download_outputs(uuid4(), tmp_path / "limited", task_ids=[task_id], **limits)
+            assert not (tmp_path / "limited").exists()
+
+
+@pytest.mark.parametrize("path", ["task/result.json", "task:one/result.json", "../escape", "task/../../escape"])
+async def test_artifact_download_validates_paths_and_omits_credentials(
+    make_client, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, path: str
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("download-url"):
+            return httpx.Response(
+                200, json={"path": path, "download_url": "https://download.test/file", "expires_in": 300, "size": 2}
+            )
+        return httpx.Response(200, json={"artifacts": [{"path": path, "size": 2}]})
+
+    async def download(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "download.test"
+        assert not any(name.lower().startswith("x-") for name in request.headers)
+        assert "authorization" not in request.headers
+        return httpx.Response(200, content=b"{}")
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", download)
+    destination = tmp_path / "outputs"
+    async with make_client(handler) as client:
+        if ".." in path:
+            with pytest.raises(ValueError, match="relative"):
+                await client.artifacts.download(uuid4(), destination)
+            assert not destination.exists()
+        else:
+            result = await client.artifacts.download(uuid4(), destination, path=path.split("/")[0])
+            assert (result / path).read_bytes() == b"{}"
+            with pytest.raises(FileExistsError):
+                await client.artifacts.download(uuid4(), destination)
+            with pytest.raises(ValueError, match="limits"):
+                await client.artifacts.download(uuid4(), tmp_path / "limited", max_bytes=1)
+            assert not (tmp_path / "limited").exists()
+
+
 async def test_task_iteration_continues_when_tasks_move_between_pages(make_client) -> None:
     """A task moving to a later page must not hide the remaining tasks."""
     first, second, third = uuid4(), uuid4(), uuid4()
@@ -288,3 +370,112 @@ async def test_task_iteration_continues_when_tasks_move_between_pages(make_clien
 
     assert [task.id for task in tasks] == [first, second, first, third]
     assert offsets == [0, 2]
+
+
+async def test_cancelled_output_extraction_finishes_before_cleanup(make_client, monkeypatch, tmp_path: Path) -> None:
+    """Cancellation must not close a worker's input or leave published output behind."""
+    from valkyrie.sdk.resources import runs
+
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    destination = tmp_path / "outputs"
+
+    def extract(stream, output_dir, **limits):
+        started.set()
+        assert release.wait(5)
+        assert stream.read() == b"archive"
+        output_dir.mkdir()
+        (output_dir / "result").write_text("complete")
+        finished.set()
+        return output_dir
+
+    monkeypatch.setattr(runs, "extract_output_archive", extract)
+    async with make_client(lambda request: httpx.Response(200, content=b"archive")) as client:
+        download = asyncio.create_task(client.runs.download_outputs(uuid4(), destination))
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            download.cancel()
+            await asyncio.sleep(0)
+            assert not download.done()
+            download.cancel()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await download
+
+    assert finished.is_set()
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("collision", [False, True])
+async def test_output_archive_merges_existing_directory_without_overwriting(make_client, tmp_path, collision):
+    nested = io.BytesIO()
+    with tarfile.open(fileobj=nested, mode="w:gz") as archive:
+        member = tarfile.TarInfo("result.txt")
+        member.size = 6
+        archive.addfile(member, io.BytesIO(b"result"))
+    outer = io.BytesIO()
+    with tarfile.open(fileobj=outer, mode="w") as archive:
+        for name, content in {
+            "task/agent_output.tar.gz": nested.getvalue(),
+            "task/agent_output/result.txt" if collision else "task/agent_output/summary.json": b"{}",
+        }.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+    destination = tmp_path / "outputs"
+    async with make_client(lambda request: httpx.Response(200, content=outer.getvalue())) as client:
+        if collision:
+            with pytest.raises(FileExistsError):
+                await client.runs.download_outputs(uuid4(), destination)
+            assert not destination.exists()
+        else:
+            await client.runs.download_outputs(uuid4(), destination)
+            assert (destination / "task/agent_output/result.txt").read_text() == "result"
+            assert (destination / "task/agent_output/summary.json").read_text() == "{}"
+
+
+async def test_cancelled_output_download_preserves_other_callers_destination(make_client, monkeypatch, tmp_path):
+    from valkyrie.sdk.resources import runs
+
+    started = threading.Event()
+    release = threading.Event()
+    destination = tmp_path / "outputs"
+
+    def extract(stream, output_dir, **limits):
+        started.set()
+        assert release.wait(5)
+        output_dir.mkdir()
+        (output_dir / "downloaded.txt").write_text("downloaded")
+        destination.mkdir(exist_ok=True)
+        (destination / "unrelated.txt").write_text("another caller")
+        return output_dir
+
+    monkeypatch.setattr(runs, "extract_output_archive", extract)
+    async with make_client(lambda request: httpx.Response(200, content=b"archive")) as client:
+        download = asyncio.create_task(client.runs.download_outputs(uuid4(), destination))
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            download.cancel()
+            await asyncio.sleep(0)
+            assert not download.done()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await download
+
+    assert (destination / "unrelated.txt").read_text() == "another caller"
+    assert list(tmp_path.iterdir()) == [destination]
+
+
+async def test_windows_artifact_download_rejects_colons_before_writing(make_client, monkeypatch, tmp_path):
+    from valkyrie.sdk.resources import artifacts
+
+    monkeypatch.setattr(artifacts.sys, "platform", "win32")
+    async with make_client(
+        lambda request: httpx.Response(200, json={"artifacts": [{"path": "task:one/result.json", "size": 2}]})
+    ) as client:
+        with pytest.raises(ValueError, match="Windows filenames"):
+            await client.artifacts.download(uuid4(), tmp_path / "outputs")
+    assert not (tmp_path / "outputs").exists()

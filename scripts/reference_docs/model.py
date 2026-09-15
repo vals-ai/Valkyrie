@@ -44,6 +44,7 @@ CLI_CARDS = {
 }
 
 RESOURCE_CARDS = {
+    "ArtifactsResource": ("Artifacts", "folder", "listing and downloading run artifact paths"),
     "RunsResource": ("Runs", "play", "starting, inspecting, streaming, controlling, and retrying runs"),
     "BenchmarksResource": ("Benchmarks", "flask-conical", "retrieving benchmark status, tasks, and artifacts"),
     "AgentsResource": ("Agents", "package", "installing, uploading, listing, downloading, and removing agent bundles"),
@@ -57,6 +58,7 @@ RESOURCE_CARDS = {
 }
 
 TYPE_CARDS = {
+    "Artifacts": ("folder", "run artifact metadata and temporary download links"),
     "Agents": ("package", "uploaded agent bundles and download URLs"),
     "Runs": ("play", "run requests, responses, and lifecycle enums"),
     "Benchmarks": ("flask-conical", "benchmark, task, artifact, and status responses"),
@@ -68,6 +70,7 @@ TYPE_CARDS = {
 
 READ_ONLY_COMMANDS = frozenset(
     {
+        ("run", "artifacts"),
         ("run", "filter-options"),
         ("run", "task-artifacts"),
         ("run", "task"),
