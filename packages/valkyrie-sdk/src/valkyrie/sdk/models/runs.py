@@ -296,3 +296,27 @@ class StopBenchmarkResponse(StatusResponse):
 
 class RetryOrResumeBenchmarkResponse(StatusResponse):
     """Response returned after retrying or resuming a run."""
+
+
+class UpdateBenchmarkConcurrencyRequest(BaseModel):
+    """A positive concurrency limit for an active run."""
+
+    concurrency: int = Field(ge=1, strict=True)
+
+
+class UpdateBenchmarkConcurrencyResponse(ResponseModel):
+    """The run state after changing its concurrency limit."""
+
+    benchmark_id: UUID
+    status: BenchmarkStatus
+    concurrency: int
+
+
+class FilterOptionsResponse(ResponseModel):
+    """Values available for run filters in the caller's organization."""
+
+    benchmark_names: list[str]
+    agent_names: list[str]
+    models: list[str]
+    datasets: list[str]
+    started_by_emails: list[str]

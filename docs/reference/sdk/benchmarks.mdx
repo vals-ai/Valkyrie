@@ -71,6 +71,32 @@ async def tasks(run_id: UUID, request: FetchTasksRequest | None = None) -> Tasks
 
 For examples, see the [Python SDK guide](/sdk/resources).
 
+## `client.benchmarks.iter_tasks` {#iter-tasks}
+
+Iterate matching tasks from the requested offset, preserving filters and page size.
+
+Task pages use offsets; concurrent status changes can move tasks between pages.
+
+```python Signature
+async def iter_tasks(run_id: UUID, request: FetchTasksRequest | None = None) -> AsyncIterator[TaskSummary]
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · UUID</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"request"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <a href="/reference/sdk/models/benchmarks#fetch-tasks-request"><code>FetchTasksRequest</code></a> | None · default: <code>{"None"}</code></span></div>
+</div>
+
+**Returns**
+
+AsyncIterator[<a href="/reference/sdk/models/benchmarks#task-summary"><code>TaskSummary</code></a>]
+
+For examples, see the [Python SDK guide](/sdk/resources).
+
 ## `client.benchmarks.task` {#task}
 
 Fetch detailed state and evaluation output for one task.
