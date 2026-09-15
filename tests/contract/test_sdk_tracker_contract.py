@@ -230,6 +230,8 @@ MODEL_PAIRS = (
 )
 INTERNAL_ROUTES = {
     ("/aws-runtime", "get"),
+    # Dashboard-only file transport; no new SDK resource is needed.
+    ("/benchmarks/{benchmark_id}/tasks/{task_id}/artifact-file", "get"),
     ("/health", "get"),
     ("/init", "post"),
 }

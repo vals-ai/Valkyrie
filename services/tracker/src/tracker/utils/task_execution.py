@@ -38,7 +38,7 @@ from tracker.aws.cloudwatch_logs import (
 )
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3ObjectStore
-from tracker.runtime.artifacts import task_artifact_key
+from tracker.runtime.artifacts import task_artifact_key, task_attempt_id
 from tracker.runtime.logs import BenchmarkLogSink
 from tracker.aws.secrets import SecretsManagerStore
 from tracker.runtime.secrets import resolve_secrets
@@ -1159,6 +1159,7 @@ async def _process_task_attempt(
                         runtime_source=task_data.source,
                         dependency_setup_mode=dependency_setup_recovery.mode,
                         execution_is_current=execution_is_current,
+                        attempt_id=task_attempt_id(task_row.started_at),
                     )
                 except DependencySetupExhaustedError:
                     dependency_setup_recovery.mode = DependencySetupMode.FINAL_FRESH_SANDBOX

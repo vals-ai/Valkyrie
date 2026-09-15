@@ -1508,6 +1508,11 @@
       },
       "OutputArtifact-Input": {
         "properties": {
+          "live": {
+            "default": false,
+            "title": "Live",
+            "type": "boolean"
+          },
           "path": {
             "title": "Path",
             "type": "string"
@@ -3851,6 +3856,69 @@
           }
         },
         "summary": "Get Single Task"
+      }
+    },
+    "/benchmarks/{benchmark_id}/tasks/{task_id}/artifact-file": {
+      "get": {
+        "description": "Read one task artifact without downloading the complete output archive.",
+        "operationId": "get_task_artifact_file",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Get Task Artifact File",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task Artifact File"
       }
     },
     "/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts": {

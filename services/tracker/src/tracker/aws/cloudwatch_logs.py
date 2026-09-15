@@ -18,6 +18,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.runtime import AWSResources
 from tracker.exceptions import CloudWatchError
+from tracker.runtime.artifacts import task_attempt_id
 from tracker.runtime.logs import (
     BenchmarkLogLocations,
     BenchmarkLogSink,
@@ -56,10 +57,7 @@ def benchmark_log_group_name(log_group: str, benchmark_id: str) -> str:
 
 def task_log_stream_name(task_id: str, started_at: datetime) -> str:
     """Return the canonical versioned CloudWatch stream for a task attempt."""
-    if started_at.utcoffset() is None:
-        started_at = started_at.replace(tzinfo=timezone.utc)
-    suffix = f"{int(started_at.timestamp() * 1_000_000):x}"
-    return f"{_sanitize_log_stream_name(task_id)}_{suffix}"
+    return f"{_sanitize_log_stream_name(task_id)}_{task_attempt_id(started_at)}"
 
 
 def _legacy_task_log_stream_name(task_id: str, started_at: datetime) -> str:
