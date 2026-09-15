@@ -73,7 +73,6 @@ from tracker.utils import (
     reset_to_in_progress_status,
     start_benchmark_request_to_benchmark,
     stop_sandbox,
-    update_benchmark_concurrency,
 )
 from tracker.utils.task_execution import handle_early_exit
 
@@ -1603,7 +1602,7 @@ class TestRunRecovery:
 
             return VerifyTaskIdsResponse(task_ids=task_ids)
 
-        monkeypatch.setattr(tracker_utils, "create_benchmark_service_client", _create_benchmark_service_client)
+        monkeypatch.setattr(main_module, "create_benchmark_service_client", _create_benchmark_service_client)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_task_ids)
 
         invalid_response = client.post(

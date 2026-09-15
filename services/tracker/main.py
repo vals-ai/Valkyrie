@@ -249,7 +249,10 @@ def _process_benchmark_kwargs(
 
 
 def _resolve_enqueue_failure(
-    bind: Engine | Connection, benchmark_id: UUID, dispatch_id: UUID, task_ids: list[str],
+    bind: Engine | Connection,
+    benchmark_id: UUID,
+    dispatch_id: UUID,
+    task_ids: list[str],
 ) -> EnqueueFailureResolution:
     with Session(bind) as session:
         return resolve_enqueue_failure(session, benchmark_id=benchmark_id, dispatch_id=dispatch_id, task_ids=task_ids)
@@ -285,7 +288,11 @@ async def _enqueue_executor_dispatch(
                 extra={"executor_dispatch_id": str(dispatch.id)},
             )
             resolution = await asyncio.to_thread(
-                _resolve_enqueue_failure, session.get_bind(), dispatch.benchmark_id, dispatch.id, verified_task_ids,
+                _resolve_enqueue_failure,
+                session.get_bind(),
+                dispatch.benchmark_id,
+                dispatch.id,
+                verified_task_ids,
             )
             if resolution == EnqueueFailureResolution.DELIVERED:
                 return
@@ -362,7 +369,8 @@ async def _rollback_failed_start_admission(
         )
         return
     if not await asyncio.to_thread(
-        _start_admission_is_absent, session.get_bind(),
+        _start_admission_is_absent,
+        session.get_bind(),
         benchmark_id=benchmark_id,
         dispatch_id=dispatch_id,
     ):
@@ -487,14 +495,19 @@ def _validate_start_release(bind: Engine | Connection) -> None:
 
 
 def _commit_start(
-    bind: Engine | Connection, benchmark_json: str, request: StartBenchmarkRequest,
-    dispatch_id: UUID, task_ids: list[str],
+    bind: Engine | Connection,
+    benchmark_json: str,
+    request: StartBenchmarkRequest,
+    dispatch_id: UUID,
+    task_ids: list[str],
     queue_pool_id: str | None,
 ) -> tuple[str, "AdmissionResult"]:
     with Session(bind, expire_on_commit=False) as session:
-        benchmark = Benchmark.model_validate_json(benchmark_json)
+        benchmark = Benchmark.model_validate(json.loads(benchmark_json))
         # API serialization deliberately excludes internal scheduler admission fields.
-        benchmark.arguments = benchmark.arguments.model_copy(update={"priority": request.priority, "queue_pool_id": queue_pool_id})
+        benchmark.arguments = benchmark.arguments.model_copy(
+            update={"priority": request.priority, "queue_pool_id": queue_pool_id}
+        )
         try:
             for task_id in task_ids:
                 session.add(Task(org_id=benchmark.org_id, benchmark=benchmark.id, task_id=task_id))
@@ -709,10 +722,16 @@ async def start_benchmark(
             request.contract.name,
         )
         benchmark_json, result = await asyncio.to_thread(
-            _commit_start, bind, benchmark_row.model_dump_json(), request, dispatch_id, verify_response.task_ids, resolved_queue_pool_id,
+            _commit_start,
+            bind,
+            benchmark_row.model_dump_json(),
+            request,
+            dispatch_id,
+            verify_response.task_ids,
+            resolved_queue_pool_id,
         )
-        benchmark_row = Benchmark.model_validate_json(benchmark_json)
-        executor_dispatch = ExecutorDispatch.model_validate_json(result.dispatch_json)
+        benchmark_row = Benchmark.model_validate(json.loads(benchmark_json))
+        executor_dispatch = ExecutorDispatch.model_validate(json.loads(result.dispatch_json))
         executor_payload = json.loads(result.payload_json)
     except Exception as exc:
         if isinstance(exc, _StartAdmissionRollbackError):
@@ -720,8 +739,12 @@ async def start_benchmark(
             exc = exc.__cause__
         else:
             await _rollback_failed_start_admission(
-                session, benchmark_id=benchmark_row.id, dispatch_id=dispatch_id,
-                created_copy=created_agent_copy, request=request, object_store=object_store,
+                session,
+                benchmark_id=benchmark_row.id,
+                dispatch_id=dispatch_id,
+                created_copy=created_agent_copy,
+                request=request,
+                object_store=object_store,
             )
         if isinstance(exc, ReleaseControlError):
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -1280,7 +1303,9 @@ class AdmissionResult:
 
 
 def _admission_result(
-    dispatch: ExecutorDispatch, payload: dict[str, Any], task_ids: list[str],
+    dispatch: ExecutorDispatch,
+    payload: dict[str, Any],
+    task_ids: list[str],
 ) -> AdmissionResult:
     return AdmissionResult(dispatch.model_dump_json(), json.dumps(payload), tuple(task_ids))
 
@@ -1296,43 +1321,87 @@ class RecoveryPreparation:
 
 
 def _prepare_recovery(
-    bind: Engine | Connection, benchmark_id: UUID, org_id: UUID, retry: bool,
-    concurrency: int | None, task_ids: list[str], benchmark_url: str | None, secrets: dict[str, str],
+    bind: Engine | Connection,
+    benchmark_id: UUID,
+    org_id: UUID,
+    retry: bool,
+    concurrency: int | None,
+    task_ids: list[str],
+    benchmark_url: str | None,
+    secrets: dict[str, str],
 ) -> RecoveryPreparation:
     with Session(bind) as session:
         org = session.get(Org, org_id)
         assert org is not None
         benchmark = get_scoped(Benchmark, benchmark_id, session, org)
         if benchmark.status == BenchmarkStatus.STOPPING:
-            raise HTTPException(status_code=400, detail=f"Run {benchmark_id} is in the {benchmark.status} state. Cannot continue a run that is stopping.")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Run {benchmark_id} is in the {benchmark.status} state. Cannot continue a run that is stopping.",
+            )
         if benchmark.status == BenchmarkStatus.IN_PROGRESS and not retry and secrets:
-            raise HTTPException(status_code=409, detail="Secret overrides require retry=true while a run is in progress.")
+            raise HTTPException(
+                status_code=409, detail="Secret overrides require retry=true while a run is in progress."
+            )
         effective_url = benchmark_url if benchmark_url is not None else benchmark.custom_benchmark_service
         if effective_url is not None:
             _authorize_custom_benchmark_destination(effective_url, org)
-        queued = benchmark.status == BenchmarkStatus.IN_PROGRESS and not retry and concurrency is None and benchmark.arguments.queue_pool_id is not None
+        queued = (
+            benchmark.status == BenchmarkStatus.IN_PROGRESS
+            and not retry
+            and concurrency is None
+            and benchmark.arguments.queue_pool_id is not None
+        )
         state = None
         if benchmark.status != BenchmarkStatus.IN_PROGRESS or retry or queued:
             state = prepare_retry_state(benchmark, session, retry, task_ids, org, queued_recovery=queued)
         return RecoveryPreparation(
-            state, benchmark.aws_managed, benchmark.name,
-            effective_url or create_benchmark_service_url(benchmark.name), benchmark.arguments.dataset, queued,
+            state,
+            benchmark.aws_managed,
+            benchmark.name,
+            effective_url or create_benchmark_service_url(benchmark.name),
+            benchmark.arguments.dataset,
+            queued,
         )
 
 
 def _commit_recovery(
-    bind: Engine | Connection, org_id: UUID, *, benchmark_id: UUID, api_key: str | None,
-    retry: bool, retry_mode: RetryMode, concurrency: int | None, task_ids: list[str],
-    service_headers: dict[str, str], secrets: dict[str, str], benchmark_url: str | None,
-    lambda_function: str | None, access_key_harness_config: HarnessConfig | None,
-    preparation: RecoveryPreparation, verified_task_ids: list[str],
+    bind: Engine | Connection,
+    org_id: UUID,
+    *,
+    benchmark_id: UUID,
+    api_key: str | None,
+    retry: bool,
+    retry_mode: RetryMode,
+    concurrency: int | None,
+    task_ids: list[str],
+    service_headers: dict[str, str],
+    secrets: dict[str, str],
+    benchmark_url: str | None,
+    lambda_function: str | None,
+    access_key_harness_config: HarnessConfig | None,
+    preparation: RecoveryPreparation,
+    verified_task_ids: list[str],
 ) -> AdmissionResult | None:
     with Session(bind, expire_on_commit=False) as session:
         org = session.get(Org, org_id)
         assert org is not None
         return _apply_recovery(
-            benchmark_id, api_key, retry, retry_mode, concurrency, task_ids, service_headers, secrets,
-            benchmark_url, lambda_function, session, org, access_key_harness_config, preparation, verified_task_ids,
+            benchmark_id,
+            api_key,
+            retry,
+            retry_mode,
+            concurrency,
+            task_ids,
+            service_headers,
+            secrets,
+            benchmark_url,
+            lambda_function,
+            session,
+            org,
+            access_key_harness_config,
+            preparation,
+            verified_task_ids,
         )
 
 
@@ -1351,57 +1420,6 @@ async def retry_or_resume_benchmark(
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> RetryOrResumeBenchmarkResponse:
-    org_id, bind = org.id, session.get_bind()
-    # Authentication shares this dependency Session; end its read transaction too.
-    session.close()
-    if benchmark_url is not None:
-        try:
-            benchmark_url = validate_service_url_syntax(benchmark_url)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if concurrency is not None and concurrency < 1:
-        raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
-    preparation = await asyncio.to_thread(
-        _prepare_recovery, bind, benchmark_id, org_id, retry, concurrency, task_ids, benchmark_url, secrets,
-    )
-    runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
-        http_request, aws_managed=preparation.aws_managed, org_id=org_id,
-    )
-    api_key = http_request.headers.get("x-api-key")
-    effective_headers = forward_tracker_api_key(
-        service_headers, api_key,
-        destination=classify_benchmark_service_destination(preparation.benchmark_name, preparation.benchmark_url),
-    )
-    verified_task_ids = list(preparation.state.task_ids) if preparation.state is not None else []
-    if verified_task_ids and not preparation.queued_recovery:
-        service = create_benchmark_service_client(preparation.benchmark_url, effective_headers)
-        try:
-            verified = await service.verify_task_ids(task_ids=verified_task_ids, slice_str=None, dataset=preparation.dataset)
-            verified_task_ids = verified.task_ids
-        finally:
-            await service.close()
-    result = await asyncio.to_thread(
-        _commit_recovery, bind, org_id, benchmark_id=benchmark_id, api_key=api_key,
-        retry=retry, retry_mode=retry_mode, concurrency=concurrency, task_ids=task_ids,
-        service_headers=service_headers, secrets=secrets, benchmark_url=benchmark_url,
-        lambda_function=lambda_function, access_key_harness_config=runtime_resolution.access_key_harness_config,
-        preparation=preparation, verified_task_ids=verified_task_ids,
-    )
-    if result is not None:
-        await _enqueue_executor_dispatch(
-            ExecutorDispatch.model_validate_json(result.dispatch_json), session=session,
-            payload=json.loads(result.payload_json), verified_task_ids=list(result.verified_task_ids),
-        )
-    return RetryOrResumeBenchmarkResponse(status="success")
-
-
-def _apply_recovery(
-    benchmark_id: UUID, api_key: str | None, retry: bool, retry_mode: RetryMode,
-    concurrency: int | None, task_ids: list[str], service_headers: dict[str, str],
-    secrets: dict[str, str], benchmark_url: str | None, lambda_function: str | None,
-    session: Session, org: Org, access_key_harness_config: HarnessConfig | None,
-    preparation: RecoveryPreparation, verified_task_ids: list[str],
-) -> AdmissionResult | None:
     """
     Retry or resume a benchmark run by its id.
 
@@ -1420,6 +1438,93 @@ def _apply_recovery(
     Returns:
         RetryOrResumeBenchmarkResponse
     """
+    org_id, bind = org.id, session.get_bind()
+    # Authentication shares this dependency Session; end its read transaction too.
+    session.close()
+    if benchmark_url is not None:
+        try:
+            benchmark_url = validate_service_url_syntax(benchmark_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if concurrency is not None and concurrency < 1:
+        raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
+    preparation = await asyncio.to_thread(
+        _prepare_recovery,
+        bind,
+        benchmark_id,
+        org_id,
+        retry,
+        concurrency,
+        task_ids,
+        benchmark_url,
+        secrets,
+    )
+    runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
+        http_request,
+        aws_managed=preparation.aws_managed,
+        org_id=org_id,
+    )
+    api_key = http_request.headers.get("x-api-key")
+    effective_headers = forward_tracker_api_key(
+        service_headers,
+        api_key,
+        destination=classify_benchmark_service_destination(preparation.benchmark_name, preparation.benchmark_url),
+    )
+    verified_task_ids = list(preparation.state.task_ids) if preparation.state is not None else []
+    if verified_task_ids and not preparation.queued_recovery:
+        service = create_benchmark_service_client(preparation.benchmark_url, effective_headers)
+        try:
+            verified = await service.verify_task_ids(
+                task_ids=verified_task_ids, slice_str=None, dataset=preparation.dataset
+            )
+            verified_task_ids = verified.task_ids
+        finally:
+            await service.close()
+    result = await asyncio.to_thread(
+        _commit_recovery,
+        bind,
+        org_id,
+        benchmark_id=benchmark_id,
+        api_key=api_key,
+        retry=retry,
+        retry_mode=retry_mode,
+        concurrency=concurrency,
+        task_ids=task_ids,
+        service_headers=service_headers,
+        secrets=secrets,
+        benchmark_url=benchmark_url,
+        lambda_function=lambda_function,
+        access_key_harness_config=runtime_resolution.access_key_harness_config,
+        preparation=preparation,
+        verified_task_ids=verified_task_ids,
+    )
+    if result is not None:
+        await _enqueue_executor_dispatch(
+            ExecutorDispatch.model_validate(json.loads(result.dispatch_json)),
+            session=session,
+            payload=json.loads(result.payload_json),
+            verified_task_ids=list(result.verified_task_ids),
+        )
+    return RetryOrResumeBenchmarkResponse(status="success")
+
+
+def _apply_recovery(
+    benchmark_id: UUID,
+    api_key: str | None,
+    retry: bool,
+    retry_mode: RetryMode,
+    concurrency: int | None,
+    task_ids: list[str],
+    service_headers: dict[str, str],
+    secrets: dict[str, str],
+    benchmark_url: str | None,
+    lambda_function: str | None,
+    session: Session,
+    org: Org,
+    access_key_harness_config: HarnessConfig | None,
+    preparation: RecoveryPreparation,
+    verified_task_ids: list[str],
+) -> AdmissionResult | None:
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
     if benchmark_row.status == BenchmarkStatus.STOPPING:
@@ -1453,8 +1558,7 @@ def _apply_recovery(
     recovery_task_ids: list[str] | None = None
     if (
         preparation.state is None
-        and
-        benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        and benchmark_row.status == BenchmarkStatus.IN_PROGRESS
         and not retry
         and concurrency is None
         and not queued_running_recovery
@@ -1474,7 +1578,12 @@ def _apply_recovery(
     if concurrency is not None and concurrency < 1:
         raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
 
-    if preparation.state is None and benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and concurrency is not None:
+    if (
+        preparation.state is None
+        and benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        and not retry
+        and concurrency is not None
+    ):
         _update_benchmark_concurrency(benchmark_id, concurrency, session, org)
         if secrets or benchmark_url is not None:
             update_benchmark_resume_arguments(
@@ -1514,10 +1623,18 @@ def _apply_recovery(
 
         try:
             current_state = prepare_retry_state(
-                benchmark_row, session, retry, task_ids, org, queued_recovery=preparation.queued_recovery, for_update=True,
+                benchmark_row,
+                session,
+                retry,
+                task_ids,
+                org,
+                queued_recovery=preparation.queued_recovery,
+                for_update=True,
             )
         except TrackerServiceError as exc:
-            raise HTTPException(status_code=409, detail="Run changed during task verification; retry the request.") from exc
+            raise HTTPException(
+                status_code=409, detail="Run changed during task verification; retry the request."
+            ) from exc
         if current_state != preparation.state:
             raise HTTPException(status_code=409, detail="Run changed during task verification; retry the request.")
         if queued_running_recovery and pre_action_status == BenchmarkStatus.IN_PROGRESS:
@@ -1567,8 +1684,13 @@ def _apply_recovery(
             verified_task_ids = recovery_task_ids
         else:
             verified_task_ids = reset_to_in_progress_status(
-                benchmark_row=benchmark_row, session=session, retry=retry, retry_mode=retry_mode,
-                rerun_task_ids=task_ids, org=org, verified_task_ids=verified_task_ids,
+                benchmark_row=benchmark_row,
+                session=session,
+                retry=retry,
+                retry_mode=retry_mode,
+                rerun_task_ids=task_ids,
+                org=org,
+                verified_task_ids=verified_task_ids,
             )
 
         if pre_action_status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids and recovery_task_ids is None:

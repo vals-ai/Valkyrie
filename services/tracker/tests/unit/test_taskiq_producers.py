@@ -349,7 +349,6 @@ def test_managed_resume_rolls_back_when_the_active_release_is_incompatible(
     _promote_test_release(database_session, release_id="legacy-release", protocol_version="1")
     payloads.clear()
 
-
     response = client.post(f"/retry-or-resume-benchmark/{benchmark_id}?retry=true")
 
     assert response.status_code == 503
@@ -405,7 +404,9 @@ def test_managed_resume_payload_failure_rolls_back_recovery_state(
 
     monkeypatch.setattr("main._process_benchmark_kwargs", fail_payload_build)
 
-    response = TestClient(app, raise_server_exceptions=False).post(f"/retry-or-resume-benchmark/{benchmark_id}?retry=true")
+    response = TestClient(app, raise_server_exceptions=False).post(
+        f"/retry-or-resume-benchmark/{benchmark_id}?retry=true"
+    )
 
     assert response.status_code == 500
     database_session.expire_all()
