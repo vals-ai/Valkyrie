@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID
@@ -49,14 +50,28 @@ def _serialize_required_utc(value: datetime) -> str:
 UTCDateTime = Annotated[datetime, PlainSerializer(_serialize_required_utc, return_type=str)]
 
 
+def format_model_api_cost_usd(value: Decimal) -> str:
+    """Format an exact USD decimal with at least cents and no redundant trailing zeros."""
+    whole, separator, fraction = format(value, "f").partition(".")
+    if not separator:
+        return f"{whole}.00"
+    fraction = fraction.rstrip("0")
+    return f"{whole}.{fraction.ljust(2, '0')}"
+
+
 class BenchmarkDetails(BaseModel):
     status: BenchmarkStatus
     started_at: datetime
     total_tasks: int
     finished_tasks: int
     task_breakdown: dict[TaskStatus, int]
+    model_api_cost_usd: Decimal | None = None
     docent_reading_status: DocentReadingStatus
     docent_reading_url: str | None = None
+
+    @field_serializer("model_api_cost_usd", when_used="json")
+    def serialize_model_api_cost_usd(self, value: Decimal | None) -> str | None:
+        return format_model_api_cost_usd(value) if value is not None else None
 
 
 class AWSCredentials(BaseModel, frozen=True):

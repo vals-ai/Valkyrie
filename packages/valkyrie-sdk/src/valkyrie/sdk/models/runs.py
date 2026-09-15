@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
@@ -114,6 +115,14 @@ class AnalyzeEvent(ResponseModel):
     data: dict[str, Any]
 
 
+def _format_model_api_cost_usd(value: Decimal) -> str:
+    whole, separator, fraction = format(value, "f").partition(".")
+    if not separator:
+        return f"{whole}.00"
+    fraction = fraction.rstrip("0")
+    return f"{whole}.{fraction.ljust(2, '0')}"
+
+
 class BenchmarkDetails(ResponseModel):
     """Detailed progress for a fetched run."""
 
@@ -122,8 +131,13 @@ class BenchmarkDetails(ResponseModel):
     total_tasks: int
     finished_tasks: int
     task_breakdown: dict[TaskStatus, int]
+    model_api_cost_usd: Decimal | None = None
     docent_reading_status: DocentReadingStatus
     docent_reading_url: str | None = None
+
+    @field_serializer("model_api_cost_usd", when_used="json")
+    def serialize_model_api_cost_usd(self, value: Decimal | None) -> str | None:
+        return _format_model_api_cost_usd(value) if value is not None else None
 
 
 class StartBenchmarkResponse(ResponseModel):

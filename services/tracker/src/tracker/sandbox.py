@@ -1,10 +1,12 @@
 """Sandbox management utilities for the tracker service."""
 
 import asyncio
+import json
 import shlex
 import time
 import uuid
 from asyncio import Semaphore
+from decimal import Decimal, InvalidOperation
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from enum import Enum
@@ -33,6 +35,7 @@ from benchmark_service import (
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 from opentelemetry import trace
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -77,6 +80,33 @@ SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
 AGENT_INSTALL_TIMEOUT_SECONDS = 10 * 60
 CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
+MODEL_API_COST_REPORT_PATH = "/tmp/valkyrie/model_api_cost.json"
+MODEL_API_COST_REPORT_MAX_BYTES = 4096
+
+
+class _ModelAPICostReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    model_api_cost_usd: str
+
+    @field_validator("model_api_cost_usd")
+    @classmethod
+    def validate_cost(cls, value: str) -> str:
+        try:
+            amount = Decimal(value)
+        except InvalidOperation as error:
+            raise ValueError("must be a decimal string") from error
+        if not amount.is_finite() or amount < 0:
+            raise ValueError("must be finite and non-negative")
+
+        _, digits, raw_exponent = amount.as_tuple()
+        exponent = int(raw_exponent)
+        integer_digits = max(len(digits) + exponent, 1)
+        fractional_digits = max(-exponent, 0)
+        fixed_point_length = integer_digits + (fractional_digits + 1 if fractional_digits else 0)
+        if fixed_point_length > MODEL_API_COST_REPORT_MAX_BYTES:
+            raise ValueError("fixed-point representation is too long")
+        return value
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -536,13 +566,18 @@ async def _stream_command_output_with_egress_allowlist(
     command: str,
     on_output: Callable[[str], None],
     allowed_addresses: list[str],
+    on_command_start: Callable[[], Awaitable[None]] | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     if not allowed_addresses:
+        if on_command_start is not None:
+            await on_command_start()
         return await stream_command_output(sandbox, command, on_output)
 
     command_completed = False
     try:
         await _apply_egress_allowlist(sandbox, allowed_addresses)
+        if on_command_start is not None:
+            await on_command_start()
         result = await stream_command_output(sandbox, command, on_output)
         command_completed = True
         return result
@@ -829,6 +864,55 @@ async def _upload_output_artifact(
     return new_total_bytes
 
 
+async def read_model_api_cost_report(
+    sandbox: Sandbox,
+    log_output: Callable[[str], None],
+) -> Decimal | None:
+    """Read an optional, agent-reported USD cost without affecting task execution."""
+
+    def warn(reason: str) -> None:
+        message = f"Model/API cost report unavailable: {reason}"
+        logger.warning(message)
+        log_output(f"[WARNING]: {message}")
+
+    def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate key: {key}")
+            result[key] = value
+        return result
+
+    quoted_path = shlex.quote(MODEL_API_COST_REPORT_PATH)
+    try:
+        exists = await _exec(sandbox, f"test -e {quoted_path}")
+        if exists.exit_code != _SUCCESS_EXIT_CODE:
+            return None
+
+        regular_file = await _exec(sandbox, f"test -f {quoted_path}")
+        if regular_file.exit_code != _SUCCESS_EXIT_CODE:
+            warn("reserved path is not a regular file")
+            return None
+
+        read_result = await _exec(sandbox, f"head -c {MODEL_API_COST_REPORT_MAX_BYTES + 1} -- {quoted_path}")
+        if read_result.exit_code != _SUCCESS_EXIT_CODE:
+            warn("file could not be read")
+            return None
+        contents = read_result.stdout
+        if len(contents.encode("utf-8")) > MODEL_API_COST_REPORT_MAX_BYTES:
+            warn(f"file exceeds {MODEL_API_COST_REPORT_MAX_BYTES} bytes")
+            return None
+
+        report = _ModelAPICostReport.model_validate(json.loads(contents, object_pairs_hook=unique_json_object))
+        return Decimal(report.model_api_cost_usd)
+    except (ValidationError, ValueError):
+        warn("expected exactly one non-negative finite decimal string field named model_api_cost_usd")
+    except Exception:
+        logger.warning("Failed to read model/API cost report", exc_info=True)
+        log_output("[WARNING]: Model/API cost report unavailable: file could not be read")
+    return None
+
+
 async def run_agent(
     sandbox: Sandbox,
     contract: AgentContractRequest,
@@ -843,6 +927,8 @@ async def run_agent(
     runtime_source: SandboxSource | None = None,
     dependency_setup_mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
     execution_is_current: Callable[[], bool] | None = None,
+    on_agent_start: Callable[[], Awaitable[None]] | None = None,
+    on_model_api_cost: Callable[[Decimal], Awaitable[None]] | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
@@ -857,6 +943,8 @@ async def run_agent(
         agent_timeout: Optional timeout in seconds to enforce on the agent command
         runtime_source: Optional source used to adapt agent commands to the task runtime
         execution_is_current: Optional execution-authority check before output uploads
+        on_agent_start: Callback invoked immediately before the agent command is dispatched
+        on_model_api_cost: Callback that persists a valid per-attempt cost report
 
     Returns:
         AgentCausedExitReason if the agent was terminated abnormally but recoverably
@@ -941,29 +1029,53 @@ async def run_agent(
         if errors and not preserve_agent_error:
             raise errors[0]
 
-    # A nonzero exit is terminal evidence; collect declared outputs while the
-    # sandbox is still available.
+    quoted_cost_report_path = shlex.quote(MODEL_API_COST_REPORT_PATH)
+    clear_result = await _exec(sandbox, f"rm -f -- {quoted_cost_report_path}")
+    if clear_result.exit_code != _SUCCESS_EXIT_CODE:
+        raise SandboxError("Failed to clear the previous model/API cost report")
+
+    agent_started = False
+
+    async def mark_agent_started() -> None:
+        nonlocal agent_started
+        if on_agent_start is not None:
+            await on_agent_start()
+        agent_started = True
+
     try:
-        exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
-            sandbox,
-            f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
-            log_output,
-            contract.egress_allowlist,
-        )
-    except Exception:
-        await upload_outputs(preserve_agent_error=True)
-        raise
+        # A nonzero exit is terminal evidence; collect declared outputs while the
+        # sandbox is still available.
+        try:
+            exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
+                sandbox,
+                f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
+                log_output,
+                contract.egress_allowlist,
+                on_command_start=mark_agent_started,
+            )
+        except Exception:
+            await upload_outputs(preserve_agent_error=True)
+            raise
 
-    if exit_reason == AgentCausedExitReason.TIMEOUT:
-        log_output(
-            f"[WARNING]:`{contract.name}` has reached the designated timeout provided by the benchmark service for this task: `{agent_timeout}`. The process has been terminated and evaluation will proceed."
-        )
-    elif exit_reason == AgentCausedExitReason.OS_KILLED:
-        log_output(
-            f"[WARNING]:`{contract.name}` was killed by the OS (exit code {_OS_KILL_EXIT_CODE}, likely out-of-memory). The process has been terminated and evaluation will proceed."
-        )
+        if exit_reason == AgentCausedExitReason.TIMEOUT:
+            log_output(
+                f"[WARNING]:`{contract.name}` has reached the designated timeout provided by the benchmark service for this task: `{agent_timeout}`. The process has been terminated and evaluation will proceed."
+            )
+        elif exit_reason == AgentCausedExitReason.OS_KILLED:
+            log_output(
+                f"[WARNING]:`{contract.name}` was killed by the OS (exit code {_OS_KILL_EXIT_CODE}, likely out-of-memory). The process has been terminated and evaluation will proceed."
+            )
 
-    await upload_outputs()
+        await upload_outputs()
 
-    # Return why the agent terminated abnormally, or None on clean exit
-    return exit_reason, agent_run_time
+        # Return why the agent terminated abnormally, or None on clean exit
+        return exit_reason, agent_run_time
+    finally:
+        if agent_started and on_model_api_cost is not None:
+            model_api_cost = await read_model_api_cost_report(sandbox, log_output)
+            if model_api_cost is not None:
+                try:
+                    await on_model_api_cost(model_api_cost)
+                except Exception:
+                    logger.warning("Failed to persist model/API cost report", exc_info=True)
+                    log_output("[WARNING]: Model/API cost report could not be persisted")

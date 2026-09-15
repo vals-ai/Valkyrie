@@ -32,6 +32,8 @@ valkyrie run fetch <run-id> --connect --format jsonl
 
 Connected text output starts with the run's identity and metadata, then the progress updates. JSONL starts with a `snapshot` record and continues with `update` records until the stream ends, at which point it emits `complete`, `error`, `stopped`, `disconnect`, or `interrupted`.
 
+Text output shows the exact agent-reported model/API cost accumulated across task attempts. Machine-readable snapshots expose the same amount as the decimal string `model_api_cost_usd`. The value is `Unavailable` in text and `null` in JSON when any started attempt did not provide a valid report. Valkyrie does not estimate this cost or query provider billing.
+
 Exit code 0 only means the CLI handled the tracker response or stream event, not that the benchmark succeeded, so read the run `status` and each JSONL record's `event` to know how it went.
 
 ### Machine-readable output

@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -13,7 +14,7 @@ from pydantic import (
     field_validator,
     model_serializer,
 )
-from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
+from sqlalchemy import Boolean, Connection, Dialect, Index, Numeric, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
     JSON,
@@ -573,6 +574,9 @@ class Task(SQLModel, table=True):
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     finished_at: datetime | None = None
     eval_resume_state: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    model_api_cost_usd: Decimal | None = Field(default=Decimal("0"), sa_column=Column(Numeric(), nullable=True))
+    model_api_cost_attempt_count: int | None = Field(default=0, nullable=True)
+    model_api_cost_report_count: int | None = Field(default=0, nullable=True)
     benchmark: UUID = Field(foreign_key="benchmark.id")
     task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")
 

@@ -1,11 +1,17 @@
 """Run progress rendering and streaming helpers."""
 
+from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
 import click
 from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
-from tracker.types import BenchmarkDetails, FetchBenchmarkMetadataResponse, FetchBenchmarkResponse
+from tracker.types import (
+    BenchmarkDetails,
+    FetchBenchmarkMetadataResponse,
+    FetchBenchmarkResponse,
+    format_model_api_cost_usd,
+)
 
 from valkyrie.cli.display import local_time, terminal_safe
 from valkyrie.cli.run.snapshot import fetch_run_metadata, format_run_snapshot_json
@@ -58,6 +64,12 @@ class BenchmarkFormatter:
         return f"{' │ '.join(parts)}" if parts else ""
 
 
+def _format_model_api_cost(value: Decimal | None) -> str:
+    if value is None:
+        return "Unavailable"
+    return f"${format_model_api_cost_usd(value)}"
+
+
 def _display_run_error(benchmark_response: FetchBenchmarkResponse) -> None:
     """Display the stored run error as terminal-safe red text.
 
@@ -89,6 +101,7 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     click.echo(f"│ {'Started at:':<12} {local_time(details.started_at)}")
     if benchmark_response.final_score is not None:
         click.echo(f"│ {'Final score:':<12} {benchmark_response.final_score:.1f}%")
+    click.echo(f"│ {'Model/API cost:':<16} {_format_model_api_cost(details.model_api_cost_usd)}")
     click.echo(f"│ {'S3:':<12} {benchmark_response.s3_bucket_url}")
     analysis_line = _format_docent_analysis(details, benchmark_response.benchmark_id)
     if analysis_line is not None:
@@ -194,7 +207,8 @@ def stream_benchmark_status(
         click.echo(
             f"[{bar}] {initial_details.finished_tasks}/{initial_details.total_tasks} ({progress_pct:.1f}%) • {status_text}"
         )
-        click.echo(BenchmarkFormatter.format_task_breakdown(initial_details.task_breakdown), nl=False)
+        click.echo(BenchmarkFormatter.format_task_breakdown(initial_details.task_breakdown))
+        click.echo(f"Model/API cost: {_format_model_api_cost(initial_details.model_api_cost_usd)}", nl=False)
 
     latest = initial
 
@@ -221,8 +235,12 @@ def stream_benchmark_status(
                     f"[{bar}] {details.finished_tasks}/{details.total_tasks} ({progress_pct:.1f}%) • {status_text}"
                 )
                 breakdown_text = BenchmarkFormatter.format_task_breakdown(details.task_breakdown)
+                model_api_cost = _format_model_api_cost(details.model_api_cost_usd)
 
-                click.echo(f"\033[F\033[K{progress_line}\n\033[K{breakdown_text}", nl=False)
+                click.echo(
+                    f"\033[F\033[F\033[K{progress_line}\n\033[K{breakdown_text}\n\033[KModel/API cost: {model_api_cost}",
+                    nl=False,
+                )
 
             elif event.startswith("event: complete"):
                 if output_format == "jsonl":

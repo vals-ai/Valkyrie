@@ -4,6 +4,7 @@ Exercise single-benchmark routes through the real app and local database.
 """
 
 import json
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -139,25 +140,37 @@ class TestBenchmarkStatusStream:
         assert streamed_statuses[0]["details"]["task_breakdown"] == {}
         assert streamed_statuses[1]["details"]["task_breakdown"] == {"FINISHED": 1}
 
+    @pytest.mark.parametrize(
+        ("report_count", "expected_cost"),
+        [(1, "0.123456789"), (0, None)],
+    )
     def test_terminal_benchmark_streams_status_and_completes(
         self,
         client: TestClient,
         database_session: Session,
+        report_count: int,
+        expected_cost: str | None,
     ) -> None:
-        """Terminal run streams must return persisted state and close without polling.
-
-        Test cases:
-        - A finished benchmark emits its current payload as a data event.
-        - The stream emits a completion event with SSE response headers.
-        """
+        """Terminal GET and SSE payloads must agree on exact and incomplete cost."""
         benchmark = make_benchmark(name="streamed-benchmark", status=BenchmarkStatus.FINISHED, session=database_session)
+        task = make_task(benchmark, "completed-task", status=TaskStatus.FINISHED)
+        task.model_api_cost_usd = Decimal("0.123456789")
+        task.model_api_cost_attempt_count = 1
+        task.model_api_cost_report_count = report_count
         database_session.add_all(
             [
-                make_task(benchmark, "completed-task", status=TaskStatus.FINISHED),
+                task,
                 FinalEvaluation(org_id=benchmark.org_id, benchmark=benchmark.id, final_score=0.75),
             ]
         )
         database_session.commit()
+
+        fetched = client.get(
+            "/fetch-benchmark",
+            params={"benchmark_id": str(benchmark.id)},
+            headers=_HARNESS_HEADERS,
+        )
+        assert fetched.status_code == 200
 
         with client.stream(
             "GET",
@@ -172,7 +185,10 @@ class TestBenchmarkStatusStream:
         assert response.headers["cache-control"] == "no-cache"
         assert event_lines[-1] == "event: complete"
 
+        fetched_status = fetched.json()
         streamed_status = json.loads(event_lines[0].removeprefix("data: "))
+        assert fetched_status["details"]["model_api_cost_usd"] == expected_cost
+        assert streamed_status["details"]["model_api_cost_usd"] == expected_cost
         assert streamed_status["benchmark_id"] == str(benchmark.id)
         assert streamed_status["benchmark_name"] == "streamed-benchmark"
         assert streamed_status["details"]["status"] == "FINISHED"

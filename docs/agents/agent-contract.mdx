@@ -193,6 +193,26 @@ benchmarks/run_id/task_0/artifacts/config.json
 benchmarks/run_id/task_0/artifacts/result.json
 ```
 
+### Model/API cost report
+
+Before `run_cmd` exits, an agent can report its model and API spend for the current attempt by writing:
+
+```text
+/tmp/valkyrie/model_api_cost.json
+```
+
+The file must be at most 4 KiB. It must contain one JSON object with exactly one key, `model_api_cost_usd`. Its value must be a non-negative, finite USD decimal string:
+
+```json
+{"model_api_cost_usd": "0.123456"}
+```
+
+The amount is for the current attempt, not the whole task or run. Write `"0"` when the attempt has no model or API cost. Scientific notation is accepted only when its plain fixed-point form is also at most 4 KiB.
+
+Valkyrie adds valid reports across retries and resumed attempts. If any started attempt does not provide a valid report, the run cost is unavailable. A missing or invalid report does not change the task result.
+
+This reserved report does not belong in `output_artifacts` and is not uploaded. Valkyrie does not query provider billing or estimate token, sandbox, or compute costs.
+
 ### `egress_allowlist: list`
 
 URLs the agent may reach while `run_cmd` is running. Use this to allow model provider requests while denying other outbound requests from the agent sandbox; the sandbox provider resolves each host into its network rules at run time.

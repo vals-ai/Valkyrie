@@ -11,6 +11,7 @@
         "IN_PROGRESS": 1,
         "FINISHED": 1
       },
+      "model_api_cost_usd": "0.30",
       "docent_reading_status": "IDLE",
       "docent_reading_url": null
     },
@@ -37,6 +38,7 @@
           "IN_PROGRESS": 1,
           "FINISHED": 1
         },
+        "model_api_cost_usd": "0.30",
         "docent_reading_status": "IDLE",
         "docent_reading_url": null
       },
