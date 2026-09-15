@@ -3,6 +3,7 @@
 import asyncio
 import time
 from contextlib import suppress
+from types import TracebackType
 
 from tracker.logging import get_logger
 from tracker.runtime.lifecycle import finish_cleanup
@@ -22,6 +23,17 @@ class TaskLogBuffer:
         self._flush_task = asyncio.create_task(self._auto_flush())
         self._close_task: asyncio.Task[None] | None = None
         self.last_log_time = time.monotonic()
+
+    async def __aenter__(self) -> "TaskLogBuffer":
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.close()
 
     def write(self, data: str) -> None:
         self.last_log_time = time.monotonic()

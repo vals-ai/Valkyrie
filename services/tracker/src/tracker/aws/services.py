@@ -21,6 +21,7 @@ from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.s3 import S3ArtifactLocations, S3ObjectStore
 from tracker.aws.secrets import SecretsManagerStore
 from tracker.runtime.services import RuntimeServices
+from tracker.runtime.secrets import resolve_secrets
 from tracker.types import StartBenchmarkRequest
 
 
@@ -30,22 +31,17 @@ class CloudRuntimeServices(RuntimeServices):
 
     aws_runtime: AWSRuntime
 
-    async def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
-        """Prepare logs and verify managed credentials before sandbox work."""
-        await to_thread(
-            self.logs.create_benchmark,
-            str(benchmark_id),
-            retention_days=self.aws_runtime.resources.log_retention_days,
-        )
+    def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
+        """Run synchronous AWS preflight checks together, before sandbox work."""
+        self.logs.create_benchmark(str(benchmark_id), retention_days=self.aws_runtime.resources.log_retention_days)
         if request.harness_config is not None:
             return
 
-        await self.get_sandbox_provider_config()
-        await self.resolve_secrets(request.contract.secrets)
+        resolve_secrets(request.contract.secrets, self.secrets)
         if request.webhook_secret_name and request.webhook_intervals:
-            await self.async_secrets.get_async(request.webhook_secret_name)
+            self.secrets.get(request.webhook_secret_name)
         if request.lambda_function:
-            await to_thread(dry_run_lambda, self.aws_runtime.clients, request.lambda_function)
+            dry_run_lambda(self.aws_runtime.clients, request.lambda_function)
 
 
 class CloudRuntimeConfig(BaseModel):
@@ -108,5 +104,5 @@ class CloudRuntimeConfig(BaseModel):
             sandbox_provider=request.sandbox_provider,
             sandbox_provider_secret_name=request.sandbox_provider_secret_reference,
         ) as runtime:
-            await runtime.prepare_execution(request, benchmark_id)
+            await to_thread(runtime.prepare_execution, request, benchmark_id)
             yield runtime

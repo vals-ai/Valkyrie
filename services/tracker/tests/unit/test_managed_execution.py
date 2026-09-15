@@ -17,6 +17,7 @@ from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.resolver import ManagedAWSEligibilityError
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.services import CloudRuntimeConfig
+from tracker.runtime.services import RuntimeServices
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org
 from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmarkRequest
 from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
@@ -332,8 +333,8 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         assert retention_days == aws_runtime.resources.log_retention_days
         calls.append("logs")
 
-    async def fetch_provider(_name: str, secret_store: object, _provider: str) -> SandboxProviderConfig:
-        assert secret_store is not aws_runtime.clients
+    async def fetch_provider(runtime: RuntimeServices, _name: str) -> SandboxProviderConfig:
+        assert runtime.async_secrets is not aws_runtime.clients
         calls.append("provider-secret")
         return provider_config
 
@@ -364,7 +365,8 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
 
     monkeypatch.setattr("tracker.aws.services.deployment_aws_runtime", deployment_runtime)
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
-    monkeypatch.setattr("tracker.runtime.services.fetch_sandbox_provider_config_async", fetch_provider)
+    monkeypatch.setattr("tracker.runtime.services.RuntimeServices._load_sandbox_provider_config", fetch_provider)
+    monkeypatch.setattr("tracker.aws.services.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.runtime.services.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.aws.services.dry_run_lambda", dry_run)
     monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", upload_results)
@@ -381,7 +383,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.FINISHED
-    assert calls[:4] == ["logs", "provider-secret", "agent-secrets", "lambda-dry-run"]
+    assert calls[:4] == ["logs", "agent-secrets", "lambda-dry-run", "provider-secret"]
     assert calls.count("agent-secrets") >= 2
     assert calls[-2:] == ["s3-final-upload", "lambda-post-run"]
     finalized_span = next(attributes for name, attributes in spans if name == "run.finalized")
@@ -424,8 +426,8 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         calls.append("lambda")
 
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
-    monkeypatch.setattr("tracker.runtime.services.fetch_sandbox_provider_config_async", fetch_provider)
-    monkeypatch.setattr("tracker.runtime.services.resolve_secrets", resolve_agent_secrets)
+    monkeypatch.setattr("tracker.runtime.services.RuntimeServices._load_sandbox_provider_config", fetch_provider)
+    monkeypatch.setattr("tracker.aws.services.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get_webhook_secret)
     monkeypatch.setattr("tracker.aws.services.dry_run_lambda", dry_run)
 
@@ -434,11 +436,11 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         sandbox_provider=request.sandbox_provider,
         sandbox_provider_secret_name=request.sandbox_provider_secret_reference,
     ) as runtime:
-        await runtime.prepare_execution(request, execution.benchmark_id)
+        runtime.prepare_execution(request, execution.benchmark_id)
         result = await runtime.get_sandbox_provider_config()
 
     assert result is provider_config
-    assert calls == ["logs", "sandbox_provider_secret", "agent_secrets", "webhook_secret", "lambda"]
+    assert calls == ["logs", "agent_secrets", "webhook_secret", "lambda", "sandbox_provider_secret"]
 
 
 async def test_managed_preflight_failure_happens_before_sandbox(

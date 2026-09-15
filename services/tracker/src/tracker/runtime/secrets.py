@@ -2,9 +2,7 @@
 
 from typing import Protocol, TypeAlias
 
-from benchmark_service import SandboxProviderConfig, sandbox_provider_config_from_mapping
-
-from tracker.exceptions import SecretsError, TrackerServiceError
+from tracker.exceptions import SecretsError
 
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -43,27 +41,3 @@ def resolve_secrets(secrets: dict[str, str], secret_store: SecretStore) -> dict[
         else:
             resolved[env_name] = str(secret_value)
     return resolved
-
-
-def _sandbox_provider_config_from_secret(secret: SecretValue, provider_type: str) -> SandboxProviderConfig:
-    if not isinstance(secret, dict):
-        raise TrackerServiceError("Expected sandbox provider secret to be a JSON object")
-    return sandbox_provider_config_from_mapping({**secret, "type": provider_type})
-
-
-def fetch_sandbox_provider_config(
-    secret_name: str,
-    secret_store: SecretStore,
-    provider_type: str,
-) -> SandboxProviderConfig:
-    """Resolve sandbox provider config from the selected provider type and secret."""
-    return _sandbox_provider_config_from_secret(secret_store.get(secret_name), provider_type)
-
-
-async def fetch_sandbox_provider_config_async(
-    secret_name: str,
-    secret_store: AsyncSecretStore,
-    provider_type: str,
-) -> SandboxProviderConfig:
-    """Resolve sandbox provider config without blocking the caller's event loop."""
-    return _sandbox_provider_config_from_secret(await secret_store.get_async(secret_name), provider_type)
