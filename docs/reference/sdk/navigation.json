@@ -1,21 +1,25 @@
 [
   "reference/sdk/index",
   "reference/sdk/client",
+  "reference/sdk/artifacts",
   "reference/sdk/runs",
   "reference/sdk/benchmarks",
   "reference/sdk/agents",
   "reference/sdk/services",
   "reference/sdk/logs",
+  "reference/sdk/scheduler",
   {
     "group": "Types",
     "pages": [
       "reference/sdk/models/index",
+      "reference/sdk/models/artifacts",
       "reference/sdk/models/agents",
       "reference/sdk/models/runs",
       "reference/sdk/models/benchmarks",
       "reference/sdk/models/services",
       "reference/sdk/models/config",
       "reference/sdk/models/logs",
+      "reference/sdk/models/scheduler",
       "reference/sdk/errors"
     ]
   }

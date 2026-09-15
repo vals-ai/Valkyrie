@@ -12,6 +12,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    FiniteFloat,
     PlainSerializer,
     field_serializer,
     field_validator,
@@ -536,9 +537,28 @@ class SchedulerActiveStatus(str, Enum):
     EVALUATING = "EVALUATING"
 
 
+class SchedulerResourceCapacityResponse(BaseModel):
+    available: FiniteFloat = Field(ge=0)
+    total: FiniteFloat = Field(ge=0)
+
+
+class SchedulerCapacityResponse(BaseModel):
+    cpu: SchedulerResourceCapacityResponse
+    memory: SchedulerResourceCapacityResponse
+    disk: SchedulerResourceCapacityResponse
+
+
+class SchedulerCapacityDomainResponse(BaseModel):
+    target_id: str = Field(min_length=1)
+    sandbox_class: str = Field(min_length=1)
+    capacity: SchedulerCapacityResponse
+
+
 class SchedulerPoolResponse(BaseModel):
     pool_id: str
     waiting: int
+    provider: str | None = None
+    capacity_domains: list[SchedulerCapacityDomainResponse] | None = None
 
 
 class SchedulerWaitingEntryResponse(BaseModel):
@@ -571,3 +591,5 @@ class SchedulerOverviewResponse(BaseModel):
     active_entries: list[SchedulerActiveEntryResponse]
     waiting_capped: bool
     active_capped: bool
+    waiting_next_offset: int | None = Field(description="Next waiting offset, or null when this list is exhausted.")
+    active_next_offset: int | None = Field(description="Next active offset, or null when this list is exhausted.")

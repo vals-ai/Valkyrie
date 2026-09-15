@@ -33,6 +33,7 @@ from valkyrie.sdk.models.runs import (
     FetchBenchmarkMetadataResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
+    FilterOptionsResponse,
     FinalEvaluation,
     FinalViewResponse,
     Order,
@@ -44,7 +45,20 @@ from valkyrie.sdk.models.runs import (
     StartBenchmarkRequest,
     StartBenchmarkResponse,
     StopBenchmarkResponse,
+    UpdateBenchmarkConcurrencyRequest,
+    UpdateBenchmarkConcurrencyResponse,
     TaskStatus,
+)
+from valkyrie.sdk.models.scheduler import (
+    SchedulerActiveEntryResponse,
+    SchedulerActiveStatus,
+    SchedulerCapacityDomainResponse,
+    SchedulerCapacityResponse,
+    SchedulerOverviewResponse,
+    SchedulerPoolResponse,
+    SchedulerResourceCapacityResponse,
+    SchedulerSummaryResponse,
+    SchedulerWaitingEntryResponse,
 )
 from valkyrie.sdk.models.services import (
     BenchmarkServiceCatalogResponse,
@@ -57,6 +71,9 @@ from valkyrie.sdk.models.services import (
 )
 
 __all__ = [
+    "RunArtifactEntry",
+    "RunArtifactsResponse",
+    "RunArtifactDownloadResponse",
     "AWSCredentials",
     "AgentContractRequest",
     "AgentDownloadURLResponse",
@@ -82,6 +99,7 @@ __all__ = [
     "FetchBenchmarkTasksRequest",
     "FetchBenchmarksRequest",
     "FetchBenchmarksResponse",
+    "FilterOptionsResponse",
     "FetchTasksRequest",
     "FinalEvaluation",
     "FinalViewResponse",
@@ -96,14 +114,27 @@ __all__ = [
     "RetryMode",
     "RetryOrResumeBenchmarkResponse",
     "S3UploadResultsResponse",
+    "SchedulerActiveEntryResponse",
+    "SchedulerActiveStatus",
+    "SchedulerCapacityDomainResponse",
+    "SchedulerCapacityResponse",
+    "SchedulerOverviewResponse",
+    "SchedulerPoolResponse",
+    "SchedulerResourceCapacityResponse",
+    "SchedulerSummaryResponse",
+    "SchedulerWaitingEntryResponse",
     "SingleBenchmarkResponse",
     "SingleTaskResponse",
     "StartBenchmarkRequest",
     "StartBenchmarkResponse",
     "StopBenchmarkResponse",
+    "UpdateBenchmarkConcurrencyRequest",
+    "UpdateBenchmarkConcurrencyResponse",
     "TaskStatus",
     "TaskArtifactsResponse",
     "TaskIDsResponse",
     "TasksResponse",
     "TaskSummary",
 ]
+
+from valkyrie.sdk.models.artifacts import RunArtifactEntry, RunArtifactsResponse, RunArtifactDownloadResponse

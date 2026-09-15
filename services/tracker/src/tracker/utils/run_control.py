@@ -2,6 +2,8 @@
 
 import asyncio
 from collections.abc import AsyncGenerator
+import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -11,12 +13,13 @@ from benchmark_service import (
     SandboxProvider,
     SandboxQuery,
 )
-from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
+from benchmark_service.client import BenchmarkServiceError
 from sqlmodel import Session, asc, col, func, or_, select, update
 
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
+    ExecutorDispatch,
     Org,
     RetryMode,
     Task,
@@ -153,46 +156,115 @@ async def force_stop_sandboxes(
             logger.exception("Unable to close provider client for benchmark %s", benchmark_row.id)
 
 
-async def reset_to_in_progress_status(
+@dataclass(frozen=True)
+class RetryState:
+    """Verification inputs and eligibility version, never session-owned objects."""
+
+    task_ids: tuple[str, ...]
+    version: str
+
+
+def _retry_candidates(
     benchmark_row: Benchmark,
     session: Session,
-    benchmark_service: BenchmarkServiceClient,
+    retry: bool,
+    rerun_task_ids: list[str],
+    org: Org,
+    *,
+    for_update: bool = False,
+) -> tuple[list[Task], list[str]]:
+    query = (
+        select(Task)
+        .where(*_retry_task_filters(benchmark_row, retry, rerun_task_ids, org))
+        .order_by(asc(Task.started_at), asc(Task.id))
+    )
+    if for_update:
+        query = query.with_for_update()
+    existing_rows = list(session.exec(query).all())
+    existing_ids = {task.task_id for task in existing_rows}
+    new_task_ids = [task_id for task_id in rerun_task_ids if task_id not in existing_ids]
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and new_task_ids:
+        raise TrackerServiceError(
+            f"{', '.join(new_task_ids)} cannot be retried while run {benchmark_row.id} is in progress because they are not in ERROR status"
+        )
+    return existing_rows, new_task_ids
+
+
+def prepare_retry_state(
+    benchmark_row: Benchmark,
+    session: Session,
+    retry: bool,
+    rerun_task_ids: list[str],
+    org: Org,
+    *,
+    queued_recovery: bool = False,
+    for_update: bool = False,
+) -> RetryState:
+    """Read a retry snapshot without acquiring locks or changing lifecycle state."""
+    if queued_recovery:
+        query = (
+            select(Task)
+            .where(Task.benchmark == benchmark_row.id, Task.org_id == org.id)
+            .where(
+                col(Task.status).in_(
+                    [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+                )
+            )
+            .order_by(asc(Task.started_at), asc(Task.id))
+        )
+        if for_update:
+            query = query.with_for_update()
+        rows = list(session.exec(query).all())
+        new_task_ids: list[str] = []
+    else:
+        rows, new_task_ids = _retry_candidates(
+            benchmark_row, session, retry, rerun_task_ids, org, for_update=for_update
+        )
+    version = json.dumps(
+        {
+            "dispatch": session.exec(
+                select(ExecutorDispatch.id)
+                .where(ExecutorDispatch.benchmark_id == benchmark_row.id)
+                .order_by(col(ExecutorDispatch.created_at).desc(), col(ExecutorDispatch.id).desc())
+                .limit(1)
+            ).first(),
+            "status": benchmark_row.status,
+            "started_at": benchmark_row.started_at,
+            "finished_at": benchmark_row.finished_at,
+            "release": benchmark_row.current_execution_release_id,
+            "name": benchmark_row.name,
+            "destination": benchmark_row.custom_benchmark_service,
+            "dataset": benchmark_row.arguments.dataset,
+            "queue_pool_id": benchmark_row.arguments.queue_pool_id,
+            "aws_managed": benchmark_row.aws_managed,
+            "tasks": [(row.id, row.task_id, row.status, row.started_at, row.eval_resume_state) for row in rows],
+        },
+        default=str,
+        sort_keys=True,
+    )
+    return RetryState(tuple([row.task_id for row in rows] + new_task_ids), version)
+
+
+def reset_to_in_progress_status(
+    benchmark_row: Benchmark,
+    session: Session,
     retry: bool,
     retry_mode: RetryMode,
     rerun_task_ids: list[str],
     org: Org,
+    verified_task_ids: list[str],
 ) -> list[str]:
-    """
-    Resets valid tasks to in progress and to allow for retrying or resuming the benchmark.
+    """Apply an externally verified retry inside the caller's locked transaction.
 
-    Retry: we reset objects with an error status ontop of the stopped status
-    Rerun Task IDs: even if task has been finished we restart it. If the task has no
-        row yet, a fresh PENDING row is created when valid in the current dataset.
-
-    Benchmark - In progress status
-    Tasks - Pending status, or Evaluating status when retrying durable eval state
-
-    NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
+    Retry resets error/stopped tasks; new valid task IDs receive fresh PENDING rows.
+    Benchmark becomes IN_PROGRESS; durable evaluation tasks retain EVALUATING.
     """
     try:
         # Serialize retries with final-score persistence for this benchmark.
         benchmark_row = fetch_benchmark_row(benchmark_row.id, session, org, for_update=True)
-        existing_rows = session.exec(
-            select(Task)
-            .where(*_retry_task_filters(benchmark_row, retry, rerun_task_ids, org))
-            .order_by(asc(Task.started_at))
-        ).all()
-        existing_by_task_id: dict[str, Task] = {task.task_id: task for task in existing_rows}
-
-        if benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
-            missing_task_ids = [task_id for task_id in rerun_task_ids if task_id not in existing_by_task_id]
-            if missing_task_ids:
-                raise TrackerServiceError(
-                    f"{', '.join(missing_task_ids)} cannot be retried while run {benchmark_row.id} is in progress because they are not in ERROR status"
-                )
-            new_task_ids = []
-        else:
-            new_task_ids = [tid for tid in rerun_task_ids if tid not in existing_by_task_id]
+        existing_rows, new_task_ids = _retry_candidates(
+            benchmark_row, session, retry, rerun_task_ids, org, for_update=True
+        )
 
         # Allow re-running the end of the benchmark without running any tasks
         if not existing_rows and not new_task_ids:
@@ -205,13 +277,6 @@ async def reset_to_in_progress_status(
                 benchmark_row.finished_at = None
                 session.add(benchmark_row)
             return []
-
-        # Verify the task ids are still valid before priming to resume
-        # Raises if any task ids are invalid
-        all_requested_task_ids = [task.task_id for task in existing_rows] + new_task_ids
-        verify_response = await benchmark_service.verify_task_ids(
-            task_ids=all_requested_task_ids, slice_str=None, dataset=benchmark_row.arguments.dataset
-        )
 
         old_evaluation = benchmark_row.final_evaluation
         if old_evaluation is not None:
@@ -246,7 +311,7 @@ async def reset_to_in_progress_status(
         for task_id in new_task_ids:
             session.add(Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING))
 
-        return verify_response.task_ids
+        return verified_task_ids
     except (TrackerServiceError, BenchmarkServiceError):
         raise
     except Exception as e:

@@ -112,7 +112,7 @@ BENCH_CONFIG = StageConfig(
         instance_class="r7g.large",
         allocated_storage_gb=20,
         backup_retention_days=7,
-        connection_alarm_threshold=135,
+        connection_alarm_threshold=1400,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_YEAR,
     managed_aws=ManagedAWSRuntimeConfig(
@@ -134,7 +134,7 @@ PROD_CONFIG = StageConfig(
         instance_class="r7g.large",
         allocated_storage_gb=20,
         backup_retention_days=7,
-        connection_alarm_threshold=135,
+        connection_alarm_threshold=1400,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_YEAR,
     managed_aws=ManagedAWSRuntimeConfig(

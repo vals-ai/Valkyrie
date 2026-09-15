@@ -74,6 +74,18 @@ def classify_benchmark_service_destination(
     return BenchmarkServiceDestination.CUSTOM
 
 
+def _positive_int_setting(name: str, default: int) -> int:
+    value = int(os.environ.get(name, str(default)))
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+
+    return value
+
+
+AGENT_UPLOAD_MAX_BYTES = _positive_int_setting("AGENT_UPLOAD_MAX_BYTES", 1073741824)
+AGENT_ARCHIVE_MAX_EXPANDED_BYTES = _positive_int_setting("AGENT_ARCHIVE_MAX_EXPANDED_BYTES", 5368709120)
+AGENT_ARCHIVE_MAX_ENTRIES = _positive_int_setting("AGENT_ARCHIVE_MAX_ENTRIES", 100000)
+
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
 AWS_DEPLOYMENT_ROLE_ORG_IDS = os.environ.get("AWS_DEPLOYMENT_ROLE_ORG_IDS", "")
 AWS_DEPLOYMENT_REGION = os.environ.get("AWS_DEPLOYMENT_REGION") or os.environ.get("AWS_REGION")

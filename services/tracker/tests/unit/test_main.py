@@ -1006,15 +1006,15 @@ class TestTrackerAPI:
     ) -> None:
         copy_agent = AsyncMock(return_value=StoredObjectCopy(deletion_token="copy-version"))
         delete_agent_copy = AsyncMock()
-        commit = database_session.commit
 
-        def commit_then_fail() -> None:
-            commit()
-            raise RuntimeError("commit acknowledgement lost")
+        class LostAcknowledgementSession(Session):
+            def commit(self) -> None:
+                super().commit()
+                raise RuntimeError("commit acknowledgement lost")
 
         monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent)
         monkeypatch.setattr(main_module.S3ObjectStore, "delete", delete_agent_copy)
-        monkeypatch.setattr(database_session, "commit", commit_then_fail)
+        monkeypatch.setattr(main_module, "Session", LostAcknowledgementSession)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
         request = StartBenchmarkRequest(
             contract=contract,
