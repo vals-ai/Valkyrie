@@ -13,7 +13,6 @@ from tracker.aws.clients import AWSClientProvider, ExplicitCredentialsAWSClientP
 
 if TYPE_CHECKING:
     from tracker.types import HarnessConfig
-    from tracker.database.models import BenchmarkArguments
     from tracker.runtime.services import RuntimeServices
 
 
@@ -55,11 +54,10 @@ class CloudRuntimeConfig(BaseModel):
         self,
         *,
         clients: AWSClientProvider,
-        arguments: BenchmarkArguments | None = None,
+        sandbox_provider: str = "daytona",
+        sandbox_provider_secret_name: str | None = None,
     ) -> AsyncGenerator[RuntimeServices]:
         """Compose existing AWS adapters without resolving credentials again."""
-        from benchmark_service import SandboxProviderConfig
-
         from tracker.aws.cloudwatch_logs import (
             CloudWatchBenchmarkLogLocations,
             CloudWatchBenchmarkLogSink,
@@ -67,23 +65,10 @@ class CloudRuntimeConfig(BaseModel):
         )
         from tracker.aws.s3 import S3ArtifactLocations, S3ObjectStore
         from tracker.aws.secrets import SecretsManagerStore
-        from tracker.exceptions import InvalidSandboxConfigurationError
         from tracker.runtime.services import RuntimeServices
-        from tracker.utils.resources import fetch_sandbox_provider_config_async
 
         runtime = AWSRuntime(resources=self.properties, clients=clients)
         secrets = SecretsManagerStore(clients)
-
-        async def load_sandbox_config() -> SandboxProviderConfig:
-            if arguments is None or not arguments.sandbox_provider_secret_name:
-                raise InvalidSandboxConfigurationError(
-                    "Sandbox access requires run arguments and a provider secret name"
-                )
-            return await fetch_sandbox_provider_config_async(
-                arguments.sandbox_provider_secret_name,
-                secrets,
-                arguments.sandbox_provider,
-            )
 
         services = RuntimeServices(
             objects=S3ObjectStore(runtime),
@@ -93,8 +78,10 @@ class CloudRuntimeConfig(BaseModel):
             log_reader=CloudWatchLogProvider(clients, self.properties.log_group),
             log_locations=CloudWatchBenchmarkLogLocations(self.properties),
             artifacts=S3ArtifactLocations(self.properties),
-            _load_sandbox_config=load_sandbox_config,
+            sandbox_provider=sandbox_provider,
+            sandbox_provider_secret_name=sandbox_provider_secret_name,
         )
+
         try:
             yield services
         finally:
