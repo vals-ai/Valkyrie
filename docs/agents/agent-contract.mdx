@@ -211,6 +211,8 @@ The amount is for the current attempt, not the whole task or run. Write `"0"` wh
 
 Valkyrie adds valid reports across retries and resumed attempts. If any started attempt does not provide a valid report, the run cost is unavailable. A missing or invalid report does not change the task result.
 
+`valkyrie run fetch` shows the total in text and connected updates. JSON/JSONL snapshots expose it as the decimal string `model_api_cost_usd`; unavailable totals appear as `Unavailable` in text and `null` in JSON.
+
 This reserved report does not belong in `output_artifacts` and is not uploaded. Valkyrie does not query provider billing or estimate token, sandbox, or compute costs.
 
 ### `egress_allowlist: list`

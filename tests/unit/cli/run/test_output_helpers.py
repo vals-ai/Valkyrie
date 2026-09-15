@@ -8,7 +8,6 @@ import tarfile
 import tempfile
 from collections.abc import Iterator
 from datetime import datetime, timezone
-from decimal import Decimal
 from importlib import import_module
 from pathlib import Path
 from typing import cast
@@ -82,7 +81,6 @@ def test_format_benchmark_status_prints_terminal_details(capsys: pytest.CaptureF
             total_tasks=4,
             finished_tasks=3,
             task_breakdown={TaskStatus.FINISHED: 3, TaskStatus.ERROR: 1},
-            model_api_cost_usd=Decimal("0.30"),
             docent_reading_status=DocentReadingStatus.IDLE,
         ),
         s3_bucket_url="https://example.com/run",
@@ -93,8 +91,6 @@ def test_format_benchmark_status_prints_terminal_details(capsys: pytest.CaptureF
 
     output = capsys.readouterr().out
     assert "Final score:" in output
-    assert "Model/API cost:" in output
-    assert "$0.30" in output
     assert "83.2%" in output
     assert "3/4 (75.0%)" in output
 
@@ -117,8 +113,6 @@ def test_format_benchmark_status_prints_terminal_details(capsys: pytest.CaptureF
 
     error_output = capsys.readouterr().out
     assert "Error:" in error_output
-    assert "Model/API cost:" in error_output
-    assert "Unavailable" in error_output
     assert "Dominant task error affecting 4/4 tasks" in error_output
 
 
@@ -142,23 +136,6 @@ def test_connected_fetch_prints_rich_identity(capsys: pytest.CaptureFixture[str]
     assert "API_KEY" not in output
     assert "secret" not in output
     assert tracker.metadata_calls == 1
-
-
-def test_connected_fetch_updates_cost_to_unavailable(capsys: pytest.CaptureFixture[str]) -> None:
-    run_id = uuid4()
-    finished = make_fetch_response(run_id, status=BenchmarkStatus.FINISHED, finished_tasks=4)
-    tracker = StubProgressTracker(
-        make_fetch_response(run_id, model_api_cost_usd=Decimal("0.10")),
-        make_fetch_metadata(run_id),
-        events=(f"data: {finished.model_dump_json()}", "event: complete"),
-    )
-
-    stream_benchmark_status(cast(TrackerService, tracker), run_id, show_identity=True)
-
-    output = capsys.readouterr().out
-    assert "Model/API cost: $0.10" in output
-    assert "Model/API cost: Unavailable" in output
-    assert "✓ Run completed!" in output
 
 
 def test_connected_fetch_uses_terminal_error_status(capsys: pytest.CaptureFixture[str]) -> None:
@@ -192,7 +169,6 @@ def test_connected_fetch_uses_terminal_error_status(capsys: pytest.CaptureFixtur
         total_tasks=0,
         finished_tasks=0,
         task_breakdown={},
-        model_api_cost_usd=Decimal("0.30"),
     ).model_copy(update={"error_message": error_message})
 
     # Live streams should trust the final payload status over the event name.
@@ -206,7 +182,6 @@ def test_connected_fetch_uses_terminal_error_status(capsys: pytest.CaptureFixtur
 
     live_output = capsys.readouterr().out
     assert "0/0 (0.0%)" in live_output
-    assert "Model/API cost: $0.30" in live_output
     assert "✗ Run errored." in live_output
     assert "✓ Run completed!" not in live_output
     assert f"Error: {error_message}" in live_output

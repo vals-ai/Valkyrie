@@ -71,7 +71,8 @@ def invoke_with_tracker(
 
 def test_run_snapshot_is_versioned_allowlisted_and_stable() -> None:
     run_id = uuid4()
-    response = make_fetch_response(run_id, model_api_cost_usd=Decimal("0.123456789012345678"))
+    response = make_fetch_response(run_id)
+    response.details.model_api_cost_usd = Decimal("0.123456789012345678")
     metadata = make_fetch_metadata(run_id)
     observed_at = datetime(2026, 7, 9, 13, 0, tzinfo=timezone.utc)
 
@@ -105,10 +106,9 @@ def test_run_snapshot_is_versioned_allowlisted_and_stable() -> None:
 
 def test_fetch_json_outputs_one_clean_object(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
-    tracker = StubFetchTracker(
-        make_fetch_response(run_id, model_api_cost_usd=Decimal("0.30")),
-        make_fetch_metadata(run_id),
-    )
+    response = make_fetch_response(run_id)
+    response.details.model_api_cost_usd = Decimal("0.30")
+    tracker = StubFetchTracker(response, make_fetch_metadata(run_id))
 
     result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--format", "json"])
 
@@ -170,10 +170,12 @@ def test_fetch_jsonl_outputs_only_snapshot_update_and_terminal_records(monkeypat
         status=BenchmarkStatus.FINISHED,
         finished_tasks=4,
         final_score=75.0,
-        model_api_cost_usd=Decimal("0.30"),
     )
+    finished.details.model_api_cost_usd = Decimal("0.30")
+    initial = make_fetch_response(run_id)
+    initial.details.model_api_cost_usd = Decimal("0.10")
     tracker = StubFetchTracker(
-        make_fetch_response(run_id, model_api_cost_usd=Decimal("0.10")),
+        initial,
         make_fetch_metadata(run_id),
         events=[f"data: {finished.model_dump_json()}", "event: complete"],
     )
@@ -305,3 +307,34 @@ def test_fetch_rejects_mismatched_machine_format(
 
     assert result.exit_code == 2
     assert expected_error in result.output
+
+
+@pytest.mark.parametrize("cost", [Decimal("0.30"), None])
+@pytest.mark.parametrize("connect", [False, True])
+@pytest.mark.parametrize("status", [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR])
+def test_fetch_text_reports_cost(
+    monkeypatch: pytest.MonkeyPatch,
+    cost: Decimal | None,
+    connect: bool,
+    status: BenchmarkStatus,
+) -> None:
+    """Fetch and connected updates show exact costs or an unavailable total."""
+    run_id = uuid4()
+    finished = make_fetch_response(run_id, status=status, finished_tasks=4)
+    finished.details.model_api_cost_usd = cost
+    initial = make_fetch_response(run_id)
+    initial.details.model_api_cost_usd = Decimal("0.10")
+    tracker = StubFetchTracker(
+        initial if connect else finished,
+        make_fetch_metadata(run_id),
+        events=[f"data: {finished.model_dump_json()}", "event: complete"],
+    )
+
+    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id)] + (["--connect"] if connect else []))
+
+    assert result.exit_code == 0, result.output
+    assert "Model/API cost:" in result.output
+    assert ("$0.30" if cost is not None else "Unavailable") in result.output
+    if connect:
+        assert "Model/API cost: $0.10" in result.output
+        assert ("Run completed!" if status == BenchmarkStatus.FINISHED else "Run errored.") in result.output

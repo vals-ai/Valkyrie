@@ -1,7 +1,6 @@
 """Factories for CLI response objects with deterministic defaults."""
 
 from datetime import datetime, timezone
-from decimal import Decimal
 from uuid import UUID
 
 from tracker.database.models import (
@@ -22,7 +21,6 @@ def make_fetch_response(
     finished_tasks: int = 1,
     task_breakdown: dict[TaskStatus, int] | None = None,
     final_score: float | None = None,
-    model_api_cost_usd: Decimal | None = None,
 ) -> FetchBenchmarkResponse:
     """Build a run response with configurable progress and terminal state."""
     return FetchBenchmarkResponse(
@@ -39,7 +37,6 @@ def make_fetch_response(
                 TaskStatus.FINISHED: finished_tasks,
                 TaskStatus.IN_PROGRESS: total_tasks - finished_tasks,
             },
-            model_api_cost_usd=model_api_cost_usd,
             docent_reading_status=DocentReadingStatus.IDLE,
         ),
         s3_bucket_url="s3://example/run",
