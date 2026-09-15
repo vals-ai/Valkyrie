@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+
+from pydantic import BaseModel
 
 from tracker.aws.clients import AWSClientProvider, ExplicitCredentialsAWSClientProvider
 
 if TYPE_CHECKING:
     from tracker.types import HarnessConfig
+    from tracker.database.models import BenchmarkArguments
+    from tracker.runtime.services import RuntimeServices
 
 
 @dataclass(frozen=True)
@@ -36,3 +42,60 @@ class AWSRuntime:
             ),
             clients=ExplicitCredentialsAWSClientProvider(harness_config.aws),
         )
+
+
+class CloudRuntimeConfig(BaseModel):
+    """Non-secret configuration for services using resolved AWS authority."""
+
+    environment: Literal["aws"] = "aws"
+    properties: AWSResources
+
+    @asynccontextmanager
+    async def create_runtime(
+        self,
+        *,
+        clients: AWSClientProvider,
+        arguments: BenchmarkArguments | None = None,
+    ) -> AsyncGenerator[RuntimeServices]:
+        """Compose existing AWS adapters without resolving credentials again."""
+        from benchmark_service import SandboxProviderConfig
+
+        from tracker.aws.cloudwatch_logs import (
+            CloudWatchBenchmarkLogLocations,
+            CloudWatchBenchmarkLogSink,
+            CloudWatchLogProvider,
+        )
+        from tracker.aws.s3 import S3ArtifactLocations, S3ObjectStore
+        from tracker.aws.secrets import SecretsManagerStore
+        from tracker.exceptions import InvalidSandboxConfigurationError
+        from tracker.runtime.services import RuntimeServices
+        from tracker.utils.resources import fetch_sandbox_provider_config_async
+
+        runtime = AWSRuntime(resources=self.properties, clients=clients)
+        secrets = SecretsManagerStore(clients)
+
+        async def load_sandbox_config() -> SandboxProviderConfig:
+            if arguments is None or not arguments.sandbox_provider_secret_name:
+                raise InvalidSandboxConfigurationError(
+                    "Sandbox access requires run arguments and a provider secret name"
+                )
+            return await fetch_sandbox_provider_config_async(
+                arguments.sandbox_provider_secret_name,
+                secrets,
+                arguments.sandbox_provider,
+            )
+
+        services = RuntimeServices(
+            objects=S3ObjectStore(runtime),
+            secrets=secrets,
+            async_secrets=secrets,
+            logs=CloudWatchBenchmarkLogSink(clients, self.properties.log_group),
+            log_reader=CloudWatchLogProvider(clients, self.properties.log_group),
+            log_locations=CloudWatchBenchmarkLogLocations(self.properties),
+            artifacts=S3ArtifactLocations(self.properties),
+            _load_sandbox_config=load_sandbox_config,
+        )
+        try:
+            yield services
+        finally:
+            await services.close()
