@@ -107,7 +107,8 @@ class StartBenchmarkRequest(BaseModel):
     def validate_custom_service(cls, value: str | None) -> str | None:
         return validate_service_url_syntax(value) if value is not None else None
 
-    def get_sandbox_provider_secret_name(self) -> str | None:
+    @property
+    def sandbox_provider_secret_reference(self) -> str | None:
         """Resolve the provider reference from legacy or managed configuration."""
         if self.harness_config is not None and self.harness_config.sandbox_provider_secret_name:
             return self.harness_config.sandbox_provider_secret_name

@@ -147,7 +147,7 @@ class TestTaskExecutionRetry:
         is_run_agent_target = fail_target == "tracker.utils.task_execution.run_agent"
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+        monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
         monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr(fail_target, _fails_first_run_agent if is_run_agent_target else _fails_first_other)
         if not is_run_agent_target:
@@ -220,7 +220,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+        monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
 
         sandbox_entry_count = 0
 
@@ -302,7 +302,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+        monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
 
         sandbox_entry_count = 0
 
@@ -365,7 +365,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+        monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
 
         mock_sandbox = AsyncMock()
         mock_sandbox.id = "mock-sandbox-queued"
@@ -432,7 +432,7 @@ class TestTaskExecutionRetry:
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+        monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
 
         sandbox_entry_count = 0
         retrieve_task_call_count = 0
@@ -528,7 +528,7 @@ class TestTaskExecutionRetry:
 
         monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock())
+        monkeypatch.setattr(task_execution_module.TaskLogBuffer, "buffer_logs", Mock())
         monkeypatch.setattr(task_execution_module, "create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr(task_execution_module, "run_agent", _mock_run_agent)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
@@ -593,7 +593,7 @@ class TestTaskExecutionRetry:
 
         monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock())
+        monkeypatch.setattr(task_execution_module.TaskLogBuffer, "buffer_logs", Mock())
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
 
@@ -634,7 +634,7 @@ class TestTaskExecutionRetry:
         capture_exception = Mock()
         monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monkeypatch.setattr(task_execution_module, "buffer_logs", Mock())
+        monkeypatch.setattr(task_execution_module.TaskLogBuffer, "buffer_logs", Mock())
         monkeypatch.setattr(task_execution_module.sentry_sdk, "capture_exception", capture_exception)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _failed_policy_lookup)
         monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _lost_grading_sandbox, raising=False)
@@ -724,7 +724,7 @@ class TestTaskExecutionRetry:
 
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+        monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
         monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr("tracker.utils.task_execution.upload_agent_artifacts", _mock_upload_agent_artifacts)
         monkeypatch.setattr("tracker.utils.task_execution.run_agent", _mock_run_agent)
