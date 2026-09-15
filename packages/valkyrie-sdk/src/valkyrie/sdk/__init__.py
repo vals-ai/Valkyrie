@@ -17,6 +17,7 @@ from valkyrie.sdk.models import (
     FetchBenchmarkMetadataResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
+    FilterOptionsResponse,
     FetchTasksRequest,
     FinalViewResponse,
     Order,
@@ -37,6 +38,8 @@ from valkyrie.sdk.models import (
     SingleTaskResponse,
     StartBenchmarkResponse,
     StopBenchmarkResponse,
+    UpdateBenchmarkConcurrencyRequest,
+    UpdateBenchmarkConcurrencyResponse,
     TaskArtifactsResponse,
     TasksResponse,
     TaskSummary,
@@ -56,6 +59,9 @@ from valkyrie.sdk.errors import (
 from .models.logs import LogEvent, LogPage
 
 __all__ = [
+    "RunArtifactEntry",
+    "RunArtifactsResponse",
+    "RunArtifactDownloadResponse",
     "AgentContractRequest",
     "AgentDownloadURLResponse",
     "AgentEntry",
@@ -72,6 +78,7 @@ __all__ = [
     "FetchBenchmarkMetadataResponse",
     "FetchBenchmarksRequest",
     "FetchBenchmarksResponse",
+    "FilterOptionsResponse",
     "FetchTasksRequest",
     "FinalViewResponse",
     "LogEvent",
@@ -94,6 +101,8 @@ __all__ = [
     "SingleTaskResponse",
     "StartBenchmarkResponse",
     "StopBenchmarkResponse",
+    "UpdateBenchmarkConcurrencyRequest",
+    "UpdateBenchmarkConcurrencyResponse",
     "TaskArtifactsResponse",
     "TasksResponse",
     "TaskSummary",
@@ -107,3 +116,5 @@ __all__ = [
     "ValkyrieStreamError",
     "ValkyrieTransportError",
 ]
+
+from valkyrie.sdk.models.artifacts import RunArtifactEntry, RunArtifactsResponse, RunArtifactDownloadResponse
