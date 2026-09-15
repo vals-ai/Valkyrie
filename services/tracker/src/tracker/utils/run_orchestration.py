@@ -631,6 +631,7 @@ async def _preflight_managed_aws(
         str(execution.benchmark_id),
         retention_days=aws_runtime.resources.log_retention_days,
     )
+
     request = execution.request
     sandbox_provider_config = await runtime.get_sandbox_provider_config()
     await asyncio.to_thread(resolve_secrets, request.contract.secrets, runtime.secrets)
@@ -638,6 +639,7 @@ async def _preflight_managed_aws(
         await runtime.async_secrets.get_async(request.webhook_secret_name)
     if request.lambda_function:
         await asyncio.to_thread(dry_run_lambda, aws_runtime.clients, request.lambda_function)
+
     return sandbox_provider_config
 
 
@@ -753,20 +755,11 @@ async def process_benchmark(
         aws_runtime = aws_runtime.with_resources(
             start_benchmark_request.properties or benchmark_row.arguments.properties
         )
-        runtime_arguments = benchmark_row.arguments.model_copy(
-            update={
-                "sandbox_provider": start_benchmark_request.sandbox_provider,
-                "sandbox_provider_secret_name": (
-                    start_benchmark_request.sandbox_provider_secret_name
-                    if execution.aws_managed
-                    else cast(HarnessConfig, start_benchmark_request.harness_config).sandbox_provider_secret_name
-                ),
-            }
-        )
         runtime = await runtime_stack.enter_async_context(
             CloudRuntimeConfig(properties=aws_runtime.resources).create_runtime(
                 clients=aws_runtime.clients,
-                arguments=runtime_arguments,
+                sandbox_provider=start_benchmark_request.sandbox_provider,
+                sandbox_provider_secret_name=start_benchmark_request.get_sandbox_provider_secret_name(),
             )
         )
         if execution.aws_managed:
@@ -1068,7 +1061,7 @@ async def process_benchmark(
                 task_ids=verified_task_ids,
             )
     finally:
-        try:
+        async with runtime_stack:
             authority_current = False
             if not finalization_deferred:
                 with Session(bind=engine) as session:
@@ -1103,8 +1096,6 @@ async def process_benchmark(
                 except Exception as notification_error:
                     logger.warning(f"Failed to send terminal notification: {notification_error}")
 
-        finally:
-            await runtime_stack.aclose()
 
 
 def commit_benchmark_error(

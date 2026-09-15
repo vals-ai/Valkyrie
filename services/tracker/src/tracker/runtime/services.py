@@ -1,11 +1,11 @@
 """Services shared by one API operation or executor execution."""
 
 from asyncio import Lock
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from benchmark_service import SandboxProvider, SandboxProviderConfig
 
+from tracker.exceptions import InvalidSandboxConfigurationError
 from tracker.runtime.logs import BenchmarkLogLocations, BenchmarkLogSink, LogProvider
 from tracker.runtime.secrets import AsyncSecretStore, SecretStore
 from tracker.runtime.storage import ArtifactLocations, ObjectStore
@@ -22,17 +22,25 @@ class RuntimeServices:
     log_reader: LogProvider
     log_locations: BenchmarkLogLocations
     artifacts: ArtifactLocations
-    _load_sandbox_config: Callable[[], Awaitable[SandboxProviderConfig]] = field(repr=False)
+    sandbox_provider: str = "daytona"
+    sandbox_provider_secret_name: str | None = None
+
     _sandbox_config: SandboxProviderConfig | None = field(default=None, init=False, repr=False)
     _sandbox_provider: SandboxProvider | None = field(default=None, init=False, repr=False)
-
     _config_lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
     async def get_sandbox_provider_config(self) -> SandboxProviderConfig:
         """Resolve provider credentials only when sandbox access is requested."""
+        from tracker.utils.resources import fetch_sandbox_provider_config_async
+
+        if not self.sandbox_provider_secret_name:
+            raise InvalidSandboxConfigurationError("Sandbox access requires a provider secret name")
+
         async with self._config_lock:
             if self._sandbox_config is None:
-                self._sandbox_config = await self._load_sandbox_config()
+                self._sandbox_config = await fetch_sandbox_provider_config_async(
+                    self.sandbox_provider_secret_name, self.async_secrets, self.sandbox_provider
+                )
             return self._sandbox_config
 
     async def get_sandbox_provider(self) -> SandboxProvider:
@@ -40,6 +48,7 @@ class RuntimeServices:
         config = await self.get_sandbox_provider_config()
         if self._sandbox_provider is None:
             self._sandbox_provider = config.create_provider()
+
         return self._sandbox_provider
 
     async def close(self) -> None:
