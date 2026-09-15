@@ -446,9 +446,10 @@ def buffer_logs(
         messages.append(log_queue.get_nowait())
 
     message = "".join(messages)
-    loop = asyncio.get_running_loop()
     if not message:
         return
+
+    loop = asyncio.get_running_loop()
     future = loop.run_in_executor(None, log_sink.write, stream_key, message)
     if pending_writes is not None:
         pending_writes.add(future)
