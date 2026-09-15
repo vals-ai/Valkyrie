@@ -177,7 +177,7 @@ class TestProcessTaskEnvironment:
                 "MODEL_GATEWAY_API_KEY": "gateway-key",
             }
 
-        monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
@@ -229,7 +229,7 @@ class TestProcessTaskEnvironment:
         )
         captured_env_vars: list[dict[str, str]] = []
 
-        monkeypatch.setattr(utils_module, "resolve_secrets", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", lambda *_args, **_kwargs: {})
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
@@ -263,7 +263,7 @@ class TestProcessTaskEnvironment:
         def _mock_resolve_no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {}
 
-        monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_no_secrets)
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_no_secrets)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
@@ -317,7 +317,7 @@ class TestProcessTaskEnvironment:
             response.sandbox_secrets = {"TAVILY_API_KEY": "daytona-tavily"}
             return response
 
-        monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
         monkeypatch.setattr(utils_module, "create_sandbox", _capture_sandbox)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
 

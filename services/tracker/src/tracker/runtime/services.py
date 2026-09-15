@@ -1,13 +1,13 @@
 """Services shared by one API operation or executor execution."""
 
-from asyncio import Lock, Task, create_task
+from asyncio import Lock, Task, create_task, to_thread
 from dataclasses import dataclass, field
 
 from benchmark_service import SandboxProvider, SandboxProviderConfig
 
 from tracker.exceptions import InvalidSandboxConfigurationError, TrackerServiceError
 from tracker.runtime.logs import BenchmarkLogLocations, BenchmarkLogSink, LogProvider
-from tracker.runtime.secrets import AsyncSecretStore, SecretStore, fetch_sandbox_provider_config_async
+from tracker.runtime.secrets import AsyncSecretStore, SecretStore, fetch_sandbox_provider_config_async, resolve_secrets
 from tracker.runtime.lifecycle import finish_cleanup
 from tracker.runtime.storage import ArtifactLocations, ObjectStore
 
@@ -53,6 +53,10 @@ class RuntimeServices:
             self._sandbox_provider = config.create_provider()
 
         return self._sandbox_provider
+
+    async def resolve_secrets(self, references: dict[str, str]) -> dict[str, str]:
+        """Resolve agent environment values without blocking execution."""
+        return await to_thread(resolve_secrets, references, self.secrets)
 
     def _require_open(self) -> None:
         if self._closed:

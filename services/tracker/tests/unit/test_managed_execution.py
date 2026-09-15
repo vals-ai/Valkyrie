@@ -15,12 +15,12 @@ from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.resolver import ManagedAWSEligibilityError
-from tracker.aws.runtime import AWSRuntime, CloudRuntimeConfig
+from tracker.aws.runtime import AWSRuntime
+from tracker.aws.services import CloudRuntimeConfig
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org
 from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmarkRequest
 from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
 from tracker.utils.run_orchestration import (
-    _preflight_managed_aws,  # pyright: ignore[reportPrivateUsage]
     _parse_queued_execution,  # pyright: ignore[reportPrivateUsage]
 )
 
@@ -293,7 +293,7 @@ async def test_ineligible_managed_execution_marks_run_error(
         spans.append((name, attributes))
         return MagicMock()
 
-    monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", reject_managed_runtime)
+    monkeypatch.setattr("tracker.aws.services.deployment_aws_runtime", reject_managed_runtime)
     monkeypatch.setattr("tracker.utils.run_orchestration.observability_span", record_span)
 
     await process_benchmark(
@@ -347,7 +347,8 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         calls.append("lambda-dry-run")
 
     async def upload_results(_benchmark: Benchmark, _final_view: object, runtime: AWSRuntime) -> None:
-        assert runtime is aws_runtime
+        assert runtime.resources == aws_runtime.resources
+        assert runtime.clients is aws_runtime.clients
         calls.append("s3-final-upload")
 
     def invoke_post_run(clients: object, _function_name: str, _payload: object, **_kwargs: Any) -> dict[str, Any]:
@@ -361,12 +362,11 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         spans.append((name, attributes))
         return MagicMock()
 
-    monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
+    monkeypatch.setattr("tracker.aws.services.deployment_aws_runtime", deployment_runtime)
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
-    monkeypatch.setattr("tracker.utils.resources.fetch_sandbox_provider_config_async", fetch_provider)
-    monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", resolve_agent_secrets)
-    monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", resolve_agent_secrets)
-    monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
+    monkeypatch.setattr("tracker.runtime.services.fetch_sandbox_provider_config_async", fetch_provider)
+    monkeypatch.setattr("tracker.runtime.services.resolve_secrets", resolve_agent_secrets)
+    monkeypatch.setattr("tracker.aws.services.dry_run_lambda", dry_run)
     monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", upload_results)
     monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", invoke_post_run)
     monkeypatch.setattr("tracker.utils.run_orchestration.observability_span", record_span)
@@ -424,17 +424,18 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         calls.append("lambda")
 
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
-    monkeypatch.setattr("tracker.utils.resources.fetch_sandbox_provider_config_async", fetch_provider)
-    monkeypatch.setattr("tracker.utils.run_orchestration.resolve_secrets", resolve_agent_secrets)
+    monkeypatch.setattr("tracker.runtime.services.fetch_sandbox_provider_config_async", fetch_provider)
+    monkeypatch.setattr("tracker.runtime.services.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get_webhook_secret)
-    monkeypatch.setattr("tracker.utils.run_orchestration.dry_run_lambda", dry_run)
+    monkeypatch.setattr("tracker.aws.services.dry_run_lambda", dry_run)
 
     async with CloudRuntimeConfig(properties=aws_runtime.resources).create_runtime(
         clients=aws_runtime.clients,
         sandbox_provider=request.sandbox_provider,
-        sandbox_provider_secret_name=request.get_sandbox_provider_secret_name(),
+        sandbox_provider_secret_name=request.sandbox_provider_secret_reference,
     ) as runtime:
-        result = await _preflight_managed_aws(execution, aws_runtime, runtime)
+        await runtime.prepare_execution(request, execution.benchmark_id)
+        result = await runtime.get_sandbox_provider_config()
 
     assert result is provider_config
     assert calls == ["logs", "sandbox_provider_secret", "agent_secrets", "webhook_secret", "lambda"]
@@ -458,7 +459,7 @@ async def test_managed_preflight_failure_happens_before_sandbox(
     def fail_log_preflight(*_args: Any, **_kwargs: Any) -> str:
         raise RuntimeError("managed log preflight failed")
 
-    monkeypatch.setattr("tracker.utils.run_orchestration.deployment_aws_runtime", deployment_runtime)
+    monkeypatch.setattr("tracker.aws.services.deployment_aws_runtime", deployment_runtime)
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", fail_log_preflight)
     monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", create_sandbox)
 

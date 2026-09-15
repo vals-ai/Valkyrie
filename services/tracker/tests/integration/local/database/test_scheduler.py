@@ -32,7 +32,8 @@ from sqlmodel import Session, create_engine, func, select
 
 from tests.factories import make_task
 from tracker.aws.resolver import AWSRuntimeResolution
-from tracker.aws.runtime import AWSRuntime, CloudRuntimeConfig
+from tracker.aws.runtime import AWSRuntime
+from tracker.aws.services import CloudRuntimeConfig
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
@@ -833,7 +834,7 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
     service.resume_evaluation.return_value = {"score": 1.0}
     _use_real_sandbox_recovery(service)
     monkeypatch.setattr(task_execution, "engine", postgres_engine)
-    monkeypatch.setattr(task_execution, "buffer_logs", Mock())
+    monkeypatch.setattr(task_execution.TaskLogBuffer, "buffer_logs", Mock())
     request = benchmark.access_key_start_benchmark_request(harness_config)
 
     async def run(task_row: Task, authority: ExecutionAuthority) -> dict[str, dict[str, Any] | None]:
@@ -899,7 +900,7 @@ async def test_resumed_evaluation_uses_lock_connection_for_callback_and_finaliza
         pool_timeout=0.05,
     )
     monkeypatch.setattr(task_execution, "engine", single_connection_engine)
-    monkeypatch.setattr(task_execution, "buffer_logs", Mock())
+    monkeypatch.setattr(task_execution.TaskLogBuffer, "buffer_logs", Mock())
     request = benchmark.access_key_start_benchmark_request(harness_config)
     try:
         result = await task_execution.process_task(
@@ -971,7 +972,7 @@ async def test_setup_retry_reenters_fifo_before_competitor(
     _use_real_sandbox_recovery(service)
     monkeypatch.setattr(task_execution, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
     monkeypatch.setattr(task_execution, "engine", postgres_engine)
-    monkeypatch.setattr(task_execution, "buffer_logs", Mock())
+    monkeypatch.setattr(task_execution.TaskLogBuffer, "buffer_logs", Mock())
     monkeypatch.setattr(task_execution, "create_sandbox", create_sandbox)
     monkeypatch.setattr(
         task_execution,

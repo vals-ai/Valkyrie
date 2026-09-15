@@ -13,7 +13,8 @@ from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
-from tracker.aws.runtime import AWSRuntime, CloudRuntimeConfig
+from tracker.aws.runtime import AWSRuntime
+from tracker.aws.services import CloudRuntimeConfig
 from tracker.aws.secrets import SecretsManagerStore
 from tracker.database.models import (
     AgentContractRequest,

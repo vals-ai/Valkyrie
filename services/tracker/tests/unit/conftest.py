@@ -24,7 +24,8 @@ from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.database.models import Org
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
-from tracker.aws.runtime import AWSRuntime, CloudRuntimeConfig
+from tracker.aws.runtime import AWSRuntime
+from tracker.aws.services import CloudRuntimeConfig
 from tracker.runtime.services import RuntimeServices
 from tracker.utils import TaskMonitor
 
