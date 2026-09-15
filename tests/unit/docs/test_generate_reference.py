@@ -27,8 +27,10 @@ _EXPECTED_CLI_PATHS = (
     "run analyze",
     "run errors",
     "run fetch",
+    "run filter-options",
     "run list",
     "run logs",
+    "run artifacts",
     "run output",
     "run outputs",
     "run results",
@@ -63,9 +65,11 @@ _EXPECTED_CLI_PATHS = (
     "queue status",
 )
 _EXPECTED_RESOURCES = {
+    "ArtifactsResource": ("list", "download_url", "download"),
     "RunsResource": (
         "start",
         "fetch",
+        "filter_options",
         "list",
         "iter",
         "stream",
@@ -75,6 +79,7 @@ _EXPECTED_RESOURCES = {
         "results_exist",
         "analyze",
         "stream_outputs",
+        "download_outputs",
         "update_concurrency",
         "stop",
         "resume",
@@ -87,6 +92,7 @@ _EXPECTED_RESOURCES = {
     "SchedulerResource": ("overview",),
 }
 _EXPECTED_TYPES = {
+    "Artifacts": ("RunArtifactEntry", "RunArtifactsResponse", "RunArtifactDownloadResponse"),
     "Agents": ("AgentContractRequest", "AgentDownloadURLResponse", "AgentEntry", "AgentsResponse"),
     "Runs": (
         "AnalyzeEvent",
@@ -94,6 +100,7 @@ _EXPECTED_TYPES = {
         "FetchBenchmarkMetadataResponse",
         "FetchBenchmarksRequest",
         "FetchBenchmarksResponse",
+        "FilterOptionsResponse",
         "FinalViewResponse",
         "RetryOrResumeBenchmarkResponse",
         "ResultsExistResponse",
@@ -394,8 +401,8 @@ class TestGeneratedFiles:
         assert generator.render_reference() == rendered
         mdx = {path: content for path, content in rendered.items() if path.suffix == ".mdx"}
         json_files = {path: content for path, content in rendered.items() if path.suffix == ".json"}
-        assert len(rendered) == 26
-        assert len(mdx) == 23
+        assert len(rendered) == 28
+        assert len(mdx) == 25
         assert len(json_files) == 3
         assert all(content.startswith("---\n") and _GENERATED_MARKER in content for content in mdx.values())
         assert all(isinstance(json.loads(content), list) for content in json_files.values())

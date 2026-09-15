@@ -20,6 +20,9 @@ from valkyrie.sdk.resources.scheduler import SchedulerResource  # pyright: ignor
 from valkyrie.sdk.resources.services import BenchmarkServicesResource  # pyright: ignore[reportMissingImports]
 
 EXPECTED_ALL = [
+    "RunArtifactEntry",
+    "RunArtifactsResponse",
+    "RunArtifactDownloadResponse",
     "AgentContractRequest",
     "AgentDownloadURLResponse",
     "AgentEntry",
@@ -36,6 +39,7 @@ EXPECTED_ALL = [
     "FetchBenchmarkMetadataResponse",
     "FetchBenchmarksRequest",
     "FetchBenchmarksResponse",
+    "FilterOptionsResponse",
     "FetchTasksRequest",
     "FinalViewResponse",
     "LogEvent",
@@ -85,6 +89,7 @@ EXPECTED_SIGNATURES = {
         "label=None, lambda_function=None, provider=None, agent_kwargs=None, secrets=None, service_headers=None, "
         "webhook_intervals=None, ignore_custom_services=False"
     ),
+    RunsResource.filter_options: "self",
     RunsResource.fetch: "self, run_id",
     RunsResource.list: "self, request=None",
     RunsResource.stream: "self, run_id",

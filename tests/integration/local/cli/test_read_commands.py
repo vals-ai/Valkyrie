@@ -203,3 +203,19 @@ async def test_sdk_iterates_run_and_task_pages(
     assert len({task.id for task in tasks}) == 4
     assert [task.id for task in skipped] == [task.id for task in tasks[2:]]
     assert request.cursor is None
+
+
+@pytest.mark.usefixtures("sdk_tracker_transport")
+def test_cli_discovers_run_filters(cli_runner: CliRunner, seeded_runs: tuple[Benchmark, Benchmark]) -> None:
+    result = cli_runner.invoke(cli, ["run", "filter-options", "--format", "json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {
+        "benchmark_names": ["swebench", "terminalbench"],
+        "agent_names": ["cli-agent", "review-agent"],
+        "models": ["openai/gpt-5"],
+        "datasets": ["default", "verified"],
+        "started_by_emails": ["reviewer@example.com", "runner@example.com"],
+    }
+    text = cli_runner.invoke(cli, ["run", "filter-options"])
+    assert text.exit_code == 0, text.output
+    assert "swebench" in text.output
