@@ -18,7 +18,9 @@ from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
 from tracker._lambda import invoke_lambda
-from tracker.aws.services import CloudRuntimeConfig
+from tracker.aws.services import CloudRuntimeServices
+from taskiq_dependencies import DependencyGraph, Depends
+from tracker.executor.dependencies import get_execution_runtime, get_benchmark_service
 from tracker.runtime.services import RuntimeServices
 from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
@@ -51,7 +53,6 @@ from tracker.types import (
 )
 
 from tracker.utils.resources import (
-    create_benchmark_service_client_from_request,
     fetch_benchmark_row,
 )
 from tracker.utils.reporting import create_final_view, upload_final_view
@@ -627,6 +628,14 @@ async def hold_dispatch_authority(
         yield session, benchmark
 
 
+@dataclass
+class _ExecutionState:
+    finalization_deferred: bool = False
+    post_task_finalization: bool = False
+    queued_cancellation_recorded: bool = False
+    notifier: SlackNotifier | None = None
+
+
 # Keep the Tracker producer and ExecutorHost on one stable Taskiq wire name.
 @broker.task(EXECUTOR_TASK_NAME)
 async def process_benchmark(
@@ -679,22 +688,11 @@ async def _process_benchmark(
             return
         queued_run = benchmark_row.arguments.queue_pool_id is not None
 
-    finalization_deferred = False
-    post_task_finalization = False
-    queued_cancellation_recorded = False
-    benchmark_service: BenchmarkServiceClient | None = None
-    notifier: SlackNotifier | None = None
-    queue_context: SandboxQueueContext | None = None
-    task_rows: Sequence[tuple[str, Task]] = ()
-    run_task_rows: Sequence[tuple[str, Task]] = ()
-    limiter: ResizableLimiter | None = None
-    sandbox_provider_config: SandboxProviderConfig | None = None
-    sandbox_provider: SandboxProvider | None = None
+    state = _ExecutionState()
 
     def record_queued_cancellation(owned_attempts: dict[UUID, datetime]) -> None:
-        nonlocal queued_cancellation_recorded
         with Session(bind=engine) as session:
-            queued_cancellation_recorded = _commit_queued_cancellation(
+            state.queued_cancellation_recorded = _commit_queued_cancellation(
                 benchmark_id,
                 session,
                 org,
@@ -739,228 +737,22 @@ async def _process_benchmark(
                 auth_required=AUTH_REQUIRED,
             )
 
-        runtime = await runtime_stack.enter_async_context(
-            CloudRuntimeConfig.create_execution_runtime(start_benchmark_request, org.id, benchmark_id)
+        dependencies = await runtime_stack.enter_async_context(
+            DependencyGraph(_execute_benchmark).async_ctx(
+                initial_cache={StartBenchmarkRequest: start_benchmark_request, Benchmark: benchmark_row, Org: org}
+            )
         )
-        aws_runtime = runtime.aws_runtime
-        sandbox_provider_config = await runtime.get_sandbox_provider_config()
-
-        benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
-        runtime_stack.push_async_callback(benchmark_service.close)
-        sandbox_provider = await runtime.get_sandbox_provider()
-
-        if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
-            notifier = SlackNotifier(
-                secret_name=start_benchmark_request.webhook_secret_name,
-                secret_store=runtime.secrets,
-                intervals=start_benchmark_request.webhook_intervals,
-            )
-
-        if queued_run:
-            with Session(bind=engine) as session:
-                benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-                task_rows = create_task_rows(
-                    verified_task_ids,
-                    benchmark_row,
-                    session,
-                    org,
-                    authority=authority,
-                )
-                run_task_rows = _load_verified_task_rows(verified_task_ids, benchmark_row, session, org)
-                queued_pool_id = benchmark_row.arguments.queue_pool_id
-            assert queued_pool_id is not None
-
-            try:
-                queue_context = create_queue_context(
-                    engine=engine,
-                    provider=sandbox_provider,
-                )
-            except Exception as error:
-                logger.warning("Sandbox provider setup failed (%s)", type(error).__name__)
-                raise TrackerServiceError("Sandbox provider configuration is unavailable") from error
-            if queue_context.pool_id != queued_pool_id:
-                raise TrackerServiceError("Configured sandbox provider does not match the run's queued provider pool")
-
-        if not queued_run:
-            with Session(bind=engine) as session:
-                benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-                task_rows = create_task_rows(
-                    verified_task_ids,
-                    benchmark_row,
-                    session,
-                    org,
-                    authority=authority,
-                )
-                run_task_rows = task_rows
-                limiter = ResizableLimiter(benchmark_row.arguments.concurrency)
-
-        assert benchmark_service is not None
-        assert sandbox_provider_config is not None
-        assert sandbox_provider is not None
-        task_row_ids: set[str] = {task_id for task_id, _ in run_task_rows}
-        missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
-        if missing_task_ids:
-            raise TrackerServiceError(
-                f"Race condition occurred when resuming run {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
-            )
-
-        # Semaphore to isolate concurrent sandboxes that are being made for the benchmark
-        creation_semaphore = Semaphore(_SANDBOX_CREATION_CAP)
-
-        if queue_context is not None:
-            await _run_queued_tasks(
-                benchmark_id=benchmark_id,
-                task_rows=run_task_rows,
-                start_benchmark_request=start_benchmark_request,
-                benchmark_service=benchmark_service,
-                runtime=runtime,
-                org=org,
-                sandbox_provider_config=sandbox_provider_config,
-                sandbox_provider=sandbox_provider,
-                creation_semaphore=creation_semaphore,
-                queue_context=queue_context,
-                notifier=notifier,
-                record_cancellation=record_queued_cancellation,
-                authority=authority,
-            )
-        else:
-            assert limiter is not None
-            tracked_tasks: dict[str, TrackedTask] = {
-                task_id: TrackedTask(
-                    process_task(
-                        task_row,
-                        start_benchmark_request,
-                        benchmark_service,
-                        benchmark_id,
-                        task_id,
-                        runtime,
-                        org,
-                        sandbox_provider_config=sandbox_provider_config,
-                        sandbox_provider=sandbox_provider,
-                        creation_semaphore=creation_semaphore,
-                        authority=authority,
-                    ),
-                    org,
-                    authority,
-                    task_row.started_at,
-                )
-                for task_id, task_row in run_task_rows
-            }
-            monitor = TaskMonitor(
-                benchmark_id,
-                tracked_tasks,
-                org,
-                limiter=limiter,
-                notifier=notifier,
-                authority=authority,
-            )
-            monitor_task = asyncio.create_task(monitor.track_tasks())
-
-            await gather(*[tracked_tasks[task_id].run(limiter, task_row) for task_id, task_row in run_task_rows])
-            await monitor_task
-
-        post_task_finalization = True
-        task_rows = ()
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
-            if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES:
-                finalization_deferred = True
-                return
-            lock_execution_authority(session, authority)
-            if has_runnable_tasks(session, benchmark_row, org):
-                finalization_deferred = True
-                return
-            terminalize_active_dispatches(
-                session,
-                benchmark_id,
-                except_dispatch_id=authority.dispatch_id,
-            )
-            evaluation_results, task_fingerprint = _fetch_final_score_state(
-                session,
-                benchmark_row,
-                org,
-                for_update=True,
-            )
-            session.commit()
-
-        if not any(result is not None for result in evaluation_results.values()):
-            finalization_deferred = await finalize_all_error_run(benchmark_id, org, authority=authority)
-            return
-
-        # Calculate the final score based off the tasks that were ran
-        final_score_response = await benchmark_service.final_score(
-            evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset
+        await _execute_benchmark(
+            execution, org, authority, state, record_queued_cancellation, **await dependencies.resolve_kwargs()
         )
-
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
-            lock_execution_authority(session, authority)
-            # final_score is a network call; a concurrent retry can make tasks runnable before we write FinalEvaluation.
-            if has_runnable_tasks(session, benchmark_row, org):
-                finalization_deferred = True
-                return
-        # Create the final evaluation row and add it to the database
-        final_evaluation_row = FinalEvaluation(
-            org_id=org.id,
-            benchmark=benchmark_id,
-            final_score=final_score_response.final_score,
-            properties=final_score_response.metadata,
-        )
-
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
-            if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES or has_runnable_tasks(session, benchmark_row, org):
-                finalization_deferred = True
-                return
-            lock_execution_authority(session, authority)
-            _current_results, current_fingerprint = _fetch_final_score_state(
-                session,
-                benchmark_row,
-                org,
-                for_update=True,
-            )
-            if current_fingerprint != task_fingerprint:
-                finalization_deferred = True
-                return
-
-            # Delete existing final evaluation if re-running
-            if benchmark_row.final_evaluation:
-                session.delete(benchmark_row.final_evaluation)
-                session.flush()
-
-            session.add(final_evaluation_row)
-            # Commit the final score and terminal status together while retry/resume is blocked.
-            set_benchmark_final_status(benchmark_row, session, org, authority=authority)
-
-            final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
-            lambda_function = benchmark_row.arguments.lambda_function
-            lambda_payload: dict[str, Any] | None = None
-            if lambda_function:
-                lambda_payload = benchmark_row.arguments.model_dump()
-                lambda_payload["benchmark_id"] = str(benchmark_id)
-                lambda_payload["benchmark_name"] = benchmark_row.name
-                lambda_payload["bucket"] = aws_runtime.resources.s3_bucket
-
-        async with hold_dispatch_authority(authority) as (_, benchmark_row):
-            await upload_final_view(benchmark_row, final_view, aws_runtime)
-
-        if lambda_function and lambda_payload is not None:
-            async with hold_dispatch_authority(authority):
-                await asyncio.to_thread(
-                    invoke_lambda,
-                    aws_runtime.clients,
-                    lambda_function,
-                    lambda_payload,
-                    config=_COMPLETION_CALLBACK_CONFIG,
-                )
 
     except asyncio.CancelledError:
-        if queued_run and not post_task_finalization:
-            finalization_deferred = not queued_cancellation_recorded
+        if queued_run and not state.post_task_finalization:
+            state.finalization_deferred = not state.queued_cancellation_recorded
         else:
             with Session(bind=engine) as session:
                 benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-                finalization_deferred = not commit_benchmark_error(
+                state.finalization_deferred = not commit_benchmark_error(
                     benchmark_row,
                     session,
                     "Run was interrupted",
@@ -972,7 +764,7 @@ async def _process_benchmark(
                 )
         raise
     except ExecutionAuthorityRevoked:
-        finalization_deferred = True
+        state.finalization_deferred = True
     except BenchmarkServiceUnauthenticatedError as e:
         _capture_run_error(
             e,
@@ -1033,7 +825,7 @@ async def _process_benchmark(
             )
     finally:
         authority_current = False
-        if not finalization_deferred:
+        if not state.finalization_deferred:
             with Session(bind=engine) as session:
                 # Handle any misalignments between the benchmark status and tasks
                 authority_current = catch_errors_during_cleanup(
@@ -1044,14 +836,14 @@ async def _process_benchmark(
                     task_ids=verified_task_ids,
                 )
 
-        if notifier and not finalization_deferred and authority_current:
+        if state.notifier and not state.finalization_deferred and authority_current:
             try:
                 async with hold_dispatch_authority(authority) as (notification_session, benchmark_row):
                     notification_context = NotificationContext.from_benchmark(benchmark_row, notification_session, org)
                     final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
                     notification_status = benchmark_row.status
                     notification_error_message = benchmark_row.error_message
-                    await notifier.send_terminal_notification(
+                    await state.notifier.send_terminal_notification(
                         notification_context,
                         status=notification_status,
                         final_score=final_score,
@@ -1061,6 +853,234 @@ async def _process_benchmark(
                 pass
             except Exception as notification_error:
                 logger.warning(f"Failed to send terminal notification: {notification_error}")
+
+
+async def _execute_benchmark(
+    execution: _QueuedExecution,
+    org: Org,
+    authority: ExecutionAuthority,
+    state: _ExecutionState,
+    record_queued_cancellation: Callable[[dict[UUID, datetime]], None],
+    *,
+    benchmark: Benchmark = Depends(),
+    runtime: CloudRuntimeServices = Depends(get_execution_runtime),
+    benchmark_service: BenchmarkServiceClient = Depends(get_benchmark_service),
+) -> None:
+    benchmark_id = execution.benchmark_id
+    start_benchmark_request = execution.request
+    verified_task_ids = execution.verified_task_ids
+    queued_run = benchmark.arguments.queue_pool_id is not None
+    queue_context: SandboxQueueContext | None = None
+    task_rows: Sequence[tuple[str, Task]] = ()
+    run_task_rows: Sequence[tuple[str, Task]] = ()
+    limiter: ResizableLimiter | None = None
+
+    aws_runtime = runtime.aws_runtime
+    sandbox_provider_config = await runtime.get_sandbox_provider_config()
+
+    sandbox_provider = await runtime.get_sandbox_provider()
+
+    if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
+        state.notifier = SlackNotifier(
+            secret_name=start_benchmark_request.webhook_secret_name,
+            secret_store=runtime.secrets,
+            intervals=start_benchmark_request.webhook_intervals,
+        )
+
+    if queued_run:
+        with Session(bind=engine) as session:
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            task_rows = create_task_rows(
+                verified_task_ids,
+                benchmark_row,
+                session,
+                org,
+                authority=authority,
+            )
+            run_task_rows = _load_verified_task_rows(verified_task_ids, benchmark_row, session, org)
+            queued_pool_id = benchmark_row.arguments.queue_pool_id
+        assert queued_pool_id is not None
+
+        try:
+            queue_context = create_queue_context(
+                engine=engine,
+                provider=sandbox_provider,
+            )
+        except Exception as error:
+            logger.warning("Sandbox provider setup failed (%s)", type(error).__name__)
+            raise TrackerServiceError("Sandbox provider configuration is unavailable") from error
+        if queue_context.pool_id != queued_pool_id:
+            raise TrackerServiceError("Configured sandbox provider does not match the run's queued provider pool")
+
+    if not queued_run:
+        with Session(bind=engine) as session:
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            task_rows = create_task_rows(
+                verified_task_ids,
+                benchmark_row,
+                session,
+                org,
+                authority=authority,
+            )
+            run_task_rows = task_rows
+            limiter = ResizableLimiter(benchmark_row.arguments.concurrency)
+
+    task_row_ids: set[str] = {task_id for task_id, _ in run_task_rows}
+    missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
+    if missing_task_ids:
+        raise TrackerServiceError(
+            f"Race condition occurred when resuming run {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
+        )
+
+    # Semaphore to isolate concurrent sandboxes that are being made for the benchmark
+    creation_semaphore = Semaphore(_SANDBOX_CREATION_CAP)
+
+    if queue_context is not None:
+        await _run_queued_tasks(
+            benchmark_id=benchmark_id,
+            task_rows=run_task_rows,
+            start_benchmark_request=start_benchmark_request,
+            benchmark_service=benchmark_service,
+            runtime=runtime,
+            org=org,
+            sandbox_provider_config=sandbox_provider_config,
+            sandbox_provider=sandbox_provider,
+            creation_semaphore=creation_semaphore,
+            queue_context=queue_context,
+            notifier=state.notifier,
+            record_cancellation=record_queued_cancellation,
+            authority=authority,
+        )
+    else:
+        assert limiter is not None
+        tracked_tasks: dict[str, TrackedTask] = {
+            task_id: TrackedTask(
+                process_task(
+                    task_row,
+                    start_benchmark_request,
+                    benchmark_service,
+                    benchmark_id,
+                    task_id,
+                    runtime,
+                    org,
+                    sandbox_provider_config=sandbox_provider_config,
+                    sandbox_provider=sandbox_provider,
+                    creation_semaphore=creation_semaphore,
+                    authority=authority,
+                ),
+                org,
+                authority,
+                task_row.started_at,
+            )
+            for task_id, task_row in run_task_rows
+        }
+        monitor = TaskMonitor(
+            benchmark_id,
+            tracked_tasks,
+            org,
+            limiter=limiter,
+            notifier=state.notifier,
+            authority=authority,
+        )
+        monitor_task = asyncio.create_task(monitor.track_tasks())
+
+        await gather(*[tracked_tasks[task_id].run(limiter, task_row) for task_id, task_row in run_task_rows])
+        await monitor_task
+
+    state.post_task_finalization = True
+    task_rows = ()
+    with Session(bind=engine) as session:
+        benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES:
+            state.finalization_deferred = True
+            return
+        lock_execution_authority(session, authority)
+        if has_runnable_tasks(session, benchmark_row, org):
+            state.finalization_deferred = True
+            return
+        terminalize_active_dispatches(
+            session,
+            benchmark_id,
+            except_dispatch_id=authority.dispatch_id,
+        )
+        evaluation_results, task_fingerprint = _fetch_final_score_state(
+            session,
+            benchmark_row,
+            org,
+            for_update=True,
+        )
+        session.commit()
+
+    if not any(result is not None for result in evaluation_results.values()):
+        state.finalization_deferred = await finalize_all_error_run(benchmark_id, org, authority=authority)
+        return
+
+    # Calculate the final score based off the tasks that were ran
+    final_score_response = await benchmark_service.final_score(
+        evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset
+    )
+
+    with Session(bind=engine) as session:
+        benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        lock_execution_authority(session, authority)
+        # final_score is a network call; a concurrent retry can make tasks runnable before we write FinalEvaluation.
+        if has_runnable_tasks(session, benchmark_row, org):
+            state.finalization_deferred = True
+            return
+    # Create the final evaluation row and add it to the database
+    final_evaluation_row = FinalEvaluation(
+        org_id=org.id,
+        benchmark=benchmark_id,
+        final_score=final_score_response.final_score,
+        properties=final_score_response.metadata,
+    )
+
+    with Session(bind=engine) as session:
+        benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES or has_runnable_tasks(session, benchmark_row, org):
+            state.finalization_deferred = True
+            return
+        lock_execution_authority(session, authority)
+        _current_results, current_fingerprint = _fetch_final_score_state(
+            session,
+            benchmark_row,
+            org,
+            for_update=True,
+        )
+        if current_fingerprint != task_fingerprint:
+            state.finalization_deferred = True
+            return
+
+        # Delete existing final evaluation if re-running
+        if benchmark_row.final_evaluation:
+            session.delete(benchmark_row.final_evaluation)
+            session.flush()
+
+        session.add(final_evaluation_row)
+        # Commit the final score and terminal status together while retry/resume is blocked.
+        set_benchmark_final_status(benchmark_row, session, org, authority=authority)
+
+        final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
+        lambda_function = benchmark_row.arguments.lambda_function
+        lambda_payload: dict[str, Any] | None = None
+        if lambda_function:
+            lambda_payload = benchmark_row.arguments.model_dump()
+            lambda_payload["benchmark_id"] = str(benchmark_id)
+            lambda_payload["benchmark_name"] = benchmark_row.name
+            lambda_payload["bucket"] = aws_runtime.resources.s3_bucket
+
+    async with hold_dispatch_authority(authority) as (_, benchmark_row):
+        await upload_final_view(benchmark_row, final_view, aws_runtime)
+
+    if lambda_function and lambda_payload is not None:
+        async with hold_dispatch_authority(authority):
+            await asyncio.to_thread(
+                invoke_lambda,
+                aws_runtime.clients,
+                lambda_function,
+                lambda_payload,
+                config=_COMPLETION_CALLBACK_CONFIG,
+            )
 
 
 def commit_benchmark_error(

@@ -361,14 +361,11 @@ async def test_direct_provider_setup_failure_closes_client(
         harness_config=harness_config,
     )
     benchmark = _persist_benchmark(request, database_session)
-    benchmark_service = AsyncMock(spec=BenchmarkServiceClient)
+    close_client = AsyncMock()
     monkeypatch.setattr(
         RuntimeServices, "get_sandbox_provider", AsyncMock(side_effect=RuntimeError("provider setup failed"))
     )
-    monkeypatch.setattr(
-        "tracker.utils.run_orchestration.create_benchmark_service_client_from_request",
-        Mock(return_value=benchmark_service),
-    )
+    monkeypatch.setattr(BenchmarkServiceClient, "close", close_client)
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
 
     await process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"], **authority_kwargs)
@@ -377,7 +374,7 @@ async def test_direct_provider_setup_failure_closes_client(
     assert benchmark.status == BenchmarkStatus.ERROR
     assert benchmark.error_message is not None
     assert "provider setup failed" in benchmark.error_message
-    benchmark_service.close.assert_awaited_once_with()
+    close_client.assert_awaited_once_with()
 
 
 @pytest.mark.usefixtures("process_benchmark_env")

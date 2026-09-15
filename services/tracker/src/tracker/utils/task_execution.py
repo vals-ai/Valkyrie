@@ -561,22 +561,25 @@ async def process_task(
         recovery_attempt: SandboxRecoveryAttempt,
     ) -> dict[str, dict[str, Any] | None]:
         clear_sandbox_context()
-        return await _process_task_attempt(
-            task_row=task_row,
-            start_benchmark_request=start_benchmark_request,
-            benchmark_service=benchmark_service,
-            benchmark_id=benchmark_id,
-            task_id=task_id,
-            runtime=runtime,
-            org=org,
-            sandbox_provider_config=sandbox_provider_config,
-            creation_semaphore=creation_semaphore,
-            dependency_setup_recovery=dependency_setup_recovery,
-            recovery_attempt=recovery_attempt,
-            authority=authority,
-            sandbox_provider=sandbox_provider,
-            queue_context=queue_context,
-        )
+        stream_key = f"{benchmark_id}:{task_log_stream_name(task_id, task_row.started_at)}"
+        async with TaskLogBuffer(runtime.logs, stream_key) as task_logs:
+            return await _process_task_attempt(
+                task_row=task_row,
+                start_benchmark_request=start_benchmark_request,
+                benchmark_service=benchmark_service,
+                benchmark_id=benchmark_id,
+                task_id=task_id,
+                runtime=runtime,
+                task_logs=task_logs,
+                org=org,
+                sandbox_provider_config=sandbox_provider_config,
+                creation_semaphore=creation_semaphore,
+                dependency_setup_recovery=dependency_setup_recovery,
+                recovery_attempt=recovery_attempt,
+                authority=authority,
+                sandbox_provider=sandbox_provider,
+                queue_context=queue_context,
+            )
 
     def record_attempt_failure(attempt: SandboxRecoveryAttempt, exc: Exception) -> None:
         _observe_task_retry(attempt, exc)
@@ -612,6 +615,7 @@ async def _process_task_attempt(
     benchmark_id: UUID,
     task_id: str,
     runtime: RuntimeServices,
+    task_logs: TaskLogBuffer,
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,
@@ -658,8 +662,6 @@ async def _process_task_attempt(
     # Setup logging infrastructure before try block so it's always available.
     # Version streams by task attempt so retries never overwrite earlier logs.
     task_stream_name = task_log_stream_name(task_id, task_row.started_at)
-    stream_key: str = f"{benchmark_id}:{task_stream_name}"
-    task_logs = TaskLogBuffer(runtime.logs, stream_key)
     log_output = task_logs.write
 
     logger.info(
@@ -1371,11 +1373,8 @@ async def _process_task_attempt(
             operation="process_task",
         )
     finally:
-        try:
-            if evaluation_lock is not None:
-                await evaluation_lock.__aexit__(None, None, None)
-        finally:
-            await task_logs.close()
+        if evaluation_lock is not None:
+            await evaluation_lock.__aexit__(None, None, None)
 
 
 def commit_task_error(

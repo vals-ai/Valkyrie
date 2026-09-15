@@ -749,7 +749,7 @@ class TestBenchmarkServiceFailures:
         )
         monkeypatch.setattr(run_orchestration_module, "AUTH_REQUIRED", True)
         monkeypatch.setattr(
-            "tracker.runtime.services.fetch_sandbox_provider_config_async",
+            "tracker.runtime.services.RuntimeServices._load_sandbox_provider_config",
             AsyncMock(side_effect=AssertionError("sandbox config resolved before destination validation")),
         )
 
