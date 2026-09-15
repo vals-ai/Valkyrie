@@ -5,7 +5,7 @@ Run: uv run pytest tests/unit/test_taskiq_producers.py
 
 import json
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import pytest
@@ -145,7 +145,7 @@ def test_managed_start_and_resume_emit_credential_free_v2(
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
     monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", agent_exists)
     monkeypatch.setattr("main.copy_agent_to_benchmark", AsyncMock(return_value=True))
-    reset_to_in_progress = AsyncMock(return_value=["task-2"])
+    reset_to_in_progress = Mock(return_value=["task-2"])
     monkeypatch.setattr("main.reset_to_in_progress_status", reset_to_in_progress)
 
     response = client.post("/start-benchmark", json=_start_request(contract, None).model_dump(mode="json"))
@@ -193,7 +193,7 @@ def test_managed_start_and_resume_emit_credential_free_v2(
     assert response.json()["detail"] == "Managed execution cannot include AWS credentials"
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.STOPPED
-    assert reset_to_in_progress.await_count == 1
+    assert reset_to_in_progress.call_count == 1
     assert payloads == []
 
 
@@ -349,16 +349,8 @@ def test_managed_resume_rolls_back_when_the_active_release_is_incompatible(
     _promote_test_release(database_session, release_id="legacy-release", protocol_version="1")
     payloads.clear()
 
-    async def mutate_recovery_state(**_kwargs: Any) -> list[str]:
-        benchmark.status = BenchmarkStatus.IN_PROGRESS
-        task.status = TaskStatus.PENDING
-        database_session.add(benchmark)
-        database_session.add(task)
-        return [task.task_id]
 
-    monkeypatch.setattr("main.reset_to_in_progress_status", mutate_recovery_state)
-
-    response = client.post(f"/retry-or-resume-benchmark/{benchmark_id}")
+    response = client.post(f"/retry-or-resume-benchmark/{benchmark_id}?retry=true")
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Activate an executor release that supports managed runs"
@@ -408,20 +400,12 @@ def test_managed_resume_payload_failure_rolls_back_recovery_state(
     }
     payloads.clear()
 
-    async def mutate_recovery_state(**_kwargs: Any) -> list[str]:
-        benchmark.status = BenchmarkStatus.IN_PROGRESS
-        task.status = TaskStatus.PENDING
-        database_session.add(benchmark)
-        database_session.add(task)
-        return [task.task_id]
-
     def fail_payload_build(*_args: Any, **_kwargs: Any) -> None:
         raise RuntimeError("payload validation failed")
 
-    monkeypatch.setattr("main.reset_to_in_progress_status", mutate_recovery_state)
     monkeypatch.setattr("main._process_benchmark_kwargs", fail_payload_build)
 
-    response = TestClient(app, raise_server_exceptions=False).post(f"/retry-or-resume-benchmark/{benchmark_id}")
+    response = TestClient(app, raise_server_exceptions=False).post(f"/retry-or-resume-benchmark/{benchmark_id}?retry=true")
 
     assert response.status_code == 500
     database_session.expire_all()
@@ -453,7 +437,7 @@ def test_access_key_start_and_resume_keep_v1_task_kwargs(
     async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
         return VerifyTaskIdsResponse(task_ids=["task-1"])
 
-    async def reset_to_in_progress(*_args: Any, **_kwargs: Any) -> list[str]:
+    def reset_to_in_progress(*_args: Any, **_kwargs: Any) -> list[str]:
         return ["task-1"]
 
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
