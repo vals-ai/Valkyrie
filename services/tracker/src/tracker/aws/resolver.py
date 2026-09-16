@@ -231,20 +231,6 @@ def resolve_start_aws_runtime(
     return AWSRuntimeResolution(_http_deployment_runtime(org_id), None)
 
 
-def resolve_run_aws_runtime(
-    request: Request,
-    *,
-    aws_managed: bool,
-    org_id: UUID,
-) -> AWSRuntime:
-    """Resolve AWS authority from a persisted run mode."""
-    return resolve_run_aws_runtime_and_access_key_config(
-        request,
-        aws_managed=aws_managed,
-        org_id=org_id,
-    ).runtime
-
-
 def resolve_run_aws_runtime_and_access_key_config(
     request: Request,
     *,

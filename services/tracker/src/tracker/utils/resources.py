@@ -8,7 +8,6 @@ from benchmark_service.client import BenchmarkServiceClient
 from sqlmodel import Session, select
 
 from tracker.auth import RequestIdentity
-from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
@@ -65,12 +64,6 @@ def create_benchmark_service_client(
     validate_service_headers(headers)
 
     return BenchmarkServiceClient(url=url, headers=headers)
-
-
-def create_benchmark_service_client_from_request(request: StartBenchmarkRequest) -> BenchmarkServiceClient:
-    """Create a BenchmarkServiceClient for a start request."""
-    url = request.custom_benchmark_service or create_benchmark_service_url(request.benchmark_name)
-    return create_benchmark_service_client(url, service_headers=request.service_headers)
 
 
 def _sandbox_provider_secret_name(request: StartBenchmarkRequest) -> str | None:

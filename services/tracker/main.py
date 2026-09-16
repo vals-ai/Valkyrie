@@ -49,7 +49,6 @@ from tracker.auth import (
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.aws.resolver import (
     resolve_aws_runtime_metadata,
-    resolve_run_aws_runtime,
     resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
 )
@@ -1045,11 +1044,11 @@ async def _retrieve_results(
         org,
     )
 
-    aws_runtime = resolve_run_aws_runtime(
+    aws_runtime = resolve_run_aws_runtime_and_access_key_config(
         http_request,
         aws_managed=benchmark_row.aws_managed,
         org_id=org.id,
-    )
+    ).runtime
 
     final_view = create_final_view(benchmark_row, session, org)
     task_ids_set = set(task_ids) if task_ids else None
