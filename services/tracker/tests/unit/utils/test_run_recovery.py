@@ -619,7 +619,7 @@ class TestRunRecovery:
         ) -> None:
             captured_lambda_payloads.append(payload)
 
-        monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", _capture_lambda_payload)
+        monkeypatch.setattr("tracker.aws.services.invoke_lambda", _capture_lambda_payload)
 
         start_benchmark_request = StartBenchmarkRequest(
             benchmark_name="swebench",

@@ -3,6 +3,7 @@
 Run: uv run pytest tests/unit/test_managed_execution.py
 """
 
+import json
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -354,9 +355,11 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         assert clients is aws_runtime.clients
         calls.append("lambda-dry-run")
 
-    async def upload_results(_benchmark: Benchmark, _final_view: object, runtime: AWSRuntime) -> None:
-        assert runtime.resources == aws_runtime.resources
-        assert runtime.clients is aws_runtime.clients
+    async def upload_results(_store: object, key: str, content: bytes) -> None:
+        assert key == f"benchmarks/{benchmark.id}/{benchmark.name}.json"
+        result = json.loads(content)
+        assert result["benchmark_id"] == str(benchmark.id)
+        assert result["status"] == "FINISHED"
         calls.append("s3-final-upload")
 
     def invoke_post_run(clients: object, _function_name: str, _payload: object, **_kwargs: Any) -> dict[str, Any]:
@@ -376,8 +379,8 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     monkeypatch.setattr("tracker.aws.services.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.runtime.services.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.aws.services.dry_run_lambda", dry_run)
-    monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", upload_results)
-    monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", invoke_post_run)
+    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.put_bytes", upload_results)
+    monkeypatch.setattr("tracker.aws.services.invoke_lambda", invoke_post_run)
     monkeypatch.setattr("tracker.utils.run_orchestration.observability_span", record_span)
 
     execution_context = _execution_context(request, benchmark.id)

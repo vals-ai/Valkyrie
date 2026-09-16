@@ -1,19 +1,27 @@
 """Services shared by one API operation or executor execution."""
 
+from abc import ABC, abstractmethod
 from asyncio import Lock, Task, create_task, to_thread
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+from uuid import UUID
 
 from benchmark_service import SandboxProvider, SandboxProviderConfig, sandbox_provider_config_from_mapping
 
 from tracker.exceptions import InvalidSandboxConfigurationError, TrackerServiceError
+from tracker.runtime.artifacts import benchmark_prefix
 from tracker.runtime.lifecycle import finish_cleanup
 from tracker.runtime.logs import BenchmarkLogLocations, BenchmarkLogSink, LogProvider
 from tracker.runtime.secrets import AsyncSecretStore, SecretStore, resolve_secrets
 from tracker.runtime.storage import ArtifactLocations, ObjectStore
 
 
+if TYPE_CHECKING:
+    from tracker.types import FinalViewResponse, StartBenchmarkRequest
+
+
 @dataclass
-class RuntimeServices:
+class RuntimeServices(ABC):
     """Storage, secrets, logs, and lazily constructed sandbox access."""
 
     objects: ObjectStore
@@ -31,6 +39,22 @@ class RuntimeServices:
     _config_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
     _close_task: Task[None] | None = field(default=None, init=False, repr=False)
+
+    @abstractmethod
+    def prepare_execution(self, request: "StartBenchmarkRequest", benchmark_id: UUID) -> None:
+        """Prepare backend resources before sandbox work."""
+        raise NotImplementedError
+
+    async def upload_final_view(self, final_view: "FinalViewResponse") -> str:
+        key = f"{benchmark_prefix(str(final_view.benchmark_id))}{final_view.benchmark_name}.json"
+        await self.objects.put_bytes(key, final_view.model_dump_json(indent=4, exclude_none=True).encode())
+
+        return key
+
+    @abstractmethod
+    async def run_completion_callback(self, final_view: "FinalViewResponse") -> None:
+        """Run the configured completion callback after results are stored."""
+        raise NotImplementedError
 
     async def get_sandbox_provider_config(self) -> SandboxProviderConfig:
         """Resolve provider credentials only when sandbox access is requested."""
