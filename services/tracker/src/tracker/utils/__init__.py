@@ -2,7 +2,6 @@
 
 from tracker.utils.harness_config import (
     fetch_harness_config,
-    try_fetch_harness_config,
 )
 from tracker.utils.run_orchestration import (
     catch_errors_during_cleanup,
@@ -99,7 +98,6 @@ __all__ = [
     "start_benchmark_request_to_benchmark",
     "stop_sandbox",
     "stream_benchmark_results",
-    "try_fetch_harness_config",
     "final_view_s3_key",
     "upload_final_view",
     "update_benchmark_concurrency",

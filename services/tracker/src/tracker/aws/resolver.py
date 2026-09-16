@@ -127,11 +127,6 @@ def _raise_missing_header(key: str) -> Never:
     raise HTTPException(status_code=400, detail=f"Missing harness config header 'x-harness-{header_name}'")
 
 
-def try_fetch_harness_config(request: Request) -> HarnessConfig | None:
-    """Return complete access-key request headers, if supplied."""
-    return inspect_harness_headers(request).config
-
-
 def fetch_harness_config(request: Request) -> HarnessConfig:
     """Return complete access-key request headers or name the first missing header."""
     header_inspection = inspect_harness_headers(request)
@@ -287,7 +282,7 @@ def resolve_run_metadata_aws_runtime(
     if aws_managed:
         return _http_deployment_runtime(org_id, properties)
 
-    harness_config = try_fetch_harness_config(request)
+    harness_config = inspect_harness_headers(request).config
     if harness_config is None:
         return None
     return AWSRuntime.from_harness_config(harness_config).with_resources(properties)
