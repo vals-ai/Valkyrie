@@ -13,13 +13,12 @@ from typing import BinaryIO
 
 import yaml
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from tracker import config
 from tracker.agent.archive import ArchiveLimitError, validate_agent_archive
 from tracker.agent.schemas import validate_agent_name
-from tracker.api.dependencies import AgentLibraryRuntimeDependency, get_agent_library_aws_runtime
-from tracker.aws.runtime import AWSRuntime
+from tracker.api.dependencies import AgentLibraryRuntimeDependency
 from tracker.runtime.artifacts import list_agents
 from tracker.exceptions import S3Error
 from tracker.types import AgentDownloadURLResponse, AgentEntry, AgentsResponse
@@ -81,17 +80,15 @@ async def list_agents_endpoint(
 async def get_agent_download_url(
     name: str,
     runtime: AgentLibraryRuntimeDependency,
-    aws_runtime: AWSRuntime = Depends(get_agent_library_aws_runtime),
 ) -> AgentDownloadURLResponse:
     """Return a 5-minute presigned URL to download agents/<name>.zip."""
     key = _agent_key(name)
     with _storage_errors():
         if not await runtime.objects.exists(key):
             raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")
-        expires_in = aws_runtime.clients.maximum_presign_ttl(PRESIGNED_URL_EXPIRES_SECONDS)
-        url = await runtime.objects.temporary_download_url(key, expires_in=expires_in)
+        url = await runtime.objects.temporary_download_url(key, expires_in=PRESIGNED_URL_EXPIRES_SECONDS)
 
-    return AgentDownloadURLResponse(name=name, download_url=url, expires_in=expires_in)
+    return AgentDownloadURLResponse(name=name, download_url=url, expires_in=PRESIGNED_URL_EXPIRES_SECONDS)
 
 
 @router.put(
