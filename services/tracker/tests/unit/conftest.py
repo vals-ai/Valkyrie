@@ -278,7 +278,7 @@ async def runtime_services(
     aws_runtime: AWSRuntime, harness_config: HarnessConfig
 ) -> AsyncGenerator[RuntimeServices, None]:
     """Compose the task runtime using the shared deterministic AWS configuration."""
-    async with CloudRuntimeConfig(properties=aws_runtime.resources).create_runtime(
+    async with CloudRuntimeConfig.from_aws_runtime(aws_runtime).create_runtime(
         clients=aws_runtime.clients,
         sandbox_provider_secret_name=harness_config.sandbox_provider_secret_name,
     ) as runtime:

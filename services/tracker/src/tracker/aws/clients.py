@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import aioboto3
 import boto3
@@ -26,6 +26,8 @@ def _boto3_client(service_name: str, **kwargs: Any) -> Any:
 
 class AWSClientProvider(ABC):
     """Construct AWS service clients for one authentication source."""
+
+    credential_source: ClassVar[Literal["access_key", "managed"]]
 
     @abstractmethod
     def _client_kwargs(self) -> dict[str, Any]:
@@ -69,6 +71,7 @@ class AWSClientProvider(ABC):
 class ExplicitCredentialsAWSClientProvider(AWSClientProvider):
     """Construct AWS clients from caller-supplied credentials."""
 
+    credential_source: ClassVar[Literal["access_key", "managed"]] = "access_key"
     credentials: AWSCredentials = field(repr=False)
 
     def _client_kwargs(self) -> dict[str, Any]:
@@ -84,6 +87,7 @@ class ExplicitCredentialsAWSClientProvider(AWSClientProvider):
 class DefaultChainAWSClientProvider(AWSClientProvider):
     """Construct AWS clients through the SDK default credential chain."""
 
+    credential_source: ClassVar[Literal["access_key", "managed"]] = "managed"
     region: str
 
     def _client_kwargs(self) -> dict[str, Any]:
