@@ -10,7 +10,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from tracker._lambda import dry_run_lambda
-from tracker.aws.clients import AWSClientProvider
+from tracker.aws.clients import AWSClientProvider, DefaultChainAWSClientProvider
 from tracker.aws.cloudwatch_logs import (
     CloudWatchBenchmarkLogLocations,
     CloudWatchBenchmarkLogSink,
@@ -32,10 +32,15 @@ class CloudRuntimeServices(RuntimeServices):
     aws_runtime: AWSRuntime
 
     def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
-        """Run synchronous AWS preflight checks together, before sandbox work."""
+        """Prepare logs before sandbox work."""
         self.logs.create_benchmark(str(benchmark_id), retention_days=self.aws_runtime.resources.log_retention_days)
-        if request.harness_config is not None:
-            return
+
+
+class ManagedCloudRuntimeServices(CloudRuntimeServices):
+    """Verify deployment AWS access before starting managed execution."""
+
+    def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
+        super().prepare_execution(request, benchmark_id)
 
         resolve_secrets(request.contract.secrets, self.secrets)
         if request.webhook_secret_name and request.webhook_intervals:
@@ -62,7 +67,10 @@ class CloudRuntimeConfig(BaseModel):
         runtime = AWSRuntime(resources=self.properties, clients=clients)
         secrets = SecretsManagerStore(clients)
 
-        services = CloudRuntimeServices(
+        services_type = (
+            ManagedCloudRuntimeServices if isinstance(clients, DefaultChainAWSClientProvider) else CloudRuntimeServices
+        )
+        services = services_type(
             aws_runtime=runtime,
             objects=S3ObjectStore(runtime),
             secrets=secrets,

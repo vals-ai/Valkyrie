@@ -13,6 +13,7 @@ from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
+from tracker.aws.clients import DefaultChainAWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.resolver import ManagedAWSEligibilityError
 from tracker.aws.runtime import AWSRuntime
@@ -27,6 +28,12 @@ from tracker.utils.run_orchestration import (
 
 
 _TASK_IDS = ["task-1", "task-2"]
+
+
+@pytest.fixture
+def aws_runtime(harness_config: HarnessConfig) -> AWSRuntime:
+    resources = AWSRuntime.from_harness_config(harness_config).resources
+    return AWSRuntime(resources, DefaultChainAWSClientProvider(resources.region))
 
 
 def _access_key_request(contract: AgentContractRequest, harness_config: HarnessConfig) -> StartBenchmarkRequest:
@@ -390,7 +397,10 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     assert finalized_span["status"] == "FINISHED"
 
 
+@pytest.mark.parametrize("aws_managed", [False, True])
 async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
+    aws_managed: bool,
+    harness_config: HarnessConfig,
     contract: AgentContractRequest,
     aws_runtime: AWSRuntime,
     monkeypatch: pytest.MonkeyPatch,
@@ -402,7 +412,11 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
             "lambda_function": "result-handler",
         }
     )
-    execution = _parse_queued_execution(None, None, None, _execution_context(request, uuid4()))
+    if not aws_managed:
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        request = request.model_copy(update={"harness_config": harness_config})
+
+    benchmark_id = uuid4()
     calls: list[str] = []
     provider_config = cast(SandboxProviderConfig, MagicMock(create_provider=MagicMock(return_value=AsyncMock())))
 
@@ -436,11 +450,12 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         sandbox_provider=request.sandbox_provider,
         sandbox_provider_secret_name=request.sandbox_provider_secret_reference,
     ) as runtime:
-        runtime.prepare_execution(request, execution.benchmark_id)
+        runtime.prepare_execution(request, benchmark_id)
         result = await runtime.get_sandbox_provider_config()
 
     assert result is provider_config
-    assert calls == ["logs", "agent_secrets", "webhook_secret", "lambda", "sandbox_provider_secret"]
+    expected_preflight = ["agent_secrets", "webhook_secret", "lambda"] if aws_managed else []
+    assert calls == ["logs", *expected_preflight, "sandbox_provider_secret"]
 
 
 async def test_managed_preflight_failure_happens_before_sandbox(
