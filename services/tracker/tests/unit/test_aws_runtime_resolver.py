@@ -15,7 +15,7 @@ from tracker import config
 from tracker.aws.clients import DefaultChainAWSClientProvider, ExplicitCredentialsAWSClientProvider
 from tracker.aws.resolver import (
     resolve_run_metadata_aws_runtime,
-    resolve_run_aws_runtime,
+    resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
 )
 from tracker.aws.runtime import AWSRuntime
@@ -165,11 +165,11 @@ def test_run_runtime_uses_stored_mode(
 ) -> None:
     _configure_managed_runtime(monkeypatch, submissions_enabled=False)
 
-    runtime = resolve_run_aws_runtime(
+    runtime = resolve_run_aws_runtime_and_access_key_config(
         _request(_COMPLETE_HARNESS_HEADERS),
         aws_managed=aws_managed,
         org_id=_ORG_ID,
-    )
+    ).runtime
 
     assert runtime.resources.s3_bucket == expected_bucket
     assert isinstance(runtime.clients, expected_provider)
@@ -177,11 +177,11 @@ def test_run_runtime_uses_stored_mode(
 
 def test_access_key_run_reports_incomplete_legacy_config() -> None:
     with pytest.raises(HTTPException) as exc_info:
-        resolve_run_aws_runtime(
+        resolve_run_aws_runtime_and_access_key_config(
             _request({"x-harness-aws-access-key-id": "partial-access-key"}),
             aws_managed=False,
             org_id=_ORG_ID,
-        )
+        ).runtime
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "Missing harness config header 'x-harness-aws-secret-access-key'"
@@ -190,11 +190,11 @@ def test_access_key_run_reports_incomplete_legacy_config() -> None:
 def test_managed_run_ignores_partial_access_key_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_managed_runtime(monkeypatch)
 
-    runtime = resolve_run_aws_runtime(
+    runtime = resolve_run_aws_runtime_and_access_key_config(
         _request({"x-harness-aws-access-key-id": "ignored"}),
         aws_managed=True,
         org_id=_ORG_ID,
-    )
+    ).runtime
 
     assert runtime.resources.s3_bucket == "deployment-bucket"
     assert isinstance(runtime.clients, DefaultChainAWSClientProvider)
@@ -227,11 +227,11 @@ def test_run_runtime_rejects_managed_run_for_ineligible_org(monkeypatch: pytest.
     _configure_managed_runtime(monkeypatch, eligible=False)
 
     with pytest.raises(HTTPException) as exc_info:
-        resolve_run_aws_runtime(
+        resolve_run_aws_runtime_and_access_key_config(
             _request(_COMPLETE_HARNESS_HEADERS),
             aws_managed=True,
             org_id=_ORG_ID,
-        )
+        ).runtime
 
     assert exc_info.value.status_code == 403
 
@@ -392,7 +392,7 @@ def test_saved_resources_survive_new_defaults_and_refreshed_credentials(
     """Resume uses the saved region and locations with the current credential source."""
     _configure_managed_runtime(monkeypatch)
     request = _request(None if aws_managed else _COMPLETE_HARNESS_HEADERS)
-    original = resolve_run_aws_runtime(request, aws_managed=aws_managed, org_id=_ORG_ID)
+    original = resolve_run_aws_runtime_and_access_key_config(request, aws_managed=aws_managed, org_id=_ORG_ID).runtime
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "new-deployment-region")
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "new-deployment-bucket")
     if remove_defaults:
@@ -410,12 +410,12 @@ def test_saved_resources_survive_new_defaults_and_refreshed_credentials(
         "x-harness-aws-default-region": "new-header-region",
         "x-harness-s3-bucket": "new-header-bucket",
     }
-    resumed = resolve_run_aws_runtime(
+    resumed = resolve_run_aws_runtime_and_access_key_config(
         _request(None if aws_managed else refreshed_headers),
         aws_managed=aws_managed,
         org_id=_ORG_ID,
         properties=original.resources,
-    )
+    ).runtime
 
     assert resumed.resources == original.resources
     if aws_managed:

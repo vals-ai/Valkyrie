@@ -10,7 +10,7 @@ from opentelemetry import trace
 from sqlmodel import Session, select
 
 from tracker.auth import get_current_org
-from tracker.aws.resolver import resolve_agent_library_aws_runtime, resolve_run_aws_runtime
+from tracker.aws.resolver import resolve_agent_library_aws_runtime, resolve_run_aws_runtime_and_access_key_config
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.services import CloudRuntimeConfig
 from tracker.database.models import Benchmark, Org, Task
@@ -58,12 +58,12 @@ def get_run_aws_context(
     benchmark = get_scoped(Benchmark, benchmark_id, session, org)
     return RunAWSContext(
         benchmark=benchmark,
-        aws_runtime=resolve_run_aws_runtime(
+        aws_runtime=resolve_run_aws_runtime_and_access_key_config(
             request,
             aws_managed=benchmark.aws_managed,
             properties=benchmark.arguments.properties,
             org_id=org.id,
-        ),
+        ).runtime,
     )
 
 
