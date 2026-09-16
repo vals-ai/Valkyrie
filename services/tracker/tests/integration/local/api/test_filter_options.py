@@ -23,6 +23,7 @@ class TestFilterOptions:
         for benchmark_name, agent_name, model, dataset, email in [
             ("swebench", "mini_sweagent", "gateway/openai/gpt-5", "verified", "a@vals.ai"),
             ("swebench", "claude_code", "gateway/anthropic/claude-opus-5", None, "b@vals.ai"),
+            ("swebench", "claude_code", "gateway/anthropic/claude-opus-5", "default", "b@vals.ai"),
             ("fab", "mini_sweagent", None, "verified", None),
             ("swebench", "mini_sweagent", "gateway/openai/gpt-5", "lite", "a@vals.ai"),
         ]:
