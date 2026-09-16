@@ -678,6 +678,7 @@ class TestTrackerAPI:
 
         # Secondary test. Arguments is correct serialized into the database
         assert benchmark_row.arguments == BenchmarkArguments(
+            properties=AWSRuntime.from_harness_config(harness_config).resources,
             contract=request.contract,
             concurrency=request.concurrency,
             task_ids=None,
@@ -864,7 +865,9 @@ class TestTrackerAPI:
             }
         else:
             assert process_payload.arguments == {
-                "start_benchmark_request_json": request.model_dump(),
+                "start_benchmark_request_json": request.model_copy(
+                    update={"properties": benchmark.arguments.properties}
+                ).model_dump(),
                 "benchmark_id_str": str(benchmark.id),
                 "verified_task_ids": ["task_0"],
                 "telemetry_context_json": child_telemetry_context,

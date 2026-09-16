@@ -89,6 +89,8 @@ def start_benchmark_request_to_benchmark(
         webhook_secret_name=request.webhook_secret_name,
         webhook_intervals=request.webhook_intervals,
         arguments=BenchmarkArguments(
+            environment=request.environment,
+            properties=request.properties,
             contract=request.contract,
             concurrency=request.concurrency,
             priority=request.priority,

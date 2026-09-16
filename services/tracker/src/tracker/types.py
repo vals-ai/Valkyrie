@@ -19,6 +19,7 @@ from pydantic import (
     model_validator,
 )
 
+from tracker.aws.runtime import AWSResources
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     AgentContractRequest,
@@ -75,6 +76,8 @@ class HarnessConfig(BaseModel):
 
 
 class StartBenchmarkRequest(BaseModel):
+    environment: Literal["aws"] = "aws"
+    properties: AWSResources | None = None
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5

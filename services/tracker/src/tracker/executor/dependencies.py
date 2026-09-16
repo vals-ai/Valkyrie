@@ -17,5 +17,7 @@ async def get_execution_runtime(
     benchmark: Benchmark = Depends(),
     org: Org = Depends(),
 ) -> AsyncGenerator[RuntimeServices, None]:
-    async with CloudRuntimeFactory.create_execution_runtime(request, org.id, benchmark.id) as runtime:
+    async with CloudRuntimeFactory.create_execution_runtime(
+        request, org.id, benchmark.id, properties=benchmark.arguments.properties
+    ) as runtime:
         yield runtime

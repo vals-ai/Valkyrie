@@ -30,6 +30,11 @@ class AWSClientProvider(ABC):
     credential_source: ClassVar[Literal["access_key", "managed"]]
 
     @abstractmethod
+    def with_region(self, region: str) -> "AWSClientProvider":
+        """Select a resource region while retaining this authentication source."""
+        raise NotImplementedError
+
+    @abstractmethod
     def _client_kwargs(self) -> dict[str, Any]:
         """Return SDK arguments for this credential source."""
         raise NotImplementedError
@@ -74,6 +79,9 @@ class ExplicitCredentialsAWSClientProvider(AWSClientProvider):
     credential_source: ClassVar[Literal["access_key", "managed"]] = "access_key"
     credentials: AWSCredentials = field(repr=False)
 
+    def with_region(self, region: str) -> AWSClientProvider:
+        return ExplicitCredentialsAWSClientProvider(self.credentials.model_copy(update={"aws_default_region": region}))
+
     def _client_kwargs(self) -> dict[str, Any]:
         return {
             "aws_access_key_id": self.credentials.aws_access_key_id,
@@ -89,6 +97,9 @@ class DefaultChainAWSClientProvider(AWSClientProvider):
 
     credential_source: ClassVar[Literal["access_key", "managed"]] = "managed"
     region: str
+
+    def with_region(self, region: str) -> AWSClientProvider:
+        return DefaultChainAWSClientProvider(region)
 
     def _client_kwargs(self) -> dict[str, Any]:
         return {"region_name": self.region}

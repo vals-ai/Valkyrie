@@ -355,7 +355,7 @@ def test_sdk_default_start_request_is_accepted_by_legacy_tracker() -> None:
     payload.pop("priority")
     sdk_request = SDKStartBenchmarkRequest.model_validate(payload)
 
-    wire_payload = sdk_request.model_dump(mode="json", exclude={"priority"})
+    wire_payload = sdk_request.model_dump(mode="json", exclude={"priority", "environment", "properties"})
     legacy_request = _LegacyTrackerStartBenchmarkRequest.model_validate(wire_payload)
 
     assert wire_payload["concurrency"] == 5

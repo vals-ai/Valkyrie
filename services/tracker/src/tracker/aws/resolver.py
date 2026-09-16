@@ -43,6 +43,17 @@ class AWSRuntimeResolution:
         """Return whether deployment-managed AWS authority was selected."""
         return self.access_key_harness_config is None
 
+    def with_submission_properties(self, properties: AWSResources | None) -> "AWSRuntimeResolution":
+        """Apply caller resources while keeping managed submissions on deployment resources."""
+        if properties is None:
+            return self
+        if self.aws_managed and properties != self.runtime.resources:
+            raise HTTPException(
+                status_code=400, detail="Managed run properties must match the deployment AWS resources"
+            )
+
+        return AWSRuntimeResolution(self.runtime.with_resources(properties), self.access_key_harness_config)
+
 
 @dataclass(frozen=True)
 class HarnessHeaderInspection:
@@ -116,11 +127,6 @@ def _raise_missing_header(key: str) -> Never:
     raise HTTPException(status_code=400, detail=f"Missing harness config header 'x-harness-{header_name}'")
 
 
-def try_fetch_harness_config(request: Request) -> HarnessConfig | None:
-    """Return complete access-key request headers, if supplied."""
-    return inspect_harness_headers(request).config
-
-
 def fetch_harness_config(request: Request) -> HarnessConfig:
     """Return complete access-key request headers or name the first missing header."""
     header_inspection = inspect_harness_headers(request)
@@ -153,8 +159,11 @@ def _eligible_org_ids() -> frozenset[UUID]:
         raise ManagedAWSConfigurationError("AWS_DEPLOYMENT_ROLE_ORG_IDS contains an invalid organization ID") from exc
 
 
-def _managed_resources() -> AWSResources:
-    """Build non-secret AWS resources from deployment configuration."""
+def _managed_resources(properties: AWSResources | None = None) -> AWSResources:
+    """Use saved resources, or resolve and validate deployment defaults."""
+    if properties is not None:
+        return properties
+
     missing = [
         name
         for name, value in (
@@ -191,23 +200,23 @@ def organization_can_use_managed_aws(org_id: UUID) -> bool:
     return org_id in _eligible_org_ids()
 
 
-def deployment_aws_runtime(org_id: UUID) -> AWSRuntime:
+def deployment_aws_runtime(org_id: UUID, properties: AWSResources | None = None) -> AWSRuntime:
     """Build a default-chain runtime for an eligible organization."""
     if not organization_can_use_managed_aws(org_id):
         raise ManagedAWSEligibilityError(
             "Managed AWS access is not available for this organization. Configure AWS access keys and try again."
         )
-    resources = _managed_resources()
+    resources = _managed_resources(properties)
     return AWSRuntime(
         resources=resources,
         clients=DefaultChainAWSClientProvider(resources.region),
     )
 
 
-def _http_deployment_runtime(org_id: UUID) -> AWSRuntime:
+def _http_deployment_runtime(org_id: UUID, properties: AWSResources | None = None) -> AWSRuntime:
     """Translate managed-runtime configuration failures into HTTP errors."""
     try:
-        return deployment_aws_runtime(org_id)
+        return deployment_aws_runtime(org_id, properties)
     except ManagedAWSEligibilityError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ManagedAWSConfigurationError as exc:
@@ -218,17 +227,21 @@ def resolve_start_aws_runtime(
     request: Request,
     body_config: HarnessConfig | None,
     org_id: UUID,
+    properties: AWSResources | None = None,
 ) -> AWSRuntimeResolution:
     """Resolve a new run without reinterpreting partial access-key input as managed."""
     harness_config = resolve_start_harness_config(request, body_config)
     if harness_config is not None:
-        return AWSRuntimeResolution(AWSRuntime.from_harness_config(harness_config), harness_config)
+        return AWSRuntimeResolution(
+            AWSRuntime.from_harness_config(harness_config), harness_config
+        ).with_submission_properties(properties)
     if not config.AWS_MANAGED_SUBMISSIONS_ENABLED:
         raise HTTPException(
             status_code=503,
             detail="Managed AWS submissions are temporarily unavailable. Configure AWS access keys and try again.",
         )
-    return AWSRuntimeResolution(_http_deployment_runtime(org_id), None)
+
+    return AWSRuntimeResolution(_http_deployment_runtime(org_id), None).with_submission_properties(properties)
 
 
 def resolve_run_aws_runtime_and_access_key_config(
@@ -236,10 +249,11 @@ def resolve_run_aws_runtime_and_access_key_config(
     *,
     aws_managed: bool,
     org_id: UUID,
+    properties: AWSResources | None = None,
 ) -> AWSRuntimeResolution:
     """Resolve AWS authority and retain any access-key harness configuration."""
     if aws_managed:
-        return AWSRuntimeResolution(_http_deployment_runtime(org_id), None)
+        return AWSRuntimeResolution(_http_deployment_runtime(org_id, properties), None)
 
     header_inspection = inspect_harness_headers(request)
     if not header_inspection.present:
@@ -252,7 +266,9 @@ def resolve_run_aws_runtime_and_access_key_config(
         _raise_missing_header(header_inspection.first_missing_key)
 
     harness_config = header_inspection.config
-    return AWSRuntimeResolution(AWSRuntime.from_harness_config(harness_config), harness_config)
+    return AWSRuntimeResolution(
+        AWSRuntime.from_harness_config(harness_config).with_resources(properties), harness_config
+    )
 
 
 def resolve_run_metadata_aws_runtime(
@@ -260,12 +276,16 @@ def resolve_run_metadata_aws_runtime(
     *,
     aws_managed: bool,
     org_id: UUID,
+    properties: AWSResources | None = None,
 ) -> AWSRuntime | None:
     """Resolve AWS authority when access-key metadata links may be omitted."""
     if aws_managed:
-        return _http_deployment_runtime(org_id)
-    harness_config = try_fetch_harness_config(request)
-    return AWSRuntime.from_harness_config(harness_config) if harness_config is not None else None
+        return _http_deployment_runtime(org_id, properties)
+
+    harness_config = inspect_harness_headers(request).config
+    if harness_config is None:
+        return None
+    return AWSRuntime.from_harness_config(harness_config).with_resources(properties)
 
 
 def resolve_agent_library_aws_runtime(

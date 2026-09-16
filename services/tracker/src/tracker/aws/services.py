@@ -139,12 +139,15 @@ class CloudRuntimeFactory:
         request: StartBenchmarkRequest,
         org_id: UUID,
         benchmark_id: UUID,
+        *,
+        properties: AWSResources | None = None,
     ) -> AsyncGenerator[RuntimeServices]:
         """Select AWS access and keep execution services alive for one dispatch."""
+        properties = request.properties or properties
         aws_runtime = (
-            deployment_aws_runtime(org_id)
+            deployment_aws_runtime(org_id, properties)
             if request.harness_config is None
-            else AWSRuntime.from_harness_config(request.harness_config)
+            else AWSRuntime.from_harness_config(request.harness_config).with_resources(properties)
         )
         config = cls.from_aws_runtime(aws_runtime)
 
