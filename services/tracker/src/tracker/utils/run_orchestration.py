@@ -55,7 +55,6 @@ from tracker.types import (
 )
 
 from tracker.utils.resources import (
-    create_benchmark_service_client_from_request,
     fetch_benchmark_row,
     fetch_sandbox_provider_config,
 )
@@ -763,7 +762,7 @@ async def process_benchmark(
                 start_benchmark_request.sandbox_provider,
             )
 
-        benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
+        benchmark_service = start_benchmark_request.benchmark_service
         try:
             sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
         except BaseException:
