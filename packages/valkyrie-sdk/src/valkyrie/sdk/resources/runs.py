@@ -13,6 +13,7 @@ from uuid import UUID
 from valkyrie.sdk.output_archive import extract_output_archive
 from valkyrie.sdk.errors import ValkyrieConfigError, ValkyrieRunError, ValkyrieStreamError, handle_httpx_stream_errors
 from valkyrie.sdk.models import (
+    AWSResources,
     AgentContractRequest,
     AnalyzeBenchmarkRequest,
     AnalyzeEvent,
@@ -53,6 +54,7 @@ class RunsResource:
         model: str | None = None,
         concurrency: int = 5,
         priority: int | None = None,
+        properties: AWSResources | None = None,
         task_ids: Sequence[str] | None = None,
         slice_str: str | None = None,
         dataset: str | None = None,
@@ -90,6 +92,7 @@ class RunsResource:
             benchmark_name=benchmark,
             concurrency=concurrency,
             priority=priority,
+            properties=properties,
             task_ids=list(task_ids) if task_ids else None,
             slice_str=slice_str,
             dataset=dataset,
@@ -111,7 +114,8 @@ class RunsResource:
             StartBenchmarkResponse,
             json=payload.model_dump(
                 mode="json",
-                exclude={"priority"} if priority is None else None,
+                exclude={"environment"}
+                | {name for name in ("priority", "properties") if getattr(payload, name) is None},
             ),
         )
 

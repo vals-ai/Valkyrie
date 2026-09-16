@@ -12,6 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 import pytest
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -63,6 +64,7 @@ from tracker.types import (
     TasksResponse,
     TaskSummary,
 )
+from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
 from valkyrie.sdk.models import (
     AWSCredentials as SDKAWSCredentials,
     AgentContractRequest as SDKAgentContractRequest,
@@ -349,18 +351,27 @@ def test_start_priority_override_is_optional_and_strict(model: type[BaseModel]) 
             model.model_validate({**payload, "sandbox_provider": "modal", "priority": invalid})
 
 
-def test_sdk_default_start_request_is_accepted_by_legacy_tracker() -> None:
-    payload = load_fixture("start.json")["request"]
-    payload.pop("concurrency")
-    payload.pop("priority")
-    sdk_request = SDKStartBenchmarkRequest.model_validate(payload)
+async def test_sdk_default_start_request_is_accepted_by_legacy_tracker() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        wire_payload = json.loads(request.content)
+        legacy_request = _LegacyTrackerStartBenchmarkRequest.model_validate(wire_payload)
+        assert legacy_request.concurrency == 5
+        assert "priority" not in wire_payload
+        assert "environment" not in wire_payload
+        assert "properties" not in wire_payload
+        return httpx.Response(200, json=load_fixture("start.json")["response"])
 
-    wire_payload = sdk_request.model_dump(mode="json", exclude={"priority", "environment", "properties"})
-    legacy_request = _LegacyTrackerStartBenchmarkRequest.model_validate(wire_payload)
-
-    assert wire_payload["concurrency"] == 5
-    assert "priority" not in wire_payload
-    assert legacy_request.concurrency == 5
+    config = ValkyrieConfig(
+        AWS_ACCESS_KEY_ID="test-key",
+        AWS_SECRET_ACCESS_KEY="test-secret",
+        AWS_DEFAULT_REGION="us-west-2",
+        S3_BUCKET="test-bucket",
+        sandbox_providers={"daytona": "DaytonaSecret"},
+    )
+    async with ValkyrieClient(
+        config, base_url="https://tracker.test", transport=httpx.MockTransport(handler)
+    ) as client:
+        await client.runs.start("sweagent", "swebench")
 
 
 def _normalized_wire_schema(value: Any) -> Any:

@@ -15,6 +15,8 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from valkyrie.sdk.models import AWSResources
+
 from valkyrie.sdk import (
     AgentContractRequest,
     FetchBenchmarksRequest,
@@ -301,9 +303,23 @@ async def test_start_can_omit_optional_run_configuration(make_client, sdk_config
     assert captured_body["webhook_intervals"] is None
     assert captured_body["concurrency"] == 5
     assert "priority" not in captured_body
+    assert "environment" not in captured_body
+    assert "properties" not in captured_body
 
 
-async def test_start_serializes_explicit_queue_priority(make_client, sdk_config) -> None:
+@pytest.mark.parametrize(
+    "properties",
+    [
+        None,
+        AWSResources(
+            region="us-east-1",
+            s3_bucket="custom-bucket",
+            log_group="custom-logs",
+            log_retention_days=7,
+        ),
+    ],
+)
+async def test_start_serializes_explicit_queue_priority(make_client, sdk_config, properties) -> None:
     captured_body: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -324,9 +340,13 @@ async def test_start_serializes_explicit_queue_priority(make_client, sdk_config)
 
     client = make_client(handler, config=sdk_config(default_sandbox_provider="daytona"))
     async with client:
-        await client.runs.start("sweagent", "swebench", priority=3)
+        await client.runs.start("sweagent", "swebench", priority=3, properties=properties)
 
     assert captured_body["priority"] == 3
+    if properties is None:
+        assert "properties" not in captured_body
+    else:
+        assert captured_body["properties"] == properties.model_dump(mode="json")
 
 
 async def test_start_overlays_a_supplied_contract_without_mutating_it(make_client) -> None:
