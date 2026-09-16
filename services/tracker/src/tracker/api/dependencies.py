@@ -17,7 +17,6 @@ from tracker.database.models import Benchmark, Org, Task
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.logging import benchmark_id_var
-from tracker.runtime.logs import LogProvider
 from tracker.runtime.services import RuntimeServices
 
 
@@ -107,11 +106,3 @@ def load_task_for_benchmark_or_404(benchmark: Benchmark, task_id: str, org: Org,
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
-
-
-def get_log_provider(runtime: RunRuntimeDependency) -> LogProvider:
-    """Construct the log reader for an organization-scoped run."""
-    return runtime.log_reader
-
-
-LogProviderDependency = Annotated[LogProvider, Depends(get_log_provider)]
