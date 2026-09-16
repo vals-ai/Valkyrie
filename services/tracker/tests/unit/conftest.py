@@ -104,6 +104,7 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.get_bytes", _mock_get_bytes)
     monkeypatch.setattr("tracker.aws.s3.get_contract_s3_key", _mock_get_contract_s3_key)
     monkeypatch.setattr("tracker.utils.reporting.upload_to_s3", _mock_upload_to_s3)
+    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.put_bytes", _mock_upload_to_s3)
     monkeypatch.setattr("main.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
 
 
@@ -179,14 +180,10 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequ
     def _mock_write(*_args: Any, **_kwargs: Any) -> None:
         return None
 
-    async def _mock_upload_final_view(*_args: Any, **_kwargs: Any) -> None:
-        return None
-
     monkeypatch.setattr(
         "tracker.aws.cloudwatch_logs.CloudWatchBenchmarkLogSink.create_benchmark", _mock_create_benchmark
     )
     monkeypatch.setattr("tracker.aws.cloudwatch_logs.CloudWatchBenchmarkLogSink.write", _mock_write)
-    monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", _mock_upload_final_view)
 
 
 @pytest.fixture(autouse=True)

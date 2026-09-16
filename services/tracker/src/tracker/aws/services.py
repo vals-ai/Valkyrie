@@ -7,9 +7,10 @@ from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
 
+from botocore.config import Config
 from pydantic import BaseModel
 
-from tracker._lambda import dry_run_lambda
+from tracker._lambda import dry_run_lambda, invoke_lambda
 from tracker.aws.clients import AWSClientProvider, DefaultChainAWSClientProvider
 from tracker.aws.cloudwatch_logs import (
     CloudWatchBenchmarkLogLocations,
@@ -22,7 +23,11 @@ from tracker.aws.s3 import S3ArtifactLocations, S3ObjectStore
 from tracker.aws.secrets import SecretsManagerStore
 from tracker.runtime.services import RuntimeServices
 from tracker.runtime.secrets import resolve_secrets
-from tracker.types import StartBenchmarkRequest
+from tracker.types import FinalViewResponse, StartBenchmarkRequest
+
+
+# Limit non-idempotent completion callbacks to one attempt and a 60-second read.
+_COMPLETION_CALLBACK_CONFIG = Config(read_timeout=60, retries={"total_max_attempts": 1})
 
 
 @dataclass(kw_only=True)
@@ -34,6 +39,23 @@ class CloudRuntimeServices(RuntimeServices):
     def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
         """Prepare logs before sandbox work."""
         self.logs.create_benchmark(str(benchmark_id), retention_days=self.aws_runtime.resources.log_retention_days)
+
+    async def run_completion_callback(self, final_view: FinalViewResponse) -> None:
+        arguments = final_view.benchmark_arguments
+        if not arguments.lambda_function:
+            return
+
+        payload = arguments.model_dump()
+        payload["benchmark_id"] = str(final_view.benchmark_id)
+        payload["benchmark_name"] = final_view.benchmark_name
+        payload["bucket"] = self.aws_runtime.resources.s3_bucket
+        await to_thread(
+            invoke_lambda,
+            self.aws_runtime.clients,
+            arguments.lambda_function,
+            payload,
+            config=_COMPLETION_CALLBACK_CONFIG,
+        )
 
 
 class ManagedCloudRuntimeServices(CloudRuntimeServices):
@@ -62,7 +84,7 @@ class CloudRuntimeConfig(BaseModel):
         clients: AWSClientProvider,
         sandbox_provider: str = "daytona",
         sandbox_provider_secret_name: str | None = None,
-    ) -> AsyncGenerator[CloudRuntimeServices]:
+    ) -> AsyncGenerator[RuntimeServices]:
         """Compose existing AWS adapters without resolving credentials again."""
         runtime = AWSRuntime(resources=self.properties, clients=clients)
         secrets = SecretsManagerStore(clients)
@@ -97,7 +119,7 @@ class CloudRuntimeConfig(BaseModel):
         benchmark_id: UUID,
         *,
         properties: AWSResources | None = None,
-    ) -> AsyncGenerator[CloudRuntimeServices]:
+    ) -> AsyncGenerator[RuntimeServices]:
         """Select AWS access and keep execution services alive for one dispatch."""
         properties = request.properties or properties
         aws_runtime = (
