@@ -235,7 +235,7 @@ class TestRunFinalization:
         monkeypatch.setattr(RuntimeServices, "upload_final_view", record_upload)
 
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        async with CloudRuntimeConfig(properties=aws_runtime.resources).create_runtime(
+        async with CloudRuntimeConfig.from_aws_runtime(aws_runtime).create_runtime(
             clients=aws_runtime.clients
         ) as runtime:
             with pytest.raises(ExecutionAuthorityRevoked):

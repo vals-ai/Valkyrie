@@ -4,14 +4,14 @@ from asyncio import to_thread
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Literal
+from typing import Annotated, ClassVar, Literal
 from uuid import UUID
 
 from botocore.config import Config
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, TypeAdapter
 
 from tracker._lambda import dry_run_lambda, invoke_lambda
-from tracker.aws.clients import AWSClientProvider, DefaultChainAWSClientProvider
+from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import (
     CloudWatchBenchmarkLogLocations,
     CloudWatchBenchmarkLogSink,
@@ -76,6 +76,13 @@ class CloudRuntimeConfig(BaseModel):
 
     environment: Literal["aws"] = "aws"
     properties: AWSResources
+    services_type: ClassVar[type[CloudRuntimeServices]]
+
+    @staticmethod
+    def from_aws_runtime(runtime: AWSRuntime) -> "CloudRuntimeConfig":
+        return _RUNTIME_CONFIG_ADAPTER.validate_python(
+            {"credential_source": runtime.clients.credential_source, "properties": runtime.resources}
+        )
 
     @asynccontextmanager
     async def create_runtime(
@@ -89,10 +96,7 @@ class CloudRuntimeConfig(BaseModel):
         runtime = AWSRuntime(resources=self.properties, clients=clients)
         secrets = SecretsManagerStore(clients)
 
-        services_type = (
-            ManagedCloudRuntimeServices if isinstance(clients, DefaultChainAWSClientProvider) else CloudRuntimeServices
-        )
-        services = services_type(
+        services = self.services_type(
             aws_runtime=runtime,
             objects=S3ObjectStore(runtime),
             secrets=secrets,
@@ -127,7 +131,7 @@ class CloudRuntimeConfig(BaseModel):
             if request.harness_config is None
             else AWSRuntime.from_harness_config(request.harness_config).with_resources(properties)
         )
-        config = cls(properties=aws_runtime.resources)
+        config = cls.from_aws_runtime(aws_runtime)
 
         async with config.create_runtime(
             clients=aws_runtime.clients,
@@ -136,3 +140,17 @@ class CloudRuntimeConfig(BaseModel):
         ) as runtime:
             await to_thread(runtime.prepare_execution, request, benchmark_id)
             yield runtime
+
+
+class AccessKeyRuntimeConfig(CloudRuntimeConfig):
+    credential_source: Literal["access_key"] = "access_key"
+    services_type: ClassVar[type[CloudRuntimeServices]] = CloudRuntimeServices
+
+
+class ManagedRuntimeConfig(CloudRuntimeConfig):
+    credential_source: Literal["managed"] = "managed"
+    services_type: ClassVar[type[CloudRuntimeServices]] = ManagedCloudRuntimeServices
+
+
+RuntimeConfig = Annotated[AccessKeyRuntimeConfig | ManagedRuntimeConfig, Field(discriminator="credential_source")]
+_RUNTIME_CONFIG_ADAPTER: TypeAdapter[RuntimeConfig] = TypeAdapter(RuntimeConfig)

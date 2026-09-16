@@ -17,7 +17,6 @@ from tracker.database.models import Benchmark, Org, Task
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.logging import benchmark_id_var
-from tracker.runtime.logs import LogProvider
 from tracker.runtime.services import RuntimeServices
 
 
@@ -73,7 +72,7 @@ RunAWSDependency = Annotated[RunAWSContext, Depends(get_run_aws_context)]
 async def get_run_runtime(run_context: RunAWSDependency) -> AsyncGenerator[RuntimeServices]:
     """Keep services alive for one authorized run operation."""
     aws_runtime = run_context.aws_runtime
-    config = CloudRuntimeConfig(properties=aws_runtime.resources)
+    config = CloudRuntimeConfig.from_aws_runtime(aws_runtime)
     arguments = run_context.benchmark.arguments
 
     async with config.create_runtime(
@@ -91,7 +90,7 @@ async def get_agent_library_runtime(
     aws_runtime: Annotated[AWSRuntime, Depends(get_agent_library_aws_runtime)],
 ) -> AsyncGenerator[RuntimeServices]:
     """Open agent storage without constructing sandbox access."""
-    config = CloudRuntimeConfig(properties=aws_runtime.resources)
+    config = CloudRuntimeConfig.from_aws_runtime(aws_runtime)
 
     async with config.create_runtime(clients=aws_runtime.clients) as runtime:
         yield runtime
@@ -108,11 +107,3 @@ def load_task_for_benchmark_or_404(benchmark: Benchmark, task_id: str, org: Org,
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
-
-
-def get_log_provider(runtime: RunRuntimeDependency) -> LogProvider:
-    """Construct the log reader for an organization-scoped run."""
-    return runtime.log_reader
-
-
-LogProviderDependency = Annotated[LogProvider, Depends(get_log_provider)]
