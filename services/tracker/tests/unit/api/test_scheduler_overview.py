@@ -398,7 +398,7 @@ async def test_route_offloads_synchronous_database_reads(monkeypatch: pytest.Mon
 
     enrich = AsyncMock(return_value=overview)
     monkeypatch.setattr(scheduler_overview_api, "read_scheduler_overview", blocking_overview_read)
-    monkeypatch.setattr(scheduler_overview_api, "_read_waiting_pool_references", blocking_reference_read)
+    monkeypatch.setattr(scheduler_overview_api, "_read_pool_references", blocking_reference_read)
     monkeypatch.setattr(scheduler_overview_api, "_enrich_scheduler_capacity", enrich)
 
     result, _ = await asyncio.gather(
@@ -464,6 +464,54 @@ def test_capacity_route_projects_provider_values_and_uses_complete_pool_referenc
     ]
     assert domains[0]["capacity"]["cpu"] == {"available": 12.5, "total": 16.0}
     assert domains[1]["capacity"]["disk"] == {"available": 40.0, "total": 50.0}
+    fetch_config.assert_awaited_once()
+    provider.get_capacity_domains.assert_awaited_once()
+    provider.close.assert_awaited_once()
+
+
+def test_capacity_route_enriches_active_only_pool(
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    benchmark = _provider_queue(make_benchmark(name="active"))
+    database_session.add_all([benchmark, make_task(benchmark, "active", status=TaskStatus.IN_PROGRESS)])
+    database_session.commit()
+    provider, fetch_config = _capacity_provider(
+        monkeypatch,
+        [
+            SandboxCapacityDomain(
+                target_id="region-a",
+                sandbox_class="container",
+                capacity=SandboxCapacity(
+                    cpu=ResourceCapacity(total=8, used=2),
+                    memory=ResourceCapacity(total=32, used=4),
+                    disk=ResourceCapacity(total=50, used=10),
+                ),
+            )
+        ],
+    )
+
+    response = _client.get("/scheduler/overview", params={"include_capacity": "true"})
+
+    assert response.status_code == 200
+    assert response.json()["pools"] == [
+        {
+            "pool_id": _QUEUE_POOL_ID,
+            "waiting": 0,
+            "provider": "daytona",
+            "capacity_domains": [
+                {
+                    "target_id": "region-a",
+                    "sandbox_class": "container",
+                    "capacity": {
+                        "cpu": {"available": 6.0, "total": 8.0},
+                        "memory": {"available": 28.0, "total": 32.0},
+                        "disk": {"available": 40.0, "total": 50.0},
+                    },
+                }
+            ],
+        }
+    ]
     fetch_config.assert_awaited_once()
     provider.get_capacity_domains.assert_awaited_once()
     provider.close.assert_awaited_once()

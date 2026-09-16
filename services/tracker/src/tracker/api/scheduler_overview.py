@@ -10,7 +10,7 @@ from uuid import UUID
 
 from benchmark_service import SandboxCapacity, SandboxCapacityDomain, SandboxProvider
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import JSON, select as sa_select, type_coerce
+from sqlalchemy import JSON, and_, or_, select as sa_select, type_coerce
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, col, func, select
 from sqlmodel.sql.expression import Select
@@ -120,16 +120,26 @@ def _read_waiting_rows(
     return rows, pool_counts
 
 
-def _read_waiting_pool_references(
+def _read_pool_references(
     *,
     session: Session,
     org_id: UUID,
 ) -> dict[str, set[_PoolProviderReference]]:
-    """Return every distinct provider reference contributing waiting work."""
+    """Return every distinct provider reference contributing waiting or active work."""
     arguments = type_coerce(col(Benchmark.arguments), JSON)
     pool_id = arguments["queue_pool_id"].as_string()
     provider_type = arguments["sandbox_provider"].as_string()
     secret_name = arguments["sandbox_provider_secret_name"].as_string()
+    lifecycle_scope = or_(
+        and_(
+            col(Task.status) == TaskStatus.PENDING,
+            col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS,
+        ),
+        and_(
+            col(Task.status).in_(_ACTIVE_STATUSES),
+            col(Benchmark.status).in_((BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING)),
+        ),
+    )
     statement = cast(
         Select[tuple[str, bool, str | None, str | None]],
         sa_select(
@@ -143,8 +153,7 @@ def _read_waiting_pool_references(
         .where(
             col(Task.org_id) == org_id,
             col(Benchmark.org_id) == org_id,
-            col(Task.status) == TaskStatus.PENDING,
-            col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS,
+            lifecycle_scope,
             _queued_benchmarks_expression(),
         )
         .distinct(),
@@ -448,7 +457,19 @@ async def get_scheduler_overview(
     )
     if not include_capacity:
         return overview
-    references = await run_in_threadpool(_read_waiting_pool_references, session=session, org_id=org.id)
+    references = await run_in_threadpool(_read_pool_references, session=session, org_id=org.id)
+    waiting_pools = {pool.pool_id: pool for pool in overview.pools}
+    pool_ids = sorted(waiting_pools.keys() | references.keys())
+    overview = overview.model_copy(
+        update={
+            "pools": [
+                waiting_pools[pool_id]
+                if pool_id in waiting_pools
+                else SchedulerPoolResponse(pool_id=pool_id, waiting=0)
+                for pool_id in pool_ids
+            ]
+        }
+    )
     return await _enrich_scheduler_capacity(
         overview,
         org_id=org.id,
