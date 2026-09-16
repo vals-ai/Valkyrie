@@ -26,6 +26,7 @@ _EXECUTOR_OUTPUT_LAMBDA_PATTERNS = (
     "swebench-final-view-lambda",
     "terminalbench-final-view-lambda",
 )
+_TRACKER_LAMBDA_PATTERNS = _TRACKER_ANALYZER_LAMBDA_PATTERNS + _EXECUTOR_OUTPUT_LAMBDA_PATTERNS
 
 
 @dataclass(frozen=True)
@@ -120,7 +121,7 @@ BENCH_CONFIG = StageConfig(
         benchmark_log_retention_days=365,
         submissions_enabled=True,
         executor_all_secret_access=True,
-        tracker_lambda_function_name_patterns=_TRACKER_ANALYZER_LAMBDA_PATTERNS,
+        tracker_lambda_function_name_patterns=_TRACKER_LAMBDA_PATTERNS,
         executor_lambda_function_name_patterns=_EXECUTOR_OUTPUT_LAMBDA_PATTERNS,
     ),
 )
@@ -142,6 +143,7 @@ PROD_CONFIG = StageConfig(
         benchmark_log_retention_days=365,
         submissions_enabled=True,
         executor_all_secret_access=True,
+        tracker_lambda_function_name_patterns=("vals-format-lambda",),
         executor_lambda_function_name_patterns=("vals-format-lambda",),
     ),
 )
@@ -163,7 +165,7 @@ DEV_CONFIG = StageConfig(
         benchmark_log_retention_days=7,
         submissions_enabled=True,
         executor_all_secret_access=True,
-        tracker_lambda_function_name_patterns=_TRACKER_ANALYZER_LAMBDA_PATTERNS,
+        tracker_lambda_function_name_patterns=_TRACKER_LAMBDA_PATTERNS,
         executor_lambda_function_name_patterns=_EXECUTOR_OUTPUT_LAMBDA_PATTERNS,
     ),
 )
