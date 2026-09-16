@@ -60,7 +60,18 @@ async def test_overview_uses_typed_snapshot_and_query_options(
                                     "memory": {"available": 7, "total": 8},
                                     "disk": {"available": 15, "total": 20},
                                 },
-                            }
+                            },
+                            {
+                                "target_id": "target-b",
+                                "sandbox_class": "gpu",
+                                "capacity": {
+                                    "cpu": {"available": 8, "total": 8},
+                                    "memory": {"available": 32, "total": 32},
+                                    "disk": {"available": 50, "total": 50},
+                                    "gpu": {"available": 2, "total": 4},
+                                    "allowed_gpu_types": ["H100", "RTX-5090"],
+                                },
+                            },
                         ],
                     },
                 ],
@@ -92,11 +103,17 @@ async def test_overview_uses_typed_snapshot_and_query_options(
     assert empty.capacity_domains == []
     assert populated.provider == "daytona"
     assert populated.capacity_domains is not None
-    domain = populated.capacity_domains[0]
-    assert (domain.target_id, domain.sandbox_class) == ("target-a", "small")
-    assert domain.capacity.cpu.model_dump() == {"available": 3.5, "total": 4.0}
-    assert domain.capacity.memory.model_dump() == {"available": 7.0, "total": 8.0}
-    assert domain.capacity.disk.model_dump() == {"available": 15.0, "total": 20.0}
+    legacy_domain, gpu_domain = populated.capacity_domains
+    assert (legacy_domain.target_id, legacy_domain.sandbox_class) == ("target-a", "small")
+    assert legacy_domain.capacity.cpu.model_dump() == {"available": 3.5, "total": 4.0}
+    assert legacy_domain.capacity.memory.model_dump() == {"available": 7.0, "total": 8.0}
+    assert legacy_domain.capacity.disk.model_dump() == {"available": 15.0, "total": 20.0}
+    assert legacy_domain.capacity.gpu is None
+    assert legacy_domain.capacity.allowed_gpu_types is None
+    assert (gpu_domain.target_id, gpu_domain.sandbox_class) == ("target-b", "gpu")
+    assert gpu_domain.capacity.gpu is not None
+    assert gpu_domain.capacity.gpu.model_dump() == {"available": 2.0, "total": 4.0}
+    assert gpu_domain.capacity.allowed_gpu_types == ["H100", "RTX-5090"]
     assert result.waiting_capped is True
     assert result.waiting_next_offset == 201
     assert result.active_next_offset is None

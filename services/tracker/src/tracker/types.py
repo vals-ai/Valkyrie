@@ -546,6 +546,8 @@ class SchedulerCapacityResponse(BaseModel):
     cpu: SchedulerResourceCapacityResponse
     memory: SchedulerResourceCapacityResponse
     disk: SchedulerResourceCapacityResponse
+    gpu: SchedulerResourceCapacityResponse | None = None
+    allowed_gpu_types: list[str] | None = None
 
 
 class SchedulerCapacityDomainResponse(BaseModel):

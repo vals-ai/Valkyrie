@@ -129,6 +129,28 @@ def test_openapi_includes_scheduler_overview_contract() -> None:
     assert pool_schema["required"] == ["pool_id", "waiting"]
     assert set(pool_schema["properties"]) == {"pool_id", "waiting", "provider", "capacity_domains"}
     assert schemas["SchedulerCapacityDomainResponse"]["required"] == ["target_id", "sandbox_class", "capacity"]
+    capacity_schema = schemas["SchedulerCapacityResponse"]
+    assert capacity_schema["required"] == ["cpu", "memory", "disk"]
+    assert set(capacity_schema["properties"]) == {
+        "cpu",
+        "memory",
+        "disk",
+        "gpu",
+        "allowed_gpu_types",
+    }
+    assert capacity_schema["properties"]["gpu"] == {
+        "anyOf": [
+            {"$ref": "#/components/schemas/SchedulerResourceCapacityResponse"},
+            {"type": "null"},
+        ]
+    }
+    assert capacity_schema["properties"]["allowed_gpu_types"] == {
+        "anyOf": [
+            {"type": "array", "items": {"type": "string"}},
+            {"type": "null"},
+        ],
+        "title": "Allowed Gpu Types",
+    }
     assert schemas["SchedulerResourceCapacityResponse"]["properties"] == {
         "available": {"type": "number", "minimum": 0.0, "title": "Available"},
         "total": {"type": "number", "minimum": 0.0, "title": "Total"},

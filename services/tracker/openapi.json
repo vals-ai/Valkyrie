@@ -1761,11 +1761,35 @@
       },
       "SchedulerCapacityResponse": {
         "properties": {
+          "allowed_gpu_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Gpu Types"
+          },
           "cpu": {
             "$ref": "#/components/schemas/SchedulerResourceCapacityResponse"
           },
           "disk": {
             "$ref": "#/components/schemas/SchedulerResourceCapacityResponse"
+          },
+          "gpu": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SchedulerResourceCapacityResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "memory": {
             "$ref": "#/components/schemas/SchedulerResourceCapacityResponse"

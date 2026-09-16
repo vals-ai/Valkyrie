@@ -435,6 +435,8 @@ def test_capacity_route_projects_provider_values_and_uses_complete_pool_referenc
                     cpu=ResourceCapacity(total=16, used=3.5),
                     memory=ResourceCapacity(total=64, used=8),
                     disk=ResourceCapacity(total=100, used=25),
+                    gpu=ResourceCapacity(total=4, used=5),
+                    allowed_gpu_types=("H100", "RTX-5090"),
                 ),
             ),
             SandboxCapacityDomain(
@@ -463,7 +465,11 @@ def test_capacity_route_projects_provider_values_and_uses_complete_pool_referenc
         ("region-a", "container"),
     ]
     assert domains[0]["capacity"]["cpu"] == {"available": 12.5, "total": 16.0}
+    assert domains[0]["capacity"]["gpu"] == {"available": 0.0, "total": 4.0}
+    assert domains[0]["capacity"]["allowed_gpu_types"] == ["H100", "RTX-5090"]
     assert domains[1]["capacity"]["disk"] == {"available": 40.0, "total": 50.0}
+    assert domains[1]["capacity"]["gpu"] is None
+    assert domains[1]["capacity"]["allowed_gpu_types"] is None
     fetch_config.assert_awaited_once()
     provider.get_capacity_domains.assert_awaited_once()
     provider.close.assert_awaited_once()
@@ -507,6 +513,8 @@ def test_capacity_route_enriches_active_only_pool(
                         "cpu": {"available": 6.0, "total": 8.0},
                         "memory": {"available": 28.0, "total": 32.0},
                         "disk": {"available": 40.0, "total": 50.0},
+                        "gpu": None,
+                        "allowed_gpu_types": None,
                     },
                 }
             ],

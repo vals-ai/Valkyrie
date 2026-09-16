@@ -279,6 +279,8 @@ def _capacity_response(capacity: SandboxCapacity) -> SchedulerCapacityResponse:
         cpu=_resource_capacity_response(capacity.cpu.available, capacity.cpu.total),
         memory=_resource_capacity_response(capacity.memory.available, capacity.memory.total),
         disk=_resource_capacity_response(capacity.disk.available, capacity.disk.total),
+        gpu=(None if capacity.gpu is None else _resource_capacity_response(capacity.gpu.available, capacity.gpu.total)),
+        allowed_gpu_types=(None if capacity.allowed_gpu_types is None else list(capacity.allowed_gpu_types)),
     )
 
 

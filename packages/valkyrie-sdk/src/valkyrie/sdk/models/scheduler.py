@@ -34,11 +34,13 @@ class SchedulerResourceCapacityResponse(ResponseModel):
 
 
 class SchedulerCapacityResponse(ResponseModel):
-    """CPU, memory, and disk capacity for one target and sandbox class."""
+    """CPU, memory, disk, and optional GPU capacity for one target and sandbox class."""
 
     cpu: SchedulerResourceCapacityResponse
     memory: SchedulerResourceCapacityResponse
     disk: SchedulerResourceCapacityResponse
+    gpu: SchedulerResourceCapacityResponse | None = None
+    allowed_gpu_types: list[str] | None = None
 
 
 class SchedulerCapacityDomainResponse(ResponseModel):
