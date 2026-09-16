@@ -31,14 +31,6 @@ async def bind_benchmark_id(benchmark_id: UUID) -> UUID:
 TrackedBenchmarkId = Annotated[UUID, Depends(bind_benchmark_id)]
 
 
-def get_agent_library_aws_runtime(
-    request: Request,
-    org: Org = Depends(get_current_org),
-) -> AWSRuntime:
-    """Resolve AWS authority for agent-library operations."""
-    return resolve_agent_library_aws_runtime(request, org.id)
-
-
 @dataclass(frozen=True)
 class RunAWSContext:
     """An organization-scoped run and its persisted AWS authority."""
@@ -86,9 +78,11 @@ RunRuntimeDependency = Annotated[RuntimeServices, Depends(get_run_runtime)]
 
 
 async def get_agent_library_runtime(
-    aws_runtime: Annotated[AWSRuntime, Depends(get_agent_library_aws_runtime)],
+    request: Request,
+    org: Org = Depends(get_current_org),
 ) -> AsyncGenerator[RuntimeServices]:
     """Open agent storage without constructing sandbox access."""
+    aws_runtime = resolve_agent_library_aws_runtime(request, org.id)
     config = CloudRuntimeConfig.from_aws_runtime(aws_runtime)
 
     async with config.create_runtime(clients=aws_runtime.clients) as runtime:
