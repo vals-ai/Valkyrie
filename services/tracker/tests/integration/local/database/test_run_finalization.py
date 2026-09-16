@@ -24,7 +24,7 @@ import tracker.utils.run_orchestration as run_orchestration_module
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tests.factories import make_benchmark, make_task
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.services import CloudRuntimeConfig
+from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
@@ -235,7 +235,7 @@ class TestRunFinalization:
         monkeypatch.setattr(RuntimeServices, "upload_final_view", record_upload)
 
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        async with CloudRuntimeConfig.from_aws_runtime(aws_runtime).create_runtime(
+        async with CloudRuntimeFactory.from_aws_runtime(aws_runtime).create_runtime(
             clients=aws_runtime.clients
         ) as runtime:
             with pytest.raises(ExecutionAuthorityRevoked):

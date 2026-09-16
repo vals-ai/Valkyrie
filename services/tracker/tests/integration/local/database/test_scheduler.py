@@ -33,7 +33,7 @@ from sqlmodel import Session, create_engine, func, select
 from tests.factories import make_task
 from tracker.aws.resolver import AWSRuntimeResolution
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.services import CloudRuntimeConfig
+from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
@@ -1012,7 +1012,7 @@ async def test_setup_retry_reenters_fifo_before_competitor(
 async def runtime_services(harness_config: HarnessConfig) -> AsyncGenerator[RuntimeServices, None]:
     """Open real AWS adapters while tests replace their external calls."""
     aws_runtime = AWSRuntime.from_harness_config(harness_config)
-    async with CloudRuntimeConfig.from_aws_runtime(aws_runtime).create_runtime(
+    async with CloudRuntimeFactory.from_aws_runtime(aws_runtime).create_runtime(
         clients=aws_runtime.clients,
     ) as runtime:
         yield runtime

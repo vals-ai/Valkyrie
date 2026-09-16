@@ -18,7 +18,7 @@ from tracker.aws.clients import DefaultChainAWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.resolver import ManagedAWSEligibilityError
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.services import CloudRuntimeConfig
+from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org
 from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmarkRequest
@@ -448,7 +448,7 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get_webhook_secret)
     monkeypatch.setattr("tracker.aws.services.dry_run_lambda", dry_run)
 
-    async with CloudRuntimeConfig.from_aws_runtime(aws_runtime).create_runtime(
+    async with CloudRuntimeFactory.from_aws_runtime(aws_runtime).create_runtime(
         clients=aws_runtime.clients,
         sandbox_provider=request.sandbox_provider,
         sandbox_provider_secret_name=request.sandbox_provider_secret_reference,

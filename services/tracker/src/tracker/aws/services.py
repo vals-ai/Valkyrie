@@ -78,12 +78,6 @@ class CloudRuntimeConfig(BaseModel):
     properties: AWSResources
     services_type: ClassVar[type[CloudRuntimeServices]]
 
-    @staticmethod
-    def from_aws_runtime(runtime: AWSRuntime) -> "CloudRuntimeConfig":
-        return _RUNTIME_CONFIG_ADAPTER.validate_python(
-            {"credential_source": runtime.clients.credential_source, "properties": runtime.resources}
-        )
-
     @asynccontextmanager
     async def create_runtime(
         self,
@@ -114,6 +108,30 @@ class CloudRuntimeConfig(BaseModel):
         finally:
             await services.close()
 
+
+class AccessKeyRuntimeConfig(CloudRuntimeConfig):
+    credential_source: Literal["access_key"] = "access_key"
+    services_type: ClassVar[type[CloudRuntimeServices]] = CloudRuntimeServices
+
+
+class ManagedRuntimeConfig(CloudRuntimeConfig):
+    credential_source: Literal["managed"] = "managed"
+    services_type: ClassVar[type[CloudRuntimeServices]] = ManagedCloudRuntimeServices
+
+
+RuntimeConfig = Annotated[AccessKeyRuntimeConfig | ManagedRuntimeConfig, Field(discriminator="credential_source")]
+_RUNTIME_CONFIG_ADAPTER: TypeAdapter[RuntimeConfig] = TypeAdapter(RuntimeConfig)
+
+
+class CloudRuntimeFactory:
+    """Select configuration and open AWS services for an operation."""
+
+    @staticmethod
+    def from_aws_runtime(runtime: AWSRuntime) -> RuntimeConfig:
+        return _RUNTIME_CONFIG_ADAPTER.validate_python(
+            {"credential_source": runtime.clients.credential_source, "properties": runtime.resources}
+        )
+
     @classmethod
     @asynccontextmanager
     async def create_execution_runtime(
@@ -137,17 +155,3 @@ class CloudRuntimeConfig(BaseModel):
         ) as runtime:
             await to_thread(runtime.prepare_execution, request, benchmark_id)
             yield runtime
-
-
-class AccessKeyRuntimeConfig(CloudRuntimeConfig):
-    credential_source: Literal["access_key"] = "access_key"
-    services_type: ClassVar[type[CloudRuntimeServices]] = CloudRuntimeServices
-
-
-class ManagedRuntimeConfig(CloudRuntimeConfig):
-    credential_source: Literal["managed"] = "managed"
-    services_type: ClassVar[type[CloudRuntimeServices]] = ManagedCloudRuntimeServices
-
-
-RuntimeConfig = Annotated[AccessKeyRuntimeConfig | ManagedRuntimeConfig, Field(discriminator="credential_source")]
-_RUNTIME_CONFIG_ADAPTER: TypeAdapter[RuntimeConfig] = TypeAdapter(RuntimeConfig)

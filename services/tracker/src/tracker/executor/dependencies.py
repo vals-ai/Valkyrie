@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from taskiq_dependencies import Depends
 
-from tracker.aws.services import CloudRuntimeConfig
+from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import Benchmark, Org
 from tracker.types import StartBenchmarkRequest
@@ -17,5 +17,5 @@ async def get_execution_runtime(
     benchmark: Benchmark = Depends(),
     org: Org = Depends(),
 ) -> AsyncGenerator[RuntimeServices, None]:
-    async with CloudRuntimeConfig.create_execution_runtime(request, org.id, benchmark.id) as runtime:
+    async with CloudRuntimeFactory.create_execution_runtime(request, org.id, benchmark.id) as runtime:
         yield runtime
