@@ -25,7 +25,7 @@ from tracker.database.models import Org
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.services import CloudRuntimeConfig
+from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 from tracker.utils import TaskMonitor
 
@@ -278,7 +278,7 @@ async def runtime_services(
     aws_runtime: AWSRuntime, harness_config: HarnessConfig
 ) -> AsyncGenerator[RuntimeServices, None]:
     """Compose the task runtime using the shared deterministic AWS configuration."""
-    async with CloudRuntimeConfig.from_aws_runtime(aws_runtime).create_runtime(
+    async with CloudRuntimeFactory.from_aws_runtime(aws_runtime).create_runtime(
         clients=aws_runtime.clients,
         sandbox_provider_secret_name=harness_config.sandbox_provider_secret_name,
     ) as runtime:

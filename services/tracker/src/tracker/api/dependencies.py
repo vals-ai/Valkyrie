@@ -12,7 +12,7 @@ from sqlmodel import Session, select
 from tracker.auth import get_current_org
 from tracker.aws.resolver import resolve_agent_library_aws_runtime, resolve_run_aws_runtime_and_access_key_config
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.services import CloudRuntimeConfig
+from tracker.aws.services import CloudRuntimeFactory
 from tracker.database.models import Benchmark, Org, Task
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
@@ -29,14 +29,6 @@ async def bind_benchmark_id(benchmark_id: UUID) -> UUID:
 
 
 TrackedBenchmarkId = Annotated[UUID, Depends(bind_benchmark_id)]
-
-
-def get_agent_library_aws_runtime(
-    request: Request,
-    org: Org = Depends(get_current_org),
-) -> AWSRuntime:
-    """Resolve AWS authority for agent-library operations."""
-    return resolve_agent_library_aws_runtime(request, org.id)
 
 
 @dataclass(frozen=True)
@@ -72,7 +64,7 @@ RunAWSDependency = Annotated[RunAWSContext, Depends(get_run_aws_context)]
 async def get_run_runtime(run_context: RunAWSDependency) -> AsyncGenerator[RuntimeServices]:
     """Keep services alive for one authorized run operation."""
     aws_runtime = run_context.aws_runtime
-    config = CloudRuntimeConfig.from_aws_runtime(aws_runtime)
+    config = CloudRuntimeFactory.from_aws_runtime(aws_runtime)
     arguments = run_context.benchmark.arguments
 
     async with config.create_runtime(
@@ -87,10 +79,12 @@ RunRuntimeDependency = Annotated[RuntimeServices, Depends(get_run_runtime)]
 
 
 async def get_agent_library_runtime(
-    aws_runtime: Annotated[AWSRuntime, Depends(get_agent_library_aws_runtime)],
+    request: Request,
+    org: Org = Depends(get_current_org),
 ) -> AsyncGenerator[RuntimeServices]:
     """Open agent storage without constructing sandbox access."""
-    config = CloudRuntimeConfig.from_aws_runtime(aws_runtime)
+    aws_runtime = resolve_agent_library_aws_runtime(request, org.id)
+    config = CloudRuntimeFactory.from_aws_runtime(aws_runtime)
 
     async with config.create_runtime(clients=aws_runtime.clients) as runtime:
         yield runtime
