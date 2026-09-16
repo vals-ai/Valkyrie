@@ -32,7 +32,6 @@ from tracker.utils.reporting import (
 from tracker.utils.resources import (
     BenchmarkConcurrencyUpdate,
     create_benchmark_service_client,
-    create_benchmark_service_client_from_request,
     fetch_benchmark_row,
     fetch_sandbox_provider_config,
     fetch_task_row,
@@ -76,7 +75,6 @@ __all__ = [
     "commit_task_error",
     "commit_task_status_transition",
     "create_benchmark_service_client",
-    "create_benchmark_service_client_from_request",
     "create_final_view",
     "create_task_rows",
     "decode_cursor",

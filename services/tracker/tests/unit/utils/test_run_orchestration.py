@@ -363,8 +363,9 @@ async def test_direct_provider_setup_failure_closes_client(
     benchmark_service = AsyncMock(spec=BenchmarkServiceClient)
     benchmark_service.get_sandbox_provider = Mock(side_effect=RuntimeError("provider setup failed"))
     monkeypatch.setattr(
-        "tracker.utils.run_orchestration.create_benchmark_service_client_from_request",
-        Mock(return_value=benchmark_service),
+        StartBenchmarkRequest,
+        "benchmark_service",
+        property(lambda _request: benchmark_service),
     )
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
 

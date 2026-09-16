@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 from typing import Any, Literal, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
@@ -15,7 +15,7 @@ from tracker import config
 from tracker.aws.clients import DefaultChainAWSClientProvider, ExplicitCredentialsAWSClientProvider
 from tracker.aws.resolver import (
     resolve_run_metadata_aws_runtime,
-    resolve_run_aws_runtime,
+    resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
 )
 from tracker.aws.runtime import AWSRuntime
@@ -165,11 +165,11 @@ def test_run_runtime_uses_stored_mode(
 ) -> None:
     _configure_managed_runtime(monkeypatch, submissions_enabled=False)
 
-    runtime = resolve_run_aws_runtime(
+    runtime = resolve_run_aws_runtime_and_access_key_config(
         _request(_COMPLETE_HARNESS_HEADERS),
         aws_managed=aws_managed,
         org_id=_ORG_ID,
-    )
+    ).runtime
 
     assert runtime.resources.s3_bucket == expected_bucket
     assert isinstance(runtime.clients, expected_provider)
@@ -177,11 +177,11 @@ def test_run_runtime_uses_stored_mode(
 
 def test_access_key_run_reports_incomplete_legacy_config() -> None:
     with pytest.raises(HTTPException) as exc_info:
-        resolve_run_aws_runtime(
+        resolve_run_aws_runtime_and_access_key_config(
             _request({"x-harness-aws-access-key-id": "partial-access-key"}),
             aws_managed=False,
             org_id=_ORG_ID,
-        )
+        ).runtime
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "Missing harness config header 'x-harness-aws-secret-access-key'"
@@ -190,11 +190,11 @@ def test_access_key_run_reports_incomplete_legacy_config() -> None:
 def test_managed_run_ignores_partial_access_key_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_managed_runtime(monkeypatch)
 
-    runtime = resolve_run_aws_runtime(
+    runtime = resolve_run_aws_runtime_and_access_key_config(
         _request({"x-harness-aws-access-key-id": "ignored"}),
         aws_managed=True,
         org_id=_ORG_ID,
-    )
+    ).runtime
 
     assert runtime.resources.s3_bucket == "deployment-bucket"
     assert isinstance(runtime.clients, DefaultChainAWSClientProvider)
@@ -227,11 +227,11 @@ def test_run_runtime_rejects_managed_run_for_ineligible_org(monkeypatch: pytest.
     _configure_managed_runtime(monkeypatch, eligible=False)
 
     with pytest.raises(HTTPException) as exc_info:
-        resolve_run_aws_runtime(
+        resolve_run_aws_runtime_and_access_key_config(
             _request(_COMPLETE_HARNESS_HEADERS),
             aws_managed=True,
             org_id=_ORG_ID,
-        )
+        ).runtime
 
     assert exc_info.value.status_code == 403
 
@@ -337,19 +337,17 @@ def test_agent_list_uses_deployment_runtime_for_eligible_org(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_managed_runtime(monkeypatch, submissions_enabled=False)
-    captured_runtime: AWSRuntime | None = None
+    from tracker.aws.s3 import S3ObjectStore
 
-    async def list_agents(runtime: AWSRuntime) -> list[object]:
-        nonlocal captured_runtime
-        captured_runtime = runtime
-        return []
-
-    monkeypatch.setattr("tracker.api.agents.list_agents", list_agents)
+    create_store = MagicMock(wraps=S3ObjectStore)
+    monkeypatch.setattr("tracker.aws.services.S3ObjectStore", create_store)
+    monkeypatch.setattr("tracker.api.agents.list_agents", AsyncMock(return_value=[]))
     response = TestClient(app).get("/agents")
 
     assert response.status_code == 200
-    assert captured_runtime is not None
-    assert captured_runtime.resources.s3_bucket == "deployment-bucket"
+    create_store.assert_called_once()
+    runtime = cast(AWSRuntime, create_store.call_args.args[0])
+    assert runtime.resources.s3_bucket == "deployment-bucket"
 
 
 def test_managed_results_report_capped_presign_expiry(
