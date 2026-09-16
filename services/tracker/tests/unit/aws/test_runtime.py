@@ -8,7 +8,7 @@ import pytest
 
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.runtime import AWSResources
-from tracker.aws.services import CloudRuntimeConfig
+from tracker.aws.services import AccessKeyRuntimeConfig
 from tracker.exceptions import InvalidSandboxConfigurationError
 from tracker.runtime import services
 from tracker.aws.secrets import SecretsManagerStore
@@ -27,7 +27,7 @@ async def test_runtime_reuses_and_closes_provider(
     monkeypatch.setattr(SecretsManagerStore, "get_async", resolve)
     monkeypatch.setattr(services, "sandbox_provider_config_from_mapping", MagicMock(return_value=provider_config))
     clients = MagicMock(spec=AWSClientProvider)
-    config = CloudRuntimeConfig(properties=AWSResources("us-east-1", "bucket", "logs", 30))
+    config = AccessKeyRuntimeConfig(properties=AWSResources("us-east-1", "bucket", "logs", 30))
 
     async def execute() -> None:
         async with config.create_runtime(
@@ -54,7 +54,7 @@ async def test_runtime_reuses_and_closes_provider(
 async def test_read_only_runtime_needs_no_provider_credentials() -> None:
     """Artifact locations work without touching AWS or sandbox credentials."""
     clients = MagicMock(spec=AWSClientProvider)
-    config = CloudRuntimeConfig(properties=AWSResources("us-east-1", "bucket", "logs", 30))
+    config = AccessKeyRuntimeConfig(properties=AWSResources("us-east-1", "bucket", "logs", 30))
     async with config.create_runtime(clients=cast(AWSClientProvider, clients)) as runtime:
         assert "bucket" in runtime.artifacts.object_location("result.json")
         with pytest.raises(InvalidSandboxConfigurationError, match="provider secret name"):
@@ -74,7 +74,7 @@ async def test_shutdown_waits_for_loading_and_rejects_late_provider(monkeypatch:
 
     monkeypatch.setattr(SecretsManagerStore, "get_async", load)
     monkeypatch.setattr(services, "sandbox_provider_config_from_mapping", MagicMock(return_value=provider_config))
-    config = CloudRuntimeConfig(properties=AWSResources("us-east-1", "bucket", "logs", 30))
+    config = AccessKeyRuntimeConfig(properties=AWSResources("us-east-1", "bucket", "logs", 30))
     async with config.create_runtime(clients=MagicMock(), sandbox_provider_secret_name="provider") as runtime:
         loading = asyncio.create_task(runtime.get_sandbox_provider())
         await started.wait()
@@ -105,7 +105,7 @@ async def test_cancelled_shutdown_drains_provider(monkeypatch: pytest.MonkeyPatc
     provider_config.create_provider.return_value = provider
     monkeypatch.setattr(SecretsManagerStore, "get_async", AsyncMock(return_value={"api_key": "test-provider-key"}))
     monkeypatch.setattr(services, "sandbox_provider_config_from_mapping", MagicMock(return_value=provider_config))
-    config = CloudRuntimeConfig(properties=AWSResources("us-east-1", "bucket", "logs", 30))
+    config = AccessKeyRuntimeConfig(properties=AWSResources("us-east-1", "bucket", "logs", 30))
     async with config.create_runtime(clients=MagicMock(), sandbox_provider_secret_name="provider") as runtime:
         await runtime.get_sandbox_provider()
         closing = asyncio.create_task(runtime.close())

@@ -13,8 +13,7 @@ from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
-from tracker.aws.runtime import AWSRuntime
-from tracker.aws.secrets import SecretsManagerStore
+from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkStatus,
@@ -28,7 +27,7 @@ from tracker.database.models import (
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.scheduler.admission import SandboxQueueContext
 from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
+from tracker.utils import process_task, start_benchmark_request_to_benchmark
 
 TEST_ORG = Org(id=TEST_ORG_ID, name="default")
 _TEST_STARTER = RequestIdentity(org=TEST_ORG, access_key_id=None, email=None, name=None)
@@ -164,7 +163,7 @@ async def run_process_task(
     start_benchmark_request: StartBenchmarkRequest,
     task_row: Task,
     benchmark_id: UUID,
-    aws_runtime: AWSRuntime,
+    runtime_services: RuntimeServices,
     authority: ExecutionAuthority,
     *,
     queue_context: SandboxQueueContext | None = None,
@@ -175,31 +174,27 @@ async def run_process_task(
     - start_benchmark_request: Request that created the benchmark.
     - task_row: Persisted task being processed.
     - benchmark_id: Parent benchmark identifier.
-    - aws_runtime: Shared AWS runtime used for provider resolution.
+    - runtime_services: Yielded services with fixture-managed cleanup.
     - authority: Execution authority for the dispatch being exercised.
 
     Returns
     - The task result mapping returned by process_task.
     """
-    benchmark_service = start_benchmark_request.benchmark_service
-    harness_config = start_benchmark_request.harness_config
-    assert harness_config is not None
-    sandbox_provider_config = fetch_sandbox_provider_config(
-        harness_config.sandbox_provider_secret_name,
-        SecretsManagerStore(aws_runtime.clients),
-        start_benchmark_request.sandbox_provider,
-    )
-    return await process_task(
-        task_row=task_row,
-        start_benchmark_request=start_benchmark_request,
-        benchmark_service=benchmark_service,
-        benchmark_id=benchmark_id,
-        task_id="task_0",
-        aws_runtime=aws_runtime,
-        org=TEST_ORG,
-        sandbox_provider_config=sandbox_provider_config,
-        sandbox_provider=benchmark_service.get_sandbox_provider(sandbox_provider_config),
-        creation_semaphore=Semaphore(1),
-        queue_context=queue_context,
-        authority=authority,
-    )
+    sandbox_provider_config = await runtime_services.get_sandbox_provider_config()
+    sandbox_provider = await runtime_services.get_sandbox_provider()
+
+    async with start_benchmark_request.benchmark_service as benchmark_service:
+        return await process_task(
+            task_row=task_row,
+            start_benchmark_request=start_benchmark_request,
+            benchmark_service=benchmark_service,
+            benchmark_id=benchmark_id,
+            task_id="task_0",
+            runtime=runtime_services,
+            org=TEST_ORG,
+            sandbox_provider_config=sandbox_provider_config,
+            sandbox_provider=sandbox_provider,
+            creation_semaphore=Semaphore(1),
+            queue_context=queue_context,
+            authority=authority,
+        )

@@ -105,6 +105,13 @@ class StartBenchmarkRequest(BaseModel):
         return validate_service_url_syntax(value) if value is not None else None
 
     @property
+    def sandbox_provider_secret_reference(self) -> str | None:
+        """Resolve the provider reference from legacy or managed configuration."""
+        if self.harness_config is not None and self.harness_config.sandbox_provider_secret_name:
+            return self.harness_config.sandbox_provider_secret_name
+        return self.sandbox_provider_secret_name
+
+    @property
     def benchmark_service(self) -> BenchmarkServiceClient:
         from tracker.utils import create_benchmark_service_client
 

@@ -12,7 +12,7 @@ from sqlmodel import Session, select
 from tracker.auth import get_current_org
 from tracker.aws.resolver import resolve_agent_library_aws_runtime, resolve_run_aws_runtime_and_access_key_config
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.services import CloudRuntimeConfig
+from tracker.aws.services import CloudRuntimeFactory
 from tracker.database.models import Benchmark, Org, Task
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
@@ -63,7 +63,7 @@ RunAWSDependency = Annotated[RunAWSContext, Depends(get_run_aws_context)]
 async def get_run_runtime(run_context: RunAWSDependency) -> AsyncGenerator[RuntimeServices]:
     """Keep services alive for one authorized run operation."""
     aws_runtime = run_context.aws_runtime
-    config = CloudRuntimeConfig(properties=aws_runtime.resources)
+    config = CloudRuntimeFactory.from_aws_runtime(aws_runtime)
     arguments = run_context.benchmark.arguments
 
     async with config.create_runtime(
@@ -83,7 +83,7 @@ async def get_agent_library_runtime(
 ) -> AsyncGenerator[RuntimeServices]:
     """Open agent storage without constructing sandbox access."""
     aws_runtime = resolve_agent_library_aws_runtime(request, org.id)
-    config = CloudRuntimeConfig(properties=aws_runtime.resources)
+    config = CloudRuntimeFactory.from_aws_runtime(aws_runtime)
 
     async with config.create_runtime(clients=aws_runtime.clients) as runtime:
         yield runtime

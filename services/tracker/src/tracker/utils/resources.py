@@ -66,12 +66,6 @@ def create_benchmark_service_client(
     return BenchmarkServiceClient(url=url, headers=headers)
 
 
-def _sandbox_provider_secret_name(request: StartBenchmarkRequest) -> str | None:
-    if request.harness_config is not None and request.harness_config.sandbox_provider_secret_name:
-        return request.harness_config.sandbox_provider_secret_name
-    return request.sandbox_provider_secret_name
-
-
 def start_benchmark_request_to_benchmark(
     request: StartBenchmarkRequest,
     run_starter: RequestIdentity,
@@ -82,7 +76,7 @@ def start_benchmark_request_to_benchmark(
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
     if aws_managed != (request.harness_config is None):
         raise ValueError("Benchmark AWS mode does not match the start request")
-    provider_secret_name = _sandbox_provider_secret_name(request)
+    provider_secret_name = request.sandbox_provider_secret_reference
     if aws_managed and (not request.sandbox_provider or not provider_secret_name):
         raise ValueError("Managed runs require a sandbox provider and provider secret name")
 
