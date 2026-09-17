@@ -7,15 +7,13 @@ import zipfile
 
 from benchmark_service import Sandbox
 
-from tracker.agent.archive import validate_agent_archive
 from tracker.exceptions import SandboxError
 from tracker.runtime.lifecycle import finish_cleanup
 
 
-async def upload_local_agent_artifacts(sandbox: Sandbox, name: str, content: bytes) -> None:
-    """Upload files without a signed URL, shared host mount, or package installation."""
+async def upload_local_agent_artifacts(sandbox: Sandbox, content: bytes) -> None:
+    """Transfer a frozen bundle already validated when admitted to the agent library."""
     stream = io.BytesIO(content)
-    await asyncio.to_thread(validate_agent_archive, stream, name)
     archive = await asyncio.to_thread(zipfile.ZipFile, stream)
     try:
         for member in archive.infolist():
