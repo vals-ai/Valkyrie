@@ -450,9 +450,7 @@ def test_local_start_is_rejected_before_aws_resolution(monkeypatch: pytest.Monke
     resolve.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "invalid_property", [{"region": ""}, {"s3_bucket": ""}, {"log_group": ""}, {"log_retention_days": 0}]
-)
+@pytest.mark.parametrize("invalid_property", [{"region": ""}, {"s3_bucket": ""}, {"log_retention_days": 0}])
 def test_start_rejects_invalid_resource_properties(invalid_property: dict[str, object]) -> None:
     """Reject unusable resource settings before admitting a run."""
     response = TestClient(app).post(

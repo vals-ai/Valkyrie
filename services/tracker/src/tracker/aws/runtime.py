@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 class AWSResources:
     region: Annotated[str, Field(min_length=1)]
     s3_bucket: Annotated[str, Field(min_length=1)]
-    log_group: Annotated[str, Field(min_length=1)]
+    log_group: str
     log_retention_days: Annotated[int, Field(gt=0)]
 
 

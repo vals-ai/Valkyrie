@@ -645,6 +645,35 @@ class TestTrackerAPI:
         assert blocked.json() == {"detail": "Custom benchmark destination is not allowed"}
         assert canonical.status_code == 200
 
+    @pytest.mark.parametrize("log_group", [None, ""])
+    def test_start_benchmark_accepts_empty_log_group_prefix(
+        self,
+        log_group: str | None,
+        harness_headers: dict[str, str],
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: Any,
+        database_session: Session,
+    ) -> None:
+        """Persist legacy requests that omit or leave the log-group prefix empty."""
+        monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", False)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        headers = {key: value for key, value in harness_headers.items() if key.lower() != "x-harness-log-group"}
+        if log_group is not None:
+            headers["x-harness-log-group"] = log_group
+
+        response = client.post(
+            "/start-benchmark",
+            headers=headers,
+            json={"benchmark_name": "swebench", "contract": contract.model_dump()},
+        )
+
+        assert response.status_code == 200, response.text
+        benchmark = database_session.get(Benchmark, UUID(response.json()["benchmark_id"]))
+        assert benchmark is not None
+        assert benchmark.arguments.properties is not None
+        assert benchmark.arguments.properties.log_group == ""
+
     async def test_start_benchmark(
         self,
         contract: AgentContractRequest,
