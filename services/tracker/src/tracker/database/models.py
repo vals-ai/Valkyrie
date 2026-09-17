@@ -154,6 +154,7 @@ class AgentContractRequest(BaseModel):
     model: str | None = None
     install_cmd: str = ""
     run_cmd: str = ""
+    finalize_cmd: str | None = None
     final_output: str | None = None
     output_artifacts: list[OutputArtifactSpec] = []
     egress_allowlist: list[str] = []

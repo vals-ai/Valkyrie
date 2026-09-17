@@ -35,7 +35,9 @@ valkyrie run results <run-id> --task-ids task_1,task_2
 
 ## Download outputs
 
-Outputs are the files the agent itself wrote. Fetch all of them, or only the tasks you care about:
+Outputs are the files the agent itself wrote. A task can retain its private native output archive and a separate ATIF sidecar; conversion does not replace the native archive. Collection happens while the sandbox and executor host remain available, so host or sandbox loss can prevent either artifact from being stored.
+
+Fetch all outputs, or only the tasks you care about:
 
 ```bash
 valkyrie run outputs <run-id> --output-dir ./outputs

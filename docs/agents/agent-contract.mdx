@@ -124,6 +124,18 @@ run_cmd: "my_agent --task {problem_statement_path} --id {task_id}"
 
 ## Optional fields
 
+### `finalize_cmd: str`
+
+Optional command to run in the agent's sandbox and working directory after a known `run_cmd` exit and before output collection. It uses the same placeholders and contract kwargs as `run_cmd`, and has a five-minute timeout. The executable and its dependencies must already be available from the agent bundle or `install_cmd`.
+
+Finalization is skipped when execution ownership was revoked, the tracker was cancelled, or the sandbox/provider was lost before the agent exit was known. Valkyrie still attempts output collection when finalization fails. The agent's failure takes precedence over a finalization failure; otherwise, the finalization failure is reported. This hook only follows the tracked shell's exit; it does not guarantee that descendant processes have stopped.
+
+```yaml
+finalize_cmd: "python -m agent.finalize --task {task_id}"
+```
+
+Omit this field to disable finalization.
+
 ### `final_output: path`
 
 Absolute path to the final output to collect. The artifact found here will be copied into the corresponding S3 bucket at `benchmark/benchmark_id/task_id/`. Can be a directory or a file (copied as a tar).
@@ -171,6 +183,8 @@ output_artifacts:
 `artifacts/model.patch` is reserved for an optional validated text diff produced by
 repository-editing agents. A trajectory artifact may reference it through
 `extra.vals.model_patch`; Valkyrie still collects it as a separate artifact.
+
+For private trajectory custody, keep the producer's native trajectory in `final_output` and write an optional ATIF conversion to a separate `output_artifacts` source. `finalize_cmd` runs in the same sandbox after the agent exits, then Valkyrie attempts the native archive before the ATIF sidecar. Valkyrie does not parse the native format or replace its bytes. Valkyrie attempts the remaining collection after a finalization or archive failure, then reports the earlier failure. Collection cannot continue after the sandbox or executor host is lost.
 
 Valkyrie does not require a specific destination prefix. Vals-hosted result ingestion expects `vals_format/config.json` and `vals_format/result.json`.
 
@@ -226,7 +240,7 @@ CLI secrets are merged with contract defaults. If both define the same key, the 
 
 ### `kwargs: dict`
 
-Define typed parameters with defaults that get substituted into `run_cmd`:
+Define typed parameters with defaults that get substituted into `run_cmd` and `finalize_cmd`:
 
 ```yaml
 name: my_agent

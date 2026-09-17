@@ -57,6 +57,7 @@ class AgentContract(BaseModel):
 
     name: str
     install_cmd: str
+    finalize_cmd: str | None = None
     final_output: Path | None = None
     output_artifacts: list[OutputArtifactSpec] = []
     egress_allowlist: list[str] = []
