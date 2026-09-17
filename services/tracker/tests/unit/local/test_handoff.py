@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from tests.factories import make_benchmark
-from tracker.database.models import ExecutorDispatch
+from tracker.database.models import ExecutorDispatch, ExecutorDispatchStatus
 from tracker.database.session import get_session
 from tracker.exceptions import SecretsError
 from tracker.local.api import router
@@ -38,13 +38,9 @@ def test_pending_secrets_require_same_claimant_and_receipt() -> None:
         registry.receive(dispatch_id, "claim-one")
 
 
-def test_pending_secrets_expire_and_capacity_is_bounded() -> None:
-    """Bound retained credentials and require a fresh handoff after expiry or restart."""
+def test_pending_secrets_capacity_is_bounded() -> None:
+    """Bound retained credentials and release capacity on discard or shutdown."""
     dispatch_id = uuid4()
-    expired = PendingExecutionSecrets(ttl_seconds=0)
-    expired.put(dispatch_id, {}, {})
-    with pytest.raises(SecretsError, match="unavailable"):
-        expired.receive(dispatch_id, "claim")
     registry = PendingExecutionSecrets(maximum_pending=1)
     registry.put(dispatch_id, {}, {})
     with pytest.raises(SecretsError, match="already registered"):
@@ -101,7 +97,9 @@ def test_handoff_api_verifies_live_claim_before_revealing_values(
         pending_execution_secrets.close()
 
 
+@pytest.mark.parametrize("status", [ExecutorDispatchStatus.QUEUED, ExecutorDispatchStatus.RUNNING])
 def test_handoff_reconciliation_preserves_active_dispatches(
+    status: ExecutorDispatchStatus,
     database_session: Session,
     executor_authority_kwargs: Callable[..., dict[str, object]],
     monkeypatch: pytest.MonkeyPatch,
@@ -114,6 +112,8 @@ def test_handoff_reconciliation_preserves_active_dispatches(
     dispatch_id = UUID(str(kwargs["executor_dispatch_id"]))
     dispatch = database_session.get(ExecutorDispatch, dispatch_id)
     assert dispatch is not None
+    dispatch.status = status
+    dispatch.claim_deadline_at = datetime.now(UTC) + timedelta(minutes=5)
     dispatch.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
     database_session.add(dispatch)
     database_session.commit()
@@ -122,6 +122,7 @@ def test_handoff_reconciliation_preserves_active_dispatches(
     try:
         reap_execution_secrets()
         assert pending_execution_secrets.pending_ids() == (dispatch_id,)
+        dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(seconds=1)
         dispatch.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
         database_session.add(dispatch)
         database_session.commit()
