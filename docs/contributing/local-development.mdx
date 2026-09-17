@@ -53,11 +53,11 @@ uv run --project services/tracker python -m tracker.local.releases \
 
 Set `DATABASE_URL` to the local PostgreSQL database. Set `EXECUTOR_RELEASE_ROOT` on ExecutorHost to the same absolute release directory. Containerized services must mount that directory at the same path.
 
-The initializer verifies the artifact digest and preserves the active release on restart. Add `--replace-active` to activate a new build for future runs. Existing artifacts remain on disk for saved dispatches. This command configures executor releases only; the Compose stack above does not yet start ExecutorHost or a local sandbox provider.
+The initializer verifies the artifact digest and preserves the active release on restart. Add `--replace-active` to activate a rebuilt executor for future runs. Existing artifacts remain on disk for saved dispatches. This command configures executor releases only; the Compose stack above does not yet start ExecutorHost or a local sandbox provider.
 
 ## Test local runtime adapters
 
-The local adapters compose filesystem artifacts, persistent logs, transient secrets,
+The local adapters compose filesystem artifacts, per-run JSONL logs, transient secrets,
 and the CBS Docker provider. They use separate service-visible and host-visible data
 roots. Artifacts are scoped to the organization. Closing the runtime discards its
 execution secrets while preserving artifacts and logs.

@@ -683,9 +683,11 @@ def test_concurrent_local_initialization_preserves_one_active_release(
     postgres_session.expire_all()
     admission = postgres_session.get(ExecutorAdmission, 1)
     assert admission is not None
-    assert admission.release_id == f"local-{_EXECUTOR_ARTIFACT_DIGEST}"
+    assert admission.release_id is not None
     release = postgres_session.get(ExecutorRelease, admission.release_id)
     assert release is not None
     assert release.status == ExecutorReleaseStatus.ACTIVE
     assert release.readiness_verified
+    assert release.artifact_digest == _EXECUTOR_ARTIFACT_DIGEST
+    assert len(postgres_session.exec(select(ExecutorRelease)).all()) == 1
     assert len(list(root.rglob("executor.pex"))) == 1

@@ -33,7 +33,7 @@ async def test_attempts_pagination_filters_and_reopening(tmp_path: Path) -> None
     assert len((await reopened.fetch(reference, query="attempt 1")).events) == 1
     assert not (await reopened.fetch(reference, end_time=started - timedelta(seconds=1))).events
     assert len((await reopened.fetch(RunLogReference(run_id))).events) == 4
-    assert reopened.benchmark_location(str(run_id)) == f"/host/logs/{run_id}/logs.sqlite3"
+    assert reopened.benchmark_location(str(run_id)) == f"/host/logs/{run_id}/logs.jsonl"
 
 
 async def test_concurrent_writes_and_follow(tmp_path: Path) -> None:
@@ -58,3 +58,32 @@ async def test_missing_logs_and_invalid_cursor(tmp_path: Path) -> None:
     assert not (await logs.fetch(reference)).events
     with pytest.raises(LogProviderError, match="cursor"):
         await logs.fetch(reference, cursor="-1")
+
+
+async def test_byte_cursors_skip_filtered_logs_and_wait_for_complete_records(tmp_path: Path) -> None:
+    logs = FilesystemLogs(tmp_path, tmp_path)
+    run_id = uuid4()
+    started = datetime.now(UTC)
+    logs.create_benchmark(str(run_id), retention_days=0)
+    stream_key = f"{run_id}:{task_log_stream_name('task', started)}"
+    logs.write(stream_key, "match café\nsecond line")
+    logs.write(stream_key, "filtered out")
+    logs.write(stream_key, "match again")
+    path = Path(logs.benchmark_location(str(run_id)))
+    records = path.read_bytes().splitlines(keepends=True)
+    path.write_bytes(b"".join(records[:-1]) + records[-1][:-1])
+
+    reference = TaskLogReference(run_id, "task", started)
+    page = await logs.fetch(reference, query="match", limit=1)
+    assert [event.message for event in page.events] == ["match café\nsecond line"]
+    assert page.events[0].event_id == str(len(records[0]))
+    assert page.next_cursor is None
+    assert not (await logs.fetch(reference, query="match", cursor=page.events[0].event_id)).events
+
+    with path.open("ab") as output:
+        output.write(b"\n")
+    page = await logs.fetch(reference, query="match", limit=1)
+    assert page.next_cursor == str(len(records[0]))
+    final = await logs.fetch(reference, query="match", cursor=page.next_cursor)
+    assert [event.message for event in final.events] == ["match again"]
+    assert len((await logs.fetch(reference, start_time=started)).events) == 3
