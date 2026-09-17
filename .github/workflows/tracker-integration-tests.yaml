@@ -5,6 +5,7 @@ on:
   # only assume the AWS role and run the live suite in trusted contexts (a
   # prod-targeting PR or a maintainer's manual re-run); on the first attempt of
   # a non-prod PR the check FAILS so a maintainer must re-run it to go green.
+  # Fork PRs never receive secrets, so they pass with a warning instead.
   pull_request:
     types: [opened, reopened, synchronize]
 
@@ -28,6 +29,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.base_ref }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
         run: |
           if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"; then
             echo "Could not compute the PR diff; treating as tracker-relevant."
@@ -35,6 +37,10 @@ jobs:
           fi
           if ! printf '%s\n' "$changed" | grep -qE '^services/tracker/'; then
             echo "No changes under services/tracker/; skipping live integration tests."
+            echo "relevant=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$IS_FORK" = "true" ]; then
+            echo "::warning::Tracker changed in a fork PR; live tests cannot run without repository secrets. A maintainer must run them manually before merging."
             echo "relevant=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ "$BASE_REF" = "prod" ] || [ "${RUN_ATTEMPT:-1}" != "1" ]; then
