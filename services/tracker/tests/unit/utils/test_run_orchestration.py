@@ -1,7 +1,7 @@
 """Tests for PostgreSQL-queued run coordination."""
 
 import asyncio
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -163,7 +163,7 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
 
     sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id=provider_pool_id)
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
-    monkeypatch.setattr(RuntimeServices, "get_sandbox_provider", AsyncMock(return_value=sandbox_provider))
+    monkeypatch.setattr(RuntimeServices, "get_sandbox_provider", Mock(return_value=nullcontext(sandbox_provider)))
     monkeypatch.setattr("tracker.utils.run_orchestration.asyncio.sleep", controlled_sleep)
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
     run = asyncio.create_task(process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs))
@@ -261,7 +261,7 @@ async def test_queued_process_benchmark_recovers_existing_work_before_finalizing
     monkeypatch.setattr(
         RuntimeServices,
         "get_sandbox_provider",
-        AsyncMock(return_value=sandbox_provider),
+        Mock(return_value=nullcontext(sandbox_provider)),
     )
 
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
@@ -325,7 +325,7 @@ async def test_queued_coordinator_retires_stale_evaluation_runner(
     provider = Mock(spec=SandboxProvider, admission_pool_id="stale-evaluation-pool")
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
     monkeypatch.setattr("tracker.utils.run_orchestration.recover_queued_pool", recover_queued_pool)
-    monkeypatch.setattr(RuntimeServices, "get_sandbox_provider", AsyncMock(return_value=provider))
+    monkeypatch.setattr(RuntimeServices, "get_sandbox_provider", Mock(return_value=nullcontext(provider)))
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
     dispatch = database_session.get(ExecutorDispatch, UUID(str(authority_kwargs["executor_dispatch_id"])))
     assert dispatch is not None
@@ -364,10 +364,8 @@ async def test_direct_provider_setup_failure_closes_client(
     )
     benchmark = _persist_benchmark(request, database_session)
     close_client = AsyncMock(side_effect=RuntimeError("client close failed") if close_fails else None)
-    close_runtime = AsyncMock()
-    monkeypatch.setattr(RuntimeServices, "close", close_runtime)
     monkeypatch.setattr(
-        RuntimeServices, "get_sandbox_provider", AsyncMock(side_effect=RuntimeError("provider setup failed"))
+        RuntimeServices, "get_sandbox_provider", Mock(side_effect=RuntimeError("provider setup failed"))
     )
     monkeypatch.setattr(BenchmarkServiceClient, "close", close_client)
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
@@ -377,8 +375,6 @@ async def test_direct_provider_setup_failure_closes_client(
             await process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"], **authority_kwargs)
     else:
         await process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"], **authority_kwargs)
-
-    close_runtime.assert_awaited_once_with()
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
@@ -414,7 +410,7 @@ async def test_queued_cancellation_errors_owned_work_and_preserves_pending_work(
 
     sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id="coordinator-pool")
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
-    monkeypatch.setattr(RuntimeServices, "get_sandbox_provider", AsyncMock(return_value=sandbox_provider))
+    monkeypatch.setattr(RuntimeServices, "get_sandbox_provider", Mock(return_value=nullcontext(sandbox_provider)))
 
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
     run = asyncio.create_task(process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs))
@@ -457,7 +453,7 @@ async def test_queued_process_benchmark_reports_provider_configuration_drift(
         },
     )
     sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id=provider_pool_id)
-    monkeypatch.setattr(RuntimeServices, "get_sandbox_provider", AsyncMock(return_value=sandbox_provider))
+    monkeypatch.setattr(RuntimeServices, "get_sandbox_provider", Mock(return_value=nullcontext(sandbox_provider)))
 
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
     await process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs)

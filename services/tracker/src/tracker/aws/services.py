@@ -98,10 +98,7 @@ class CloudRuntimeFactory:
             sandbox_provider_secret_name=sandbox_provider_secret_name,
         )
 
-        try:
-            yield services
-        finally:
-            await services.close()
+        yield services
 
     @classmethod
     @asynccontextmanager

@@ -181,9 +181,10 @@ async def run_process_task(
     - The task result mapping returned by process_task.
     """
     sandbox_provider_config = await runtime_services.get_sandbox_provider_config()
-    sandbox_provider = await runtime_services.get_sandbox_provider()
-
-    async with start_benchmark_request.benchmark_service as benchmark_service:
+    async with (
+        start_benchmark_request.benchmark_service as benchmark_service,
+        runtime_services.get_sandbox_provider(sandbox_provider_config) as sandbox_provider,
+    ):
         return await process_task(
             task_row=task_row,
             start_benchmark_request=start_benchmark_request,

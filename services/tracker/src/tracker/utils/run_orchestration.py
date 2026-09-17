@@ -735,7 +735,9 @@ async def _process_benchmark(
         benchmark_service = await runtime_stack.enter_async_context(start_benchmark_request.benchmark_service)
         sandbox_provider_config = await runtime.get_sandbox_provider_config()
 
-        sandbox_provider = await runtime.get_sandbox_provider()
+        sandbox_provider = await runtime_stack.enter_async_context(
+            runtime.get_sandbox_provider(sandbox_provider_config)
+        )
 
         if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
             notifier = SlackNotifier(
