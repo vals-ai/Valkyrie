@@ -1,11 +1,12 @@
-"""Persistent local task logs, indexed by run, task, and attempt."""
+"""Persistent local task logs stored as JSON lines per run."""
 
 import asyncio
-import sqlite3
-from collections.abc import AsyncGenerator, Generator
-from contextlib import contextmanager
+import fcntl
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from pathlib import Path
+
+from pydantic import BaseModel, ValidationError
 
 from tracker.local.storage import local_path
 from tracker.runtime.logs import (
@@ -24,8 +25,14 @@ def _timestamp(value: datetime) -> float:
     return value.timestamp()
 
 
+class _LogRecord(BaseModel):
+    stream: str
+    timestamp: float
+    message: str
+
+
 class FilesystemLogs:
-    """Store each run's append-only logs in a local SQLite database."""
+    """Store each run's append-only logs in a local JSONL file."""
 
     def __init__(self, root: Path, host_root: Path) -> None:
         if not root.is_absolute() or not host_root.is_absolute():
@@ -34,37 +41,23 @@ class FilesystemLogs:
         self.host_root = host_root
 
     def _path(self, benchmark_id: str) -> Path:
-        return local_path(self.root, f"{benchmark_id}/logs.sqlite3")
-
-    @contextmanager
-    def _connection(self, path: Path) -> Generator[sqlite3.Connection]:
-        connection = sqlite3.connect(path, timeout=30)
-        try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
+        return local_path(self.root, f"{benchmark_id}/logs.jsonl")
 
     def create_benchmark(self, benchmark_id: str, *, retention_days: int) -> None:
         path = self._path(benchmark_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connection(path) as connection:
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS events ("
-                "id INTEGER PRIMARY KEY, stream TEXT NOT NULL, task TEXT NOT NULL, "
-                "timestamp REAL NOT NULL, message TEXT NOT NULL)"
-            )
-            connection.execute("CREATE INDEX IF NOT EXISTS events_task ON events(task, id)")
+        path.touch(exist_ok=True)
 
     def write(self, stream_key: str, message: str) -> None:
         benchmark_id, separator, stream = stream_key.partition(":")
         if not separator or not benchmark_id or not stream:
             raise LogProviderError("Invalid local log stream key")
-        with self._connection(self._path(benchmark_id)) as connection:
-            connection.execute(
-                "INSERT INTO events(stream, task, timestamp, message) VALUES (?, ?, ?, ?)",
-                (stream, stream.rsplit("_", 1)[0], datetime.now(UTC).timestamp(), message),
-            )
+        record = _LogRecord(stream=stream, timestamp=datetime.now(UTC).timestamp(), message=message)
+        with self._path(benchmark_id).open("ab") as output:
+            # Separate executor processes can append to the same run.
+            fcntl.flock(output, fcntl.LOCK_EX)
+            output.write(record.model_dump_json().encode() + b"\n")
+            output.flush()
 
     def benchmark_location(self, benchmark_id: str) -> str:
         return str(self.host_root / self._path(benchmark_id).relative_to(self.root))
@@ -100,42 +93,38 @@ class FilesystemLogs:
             path = self._path(str(reference.run_id))
             if not path.exists():
                 return LogPage(events=[])
-            clauses = ["id > ?"]
-            parameters: list[str | int | float] = [offset]
-            if isinstance(reference, TaskLogReference):
-                clauses.append("task = ?")
-                parameters.append(next(iter(task_names)))
-            if query:
-                clauses.append("instr(message, ?) > 0")
-                parameters.append(query)
-            if start_time is not None:
-                clauses.append("timestamp >= ?")
-                parameters.append(_timestamp(start_time))
-            if end_time is not None:
-                clauses.append("timestamp <= ?")
-                parameters.append(_timestamp(end_time))
-            parameters.append(limit + 1)
-            with self._connection(path) as connection:
-                rows = connection.execute(
-                    "SELECT id, task, timestamp, message FROM events WHERE "
-                    + " AND ".join(clauses)
-                    + " ORDER BY id LIMIT ?",
-                    parameters,
-                ).fetchall()
-            events = [
-                LogEvent(
-                    event_id=str(row[0]),
-                    task_id=task_names.get(row[1]),
-                    timestamp=datetime.fromtimestamp(row[2], UTC),
-                    message=row[3],
-                )
-                for row in rows[:limit]
-            ]
-            return LogPage(events=events, next_cursor=str(rows[limit - 1][0]) if len(rows) > limit else None)
+            events: list[LogEvent] = []
+            with path.open("rb") as source:
+                source.seek(offset)
+                while line := source.readline():
+                    # A concurrent writer may not have appended the newline yet.
+                    if not line.endswith(b"\n"):
+                        break
+                    record = _LogRecord.model_validate_json(line)
+                    task = record.stream.rsplit("_", 1)[0]
+                    if isinstance(reference, TaskLogReference) and task not in task_names:
+                        continue
+                    if query and query not in record.message:
+                        continue
+                    if start_time is not None and record.timestamp < _timestamp(start_time):
+                        continue
+                    if end_time is not None and record.timestamp > _timestamp(end_time):
+                        continue
+                    if len(events) == limit:
+                        return LogPage(events=events, next_cursor=events[-1].event_id)
+                    events.append(
+                        LogEvent(
+                            event_id=str(source.tell()),
+                            task_id=task_names.get(task),
+                            timestamp=datetime.fromtimestamp(record.timestamp, UTC),
+                            message=record.message,
+                        )
+                    )
+            return LogPage(events=events)
 
         try:
             return await asyncio.to_thread(read)
-        except sqlite3.Error as error:
+        except (OSError, ValidationError) as error:
             raise LogProviderError("Failed to read local task logs") from error
 
     async def stream_task(
