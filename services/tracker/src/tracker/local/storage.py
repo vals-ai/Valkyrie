@@ -195,8 +195,8 @@ class FilesystemObjectStore:
         for stored in await _io(list_files):
             yield stored
 
-    async def temporary_download_url(self, key: str, *, expires_in: int) -> str:
-        raise NotImplementedError("Local artifacts require provider file transfer or the agent download endpoint")
+    async def temporary_download_url(self, key: str, *, expires_in: int) -> None:
+        return None
 
 
 class FilesystemArtifactLocations:

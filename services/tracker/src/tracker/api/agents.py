@@ -90,9 +90,8 @@ async def get_agent_download_url(
     with _storage_errors():
         if not await runtime.objects.exists(key):
             raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
-        try:
-            url = await runtime.objects.temporary_download_url(key, expires_in=PRESIGNED_URL_EXPIRES_SECONDS)
-        except NotImplementedError:
+        url = await runtime.objects.temporary_download_url(key, expires_in=PRESIGNED_URL_EXPIRES_SECONDS)
+        if url is None:
             return AgentDownloadURLResponse(name=name, download_url=f"/agents/{name}/download", expires_in=0)
 
     return AgentDownloadURLResponse(name=name, download_url=url, expires_in=PRESIGNED_URL_EXPIRES_SECONDS)
@@ -107,8 +106,6 @@ async def download_agent_archive(name: str, runtime: AgentLibraryRuntimeDependen
     """Download the library archive using the caller's existing authorization."""
     key = _agent_key(name)
     with _storage_errors():
-        if not await runtime.objects.exists(key):
-            raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
         content = await runtime.objects.get_bytes(key)
     return Response(
         content=content,

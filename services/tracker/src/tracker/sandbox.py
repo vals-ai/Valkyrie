@@ -358,12 +358,11 @@ async def upload_agent_artifacts(
     logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
     contract_s3_key = benchmark_agent_bundle_key(benchmark_id, contract.name)
-    try:
-        presigned_url = await object_store.temporary_download_url(
-            contract_s3_key,
-            expires_in=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS,
-        )
-    except NotImplementedError:
+    presigned_url = await object_store.temporary_download_url(
+        contract_s3_key,
+        expires_in=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS,
+    )
+    if presigned_url is None:
         from tracker.local.artifacts import upload_local_agent_artifacts
 
         await upload_local_agent_artifacts(sandbox, contract.name, await object_store.get_bytes(contract_s3_key))
