@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import cast
 from uuid import uuid4
 
@@ -19,7 +20,7 @@ from sqlmodel import Session  # pyright: ignore[reportMissingImports]
 from main import app
 from tests.factories import make_task
 from tracker.api import logs as logs_api
-from tracker.api.dependencies import get_log_provider
+from tracker.api.dependencies import get_run_runtime
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchLogProvider
 from tracker.database.models import Benchmark, Org
@@ -105,7 +106,7 @@ class FailingClients:
 
 
 def _override_provider(monkeypatch: pytest.MonkeyPatch, provider: LogProvider) -> None:
-    monkeypatch.setitem(app.dependency_overrides, get_log_provider, lambda: provider)
+    monkeypatch.setitem(app.dependency_overrides, get_run_runtime, lambda: SimpleNamespace(log_reader=provider))
 
 
 def test_client_construction_failure_uses_snapshot_and_sse_error_paths(

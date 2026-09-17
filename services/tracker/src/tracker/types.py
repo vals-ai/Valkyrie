@@ -19,6 +19,7 @@ from pydantic import (
     model_validator,
 )
 
+from tracker.aws.runtime import AWSResources
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     AgentContractRequest,
@@ -75,6 +76,8 @@ class HarnessConfig(BaseModel):
 
 
 class StartBenchmarkRequest(BaseModel):
+    environment: Literal["aws"] = "aws"
+    properties: AWSResources | None = None
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
@@ -103,6 +106,13 @@ class StartBenchmarkRequest(BaseModel):
     @classmethod
     def validate_custom_service(cls, value: str | None) -> str | None:
         return validate_service_url_syntax(value) if value is not None else None
+
+    @property
+    def sandbox_provider_secret_reference(self) -> str | None:
+        """Resolve the provider reference from legacy or managed configuration."""
+        if self.harness_config is not None and self.harness_config.sandbox_provider_secret_name:
+            return self.harness_config.sandbox_provider_secret_name
+        return self.sandbox_provider_secret_name
 
     @property
     def benchmark_service(self) -> BenchmarkServiceClient:

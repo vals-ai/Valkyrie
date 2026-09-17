@@ -4,7 +4,7 @@ import asyncio
 import traceback
 from asyncio import Semaphore, gather
 from collections.abc import AsyncGenerator, Callable, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
@@ -13,16 +13,11 @@ from uuid import UUID
 import sentry_sdk
 from benchmark_service import SandboxProvider, SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
-from botocore.config import Config
 from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
-from tracker._lambda import dry_run_lambda, invoke_lambda
-from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
-from tracker.aws.resolver import deployment_aws_runtime
-from tracker.aws.runtime import AWSRuntime
-from tracker.aws.secrets import SecretsManagerStore
-from tracker.runtime.secrets import resolve_secrets
+from tracker.executor.dependencies import get_execution_runtime
+from tracker.runtime.services import RuntimeServices
 from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
     Benchmark,
@@ -49,15 +44,12 @@ from tracker.outbound_security import validate_custom_service_destination
 from tracker.scheduler.admission import SandboxQueueContext, create_queue_context, recover_queued_pool
 from tracker.types import (
     FinalViewResponse,
-    HarnessConfig,
     ManagedExecutionContext,
     StartBenchmarkRequest,
 )
 
 from tracker.utils.resources import (
-    create_benchmark_service_client_from_request,
     fetch_benchmark_row,
-    fetch_sandbox_provider_config,
 )
 from tracker.utils.reporting import create_final_view, upload_final_view
 from tracker.utils.task_error_summary import summarize_task_errors
@@ -77,7 +69,7 @@ async def _run_queued_tasks(
     task_rows: Sequence[tuple[str, Task]],
     start_benchmark_request: StartBenchmarkRequest,
     benchmark_service: BenchmarkServiceClient,
-    aws_runtime: AWSRuntime,
+    runtime: RuntimeServices,
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
     sandbox_provider: SandboxProvider,
@@ -114,7 +106,7 @@ async def _run_queued_tasks(
                 benchmark_service,
                 benchmark_id,
                 task_row.task_id,
-                aws_runtime,
+                runtime,
                 org,
                 sandbox_provider_config=sandbox_provider_config,
                 sandbox_provider=sandbox_provider,
@@ -234,10 +226,6 @@ async def _run_queued_tasks(
         await monitor_task
         if cancellation_attempts is not None:
             record_cancellation(cancellation_attempts)
-
-
-# Limit non-idempotent completion callbacks to one attempt and a 60-second read.
-_COMPLETION_CALLBACK_CONFIG = Config(read_timeout=60, retries={"total_max_attempts": 1})
 
 
 def _capture_run_error(
@@ -622,33 +610,6 @@ def _queued_benchmark_id(
         raise ValueError("Queued benchmark request has no valid benchmark ID.") from None
 
 
-def _preflight_managed_aws(
-    execution: _QueuedExecution,
-    runtime: AWSRuntime,
-) -> SandboxProviderConfig:
-    """Verify executor-owned AWS access before starting sandbox work."""
-    CloudWatchBenchmarkLogSink(runtime.clients, runtime.resources.log_group).create_benchmark(
-        str(execution.benchmark_id),
-        retention_days=runtime.resources.log_retention_days,
-    )
-    request = execution.request
-    provider_secret_name = request.sandbox_provider_secret_name
-    if provider_secret_name is None:
-        raise ValueError("Queued managed benchmark request has no sandbox provider secret name.")
-    secret_store = SecretsManagerStore(runtime.clients)
-    sandbox_provider_config = fetch_sandbox_provider_config(
-        provider_secret_name,
-        secret_store,
-        request.sandbox_provider,
-    )
-    resolve_secrets(request.contract.secrets, secret_store)
-    if request.webhook_secret_name and request.webhook_intervals:
-        secret_store.get(request.webhook_secret_name)
-    if request.lambda_function:
-        dry_run_lambda(runtime.clients, request.lambda_function)
-    return sandbox_provider_config
-
-
 @asynccontextmanager
 async def hold_dispatch_authority(
     authority: ExecutionAuthority,
@@ -668,6 +629,26 @@ async def process_benchmark(
     execution_context_json: dict[str, Any] | None = None,
     *,
     executor_dispatch_id: str,
+) -> None:
+    async with AsyncExitStack() as runtime_stack:
+        await _process_benchmark(
+            start_benchmark_request_json,
+            benchmark_id_str,
+            verified_task_ids,
+            execution_context_json,
+            executor_dispatch_id=executor_dispatch_id,
+            runtime_stack=runtime_stack,
+        )
+
+
+async def _process_benchmark(
+    start_benchmark_request_json: dict[str, Any] | None,
+    benchmark_id_str: str | None,
+    verified_task_ids: list[str] | None,
+    execution_context_json: dict[str, Any] | None,
+    *,
+    executor_dispatch_id: str,
+    runtime_stack: AsyncExitStack,
 ) -> None:
     benchmark_id = _queued_benchmark_id(
         benchmark_id_str,
@@ -694,14 +675,11 @@ async def process_benchmark(
     finalization_deferred = False
     post_task_finalization = False
     queued_cancellation_recorded = False
-    benchmark_service: BenchmarkServiceClient | None = None
     notifier: SlackNotifier | None = None
     queue_context: SandboxQueueContext | None = None
     task_rows: Sequence[tuple[str, Task]] = ()
     run_task_rows: Sequence[tuple[str, Task]] = ()
     limiter: ResizableLimiter | None = None
-    sandbox_provider_config: SandboxProviderConfig | None = None
-    sandbox_provider: SandboxProvider | None = None
 
     def record_queued_cancellation(owned_attempts: dict[UUID, datetime]) -> None:
         nonlocal queued_cancellation_recorded
@@ -751,37 +729,21 @@ async def process_benchmark(
                 auth_required=AUTH_REQUIRED,
             )
 
-        if execution.aws_managed:
-            aws_runtime = deployment_aws_runtime(org.id)
-            sandbox_provider_config = _preflight_managed_aws(execution, aws_runtime)
-        else:
-            harness_config = cast(HarnessConfig, start_benchmark_request.harness_config)
-            aws_runtime = AWSRuntime.from_harness_config(harness_config)
-            sandbox_provider_config = fetch_sandbox_provider_config(
-                harness_config.sandbox_provider_secret_name,
-                SecretsManagerStore(aws_runtime.clients),
-                start_benchmark_request.sandbox_provider,
-            )
+        runtime = await runtime_stack.enter_async_context(
+            get_execution_runtime(start_benchmark_request, benchmark_row, org)
+        )
+        benchmark_service = await runtime_stack.enter_async_context(start_benchmark_request.benchmark_service)
+        sandbox_provider_config = await runtime.get_sandbox_provider_config()
 
-        benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
-        try:
-            sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
-        except BaseException:
-            await benchmark_service.close()
-            benchmark_service = None
-            raise
+        sandbox_provider = await runtime_stack.enter_async_context(
+            runtime.get_sandbox_provider(sandbox_provider_config)
+        )
 
         if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
             notifier = SlackNotifier(
                 secret_name=start_benchmark_request.webhook_secret_name,
-                secret_store=SecretsManagerStore(aws_runtime.clients),
+                secret_store=runtime.secrets,
                 intervals=start_benchmark_request.webhook_intervals,
-            )
-
-        if not execution.aws_managed:
-            CloudWatchBenchmarkLogSink(aws_runtime.clients, aws_runtime.resources.log_group).create_benchmark(
-                str(benchmark_id),
-                retention_days=aws_runtime.resources.log_retention_days,
             )
 
         if queued_run:
@@ -822,9 +784,6 @@ async def process_benchmark(
                 run_task_rows = task_rows
                 limiter = ResizableLimiter(benchmark_row.arguments.concurrency)
 
-        assert benchmark_service is not None
-        assert sandbox_provider_config is not None
-        assert sandbox_provider is not None
         task_row_ids: set[str] = {task_id for task_id, _ in run_task_rows}
         missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
         if missing_task_ids:
@@ -841,7 +800,7 @@ async def process_benchmark(
                 task_rows=run_task_rows,
                 start_benchmark_request=start_benchmark_request,
                 benchmark_service=benchmark_service,
-                aws_runtime=aws_runtime,
+                runtime=runtime,
                 org=org,
                 sandbox_provider_config=sandbox_provider_config,
                 sandbox_provider=sandbox_provider,
@@ -861,7 +820,7 @@ async def process_benchmark(
                         benchmark_service,
                         benchmark_id,
                         task_id,
-                        aws_runtime,
+                        runtime,
                         org,
                         sandbox_provider_config=sandbox_provider_config,
                         sandbox_provider=sandbox_provider,
@@ -961,26 +920,12 @@ async def process_benchmark(
             set_benchmark_final_status(benchmark_row, session, org, authority=authority)
 
             final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
-            lambda_function = benchmark_row.arguments.lambda_function
-            lambda_payload: dict[str, Any] | None = None
-            if lambda_function:
-                lambda_payload = benchmark_row.arguments.model_dump()
-                lambda_payload["benchmark_id"] = str(benchmark_id)
-                lambda_payload["benchmark_name"] = benchmark_row.name
-                lambda_payload["bucket"] = aws_runtime.resources.s3_bucket
 
-        async with hold_dispatch_authority(authority) as (_, benchmark_row):
-            await upload_final_view(benchmark_row, final_view, aws_runtime)
+        async with hold_dispatch_authority(authority):
+            await upload_final_view(final_view, runtime.objects)
 
-        if lambda_function and lambda_payload is not None:
-            async with hold_dispatch_authority(authority):
-                await asyncio.to_thread(
-                    invoke_lambda,
-                    aws_runtime.clients,
-                    lambda_function,
-                    lambda_payload,
-                    config=_COMPLETION_CALLBACK_CONFIG,
-                )
+        async with hold_dispatch_authority(authority):
+            await runtime.run_completion_callback(final_view)
 
     except asyncio.CancelledError:
         if queued_run and not post_task_finalization:
@@ -1089,9 +1034,6 @@ async def process_benchmark(
                 pass
             except Exception as notification_error:
                 logger.warning(f"Failed to send terminal notification: {notification_error}")
-
-        if benchmark_service is not None:
-            await benchmark_service.close()
 
 
 def commit_benchmark_error(

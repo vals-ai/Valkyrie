@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 from valkyrie.sdk.models.agents import AgentContractRequest
-from valkyrie.sdk.models.config import HarnessConfig
+from valkyrie.sdk.models.config import AWSResources, HarnessConfig
 
 
 class TaskStatus(str, Enum):
@@ -62,6 +62,8 @@ class Order(str, Enum):
 class StartBenchmarkRequest(BaseModel):
     """Wire payload used to start a benchmark run."""
 
+    environment: Literal["aws"] = "aws"
+    properties: AWSResources | None = None
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
@@ -208,6 +210,8 @@ class BenchmarkArguments(ResponseModel):
 
     contract: AgentContractRequest
     concurrency: int
+    environment: Literal["aws"] = "aws"
+    properties: AWSResources | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None

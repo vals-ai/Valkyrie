@@ -33,6 +33,8 @@ from sqlmodel import Session, create_engine, func, select
 from tests.factories import make_task
 from tracker.aws.resolver import AWSRuntimeResolution
 from tracker.aws.runtime import AWSRuntime
+from tracker.aws.services import CloudRuntimeFactory
+from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -758,6 +760,7 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
     monkeypatch: pytest.MonkeyPatch,
     harness_config: HarnessConfig,
     executor_authority: Any,
+    runtime_services: RuntimeServices,
 ) -> None:
     provider_pool_id = f"daytona:{uuid4()}"
     org, benchmark, (task,) = _run(
@@ -831,7 +834,7 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
     service.resume_evaluation.return_value = {"score": 1.0}
     _use_real_sandbox_recovery(service)
     monkeypatch.setattr(task_execution, "engine", postgres_engine)
-    monkeypatch.setattr(task_execution, "buffer_logs", Mock())
+    monkeypatch.setattr(task_execution.TaskLogBuffer, "buffer_logs", Mock())
     request = benchmark.access_key_start_benchmark_request(harness_config)
 
     async def run(task_row: Task, authority: ExecutionAuthority) -> dict[str, dict[str, Any] | None]:
@@ -841,7 +844,7 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
             cast(BenchmarkServiceClient, service),
             benchmark.id,
             task.task_id,
-            AWSRuntime.from_harness_config(harness_config),
+            runtime_services,
             org,
             sandbox_provider_config=cast(SandboxProviderConfig, object()),
             sandbox_provider=cast(SandboxProvider, object()),
@@ -864,6 +867,7 @@ async def test_resumed_evaluation_uses_lock_connection_for_callback_and_finaliza
     monkeypatch: pytest.MonkeyPatch,
     harness_config: HarnessConfig,
     executor_authority: Any,
+    runtime_services: RuntimeServices,
 ) -> None:
     provider_pool_id = f"daytona:{uuid4()}"
     org, benchmark, (task,) = _run(
@@ -896,7 +900,7 @@ async def test_resumed_evaluation_uses_lock_connection_for_callback_and_finaliza
         pool_timeout=0.05,
     )
     monkeypatch.setattr(task_execution, "engine", single_connection_engine)
-    monkeypatch.setattr(task_execution, "buffer_logs", Mock())
+    monkeypatch.setattr(task_execution.TaskLogBuffer, "buffer_logs", Mock())
     request = benchmark.access_key_start_benchmark_request(harness_config)
     try:
         result = await task_execution.process_task(
@@ -905,7 +909,7 @@ async def test_resumed_evaluation_uses_lock_connection_for_callback_and_finaliza
             cast(BenchmarkServiceClient, service),
             benchmark.id,
             task.task_id,
-            AWSRuntime.from_harness_config(harness_config),
+            runtime_services,
             org,
             sandbox_provider_config=cast(SandboxProviderConfig, object()),
             sandbox_provider=cast(SandboxProvider, object()),
@@ -928,6 +932,7 @@ async def test_setup_retry_reenters_fifo_before_competitor(
     monkeypatch: pytest.MonkeyPatch,
     harness_config: HarnessConfig,
     executor_authority: Any,
+    runtime_services: RuntimeServices,
 ) -> None:
     provider_pool_id = f"daytona:{uuid4()}"
     pool_id = store.queue_pool_id(provider_pool_id)
@@ -967,7 +972,7 @@ async def test_setup_retry_reenters_fifo_before_competitor(
     _use_real_sandbox_recovery(service)
     monkeypatch.setattr(task_execution, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
     monkeypatch.setattr(task_execution, "engine", postgres_engine)
-    monkeypatch.setattr(task_execution, "buffer_logs", Mock())
+    monkeypatch.setattr(task_execution.TaskLogBuffer, "buffer_logs", Mock())
     monkeypatch.setattr(task_execution, "create_sandbox", create_sandbox)
     monkeypatch.setattr(
         task_execution,
@@ -984,7 +989,7 @@ async def test_setup_retry_reenters_fifo_before_competitor(
         cast(BenchmarkServiceClient, service),
         benchmark.id,
         retrying.task_id,
-        AWSRuntime.from_harness_config(harness_config),
+        runtime_services,
         org,
         sandbox_provider_config=cast(SandboxProviderConfig, object()),
         sandbox_provider=context.provider,
@@ -1001,3 +1006,13 @@ async def test_setup_retry_reenters_fifo_before_competitor(
     assert len(names) == 2
     assert names[0] == names[1]
     assert retrying.id.hex in names[0]
+
+
+@pytest.fixture
+async def runtime_services(harness_config: HarnessConfig) -> AsyncGenerator[RuntimeServices, None]:
+    """Open real AWS adapters while tests replace their external calls."""
+    aws_runtime = AWSRuntime.from_harness_config(harness_config)
+    async with CloudRuntimeFactory.create_runtime(
+        aws_runtime,
+    ) as runtime:
+        yield runtime

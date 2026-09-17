@@ -19,6 +19,8 @@ from tracker.exceptions import S3Error
 import tracker.api.agents as agents_api
 from main import app
 from tracker.aws.runtime import AWSRuntime
+from tracker.aws import s3 as aws_s3
+from tracker.aws.s3 import S3ObjectStore
 from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
 
 _client = TestClient(app)
@@ -155,9 +157,9 @@ class TestAgentWrites:
     ) -> None:
         error = S3Error("storage failed")
         error.__cause__ = ClientError({"Error": {"Code": code}}, "PutObject")
-        monkeypatch.setattr(agents_api, "s3_object_exists", AsyncMock(return_value=True))
-        monkeypatch.setattr(agents_api, "upload_stream_to_s3", AsyncMock(side_effect=error))
-        monkeypatch.setattr(agents_api, "delete_from_s3", AsyncMock(side_effect=error))
+        monkeypatch.setattr(aws_s3, "s3_object_exists", AsyncMock(return_value=True))
+        monkeypatch.setattr(aws_s3, "upload_stream_to_s3", AsyncMock(side_effect=error))
+        monkeypatch.setattr(aws_s3, "delete_from_s3", AsyncMock(side_effect=error))
 
         response = _client.request(
             operation,
@@ -218,7 +220,6 @@ class TestAgentRoutes:
     def test_list_agents_returns_storage_metadata(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AWSRuntime,
         harness_headers: dict[str, str],
     ) -> None:
         """Agent listing must expose the names and timestamps returned by storage.
@@ -234,7 +235,8 @@ class TestAgentRoutes:
 
         assert response.status_code == 200
         assert response.json() == {"agents": [{"name": "agent-a", "last_modified": "2026-01-02 00:00:00+00:00"}]}
-        list_agents.assert_awaited_once_with(aws_runtime)
+        list_agents.assert_awaited_once()
+        assert isinstance(list_agents.call_args.args[0], S3ObjectStore)
 
     def test_agent_download_url_uses_route_expiration(
         self,
@@ -249,8 +251,8 @@ class TestAgentRoutes:
         """
         exists = AsyncMock(return_value=True)
         presigned_url = AsyncMock(return_value="https://example.test/agent-a.zip")
-        monkeypatch.setattr(agents_api, "s3_object_exists", exists)
-        monkeypatch.setattr(agents_api, "create_presigned_url", presigned_url)
+        monkeypatch.setattr(aws_s3, "s3_object_exists", exists)
+        monkeypatch.setattr(aws_s3, "create_presigned_url", presigned_url)
 
         response = _client.get("/agents/agent-a/download-url", headers=harness_headers)
 
@@ -280,7 +282,7 @@ class TestAgentRoutes:
         """
 
         exists = AsyncMock(return_value=False)
-        monkeypatch.setattr(agents_api, "s3_object_exists", exists)
+        monkeypatch.setattr(aws_s3, "s3_object_exists", exists)
 
         response = _client.get("/agents/missing/download-url", headers=harness_headers)
 

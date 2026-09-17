@@ -1,20 +1,29 @@
 """Services shared by one API operation or executor execution."""
 
-from asyncio import Lock, Task, create_task
-from dataclasses import dataclass, field
+from abc import ABC, abstractmethod
+from asyncio import create_task, to_thread
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+from uuid import UUID
 
-from benchmark_service import SandboxProvider, SandboxProviderConfig, sandbox_provider_config_from_mapping
+from benchmark_service import SandboxProvider, SandboxProviderConfig
 
-from tracker.exceptions import InvalidSandboxConfigurationError, TrackerServiceError
-from tracker.runtime.logs import BenchmarkLogLocations, BenchmarkLogSink, LogProvider
-from tracker.runtime.secrets import AsyncSecretStore, SecretStore
+from tracker.exceptions import InvalidSandboxConfigurationError
 from tracker.runtime.lifecycle import finish_cleanup
+from tracker.runtime.logs import BenchmarkLogLocations, BenchmarkLogSink, LogProvider
+from tracker.runtime.secrets import AsyncSecretStore, SecretStore, resolve_secrets, sandbox_provider_config_from_secret
 from tracker.runtime.storage import ArtifactLocations, ObjectStore
 
 
+if TYPE_CHECKING:
+    from tracker.types import FinalViewResponse, StartBenchmarkRequest
+
+
 @dataclass
-class RuntimeServices:
-    """Storage, secrets, logs, and lazily constructed sandbox access."""
+class RuntimeServices(ABC):
+    """Storage, secrets, logs, and execution-scoped sandbox access."""
 
     objects: ObjectStore
     secrets: SecretStore
@@ -26,55 +35,36 @@ class RuntimeServices:
     sandbox_provider: str = "daytona"
     sandbox_provider_secret_name: str | None = None
 
-    _sandbox_config: SandboxProviderConfig | None = field(default=None, init=False, repr=False)
-    _sandbox_provider: SandboxProvider | None = field(default=None, init=False, repr=False)
-    _config_lock: Lock = field(default_factory=Lock, init=False, repr=False)
-    _closed: bool = field(default=False, init=False, repr=False)
-    _close_task: Task[None] | None = field(default=None, init=False, repr=False)
+    @abstractmethod
+    def prepare_execution(self, request: "StartBenchmarkRequest", benchmark_id: UUID) -> None:
+        """Prepare backend resources before sandbox work."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def run_completion_callback(self, final_view: "FinalViewResponse") -> None:
+        """Run the configured completion callback after results are stored."""
+        raise NotImplementedError
 
     async def get_sandbox_provider_config(self) -> SandboxProviderConfig:
         """Resolve provider credentials only when sandbox access is requested."""
         if not self.sandbox_provider_secret_name:
             raise InvalidSandboxConfigurationError("Sandbox access requires a provider secret name")
 
-        async with self._config_lock:
-            self._require_open()
-            if self._sandbox_config is None:
-                self._sandbox_config = await self._load_sandbox_provider_config(self.sandbox_provider_secret_name)
-            self._require_open()
-            return self._sandbox_config
+        return await self._load_sandbox_provider_config(self.sandbox_provider_secret_name)
 
     async def _load_sandbox_provider_config(self, secret_name: str) -> SandboxProviderConfig:
         secret = await self.async_secrets.get_async(secret_name)
-        if not isinstance(secret, dict):
-            raise InvalidSandboxConfigurationError("Expected sandbox provider secret to be a JSON object")
-        return sandbox_provider_config_from_mapping({**secret, "type": self.sandbox_provider})
+        return sandbox_provider_config_from_secret(secret, self.sandbox_provider)
 
-    async def get_sandbox_provider(self) -> SandboxProvider:
-        """Reuse one provider for this runtime's lifetime."""
-        config = await self.get_sandbox_provider_config()
-        if self._sandbox_provider is None:
-            self._sandbox_provider = config.create_provider()
+    @asynccontextmanager
+    async def get_sandbox_provider(self, config: SandboxProviderConfig) -> AsyncGenerator[SandboxProvider]:
+        """Keep one provider alive for the enclosing execution context."""
+        provider = config.create_provider()
+        try:
+            yield provider
+        finally:
+            await finish_cleanup(create_task(provider.close()))
 
-        return self._sandbox_provider
-
-    def _require_open(self) -> None:
-        if self._closed:
-            raise TrackerServiceError("Runtime services are closed")
-
-    async def close(self) -> None:
-        """Finish one shutdown even if the caller is cancelled."""
-        if self._close_task is None:
-            self._closed = True
-            self._close_task = create_task(self._close())
-
-        await finish_cleanup(self._close_task)
-
-    async def _close(self) -> None:
-        async with self._config_lock:
-            provider = self._sandbox_provider
-            self._sandbox_provider = None
-            self._sandbox_config = None
-
-        if provider is not None:
-            await provider.close()
+    async def resolve_secrets(self, references: dict[str, str]) -> dict[str, str]:
+        """Resolve agent environment values without blocking execution."""
+        return await to_thread(resolve_secrets, references, self.secrets)

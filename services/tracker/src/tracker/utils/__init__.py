@@ -2,7 +2,6 @@
 
 from tracker.utils.harness_config import (
     fetch_harness_config,
-    try_fetch_harness_config,
 )
 from tracker.utils.run_orchestration import (
     catch_errors_during_cleanup,
@@ -32,7 +31,6 @@ from tracker.utils.reporting import (
 from tracker.utils.resources import (
     BenchmarkConcurrencyUpdate,
     create_benchmark_service_client,
-    create_benchmark_service_client_from_request,
     fetch_benchmark_row,
     fetch_sandbox_provider_config,
     fetch_task_row,
@@ -52,7 +50,6 @@ from tracker.utils.task_execution import (
     TaskMonitor,
     TrackedTask,
     TrackedTaskStatus,
-    buffer_logs,
     commit_task_error,
     commit_task_status_transition,
     handle_early_exit,
@@ -69,14 +66,12 @@ __all__ = [
     "TrackedTask",
     "TrackedTaskStatus",
     "YieldingWriter",
-    "buffer_logs",
     "build_benchmark_table_rows",
     "catch_errors_during_cleanup",
     "commit_benchmark_error",
     "commit_task_error",
     "commit_task_status_transition",
     "create_benchmark_service_client",
-    "create_benchmark_service_client_from_request",
     "create_final_view",
     "create_task_rows",
     "decode_cursor",
@@ -103,7 +98,6 @@ __all__ = [
     "start_benchmark_request_to_benchmark",
     "stop_sandbox",
     "stream_benchmark_results",
-    "try_fetch_harness_config",
     "final_view_s3_key",
     "upload_final_view",
     "update_benchmark_concurrency",
