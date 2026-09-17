@@ -5,7 +5,6 @@ from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 from uuid import UUID
 
 from benchmark_service import DockerProviderConfig, SandboxProviderConfig
@@ -24,7 +23,6 @@ class LocalRuntimeConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    environment: Literal["local"] = "local"
     data_root: Path
     host_data_root: Path
     docker: DockerProviderConfig = Field(default_factory=DockerProviderConfig)
