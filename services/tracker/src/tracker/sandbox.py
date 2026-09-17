@@ -32,6 +32,7 @@ from benchmark_service import (
 )
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
+from benchmark_service.sandbox.local.docker import DockerSandboxProvider
 from opentelemetry import trace
 from tenacity import (
     retry,
@@ -224,6 +225,8 @@ async def _create_sandbox(
 ) -> Sandbox:
     """Create a sandbox through its provider."""
     _reject_plaintext_secret_collisions(env_vars, sandbox_secrets)
+    if isinstance(provider, DockerSandboxProvider) and isinstance(source, ComposeSource):
+        raise InvalidSandboxConfigurationError("Local Docker does not support Compose sources")
     provider_source = _provider_source(source)
     _set_sandbox_create_span_attributes(sandbox_name, provider_source, resources)
     sandbox = await provider.create_sandbox(
@@ -235,7 +238,7 @@ async def _create_sandbox(
             env_vars=env_vars or {},
             sandbox_secrets=sandbox_secrets or {},
             volumes=volumes or [],
-            auto_stop_interval=SANDBOX_AUTO_STOP_INTERVAL,
+            auto_stop_interval=0 if isinstance(provider, DockerSandboxProvider) else SANDBOX_AUTO_STOP_INTERVAL,
             create_timeout=SANDBOX_CREATE_TIMEOUT,
         )
     )
@@ -341,7 +344,7 @@ async def upload_agent_artifacts(
     object_store: ObjectStore,
 ) -> None:
     """
-    Download and extract the agent contract zip directly inside the sandbox. We generate a presigned S3 URL and have the sandbox curl + unzip it directly.
+    Transfer the frozen agent bundle using a signed URL or local provider file upload.
 
     Reads from benchmarks/<benchmark_id>/<name>.zip so edits to the shared agent don't affect runs in flight.
 
@@ -357,10 +360,16 @@ async def upload_agent_artifacts(
     logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
     contract_s3_key = benchmark_agent_bundle_key(benchmark_id, contract.name)
-    presigned_url = await object_store.temporary_download_url(
-        contract_s3_key,
-        expires_in=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS,
-    )
+    try:
+        presigned_url = await object_store.temporary_download_url(
+            contract_s3_key,
+            expires_in=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS,
+        )
+    except NotImplementedError:
+        from tracker.local.artifacts import upload_local_agent_artifacts
+
+        await upload_local_agent_artifacts(sandbox, contract.name, await object_store.get_bytes(contract_s3_key))
+        return
 
     zip_path = shlex.quote(f"/tmp/{contract.name}.zip")
     contract_dir = shlex.quote(str(bundle_path / contract.name))

@@ -55,6 +55,27 @@ Set `DATABASE_URL` to the local PostgreSQL database. Set `EXECUTOR_RELEASE_ROOT`
 
 The initializer verifies and activates the supplied build for future runs. Repeating the command with the same build reuses its active release. Existing runs keep their saved release and artifacts. This command configures executor releases only; the Compose stack above does not yet start ExecutorHost or a local sandbox provider.
 
+## Test local runtime adapters
+
+The local adapters compose filesystem artifacts, persistent logs, transient secrets,
+and the CBS Docker provider. They use separate service-visible and host-visible data
+roots. Artifacts are scoped to the organization. Closing the runtime discards its
+execution secrets while preserving artifacts and logs.
+
+Run the Docker integration check from `services/tracker`:
+
+```bash
+CBS_DOCKER_ENABLED=true DOCKER_HOST=unix:///var/run/docker.sock \
+  uv run pytest tests/integration/docker
+```
+
+Use your Docker context's Unix socket for `DOCKER_HOST` when it differs. The check
+creates a disposable container, transfers a frozen agent bundle, executes it, verifies
+its output, and deletes the container. Local transfers use provider file upload and
+preserve executable files without requiring curl or unzip in the image.
+
+These adapters do not yet enable local run submission through the API or CLI.
+
 ### Run it with hosted-mode authentication
 
 ```bash
