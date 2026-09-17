@@ -103,7 +103,6 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.get_bytes", _mock_get_bytes)
     monkeypatch.setattr("tracker.aws.s3.get_contract_s3_key", _mock_get_contract_s3_key)
-    monkeypatch.setattr("tracker.utils.reporting.upload_to_s3", _mock_upload_to_s3)
     monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.put_bytes", _mock_upload_to_s3)
     monkeypatch.setattr("main.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
 
@@ -278,8 +277,8 @@ async def runtime_services(
     aws_runtime: AWSRuntime, harness_config: HarnessConfig
 ) -> AsyncGenerator[RuntimeServices, None]:
     """Compose the task runtime using the shared deterministic AWS configuration."""
-    async with CloudRuntimeFactory.from_aws_runtime(aws_runtime).create_runtime(
-        clients=aws_runtime.clients,
+    async with CloudRuntimeFactory.create_runtime(
+        aws_runtime,
         sandbox_provider_secret_name=harness_config.sandbox_provider_secret_name,
     ) as runtime:
         yield runtime

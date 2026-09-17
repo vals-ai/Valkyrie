@@ -1086,7 +1086,7 @@ async def _retrieve_results(
 
     if preview:
         await _archive_final_view(benchmark_row, aws_runtime)
-    s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime)
+    s3_key = await upload_final_view(final_view, S3ObjectStore(aws_runtime))
     if preview:
         await _invoke_preview_lambda(benchmark_row, aws_runtime)
     return await _s3_results_response(s3_key, aws_runtime)

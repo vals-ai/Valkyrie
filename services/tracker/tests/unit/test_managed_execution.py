@@ -448,8 +448,8 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get_webhook_secret)
     monkeypatch.setattr("tracker.aws.services.dry_run_lambda", dry_run)
 
-    async with CloudRuntimeFactory.from_aws_runtime(aws_runtime).create_runtime(
-        clients=aws_runtime.clients,
+    async with CloudRuntimeFactory.create_runtime(
+        aws_runtime,
         sandbox_provider=request.sandbox_provider,
         sandbox_provider_secret_name=request.sandbox_provider_secret_reference,
     ) as runtime:

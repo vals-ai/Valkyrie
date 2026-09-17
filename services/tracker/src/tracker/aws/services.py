@@ -4,14 +4,11 @@ from asyncio import to_thread
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Annotated, ClassVar, Literal
 from uuid import UUID
 
 from botocore.config import Config
-from pydantic import BaseModel, Field, TypeAdapter
 
 from tracker._lambda import dry_run_lambda, invoke_lambda
-from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import (
     CloudWatchBenchmarkLogLocations,
     CloudWatchBenchmarkLogSink,
@@ -71,34 +68,32 @@ class ManagedCloudRuntimeServices(CloudRuntimeServices):
             dry_run_lambda(self.aws_runtime.clients, request.lambda_function)
 
 
-class CloudRuntimeConfig(BaseModel):
-    """Non-secret configuration for AWS runtime services."""
+class CloudRuntimeFactory:
+    """Compose AWS services from resolved resources and credentials."""
 
-    environment: Literal["aws"] = "aws"
-    properties: AWSResources
-    services_type: ClassVar[type[CloudRuntimeServices]]
-
+    @staticmethod
     @asynccontextmanager
     async def create_runtime(
-        self,
+        runtime: AWSRuntime,
         *,
-        clients: AWSClientProvider,
         sandbox_provider: str = "daytona",
         sandbox_provider_secret_name: str | None = None,
     ) -> AsyncGenerator[RuntimeServices]:
         """Compose existing AWS adapters without resolving credentials again."""
-        runtime = AWSRuntime(resources=self.properties, clients=clients)
+        clients = runtime.clients
+        resources = runtime.resources
         secrets = SecretsManagerStore(clients)
+        services_type = ManagedCloudRuntimeServices if clients.credential_source == "managed" else CloudRuntimeServices
 
-        services = self.services_type(
+        services = services_type(
             aws_runtime=runtime,
             objects=S3ObjectStore(runtime),
             secrets=secrets,
             async_secrets=secrets,
-            logs=CloudWatchBenchmarkLogSink(clients, self.properties.log_group),
-            log_reader=CloudWatchLogProvider(clients, self.properties.log_group),
-            log_locations=CloudWatchBenchmarkLogLocations(self.properties),
-            artifacts=S3ArtifactLocations(self.properties),
+            logs=CloudWatchBenchmarkLogSink(clients, resources.log_group),
+            log_reader=CloudWatchLogProvider(clients, resources.log_group),
+            log_locations=CloudWatchBenchmarkLogLocations(resources),
+            artifacts=S3ArtifactLocations(resources),
             sandbox_provider=sandbox_provider,
             sandbox_provider_secret_name=sandbox_provider_secret_name,
         )
@@ -107,30 +102,6 @@ class CloudRuntimeConfig(BaseModel):
             yield services
         finally:
             await services.close()
-
-
-class AccessKeyRuntimeConfig(CloudRuntimeConfig):
-    credential_source: Literal["access_key"] = "access_key"
-    services_type: ClassVar[type[CloudRuntimeServices]] = CloudRuntimeServices
-
-
-class ManagedRuntimeConfig(CloudRuntimeConfig):
-    credential_source: Literal["managed"] = "managed"
-    services_type: ClassVar[type[CloudRuntimeServices]] = ManagedCloudRuntimeServices
-
-
-RuntimeConfig = Annotated[AccessKeyRuntimeConfig | ManagedRuntimeConfig, Field(discriminator="credential_source")]
-_RUNTIME_CONFIG_ADAPTER: TypeAdapter[RuntimeConfig] = TypeAdapter(RuntimeConfig)
-
-
-class CloudRuntimeFactory:
-    """Select configuration and open AWS services for an operation."""
-
-    @staticmethod
-    def from_aws_runtime(runtime: AWSRuntime) -> RuntimeConfig:
-        return _RUNTIME_CONFIG_ADAPTER.validate_python(
-            {"credential_source": runtime.clients.credential_source, "properties": runtime.resources}
-        )
 
     @classmethod
     @asynccontextmanager
@@ -149,10 +120,8 @@ class CloudRuntimeFactory:
             if request.harness_config is None
             else AWSRuntime.from_harness_config(request.harness_config).with_resources(properties)
         )
-        config = cls.from_aws_runtime(aws_runtime)
-
-        async with config.create_runtime(
-            clients=aws_runtime.clients,
+        async with cls.create_runtime(
+            aws_runtime,
             sandbox_provider=request.sandbox_provider,
             sandbox_provider_secret_name=request.sandbox_provider_secret_reference,
         ) as runtime:

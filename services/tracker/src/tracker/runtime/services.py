@@ -6,13 +6,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from benchmark_service import SandboxProvider, SandboxProviderConfig, sandbox_provider_config_from_mapping
+from benchmark_service import SandboxProvider, SandboxProviderConfig
 
 from tracker.exceptions import InvalidSandboxConfigurationError, TrackerServiceError
-from tracker.runtime.artifacts import benchmark_prefix
 from tracker.runtime.lifecycle import finish_cleanup
 from tracker.runtime.logs import BenchmarkLogLocations, BenchmarkLogSink, LogProvider
-from tracker.runtime.secrets import AsyncSecretStore, SecretStore, resolve_secrets
+from tracker.runtime.secrets import AsyncSecretStore, SecretStore, resolve_secrets, sandbox_provider_config_from_secret
 from tracker.runtime.storage import ArtifactLocations, ObjectStore
 
 
@@ -45,12 +44,6 @@ class RuntimeServices(ABC):
         """Prepare backend resources before sandbox work."""
         raise NotImplementedError
 
-    async def upload_final_view(self, final_view: "FinalViewResponse") -> str:
-        key = f"{benchmark_prefix(str(final_view.benchmark_id))}{final_view.benchmark_name}.json"
-        await self.objects.put_bytes(key, final_view.model_dump_json(indent=4, exclude_none=True).encode())
-
-        return key
-
     @abstractmethod
     async def run_completion_callback(self, final_view: "FinalViewResponse") -> None:
         """Run the configured completion callback after results are stored."""
@@ -70,9 +63,7 @@ class RuntimeServices(ABC):
 
     async def _load_sandbox_provider_config(self, secret_name: str) -> SandboxProviderConfig:
         secret = await self.async_secrets.get_async(secret_name)
-        if not isinstance(secret, dict):
-            raise InvalidSandboxConfigurationError("Expected sandbox provider secret to be a JSON object")
-        return sandbox_provider_config_from_mapping({**secret, "type": self.sandbox_provider})
+        return sandbox_provider_config_from_secret(secret, self.sandbox_provider)
 
     async def get_sandbox_provider(self) -> SandboxProvider:
         """Reuse one provider for this runtime's lifetime."""

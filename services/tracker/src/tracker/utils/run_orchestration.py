@@ -16,7 +16,6 @@ from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceErr
 from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
-from taskiq_dependencies import DependencyGraph
 from tracker.executor.dependencies import get_execution_runtime
 from tracker.runtime.services import RuntimeServices
 from tracker.config import AUTH_REQUIRED, broker
@@ -52,7 +51,7 @@ from tracker.types import (
 from tracker.utils.resources import (
     fetch_benchmark_row,
 )
-from tracker.utils.reporting import create_final_view
+from tracker.utils.reporting import create_final_view, upload_final_view
 from tracker.utils.task_error_summary import summarize_task_errors
 from tracker.utils.task_execution import ResizableLimiter, TaskMonitor, TrackedTask, process_task
 
@@ -730,12 +729,9 @@ async def _process_benchmark(
                 auth_required=AUTH_REQUIRED,
             )
 
-        dependencies = await runtime_stack.enter_async_context(
-            DependencyGraph(get_execution_runtime).async_ctx(
-                initial_cache={StartBenchmarkRequest: start_benchmark_request, Benchmark: benchmark_row, Org: org}
-            )
+        runtime = await runtime_stack.enter_async_context(
+            get_execution_runtime(start_benchmark_request, benchmark_row, org)
         )
-        runtime = await runtime_stack.enter_async_context(get_execution_runtime(**await dependencies.resolve_kwargs()))
         benchmark_service = await runtime_stack.enter_async_context(start_benchmark_request.benchmark_service)
         sandbox_provider_config = await runtime.get_sandbox_provider_config()
 
@@ -924,7 +920,7 @@ async def _process_benchmark(
             final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
 
         async with hold_dispatch_authority(authority):
-            await runtime.upload_final_view(final_view)
+            await upload_final_view(final_view, runtime.objects)
 
         async with hold_dispatch_authority(authority):
             await runtime.run_completion_callback(final_view)

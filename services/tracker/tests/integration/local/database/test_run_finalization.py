@@ -25,7 +25,6 @@ from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tests.factories import make_benchmark, make_task
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
-from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -79,7 +78,7 @@ def _patch_process_dependencies(
     monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", _skip_log_group)
     monkeypatch.setattr("tracker.runtime.services.RuntimeServices._load_sandbox_provider_config", _provider_config)
-    monkeypatch.setattr(RuntimeServices, "upload_final_view", upload)
+    monkeypatch.setattr(run_orchestration_module, "upload_final_view", upload)
 
 
 class TestRunFinalization:
@@ -232,15 +231,13 @@ class TestRunFinalization:
             upload_calls.append(benchmark.id)
 
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
-        monkeypatch.setattr(RuntimeServices, "upload_final_view", record_upload)
+        monkeypatch.setattr(run_orchestration_module, "upload_final_view", record_upload)
 
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        async with CloudRuntimeFactory.from_aws_runtime(aws_runtime).create_runtime(
-            clients=aws_runtime.clients
-        ) as runtime:
+        async with CloudRuntimeFactory.create_runtime(aws_runtime) as runtime:
             with pytest.raises(ExecutionAuthorityRevoked):
                 async with run_orchestration_module.hold_dispatch_authority(authority):
-                    await runtime.upload_final_view(final_view)
+                    await run_orchestration_module.upload_final_view(final_view, runtime.objects)
 
         assert upload_calls == []
         postgres_session.refresh(retry_dispatch)
@@ -358,7 +355,7 @@ class TestRunFinalization:
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
         monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", skip_log_group)
         monkeypatch.setattr("tracker.runtime.services.RuntimeServices._load_sandbox_provider_config", provider_config)
-        monkeypatch.setattr(RuntimeServices, "upload_final_view", skip_cloud_operation)
+        monkeypatch.setattr(run_orchestration_module, "upload_final_view", skip_cloud_operation)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_retry_task)
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", stale_final_score)
 
@@ -470,7 +467,7 @@ class TestRunFinalization:
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
         monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", skip_log_group)
         monkeypatch.setattr("tracker.runtime.services.RuntimeServices._load_sandbox_provider_config", provider_config)
-        monkeypatch.setattr(RuntimeServices, "upload_final_view", skip_cloud_operation)
+        monkeypatch.setattr(run_orchestration_module, "upload_final_view", skip_cloud_operation)
         monkeypatch.setattr(TaskMonitor, "track_tasks", synchronized_track_tasks)
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", final_score)
 
@@ -599,7 +596,7 @@ class TestRunFinalization:
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
         monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", skip_log_group)
         monkeypatch.setattr("tracker.runtime.services.RuntimeServices._load_sandbox_provider_config", provider_config)
-        monkeypatch.setattr(RuntimeServices, "upload_final_view", assert_upload_lock_held)
+        monkeypatch.setattr(run_orchestration_module, "upload_final_view", assert_upload_lock_held)
         monkeypatch.setattr("tracker.aws.services.invoke_lambda", assert_lambda_lock_held)
         monkeypatch.setattr(SlackNotifier, "send_terminal_notification", assert_notification_lock_held)
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", final_score)

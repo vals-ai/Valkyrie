@@ -29,7 +29,6 @@ dependencies = [
   "python-dotenv>=1.2.2",
   "create-benchmark-service>=0.39.1",
   "aioboto3>=7.0.0",
-  "taskiq-dependencies>=1.5.7",
 ]
 
 [dependency-groups]

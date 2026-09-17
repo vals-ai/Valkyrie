@@ -2094,7 +2094,6 @@ dependencies = [
     { name = "sqlmodel" },
     { name = "starlette" },
     { name = "taskiq" },
-    { name = "taskiq-dependencies" },
     { name = "taskiq-redis" },
     { name = "tenacity" },
 ]
@@ -2134,7 +2133,6 @@ requires-dist = [
     { name = "sqlmodel", specifier = ">=0.0.38" },
     { name = "starlette", specifier = ">=1.0.1" },
     { name = "taskiq", specifier = ">=0.12.1" },
-    { name = "taskiq-dependencies", specifier = ">=1.5.7" },
     { name = "taskiq-redis", specifier = ">=1.2.2" },
     { name = "tenacity", specifier = ">=9.0.0" },
 ]

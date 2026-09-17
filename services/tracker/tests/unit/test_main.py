@@ -36,7 +36,7 @@ from main import app, tracker_service_error_handler
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.aws.runtime import AWSRuntime
-from tracker.runtime.storage import StoredObject, StoredObjectCopy
+from tracker.runtime.storage import ObjectStore, StoredObject, StoredObjectCopy
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -1684,9 +1684,8 @@ class TestTrackerAPI:
             return None
 
         async def _mock_upload_final_view(
-            _benchmark_row: Benchmark,
             _final_view: FinalViewResponse,
-            _aws_runtime: AWSRuntime,
+            _object_store: ObjectStore,
         ) -> str:
             uploaded_keys.append(canonical_key)
 

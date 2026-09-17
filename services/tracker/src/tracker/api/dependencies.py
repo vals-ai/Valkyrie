@@ -64,11 +64,10 @@ RunAWSDependency = Annotated[RunAWSContext, Depends(get_run_aws_context)]
 async def get_run_runtime(run_context: RunAWSDependency) -> AsyncGenerator[RuntimeServices]:
     """Keep services alive for one authorized run operation."""
     aws_runtime = run_context.aws_runtime
-    config = CloudRuntimeFactory.from_aws_runtime(aws_runtime)
     arguments = run_context.benchmark.arguments
 
-    async with config.create_runtime(
-        clients=aws_runtime.clients,
+    async with CloudRuntimeFactory.create_runtime(
+        aws_runtime,
         sandbox_provider=arguments.sandbox_provider,
         sandbox_provider_secret_name=arguments.sandbox_provider_secret_name,
     ) as runtime:
@@ -84,9 +83,8 @@ async def get_agent_library_runtime(
 ) -> AsyncGenerator[RuntimeServices]:
     """Open agent storage without constructing sandbox access."""
     aws_runtime = resolve_agent_library_aws_runtime(request, org.id)
-    config = CloudRuntimeFactory.from_aws_runtime(aws_runtime)
 
-    async with config.create_runtime(clients=aws_runtime.clients) as runtime:
+    async with CloudRuntimeFactory.create_runtime(aws_runtime) as runtime:
         yield runtime
 
 
