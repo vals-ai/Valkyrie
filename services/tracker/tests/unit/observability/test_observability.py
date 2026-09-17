@@ -261,6 +261,30 @@ class TestSandboxContext:
             }
         }
 
+    def test_set_sandbox_context_includes_provider_metadata(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Provider allocation fields must be carried into the Sentry context.
+
+        Test cases:
+        - A populated provider_metadata mapping is included in the sandbox context.
+        """
+        contexts: dict[str, dict[str, Any]] = {}
+
+        def fake_set_context(key: str, value: dict[str, Any]) -> None:
+            contexts[key] = value
+
+        monkeypatch.setattr(sentry_module.sentry_sdk, "set_tag", Mock())
+        monkeypatch.setattr(sentry_module.sentry_sdk, "set_context", fake_set_context)
+
+        sandbox = SimpleNamespace(
+            id="sandbox-123",
+            name="bench-task-1",
+            provider_metadata={"runner_id": "runner-1", "snapshot": "snap-name"},
+        )
+
+        sentry_module.set_sandbox_context(sandbox)
+
+        assert contexts["sandbox"]["provider_metadata"] == {"runner_id": "runner-1", "snapshot": "snap-name"}
+
     def test_set_sandbox_context_failures_are_logged_without_propagating(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Sentry context failures must not block sandbox execution.
 
