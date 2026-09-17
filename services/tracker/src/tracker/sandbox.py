@@ -225,8 +225,6 @@ async def _create_sandbox(
 ) -> Sandbox:
     """Create a sandbox through its provider."""
     _reject_plaintext_secret_collisions(env_vars, sandbox_secrets)
-    if isinstance(provider, DockerSandboxProvider) and isinstance(source, ComposeSource):
-        raise InvalidSandboxConfigurationError("Local Docker does not support Compose sources")
     provider_source = _provider_source(source)
     _set_sandbox_create_span_attributes(sandbox_name, provider_source, resources)
     sandbox = await provider.create_sandbox(
