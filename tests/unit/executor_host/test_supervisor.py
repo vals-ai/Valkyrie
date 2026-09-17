@@ -329,8 +329,6 @@ async def test_postgres_claim_is_status_fenced_and_returns_authority(
     assert authority is not None
     assert authority.dispatch_id == "dispatch-1"
     assert authority.benchmark_id == "benchmark-1"
-    assert authority.claim_token is not None
-    assert len(authority.claim_token) == 32
     statement, parameters = cursor.statements[0]
     assert "UPDATE executordispatch AS dispatch" in statement
     assert "FROM benchmark" in statement
@@ -339,8 +337,7 @@ async def test_postgres_claim_is_status_fenced_and_returns_authority(
     assert "dispatch.claim_deadline_at > CURRENT_TIMESTAMP" in statement
     assert "SET status = 'RUNNING'" in statement
     assert "started_at = CURRENT_TIMESTAMP" in statement
-    assert parameters[0] == authority.claim_token
-    assert parameters[2:4] == ("dispatch-1", "benchmark-1")
+    assert parameters[1:3] == ("dispatch-1", "benchmark-1")
 
 
 @pytest.mark.asyncio
@@ -1213,11 +1210,16 @@ def test_release_readers_bootstrap_without_tracker_dependencies(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("acknowledgment_fails", [False, True])
 async def test_local_credentials_reach_child_without_payload_persistence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    acknowledgment_fails: bool,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Send credentials through an inherited descriptor and acknowledge child receipt."""
     from services.executor_host.local.secrets import LocalExecutionSecretsClient
+    from tracker.local.secret_pipe import LocalSecretsError
 
     marker = tmp_path / "received"
     source_root = Path(__file__).resolve().parents[3] / "services/tracker/src"
@@ -1234,11 +1236,15 @@ async def test_local_credentials_reach_child_without_payload_persistence(
     ).encode()
     acknowledged: list[bool] = []
     monkeypatch.setenv("VALKYRIE_LOCAL_TRACKER_URL", "http://tracker:8000")
+    monkeypatch.setenv("VALKYRIE_LOCAL_DATA_ROOT", str(tmp_path))
+
     def receive(_self: LocalExecutionSecretsClient) -> dict[str, str]:
         return {"KEY": "transient-value"}
 
     def acknowledge(_self: LocalExecutionSecretsClient) -> None:
         acknowledged.append(True)
+        if acknowledgment_fails:
+            raise LocalSecretsError("simulated acknowledgment failure")
 
     monkeypatch.setattr(LocalExecutionSecretsClient, "receive", receive)
     monkeypatch.setattr(LocalExecutionSecretsClient, "acknowledge", acknowledge)
@@ -1252,9 +1258,15 @@ async def test_local_credentials_reach_child_without_payload_persistence(
         return True
 
     await supervisor.run(
-        artifact, dispatch, process_payload=payload,
-        authority=DispatchAuthority("dispatch-1", "benchmark-1", claim_token="claim"), is_current=current,
+        artifact,
+        dispatch,
+        process_payload=payload,
+        authority=DispatchAuthority("dispatch-1", "benchmark-1"),
+        is_current=current,
     )
     assert marker.read_text() == "received"
     assert acknowledged == [True]
+    assert ("acknowledgment failed" in caplog.text) is acknowledgment_fails
+    assert "transient-value" not in caplog.text
+    assert "transient-value" not in (tmp_path / ".execution-handoff-token").read_text()
     assert not list(tmp_path.glob(".dispatch-*"))

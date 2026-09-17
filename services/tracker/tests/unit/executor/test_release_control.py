@@ -729,7 +729,7 @@ def _local_manifest(directory: Path, content: bytes) -> Path:
     return manifest
 
 
-def test_local_release_restart_preserves_active_and_explicit_upgrade_retains_artifact(
+def test_local_release_restart_preserves_active_and_replacement_reuses_prior_artifact(
     database_session: Session,
     tmp_path: Path,
 ) -> None:
@@ -755,6 +755,14 @@ def test_local_release_restart_preserves_active_and_explicit_upgrade_retains_art
         assert stream.read() == b"first executor"
     with reader.open(second.artifact_uri) as stream:
         assert stream.read() == b"second executor"
+
+    _local_manifest(manifest.parent, b"first executor")
+    restored = initialize_release(database_session, manifest, root, replace_active=True)
+    database_session.commit()
+    assert restored.id != first.id
+    assert restored.artifact_uri == first.artifact_uri
+    assert restored.status == ExecutorReleaseStatus.ACTIVE
+    assert second.status == ExecutorReleaseStatus.DRAINING
     assert not list(root.rglob("*.tmp"))
 
 

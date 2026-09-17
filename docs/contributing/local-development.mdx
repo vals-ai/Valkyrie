@@ -53,11 +53,11 @@ uv run --project services/tracker python -m tracker.local.releases \
 
 Set `DATABASE_URL` to the local PostgreSQL database. Set `EXECUTOR_RELEASE_ROOT` on ExecutorHost to the same absolute release directory. Containerized services must mount that directory at the same path.
 
-The initializer verifies the artifact digest and preserves the active release on restart. Add `--replace-active` to activate a new build for future runs. Existing artifacts remain on disk for saved dispatches. This command configures executor releases only; the Compose stack above does not yet start ExecutorHost or a local sandbox provider.
+The initializer verifies the artifact digest and preserves the active release on restart. Add `--replace-active` to activate a rebuilt executor for future runs. Existing artifacts remain on disk for saved dispatches. This command configures executor releases only; the Compose stack above does not yet start ExecutorHost or a local sandbox provider.
 
 ## Test local runtime adapters
 
-The local adapters compose filesystem artifacts, persistent logs, transient secrets,
+The local adapters compose filesystem artifacts, per-run JSONL logs, transient secrets,
 and the CBS Docker provider. They use separate service-visible and host-visible data
 roots. Artifacts are scoped to the organization. Closing the runtime discards its
 execution secrets while preserving artifacts and logs.
@@ -85,13 +85,15 @@ These adapters do not yet enable local run submission through the API or CLI.
 Local secret handoff uses one Tracker process. `VALKYRIE_RUNTIME=local` selects one
 worker in the Tracker entrypoint and enables the internal handoff endpoints. Set
 `VALKYRIE_LOCAL_TRACKER_URL` on ExecutorHost to the Tracker URL reachable from its
-container. Apply database migrations before starting the updated host.
+container. Tracker and ExecutorHost must share `VALKYRIE_LOCAL_DATA_ROOT` and run
+with the same user ID. The private `.execution-handoff-token` file in that directory
+authenticates their handoff requests; it contains no execution credential values.
 
-Tracker holds pending credential mappings in memory. A successful dispatch claim
-creates a random token that authorizes retrieval. ExecutorHost sends credentials to
-its child through an inherited socket, then acknowledges receipt to Tracker. Values
+Tracker holds pending credential mappings in memory. After claiming a dispatch,
+ExecutorHost retrieves its credentials and sends them to its child through an
+inherited socket, then acknowledges receipt to Tracker. Values
 never enter the queued request, payload file, or child environment. Pending mappings
-expire after 15 minutes and are discarded when their dispatch stops or expires.
+are discarded when their dispatch stops or expires.
 Restarting Tracker loses pending mappings and requires fresh input on resume. API
 admission and CLI collection of that input are not enabled by this layer alone.
 

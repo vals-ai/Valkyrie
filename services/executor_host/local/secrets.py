@@ -7,30 +7,28 @@ import urllib.request
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
-from tracker.local.secret_pipe import MAX_SECRET_PAYLOAD_BYTES, LocalSecretsError, validate_values
+from tracker.local.secret_pipe import MAX_SECRET_PAYLOAD_BYTES, LocalSecretsError, local_handoff_token, validate_values
 
 
 @dataclass(frozen=True)
 class LocalExecutionSecretsClient:
     base_url: str
     dispatch_id: str
-    claim_token: str = field(repr=False)
+    token: str = field(repr=False)
 
     @classmethod
-    def from_env(cls, dispatch_id: str, claim_token: str | None) -> "LocalExecutionSecretsClient":
+    def from_env(cls, dispatch_id: str) -> "LocalExecutionSecretsClient":
         base_url = os.environ.get("VALKYRIE_LOCAL_TRACKER_URL", "")
         parsed = urlsplit(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
             raise LocalSecretsError("Local execution requires VALKYRIE_LOCAL_TRACKER_URL")
-        if not claim_token:
-            raise LocalSecretsError("Local execution requires a dispatch claim token")
-        return cls(base_url.rstrip("/"), dispatch_id, claim_token)
+        return cls(base_url.rstrip("/"), dispatch_id, local_handoff_token())
 
     def _request(self, operation: str) -> bytes:
         request = urllib.request.Request(
             f"{self.base_url}/internal/local-execution-secrets/{self.dispatch_id}/{operation}",
             data=b"",
-            headers={"X-Executor-Claim": self.claim_token},
+            headers={"X-Local-Handoff-Token": self.token},
             method="POST",
         )
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))

@@ -32,7 +32,6 @@ from benchmark_service import (
 )
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
-from benchmark_service.sandbox.local.docker import DockerSandboxProvider
 from opentelemetry import trace
 from tenacity import (
     retry,
@@ -236,7 +235,7 @@ async def _create_sandbox(
             env_vars=env_vars or {},
             sandbox_secrets=sandbox_secrets or {},
             volumes=volumes or [],
-            auto_stop_interval=0 if isinstance(provider, DockerSandboxProvider) else SANDBOX_AUTO_STOP_INTERVAL,
+            auto_stop_interval=SANDBOX_AUTO_STOP_INTERVAL,
             create_timeout=SANDBOX_CREATE_TIMEOUT,
         )
     )
@@ -365,7 +364,7 @@ async def upload_agent_artifacts(
     if presigned_url is None:
         from tracker.local.artifacts import upload_local_agent_artifacts
 
-        await upload_local_agent_artifacts(sandbox, contract.name, await object_store.get_bytes(contract_s3_key))
+        await upload_local_agent_artifacts(sandbox, await object_store.get_bytes(contract_s3_key))
         return
 
     zip_path = shlex.quote(f"/tmp/{contract.name}.zip")

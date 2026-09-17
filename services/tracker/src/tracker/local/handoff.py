@@ -2,17 +2,10 @@
 
 import threading
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from uuid import UUID
 
 from tracker.exceptions import SecretsError
 from tracker.local.secrets import InMemorySecretStore
-
-
-@dataclass
-class _PendingSecrets:
-    values: dict[str, str] = field(repr=False)
-    claim_token: str | None = field(default=None, repr=False)
 
 
 class PendingExecutionSecrets:
@@ -20,7 +13,7 @@ class PendingExecutionSecrets:
 
     def __init__(self, *, maximum_pending: int = 100) -> None:
         self._maximum_pending = maximum_pending
-        self._pending: dict[UUID, _PendingSecrets] = {}
+        self._pending: dict[UUID, dict[str, str]] = {}
         self._lock = threading.Lock()
 
     def put(self, dispatch_id: UUID, references: Mapping[str, str], values: Mapping[str, str]) -> None:
@@ -34,28 +27,15 @@ class PendingExecutionSecrets:
                 raise SecretsError("Local execution secrets are already registered for this dispatch")
             if len(self._pending) >= self._maximum_pending:
                 raise SecretsError("Too many pending local executions")
-            self._pending[dispatch_id] = _PendingSecrets(dict(values))
+            self._pending[dispatch_id] = dict(values)
 
-    def receive(self, dispatch_id: UUID, claim_token: str) -> dict[str, str]:
+    def receive(self, dispatch_id: UUID) -> dict[str, str]:
         """Return credentials only after the caller verifies the durable claim."""
         with self._lock:
             pending = self._pending.get(dispatch_id)
             if pending is None:
                 raise SecretsError("Local execution secrets are unavailable; resume with fresh execution secrets")
-            if pending.claim_token is not None and pending.claim_token != claim_token:
-                raise SecretsError("Local execution secrets belong to another dispatch claimant")
-            pending.claim_token = claim_token
-            return dict(pending.values)
-
-    def acknowledge(self, dispatch_id: UUID, claim_token: str) -> None:
-        """Forget values after the same claimant reports child receipt."""
-        with self._lock:
-            pending = self._pending.get(dispatch_id)
-            if pending is None:
-                return
-            if pending.claim_token != claim_token:
-                raise SecretsError("Local execution secrets have not been received by this claimant")
-            self._discard(dispatch_id)
+            return dict(pending)
 
     def discard(self, dispatch_id: UUID) -> None:
         with self._lock:
@@ -73,7 +53,7 @@ class PendingExecutionSecrets:
     def _discard(self, dispatch_id: UUID) -> None:
         pending = self._pending.pop(dispatch_id, None)
         if pending is not None:
-            pending.values.clear()
+            pending.clear()
 
 
 pending_execution_secrets = PendingExecutionSecrets()

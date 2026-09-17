@@ -1,5 +1,8 @@
 """Transient credentials use the shared reference resolver without persistence."""
 
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
 import pytest
 
 from tracker.exceptions import SecretsError
@@ -24,3 +27,18 @@ def test_rejects_missing_or_undeclared_keys_without_exposing_values(values: dict
     with pytest.raises(SecretsError) as error:
         InMemorySecretStore({"API_KEY": "agent"}, values)
     assert "sensitive" not in str(error.value)
+
+
+def test_installation_handoff_token_is_shared_and_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Concurrent hosts share one token without publishing a partial or world-readable file."""
+    from tracker.local.secret_pipe import local_handoff_token
+
+    monkeypatch.setenv("VALKYRIE_LOCAL_DATA_ROOT", str(tmp_path))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        pending = [pool.submit(local_handoff_token) for _ in range(8)]
+        tokens = [future.result() for future in pending]
+    assert len(set(tokens)) == 1
+    token_path = tmp_path / ".execution-handoff-token"
+    assert token_path.read_text() == tokens[0]
+    assert token_path.stat().st_mode & 0o777 == 0o600
+    assert list(tmp_path.iterdir()) == [token_path]
