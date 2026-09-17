@@ -300,6 +300,7 @@ class ExecutorDispatch(SQLModel, table=True):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     assigned_task_ids: list[str] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    claim_token: str | None = Field(default=None, repr=False)
     claim_deadline_at: datetime | None = None
     heartbeat_at: datetime | None = None
     lease_expires_at: datetime | None = None

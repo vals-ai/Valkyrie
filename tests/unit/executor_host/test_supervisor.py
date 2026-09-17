@@ -326,10 +326,11 @@ async def test_postgres_claim_is_status_fenced_and_returns_authority(
         _dispatch(digest="0" * 64),
     )
 
-    assert authority == DispatchAuthority(
-        dispatch_id="dispatch-1",
-        benchmark_id="benchmark-1",
-    )
+    assert authority is not None
+    assert authority.dispatch_id == "dispatch-1"
+    assert authority.benchmark_id == "benchmark-1"
+    assert authority.claim_token is not None
+    assert len(authority.claim_token) == 32
     statement, parameters = cursor.statements[0]
     assert "UPDATE executordispatch AS dispatch" in statement
     assert "FROM benchmark" in statement
@@ -338,7 +339,8 @@ async def test_postgres_claim_is_status_fenced_and_returns_authority(
     assert "dispatch.claim_deadline_at > CURRENT_TIMESTAMP" in statement
     assert "SET status = 'RUNNING'" in statement
     assert "started_at = CURRENT_TIMESTAMP" in statement
-    assert parameters[1:3] == ("dispatch-1", "benchmark-1")
+    assert parameters[0] == authority.claim_token
+    assert parameters[2:4] == ("dispatch-1", "benchmark-1")
 
 
 @pytest.mark.asyncio
@@ -1208,3 +1210,51 @@ def test_release_readers_bootstrap_without_tracker_dependencies(tmp_path: Path) 
         capture_output=True,
         text=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_local_credentials_reach_child_without_payload_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Send credentials through an inherited descriptor and acknowledge child receipt."""
+    from services.executor_host.local.secrets import LocalExecutionSecretsClient
+
+    marker = tmp_path / "received"
+    source_root = Path(__file__).resolve().parents[3] / "services/tracker/src"
+    script = (
+        "import json, os, sys\nfrom pathlib import Path\n"
+        f"sys.path.insert(0, {str(source_root)!r})\n"
+        "from tracker.local.secret_pipe import receive_execution_secrets\n"
+        "payload_path = Path(sys.argv[1])\n"
+        "assert 'transient-value' not in payload_path.read_text()\n"
+        "assert 'transient-value' not in repr(dict(os.environ))\n"
+        "values = receive_execution_secrets()\n"
+        "assert values == {'KEY': 'transient-value'}\n"
+        f"Path({str(marker)!r}).write_text('received')\n"
+    ).encode()
+    acknowledged: list[bool] = []
+    monkeypatch.setenv("VALKYRIE_LOCAL_TRACKER_URL", "http://tracker:8000")
+    def receive(_self: LocalExecutionSecretsClient) -> dict[str, str]:
+        return {"KEY": "transient-value"}
+
+    def acknowledge(_self: LocalExecutionSecretsClient) -> None:
+        acknowledged.append(True)
+
+    monkeypatch.setattr(LocalExecutionSecretsClient, "receive", receive)
+    monkeypatch.setattr(LocalExecutionSecretsClient, "acknowledge", acknowledge)
+    supervisor = _supervisor(tmp_path, content=script)
+    dispatch = _dispatch(digest=hashlib.sha256(script).hexdigest())
+    artifact = await supervisor.prepare_artifact(dispatch)
+    payload = _process_payload()
+    payload.arguments["start_benchmark_request_json"] = {"environment": "local"}
+
+    async def current() -> bool:
+        return True
+
+    await supervisor.run(
+        artifact, dispatch, process_payload=payload,
+        authority=DispatchAuthority("dispatch-1", "benchmark-1", claim_token="claim"), is_current=current,
+    )
+    assert marker.read_text() == "received"
+    assert acknowledged == [True]
+    assert not list(tmp_path.glob(".dispatch-*"))

@@ -429,3 +429,21 @@ def test_current_execution_ownership_migration_rejects_downgrade(
     assert revision == _CURRENT_OWNERSHIP_REVISION
     assert stored_owner == "migration-test-release"
     engine.dispose()
+
+
+def test_claim_token_migration_preserves_dispatch_lease_schema(migration_database_url: str) -> None:
+    """Add optional claimant identity without replacing existing dispatch lease state."""
+    upgrade = _run_alembic(migration_database_url, "upgrade", "7b8c9d0e1f2a")
+    assert upgrade.returncode == 0, upgrade.stderr
+    engine = create_engine(migration_database_url)
+    try:
+        columns = {column["name"]: column for column in inspect(engine).get_columns("executordispatch")}
+        assert columns["claim_token"]["nullable"]
+        assert "lease_expires_at" in columns
+        downgrade = _run_alembic(migration_database_url, "downgrade", _DISPATCH_LEASE_REVISION)
+        assert downgrade.returncode == 0, downgrade.stderr
+        columns = {column["name"]: column for column in inspect(engine).get_columns("executordispatch")}
+        assert "claim_token" not in columns
+        assert "lease_expires_at" in columns
+    finally:
+        engine.dispose()

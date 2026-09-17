@@ -1,4 +1,5 @@
 import asyncio
+import os
 import io
 import logging
 import tarfile
@@ -30,6 +31,8 @@ from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
+from tracker.local.api import router as local_secrets_router
+from tracker.local.handoff_lifecycle import local_secret_handoff_lifespan
 from tracker.api.dependencies import RunAWSDependency
 from tracker.api.filter_options import router as filter_options_router
 from tracker.api.logs import router as logs_router
@@ -186,7 +189,11 @@ async def tracker_lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     retirement.start()
     dispatch_recovery.start()
     try:
-        yield
+        if os.environ.get("VALKYRIE_RUNTIME") == "local":
+            async with local_secret_handoff_lifespan():
+                yield
+        else:
+            yield
     finally:
         dispatch_recovery.stop()
         retirement.stop()
@@ -198,6 +205,7 @@ logfire.instrument_fastapi(app, excluded_urls="/health$")
 
 app.add_middleware(RequestContextMiddleware)
 
+app.include_router(local_secrets_router)
 app.include_router(agents_router)
 app.include_router(benchmark_services_router)
 app.include_router(benchmarks_status_router)

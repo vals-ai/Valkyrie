@@ -8,14 +8,16 @@ import json
 import logging
 import os
 import signal
+import socket
 import shutil
 import sys
 import tempfile
 import urllib.request
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Protocol, Unpack, cast
+from uuid import uuid4
 
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
 from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
@@ -35,6 +37,8 @@ from executor_protocol import (
     normalize_executor_telemetry_context,
     validate_executor_digest,
 )
+from services.executor_host.local.secrets import LocalExecutionSecretsClient
+from tracker.local.secret_pipe import SECRET_SOCKET_ENV, send_execution_secrets
 from services.executor_host.observability import (
     capture_dispatch_error,
     configure_observability,
@@ -172,6 +176,7 @@ class ArtifactDispatch:
 class DispatchAuthority:
     dispatch_id: str
     benchmark_id: str
+    claim_token: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -179,6 +184,14 @@ class ExecutorProcessPayload:
     benchmark_id: str
     verified_task_ids: list[str]
     arguments: dict[str, object]
+
+    @property
+    def is_local(self) -> bool:
+        request = self.arguments.get("start_benchmark_request_json")
+        context = self.arguments.get("execution_context_json")
+        if isinstance(context, Mapping):
+            request = context.get("start_benchmark_request")
+        return isinstance(request, Mapping) and request.get("environment") == "local"
 
     @classmethod
     def from_payload(
@@ -290,17 +303,20 @@ class PostgresExecutorDispatchStore:
         benchmark_id: str,
         dispatch: ArtifactDispatch,
     ) -> DispatchAuthority | None:
+        claim_token = uuid4().hex
         claimed = await asyncio.to_thread(
             self._claim,
             dispatch_id,
             benchmark_id,
             dispatch,
+            claim_token,
         )
         if not claimed:
             return None
         return DispatchAuthority(
             dispatch_id=dispatch_id,
             benchmark_id=benchmark_id,
+            claim_token=claim_token,
         )
 
     def _claim(
@@ -308,12 +324,14 @@ class PostgresExecutorDispatchStore:
         dispatch_id: str,
         benchmark_id: str,
         dispatch: ArtifactDispatch,
+        claim_token: str,
     ) -> bool:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """
                 UPDATE executordispatch AS dispatch
                 SET status = 'RUNNING',
+                    claim_token = %s,
                     started_at = CURRENT_TIMESTAMP,
                     heartbeat_at = CURRENT_TIMESTAMP,
                     lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second')
@@ -331,6 +349,7 @@ class PostgresExecutorDispatchStore:
                 RETURNING dispatch.id
                 """,
                 (
+                    claim_token,
                     DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
                     dispatch_id,
                     benchmark_id,
@@ -619,20 +638,55 @@ class ExecutorSupervisor:
                 dispatch.artifact_digest,
                 dispatch.protocol_version,
             )
-            process = await asyncio.create_subprocess_exec(
-                self.python_executable,
-                str(artifact_path),
-                str(payload_path),
-                start_new_session=True,
-                env={**os.environ, "SENTRY_RELEASE": dispatch.release_id},
-            )
+            client = None
+            values: dict[str, str] = {}
+            parent_socket = None
+            child_socket = None
+            process = None
             try:
+                environment = {**os.environ, "SENTRY_RELEASE": dispatch.release_id}
+                environment.pop(SECRET_SOCKET_ENV, None)
+                pass_fds: tuple[int, ...] = ()
+                if process_payload.is_local:
+                    client = LocalExecutionSecretsClient.from_env(authority.dispatch_id, authority.claim_token)
+                    values = await asyncio.to_thread(client.receive)
+                    parent_socket, child_socket = socket.socketpair()
+                    pass_fds = (child_socket.fileno(),)
+                    environment[SECRET_SOCKET_ENV] = str(child_socket.fileno())
+                spawn_task = asyncio.create_task(
+                    asyncio.create_subprocess_exec(
+                        self.python_executable,
+                        str(artifact_path),
+                        str(payload_path),
+                        start_new_session=True,
+                        env=environment,
+                        pass_fds=pass_fds,
+                    )
+                )
+                try:
+                    process = await asyncio.shield(spawn_task)
+                except asyncio.CancelledError:
+                    process = await spawn_task
+                    raise
+                if child_socket is not None:
+                    child_socket.close()
+                if parent_socket is not None and client is not None:
+                    await asyncio.to_thread(send_execution_secrets, parent_socket, values)
+                    values.clear()
+                    await asyncio.to_thread(client.acknowledge)
                 return_code = await self._wait_with_authority(process, is_current)
+                if return_code != 0:
+                    raise RuntimeError(f"Executor for benchmark {authority.benchmark_id} exited with status {return_code}")
             except BaseException:
-                await _terminate_process_group(process)
+                if process is not None:
+                    await _terminate_process_group(process)
                 raise
-            if return_code != 0:
-                raise RuntimeError(f"Executor for benchmark {authority.benchmark_id} exited with status {return_code}")
+            finally:
+                values.clear()
+                if parent_socket is not None:
+                    parent_socket.close()
+                if child_socket is not None:
+                    child_socket.close()
 
     async def _wait_with_authority(
         self,

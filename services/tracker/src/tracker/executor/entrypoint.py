@@ -22,6 +22,7 @@ from executor_protocol import (
     normalize_executor_telemetry_context,
 )
 from tracker.config import ENVIRONMENT
+from tracker.local.secret_pipe import receive_execution_secrets
 from tracker.logging import benchmark_id_var, request_id_var, task_id_var
 from tracker.logging.context import attempt_started_at_var, executor_dispatch_id_var
 from tracker.observability import configure_observability
@@ -53,7 +54,7 @@ def _executor_context(payload: Mapping[str, object]) -> Generator[None, None, No
             token.var.reset(token)
 
 
-async def _run_executor(payload: dict[str, Any]) -> None:
+async def _run_executor(payload: dict[str, Any], execution_secrets: dict[str, str] | None = None) -> None:
     with _executor_context(payload):
         task = asyncio.create_task(
             process_benchmark(
@@ -62,6 +63,7 @@ async def _run_executor(payload: dict[str, Any]) -> None:
                 verified_task_ids=payload.get("verified_task_ids"),
                 execution_context_json=payload.get("execution_context_json"),
                 executor_dispatch_id=payload["executor_dispatch_id"],
+                execution_secrets=execution_secrets,
             )
         )
         loop = asyncio.get_running_loop()
@@ -103,10 +105,13 @@ def main() -> None:
     if not isinstance(decoded, dict):
         raise SystemExit("Invalid executor payload: expected object")
     payload = cast(dict[str, Any], decoded)
+    execution_secrets = receive_execution_secrets()
     configure_observability("valkyrie-executor", environment=ENVIRONMENT)
     try:
-        asyncio.run(_run_executor(payload))
+        asyncio.run(_run_executor(payload, execution_secrets))
     finally:
+        if execution_secrets is not None:
+            execution_secrets.clear()
         _flush_observability()
 
 
