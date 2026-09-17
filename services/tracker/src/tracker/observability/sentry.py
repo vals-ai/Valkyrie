@@ -15,19 +15,21 @@ from sentry_sdk.types import Event, Hint, Log
 
 from tracker.exceptions import SSLConnectionError
 from tracker.logging import task_id_var
-from tracker.logging.context import get_context_tags
+from tracker.logging.context import attempt_started_at_var, get_context_tags
 
 logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def task_scope(task_id: str) -> Iterator[None]:
-    """Isolate Sentry events and logging context for one tracked task."""
+def task_scope(task_id: str, *, attempt_started_at: str) -> Iterator[None]:
+    """Isolate Sentry events and logging context for one tracked task execution epoch."""
     with sentry_sdk.isolation_scope():
         token = task_id_var.set(task_id)
+        attempt_token = attempt_started_at_var.set(attempt_started_at)
         try:
             yield
         finally:
+            attempt_started_at_var.reset(attempt_token)
             task_id_var.reset(token)
 
 
@@ -46,6 +48,15 @@ def _before_send(
     for key, value in get_context_tags().items():
         if value:
             tags[key] = value
+    return event
+
+
+def _before_send_transaction(event: Event, _hint: Hint) -> Event | None:
+    """Expose captured root identities as tags without using finishing-scope values."""
+    attributes = event.get("contexts", {}).get("otel", {}).get("attributes", {})
+    for key in get_context_tags():
+        if key in attributes:
+            event.setdefault("tags", {})[key] = attributes[key]
     return event
 
 
@@ -89,6 +100,7 @@ def init_sentry(service_name: str, environment: str) -> None:
             enable_logs=True,
             send_default_pii=False,
             before_send=_before_send,
+            before_send_transaction=_before_send_transaction,
             before_send_log=_before_send_log,
             integrations=[
                 # INFO records become both searchable logs and breadcrumbs. Explicit exception

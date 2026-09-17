@@ -4,6 +4,7 @@ Run: uv run pytest tests/unit/cli/agent/test_lifecycle.py
 """
 
 from collections.abc import Callable
+import json
 from datetime import datetime, timezone
 from importlib import import_module
 from unittest.mock import AsyncMock
@@ -19,6 +20,29 @@ lifecycle = import_module("valkyrie.cli.agent.lifecycle")
 
 class TestAgentLifecycleCommands:
     """User-visible install, download, list, and removal behavior."""
+
+    @pytest.mark.parametrize("count", [0, 12])
+    @pytest.mark.parametrize("arguments", [["--all"], ["--format", "json"], ["--all", "--format", "JSON"]])
+    def test_list_without_paging(
+        self, count: int, arguments: list[str], monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner
+    ) -> None:
+        modified = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
+        agents = [(f"agent-{index}", modified if index else None) for index in range(count)]
+        monkeypatch.setattr(lifecycle, "list_agents", AsyncMock(return_value=agents))
+
+        result = cli_runner.invoke(agent, ["list", *arguments])
+
+        assert result.exit_code == 0, result.output
+        assert "\x1b" not in result.output
+        if "--format" in arguments:
+            assert json.loads(result.output) == {
+                "agents": [{"name": name, "last_modified": date.isoformat() if date else None} for name, date in agents]
+            }
+        elif count:
+            assert all(name in result.output for name, _ in agents)
+            assert "[q] quit" not in result.output
+        else:
+            assert "No agents found" in result.output
 
     def test_commands_complete_successful_storage_flows(
         self,

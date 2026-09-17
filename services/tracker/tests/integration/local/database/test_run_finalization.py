@@ -325,14 +325,19 @@ class TestRunFinalization:
                 pre_action_status = retry_benchmark.status
                 benchmark_service = retry_benchmark.benchmark_service()
                 try:
-                    verified_task_ids = await reset_to_in_progress_status(
+                    verified = await benchmark_service.verify_task_ids(
+                        task_ids=[task.task_id],
+                        slice_str=None,
+                        dataset=retry_benchmark.arguments.dataset,
+                    )
+                    verified_task_ids = reset_to_in_progress_status(
                         retry_benchmark,
                         retry_session,
-                        benchmark_service,
                         retry=True,
                         retry_mode=RetryMode.FROM_SCRATCH,
                         rerun_task_ids=[task.task_id],
                         org=org,
+                        verified_task_ids=verified.task_ids,
                     )
                 finally:
                     await benchmark_service.close()

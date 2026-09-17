@@ -226,7 +226,7 @@ async def _create_sandbox(
     _reject_plaintext_secret_collisions(env_vars, sandbox_secrets)
     provider_source = _provider_source(source)
     _set_sandbox_create_span_attributes(sandbox_name, provider_source, resources)
-    return await provider.create_sandbox(
+    sandbox = await provider.create_sandbox(
         SandboxCreateRequest(
             source=provider_source,
             resources=resources,
@@ -239,6 +239,8 @@ async def _create_sandbox(
             create_timeout=SANDBOX_CREATE_TIMEOUT,
         )
     )
+    _set_sandbox_span_attributes(sandbox)
+    return sandbox
 
 
 @asynccontextmanager

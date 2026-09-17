@@ -32,6 +32,7 @@ GUIDE_LINKS = {
     "agent": "/agents/manage-agents",
     "benchmark": "/benchmarks/custom-services",
     "config": "/get-started/configuration",
+    "queue": "/runs/monitor#inspect-the-priority-queue",
 }
 
 CLI_CARDS = {
@@ -39,31 +40,41 @@ CLI_CARDS = {
     "agent": ("package", "installing, uploading, listing, downloading, and removing agent bundles"),
     "benchmark": ("flask-conical", "exporting the task IDs in a benchmark dataset"),
     "config": ("sliders-horizontal", "credentials, sandbox providers, and benchmark services"),
+    "queue": ("list-ordered", "inspecting sandbox queue priorities, positions, and active tasks"),
 }
 
 RESOURCE_CARDS = {
+    "ArtifactsResource": ("Artifacts", "folder", "listing and downloading run artifact paths"),
     "RunsResource": ("Runs", "play", "starting, inspecting, streaming, controlling, and retrying runs"),
     "BenchmarksResource": ("Benchmarks", "flask-conical", "retrieving benchmark status, tasks, and artifacts"),
-    "AgentsResource": ("Agents", "package", "listing agents and retrieving bundle download URLs"),
+    "AgentsResource": ("Agents", "package", "installing, uploading, listing, downloading, and removing agent bundles"),
     "BenchmarkServicesResource": (
         "Benchmark services",
         "server",
         "discovering service catalogs, deployments, and task IDs",
     ),
     "LogsResource": ("Logs", "scroll-text", "fetching, filtering, and following benchmark logs"),
+    "SchedulerResource": ("Scheduler", "list-ordered", "inspecting queue positions and active tasks"),
 }
 
 TYPE_CARDS = {
+    "Artifacts": ("folder", "run artifact metadata and temporary download links"),
     "Agents": ("package", "uploaded agent bundles and download URLs"),
     "Runs": ("play", "run requests, responses, and lifecycle enums"),
     "Benchmarks": ("flask-conical", "benchmark, task, artifact, and status responses"),
     "Services": ("server", "benchmark service catalog and health responses"),
     "Config": ("sliders-horizontal", "validated SDK configuration and field aliases"),
     "Logs": ("scroll-text", "benchmark log events and paginated responses"),
+    "Scheduler": ("list-ordered", "sandbox queue totals, positions, and active task responses"),
 }
 
 READ_ONLY_COMMANDS = frozenset(
     {
+        ("run", "artifacts"),
+        ("run", "filter-options"),
+        ("run", "task-artifacts"),
+        ("run", "task"),
+        ("run", "tasks"),
         ("agent", "list"),
         ("benchmark", "tasks"),
         ("config", "auth", "list"),
@@ -77,6 +88,7 @@ READ_ONLY_COMMANDS = frozenset(
         ("run", "outputs"),
         ("run", "results"),
         ("run", "status"),
+        ("queue", "status"),
     }
 )
 

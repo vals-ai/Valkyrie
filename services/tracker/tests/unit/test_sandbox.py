@@ -1036,6 +1036,98 @@ class TestRunAgent:
 
         assert events == ["agent", "finalizer", "upload"]
 
+    @pytest.mark.parametrize(
+        ("failure", "expected_error"),
+        [
+            ("finalizer", "finalizer failed"),
+            ("archive", "archive failed"),
+        ],
+    )
+    async def test_run_agent_keeps_native_output_and_attempts_atif_sidecar_after_collection_failures(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: str,
+        expected_error: str,
+    ) -> None:
+        native_bytes = b"native trajectory bytes"
+        sandbox_files = {
+            "/logs/native-trajectory": native_bytes,
+            "/logs/trajectory.atif.json": b"previous ATIF bytes",
+        }
+        artifact = OutputArtifact(
+            path="atif/trajectory.json",
+            source="/logs/trajectory.atif.json",
+            required=False,
+        )
+        contract = AgentContractRequest(
+            name="test-agent",
+            run_cmd="python -m agent",
+            finalize_cmd="python -m converter",
+            final_output="/logs/native-trajectory",
+            output_artifacts=[artifact],
+        )
+        events: list[str] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command == "mkdir -p /workspace" or command == "test -e /logs/native-trajectory":
+                return ExecResult(exit_code=0)
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fake_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            if not events:
+                events.append("agent")
+                return None, 1.0
+
+            events.append("finalizer")
+            sandbox_files["/logs/trajectory.atif.json"] = b"converted ATIF bytes"
+            if failure == "finalizer":
+                raise AgentRunFailedError("finalizer failed")
+            return None, 0.0
+
+        async def fake_archive_and_upload_output(
+            _sandbox: Any,
+            output_path: str,
+            *_args: Any,
+            **_kwargs: Any,
+        ) -> None:
+            events.append("archive")
+            assert output_path == "/logs/native-trajectory"
+            assert sandbox_files[output_path] == native_bytes
+            if failure == "archive":
+                raise OutputArtifactError("archive failed")
+
+        async def fake_upload_output_artifacts(
+            _sandbox: Any,
+            artifacts: list[OutputArtifact | str],
+            *_args: Any,
+            **_kwargs: Any,
+        ) -> None:
+            events.append("atif")
+            assert artifacts == [artifact]
+            assert artifact.source == "/logs/trajectory.atif.json"
+            assert sandbox_files["/logs/native-trajectory"] == native_bytes
+            assert sandbox_files[artifact.source] == b"converted ATIF bytes"
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", fake_archive_and_upload_output)
+        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", fake_upload_output_artifacts)
+
+        with pytest.raises((AgentRunFailedError, OutputArtifactError), match=expected_error):
+            await run_agent(
+                Mock(id="sandbox-123", name="task-alias"),
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                agent_output_s3_key="benchmarks/benchmark-123/task_0/agent_output.tar.gz",
+                benchmark_id="benchmark-123",
+            )
+
+        assert events == ["agent", "finalizer", "archive", "atif"]
+
     async def test_run_agent_collects_artifacts_before_failing_on_finalizer_timeout(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1308,7 +1400,9 @@ class TestSandboxLifecycle:
             "valkyrie.sandbox_state": "started",
         }
 
-    async def test_create_sandbox_passes_request_to_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_create_sandbox_passes_request_and_records_returned_identity(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         span_calls: list[tuple[str, str, int]] = []
 
         def fake_create_span_attrs(sandbox_name: str, source: Any, resources: Any) -> None:
@@ -1316,7 +1410,16 @@ class TestSandboxLifecycle:
 
         monkeypatch.setattr(sandbox_module, "_set_sandbox_create_span_attributes", fake_create_span_attrs)
 
+        span_attributes: dict[str, str] = {}
+        span = Mock(spec=sandbox_module.trace.Span)
+        span.get_span_context.return_value = sandbox_module.trace.INVALID_SPAN_CONTEXT
+        span.set_attribute.side_effect = lambda key, value: span_attributes.update({key: value})
+        monkeypatch.setattr(sandbox_module.trace, "get_current_span", lambda context=None: span)
+
         mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sandbox-created-123"
+        mock_sandbox.name = "provider-returned-name"
+        mock_sandbox.state = "started"
         provider = AsyncMock()
         provider.create_sandbox = AsyncMock(return_value=mock_sandbox)
 
@@ -1342,6 +1445,11 @@ class TestSandboxLifecycle:
 
         assert sandbox is mock_sandbox
         assert span_calls == [("task-alias", "ghcr.io/vals/swebench:latest", 2)]
+        assert span_attributes == {
+            "valkyrie.sandbox_id": "sandbox-created-123",
+            "valkyrie.sandbox_name": "provider-returned-name",
+            "valkyrie.sandbox_state": "started",
+        }
         request = provider.create_sandbox.await_args.args[0]
         assert request.name == "task-alias"
         assert request.resources == resources

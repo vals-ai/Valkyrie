@@ -1582,6 +1582,94 @@
         "title": "RetryOrResumeBenchmarkResponse",
         "type": "object"
       },
+      "RunArtifactDownloadResponse": {
+        "description": "A temporary URL for a single run artifact.",
+        "properties": {
+          "download_url": {
+            "title": "Download Url",
+            "type": "string"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "download_url",
+          "expires_in",
+          "size"
+        ],
+        "title": "RunArtifactDownloadResponse",
+        "type": "object"
+      },
+      "RunArtifactEntry": {
+        "description": "An object stored beneath one run's artifact directory.",
+        "properties": {
+          "last_modified": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Modified"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "size"
+        ],
+        "title": "RunArtifactEntry",
+        "type": "object"
+      },
+      "RunArtifactsResponse": {
+        "description": "One page of run artifacts.",
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/RunArtifactEntry"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "artifacts"
+        ],
+        "title": "RunArtifactsResponse",
+        "type": "object"
+      },
       "S3UploadResultsResponse": {
         "properties": {
           "console_url": {
@@ -1669,6 +1757,50 @@
         "title": "SchedulerActiveStatus",
         "type": "string"
       },
+      "SchedulerCapacityDomainResponse": {
+        "properties": {
+          "capacity": {
+            "$ref": "#/components/schemas/SchedulerCapacityResponse"
+          },
+          "sandbox_class": {
+            "minLength": 1,
+            "title": "Sandbox Class",
+            "type": "string"
+          },
+          "target_id": {
+            "minLength": 1,
+            "title": "Target Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_id",
+          "sandbox_class",
+          "capacity"
+        ],
+        "title": "SchedulerCapacityDomainResponse",
+        "type": "object"
+      },
+      "SchedulerCapacityResponse": {
+        "properties": {
+          "cpu": {
+            "$ref": "#/components/schemas/SchedulerResourceCapacityResponse"
+          },
+          "disk": {
+            "$ref": "#/components/schemas/SchedulerResourceCapacityResponse"
+          },
+          "memory": {
+            "$ref": "#/components/schemas/SchedulerResourceCapacityResponse"
+          }
+        },
+        "required": [
+          "cpu",
+          "memory",
+          "disk"
+        ],
+        "title": "SchedulerCapacityResponse",
+        "type": "object"
+      },
       "SchedulerOverviewResponse": {
         "properties": {
           "active_capped": {
@@ -1681,6 +1813,18 @@
             },
             "title": "Active Entries",
             "type": "array"
+          },
+          "active_next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Next active offset, or null when this list is exhausted.",
+            "title": "Active Next Offset"
           },
           "observed_at": {
             "title": "Observed At",
@@ -1706,6 +1850,18 @@
             },
             "title": "Waiting Entries",
             "type": "array"
+          },
+          "waiting_next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Next waiting offset, or null when this list is exhausted.",
+            "title": "Waiting Next Offset"
           }
         },
         "required": [
@@ -1715,16 +1871,43 @@
           "waiting_entries",
           "active_entries",
           "waiting_capped",
-          "active_capped"
+          "active_capped",
+          "waiting_next_offset",
+          "active_next_offset"
         ],
         "title": "SchedulerOverviewResponse",
         "type": "object"
       },
       "SchedulerPoolResponse": {
         "properties": {
+          "capacity_domains": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SchedulerCapacityDomainResponse"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity Domains"
+          },
           "pool_id": {
             "title": "Pool Id",
             "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
           },
           "waiting": {
             "title": "Waiting",
@@ -1736,6 +1919,26 @@
           "waiting"
         ],
         "title": "SchedulerPoolResponse",
+        "type": "object"
+      },
+      "SchedulerResourceCapacityResponse": {
+        "properties": {
+          "available": {
+            "minimum": 0.0,
+            "title": "Available",
+            "type": "number"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "number"
+          }
+        },
+        "required": [
+          "available",
+          "total"
+        ],
+        "title": "SchedulerResourceCapacityResponse",
         "type": "object"
       },
       "SchedulerSummaryResponse": {
@@ -2613,7 +2816,7 @@
   "paths": {
     "/agents": {
       "get": {
-        "description": "List agent zips under the org's S3 bucket.",
+        "description": "List agent zips in the configured shared library.",
         "operationId": "list_agents_endpoint",
         "parameters": [
           {
@@ -2642,6 +2845,134 @@
           }
         },
         "summary": "List Agents Endpoint"
+      }
+    },
+    "/agents/{name}": {
+      "delete": {
+        "description": "Remove an existing ZIP from the configured shared agent library.",
+        "operationId": "remove_agent_endpoint",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "Storage permission denied"
+          },
+          "404": {
+            "description": "Agent not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Agent Endpoint"
+      },
+      "put": {
+        "description": "Validate and upload a ZIP, replacing agents/<name>.zip if it exists.",
+        "operationId": "push_agent_endpoint",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/zip": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "Invalid agent archive"
+          },
+          "403": {
+            "description": "Storage permission denied"
+          },
+          "413": {
+            "description": "Configured archive limit exceeded"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Push Agent Endpoint"
       }
     },
     "/agents/{name}/download-url": {
@@ -2931,6 +3262,136 @@
           }
         },
         "summary": "Get Single Benchmark"
+      }
+    },
+    "/benchmarks/{benchmark_id}/artifacts": {
+      "get": {
+        "description": "List an exact artifact path or its descendants within the authorized run.",
+        "operationId": "list_run_artifacts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "prefix",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Prefix",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunArtifactsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Run Artifacts"
+      }
+    },
+    "/benchmarks/{benchmark_id}/artifacts/download-url": {
+      "get": {
+        "description": "Return a temporary download URL for an exact artifact in the authorized run.",
+        "operationId": "get_run_artifact_url",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunArtifactDownloadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Artifact Url"
       }
     },
     "/benchmarks/{benchmark_id}/concurrency": {
@@ -4327,6 +4788,38 @@
               "minimum": 1,
               "title": "Active Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "waiting_offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Waiting Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "active_offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Active Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_capacity",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Capacity",
+              "type": "boolean"
             }
           }
         ],

@@ -277,7 +277,7 @@ class TrackedTask:
                 self._status = TrackedTaskStatus.RUNNING
                 return await self._coro
 
-        with task_scope(task_row.task_id):
+        with task_scope(task_row.task_id, attempt_started_at=self.attempt_started_at.isoformat()):
             try:
                 self._task = asyncio.create_task(_wrap_coro())
                 return await self._task

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterable
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from types import TracebackType
@@ -14,9 +15,11 @@ from pydantic import BaseModel
 from valkyrie.sdk.config import DEFAULT_CONFIG_PATH, TRACKER_URLS, ValkyrieConfig
 from valkyrie.sdk.errors import ValkyrieAPIError, ValkyrieTransportError
 from valkyrie.sdk.resources.agents import AgentsResource
+from valkyrie.sdk.resources.artifacts import ArtifactsResource
 from valkyrie.sdk.resources.benchmarks import BenchmarksResource
 from .resources.logs import LogsResource
 from valkyrie.sdk.resources.runs import RunsResource
+from valkyrie.sdk.resources.scheduler import SchedulerResource
 from valkyrie.sdk.resources.services import BenchmarkServicesResource
 
 DEFAULT_BASE_URL = TRACKER_URLS["bench"]
@@ -47,7 +50,9 @@ class ValkyrieClient:
         self.logs = LogsResource(self)
         self.benchmarks = BenchmarksResource(self)
         self.agents = AgentsResource(self)
+        self.artifacts = ArtifactsResource(self)
         self.services = BenchmarkServicesResource(self)
+        self.scheduler = SchedulerResource(self)
 
     @classmethod
     def from_config(
@@ -89,10 +94,19 @@ class ValkyrieClient:
         *,
         params: dict[str, Any] | None = None,
         json: Any = None,
+        content: AsyncIterable[bytes] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> ResponseModel:
         """Send a request and validate its response as a Pydantic model."""
         try:
-            response = await self._client.request(method, path, params=params, json=json)
+            response = await self._client.request(
+                method,
+                path,
+                params=params,
+                json=json,
+                content=content,
+                headers=headers,
+            )
         except httpx.HTTPError as exc:
             raise ValkyrieTransportError(f"Valkyrie request failed: {exc}") from exc
 

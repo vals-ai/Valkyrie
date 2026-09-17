@@ -46,6 +46,37 @@ valkyrie run status --ids <run-id-1>,<run-id-2> --format json
 
 Batch status keeps the order you asked for, ignores duplicate IDs, and takes at most 50 IDs at a time. Any ID that is missing or that you cannot access is listed under `missing_run_ids`, and the command exits nonzero after writing the JSON document.
 
+## Inspect the priority queue
+
+See your organization's waiting tasks, pool positions, priorities, and active tasks:
+
+<CodeGroup>
+
+```bash CLI
+valkyrie queue status
+```
+
+```python Python SDK
+snapshot = await client.scheduler.overview()
+print(snapshot.summary.waiting)
+```
+
+</CodeGroup>
+
+Managed sandbox pools order waiting tasks by priority (P0 highest, P4 lowest), enqueue time, then task ID. Priority defaults to P3. Positions are within each shared pool; other organizations' tasks can occupy positions but are not listed. Wait time uses the snapshot's observation time.
+
+Totals remain uncapped. Text output marks pages with more entries and prints the next `--waiting-offset` or `--active-offset`. Pass these offsets independently to advance either list:
+
+```bash
+valkyrie queue status --waiting-offset 100 --active-offset 100
+```
+
+`--format json` includes `waiting_next_offset` and `active_next_offset`; `null` means that list is exhausted. Capped flags indicate more entries after the current page, not tasks on earlier pages. Pages are live, not a frozen snapshot: queue changes between calls can repeat or skip tasks. See [SDK page iteration](/sdk/resources#scheduler) for a Python example.
+
+Queueing must be enabled for the selected provider's managed pool. An empty waiting list alone does not indicate whether queueing is enabled. This command only reads state; it does not change priorities or reserve capacity.
+
+See [`queue status`](/reference/cli/queue#status) and [`client.scheduler.overview`](/reference/sdk/scheduler#overview) for the full reference.
+
 ## Inspect errors
 
 ```bash
@@ -87,3 +118,13 @@ valkyrie run list --format json --all --status IN_PROGRESS
 ```
 
 Machine-readable output is built from a versioned allowlist of fields, so it never carries stored agent secrets, kwargs, or raw error messages. Optional identity fields and scores may be `null`, timestamps are UTC ISO 8601 strings, and a non-finite score is reported as `null`.
+
+## Inspect individual tasks
+
+Use `valkyrie run tasks <run_id> --status ERROR --format json` to inspect failed tasks. The command returns one page; use `--offset` to read later pages. Inspect a result with `valkyrie run task <run_id> <task_id>`, or obtain temporary download and log links with `valkyrie run task-artifacts <run_id> <task_id>`. See the [task command reference](/reference/cli/run#tasks) for filtering and sorting options.
+
+
+For Python reports, use `async for run in client.runs.iter(request)` and `async for task in client.benchmarks.iter_tasks(run_id, request)` to fetch successive pages. Each iterator preserves its filters and page size. Run iteration uses cursors; task iteration uses offsets, so tasks can move between pages while their status changes.
+
+
+Use `valkyrie run filter-options --format json` or `await client.runs.filter_options()` to discover filter values from your organization's run history. These values describe previous runs, not all models or benchmark services you could use for a new run.

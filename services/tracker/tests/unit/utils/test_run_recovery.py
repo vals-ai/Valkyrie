@@ -73,7 +73,6 @@ from tracker.utils import (
     reset_to_in_progress_status,
     start_benchmark_request_to_benchmark,
     stop_sandbox,
-    update_benchmark_concurrency,
 )
 from tracker.utils.task_execution import handle_early_exit
 
@@ -215,10 +214,10 @@ class TestRunRecovery:
             SimpleNamespace(now=unchanged_attempt_time),
         )
 
-        await reset_to_in_progress_status(
+        reset_to_in_progress_status(
             benchmark_row=benchmark,
             session=database_session,
-            benchmark_service=benchmark_service,
+            verified_task_ids=["task_0"],
             retry=False,
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=[],
@@ -682,10 +681,10 @@ class TestRunRecovery:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        verified_task_ids = await reset_to_in_progress_status(
+        verified_task_ids = reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
-            benchmark_service=start_benchmark_request.benchmark_service,
+            verified_task_ids=pending_task_ids,
             retry=False,
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=[],
@@ -751,10 +750,10 @@ class TestRunRecovery:
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
 
-        verified_task_ids = await reset_to_in_progress_status(
+        verified_task_ids = reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
-            benchmark_service=benchmark_row.benchmark_service(),
+            verified_task_ids=[task_row.task_id],
             retry=False,
             retry_mode=retry_mode,
             rerun_task_ids=[],
@@ -823,10 +822,10 @@ class TestRunRecovery:
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
 
-        verified_task_ids = await reset_to_in_progress_status(
+        verified_task_ids = reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
-            benchmark_service=benchmark_row.benchmark_service(),
+            verified_task_ids=["task_error", "task_result"],
             retry=True,
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=["task_error", "task_result"],
@@ -876,10 +875,10 @@ class TestRunRecovery:
         )
         database_session.commit()
 
-        verified_task_ids = await reset_to_in_progress_status(
+        verified_task_ids = reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
-            benchmark_service=benchmark_row.benchmark_service(),
+            verified_task_ids=["task_0", "task_1", "task_2"],
             retry=False,
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=["task_1", "task_2"],
@@ -921,10 +920,10 @@ class TestRunRecovery:
         )
         database_session.commit()
 
-        verified_task_ids = await reset_to_in_progress_status(
+        verified_task_ids = reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
-            benchmark_service=benchmark_row.benchmark_service(),
+            verified_task_ids=["task_requested"],
             retry=True,
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=["task_requested"],
@@ -1007,10 +1006,10 @@ class TestRunRecovery:
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", _capturing_final_score)
 
         # Resume with a new task id — should be lazily created as PENDING
-        verified_task_ids = await reset_to_in_progress_status(
+        verified_task_ids = reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
-            benchmark_service=start_benchmark_request.benchmark_service,
+            verified_task_ids=[new_task_id],
             retry=False,
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=[new_task_id],
@@ -1343,17 +1342,15 @@ class TestRunRecovery:
 
         observed_headers: dict[str, str] = {}
 
-        async def _mock_reset_to_in_progress_status(
-            *_args: Any, benchmark_service: BenchmarkServiceClient, **_kwargs: Any
-        ) -> list[str]:
+        async def verify(benchmark_service: BenchmarkServiceClient, **_kwargs: Any) -> VerifyTaskIdsResponse:
             observed_headers.update(getattr(benchmark_service, "_headers"))
-            return ["task_0"]
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
 
-        monkeypatch.setattr("main.reset_to_in_progress_status", _mock_reset_to_in_progress_status)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
 
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}",
-            json={"task_ids": [], "service_headers": {}},
+            json={"task_ids": ["task_0"], "service_headers": {}},
             headers={**harness_headers, "X-Api-Key": "tracker-api-key"},
         )
 
@@ -1380,19 +1377,15 @@ class TestRunRecovery:
 
         observed_headers: dict[str, str] = {}
 
-        async def _mock_reset_to_in_progress_status(
-            *_args: Any,
-            benchmark_service: BenchmarkServiceClient,
-            **_kwargs: Any,
-        ) -> list[str]:
+        async def verify(benchmark_service: BenchmarkServiceClient, **_kwargs: Any) -> VerifyTaskIdsResponse:
             observed_headers.update(getattr(benchmark_service, "_headers"))
-            return ["task_0"]
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
 
-        monkeypatch.setattr("main.reset_to_in_progress_status", _mock_reset_to_in_progress_status)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
 
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}",
-            json={"task_ids": [], "service_headers": {}},
+            json={"task_ids": ["task_0"], "service_headers": {}},
             headers={**harness_headers, "X-Api-Key": "tracker-api-key"},
         )
 
@@ -1528,7 +1521,7 @@ class TestRunRecovery:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        async def _mock_reset_to_in_progress_status(*_args: Any, **_kwargs: Any) -> list[str]:
+        def _mock_reset_to_in_progress_status(*_args: Any, **_kwargs: Any) -> list[str]:
             return ["task_0"]
 
         monkeypatch.setattr("main.reset_to_in_progress_status", _mock_reset_to_in_progress_status)
@@ -1609,7 +1602,7 @@ class TestRunRecovery:
 
             return VerifyTaskIdsResponse(task_ids=task_ids)
 
-        monkeypatch.setattr(tracker_utils, "create_benchmark_service_client", _create_benchmark_service_client)
+        monkeypatch.setattr(main_module, "create_benchmark_service_client", _create_benchmark_service_client)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_task_ids)
 
         invalid_response = client.post(
@@ -1716,22 +1709,21 @@ class TestRunRecovery:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        async def _concurrent_reset(*_args: Any, **_kwargs: Any) -> list[str]:
+        async def concurrent_verify(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
             with Session(bind=database_session.get_bind()) as control_session:
                 persisted = control_session.get(Benchmark, benchmark_row.id)
                 assert persisted is not None
-                persisted.status = BenchmarkStatus.IN_PROGRESS
+                persisted.arguments = persisted.arguments.model_copy(update={"concurrency": 9})
                 control_session.add(persisted)
                 control_session.commit()
-                update_benchmark_concurrency(benchmark_row.id, 9, control_session, self._test_org)
-            return ["task_0"]
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
 
-        monkeypatch.setattr("main.reset_to_in_progress_status", _concurrent_reset)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", concurrent_verify)
 
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}",
             json={
-                "task_ids": [],
+                "task_ids": ["task_0"],
                 "service_headers": {},
                 "secrets": {"ANTHROPIC_API_KEY": "new-secret"},
             },

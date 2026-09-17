@@ -19,7 +19,7 @@ _AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
 def validate_agent_name(name: str) -> str:
     """Validate an agent name before it is used as an S3 key and bundle folder name."""
-    if not name or not _AGENT_NAME_PATTERN.match(name) or name in {".", ".."}:
+    if not name or not _AGENT_NAME_PATTERN.fullmatch(name) or name in {".", ".."}:
         raise ValueError(f"Invalid agent name {name!r}: use only letters, digits, dots, dashes, or underscores.")
     return name
 

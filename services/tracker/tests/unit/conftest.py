@@ -110,7 +110,9 @@ def override_database_session(database_session: Session, monkeypatch: pytest.Mon
     """Route FastAPI database dependencies through the in-memory test session."""
 
     def get_test_session() -> Generator[Session, None, None]:
-        yield database_session
+        with Session(database_session.get_bind(), expire_on_commit=False) as request_session:
+            yield request_session
+        database_session.expire_all()
 
     monkeypatch.setitem(app.dependency_overrides, get_session, get_test_session)
 

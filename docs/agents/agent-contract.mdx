@@ -184,6 +184,8 @@ output_artifacts:
 repository-editing agents. A trajectory artifact may reference it through
 `extra.vals.model_patch`; Valkyrie still collects it as a separate artifact.
 
+For private trajectory custody, keep the producer's native trajectory in `final_output` and write an optional ATIF conversion to a separate `output_artifacts` source. `finalize_cmd` runs in the same sandbox after the agent exits, then Valkyrie attempts the native archive before the ATIF sidecar. Valkyrie does not parse the native format or replace its bytes. Valkyrie attempts the remaining collection after a finalization or archive failure, then reports the earlier failure. Collection cannot continue after the sandbox or executor host is lost.
+
 Valkyrie does not require a specific destination prefix. Vals-hosted result ingestion expects `vals_format/config.json` and `vals_format/result.json`.
 
 Guardrails:

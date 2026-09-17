@@ -16,6 +16,7 @@ import pytest
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from services.tracker.main import app
+from tracker.api.filter_options import FilterOptionsResponse
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
@@ -48,6 +49,11 @@ from tracker.types import (
     LogEventResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
+    SchedulerActiveEntryResponse,
+    SchedulerOverviewResponse,
+    SchedulerPoolResponse,
+    SchedulerSummaryResponse,
+    SchedulerWaitingEntryResponse,
     SingleBenchmarkResponse,
     SingleTaskResponse,
     StartBenchmarkRequest,
@@ -81,12 +87,18 @@ from valkyrie.sdk.models import (
     FetchBenchmarksRequest as SDKFetchBenchmarksRequest,
     FetchBenchmarksResponse as SDKFetchBenchmarksResponse,
     FinalEvaluation as SDKFinalEvaluation,
+    FilterOptionsResponse as SDKFilterOptionsResponse,
     FinalViewResponse as SDKFinalViewResponse,
     HarnessConfig as SDKHarnessConfig,
     LogEvent as SDKLogEvent,
     OutputArtifact as SDKOutputArtifact,
     RetryOrResumeBenchmarkResponse as SDKRetryResponse,
     S3UploadResultsResponse as SDKS3ResultsResponse,
+    SchedulerActiveEntryResponse as SDKSchedulerActiveEntryResponse,
+    SchedulerOverviewResponse as SDKSchedulerOverviewResponse,
+    SchedulerPoolResponse as SDKSchedulerPoolResponse,
+    SchedulerSummaryResponse as SDKSchedulerSummaryResponse,
+    SchedulerWaitingEntryResponse as SDKSchedulerWaitingEntryResponse,
     SingleBenchmarkResponse as SDKSingleBenchmarkResponse,
     SingleTaskResponse as SDKSingleTaskResponse,
     StartBenchmarkRequest as SDKStartBenchmarkRequest,
@@ -100,6 +112,10 @@ from valkyrie.sdk.models import (
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "sdk_api"
 ROUTES = (
+    ("/benchmarks/filter-options", "get", ""),
+    ("/benchmarks/{benchmark_id}/concurrency", "patch", "benchmark_id"),
+    ("/benchmarks/{benchmark_id}/artifacts", "get", "benchmark_id prefix cursor limit"),
+    ("/benchmarks/{benchmark_id}/artifacts/download-url", "get", "benchmark_id path"),
     ("/start-benchmark", "post", ""),
     ("/fetch-benchmark", "get", "benchmark_id connect"),
     (
@@ -112,6 +128,7 @@ ROUTES = (
     ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id force"),
     ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id retry retry_mode concurrency"),
     ("/benchmarks/status", "get", "ids"),
+    ("/scheduler/overview", "get", "waiting_limit active_limit waiting_offset active_offset include_capacity"),
     ("/benchmarks/{benchmark_id}", "get", "benchmark_id"),
     (
         "/benchmarks/{benchmark_id}/tasks",
@@ -132,6 +149,8 @@ ROUTES = (
     ),
     ("/agents", "get", ""),
     ("/agents/{name}/download-url", "get", "name"),
+    ("/agents/{name}", "put", "name"),
+    ("/agents/{name}", "delete", "name"),
     ("/benchmark-services", "get", ""),
     ("/benchmark-services", "post", ""),
     ("/fetch-benchmark-tasks", "post", ""),
@@ -141,11 +160,13 @@ ROUTES = (
     ("/fetch-run-outputs/{benchmark_id}", "get", "benchmark_id task_ids"),
 )
 RESPONSE_MODELS = {
+    ("/benchmarks/filter-options", "get"): "FilterOptionsResponse",
     ("/start-benchmark", "post"): "StartBenchmarkResponse",
     ("/fetch-benchmarks", "get"): "FetchBenchmarksResponse",
     ("/stop-benchmark/{benchmark_id}", "post"): "StopBenchmarkResponse",
     ("/retry-or-resume-benchmark/{benchmark_id}", "post"): "RetryOrResumeBenchmarkResponse",
     ("/benchmarks/status", "get"): "BenchmarkStatusResponse",
+    ("/scheduler/overview", "get"): "SchedulerOverviewResponse",
     ("/benchmarks/{benchmark_id}", "get"): "SingleBenchmarkResponse",
     ("/benchmarks/{benchmark_id}/tasks", "get"): "TasksResponse",
     ("/benchmarks/{benchmark_id}/tasks/{task_id}", "get"): "SingleTaskResponse",
@@ -153,6 +174,8 @@ RESPONSE_MODELS = {
     ("/benchmarks/{benchmark_id}/logs", "get"): "LogPageResponse",
     ("/agents", "get"): "AgentsResponse",
     ("/agents/{name}/download-url", "get"): "AgentDownloadURLResponse",
+    ("/agents/{name}", "put"): "AgentEntry",
+    ("/agents/{name}", "delete"): "AgentEntry",
     ("/benchmark-services", "get"): "BenchmarkServiceCatalogResponse",
     ("/benchmark-services", "post"): "BenchmarkServicesResponse",
     ("/fetch-benchmark-tasks", "post"): "VerifyTaskIdsResponse",
@@ -160,6 +183,7 @@ RESPONSE_MODELS = {
     ("/preview-results", "get"): "S3UploadResultsResponse",
 }
 MODEL_PAIRS = (
+    (FilterOptionsResponse, SDKFilterOptionsResponse),
     (OutputArtifact, SDKOutputArtifact),
     (AgentContractRequest, SDKAgentContractRequest),
     (AWSCredentials, SDKAWSCredentials),
@@ -181,6 +205,11 @@ MODEL_PAIRS = (
     (RetryOrResumeBenchmarkResponse, SDKRetryResponse),
     (BenchmarkStatusEntry, SDKBenchmarkStatusEntry),
     (BenchmarkStatusResponse, SDKBenchmarkStatusResponse),
+    (SchedulerActiveEntryResponse, SDKSchedulerActiveEntryResponse),
+    (SchedulerOverviewResponse, SDKSchedulerOverviewResponse),
+    (SchedulerPoolResponse, SDKSchedulerPoolResponse),
+    (SchedulerSummaryResponse, SDKSchedulerSummaryResponse),
+    (SchedulerWaitingEntryResponse, SDKSchedulerWaitingEntryResponse),
     (SingleBenchmarkResponse, SDKSingleBenchmarkResponse),
     (TaskSummary, SDKTaskSummary),
     (TasksResponse, SDKTasksResponse),
@@ -201,11 +230,8 @@ MODEL_PAIRS = (
 )
 INTERNAL_ROUTES = {
     ("/aws-runtime", "get"),
-    ("/benchmarks/{benchmark_id}/concurrency", "patch"),
-    ("/benchmarks/filter-options", "get"),
     ("/health", "get"),
     ("/init", "post"),
-    ("/scheduler/overview", "get"),
 }
 
 
