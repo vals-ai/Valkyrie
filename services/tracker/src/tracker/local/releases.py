@@ -6,6 +6,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from uuid import uuid4
 
 from pydantic import BaseModel
 from sqlmodel import Session
@@ -81,7 +82,7 @@ def initialize_release(
     artifact = local_path(manifest_path.parent, manifest.artifact_path)
     destination = _publish_artifact(artifact, reader.root, digest)
     candidate = ExecutorRelease(
-        id=f"local-{digest}",
+        id=f"local-{uuid4()}",
         artifact_uri=destination.as_uri(),
         artifact_digest=digest,
         protocol_version=manifest.protocol_version,
@@ -93,7 +94,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--release-root", type=Path, required=True)
-    parser.add_argument("--replace-active", action="store_true", help="Explicitly activate a new build for future runs")
+    parser.add_argument("--replace-active", action="store_true", help="Activate a rebuilt executor for future runs")
     args = parser.parse_args()
 
     from tracker.database.session import engine
