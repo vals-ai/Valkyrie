@@ -234,10 +234,10 @@ class TestRunFinalization:
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", record_upload)
 
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        async with CloudRuntimeFactory.create_runtime(aws_runtime) as runtime:
-            with pytest.raises(ExecutionAuthorityRevoked):
-                async with run_orchestration_module.hold_dispatch_authority(authority):
-                    await run_orchestration_module.upload_final_view(final_view, runtime.objects)
+        runtime = CloudRuntimeFactory.create_runtime(aws_runtime)
+        with pytest.raises(ExecutionAuthorityRevoked):
+            async with run_orchestration_module.hold_dispatch_authority(authority):
+                await run_orchestration_module.upload_final_view(final_view, runtime.objects)
 
         assert upload_calls == []
         postgres_session.refresh(retry_dispatch)

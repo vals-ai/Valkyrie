@@ -729,9 +729,7 @@ async def _process_benchmark(
                 auth_required=AUTH_REQUIRED,
             )
 
-        runtime = await runtime_stack.enter_async_context(
-            get_execution_runtime(start_benchmark_request, benchmark_row, org)
-        )
+        runtime = await get_execution_runtime(start_benchmark_request, benchmark_row, org)
         benchmark_service = await runtime_stack.enter_async_context(start_benchmark_request.benchmark_service)
         sandbox_provider_config = await runtime.get_sandbox_provider_config()
 

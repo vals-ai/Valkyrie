@@ -1,8 +1,6 @@
 """Compose AWS-backed runtime services."""
 
 from asyncio import to_thread
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -36,6 +34,14 @@ class CloudRuntimeServices(RuntimeServices):
     def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
         """Prepare logs before sandbox work."""
         self.logs.create_benchmark(str(benchmark_id), retention_days=self.aws_runtime.resources.log_retention_days)
+        if self.aws_runtime.clients.credential_source != "managed":
+            return
+
+        resolve_secrets(request.contract.secrets, self.secrets)
+        if request.webhook_secret_name and request.webhook_intervals:
+            self.secrets.get(request.webhook_secret_name)
+        if request.lambda_function:
+            dry_run_lambda(self.aws_runtime.clients, request.lambda_function)
 
     async def run_completion_callback(self, final_view: FinalViewResponse) -> None:
         arguments = final_view.benchmark_arguments
@@ -55,37 +61,22 @@ class CloudRuntimeServices(RuntimeServices):
         )
 
 
-class ManagedCloudRuntimeServices(CloudRuntimeServices):
-    """Verify deployment AWS access before starting managed execution."""
-
-    def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
-        super().prepare_execution(request, benchmark_id)
-
-        resolve_secrets(request.contract.secrets, self.secrets)
-        if request.webhook_secret_name and request.webhook_intervals:
-            self.secrets.get(request.webhook_secret_name)
-        if request.lambda_function:
-            dry_run_lambda(self.aws_runtime.clients, request.lambda_function)
-
-
 class CloudRuntimeFactory:
     """Compose AWS services from resolved resources and credentials."""
 
     @staticmethod
-    @asynccontextmanager
-    async def create_runtime(
+    def create_runtime(
         runtime: AWSRuntime,
         *,
         sandbox_provider: str = "daytona",
         sandbox_provider_secret_name: str | None = None,
-    ) -> AsyncGenerator[RuntimeServices]:
+    ) -> RuntimeServices:
         """Compose existing AWS adapters without resolving credentials again."""
         clients = runtime.clients
         resources = runtime.resources
         secrets = SecretsManagerStore(clients)
-        services_type = ManagedCloudRuntimeServices if clients.credential_source == "managed" else CloudRuntimeServices
 
-        services = services_type(
+        return CloudRuntimeServices(
             aws_runtime=runtime,
             objects=S3ObjectStore(runtime),
             secrets=secrets,
@@ -98,10 +89,7 @@ class CloudRuntimeFactory:
             sandbox_provider_secret_name=sandbox_provider_secret_name,
         )
 
-        yield services
-
     @classmethod
-    @asynccontextmanager
     async def create_execution_runtime(
         cls,
         request: StartBenchmarkRequest,
@@ -109,18 +97,18 @@ class CloudRuntimeFactory:
         benchmark_id: UUID,
         *,
         properties: AWSResources | None = None,
-    ) -> AsyncGenerator[RuntimeServices]:
-        """Select AWS access and keep execution services alive for one dispatch."""
+    ) -> RuntimeServices:
+        """Select AWS access and prepare services for one dispatch."""
         properties = request.properties or properties
         aws_runtime = (
             deployment_aws_runtime(org_id, properties)
             if request.harness_config is None
             else AWSRuntime.from_harness_config(request.harness_config).with_resources(properties)
         )
-        async with cls.create_runtime(
+        runtime = cls.create_runtime(
             aws_runtime,
             sandbox_provider=request.sandbox_provider,
             sandbox_provider_secret_name=request.sandbox_provider_secret_reference,
-        ) as runtime:
-            await to_thread(runtime.prepare_execution, request, benchmark_id)
-            yield runtime
+        )
+        await to_thread(runtime.prepare_execution, request, benchmark_id)
+        return runtime

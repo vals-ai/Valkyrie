@@ -448,13 +448,13 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get_webhook_secret)
     monkeypatch.setattr("tracker.aws.services.dry_run_lambda", dry_run)
 
-    async with CloudRuntimeFactory.create_runtime(
+    runtime = CloudRuntimeFactory.create_runtime(
         aws_runtime,
         sandbox_provider=request.sandbox_provider,
         sandbox_provider_secret_name=request.sandbox_provider_secret_reference,
-    ) as runtime:
-        runtime.prepare_execution(request, benchmark_id)
-        result = await runtime.get_sandbox_provider_config()
+    )
+    runtime.prepare_execution(request, benchmark_id)
+    result = await runtime.get_sandbox_provider_config()
 
     assert result is provider_config
     expected_preflight = ["agent_secrets", "webhook_secret", "lambda"] if aws_managed else []

@@ -31,19 +31,19 @@ async def test_runtime_reuses_and_closes_provider(
     aws_runtime = AWSRuntime(AWSResources("us-east-1", "bucket", "logs", 30), cast(AWSClientProvider, clients))
 
     async def execute() -> None:
-        async with CloudRuntimeFactory.create_runtime(
+        runtime = CloudRuntimeFactory.create_runtime(
             aws_runtime,
             sandbox_provider="modal",
             sandbox_provider_secret_name="provider-reference",
-        ) as runtime:
-            resolve.assert_not_awaited()
-            config = await runtime.get_sandbox_provider_config()
-            async with runtime.get_sandbox_provider(config) as sandbox_provider:
-                assert sandbox_provider is provider
-                resolve.assert_awaited_once_with("provider-reference")
-                provider.close.assert_not_awaited()
-                if failure is not None:
-                    raise failure()
+        )
+        resolve.assert_not_awaited()
+        config = await runtime.get_sandbox_provider_config()
+        async with runtime.get_sandbox_provider(config) as sandbox_provider:
+            assert sandbox_provider is provider
+            resolve.assert_awaited_once_with("provider-reference")
+            provider.close.assert_not_awaited()
+            if failure is not None:
+                raise failure()
 
     if failure is None:
         await execute()
@@ -58,10 +58,10 @@ async def test_read_only_runtime_needs_no_provider_credentials() -> None:
     """Artifact locations work without touching AWS or sandbox credentials."""
     clients = MagicMock(spec=AWSClientProvider, credential_source="access_key")
     aws_runtime = AWSRuntime(AWSResources("us-east-1", "bucket", "logs", 30), cast(AWSClientProvider, clients))
-    async with CloudRuntimeFactory.create_runtime(aws_runtime) as runtime:
-        assert "bucket" in runtime.artifacts.object_location("result.json")
-        with pytest.raises(InvalidSandboxConfigurationError, match="provider secret name"):
-            await runtime.get_sandbox_provider_config()
+    runtime = CloudRuntimeFactory.create_runtime(aws_runtime)
+    assert "bucket" in runtime.artifacts.object_location("result.json")
+    with pytest.raises(InvalidSandboxConfigurationError, match="provider secret name"):
+        await runtime.get_sandbox_provider_config()
     assert clients.mock_calls == []
 
 
@@ -84,10 +84,10 @@ async def test_cancelled_shutdown_drains_provider(monkeypatch: pytest.MonkeyPatc
     )
 
     async def execute() -> None:
-        async with CloudRuntimeFactory.create_runtime(aws_runtime, sandbox_provider_secret_name="provider") as runtime:
-            config = await runtime.get_sandbox_provider_config()
-            async with runtime.get_sandbox_provider(config):
-                pass
+        runtime = CloudRuntimeFactory.create_runtime(aws_runtime, sandbox_provider_secret_name="provider")
+        config = await runtime.get_sandbox_provider_config()
+        async with runtime.get_sandbox_provider(config):
+            pass
 
     closing = asyncio.create_task(execute())
     await started.wait()

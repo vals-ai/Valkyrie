@@ -1012,7 +1012,7 @@ async def test_setup_retry_reenters_fifo_before_competitor(
 async def runtime_services(harness_config: HarnessConfig) -> AsyncGenerator[RuntimeServices, None]:
     """Open real AWS adapters while tests replace their external calls."""
     aws_runtime = AWSRuntime.from_harness_config(harness_config)
-    async with CloudRuntimeFactory.create_runtime(
+    runtime = CloudRuntimeFactory.create_runtime(
         aws_runtime,
-    ) as runtime:
-        yield runtime
+    )
+    yield runtime

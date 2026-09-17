@@ -1,6 +1,5 @@
 """Shared API dependencies."""
 
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
@@ -61,17 +60,17 @@ def get_run_aws_context(
 RunAWSDependency = Annotated[RunAWSContext, Depends(get_run_aws_context)]
 
 
-async def get_run_runtime(run_context: RunAWSDependency) -> AsyncGenerator[RuntimeServices]:
-    """Keep services alive for one authorized run operation."""
+async def get_run_runtime(run_context: RunAWSDependency) -> RuntimeServices:
+    """Compose services for one authorized run operation."""
     aws_runtime = run_context.aws_runtime
     arguments = run_context.benchmark.arguments
 
-    async with CloudRuntimeFactory.create_runtime(
+    runtime = CloudRuntimeFactory.create_runtime(
         aws_runtime,
         sandbox_provider=arguments.sandbox_provider,
         sandbox_provider_secret_name=arguments.sandbox_provider_secret_name,
-    ) as runtime:
-        yield runtime
+    )
+    return runtime
 
 
 RunRuntimeDependency = Annotated[RuntimeServices, Depends(get_run_runtime)]
@@ -80,12 +79,12 @@ RunRuntimeDependency = Annotated[RuntimeServices, Depends(get_run_runtime)]
 async def get_agent_library_runtime(
     request: Request,
     org: Org = Depends(get_current_org),
-) -> AsyncGenerator[RuntimeServices]:
+) -> RuntimeServices:
     """Open agent storage without constructing sandbox access."""
     aws_runtime = resolve_agent_library_aws_runtime(request, org.id)
 
-    async with CloudRuntimeFactory.create_runtime(aws_runtime) as runtime:
-        yield runtime
+    runtime = CloudRuntimeFactory.create_runtime(aws_runtime)
+    return runtime
 
 
 AgentLibraryRuntimeDependency = Annotated[RuntimeServices, Depends(get_agent_library_runtime)]

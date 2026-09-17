@@ -13,7 +13,7 @@ async def test_get_run_runtime_uses_persisted_sandbox_provider(
         benchmark=example_benchmark_object, aws_runtime=AWSRuntime.from_harness_config(harness_config)
     )
 
-    async for runtime in get_run_runtime(context):
-        arguments = example_benchmark_object.arguments
-        assert runtime.sandbox_provider == arguments.sandbox_provider
-        assert runtime.sandbox_provider_secret_name == arguments.sandbox_provider_secret_name
+    runtime = await get_run_runtime(context)
+    arguments = example_benchmark_object.arguments
+    assert runtime.sandbox_provider == arguments.sandbox_provider
+    assert runtime.sandbox_provider_secret_name == arguments.sandbox_provider_secret_name
