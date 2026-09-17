@@ -3,12 +3,14 @@
 Run: uv run pytest tests/unit/utils/test_task_execution_env.py
 """
 
+import asyncio
 import json
+import threading
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -26,7 +28,7 @@ from tests.unit.utils.task_execution_support import (
     run_process_task,
 )
 from tracker.auth import RequestIdentity
-from tracker.aws.runtime import AWSRuntime
+from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
     ExecutorDispatch,
@@ -59,7 +61,7 @@ class TestQueuedTaskSource:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
@@ -112,7 +114,7 @@ class TestQueuedTaskSource:
             start_benchmark_request,
             task_row,
             benchmark_id,
-            aws_runtime,
+            runtime_services,
             authority,
             queue_context=queue_context,
         )
@@ -133,7 +135,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         contract = contract.model_copy(
             update={
@@ -175,14 +177,14 @@ class TestProcessTaskEnvironment:
                 "MODEL_GATEWAY_API_KEY": "gateway-key",
             }
 
-        monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert len(captured_env_vars) == 1
@@ -208,7 +210,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         """A caller-supplied contract must not reach setup as trusted settings."""
         contract = contract.model_copy(
@@ -227,14 +229,14 @@ class TestProcessTaskEnvironment:
         )
         captured_env_vars: list[dict[str, str]] = []
 
-        monkeypatch.setattr(utils_module, "resolve_secrets", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", lambda *_args, **_kwargs: {})
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
         assert len(captured_env_vars) == 1
         env_vars = captured_env_vars[0]
@@ -248,7 +250,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         contract = contract.model_copy(update={"inference_settings_attested": True})
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
@@ -261,14 +263,14 @@ class TestProcessTaskEnvironment:
         def _mock_resolve_no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {}
 
-        monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_no_secrets)
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_no_secrets)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert len(captured_env_vars) == 1
@@ -289,7 +291,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         contract = contract.model_copy(update={"secrets": {"LEGACY_API_KEY": "aws-secret"}})
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
@@ -315,11 +317,11 @@ class TestProcessTaskEnvironment:
             response.sandbox_secrets = {"TAVILY_API_KEY": "daytona-tavily"}
             return response
 
-        monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
         monkeypatch.setattr(utils_module, "create_sandbox", _capture_sandbox)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert resolved_inputs == [{"LEGACY_API_KEY": "aws-secret"}]
@@ -334,7 +336,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
@@ -378,9 +380,46 @@ class TestProcessTaskEnvironment:
             start_benchmark_request,
             task_row,
             benchmark_id,
-            aws_runtime,
+            runtime_services,
             authority,
         )
 
         assert output_authority_checks == [False]
         assert result == {task_row.task_id: None}
+
+
+@pytest.mark.usefixtures("process_benchmark_env")
+async def test_task_waits_for_final_log_write(
+    contract: AgentContractRequest,
+    database_session: Session,
+    harness_config: HarnessConfig,
+    runtime_services: RuntimeServices,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task completion must not race a buffered write still running in a thread."""
+    request, task, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
+    loop = asyncio.get_running_loop()
+    writing = asyncio.Event()
+    release_write = threading.Event()
+    written: list[str] = []
+
+    async def run_agent(*args: Any, **_kwargs: Any) -> tuple[None, float]:
+        cast(Callable[[str], None], args[4])("final agent message")
+        return None, 0.0
+
+    def write(_self: object, _stream: str, message: str) -> None:
+        loop.call_soon_threadsafe(writing.set)
+        if not release_write.wait(timeout=5):
+            raise TimeoutError("test did not release the log write")
+        written.append(message)
+
+    monkeypatch.setattr(utils_module, "run_agent", run_agent)
+    monkeypatch.setattr("tracker.aws.cloudwatch_logs.CloudWatchBenchmarkLogSink.write", write)
+    execution = asyncio.create_task(run_process_task(request, task, benchmark_id, runtime_services, authority))
+    try:
+        await asyncio.wait_for(writing.wait(), timeout=2)
+        assert not execution.done()
+    finally:
+        release_write.set()
+        await asyncio.wait_for(execution, timeout=2)
+    assert any("final agent message" in message for message in written)

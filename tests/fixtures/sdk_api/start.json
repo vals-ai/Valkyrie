@@ -1,5 +1,7 @@
 {
   "request": {
+    "environment": "aws",
+    "properties": null,
     "contract": {
       "name": "sweagent",
       "model": "claude-sonnet",

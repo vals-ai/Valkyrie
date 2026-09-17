@@ -7,6 +7,12 @@ The tracker is the FastAPI backend. It serves the CLI and SDK API, tracks run an
 
 Local Docker Compose starts the tracker, PostgreSQL, and Redis only. It does not run ExecutorHost or create an active executor release, so a locally started run never executes. Use a deployed environment to run benchmarks.
 
+## Run configuration
+
+Runs currently support `environment: "aws"` only. Optional `properties` sets the AWS region, S3 bucket, log group, and log retention. Managed runs use deployment settings. Runs using your AWS credentials may supply their own properties.
+
+New runs retain these locations for retries, resumes, and artifact reads. Older runs without saved properties use the current settings.
+
 ## Benchmark-service authentication
 
 The tracker forwards its inbound Descope API key only when the benchmark-service origin matches the hosted origin derived from the benchmark name and tracker configuration. A custom origin never receives that key. Custom services authenticate with explicit headers or a stored service secret instead. See [Benchmark authentication](/benchmarks/authentication).
@@ -96,3 +102,7 @@ make migrate-gen   # Generate a migration from model changes
 ```
 
 See [Database and migrations](/contributing/database) for the full guide.
+
+### Runtime configuration rollout
+
+Stop admission and drain active runs before deploying Tracker with a compatible executor release. Verify a new run and a stopped-run resume before reopening admission.

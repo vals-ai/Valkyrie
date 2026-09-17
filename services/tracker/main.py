@@ -49,7 +49,6 @@ from tracker.auth import (
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.aws.resolver import (
     resolve_aws_runtime_metadata,
-    resolve_run_aws_runtime,
     resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
 )
@@ -64,7 +63,7 @@ from tracker.aws.s3 import (
     create_presigned_url,
     s3_object_exists,
 )
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.runtime.artifacts import (
     agent_bundle_key,
     benchmark_agent_bundle_key,
@@ -554,7 +553,9 @@ async def start_benchmark(
 
     bind = session.get_bind()
     session.close()
-    runtime_resolution = resolve_start_aws_runtime(http_request, request.harness_config, run_starter.org.id)
+    runtime_resolution = resolve_start_aws_runtime(
+        http_request, request.harness_config, run_starter.org.id, request.properties
+    )
     aws_runtime = runtime_resolution.runtime
     object_store = S3ObjectStore(aws_runtime)
     effective_harness_config = runtime_resolution.access_key_harness_config
@@ -599,6 +600,7 @@ async def start_benchmark(
 
     request = request.model_copy(
         update={
+            "properties": aws_runtime.resources,
             "harness_config": effective_harness_config,
             "service_headers": forward_tracker_api_key(
                 service_headers,
@@ -1045,11 +1047,12 @@ async def _retrieve_results(
         org,
     )
 
-    aws_runtime = resolve_run_aws_runtime(
+    aws_runtime = resolve_run_aws_runtime_and_access_key_config(
         http_request,
         aws_managed=benchmark_row.aws_managed,
+        properties=benchmark_row.arguments.properties,
         org_id=org.id,
-    )
+    ).runtime
 
     final_view = create_final_view(benchmark_row, session, org)
     task_ids_set = set(task_ids) if task_ids else None
@@ -1083,7 +1086,7 @@ async def _retrieve_results(
 
     if preview:
         await _archive_final_view(benchmark_row, aws_runtime)
-    s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime)
+    s3_key = await upload_final_view(final_view, S3ObjectStore(aws_runtime))
     if preview:
         await _invoke_preview_lambda(benchmark_row, aws_runtime)
     return await _s3_results_response(s3_key, aws_runtime)
@@ -1222,6 +1225,7 @@ async def stop_benchmark(
     runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
         http_request,
         aws_managed=benchmark_row.aws_managed,
+        properties=benchmark_row.arguments.properties,
         org_id=org.id,
     )
 
@@ -1320,6 +1324,7 @@ class RecoveryPreparation:
     benchmark_url: str
     dataset: str | None
     queued_recovery: bool
+    properties: AWSResources | None = None
 
 
 def _prepare_recovery(
@@ -1364,6 +1369,7 @@ def _prepare_recovery(
             effective_url or create_benchmark_service_url(benchmark.name),
             benchmark.arguments.dataset,
             queued,
+            benchmark.arguments.properties,
         )
 
 
@@ -1463,6 +1469,7 @@ async def retry_or_resume_benchmark(
     )
     runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
         http_request,
+        properties=preparation.properties,
         aws_managed=preparation.aws_managed,
         org_id=org_id,
     )

@@ -489,7 +489,7 @@ async def test_retry_attempt_clears_previous_sandbox_identity(
     ):
         with sentry_module.task_scope("task-0", attempt_started_at="2026-04-01T12:00:00+00:00"):
             result = await task_execution.process_task(
-                task_row=cast(Any, object()),
+                task_row=cast(Any, SimpleNamespace(started_at=datetime(2026, 4, 1, 12, tzinfo=UTC))),
                 start_benchmark_request=cast(
                     Any,
                     SimpleNamespace(
@@ -501,7 +501,7 @@ async def test_retry_attempt_clears_previous_sandbox_identity(
                 benchmark_service=cast(Any, FakeBenchmarkService()),
                 benchmark_id=cast(Any, "benchmark-0"),
                 task_id="task-0",
-                aws_runtime=cast(Any, object()),
+                runtime=cast(Any, SimpleNamespace(logs=None)),
                 org=cast(Any, object()),
                 sandbox_provider_config=cast(Any, object()),
                 creation_semaphore=cast(Any, object()),

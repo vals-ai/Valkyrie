@@ -325,7 +325,17 @@ class CloudWatchLogProvider(LogProvider):
             request["nextToken"] = cursor
 
         client = await self._get_client()
-        return await self._request(client.filter_log_events, request)
+        response = await self._request(client.filter_log_events, request)
+        if response is not None or not stream_names or len(stream_names) == 1:
+            return response
+
+        # CloudWatch rejects the whole request if either stream name is absent.
+        for stream_name in stream_names:
+            response = await self._request(client.filter_log_events, {**request, "logStreamNames": [stream_name]})
+            if response is not None:
+                return response
+
+        return None
 
     async def _get_client(self) -> Any:
         try:

@@ -20,7 +20,6 @@ from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     create_benchmark_url,
-    upload_to_s3,
 )
 from tracker.database.models import (
     Benchmark,
@@ -33,6 +32,8 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.scoping import scoped_select
+from tracker.runtime.artifacts import benchmark_prefix
+from tracker.runtime.storage import ObjectStore
 from tracker.logging import get_logger
 from tracker.types import (
     AverageTaskBreakdown,
@@ -557,13 +558,8 @@ def final_view_s3_key(benchmark_row: Benchmark) -> str:
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/{benchmark_row.name}.json"
 
 
-async def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse, aws_runtime: AWSRuntime) -> str:
-    """Uploads the final view to the root of the benchmark folder and returns the s3 key"""
-    s3_key = final_view_s3_key(benchmark_row)
-    await upload_to_s3(
-        final_view.model_dump_json(indent=4, exclude_none=True).encode(),
-        s3_key,
-        aws_runtime,
-    )
-
-    return s3_key
+async def upload_final_view(final_view: FinalViewResponse, object_store: ObjectStore) -> str:
+    """Store the final view in the run's artifact directory and return its key."""
+    key = f"{benchmark_prefix(str(final_view.benchmark_id))}{final_view.benchmark_name}.json"
+    await object_store.put_bytes(key, final_view.model_dump_json(indent=4, exclude_none=True).encode())
+    return key

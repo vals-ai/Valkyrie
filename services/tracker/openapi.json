@@ -69,6 +69,37 @@
         "title": "AWSCredentials",
         "type": "object"
       },
+      "AWSResources": {
+        "properties": {
+          "log_group": {
+            "title": "Log Group",
+            "type": "string"
+          },
+          "log_retention_days": {
+            "exclusiveMinimum": 0.0,
+            "title": "Log Retention Days",
+            "type": "integer"
+          },
+          "region": {
+            "minLength": 1,
+            "title": "Region",
+            "type": "string"
+          },
+          "s3_bucket": {
+            "minLength": 1,
+            "title": "S3 Bucket",
+            "type": "string"
+          }
+        },
+        "required": [
+          "region",
+          "s3_bucket",
+          "log_group",
+          "log_retention_days"
+        ],
+        "title": "AWSResources",
+        "type": "object"
+      },
       "AWSRuntimeResponse": {
         "properties": {
           "mode": {
@@ -448,6 +479,12 @@
             ],
             "title": "Dataset"
           },
+          "environment": {
+            "const": "aws",
+            "default": "aws",
+            "title": "Environment",
+            "type": "string"
+          },
           "lambda_function": {
             "anyOf": [
               {
@@ -458,6 +495,16 @@
               }
             ],
             "title": "Lambda Function"
+          },
+          "properties": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AWSResources"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "sandbox_provider": {
             "default": "daytona",
@@ -2317,6 +2364,12 @@
             ],
             "title": "Dataset"
           },
+          "environment": {
+            "const": "aws",
+            "default": "aws",
+            "title": "Environment",
+            "type": "string"
+          },
           "harness_config": {
             "anyOf": [
               {
@@ -2361,6 +2414,16 @@
               }
             ],
             "title": "Priority"
+          },
+          "properties": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AWSResources"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "sandbox_provider": {
             "default": "daytona",
