@@ -57,7 +57,7 @@ The initializer verifies the artifact digest and preserves the active release on
 
 ## Test local runtime adapters
 
-The local adapters compose filesystem artifacts, persistent logs, transient secrets,
+The local adapters compose filesystem artifacts, per-run JSONL logs, transient secrets,
 and the CBS Docker provider. They use separate service-visible and host-visible data
 roots. Artifacts are scoped to the organization. Closing the runtime discards its
 execution secrets while preserving artifacts and logs.
