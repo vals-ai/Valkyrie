@@ -19,6 +19,7 @@ HARNESS_HEADERS = (
 HARNESS_OPERATIONS = (
     ("/agents", "get"),
     ("/agents/{name}/download-url", "get"),
+    ("/agents/{name}/download", "get"),
     ("/agents/{name}", "put"),
     ("/agents/{name}", "delete"),
     ("/analyze-benchmark/{benchmark_id}", "post"),
@@ -53,7 +54,8 @@ def build_openapi() -> dict[str, Any]:
         component: {
             "name": header,
             "in": "header",
-            "required": True,
+            "required": False,
+            "description": "Required for access-key AWS mode; omitted in managed AWS and local modes.",
             "schema": {"type": "string"},
         }
         for component, header in HARNESS_HEADERS

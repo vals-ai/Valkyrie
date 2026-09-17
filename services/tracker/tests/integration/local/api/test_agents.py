@@ -28,7 +28,7 @@ def test_agents_empty_when_bucket_empty(client: TestClient, monkeypatch: MonkeyP
     assert response.json()["agents"] == []
 
 
-@mark.parametrize(("method", "path"), [("GET", "/agents"), ("PUT", "/agents/demo"), ("DELETE", "/agents/demo")])
+@mark.parametrize(("method", "path"), [("GET", "/agents"), ("GET", "/agents/demo/download"), ("PUT", "/agents/demo"), ("DELETE", "/agents/demo")])
 def test_agents_unauth_401(client: TestClient, method: str, path: str) -> None:
     """The agents catalog must not be readable without authentication.
 
