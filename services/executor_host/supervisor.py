@@ -14,10 +14,9 @@ import sys
 import tempfile
 import urllib.request
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Protocol, Unpack, cast
-from uuid import uuid4
 
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
 from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
@@ -38,7 +37,7 @@ from executor_protocol import (
     validate_executor_digest,
 )
 from services.executor_host.local.secrets import LocalExecutionSecretsClient
-from tracker.local.secret_pipe import SECRET_SOCKET_ENV, send_execution_secrets
+from tracker.local.secret_pipe import SECRET_SOCKET_ENV, LocalSecretsError, send_execution_secrets
 from services.executor_host.observability import (
     capture_dispatch_error,
     configure_observability,
@@ -176,7 +175,6 @@ class ArtifactDispatch:
 class DispatchAuthority:
     dispatch_id: str
     benchmark_id: str
-    claim_token: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -303,20 +301,17 @@ class PostgresExecutorDispatchStore:
         benchmark_id: str,
         dispatch: ArtifactDispatch,
     ) -> DispatchAuthority | None:
-        claim_token = uuid4().hex
         claimed = await asyncio.to_thread(
             self._claim,
             dispatch_id,
             benchmark_id,
             dispatch,
-            claim_token,
         )
         if not claimed:
             return None
         return DispatchAuthority(
             dispatch_id=dispatch_id,
             benchmark_id=benchmark_id,
-            claim_token=claim_token,
         )
 
     def _claim(
@@ -324,14 +319,12 @@ class PostgresExecutorDispatchStore:
         dispatch_id: str,
         benchmark_id: str,
         dispatch: ArtifactDispatch,
-        claim_token: str,
     ) -> bool:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """
                 UPDATE executordispatch AS dispatch
                 SET status = 'RUNNING',
-                    claim_token = %s,
                     started_at = CURRENT_TIMESTAMP,
                     heartbeat_at = CURRENT_TIMESTAMP,
                     lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second')
@@ -349,7 +342,6 @@ class PostgresExecutorDispatchStore:
                 RETURNING dispatch.id
                 """,
                 (
-                    claim_token,
                     DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
                     dispatch_id,
                     benchmark_id,
@@ -648,7 +640,7 @@ class ExecutorSupervisor:
                 environment.pop(SECRET_SOCKET_ENV, None)
                 pass_fds: tuple[int, ...] = ()
                 if process_payload.is_local:
-                    client = LocalExecutionSecretsClient.from_env(authority.dispatch_id, authority.claim_token)
+                    client = await asyncio.to_thread(LocalExecutionSecretsClient.from_env, authority.dispatch_id)
                     values = await asyncio.to_thread(client.receive)
                     parent_socket, child_socket = socket.socketpair()
                     pass_fds = (child_socket.fileno(),)
@@ -673,10 +665,17 @@ class ExecutorSupervisor:
                 if parent_socket is not None and client is not None:
                     await asyncio.to_thread(send_execution_secrets, parent_socket, values)
                     values.clear()
-                    await asyncio.to_thread(client.acknowledge)
+                    try:
+                        await asyncio.to_thread(client.acknowledge)
+                    except LocalSecretsError:
+                        logger.warning(
+                            "Local execution secret acknowledgment failed; pending credentials will be reaped"
+                        )
                 return_code = await self._wait_with_authority(process, is_current)
                 if return_code != 0:
-                    raise RuntimeError(f"Executor for benchmark {authority.benchmark_id} exited with status {return_code}")
+                    raise RuntimeError(
+                        f"Executor for benchmark {authority.benchmark_id} exited with status {return_code}"
+                    )
             except BaseException:
                 if process is not None:
                     await _terminate_process_group(process)

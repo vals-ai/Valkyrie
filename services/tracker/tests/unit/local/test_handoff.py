@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -10,32 +11,29 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from tests.factories import make_benchmark
-from tracker.database.models import ExecutorDispatch, ExecutorDispatchStatus
+from tracker.database.models import BenchmarkStatus, ExecutorDispatch, ExecutorDispatchStatus
 from tracker.database.session import get_session
 from tracker.exceptions import SecretsError
 from tracker.local.api import router
 from tracker.local.handoff import PendingExecutionSecrets, pending_execution_secrets
+from tracker.local.secret_pipe import local_handoff_token
 
 
-def test_pending_secrets_require_same_claimant_and_receipt() -> None:
-    """Keep values through retrieval, then discard only after claimant acknowledgement."""
+def test_pending_secrets_remain_until_child_receipt() -> None:
+    """Keep values through retrieval, then discard only after child acknowledgement."""
     registry = PendingExecutionSecrets()
     dispatch_id = uuid4()
     values = {"KEY": "value"}
     registry.put(dispatch_id, {"KEY": "reference"}, values)
     values.clear()
-    received = registry.receive(dispatch_id, "claim-one")
+    received = registry.receive(dispatch_id)
     assert received == {"KEY": "value"}
     received.clear()
-    assert registry.receive(dispatch_id, "claim-one") == {"KEY": "value"}
-    with pytest.raises(SecretsError, match="another"):
-        registry.receive(dispatch_id, "claim-two")
-    with pytest.raises(SecretsError, match="not been received"):
-        registry.acknowledge(dispatch_id, "claim-two")
-    registry.acknowledge(dispatch_id, "claim-one")
-    registry.acknowledge(dispatch_id, "claim-one")
+    assert registry.receive(dispatch_id) == {"KEY": "value"}
+    registry.discard(dispatch_id)
+    registry.discard(dispatch_id)
     with pytest.raises(SecretsError, match="fresh execution secrets"):
-        registry.receive(dispatch_id, "claim-one")
+        registry.receive(dispatch_id)
 
 
 def test_pending_secrets_capacity_is_bounded() -> None:
@@ -54,6 +52,7 @@ def test_pending_secrets_capacity_is_bounded() -> None:
 
 
 def test_handoff_api_verifies_live_claim_before_revealing_values(
+    tmp_path: Path,
     database_session: Session,
     executor_authority_kwargs: Callable[..., dict[str, object]],
     monkeypatch: pytest.MonkeyPatch,
@@ -64,7 +63,6 @@ def test_handoff_api_verifies_live_claim_before_revealing_values(
     dispatch_id = UUID(str(kwargs["executor_dispatch_id"]))
     dispatch = database_session.get(ExecutorDispatch, dispatch_id)
     assert dispatch is not None
-    dispatch.claim_token = "current-claim"
     dispatch.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
     database_session.add(dispatch)
     database_session.commit()
@@ -73,21 +71,31 @@ def test_handoff_api_verifies_live_claim_before_revealing_values(
     app.dependency_overrides[get_session] = lambda: database_session
     pending_execution_secrets.put(dispatch_id, {"KEY": "reference"}, {"KEY": "sensitive"})
     url = f"/internal/local-execution-secrets/{dispatch_id}"
-    headers = {"x-executor-claim": "current-claim"}
+    monkeypatch.setenv("VALKYRIE_LOCAL_DATA_ROOT", str(tmp_path))
+    headers = {"x-local-handoff-token": local_handoff_token()}
     try:
         with TestClient(app) as client:
             monkeypatch.delenv("VALKYRIE_RUNTIME", raising=False)
             assert client.post(f"{url}/receive", headers=headers).status_code == 404
             monkeypatch.setenv("VALKYRIE_RUNTIME", "local")
-            rejected = client.post(f"{url}/receive", headers={"x-executor-claim": "wrong-claim"})
+            rejected = client.post(f"{url}/receive", headers={"x-local-handoff-token": "wrong-token"})
             assert rejected.status_code == 403
             assert "sensitive" not in rejected.text
             response = client.post(f"{url}/receive", headers=headers)
             assert response.status_code == 200
             assert response.json() == {"KEY": "sensitive"}
             assert response.headers["cache-control"] == "no-store"
+            assert client.post(f"{url}/acknowledge", headers={"x-local-handoff-token": "wrong"}).status_code == 403
+            assert pending_execution_secrets.pending_ids() == (dispatch_id,)
+            benchmark.status = BenchmarkStatus.FINISHED
+            database_session.add(benchmark)
+            database_session.commit()
+            assert client.post(f"{url}/acknowledge", headers=headers).status_code == 204
+            assert pending_execution_secrets.pending_ids() == ()
             assert client.post(f"{url}/acknowledge", headers=headers).status_code == 204
             assert client.post(f"{url}/receive", headers=headers).status_code == 409
+            benchmark.status = BenchmarkStatus.IN_PROGRESS
+            database_session.add(benchmark)
             pending_execution_secrets.put(dispatch_id, {}, {})
             dispatch.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
             database_session.add(dispatch)

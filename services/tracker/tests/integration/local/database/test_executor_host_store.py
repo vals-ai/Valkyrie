@@ -127,9 +127,6 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     postgres_session.expire_all()
     claimed_dispatch = postgres_session.get(type(first_dispatch), first_dispatch.id)
     assert claimed_dispatch is not None
-    assert first_authority.claim_token is not None
-    assert claimed_dispatch.claim_token == first_authority.claim_token
-    assert first_authority.claim_token != sibling_authority.claim_token
     assert claimed_dispatch.started_at is not None
     assert claimed_dispatch.heartbeat_at is not None
     assert claimed_dispatch.lease_expires_at is not None

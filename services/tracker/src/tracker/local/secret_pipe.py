@@ -3,6 +3,9 @@
 import json
 import os
 import socket
+import secrets
+import tempfile
+from pathlib import Path
 from collections.abc import Mapping
 from typing import cast
 
@@ -50,3 +53,19 @@ def receive_execution_secrets() -> dict[str, str] | None:
             raise LocalSecretsError("Invalid local execution secret payload") from error
         connection.sendall(b"A")
         return values
+
+
+def local_handoff_token() -> str:
+    """Share one private authentication token through the installation's data root."""
+    root = Path(os.environ["VALKYRIE_LOCAL_DATA_ROOT"])
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / ".execution-handoff-token"
+    if not path.exists():
+        with tempfile.NamedTemporaryFile(mode="w", dir=root) as temporary:
+            temporary.write(secrets.token_hex(32))
+            temporary.flush()
+            try:
+                os.link(temporary.name, path)
+            except FileExistsError:
+                pass
+    return path.read_text()
