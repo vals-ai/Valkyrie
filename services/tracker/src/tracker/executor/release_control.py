@@ -81,14 +81,16 @@ def activate_release(
     session: Session,
     candidate: ExecutorRelease,
     *,
-    expected_bucket: str,
-    expected_prefix: str,
+    expected_bucket: str | None = None,
+    expected_prefix: str | None = None,
     artifact_reader: ExecutorArtifactReader,
 ) -> ExecutorRelease:
     """Create-or-match, verify, promote, and assert one immutable release."""
     _validate_release_manifest(candidate)
     try:
-        validate_executor_artifact_uri(candidate.artifact_uri, expected_bucket, expected_prefix)
+        if expected_bucket is not None or expected_prefix is not None:
+            validate_executor_artifact_uri(candidate.artifact_uri, expected_bucket or "", expected_prefix or "")
+        artifact_reader.validate(candidate.artifact_uri)
     except ValueError as error:
         raise ReleaseControlError(str(error)) from error
 
@@ -127,13 +129,9 @@ def verify_release_artifact(
     release = _get_release(session, release_id)
     if release.status == ExecutorReleaseStatus.RETIRED:
         raise ReleaseControlError(f"Retired executor release {release_id!r} cannot be verified")
-    parsed = urlparse(release.artifact_uri)
-    if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.lstrip("/"):
-        raise ReleaseControlError("Executor artifact URI must use s3://bucket/key")
-
     digest = hashlib.sha256()
     artifact_bytes = 0
-    with artifact_reader.open(parsed.netloc, parsed.path.lstrip("/")) as body:
+    with artifact_reader.open(release.artifact_uri) as body:
         while chunk := body.read(1024 * 1024):
             digest.update(chunk)
             artifact_bytes += len(chunk)
@@ -421,8 +419,13 @@ def _validate_release_manifest(release: ExecutorRelease) -> None:
         raise ReleaseControlError(str(error)) from error
     if release.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
         raise ReleaseControlError(f"Unsupported executor protocol version: {release.protocol_version}")
-    if not release.artifact_uri.startswith("s3://"):
-        raise ReleaseControlError("Executor artifact URI must use s3://")
+    parsed = urlparse(release.artifact_uri)
+    if parsed.scheme not in {"s3", "file"} or not parsed.path or parsed.query or parsed.fragment:
+        raise ReleaseControlError("Executor artifact URI must use s3:// or file://")
+    if parsed.scheme == "s3" and not parsed.netloc:
+        raise ReleaseControlError("Executor artifact URI must identify an S3 object")
+    if parsed.scheme == "file" and (parsed.netloc or not parsed.path.startswith("/")):
+        raise ReleaseControlError("Local executor artifact URI must use file:///absolute/path")
 
 
 def _get_release(

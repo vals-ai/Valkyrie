@@ -7,12 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 from json import JSONDecodeError
 import logging
 import sys
+import shutil
+import subprocess
 from collections.abc import Awaitable, Callable, Coroutine
 from functools import partial
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import Mock
@@ -33,6 +37,7 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     verify_file_digest,
 )
 from executor_protocol import ExecutorTelemetryContext, validate_executor_artifact_uri
+from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader
 
 
 class FakeDispatchStore:
@@ -91,11 +96,11 @@ class FakeDispatchStore:
 class FakeS3Client:
     def __init__(self, content: bytes) -> None:
         self.content = content
-        self.calls: list[tuple[str, str, str]] = []
+        self.calls: list[tuple[str, str]] = []
 
-    def download_file(self, bucket: str, key: str, filename: str) -> None:
-        self.calls.append((bucket, key, filename))
-        Path(filename).write_bytes(self.content)
+    def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+        self.calls.append((Bucket, Key))
+        return {"Body": io.BytesIO(self.content)}
 
 
 class RecordingCursor:
@@ -279,11 +284,9 @@ async def test_prepare_artifact_downloads_and_verifies_by_digest(tmp_path: Path)
     assert artifact_path.read_bytes() == content
     assert artifact_path.stat().st_mode & 0o111
     assert len(client.calls) == 1
-    bucket, key, temporary_name = client.calls[0]
+    bucket, key = client.calls[0]
     assert (bucket, key) == ("artifacts", "executors/v2.pex")
-    assert Path(temporary_name).parent == tmp_path
-    assert Path(temporary_name).suffix == ".tmp"
-    assert Path(temporary_name).name != f"{digest}.tmp"
+    assert list(tmp_path.iterdir()) == [artifact_path]
 
 
 def test_validate_artifact_uri_requires_configured_bucket_and_prefix() -> None:
@@ -1432,3 +1435,60 @@ def test_host_accepts_current_and_pinned_legacy_protocols(protocol_version: str)
     )
     assert dispatch.protocol_version == protocol_version
     assert dispatch.release_id == "immutable-release"
+
+
+async def test_local_release_cache_and_location_validation(tmp_path: Path) -> None:
+    root = tmp_path / "releases"
+    root.mkdir()
+    artifact = root / "executor.pex"
+    content = b"local executor"
+    artifact.write_bytes(content)
+    digest = hashlib.sha256(content).hexdigest()
+    supervisor = ExecutorSupervisor(tmp_path / "cache", artifact_reader=FilesystemExecutorArtifactReader(root))
+    dispatch = replace(_dispatch(digest=digest), artifact_uri=artifact.as_uri())
+
+    cached = await supervisor.prepare_artifact(dispatch)
+    assert cached.read_bytes() == content
+    artifact.unlink()
+    assert await supervisor.prepare_artifact(dispatch) == cached
+    with pytest.raises(ValueError, match="outside"):
+        await supervisor.prepare_artifact(replace(dispatch, artifact_uri=(tmp_path / "outside.pex").as_uri()))
+    cached.write_bytes(b"damaged cache")
+    artifact.write_bytes(content)
+    assert (await supervisor.prepare_artifact(dispatch)).read_bytes() == content
+
+
+def test_release_readers_bootstrap_without_tracker_dependencies(tmp_path: Path) -> None:
+    source = Path(__file__).resolve().parents[3] / "services/tracker/src"
+    files = [
+        "executor_protocol.py",
+        "tracker/__init__.py",
+        "tracker/aws/__init__.py",
+        "tracker/aws/executor_artifacts.py",
+        "tracker/local/__init__.py",
+        "tracker/local/executor_artifacts.py",
+        "tracker/runtime/__init__.py",
+        "tracker/runtime/executor_artifacts.py",
+        "tracker/runtime/lifecycle.py",
+    ]
+    for name in files:
+        destination = tmp_path / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / name, destination)
+    subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            (
+                "from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader; "
+                "from tracker.aws.executor_artifacts import S3ExecutorArtifactReader; "
+                "from tracker.runtime.lifecycle import finish_cleanup; "
+                "import sys; assert 'boto3' not in sys.modules; assert 'pydantic' not in sys.modules"
+            ),
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
