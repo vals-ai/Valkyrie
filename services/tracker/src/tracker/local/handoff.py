@@ -1,7 +1,6 @@
 """Keep local execution credentials in memory until the claimed child receives them."""
 
 import threading
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -13,15 +12,13 @@ from tracker.local.secrets import InMemorySecretStore
 @dataclass
 class _PendingSecrets:
     values: dict[str, str] = field(repr=False)
-    expires_at: float
     claim_token: str | None = field(default=None, repr=False)
 
 
 class PendingExecutionSecrets:
-    """A bounded, process-local handoff; restarting Tracker requires fresh input."""
+    """Bound credentials in memory; the reaper applies durable dispatch deadlines."""
 
-    def __init__(self, *, ttl_seconds: float = 900, maximum_pending: int = 100) -> None:
-        self._ttl_seconds = ttl_seconds
+    def __init__(self, *, maximum_pending: int = 100) -> None:
         self._maximum_pending = maximum_pending
         self._pending: dict[UUID, _PendingSecrets] = {}
         self._lock = threading.Lock()
@@ -33,17 +30,15 @@ class PendingExecutionSecrets:
         if sum(len(key.encode()) + len(value.encode()) for key, value in values.items()) > 1024 * 1024:
             raise SecretsError("Local execution secrets exceed the one-megabyte limit")
         with self._lock:
-            self._expire()
             if dispatch_id in self._pending:
                 raise SecretsError("Local execution secrets are already registered for this dispatch")
             if len(self._pending) >= self._maximum_pending:
                 raise SecretsError("Too many pending local executions")
-            self._pending[dispatch_id] = _PendingSecrets(dict(values), time.monotonic() + self._ttl_seconds)
+            self._pending[dispatch_id] = _PendingSecrets(dict(values))
 
     def receive(self, dispatch_id: UUID, claim_token: str) -> dict[str, str]:
         """Return credentials only after the caller verifies the durable claim."""
         with self._lock:
-            self._expire()
             pending = self._pending.get(dispatch_id)
             if pending is None:
                 raise SecretsError("Local execution secrets are unavailable; resume with fresh execution secrets")
@@ -68,7 +63,6 @@ class PendingExecutionSecrets:
 
     def pending_ids(self) -> tuple[UUID, ...]:
         with self._lock:
-            self._expire()
             return tuple(self._pending)
 
     def close(self) -> None:
@@ -80,12 +74,6 @@ class PendingExecutionSecrets:
         pending = self._pending.pop(dispatch_id, None)
         if pending is not None:
             pending.values.clear()
-
-    def _expire(self) -> None:
-        now = time.monotonic()
-        for dispatch_id, pending in tuple(self._pending.items()):
-            if pending.expires_at <= now:
-                self._discard(dispatch_id)
 
 
 pending_execution_secrets = PendingExecutionSecrets()

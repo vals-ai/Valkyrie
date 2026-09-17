@@ -3,7 +3,6 @@
 import json
 import os
 import socket
-import struct
 from collections.abc import Mapping
 from typing import cast
 
@@ -24,24 +23,14 @@ def validate_values(value: object) -> dict[str, str]:
     return cast(dict[str, str], values)
 
 
-def _read_exact(connection: socket.socket, size: int) -> bytes:
-    output = bytearray()
-    while len(output) < size:
-        chunk = connection.recv(size - len(output))
-        if not chunk:
-            raise LocalSecretsError("Local execution secret channel closed before receipt")
-        output.extend(chunk)
-    return bytes(output)
-
-
 def send_execution_secrets(connection: socket.socket, values: Mapping[str, str]) -> None:
     encoded = json.dumps(dict(values)).encode()
     if len(encoded) > MAX_SECRET_PAYLOAD_BYTES:
         raise LocalSecretsError("Local execution secret payload exceeds the transfer limit")
     connection.settimeout(30)
-    connection.sendall(struct.pack("!I", len(encoded)))
     connection.sendall(encoded)
-    if _read_exact(connection, 1) != b"A":
+    connection.shutdown(socket.SHUT_WR)
+    if connection.recv(1) != b"A":
         raise LocalSecretsError("Local executor did not acknowledge credential receipt")
 
 
@@ -51,11 +40,12 @@ def receive_execution_secrets() -> dict[str, str] | None:
         return None
     with socket.socket(fileno=int(descriptor)) as connection:
         connection.settimeout(30)
-        size = struct.unpack("!I", _read_exact(connection, 4))[0]
-        if size > MAX_SECRET_PAYLOAD_BYTES:
+        with connection.makefile("rb") as stream:
+            encoded = stream.read(MAX_SECRET_PAYLOAD_BYTES + 1)
+        if len(encoded) > MAX_SECRET_PAYLOAD_BYTES:
             raise LocalSecretsError("Local execution secret payload exceeds the transfer limit")
         try:
-            values = validate_values(json.loads(_read_exact(connection, size)))
+            values = validate_values(json.loads(encoded))
         except (ValueError, UnicodeError) as error:
             raise LocalSecretsError("Invalid local execution secret payload") from error
         connection.sendall(b"A")
