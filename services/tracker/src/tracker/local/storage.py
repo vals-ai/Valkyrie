@@ -95,7 +95,7 @@ class FilesystemObjectStore:
         def read() -> bytes:
             return local_path(self.root, key).read_bytes()
 
-        return await _io(read)
+        return await asyncio.to_thread(read)
 
     async def get_many(self, keys: AsyncIterable[str]) -> AsyncIterator[tuple[str, bytes]]:
         async for key in keys:
@@ -114,7 +114,7 @@ class FilesystemObjectStore:
         return StoredObjectCopy(deletion_token=None)
 
     async def exists(self, key: str) -> bool:
-        return await _io(lambda: local_path(self.root, key).is_file())
+        return await asyncio.to_thread(lambda: local_path(self.root, key).is_file())
 
     async def list_objects(self, prefix: str) -> AsyncIterator[StoredObject]:
         def list_files() -> list[StoredObject]:
@@ -134,7 +134,7 @@ class FilesystemObjectStore:
                     continue
             return objects
 
-        for stored in await _io(list_files):
+        for stored in await asyncio.to_thread(list_files):
             yield stored
 
     async def stat(self, key: str) -> StoredObject:
@@ -145,7 +145,7 @@ class FilesystemObjectStore:
             stat = path.stat()
             return StoredObject(key, datetime.fromtimestamp(stat.st_mtime, UTC), size=stat.st_size)
 
-        return await _io(metadata)
+        return await asyncio.to_thread(metadata)
 
     async def list_objects_page(
         self, prefix: str, *, cursor: str | None, limit: int

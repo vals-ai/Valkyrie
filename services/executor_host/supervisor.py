@@ -44,7 +44,6 @@ from services.executor_host.observability import (
     record_dispatch_completion,
 )
 from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader
-from tracker.runtime.lifecycle import finish_cleanup
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -564,7 +563,7 @@ class ExecutorSupervisor:
         self.sleep = sleep
 
     async def prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
-        return await finish_cleanup(asyncio.create_task(asyncio.to_thread(self._prepare_artifact, dispatch)))
+        return await asyncio.to_thread(self._prepare_artifact, dispatch)
 
     def _prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
         if self.artifact_reader is not None:
