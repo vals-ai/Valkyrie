@@ -29,6 +29,8 @@ from tracker.run_purge.contracts import ProviderLocator, PurgeRun
 from tracker.run_purge.locking import database_target, exclusive_operation
 from tracker.storage_migration_exchange import (
     AWSResources,
+    CopiedObject,
+    DestinationVersion,
     DispatchObservation,
     ExecutionReference,
     RelocationRun,
@@ -309,17 +311,26 @@ class RelocationOperator:
                 raise LifecycleConflict("Request differs from immutable operation identity")
         with exclusive_operation(self.session, identity):
             observations: list[RunObservation] = []
+            verified_copies: list[CopiedObject] = []
+            verified_history: list[DestinationVersion] = []
             for run in request.plan.runs:
-                observations.append(await self._execute_run(request, identity, run))
+                observation, effective_request = await self._execute_run(request, identity, run)
+                observations.append(observation)
+                verified_copies.extend(
+                    item for item in effective_request.copied_objects if item.run_id == run.scope.run_id
+                )
+                verified_history.extend(
+                    item for item in effective_request.destination_versions if item.run_id == run.scope.run_id
+                )
             return TrackerResponse(
                 nonce=request.nonce,
                 action=request.action,
                 child_plan_sha256=request.plan.sha256,
                 copied_objects_sha256=canonical_digest(
-                    [item.model_dump(mode="json") for item in request.copied_objects]
+                    [item.model_dump(mode="json") for item in (request.copied_objects or verified_copies)]
                 ),
                 destination_versions_sha256=canonical_digest(
-                    [item.model_dump(mode="json") for item in request.destination_versions]
+                    [item.model_dump(mode="json") for item in (request.destination_versions or verified_history)]
                 ),
                 completion_sha256=request.completion_sha256,
                 runs=tuple(observations),
@@ -356,7 +367,7 @@ class RelocationOperator:
 
     async def _execute_run(
         self, request: TrackerRequest, identity: OperationIdentity, run: RelocationRun
-    ) -> RunObservation:
+    ) -> tuple[RunObservation, TrackerRequest]:
         assert request.plan is not None
         self._host_contract(request)
         benchmark, arguments = self._run(request, run.scope.run_id)
@@ -516,8 +527,11 @@ class RelocationOperator:
         benchmark, arguments = self._run(request, run.scope.run_id)
         record, checkpoint = self._checkpoint(identity, run)
         self._validate_run(benchmark, arguments, run, checkpoint)
-        return self._observation(
-            request, benchmark, arguments, record=record, dispatches=dispatches, references=references
+        return (
+            self._observation(
+                request, benchmark, arguments, record=record, dispatches=dispatches, references=references
+            ),
+            request,
         )
 
     def _observation(

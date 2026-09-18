@@ -201,6 +201,9 @@ class RelocationAWSBoundary(AWSProviderBoundary):
             group = [item for item in values if item.key == key]
             if sum(item.current for item in group) != 1:
                 raise LifecycleConflict("Exactly one current object or marker is required per key")
+
+            if len({item.modified for item in group}) != len(group):
+                raise LifecycleConflict("Version ordering is ambiguous")
         return tuple(values)
 
     async def verify_objects(
@@ -462,17 +465,21 @@ class RelocationAWSBoundary(AWSProviderBoundary):
                             options["VersionId"] = versions["versionId"][0]
                         response = await client.get_object(**options)
                         identifier = response.get("VersionId")
-                        if (
-                            not isinstance(identifier, str)
-                            or not identifier
-                            or identifier == "null"
-                            or ("versionId" in versions and identifier != versions["versionId"][0])
-                        ):
-                            raise LifecycleConflict("Retained execution object has no exact version")
                         async with response["Body"] as body:
                             content = await body.read()
                         if not isinstance(content, bytes) or len(content) != response.get("ContentLength"):
                             raise LifecycleConflict("Retained execution object bytes are incomplete")
+                        requested_version = options.get("VersionId")
+                        if (
+                            requested_version is not None
+                            and identifier != requested_version
+                            and not (requested_version == "null" and identifier is None)
+                        ):
+                            raise LifecycleConflict("Retained execution object returned another version")
+
+                        if not isinstance(identifier, str) or identifier in {"", "null"}:
+                            references.append(reference)
+                            continue
                     reference = ExecutionReference(
                         pointer=pointer,
                         value_sha256=canonical_digest(value),
