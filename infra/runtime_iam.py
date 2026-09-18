@@ -55,6 +55,7 @@ def create_tracker_task_role(
         role,
         config,
         role_actions=("s3:DeleteObject", "s3:DeleteObjectVersion"),
+        archive_read=True,
     )
     _add_secret_access(role, config.tracker_secret_name_prefixes)
     _add_lambda_access(role, config.tracker_lambda_function_name_patterns)
@@ -137,6 +138,7 @@ def _add_owner_storage_access(
     config: ManagedAWSRuntimeConfig,
     *,
     role_actions: tuple[str, ...],
+    archive_read: bool = False,
 ) -> None:
     environments = sorted(
         {
@@ -153,14 +155,29 @@ def _add_owner_storage_access(
     foreign_conditions = {"StringNotEquals": {"s3:ResourceAccount": stack.account}}
     owner_bucket_arns = [f"arn:{stack.partition}:s3:::vs-{environment}-*" for environment in environments]
     owner_objects_arns = [f"{owner_bucket_arn}/benchmarks/*" for owner_bucket_arn in owner_bucket_arns]
+    bucket_actions = ["s3:ListBucket", "s3:GetBucketTagging", "s3:GetBucketVersioning"]
+    if archive_read:
+        bucket_actions.append("s3:GetBucketOwnershipControls")
 
     role.add_to_policy(
         aws_iam.PolicyStatement(
-            actions=["s3:ListBucket", "s3:GetBucketTagging", "s3:GetBucketVersioning"],
+            actions=bucket_actions,
             resources=owner_bucket_arns,
             conditions=conditions,
         )
     )
+    if archive_read:
+        role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["s3:GetObjectVersion"],
+                resources=[
+                    f"{owner_bucket_arn}/benchmarks/????????-????-????-????-????????????/log-history/*"
+                    for owner_bucket_arn in owner_bucket_arns
+                ],
+                conditions=conditions,
+            )
+        )
+
     role.add_to_policy(
         aws_iam.PolicyStatement(
             actions=["s3:GetObject", "s3:PutObject"],
