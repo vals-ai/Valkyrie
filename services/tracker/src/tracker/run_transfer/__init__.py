@@ -231,6 +231,10 @@ class TransferOperator:
             observations: list[TransferObservation] = []
             for run in request.plan.runs:
                 observations.append(await self._execute_run(request, run))
+
+            if request.action == "inspect" and request.parent_completion is not None:
+                self._inspect_completion(request)
+
             return TransferResponse(
                 copied_objects_sha256=digest([item.model_dump(mode="json") for item in request.copied_objects])
                 if request.action in {"import", "inspect", "cleanup", "finalize"}
@@ -243,7 +247,7 @@ class TransferOperator:
                 and all(item.archive is not None for item in observations)
                 else None,
                 parent_completion_sha256=digest(request.parent_completion.model_dump(mode="json"))
-                if request.parent_completion is not None and request.action in {"cleanup", "finalize"}
+                if request.parent_completion is not None and request.action in {"inspect", "cleanup", "finalize"}
                 else None,
                 action=request.action,
                 nonce=request.nonce,
@@ -530,6 +534,16 @@ class TransferOperator:
             archives.append(checkpoint.archive.model_dump(mode="json"))
         if completion.destination_rows_sha256 != digest(rows) or completion.archives_sha256 != digest(archives):
             raise LifecycleConflict("Parent completion differs from current destination rows or archives")
+
+    def _inspect_completion(self, request: TransferRequest) -> None:
+        self._completion(request)
+        assert request.parent_completion is not None
+        completion_digest = digest(request.parent_completion.model_dump(mode="json"))
+        for run in request.plan.runs:
+            for session, destination in ((self.source, False), (self.destination, True)):
+                _, checkpoint = self._checkpoint(session, request, run, destination=destination)
+                if checkpoint.parent_completion_sha256 not in {None, completion_digest}:
+                    raise LifecycleConflict("Retained parent completion authorization changed")
 
     def _observation(
         self,
