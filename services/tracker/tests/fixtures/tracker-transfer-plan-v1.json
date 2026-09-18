@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "action": "plan",
+  "nonce": "00000000-0000-0000-0000-000000000004",
+  "plan": {
+    "schema_version": 1,
+    "source_identity": {
+      "schema_version": 1,
+      "operation_id": "00000000-0000-0000-0000-000000000002",
+      "parent_plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "github_owner_id": 42,
+      "org_id": "00000000-0000-0000-0000-000000000003",
+      "source_aws_account_id": "111111111111",
+      "destination_aws_account_id": "222222222222",
+      "region": "us-east-1",
+      "environment": "prod",
+      "database_target": "postgresql:source-db:5432/tracker",
+      "run_ids": [
+        "00000000-0000-0000-0000-000000000001"
+      ]
+    },
+    "destination_identity": {
+      "schema_version": 1,
+      "operation_id": "00000000-0000-0000-0000-000000000002",
+      "parent_plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "github_owner_id": 42,
+      "org_id": "00000000-0000-0000-0000-000000000003",
+      "source_aws_account_id": "111111111111",
+      "destination_aws_account_id": "222222222222",
+      "region": "us-west-2",
+      "environment": "prod",
+      "database_target": "postgresql:destination-db:5432/tracker",
+      "run_ids": [
+        "00000000-0000-0000-0000-000000000001"
+      ]
+    },
+    "org_name": "reviewed-existing-org",
+    "releases": [],
+    "runs": [
+      {
+        "source": {
+          "run_id": "00000000-0000-0000-0000-000000000001",
+          "original_resources": {
+            "region": "us-east-1",
+            "s3_bucket": "legacy-source-bucket",
+            "log_group": "runs",
+            "log_retention_days": 30
+          },
+          "object_prefix": "benchmarks/00000000-0000-0000-0000-000000000001/",
+          "log_group": "runs/00000000-0000-0000-0000-000000000001"
+        },
+        "destination": {
+          "run_id": "00000000-0000-0000-0000-000000000001",
+          "original_resources": {
+            "region": "us-west-2",
+            "s3_bucket": "vs-prod-42-destination",
+            "log_group": "runs",
+            "log_retention_days": 30
+          },
+          "object_prefix": "benchmarks/00000000-0000-0000-0000-000000000001/",
+          "log_group": "runs/00000000-0000-0000-0000-000000000001"
+        },
+        "source_rows_sha256": null,
+        "execution_policy": "history_only",
+        "predecessor": null,
+        "reference_edits": [],
+        "transformations": [],
+        "unmasked_read_authorized": true
+      }
+    ]
+  },
+  "copied_objects": [],
+  "destination_versions": [],
+  "source_host_contract": null,
+  "external_host_drains": [],
+  "external_evidence_files": [],
+  "parent_completion": null
+}
