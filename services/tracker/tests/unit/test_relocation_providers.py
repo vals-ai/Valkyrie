@@ -2,71 +2,23 @@
 
 import hashlib
 import json
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, Mock
+from typing import Any, cast
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
 
-from tracker.lifecycle import LifecycleConflict
+from tests.relocation_support import VersionStore
+from tracker.aws.runtime import AWSResources
+from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope
+from tracker.run_purge.contracts import ProviderLocator, PurgeRun
 from tracker.run_relocation.providers import RelocationAWSBoundary, rewrite_json
 from tracker.storage_migration_exchange import JsonLocatorEdit, ObjectTransformation, TrackerRequest, canonical_digest
 
 
 def checksum(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
-
-
-class VersionStore:
-    def __init__(self, run_id: str) -> None:
-        self.fence_statement: dict[str, Any] | None = None
-        self.key = f"benchmarks/{run_id}/results.json"
-        self.versions: dict[str, list[tuple[str, bytes | None]]] = {
-            "source": [("s1", b'{"value":1}')],
-            "destination": [("d1", b'{"value":1}')],
-        }
-
-    async def __aenter__(self) -> "VersionStore":
-        return self
-
-    async def __aexit__(self, *_arguments: object) -> None:
-        pass
-
-    async def get_bucket_policy(self, **arguments: Any) -> dict[str, str]:
-        assert arguments["ExpectedBucketOwner"] == "123456789012"
-        return {"Policy": json.dumps({"Statement": [] if self.fence_statement is None else [self.fence_statement]})}
-
-    async def list_object_versions(self, **arguments: Any) -> dict[str, Any]:
-        assert arguments["ExpectedBucketOwner"] == "123456789012"
-        versions: list[dict[str, Any]] = []
-        markers: list[dict[str, Any]] = []
-        for index, (identifier, content) in enumerate(self.versions[arguments["Bucket"]]):
-            item = {
-                "Key": self.key,
-                "VersionId": identifier,
-                "Size": len(content or b""),
-                "IsLatest": index == 0,
-                "LastModified": datetime(2026, 1, 1, tzinfo=UTC) - timedelta(seconds=index),
-            }
-            (markers if content is None else versions).append(item)
-        return {"Versions": versions, "DeleteMarkers": markers, "IsTruncated": False}
-
-    async def list_multipart_uploads(self, **_arguments: Any) -> dict[str, Any]:
-        return {"Uploads": [], "IsTruncated": False}
-
-    async def get_object(self, **arguments: Any) -> dict[str, Any]:
-        content = next(
-            content
-            for identifier, content in self.versions[arguments["Bucket"]]
-            if identifier == arguments["VersionId"]
-        )
-        assert content is not None
-        stream = AsyncMock()
-        stream.__aenter__.return_value = stream
-        stream.read.return_value = content
-        return {"VersionId": arguments["VersionId"], "Body": stream, "ContentLength": len(content)}
 
 
 def setup() -> tuple[RelocationAWSBoundary, VersionStore, dict[str, Any]]:
@@ -324,3 +276,36 @@ async def test_copy_history_cannot_invert_source_version_order() -> None:
     assert parsed.plan is not None
     with pytest.raises(LifecycleConflict):
         await boundary.verify_objects(parsed, parsed.plan.runs[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change", ["foreign_owner", "managed_name", "foreign_org", "unknown_versioning", "wrong_region", "wrong_account"]
+)
+async def test_source_authority_never_falls_back_from_foreign_managed_scope(change: str) -> None:
+
+    boundary, store, request = setup()
+    assert request["plan"] is not None
+    identity = OperationIdentity.model_validate(request["plan"]["identity"])
+    bucket = "vs-dev-other-99" if change == "managed_name" else "source"
+    resources = AWSResources("us-east-1", bucket, "runs", 7)
+    run = PurgeRun(
+        scope=RunScope(run_id=identity.run_ids[0], original_resources=resources),
+        provider=ProviderLocator(kind="daytona", secret_name="provider"),
+    )
+    clients = cast(Mock, boundary.clients)
+    clients.credential_source = "managed"
+    clients.sts_client.return_value.get_caller_identity.return_value = {"Account": "123456789012"}
+    store.tags[bucket] = []
+    if change == "foreign_owner":
+        store.tags[bucket] = [{"Key": "valsmith:owner-account-id", "Value": "99"}]
+    elif change == "foreign_org":
+        store.tags[bucket] = [{"Key": "valsmith:valkyrie-org-id", "Value": str(uuid4())}]
+    elif change == "unknown_versioning":
+        store.versioning[bucket] = {"Status": "Unknown"}
+    elif change == "wrong_region":
+        store.region = "us-west-2"
+    elif change == "wrong_account":
+        clients.sts_client.return_value.get_caller_identity.return_value = {"Account": "999999999999"}
+    with pytest.raises(LifecycleConflict):
+        await boundary.validate_source(identity, run)

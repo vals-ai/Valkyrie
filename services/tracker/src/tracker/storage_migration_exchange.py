@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -45,7 +45,7 @@ class OperationIdentity(ContractModel):
     region: SafeIdentity
     environment: SafeIdentity
     database_target: SafeIdentity
-    run_ids: tuple[UUID, ...]
+    run_ids: tuple[UUID, ...] = Field(min_length=1, json_schema_extra={"uniqueItems": True})
 
     @field_validator("run_ids")
     @classmethod
@@ -192,7 +192,7 @@ class CopiedObject(ContractModel):
 class HostContractObservation(ContractModel):
     contract: Literal["stable-host-lifecycle-v1"]
     deployment_sha256: Digest
-    host_inventory: tuple[SafeIdentity, ...]
+    host_inventory: tuple[SafeIdentity, ...] = Field(min_length=1, json_schema_extra={"uniqueItems": True})
     observed_at: AwareDatetime
     acknowledgement_required_since: AwareDatetime
     verifier: SafeIdentity
@@ -204,6 +204,17 @@ class HostContractObservation(ContractModel):
         if not value or value != tuple(sorted(set(value))):
             raise ValueError("host inventory must be complete, sorted and unique")
         return value
+
+    def require_current(self) -> None:
+        now = datetime.now(UTC)
+        if (
+            self.observed_at.utcoffset() != timedelta(0)
+            or self.acknowledgement_required_since.utcoffset() != timedelta(0)
+            or self.observed_at > now
+            or now - self.observed_at > timedelta(minutes=15)
+            or self.acknowledgement_required_since > self.observed_at
+        ):
+            raise ValueError("host observation is stale, future, non-UTC, or has a later cutoff")
 
 
 class ExternalHostDrain(ContractModel):

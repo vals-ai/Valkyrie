@@ -8,9 +8,10 @@ import subprocess
 import sys
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -18,6 +19,7 @@ from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine
 
 from tests.factories import make_benchmark
+from tests.relocation_support import VersionStore
 from tracker.aws.runtime import AWSResources
 from tracker.database.models import (
     Benchmark,
@@ -36,6 +38,7 @@ from tracker.executor.release_control import create_executor_dispatch
 from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, require_unheld
 from tracker.lifecycle_completion import acquire_successor_hold, capture_predecessor
 from tracker.run_relocation import RelocationOperator
+from tracker.run_relocation.providers import RelocationAWSBoundary
 from tracker.storage_migration_exchange import ExecutionReference, TrackerRequest, TrackerResponse
 
 
@@ -64,6 +67,9 @@ def relocation_session(request: pytest.FixtureRequest) -> Generator[Session, Non
 
 
 class EmptyBoundary:
+    async def validate_source(self, *arguments: object) -> None:
+        await self.validate(*arguments)
+
     async def validate(self, *_arguments: object) -> None:
         pass
 
@@ -354,7 +360,7 @@ def test_cli_reads_real_postgresql_inventory_and_writes_private_nonce_bound_repo
 
 
 @pytest.mark.parametrize(
-    "failure", ["sandbox", "destination", "account", "stale_host", "future_cutoff", "started_dispatch"]
+    "failure", ["sandbox", "destination", "account", "stale_host", "future_cutoff", "non_utc", "started_dispatch"]
 )
 def test_fresh_external_or_exit_failure_retains_hold_and_original_bucket(
     relocation_session: Session, failure: str
@@ -366,6 +372,8 @@ def test_fresh_external_or_exit_failure_retains_hold_and_original_bucket(
         request["host_contract"]["observed_at"] = (datetime.now(UTC) - timedelta(minutes=16)).isoformat()
     elif failure == "future_cutoff":
         request["host_contract"]["acknowledgement_required_since"] = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    elif failure == "non_utc":
+        request["host_contract"]["observed_at"] = datetime.now(UTC).astimezone(timezone(timedelta(hours=1))).isoformat()
     elif failure == "started_dispatch":
         release = ExecutorRelease(
             id="release", artifact_uri="s3://releases/test", artifact_digest="a" * 64, protocol_version="1"
@@ -559,4 +567,97 @@ def test_terminal_task_with_deferred_evaluation_blocks_relocation(relocation_ses
     with pytest.raises(LifecycleConflict):
         execute(relocation_session, request, "prepare")
     relocation_session.rollback()
+    assert relocation_session.get_one(RunLifecycle, run.id).released_at is None
+
+
+@pytest.mark.parametrize("source_version", ["source-v1", "null"])
+@pytest.mark.parametrize("source_tags", ["none", "organization"])
+def test_legacy_shared_source_moves_through_real_provider_checks_without_touching_other_owner(
+    relocation_session: Session, monkeypatch: pytest.MonkeyPatch, source_version: str, source_tags: str
+) -> None:
+
+    run, _, request = seed(relocation_session)
+    source, destination = "legacy-shared-storage", "vs-dev-owner-42"
+    run.arguments = run.arguments.model_copy(update={"properties": AWSResources("us-east-1", source, "runs", 7)})
+    relocation_session.add(run)
+    relocation_session.commit()
+    planned = request["plan"]["runs"][0]
+    planned["scope"]["original_resources"]["s3_bucket"] = source
+    planned["destination_resources"]["s3_bucket"] = destination
+    store = VersionStore(str(run.id))
+    content = b"retained result"
+    store.versions = {source: [(source_version, content)], destination: [("destination-v1", content)]}
+    store.versioning[source] = {} if source_version == "null" else {"Status": "Suspended"}
+    if source_tags == "organization":
+        store.tags[source] = [{"Key": "valsmith:valkyrie-org-id", "Value": str(run.org_id)}]
+    store.tags[destination] = [
+        {"Key": key, "Value": value}
+        for key, value in {
+            "valsmith:environment": "dev",
+            "valsmith:owner-account-id": "42",
+            "valsmith:backup": "true",
+            "valsmith:valkyrie-org-id": str(run.org_id),
+        }.items()
+    ]
+    store.unrelated[source, f"benchmarks/{uuid4()}/other-owner.json"] = b"other owner result"
+    unrelated = dict(store.unrelated)
+    store.fence_statement = {
+        "Sid": "ValSmithOwnerMigration" + request["plan"]["identity"]["operation_id"].replace("-", ""),
+        "Effect": "Deny",
+        "Principal": "*",
+        "Action": ["s3:PutObject", "s3:DeleteObject"],
+        "Resource": [f"arn:aws:s3:::{source}/benchmarks/{run.id}/*"],
+    }
+    clients = Mock()
+    clients.credential_source = "managed"
+    clients.with_region.return_value = clients
+    clients.sts_client.return_value.get_caller_identity.return_value = {"Account": "123456789012"}
+    clients.s3_client.return_value = store
+    sandboxes = Mock()
+    sandboxes.list_sandboxes.return_value = AsyncMock()
+    sandboxes.close = AsyncMock()
+    configuration = Mock()
+    configuration.create_provider.return_value = sandboxes
+
+    def sandbox_configuration(*_arguments: object) -> Mock:
+        return configuration
+
+    monkeypatch.setattr("tracker.run_purge.providers.fetch_sandbox_provider_config", sandbox_configuration)
+    operator = RelocationOperator(relocation_session, RelocationAWSBoundary(clients))
+    asyncio.run(operator.execute(TrackerRequest.model_validate(request)))
+    content_digest = hashlib.sha256(content).hexdigest()
+    request["copied_objects"] = [
+        {
+            "run_id": str(run.id),
+            "key": store.key,
+            "source_bucket": source,
+            "source_version_id": source_version,
+            "destination_bucket": destination,
+            "destination_version_id": "destination-v1",
+            "is_delete_marker": False,
+            "source_sha256": content_digest,
+            "destination_sha256": content_digest,
+            "source_size": len(content),
+            "destination_size": len(content),
+            "is_current": True,
+        }
+    ]
+    request["destination_versions"] = [
+        {
+            "run_id": str(run.id),
+            "bucket": destination,
+            "key": store.key,
+            "version_id": "destination-v1",
+            "is_delete_marker": False,
+            "size": len(content),
+            "sha256": content_digest,
+            "is_current": True,
+            "provenance": "copied",
+        }
+    ]
+    request["action"] = "relocate"
+    response = asyncio.run(operator.execute(TrackerRequest.model_validate(request)))
+    assert response.runs[0].resources.s3_bucket == destination
+    assert store.unrelated == unrelated
+    assert store.versions[source] == [(source_version, content)]
     assert relocation_session.get_one(RunLifecycle, run.id).released_at is None
