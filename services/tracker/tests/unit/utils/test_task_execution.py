@@ -49,6 +49,13 @@ class TestExceptionMessage:
 
         assert message == "Sandbox error: provider unavailable"
 
+    def test_self_referential_cause_chain_terminates(self) -> None:
+        """`raise e from e` (the evaluation re-raise in `_process_task_attempt`) must not loop forever."""
+        exc = RuntimeError("stream closed")
+        exc.__cause__ = exc
+
+        assert _exception_message(exc) == "stream closed"
+
 
 class TestTaskExecution:
     """Task monitoring and tracked task state transitions."""
