@@ -131,6 +131,61 @@ class RuntimeIamTest(unittest.TestCase):
                         )
                     self.assertEqual(actions, expected_actions)
 
+    def test_tracker_archive_reads_are_limited_to_permitted_owner_buckets_and_run_history(self) -> None:
+        for environments in (frozenset[str](), frozenset({"prod"}), frozenset({"dev", "prod"})):
+            with self.subTest(environments=environments):
+                app = cdk.App()
+                stack = cdk.Stack(
+                    app,
+                    "ArchiveRuntimeIamStack",
+                    env=cdk.Environment(account=TEST_AWS_ACCOUNT, region=TEST_AWS_REGION),
+                )
+                bucket = aws_s3.Bucket.from_bucket_name(stack, "ManagedRuntimeBucket", "managed-runtime-bucket")
+                config = ManagedAWSRuntimeConfig(
+                    benchmark_log_group_prefix="/valkyrie/benchmarks",
+                    benchmark_log_retention_days=7,
+                    deployment_role_org_ids=(TEST_MANAGED_ORG_ID,),
+                    managed_storage_org_environments={UUID(TEST_MANAGED_ORG_ID): environments} if environments else {},
+                )
+                create_tracker_task_role(stack, Stage("prod"), bucket, config)
+                create_executor_task_role(stack, Stage("prod"), bucket, config)
+                template = assertions.Template.from_stack(stack)
+
+                for role_name in ("ValkyrieTrackerTaskRole-prod", "ValkyrieExecutorTaskRole-prod"):
+                    role_logical_id, _ = _named_role(template, role_name)
+                    statements = _role_policy_statements(template, role_logical_id)
+                    for action, suffix in (
+                        ("s3:GetBucketOwnershipControls", ""),
+                        ("s3:GetObjectVersion", "/benchmarks/????????-????-????-????-????????????/log-history/*"),
+                    ):
+                        grants = [
+                            statement
+                            for statement in statements
+                            if statement["Effect"] == "Allow" and action in _statement_actions(statement)
+                        ]
+                        expected_count = int(bool(environments) and role_name == "ValkyrieTrackerTaskRole-prod")
+                        self.assertEqual(len(grants), expected_count, (role_name, action))
+                        for grant in grants:
+                            self.assertEqual(
+                                grant["Condition"], {"StringEquals": {"s3:ResourceAccount": TEST_AWS_ACCOUNT}}
+                            )
+                            resources = grant["Resource"]
+                            actual_resources = (
+                                cast(list[JsonObject], resources) if isinstance(resources, list) else [resources]
+                            )
+                            self.assertEqual(
+                                actual_resources,
+                                [
+                                    {
+                                        "Fn::Join": [
+                                            "",
+                                            ["arn:", {"Ref": "AWS::Partition"}, f":s3:::vs-{environment}-*{suffix}"],
+                                        ]
+                                    }
+                                    for environment in sorted(environments)
+                                ],
+                            )
+
     def test_bench_passes_canonical_owner_storage_settings_to_both_services(self) -> None:
         configured_mapping = json.dumps({TEST_MANAGED_ORG_ID: ["prod", "dev"]})
         environment = {
@@ -260,7 +315,8 @@ class RuntimeIamTest(unittest.TestCase):
                 owner_allows = [statement for statement in owner_statements if statement.get("Effect") != "Deny"]
                 owner_denies = [statement for statement in owner_statements if statement.get("Effect") == "Deny"]
 
-                self.assertEqual(len(owner_allows), 3)
+                is_tracker = role_name == "ValkyrieTrackerTaskRole"
+                self.assertEqual(len(owner_allows), 4 if is_tracker else 3)
                 self.assertEqual(len(owner_denies), 1)
                 for statement in owner_allows:
                     self.assertEqual(statement["Condition"], same_account_condition)
@@ -270,6 +326,7 @@ class RuntimeIamTest(unittest.TestCase):
                     for statement in owner_allows
                     if _statement_actions(statement)
                     == {"s3:ListBucket", "s3:GetBucketTagging", "s3:GetBucketVersioning"}
+                    | ({"s3:GetBucketOwnershipControls"} if is_tracker else set())
                 )
                 self.assertEqual(bucket_allow["Resource"], bucket_resources)
                 self.assertNotIn("s3:prefix", json.dumps(bucket_allow.get("Condition", {})))
