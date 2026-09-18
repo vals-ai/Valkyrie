@@ -8,27 +8,22 @@ import zipfile
 from benchmark_service import Sandbox
 
 from tracker.exceptions import SandboxError
-from tracker.runtime.lifecycle import finish_cleanup
 
 
 async def upload_local_agent_artifacts(sandbox: Sandbox, content: bytes) -> None:
     """Transfer a frozen bundle already validated when admitted to the agent library."""
-    stream = io.BytesIO(content)
-    archive = await asyncio.to_thread(zipfile.ZipFile, stream)
-    try:
-        for member in archive.infolist():
-            path = f"/bundle/{member.filename.rstrip('/')}"
-            quoted_path = shlex.quote(path)
-            if member.is_dir():
-                command = f"mkdir -p {quoted_path}"
-            else:
-                data = await finish_cleanup(asyncio.create_task(asyncio.to_thread(archive.read, member)))
-                await sandbox.upload_file(path, data)
-                if not member.external_attr >> 16 & 0o111:
-                    continue
-                command = f"chmod 755 {quoted_path}"
-            result = await sandbox.exec(command)
-            if result.exit_code:
-                raise SandboxError(f"Failed to prepare local agent file {member.filename!r}")
-    finally:
-        archive.close()
+    archive = await asyncio.to_thread(zipfile.ZipFile, io.BytesIO(content))
+    for member in archive.infolist():
+        path = f"/bundle/{member.filename.rstrip('/')}"
+        quoted_path = shlex.quote(path)
+        if member.is_dir():
+            command = f"mkdir -p {quoted_path}"
+        else:
+            data = await asyncio.to_thread(archive.read, member)
+            await sandbox.upload_file(path, data)
+            if not member.external_attr >> 16 & 0o111:
+                continue
+            command = f"chmod 755 {quoted_path}"
+        result = await sandbox.exec(command)
+        if result.exit_code:
+            raise SandboxError(f"Failed to prepare local agent file {member.filename!r}")
