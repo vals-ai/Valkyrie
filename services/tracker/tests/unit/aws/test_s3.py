@@ -4,7 +4,7 @@ Run: uv run pytest tests/unit/aws/test_s3.py
 """
 
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import Any, Literal, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -13,8 +13,9 @@ from botocore.exceptions import ClientError
 
 from tracker.aws import s3 as s3_module
 from tracker.aws.clients import DefaultChainAWSClientProvider
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.s3 import (
+    S3ObjectCopier,
     S3ObjectStore,
     copy_s3_object,
     create_presigned_url,
@@ -109,6 +110,36 @@ class DownloadClient:
         if isinstance(response, ClientError):
             raise response
         return {"Body": DownloadBody(response)}
+
+
+class StaticS3ClientProvider:
+    """Return one recording client for a runtime used by an S3 unit test."""
+
+    def __init__(self, client: AsyncMock, *, credential_source: Literal["access_key", "managed"]) -> None:
+        self._client = client
+        self.credential_source = credential_source
+
+    def s3_client(self) -> AsyncMock:
+        return self._client
+
+
+def _copy_runtime(
+    *,
+    bucket: str,
+    client: AsyncMock,
+    credential_source: Literal["access_key", "managed"],
+    expected_bucket_owner: str | None,
+) -> AWSRuntime:
+    return AWSRuntime(
+        resources=AWSResources(
+            region="us-east-1",
+            s3_bucket=bucket,
+            log_group="test-log-group",
+            log_retention_days=30,
+        ),
+        clients=cast(Any, StaticS3ClientProvider(client, credential_source=credential_source)),
+        expected_bucket_owner=expected_bucket_owner,
+    )
 
 
 async def test_download_many_reuses_one_client_and_skips_provider_failures(
@@ -408,6 +439,160 @@ async def test_versioned_copy_can_be_deleted_exactly(
         Bucket="test-bucket",
         Key="benchmarks/run/demo.zip",
         VersionId="version-1",
+    )
+
+
+async def test_s3_object_copier_guards_both_buckets_and_returns_destination_version() -> None:
+    source_client = AsyncMock()
+    source_client.__aenter__.return_value = source_client
+    source_client.head_object.return_value = {"ContentLength": 1024, "ETag": '"source-etag"'}
+    destination_client = AsyncMock()
+    destination_client.__aenter__.return_value = destination_client
+    destination_client.copy_object.return_value = {"VersionId": "destination-version"}
+    source = _copy_runtime(
+        bucket="shared-library",
+        client=source_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+    destination = _copy_runtime(
+        bucket="owner-runs",
+        client=destination_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+
+    copied = await S3ObjectCopier(source, destination).copy(
+        "agents/demo.zip",
+        "benchmarks/run/demo.zip",
+    )
+    await S3ObjectStore(destination).delete(
+        "benchmarks/run/demo.zip",
+        deletion_token=copied.deletion_token,
+    )
+
+    assert copied.deletion_token == "destination-version"
+    source_client.head_object.assert_awaited_once_with(
+        Bucket="shared-library",
+        Key="agents/demo.zip",
+        ExpectedBucketOwner="123456789012",
+    )
+    destination_client.copy_object.assert_awaited_once_with(
+        Bucket="owner-runs",
+        Key="benchmarks/run/demo.zip",
+        CopySource={"Bucket": "shared-library", "Key": "agents/demo.zip"},
+        CopySourceIfMatch='"source-etag"',
+        ExpectedSourceBucketOwner="123456789012",
+        ExpectedBucketOwner="123456789012",
+    )
+    destination_client.delete_object.assert_awaited_once_with(
+        Bucket="owner-runs",
+        Key="benchmarks/run/demo.zip",
+        VersionId="destination-version",
+        ExpectedBucketOwner="123456789012",
+    )
+    source_client.delete_object.assert_not_awaited()
+
+
+async def test_s3_object_copier_rejects_bundle_over_single_copy_limit() -> None:
+    source_client = AsyncMock()
+    source_client.__aenter__.return_value = source_client
+    source_client.head_object.return_value = {
+        "ContentLength": 5 * 1024**3 + 1,
+        "ETag": '"source-etag"',
+    }
+    destination_client = AsyncMock()
+    destination_client.__aenter__.return_value = destination_client
+    source = _copy_runtime(
+        bucket="shared-library",
+        client=source_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+    destination = _copy_runtime(
+        bucket="owner-runs",
+        client=destination_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+
+    with pytest.raises(S3Error, match="exceeds the 5 GiB single-copy limit"):
+        await S3ObjectCopier(source, destination).copy(
+            "agents/demo.zip",
+            "benchmarks/run/demo.zip",
+        )
+
+    destination_client.copy_object.assert_not_awaited()
+
+
+async def test_s3_object_copier_wraps_source_replacement_failure() -> None:
+    source_client = AsyncMock()
+    source_client.__aenter__.return_value = source_client
+    source_client.head_object.return_value = {"ContentLength": 1024, "ETag": '"old-etag"'}
+    destination_client = AsyncMock()
+    destination_client.__aenter__.return_value = destination_client
+    destination_client.copy_object.side_effect = ClientError(
+        {"Error": {"Code": "PreconditionFailed", "Message": "source changed"}},
+        "CopyObject",
+    )
+    source = _copy_runtime(
+        bucket="shared-library",
+        client=source_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+    destination = _copy_runtime(
+        bucket="owner-runs",
+        client=destination_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+
+    with pytest.raises(S3Error, match="Failed to copy S3 object"):
+        await S3ObjectCopier(source, destination).copy(
+            "agents/demo.zip",
+            "benchmarks/run/demo.zip",
+        )
+
+    destination_client.copy_object.assert_awaited_once_with(
+        Bucket="owner-runs",
+        Key="benchmarks/run/demo.zip",
+        CopySource={"Bucket": "shared-library", "Key": "agents/demo.zip"},
+        CopySourceIfMatch='"old-etag"',
+        ExpectedSourceBucketOwner="123456789012",
+        ExpectedBucketOwner="123456789012",
+    )
+
+
+async def test_s3_object_copier_omits_unset_owner_guards_for_explicit_credentials() -> None:
+    source_client = AsyncMock()
+    source_client.__aenter__.return_value = source_client
+    source_client.head_object.return_value = {"ContentLength": 1024, "ETag": '"source-etag"'}
+    destination_client = AsyncMock()
+    destination_client.__aenter__.return_value = destination_client
+    destination_client.copy_object.return_value = {}
+    source = _copy_runtime(
+        bucket="source",
+        client=source_client,
+        credential_source="access_key",
+        expected_bucket_owner=None,
+    )
+    destination = _copy_runtime(
+        bucket="destination",
+        client=destination_client,
+        credential_source="access_key",
+        expected_bucket_owner=None,
+    )
+
+    copied = await S3ObjectCopier(source, destination).copy("source-key", "destination-key")
+
+    assert copied.deletion_token is None
+    source_client.head_object.assert_awaited_once_with(Bucket="source", Key="source-key")
+    destination_client.copy_object.assert_awaited_once_with(
+        Bucket="destination",
+        Key="destination-key",
+        CopySource={"Bucket": "source", "Key": "source-key"},
+        CopySourceIfMatch='"source-etag"',
     )
 
 

@@ -35,7 +35,10 @@ from executor_protocol import SUPPORTED_PROTOCOL_VERSION, ExecutorTelemetryConte
 from main import app, tracker_service_error_handler
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.clients import DefaultChainAWSClientProvider
+from tracker.aws.resolver import AWSRuntimeResolution
+from tracker.aws.runtime import AWSResources, AWSRuntime
+from tracker.aws.s3 import S3ObjectCopier
 from tracker.runtime.storage import ObjectStore, StoredObject, StoredObjectCopy
 from tracker.database.models import (
     AgentContractRequest,
@@ -58,6 +61,7 @@ from tracker.database.models import (
 )
 from tracker.config import STABLE_QUEUE_NAME
 from tracker.exceptions import TrackerServiceError
+from tracker.runtime.artifacts import copy_agent_to_benchmark as copy_agent_artifact_to_benchmark
 from tracker.types import (
     BenchmarkTableRow,
     FetchBenchmarksRequest,
@@ -92,6 +96,20 @@ def active_executor_release(database_session: Session) -> None:
 async def _verify_single_task_id(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
     """Return the single task used by benchmark start route tests."""
     return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+
+def _managed_test_runtime(bucket: str) -> AWSRuntime:
+    """Build a guarded managed runtime for admission storage tests."""
+    return AWSRuntime(
+        resources=AWSResources(
+            region="us-east-1",
+            s3_bucket=bucket,
+            log_group="deployment-log-group",
+            log_retention_days=30,
+        ),
+        clients=DefaultChainAWSClientProvider(region="us-east-1"),
+        expected_bucket_owner="123456789012",
+    )
 
 
 class TestTrackerAPI:
@@ -794,6 +812,7 @@ class TestTrackerAPI:
 
         if aws_managed:
             monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+            monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
             monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_REGION", "deployment-region")
             monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket")
             monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group")
@@ -1028,6 +1047,170 @@ class TestTrackerAPI:
             f"benchmarks/{copied_benchmark_id}/{contract.name}.zip",
             deletion_token="copy-version",
         )
+
+    async def test_managed_start_reads_shared_library_and_copies_to_run_storage(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        shared_runtime = _managed_test_runtime("shared-library")
+        run_runtime = _managed_test_runtime("owner-runs")
+        reads: list[tuple[str, str]] = []
+        existence_checks: list[tuple[str, str]] = []
+        cross_bucket_copies: list[tuple[str, str, str, str]] = []
+
+        async def record_read(store: object, key: str) -> bytes:
+            runtime = cast(Any, store)._runtime
+            reads.append((runtime.resources.s3_bucket, key))
+
+            return b"agent bundle"
+
+        async def record_exists(store: object, key: str) -> bool:
+            runtime = cast(Any, store)._runtime
+            existence_checks.append((runtime.resources.s3_bucket, key))
+
+            return False
+
+        async def record_cross_bucket_copy(
+            copier: S3ObjectCopier,
+            source_key: str,
+            destination_key: str,
+        ) -> StoredObjectCopy:
+            source_runtime = cast(Any, copier)._source
+            destination_runtime = cast(Any, copier)._destination
+            cross_bucket_copies.append(
+                (
+                    source_runtime.resources.s3_bucket,
+                    destination_runtime.resources.s3_bucket,
+                    source_key,
+                    destination_key,
+                )
+            )
+
+            return StoredObjectCopy(deletion_token="destination-version")
+
+        monkeypatch.setattr(
+            main_module,
+            "resolve_start_aws_runtime",
+            Mock(return_value=AWSRuntimeResolution(run_runtime, None)),
+        )
+        monkeypatch.setattr(
+            main_module,
+            "deployment_aws_runtime",
+            Mock(return_value=shared_runtime),
+            raising=False,
+        )
+        monkeypatch.setattr(main_module.S3ObjectStore, "get_bytes", record_read)
+        monkeypatch.setattr(main_module.S3ObjectStore, "exists", record_exists)
+        monkeypatch.setattr(
+            main_module.S3ObjectStore,
+            "copy",
+            AsyncMock(side_effect=AssertionError("cross-bucket copy must use S3ObjectCopier")),
+        )
+        monkeypatch.setattr(S3ObjectCopier, "copy", record_cross_bucket_copy)
+        monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent_artifact_to_benchmark)
+        monkeypatch.setattr(main_module, "get_contract_from_zip_bytes", Mock(return_value=contract))
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        unresolved_contract = contract.model_copy(update={"install_cmd": "", "run_cmd": ""})
+        request = StartBenchmarkRequest(
+            contract=unresolved_contract,
+            benchmark_name="swebench",
+            task_ids=["task_0"],
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="provider-secret",
+        )
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 200, response.text
+        benchmark_id = response.json()["benchmark_id"]
+        assert reads == [("shared-library", f"agents/{contract.name}.zip")]
+        assert existence_checks == [("owner-runs", f"benchmarks/{benchmark_id}/{contract.name}.zip")]
+        assert cross_bucket_copies == [
+            (
+                "shared-library",
+                "owner-runs",
+                f"agents/{contract.name}.zip",
+                f"benchmarks/{benchmark_id}/{contract.name}.zip",
+            )
+        ]
+        benchmark = database_session.get(Benchmark, UUID(benchmark_id))
+        assert benchmark is not None
+        assert benchmark.arguments.properties == run_runtime.resources
+
+    async def test_managed_start_failure_rolls_back_only_destination_copy_version(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        shared_runtime = _managed_test_runtime("shared-library")
+        run_runtime = _managed_test_runtime("owner-runs")
+        existence_checks: list[tuple[str, str]] = []
+        deletions: list[tuple[str, str, str | None]] = []
+
+        async def record_exists(store: object, key: str) -> bool:
+            runtime = cast(Any, store)._runtime
+            existence_checks.append((runtime.resources.s3_bucket, key))
+
+            return key.startswith("agents/")
+
+        async def record_delete(
+            store: object,
+            key: str,
+            *,
+            deletion_token: str | None = None,
+        ) -> None:
+            runtime = cast(Any, store)._runtime
+            deletions.append((runtime.resources.s3_bucket, key, deletion_token))
+
+        async def create_destination_copy(
+            _copier: S3ObjectCopier,
+            _source_key: str,
+            _destination_key: str,
+        ) -> StoredObjectCopy:
+            return StoredObjectCopy(deletion_token="destination-version")
+
+        def fail_payload_build(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("payload validation failed")
+
+        monkeypatch.setattr(
+            main_module,
+            "resolve_start_aws_runtime",
+            Mock(return_value=AWSRuntimeResolution(run_runtime, None)),
+        )
+        monkeypatch.setattr(
+            main_module,
+            "deployment_aws_runtime",
+            Mock(return_value=shared_runtime),
+            raising=False,
+        )
+        monkeypatch.setattr(main_module.S3ObjectStore, "exists", record_exists)
+        monkeypatch.setattr(main_module.S3ObjectStore, "delete", record_delete)
+        monkeypatch.setattr(S3ObjectCopier, "copy", create_destination_copy)
+        monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent_artifact_to_benchmark)
+        monkeypatch.setattr(main_module, "_process_benchmark_kwargs", fail_payload_build)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            task_ids=["task_0"],
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="provider-secret",
+        )
+
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/start-benchmark",
+            json=request.model_dump(),
+        )
+
+        assert response.status_code == 500
+        assert database_session.exec(select(Benchmark)).all() == []
+        assert existence_checks[0] == ("shared-library", f"agents/{contract.name}.zip")
+        destination_bucket, destination_key = existence_checks[1]
+        assert destination_bucket == "owner-runs"
+        assert deletions == [("owner-runs", destination_key, "destination-version")]
 
     async def test_start_commit_acknowledgement_failure_retains_durable_copy(
         self,
