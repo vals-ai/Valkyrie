@@ -31,7 +31,7 @@ from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
-from tracker.api.dependencies import RunAWSDependency, RunRuntimeDependency
+from tracker.api.dependencies import RunAWSDependency, RunBenchmarkDependency, RunRuntimeDependency
 from tracker.api.filter_options import router as filter_options_router
 from tracker.api.logs import router as logs_router
 from tracker.api.scheduler_overview import router as scheduler_overview_router
@@ -1003,6 +1003,7 @@ async def fetch_benchmark_tasks(
 async def fetch_benchmark(
     benchmark_id: TrackedBenchmarkId,
     runtime: RunRuntimeDependency,
+    benchmark_row: RunBenchmarkDependency,
     connect: bool = Query(default=False),
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
@@ -1020,8 +1021,6 @@ async def fetch_benchmark(
     - 200 OK if benchmark is found
     - 404 Not Found if benchmark is not found
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
-
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
     if connect:
@@ -1306,8 +1305,7 @@ async def preview_results(
 async def check_results_exist(
     benchmark_id: TrackedBenchmarkId,
     runtime: RunRuntimeDependency,
-    session: Session = Depends(get_session),
-    org: Org = Depends(get_current_org),
+    benchmark_row: RunBenchmarkDependency,
 ) -> dict[str, bool]:
     """
     Check if the benchmark's final view already exists in S3.
@@ -1318,8 +1316,6 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
-
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_row.name}.json"
     exists = await runtime.objects.exists(s3_key)
     return {"exists": exists}
