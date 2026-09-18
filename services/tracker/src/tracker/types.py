@@ -502,7 +502,7 @@ class SingleTaskResponse(BaseModel):
     started_at: datetime
     finished_at: datetime | None
     error_message: str | None
-    failure_category: FailureCategory | None
+    failure_category: FailureCategory | None = None
     evaluation_result: dict[str, Any] | None
     agent_caused_exit_reason: str | None
 

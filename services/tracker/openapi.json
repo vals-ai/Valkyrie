@@ -2358,7 +2358,6 @@
           "started_at",
           "finished_at",
           "error_message",
-          "failure_category",
           "evaluation_result",
           "agent_caused_exit_reason"
         ],
