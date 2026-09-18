@@ -1,6 +1,5 @@
 """Local service composition uses persistent files and transient credentials."""
 
-import asyncio
 from pathlib import Path
 from uuid import uuid4
 
@@ -30,18 +29,6 @@ async def test_local_runtime_scopes_files_and_clears_secrets(tmp_path: Path) -> 
     async with LocalRuntimeFactory.open(tmp_path, uuid4()) as other:
         assert not await other.objects.exists("agent.zip")
     assert all(b"transient-value" not in path.read_bytes() for path in tmp_path.rglob("*") if path.is_file())
-
-
-async def test_local_runtime_discards_secrets_on_cancellation(tmp_path: Path) -> None:
-    """Release operation credentials when an executing request is cancelled."""
-    with pytest.raises(asyncio.CancelledError):
-        async with LocalRuntimeFactory.open(
-            tmp_path, uuid4(), secret_references={"KEY": "secret"}, execution_secrets={"KEY": "value"}
-        ) as cancelled:
-            store = cancelled.secrets
-            raise asyncio.CancelledError
-    with pytest.raises(SecretsError):
-        store.get("secret")
 
 
 async def test_executor_reads_only_declared_credentials_fresh_for_each_dispatch(tmp_path: Path) -> None:

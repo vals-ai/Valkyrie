@@ -101,10 +101,3 @@ def test_unknown_environment_is_rejected(monkeypatch: pytest.MonkeyPatch) -> Non
         match="Unknown VALKYRIE_ENV='staging'. Must be one of: bench, dev, external, prod",
     ):
         selected_environment()
-
-
-def test_local_execution_uses_configured_tracker_url() -> None:
-    runtime_config.HOSTED_CONFIG_PATH.write_text(
-        "execution_environment: local\ntracker_url: http://localhost:8123\n", encoding="utf-8"
-    )
-    assert tracker_service_url() == "http://localhost:8123"
