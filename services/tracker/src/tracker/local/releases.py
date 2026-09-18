@@ -82,10 +82,9 @@ def initialize_release(
         artifact_uri=destination.as_uri(),
         artifact_digest=digest,
         protocol_version=manifest.protocol_version,
+        readiness_verified=True,
     )
     register_release(session, candidate)
-    candidate.readiness_verified = True
-    session.add(candidate)
     return promote_release(session, candidate.id)
 
 
