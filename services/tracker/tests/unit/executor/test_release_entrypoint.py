@@ -289,7 +289,7 @@ def test_release_entrypoint_rejects_invalid_release_id_before_reading_secret(mon
     ("argument_index", "invalid_value", "error"),
     [
         (14, "s3://other/releases/git-abc123-def456/executor.pex", "configured S3 bucket"),
-        (16, "3", "Unsupported executor protocol"),
+        (16, "4", "Unsupported executor protocol"),
     ],
 )
 def test_release_entrypoint_rejects_invalid_artifact_identity_before_reading_secret(

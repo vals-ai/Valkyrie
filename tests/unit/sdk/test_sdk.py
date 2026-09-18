@@ -399,12 +399,16 @@ async def test_start_with_managed_storage_rejects_unconfirmed_bucket(
         AWS_SESSION_TOKEN=None,
     )
     async with make_client(handler, config=config) as client:
-        with pytest.raises(ValkyrieRunError, match=str(run_id)):
+        with pytest.raises(ValkyrieRunError, match=str(run_id)) as error:
             await client.runs.start(
                 "sweagent",
                 "swebench",
                 managed_s3_bucket="vs-dev-acme-123",
             )
+
+    assert error.value.run_id == run_id
+    assert ValkyrieRunError("invalid input").run_id is None
+    assert str(ValkyrieRunError("invalid input")) == "invalid input"
 
 
 @pytest.mark.parametrize("conflict", ["properties", "access_keys"])
