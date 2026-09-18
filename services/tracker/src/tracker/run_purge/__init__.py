@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from sqlmodel import Session, col, select
 
 from tracker.database.models import Benchmark, ExecutorDispatch, Org, RunLifecycle
-from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, acquire_hold, require_owned_hold
+from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, require_owned_hold
 from tracker.lifecycle_evidence import (
     DispatchDrain,
     ExternalHostDrain,
@@ -25,6 +25,7 @@ from tracker.run_purge.contracts import (
     PurgeRun,
 )
 from tracker.run_purge.locking import exclusive_operation, verify_database_target
+from tracker.run_purge.predecessor import acquire_deletion_hold, capture_predecessor
 from tracker.run_purge.rows import delete_rows, inventory_rows, verify_foreign_keys, verify_rows_absent
 from tracker.utils.run_control import apply_stop_benchmark
 
@@ -55,6 +56,7 @@ def build_plan(session: Session, identity: OperationIdentity) -> PurgePlan:
             PurgeRun(
                 scope=RunScope(run_id=run_id, original_resources=resources),
                 provider=ProviderLocator(kind=benchmark.arguments.sandbox_provider, secret_name=locator),
+                released_relocation=capture_predecessor(session, identity, run_id),
             )
         )
     return PurgePlan(identity=identity, runs=tuple(runs))
@@ -104,6 +106,7 @@ class PurgeOperator:
             record.released_at is not None
             or checkpoint.child_plan_sha256 != self.plan.digest()
             or checkpoint.provider != run.provider
+            or checkpoint.released_relocation != run.released_relocation
             or record.phase != checkpoint.phase
         ):
             raise LifecycleConflict("Purge checkpoint identity does not match")
@@ -169,7 +172,7 @@ class PurgeOperator:
     async def _prepare(self) -> PurgeReport:
         for run in self.plan.runs:
             await self.boundary.validate(self.plan.identity, run)
-            record = acquire_hold(self.session, identity=self.plan.identity, scope=run.scope, purpose="deletion")
+            record = acquire_deletion_hold(self.session, self.plan.identity, run)
             saved_run = self.session.get(Benchmark, run.scope.run_id)
             if saved_run is not None:
                 self._validate_saved_run(saved_run, run)
@@ -186,6 +189,7 @@ class PurgeOperator:
                 checkpoint = PurgeCheckpoint(
                     child_plan_sha256=self.plan.digest(),
                     provider=run.provider,
+                    released_relocation=run.released_relocation,
                     original_dispatches=tuple(
                         DispatchSnapshot(
                             dispatch_id=dispatch.id,

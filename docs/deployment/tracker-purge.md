@@ -41,8 +41,24 @@ These reuse the shared identity, scope and drain models in
 
 A plan has `identity` and sorted `runs`. Each run has a `scope` with complete
 original saved resources and exact object/log paths, plus a `provider` containing
-only `kind` and `secret_name`. The secret locator is private control data; no
-secret values or benchmark arguments are saved in the plan/checkpoint. A report
+only `kind` and `secret_name`. A run that follows a completed relocation also
+has `released_relocation`: the exact prior operation UUID, SHA-256 hashes of its
+stored identity and scope JSON, and its UTC acquisition/release times. The
+read-only plan captures this from the retained released relocation record. It
+refuses active relocation and permanent deletion records. The current saved
+resources in `scope` describe the destination bucket after relocation; the
+predecessor scope hash binds the previous original-resource record.
+
+Create a new deletion operation and plan only after relocation has completed and
+its hold is released. Prepare locks and refreshes the run and control record,
+compares every planned predecessor fact, then uses the shared explicit
+`replace_released_operation_id` path. An absent, changed, active, permanent, or
+unplanned predecessor is refused before provider deletion. Each run has its own
+predecessor. The tracker does not automatically replace another operation.
+A matching deletion resume uses the original plan and its durable checkpoint;
+it does not need the previous relocation record to remain after replacement.
+
+The secret locator is private control data; no secret values or benchmark arguments are saved in the plan/checkpoint. A report
 contains the shared lifecycle fields, `child_plan_sha256`, and `outcome`:
 `checked` means this invocation completed its requested checks; `incomplete`
 means current verification failed. A `prepared` phase authorizes only the next
@@ -50,8 +66,11 @@ parent handshake. A saved `complete` phase in an incomplete report is not fresh
 proof. The exit code is 0 only after the requested checks pass and the report is
 written; failures return 2. Error output omits provider and SQL payloads.
 
-The child digest is SHA-256 of canonical plan JSON with sorted keys and compact
-separators. It is distinct from the immutable parent plan fingerprint. Both stay
+The child digest is SHA-256 of canonical plan JSON with sorted keys, compact
+separators and absent optional values omitted. In particular, an absent
+`released_relocation` is omitted, so existing plans without this field keep
+their original digest and can resume. Plan output uses the same omission rule.
+The child digest is distinct from the immutable parent plan fingerprint. Both stay
 bound to the durable hold. Changed scope, operation, owner, org, account,
 resources, provider locator or database target is refused.
 
@@ -147,7 +166,8 @@ One session-level PostgreSQL advisory lock per run prevents concurrent purge
 callers across provider calls and transaction commits. The existing run lock
 then the lifecycle record lock protect each checkpoint update. No second fence
 table is created. The nullable text checkpoint retains only the plan digest,
-provider locator, original dispatch facts, drain proof, scoped row IDs, fence
+provider locator, exact planned relocation predecessor, original dispatch facts,
+drain proof, scoped row IDs, fence
 policy digest and phase. The deletion hold and checkpoint survive row removal.
 
 Purge lists all versions and delete markers under the saved

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import AwareDatetime, Field, model_validator
 
 from executor_protocol import ExecutorDispatchStatus
 from tracker.lifecycle import ContractModel, Digest, OperationIdentity, RunScope, SafeIdentity
@@ -18,9 +18,18 @@ class ProviderLocator(ContractModel):
     secret_name: Annotated[str, Field(min_length=1, max_length=2048)]
 
 
+class ReleasedRelocation(ContractModel):
+    operation_id: UUID
+    identity_sha256: Digest
+    scope_sha256: Digest
+    acquired_at: AwareDatetime
+    released_at: AwareDatetime
+
+
 class PurgeRun(ContractModel):
     scope: RunScope
     provider: ProviderLocator
+    released_relocation: ReleasedRelocation | None = None
 
 
 class PurgePlan(ContractModel):
@@ -35,11 +44,16 @@ class PurgePlan(ContractModel):
             raise ValueError("Deletion must use one source account")
         if any(run.scope.original_resources.region != self.identity.region for run in self.runs):
             raise ValueError("Plan regions do not match identity")
+        if any(
+            run.released_relocation is not None and run.released_relocation.operation_id == self.identity.operation_id
+            for run in self.runs
+        ):
+            raise ValueError("Deletion requires a new operation after relocation")
         return self
 
     def digest(self) -> str:
         return hashlib.sha256(
-            json.dumps(self.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
+            json.dumps(self.model_dump(mode="json", exclude_none=True), sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
 
 
@@ -61,6 +75,7 @@ class PurgeCheckpoint(ContractModel):
     schema_version: Literal[1] = 1
     child_plan_sha256: Digest
     provider: ProviderLocator
+    released_relocation: ReleasedRelocation | None = None
     original_dispatches: tuple[DispatchSnapshot, ...]
     dispatch_drain: tuple[DispatchDrain, ...] = ()
     external_host_drain: ExternalHostDrain | None = None

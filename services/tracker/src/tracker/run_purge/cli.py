@@ -24,7 +24,7 @@ def write_plan(path: Path, plan: BaseModel) -> None:
     try:
         with os.fdopen(descriptor, "w") as output:
             os.fchmod(output.fileno(), 0o600)
-            output.write(plan.model_dump_json(indent=2))
+            output.write(plan.model_dump_json(indent=2, exclude_none=True))
             output.flush()
             os.fsync(output.fileno())
         temporary.replace(path)
