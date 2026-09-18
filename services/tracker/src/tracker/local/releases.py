@@ -1,4 +1,4 @@
-"""Initialize local executor releases without replacing an active release on restart."""
+"""Initialize the supplied local executor release for future runs."""
 
 import argparse
 import hashlib
@@ -49,25 +49,24 @@ def initialize_release(
     session: Session,
     manifest_path: Path,
     release_root: Path,
-    *,
-    replace_active: bool = False,
 ) -> ExecutorRelease:
     """Verify and activate a content-addressed artifact, preserving prior releases."""
     reader = FilesystemExecutorArtifactReader(release_root)
     admission = lock_executor_admission(session)
-    if admission.release_id is not None and not replace_active:
-        active = select_active_release(session)
-        with reader.validate(active.artifact_uri).open("rb") as source:
-            if hashlib.file_digest(source, "sha256").hexdigest() != active.artifact_digest:
-                raise ReleaseControlError("Active local executor artifact has an invalid digest")
-        return active
-
     manifest = LocalReleaseManifest.model_validate_json(manifest_path.read_bytes())
     digest = validate_executor_digest(manifest.artifact_digest)
     if manifest.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
         raise ReleaseControlError(f"Unsupported executor protocol version: {manifest.protocol_version}")
     artifact = local_path(manifest_path.parent, manifest.artifact_path)
     destination = _publish_artifact(artifact, reader.root, digest)
+    if admission.release_id is not None:
+        active = select_active_release(session)
+        if (
+            active.artifact_uri == destination.as_uri()
+            and active.artifact_digest == digest
+            and active.protocol_version == manifest.protocol_version
+        ):
+            return active
     candidate = ExecutorRelease(
         id=f"local-{uuid4()}",
         artifact_uri=destination.as_uri(),
@@ -83,15 +82,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--release-root", type=Path, required=True)
-    parser.add_argument("--replace-active", action="store_true", help="Activate a rebuilt executor for future runs")
     args = parser.parse_args()
 
     from tracker.database.session import engine
 
     with Session(engine) as session:
-        release = initialize_release(
-            session, args.manifest.resolve(), args.release_root, replace_active=args.replace_active
-        )
+        release = initialize_release(session, args.manifest.resolve(), args.release_root)
         session.commit()
         print(f"Local executor release ready: {release.id}")
 
