@@ -564,6 +564,36 @@ async def test_s3_object_copier_wraps_source_replacement_failure() -> None:
     )
 
 
+@pytest.mark.parametrize("version_id", [None, "", "null"])
+async def test_managed_s3_object_copier_rejects_missing_destination_version(version_id: str | None) -> None:
+    source_client = AsyncMock()
+    source_client.__aenter__.return_value = source_client
+    source_client.head_object.return_value = {"ContentLength": 1024, "ETag": '"source-etag"'}
+    destination_client = AsyncMock()
+    destination_client.__aenter__.return_value = destination_client
+    destination_client.copy_object.return_value = {} if version_id is None else {"VersionId": version_id}
+    source = _copy_runtime(
+        bucket="shared-library",
+        client=source_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+    destination = _copy_runtime(
+        bucket="owner-runs",
+        client=destination_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+
+    with pytest.raises(S3Error, match="destination version"):
+        await S3ObjectCopier(source, destination).copy(
+            "agents/demo.zip",
+            "benchmarks/run/demo.zip",
+        )
+
+    destination_client.delete_object.assert_not_awaited()
+
+
 async def test_s3_object_copier_omits_unset_owner_guards_for_explicit_credentials() -> None:
     source_client = AsyncMock()
     source_client.__aenter__.return_value = source_client

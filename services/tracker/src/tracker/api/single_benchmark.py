@@ -11,7 +11,7 @@ from tracker.api.parsing import parse_csv
 from tracker.api.dependencies import TrackedBenchmarkId
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
-from tracker.aws.resolver import resolve_run_metadata_aws_runtime
+from tracker.aws.resolver import resolve_run_metadata_aws_runtime, validate_saved_managed_storage_runtime
 from tracker.aws.s3 import create_benchmark_url
 from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
@@ -44,7 +44,7 @@ _STATUS_SORT_PRIORITY = case(
 
 
 @router.get("/{benchmark_id}", response_model=SingleBenchmarkResponse)
-def get_single_benchmark(
+async def get_single_benchmark(
     benchmark_id: TrackedBenchmarkId,
     request: Request,
     org: Org = Depends(get_current_org),
@@ -69,6 +69,9 @@ def get_single_benchmark(
         properties=benchmark.arguments.properties,
         org_id=org.id,
     )
+    if aws_runtime is not None and benchmark.aws_managed:
+        await validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
+
     if aws_runtime:
         aws_resources = aws_runtime.resources
         s3_bucket_url = create_benchmark_url(str(benchmark.id), aws_resources)

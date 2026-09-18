@@ -64,6 +64,7 @@ class StartBenchmarkRequest(BaseModel):
 
     environment: Literal["aws"] = "aws"
     properties: AWSResources | None = None
+    managed_s3_bucket: str | None = None
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
@@ -139,6 +140,7 @@ class StartBenchmarkResponse(ResponseModel):
     task_count: int
     cloudwatch_url: str
     s3_bucket_url: str
+    storage_bucket: str | None = None
     executor_release_id: str | None = None
     current_execution_release_id: str | None = None
     executor_artifact_digest: str | None = None
@@ -152,6 +154,7 @@ class FetchBenchmarkResponse(ResponseModel):
     benchmark_id: UUID
     details: BenchmarkDetails
     s3_bucket_url: str
+    storage_bucket: str | None = None
     label: str | None = None
     final_score: float | None = None
     error_message: str | None = None
@@ -226,6 +229,7 @@ class FetchBenchmarkMetadataResponse(ResponseModel):
     benchmark_id: UUID
     benchmark_name: str
     benchmark_arguments: BenchmarkArguments
+    storage_bucket: str | None = None
     started_by_email: str | None = None
     executor_release_id: str | None = None
     current_execution_release_id: str | None = None
