@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import signal
-import shutil
 import sys
 import tempfile
 import urllib.request
@@ -532,11 +531,8 @@ def _required_string(payload: Mapping[str, object], key: str) -> str:
 
 
 def verify_file_digest(path: Path, expected_digest: str) -> None:
-    digest = hashlib.sha256()
     with path.open("rb") as artifact:
-        for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
-            digest.update(chunk)
-    actual_digest = digest.hexdigest()
+        actual_digest = hashlib.file_digest(artifact, "sha256").hexdigest()
     if actual_digest != expected_digest:
         raise ValueError(f"Executor artifact digest mismatch: expected {expected_digest}, got {actual_digest}")
 
@@ -587,11 +583,13 @@ class ExecutorSupervisor:
         return await finish_cleanup(asyncio.create_task(asyncio.to_thread(self._prepare_artifact, dispatch)))
 
     def _prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
-        if self.artifact_reader is not None:
-            self.artifact_reader.validate(dispatch.artifact_uri)
-        else:
-            validate_executor_artifact_uri(dispatch.artifact_uri, self.artifact_bucket, self.artifact_prefix)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        if self.artifact_reader is not None:
+            artifact_path = self.artifact_reader.validate(dispatch.artifact_uri)
+            verify_file_digest(artifact_path, dispatch.artifact_digest)
+            return artifact_path
+
+        bucket, key = validate_executor_artifact_uri(dispatch.artifact_uri, self.artifact_bucket, self.artifact_prefix)
         artifact_path = self.cache_dir / f"{dispatch.artifact_digest}.pex"
         try:
             verify_file_digest(artifact_path, dispatch.artifact_digest)
@@ -602,21 +600,11 @@ class ExecutorSupervisor:
 
         with tempfile.TemporaryDirectory(dir=self.cache_dir) as staging:
             temporary_path = Path(staging) / "executor.pex"
-            if self.artifact_reader is not None:
-                with (
-                    self.artifact_reader.open(dispatch.artifact_uri) as source,
-                    temporary_path.open("wb") as destination,
-                ):
-                    shutil.copyfileobj(source, destination)
-            else:
-                bucket, key = validate_executor_artifact_uri(
-                    dispatch.artifact_uri, self.artifact_bucket, self.artifact_prefix
-                )
-                client = self.s3_client or cast(
-                    S3Client,
-                    boto3.client("s3"),  # pyright: ignore[reportUnknownMemberType]
-                )
-                client.download_file(bucket, key, str(temporary_path))
+            client = self.s3_client or cast(
+                S3Client,
+                boto3.client("s3"),  # pyright: ignore[reportUnknownMemberType]
+            )
+            client.download_file(bucket, key, str(temporary_path))
             verify_file_digest(temporary_path, dispatch.artifact_digest)
             temporary_path.chmod(temporary_path.stat().st_mode | 0o111)
             temporary_path.replace(artifact_path)
