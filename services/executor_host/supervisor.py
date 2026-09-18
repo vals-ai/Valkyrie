@@ -586,8 +586,6 @@ class ExecutorSupervisor:
         try:
             with self.artifact_reader.open(dispatch.artifact_uri) as source, temporary_path.open("wb") as destination:
                 shutil.copyfileobj(source, destination)
-                destination.flush()
-                os.fsync(destination.fileno())
             verify_file_digest(temporary_path, dispatch.artifact_digest)
             temporary_path.chmod(temporary_path.stat().st_mode | 0o111)
             temporary_path.replace(artifact_path)
