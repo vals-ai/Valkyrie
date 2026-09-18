@@ -7,6 +7,7 @@ from sqlmodel import Session, col, select
 
 from tracker.database.models import Benchmark, BenchmarkStatus, ExecutorDispatch, ExecutorDispatchStatus
 from tracker.exceptions import ExecutionAuthorityRevoked
+from tracker.lifecycle import active_hold
 
 
 @dataclass(frozen=True)
@@ -23,10 +24,14 @@ def lock_execution_authority(
 ) -> Benchmark:
     """Lock the benchmark and prove that the exact dispatch remains authoritative."""
     benchmark = session.exec(
-        select(Benchmark).where(col(Benchmark.id) == authority.benchmark_id).with_for_update()
+        select(Benchmark)
+        .where(col(Benchmark.id) == authority.benchmark_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
     ).one_or_none()
     if (
         benchmark is None
+        or active_hold(session, authority.benchmark_id) is not None
         or benchmark.status == BenchmarkStatus.STOPPED
         or (require_in_progress and benchmark.status not in (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING))
     ):

@@ -50,6 +50,7 @@ class FakeDispatchStore:
         self.authority_checks: list[DispatchAuthority] = []
         self.terminalized: list[DispatchAuthority] = []
         self.finished: list[DispatchAuthority] = []
+        self.exited: list[DispatchAuthority] = []
         self.heartbeats: list[DispatchAuthority] = []
         self.authority: DispatchAuthority | None = None
 
@@ -82,6 +83,9 @@ class FakeDispatchStore:
         _ = task_ids
         self.terminalized.append(authority)
         return True
+
+    async def acknowledge_exit(self, authority: DispatchAuthority) -> None:
+        self.exited.append(authority)
 
     async def finish(self, authority: DispatchAuthority) -> bool:
         self.finished.append(authority)
@@ -327,7 +331,8 @@ async def test_postgres_claim_is_status_fenced_and_returns_authority(
         dispatch_id="dispatch-1",
         benchmark_id="benchmark-1",
     )
-    statement, parameters = cursor.statements[0]
+    statement, parameters = cursor.statements[1]
+    assert "FOR UPDATE" in cursor.statements[0][0]
     assert "UPDATE executordispatch AS dispatch" in statement
     assert "FROM benchmark" in statement
     assert "benchmark.status = 'IN_PROGRESS'" in statement
@@ -364,7 +369,7 @@ async def test_postgres_authority_and_completion_are_fenced(
     finish_statement, finish_parameters = cursor.statements[2]
     assert "dispatch.status = 'RUNNING'" in authority_statement
     assert "benchmark.status != 'STOPPED'" in authority_statement
-    assert authority_parameters == ("dispatch-1",)
+    assert authority_parameters == ("dispatch-1", "benchmark-1")
     assert "FOR UPDATE" in finish_lock_statement
     assert finish_lock_parameters == ("benchmark-1",)
     assert "SET status = 'FINISHED'" in finish_statement
@@ -580,6 +585,7 @@ async def test_duplicate_dispatch_claim_does_not_launch_again(tmp_path: Path) ->
 
     assert len(store.claimed) == 2
     assert len(store.finished) == 1
+    assert store.exited == [store.authority]
 
 
 @pytest.mark.asyncio
@@ -1162,3 +1168,83 @@ def test_host_accepts_current_and_pinned_legacy_protocols(protocol_version: str)
     )
     assert dispatch.protocol_version == protocol_version
     assert dispatch.release_id == "immutable-release"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["normal", "failure", "authority", "cancel", "termination_failure", "ack_failure"])
+async def test_exit_receipt_requires_awaited_child_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    marker = tmp_path / "started"
+    content = (
+        f"from pathlib import Path\nimport time\nPath({str(marker)!r}).touch()\n"
+        + (
+            "time.sleep(60)\n"
+            if mode in ("authority", "cancel", "termination_failure")
+            else "raise SystemExit(1)\n"
+            if mode == "failure"
+            else ""
+        )
+    ).encode()
+    supervisor = _supervisor(tmp_path, content=content)
+    supervisor.authority_check_interval = 0.01
+    monkeypatch.setattr(supervisor_module, "_AUTHORITY_LOSS_GRACE_SECONDS", 0.01)
+    dispatch = _dispatch(digest=hashlib.sha256(content).hexdigest())
+    artifact = await supervisor.prepare_artifact(dispatch)
+    receipts: list[str] = []
+    processes: list[asyncio.subprocess.Process] = []
+    original_spawn = asyncio.create_subprocess_exec
+
+    async def spawn(*args: str, **kwargs: object) -> asyncio.subprocess.Process:
+        process = await original_spawn(*args, **kwargs)  # type: ignore[arg-type]
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+    async def is_current() -> bool:
+        return not (mode == "authority" and marker.exists())
+
+    async def acknowledge() -> None:
+        assert processes[0].returncode is not None
+        if mode == "ack_failure":
+            raise OSError("receipt unavailable")
+        receipts.append("exit")
+
+    if mode == "termination_failure":
+
+        async def fail_termination(_process: asyncio.subprocess.Process) -> None:
+            raise OSError("termination failed")
+
+        monkeypatch.setattr(supervisor_module, "_terminate_process_group", fail_termination)
+
+    task = asyncio.create_task(
+        supervisor.run(
+            artifact,
+            dispatch,
+            process_payload=_process_payload(),
+            authority=DispatchAuthority("dispatch-1", "benchmark-1"),
+            is_current=is_current,
+            acknowledge_exit=acknowledge,
+        )
+    )
+    try:
+        if mode in ("cancel", "termination_failure"):
+            async with asyncio.timeout(5):
+                while not marker.exists():
+                    await asyncio.sleep(0.01)
+            task.cancel()
+        if mode == "normal":
+            await task
+        elif mode == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises((RuntimeError, OSError)):
+                await task
+        assert receipts == ([] if mode in ("termination_failure", "ack_failure") else ["exit"])
+    finally:
+        for process in processes:
+            if process.returncode is None:
+                process.kill()
+            await process.wait()

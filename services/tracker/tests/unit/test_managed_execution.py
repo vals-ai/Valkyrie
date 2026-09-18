@@ -5,8 +5,9 @@ Run: uv run pytest tests/unit/test_managed_execution.py
 
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock
 from uuid import UUID, uuid4
 
 import pytest
@@ -21,15 +22,15 @@ from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.resolver import ManagedAWSEligibilityError
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
-from tracker.runtime.services import RuntimeServices
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org, RunLifecycle
 from tracker.exceptions import TrackerServiceError
+from tracker.lifecycle import LifecycleConflict
+from tracker.runtime.services import RuntimeServices
 from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmarkRequest
 from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
 from tracker.utils.run_orchestration import (
     _parse_queued_execution,  # pyright: ignore[reportPrivateUsage]
 )
-
 
 _TASK_IDS = ["task-1", "task-2"]
 _EXPECTED_BUCKET_OWNER = "123456789012"
@@ -618,3 +619,31 @@ async def test_v2_null_resources_reject_owner_deployment_fallback(
         )
 
     validation.assert_not_awaited()
+
+
+async def test_delayed_payload_is_rejected_before_runtime_setup(
+    contract: AgentContractRequest,
+    database_session: Session,
+    process_benchmark_env: None,
+    executor_authority_kwargs: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _managed_request(contract)
+    benchmark = _persist_benchmark(database_session, request, aws_managed=True)
+    authority = executor_authority_kwargs(benchmark)
+    database_session.add(
+        RunLifecycle(
+            run_id=benchmark.id,
+            identity_json="{}",
+            scope_json="{}",
+            purpose="deletion",
+            phase="held",
+            acquired_at=datetime.now(UTC),
+        )
+    )
+    database_session.commit()
+    setup = Mock(side_effect=AssertionError("provider setup must not run"))
+    monkeypatch.setattr("tracker.utils.run_orchestration._parse_queued_execution", setup)
+    with pytest.raises(LifecycleConflict):
+        await process_benchmark(execution_context_json=_execution_context(request, benchmark.id), **authority)
+    setup.assert_not_called()

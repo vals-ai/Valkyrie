@@ -13,7 +13,7 @@ from pydantic import (
     field_validator,
     model_serializer,
 )
-from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
+from sqlalchemy import Boolean, Connection, Dialect, Index, Text, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
     JSON,
@@ -299,11 +299,30 @@ class ExecutorDispatch(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    process_exited_at: datetime | None = None
     assigned_task_ids: list[str] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     claim_deadline_at: datetime | None = None
     heartbeat_at: datetime | None = None
     lease_expires_at: datetime | None = None
     failure_reason: str | None = None
+
+
+class RunLifecycle(SQLModel, table=True):
+    """Minimal durable fence, deliberately independent of Benchmark and Org FKs."""
+
+    __table_args__ = (
+        CheckConstraint("purpose IN ('relocation', 'deletion')", name="lifecycle_purpose"),
+        CheckConstraint("purpose != 'deletion' OR released_at IS NULL", name="deletion_hold_permanent"),
+    )
+
+    run_id: UUID = Field(primary_key=True)
+    identity_json: str
+    scope_json: str
+    purpose: str
+    phase: str
+    acquired_at: datetime
+    released_at: datetime | None = None
+    checkpoint_json: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
 
 
 class Benchmark(SQLModel, table=True):

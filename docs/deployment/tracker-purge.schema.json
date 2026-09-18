@@ -1,0 +1,1383 @@
+{
+  "PurgePlan": {
+    "$defs": {
+      "AWSResources": {
+        "additionalProperties": false,
+        "properties": {
+          "region": {
+            "minLength": 1,
+            "title": "Region",
+            "type": "string"
+          },
+          "s3_bucket": {
+            "minLength": 1,
+            "title": "S3 Bucket",
+            "type": "string"
+          },
+          "log_group": {
+            "title": "Log Group",
+            "type": "string"
+          },
+          "log_retention_days": {
+            "exclusiveMinimum": 0,
+            "title": "Log Retention Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "region",
+          "s3_bucket",
+          "log_group",
+          "log_retention_days"
+        ],
+        "title": "AWSResources",
+        "type": "object"
+      },
+      "OperationIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "parent_plan_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Parent Plan Sha256",
+            "type": "string"
+          },
+          "github_owner_id": {
+            "exclusiveMinimum": 0,
+            "title": "Github Owner Id",
+            "type": "integer"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "source_aws_account_id": {
+            "pattern": "^[0-9]{12}$",
+            "title": "Source Aws Account Id",
+            "type": "string"
+          },
+          "destination_aws_account_id": {
+            "pattern": "^[0-9]{12}$",
+            "title": "Destination Aws Account Id",
+            "type": "string"
+          },
+          "region": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Region",
+            "type": "string"
+          },
+          "environment": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Environment",
+            "type": "string"
+          },
+          "database_target": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Database Target",
+            "type": "string"
+          },
+          "run_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Run Ids",
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "operation_id",
+          "parent_plan_sha256",
+          "github_owner_id",
+          "org_id",
+          "source_aws_account_id",
+          "destination_aws_account_id",
+          "region",
+          "environment",
+          "database_target",
+          "run_ids"
+        ],
+        "title": "OperationIdentity",
+        "type": "object"
+      },
+      "ProviderLocator": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Kind",
+            "type": "string"
+          },
+          "secret_name": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Secret Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "secret_name"
+        ],
+        "title": "ProviderLocator",
+        "type": "object"
+      },
+      "PurgeRun": {
+        "additionalProperties": false,
+        "properties": {
+          "scope": {
+            "$ref": "#/$defs/RunScope"
+          },
+          "provider": {
+            "$ref": "#/$defs/ProviderLocator"
+          },
+          "released_relocation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ReleasedRelocation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "scope",
+          "provider"
+        ],
+        "title": "PurgeRun",
+        "type": "object"
+      },
+      "ReleasedRelocation": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "identity_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Identity Sha256",
+            "type": "string"
+          },
+          "scope_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Scope Sha256",
+            "type": "string"
+          },
+          "acquired_at": {
+            "format": "date-time",
+            "title": "Acquired At",
+            "type": "string"
+          },
+          "released_at": {
+            "format": "date-time",
+            "title": "Released At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "identity_sha256",
+          "scope_sha256",
+          "acquired_at",
+          "released_at"
+        ],
+        "title": "ReleasedRelocation",
+        "type": "object"
+      },
+      "RunScope": {
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "original_resources": {
+            "$ref": "#/$defs/AWSResources"
+          },
+          "object_prefix": {
+            "default": "",
+            "title": "Object Prefix",
+            "type": "string"
+          },
+          "log_group": {
+            "default": "",
+            "title": "Log Group",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "original_resources"
+        ],
+        "title": "RunScope",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "identity": {
+        "$ref": "#/$defs/OperationIdentity"
+      },
+      "runs": {
+        "items": {
+          "$ref": "#/$defs/PurgeRun"
+        },
+        "title": "Runs",
+        "type": "array"
+      }
+    },
+    "required": [
+      "identity",
+      "runs"
+    ],
+    "title": "PurgePlan",
+    "type": "object"
+  },
+  "PurgeReport": {
+    "$defs": {
+      "AWSResources": {
+        "additionalProperties": false,
+        "properties": {
+          "region": {
+            "minLength": 1,
+            "title": "Region",
+            "type": "string"
+          },
+          "s3_bucket": {
+            "minLength": 1,
+            "title": "S3 Bucket",
+            "type": "string"
+          },
+          "log_group": {
+            "title": "Log Group",
+            "type": "string"
+          },
+          "log_retention_days": {
+            "exclusiveMinimum": 0,
+            "title": "Log Retention Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "region",
+          "s3_bucket",
+          "log_group",
+          "log_retention_days"
+        ],
+        "title": "AWSResources",
+        "type": "object"
+      },
+      "CopiedObject": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "minLength": 1,
+            "title": "Key",
+            "type": "string"
+          },
+          "source_version_id": {
+            "minLength": 1,
+            "title": "Source Version Id",
+            "type": "string"
+          },
+          "destination_version_id": {
+            "minLength": 1,
+            "title": "Destination Version Id",
+            "type": "string"
+          },
+          "checksum_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checksum Sha256"
+          },
+          "state": {
+            "enum": [
+              "version",
+              "current_object",
+              "current_delete_marker",
+              "delete_marker"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "source_version_id",
+          "destination_version_id",
+          "checksum_sha256",
+          "state"
+        ],
+        "title": "CopiedObject",
+        "type": "object"
+      },
+      "DispatchDrain": {
+        "additionalProperties": false,
+        "properties": {
+          "dispatch_id": {
+            "format": "uuid",
+            "title": "Dispatch Id",
+            "type": "string"
+          },
+          "provenance": {
+            "enum": [
+              "host_process_exit",
+              "verified_finished_contract",
+              "held_unclaimed",
+              "externally_confirmed_host_drain",
+              "pending"
+            ],
+            "title": "Provenance",
+            "type": "string"
+          },
+          "observed_exit_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Observed Exit At"
+          }
+        },
+        "required": [
+          "dispatch_id",
+          "provenance"
+        ],
+        "title": "DispatchDrain",
+        "type": "object"
+      },
+      "ExternalHostDrain": {
+        "additionalProperties": false,
+        "properties": {
+          "provenance": {
+            "const": "externally_confirmed_host_drain",
+            "title": "Provenance",
+            "type": "string"
+          },
+          "identity": {
+            "$ref": "#/$defs/OperationIdentity"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "hold_acquired_at": {
+            "format": "date-time",
+            "title": "Hold Acquired At",
+            "type": "string"
+          },
+          "dispatch_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Dispatch Ids",
+            "type": "array"
+          },
+          "host_inventory": {
+            "items": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+              "type": "string"
+            },
+            "title": "Host Inventory",
+            "type": "array"
+          },
+          "deployed_host_contract": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Deployed Host Contract",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "verifier": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Verifier",
+            "type": "string"
+          },
+          "evidence_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Evidence Sha256",
+            "type": "string"
+          },
+          "confirmation": {
+            "const": "all_inventory_hosts_terminated_and_old_claims_disabled",
+            "title": "Confirmation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provenance",
+          "identity",
+          "run_id",
+          "hold_acquired_at",
+          "dispatch_ids",
+          "host_inventory",
+          "deployed_host_contract",
+          "observed_at",
+          "verifier",
+          "evidence_sha256",
+          "confirmation"
+        ],
+        "title": "ExternalHostDrain",
+        "type": "object"
+      },
+      "HostContractObservation": {
+        "additionalProperties": false,
+        "description": "Built by the operator after inspecting the complete deployed host inventory.",
+        "properties": {
+          "contract": {
+            "const": "stable-host-lifecycle-v1",
+            "title": "Contract",
+            "type": "string"
+          },
+          "deployment_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Deployment Sha256",
+            "type": "string"
+          },
+          "host_inventory": {
+            "items": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Host Inventory",
+            "type": "array",
+            "uniqueItems": true
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "acknowledgement_required_since": {
+            "format": "date-time",
+            "title": "Acknowledgement Required Since",
+            "type": "string"
+          },
+          "verifier": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Verifier",
+            "type": "string"
+          },
+          "legacy_dispatch_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Legacy Dispatch Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "contract",
+          "deployment_sha256",
+          "host_inventory",
+          "observed_at",
+          "acknowledgement_required_since",
+          "verifier"
+        ],
+        "title": "HostContractObservation",
+        "type": "object"
+      },
+      "OperationIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "parent_plan_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Parent Plan Sha256",
+            "type": "string"
+          },
+          "github_owner_id": {
+            "exclusiveMinimum": 0,
+            "title": "Github Owner Id",
+            "type": "integer"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "source_aws_account_id": {
+            "pattern": "^[0-9]{12}$",
+            "title": "Source Aws Account Id",
+            "type": "string"
+          },
+          "destination_aws_account_id": {
+            "pattern": "^[0-9]{12}$",
+            "title": "Destination Aws Account Id",
+            "type": "string"
+          },
+          "region": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Region",
+            "type": "string"
+          },
+          "environment": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Environment",
+            "type": "string"
+          },
+          "database_target": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Database Target",
+            "type": "string"
+          },
+          "run_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Run Ids",
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "operation_id",
+          "parent_plan_sha256",
+          "github_owner_id",
+          "org_id",
+          "source_aws_account_id",
+          "destination_aws_account_id",
+          "region",
+          "environment",
+          "database_target",
+          "run_ids"
+        ],
+        "title": "OperationIdentity",
+        "type": "object"
+      },
+      "RunReport": {
+        "additionalProperties": false,
+        "properties": {
+          "scope": {
+            "$ref": "#/$defs/RunScope"
+          },
+          "phase": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Phase",
+            "type": "string"
+          },
+          "destination_resources": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AWSResources"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "copied_objects": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/CopiedObject"
+            },
+            "title": "Copied Objects",
+            "type": "array"
+          },
+          "dispatch_drain": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/DispatchDrain"
+            },
+            "title": "Dispatch Drain",
+            "type": "array"
+          },
+          "external_host_drain": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ExternalHostDrain"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "scope",
+          "phase"
+        ],
+        "title": "RunReport",
+        "type": "object"
+      },
+      "RunScope": {
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "original_resources": {
+            "$ref": "#/$defs/AWSResources"
+          },
+          "object_prefix": {
+            "default": "",
+            "title": "Object Prefix",
+            "type": "string"
+          },
+          "log_group": {
+            "default": "",
+            "title": "Log Group",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "original_resources"
+        ],
+        "title": "RunScope",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "identity": {
+        "$ref": "#/$defs/OperationIdentity"
+      },
+      "purpose": {
+        "enum": [
+          "relocation",
+          "deletion"
+        ],
+        "title": "Purpose",
+        "type": "string"
+      },
+      "observed_at": {
+        "format": "date-time",
+        "title": "Observed At",
+        "type": "string"
+      },
+      "host_contract": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/HostContractObservation"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "runs": {
+        "items": {
+          "$ref": "#/$defs/RunReport"
+        },
+        "title": "Runs",
+        "type": "array"
+      },
+      "child_plan_sha256": {
+        "pattern": "^[0-9a-f]{64}$",
+        "title": "Child Plan Sha256",
+        "type": "string"
+      },
+      "outcome": {
+        "enum": [
+          "checked",
+          "incomplete"
+        ],
+        "title": "Outcome",
+        "type": "string"
+      }
+    },
+    "required": [
+      "identity",
+      "purpose",
+      "observed_at",
+      "runs",
+      "child_plan_sha256",
+      "outcome"
+    ],
+    "title": "PurgeReport",
+    "type": "object"
+  },
+  "FenceReceipts": {
+    "$defs": {
+      "FenceReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "identity": {
+            "$ref": "#/$defs/OperationIdentity"
+          },
+          "bucket": {
+            "title": "Bucket",
+            "type": "string"
+          },
+          "policy_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Policy Sha256",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "write_probe": {
+            "$ref": "#/$defs/WriteProbe"
+          }
+        },
+        "required": [
+          "identity",
+          "bucket",
+          "policy_sha256",
+          "observed_at",
+          "write_probe"
+        ],
+        "title": "FenceReceipt",
+        "type": "object"
+      },
+      "OperationIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "parent_plan_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Parent Plan Sha256",
+            "type": "string"
+          },
+          "github_owner_id": {
+            "exclusiveMinimum": 0,
+            "title": "Github Owner Id",
+            "type": "integer"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "source_aws_account_id": {
+            "pattern": "^[0-9]{12}$",
+            "title": "Source Aws Account Id",
+            "type": "string"
+          },
+          "destination_aws_account_id": {
+            "pattern": "^[0-9]{12}$",
+            "title": "Destination Aws Account Id",
+            "type": "string"
+          },
+          "region": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Region",
+            "type": "string"
+          },
+          "environment": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Environment",
+            "type": "string"
+          },
+          "database_target": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Database Target",
+            "type": "string"
+          },
+          "run_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Run Ids",
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "operation_id",
+          "parent_plan_sha256",
+          "github_owner_id",
+          "org_id",
+          "source_aws_account_id",
+          "destination_aws_account_id",
+          "region",
+          "environment",
+          "database_target",
+          "run_ids"
+        ],
+        "title": "OperationIdentity",
+        "type": "object"
+      },
+      "WriteProbe": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "outcome": {
+            "const": "AccessDenied",
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "outcome"
+        ],
+        "title": "WriteProbe",
+        "type": "object"
+      }
+    },
+    "items": {
+      "$ref": "#/$defs/FenceReceipt"
+    },
+    "type": "array"
+  },
+  "PurgeCheckpoint": {
+    "$defs": {
+      "DispatchDrain": {
+        "additionalProperties": false,
+        "properties": {
+          "dispatch_id": {
+            "format": "uuid",
+            "title": "Dispatch Id",
+            "type": "string"
+          },
+          "provenance": {
+            "enum": [
+              "host_process_exit",
+              "verified_finished_contract",
+              "held_unclaimed",
+              "externally_confirmed_host_drain",
+              "pending"
+            ],
+            "title": "Provenance",
+            "type": "string"
+          },
+          "observed_exit_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Observed Exit At"
+          }
+        },
+        "required": [
+          "dispatch_id",
+          "provenance"
+        ],
+        "title": "DispatchDrain",
+        "type": "object"
+      },
+      "DispatchSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "dispatch_id": {
+            "format": "uuid",
+            "title": "Dispatch Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/$defs/ExecutorDispatchStatus"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "process_exited_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Process Exited At"
+          }
+        },
+        "required": [
+          "dispatch_id",
+          "status",
+          "started_at",
+          "process_exited_at"
+        ],
+        "title": "DispatchSnapshot",
+        "type": "object"
+      },
+      "ExecutorDispatchStatus": {
+        "enum": [
+          "QUEUED",
+          "RUNNING",
+          "FINISHED",
+          "FAILED"
+        ],
+        "title": "ExecutorDispatchStatus",
+        "type": "string"
+      },
+      "ExternalHostDrain": {
+        "additionalProperties": false,
+        "properties": {
+          "provenance": {
+            "const": "externally_confirmed_host_drain",
+            "title": "Provenance",
+            "type": "string"
+          },
+          "identity": {
+            "$ref": "#/$defs/OperationIdentity"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "hold_acquired_at": {
+            "format": "date-time",
+            "title": "Hold Acquired At",
+            "type": "string"
+          },
+          "dispatch_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Dispatch Ids",
+            "type": "array"
+          },
+          "host_inventory": {
+            "items": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+              "type": "string"
+            },
+            "title": "Host Inventory",
+            "type": "array"
+          },
+          "deployed_host_contract": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Deployed Host Contract",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "verifier": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Verifier",
+            "type": "string"
+          },
+          "evidence_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Evidence Sha256",
+            "type": "string"
+          },
+          "confirmation": {
+            "const": "all_inventory_hosts_terminated_and_old_claims_disabled",
+            "title": "Confirmation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provenance",
+          "identity",
+          "run_id",
+          "hold_acquired_at",
+          "dispatch_ids",
+          "host_inventory",
+          "deployed_host_contract",
+          "observed_at",
+          "verifier",
+          "evidence_sha256",
+          "confirmation"
+        ],
+        "title": "ExternalHostDrain",
+        "type": "object"
+      },
+      "OperationIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "parent_plan_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Parent Plan Sha256",
+            "type": "string"
+          },
+          "github_owner_id": {
+            "exclusiveMinimum": 0,
+            "title": "Github Owner Id",
+            "type": "integer"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "source_aws_account_id": {
+            "pattern": "^[0-9]{12}$",
+            "title": "Source Aws Account Id",
+            "type": "string"
+          },
+          "destination_aws_account_id": {
+            "pattern": "^[0-9]{12}$",
+            "title": "Destination Aws Account Id",
+            "type": "string"
+          },
+          "region": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Region",
+            "type": "string"
+          },
+          "environment": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Environment",
+            "type": "string"
+          },
+          "database_target": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Database Target",
+            "type": "string"
+          },
+          "run_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Run Ids",
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "operation_id",
+          "parent_plan_sha256",
+          "github_owner_id",
+          "org_id",
+          "source_aws_account_id",
+          "destination_aws_account_id",
+          "region",
+          "environment",
+          "database_target",
+          "run_ids"
+        ],
+        "title": "OperationIdentity",
+        "type": "object"
+      },
+      "ProviderLocator": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "title": "Kind",
+            "type": "string"
+          },
+          "secret_name": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Secret Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "secret_name"
+        ],
+        "title": "ProviderLocator",
+        "type": "object"
+      },
+      "ReleasedRelocation": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "identity_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Identity Sha256",
+            "type": "string"
+          },
+          "scope_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Scope Sha256",
+            "type": "string"
+          },
+          "acquired_at": {
+            "format": "date-time",
+            "title": "Acquired At",
+            "type": "string"
+          },
+          "released_at": {
+            "format": "date-time",
+            "title": "Released At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "identity_sha256",
+          "scope_sha256",
+          "acquired_at",
+          "released_at"
+        ],
+        "title": "ReleasedRelocation",
+        "type": "object"
+      },
+      "RowScope": {
+        "additionalProperties": false,
+        "properties": {
+          "table": {
+            "enum": [
+              "benchmark",
+              "task",
+              "evaluationresult",
+              "errorresult",
+              "finalevaluation",
+              "executordispatch",
+              "taskbreakdown"
+            ],
+            "title": "Table",
+            "type": "string"
+          },
+          "ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "table",
+          "ids"
+        ],
+        "title": "RowScope",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "schema_version": {
+        "const": 1,
+        "default": 1,
+        "title": "Schema Version",
+        "type": "integer"
+      },
+      "child_plan_sha256": {
+        "pattern": "^[0-9a-f]{64}$",
+        "title": "Child Plan Sha256",
+        "type": "string"
+      },
+      "provider": {
+        "$ref": "#/$defs/ProviderLocator"
+      },
+      "released_relocation": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ReleasedRelocation"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "original_dispatches": {
+        "items": {
+          "$ref": "#/$defs/DispatchSnapshot"
+        },
+        "title": "Original Dispatches",
+        "type": "array"
+      },
+      "dispatch_drain": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/DispatchDrain"
+        },
+        "title": "Dispatch Drain",
+        "type": "array"
+      },
+      "external_host_drain": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ExternalHostDrain"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "rows": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/RowScope"
+        },
+        "title": "Rows",
+        "type": "array"
+      },
+      "fence_policy_sha256": {
+        "anyOf": [
+          {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Fence Policy Sha256"
+      },
+      "phase": {
+        "default": "held",
+        "enum": [
+          "held",
+          "prepared",
+          "objects_removed",
+          "logs_removed",
+          "rows_removed",
+          "complete"
+        ],
+        "title": "Phase",
+        "type": "string"
+      }
+    },
+    "required": [
+      "child_plan_sha256",
+      "provider",
+      "original_dispatches"
+    ],
+    "title": "PurgeCheckpoint",
+    "type": "object"
+  },
+  "OwnerDeletionFence": {
+    "additionalProperties": false,
+    "properties": {
+      "Sid": {
+        "title": "Sid",
+        "type": "string"
+      },
+      "Effect": {
+        "const": "Deny",
+        "title": "Effect",
+        "type": "string"
+      },
+      "Principal": {
+        "const": "*",
+        "title": "Principal",
+        "type": "string"
+      },
+      "Action": {
+        "maxItems": 2,
+        "minItems": 2,
+        "prefixItems": [
+          {
+            "const": "s3:PutObject",
+            "type": "string"
+          },
+          {
+            "const": "s3:DeleteObject",
+            "type": "string"
+          }
+        ],
+        "title": "Action",
+        "type": "array"
+      },
+      "Resource": {
+        "title": "Resource",
+        "type": "string"
+      }
+    },
+    "required": [
+      "Sid",
+      "Effect",
+      "Principal",
+      "Action",
+      "Resource"
+    ],
+    "title": "OwnerDeletionFence",
+    "type": "object"
+  }
+}
