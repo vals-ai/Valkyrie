@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "action": "relocate",
+  "nonce": "44444444-4444-4444-8444-444444444444",
+  "github_owner_id": 11,
+  "org_id": "33333333-3333-4333-8333-333333333333",
+  "source_aws_account_id": "123456789012",
+  "destination_aws_account_id": "123456789012",
+  "region": "us-west-2",
+  "environment": "dev",
+  "database_target": "postgresql:localhost:5432/tracker_dev",
+  "run_ids": [
+    "11111111-1111-4111-8111-111111111111"
+  ],
+  "plan": {
+    "schema_version": 1,
+    "identity": {
+      "schema_version": 1,
+      "operation_id": "22222222-2222-4222-8222-222222222222",
+      "parent_plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "github_owner_id": 11,
+      "org_id": "33333333-3333-4333-8333-333333333333",
+      "source_aws_account_id": "123456789012",
+      "destination_aws_account_id": "123456789012",
+      "region": "us-west-2",
+      "environment": "dev",
+      "database_target": "postgresql:localhost:5432/tracker_dev",
+      "run_ids": [
+        "11111111-1111-4111-8111-111111111111"
+      ]
+    },
+    "runs": [
+      {
+        "scope": {
+          "run_id": "11111111-1111-4111-8111-111111111111",
+          "original_resources": {
+            "region": "us-west-2",
+            "s3_bucket": "legacy-storage",
+            "log_group": "/runs",
+            "log_retention_days": 7
+          },
+          "object_prefix": "benchmarks/11111111-1111-4111-8111-111111111111/",
+          "log_group": "/runs/11111111-1111-4111-8111-111111111111"
+        },
+        "destination_resources": {
+          "region": "us-west-2",
+          "s3_bucket": "vs-dev-owner-11-11",
+          "log_group": "/runs",
+          "log_retention_days": 7
+        },
+        "expected_label": "valsmith:example:generation:1",
+        "execution_policy": "history_only",
+        "execution_arguments_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "predecessor": null,
+        "transformations": [
+          {
+            "source_bucket": "legacy-storage",
+            "key": "benchmarks/11111111-1111-4111-8111-111111111111/metadata.json",
+            "source_version_id": "source-version-1",
+            "original_size": 124,
+            "original_sha256": "8d700c9962063e6436aa31810392ba0844c8e1cb1b586f06efb27820225d3296",
+            "rewritten_size": 125,
+            "rewritten_sha256": "9fe6e97ac0afe6711c8a695188906ea8b07615f90189d758e51000136e4c8421",
+            "edits": [
+              {
+                "pointer": "/artifact_uri",
+                "original": "s3://legacy-storage/benchmarks/11111111-1111-4111-8111-111111111111/artifact.txt",
+                "replacement": "s3://vs-dev-owner-11-11/benchmarks/11111111-1111-4111-8111-111111111111/artifact.txt"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "copied_objects": [
+    {
+      "run_id": "11111111-1111-4111-8111-111111111111",
+      "key": "benchmarks/11111111-1111-4111-8111-111111111111/metadata.json",
+      "source_bucket": "legacy-storage",
+      "source_version_id": "source-version-1",
+      "destination_bucket": "vs-dev-owner-11-11",
+      "destination_version_id": "destination-version-1",
+      "is_delete_marker": false,
+      "source_sha256": "8d700c9962063e6436aa31810392ba0844c8e1cb1b586f06efb27820225d3296",
+      "destination_sha256": "9fe6e97ac0afe6711c8a695188906ea8b07615f90189d758e51000136e4c8421",
+      "source_size": 124,
+      "destination_size": 125,
+      "is_current": true,
+      "transformation_sha256": "0ee1538f58f95d0806ebbeffddb8a09f5bbb518ea547afd668b7ec0c9d5df09b"
+    }
+  ],
+  "completion_sha256": null,
+  "destination_versions": [
+    {
+      "run_id": "11111111-1111-4111-8111-111111111111",
+      "bucket": "vs-dev-owner-11-11",
+      "key": "benchmarks/11111111-1111-4111-8111-111111111111/metadata.json",
+      "version_id": "destination-version-1",
+      "is_delete_marker": false,
+      "size": 125,
+      "sha256": "9fe6e97ac0afe6711c8a695188906ea8b07615f90189d758e51000136e4c8421",
+      "is_current": true,
+      "provenance": "copied",
+      "restored_from_version_id": null,
+      "transformation_sha256": "0ee1538f58f95d0806ebbeffddb8a09f5bbb518ea547afd668b7ec0c9d5df09b"
+    }
+  ],
+  "host_contract": null,
+  "external_host_drains": [],
+  "external_evidence_files": []
+}

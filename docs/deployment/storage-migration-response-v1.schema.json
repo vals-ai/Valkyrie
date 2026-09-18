@@ -1,0 +1,660 @@
+{
+  "$defs": {
+    "AWSResources": {
+      "additionalProperties": false,
+      "properties": {
+        "region": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Region",
+          "type": "string"
+        },
+        "s3_bucket": {
+          "maxLength": 63,
+          "minLength": 3,
+          "title": "S3 Bucket",
+          "type": "string"
+        },
+        "log_group": {
+          "title": "Log Group",
+          "type": "string"
+        },
+        "log_retention_days": {
+          "exclusiveMinimum": 0,
+          "title": "Log Retention Days",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "region",
+        "s3_bucket",
+        "log_group",
+        "log_retention_days"
+      ],
+      "title": "AWSResources",
+      "type": "object"
+    },
+    "DispatchObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "dispatch_id": {
+          "format": "uuid",
+          "title": "Dispatch Id",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Started At"
+        },
+        "process_exited_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Process Exited At"
+        },
+        "evidence": {
+          "enum": [
+            "process_exited",
+            "finished_current_host",
+            "unclaimed_held",
+            "externally_confirmed_host_drain"
+          ],
+          "title": "Evidence",
+          "type": "string"
+        },
+        "external_evidence_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "External Evidence Sha256"
+        }
+      },
+      "required": [
+        "dispatch_id",
+        "status",
+        "started_at",
+        "process_exited_at",
+        "evidence"
+      ],
+      "title": "DispatchObservation",
+      "type": "object"
+    },
+    "ExecutionReference": {
+      "additionalProperties": false,
+      "properties": {
+        "pointer": {
+          "title": "Pointer",
+          "type": "string"
+        },
+        "value_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Value Sha256",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "retained_s3_object",
+            "builtin_dataset",
+            "retired_source",
+            "unknown"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "bucket": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bucket"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key"
+        },
+        "version_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Id"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha256"
+        }
+      },
+      "required": [
+        "pointer",
+        "value_sha256",
+        "kind"
+      ],
+      "title": "ExecutionReference",
+      "type": "object"
+    },
+    "OperationIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "format": "uuid",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "parent_plan_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Parent Plan Sha256",
+          "type": "string"
+        },
+        "github_owner_id": {
+          "exclusiveMinimum": 0,
+          "title": "Github Owner Id",
+          "type": "integer"
+        },
+        "org_id": {
+          "format": "uuid",
+          "title": "Org Id",
+          "type": "string"
+        },
+        "source_aws_account_id": {
+          "pattern": "^[0-9]{12}$",
+          "title": "Source Aws Account Id",
+          "type": "string"
+        },
+        "destination_aws_account_id": {
+          "pattern": "^[0-9]{12}$",
+          "title": "Destination Aws Account Id",
+          "type": "string"
+        },
+        "region": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Region",
+          "type": "string"
+        },
+        "environment": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Environment",
+          "type": "string"
+        },
+        "database_target": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Database Target",
+          "type": "string"
+        },
+        "run_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Run Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "operation_id",
+        "parent_plan_sha256",
+        "github_owner_id",
+        "org_id",
+        "source_aws_account_id",
+        "destination_aws_account_id",
+        "region",
+        "environment",
+        "database_target",
+        "run_ids"
+      ],
+      "title": "OperationIdentity",
+      "type": "object"
+    },
+    "RelocationPredecessor": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "released_relocation",
+            "completed_history_only"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "operation_id": {
+          "format": "uuid",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "identity_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Identity Sha256",
+          "type": "string"
+        },
+        "scope_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Scope Sha256",
+          "type": "string"
+        },
+        "completion_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completion Sha256"
+        }
+      },
+      "required": [
+        "kind",
+        "operation_id",
+        "identity_sha256",
+        "scope_sha256"
+      ],
+      "title": "RelocationPredecessor",
+      "type": "object"
+    },
+    "RunObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "org_id": {
+          "format": "uuid",
+          "title": "Org Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Label"
+        },
+        "model_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Sha256"
+        },
+        "dataset_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dataset Sha256"
+        },
+        "benchmark_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Benchmark Name"
+        },
+        "predecessor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RelocationPredecessor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "execution_arguments_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Execution Arguments Sha256"
+        },
+        "execution_references": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ExecutionReference"
+          },
+          "title": "Execution References",
+          "type": "array"
+        },
+        "resources": {
+          "$ref": "#/$defs/AWSResources"
+        },
+        "status": {
+          "enum": [
+            "FINISHED",
+            "ERROR",
+            "STOPPED",
+            "STOPPING",
+            "IN_PROGRESS"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "hold_identity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OperationIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "hold_scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "hold_phase": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hold Phase"
+        },
+        "hold_purpose": {
+          "anyOf": [
+            {
+              "enum": [
+                "relocation",
+                "deletion"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hold Purpose"
+        },
+        "hold_released_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hold Released At"
+        },
+        "deployed_host_contract_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deployed Host Contract Sha256"
+        },
+        "dispatches": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DispatchObservation"
+          },
+          "title": "Dispatches",
+          "type": "array"
+        },
+        "sandbox_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Sandbox Ids",
+          "type": "array"
+        },
+        "pending_task_ids": {
+          "default": [],
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Pending Task Ids",
+          "type": "array"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "org_id",
+        "label",
+        "resources",
+        "status",
+        "observed_at"
+      ],
+      "title": "RunObservation",
+      "type": "object"
+    },
+    "RunScope": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "original_resources": {
+          "$ref": "#/$defs/AWSResources"
+        },
+        "object_prefix": {
+          "title": "Object Prefix",
+          "type": "string"
+        },
+        "log_group": {
+          "title": "Log Group",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "original_resources",
+        "object_prefix",
+        "log_group"
+      ],
+      "title": "RunScope",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "destination_versions_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Destination Versions Sha256"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "nonce": {
+      "format": "uuid",
+      "title": "Nonce",
+      "type": "string"
+    },
+    "action": {
+      "enum": [
+        "inventory",
+        "prepare",
+        "inspect",
+        "relocate",
+        "release"
+      ],
+      "title": "Action",
+      "type": "string"
+    },
+    "child_plan_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Child Plan Sha256"
+    },
+    "copied_objects_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Copied Objects Sha256"
+    },
+    "completion_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completion Sha256"
+    },
+    "runs": {
+      "items": {
+        "$ref": "#/$defs/RunObservation"
+      },
+      "title": "Runs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "nonce",
+    "action",
+    "runs"
+  ],
+  "title": "TrackerResponse",
+  "type": "object"
+}
