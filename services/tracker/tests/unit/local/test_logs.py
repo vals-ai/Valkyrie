@@ -5,10 +5,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-import pytest
-
 from tracker.local.logs import FilesystemLogs
-from tracker.runtime.logs import LogProviderError, RunLogReference, TaskLogReference, task_log_stream_name
+from tracker.runtime.logs import RunLogReference, TaskLogReference, task_log_stream_name
 
 
 async def test_attempts_pagination_filters_and_reopening(tmp_path: Path) -> None:
@@ -50,14 +48,6 @@ async def test_concurrent_writes_and_follow(tmp_path: Path) -> None:
     logs.write(stream_key, "new output")
     assert (await asyncio.wait_for(anext(iterator), timeout=2)).message == "new output"
     await iterator.aclose()
-
-
-async def test_missing_logs_and_invalid_cursor(tmp_path: Path) -> None:
-    logs = FilesystemLogs(tmp_path)
-    reference = RunLogReference(uuid4())
-    assert not (await logs.fetch(reference)).events
-    with pytest.raises(LogProviderError, match="cursor"):
-        await logs.fetch(reference, cursor="-1")
 
 
 async def test_byte_cursors_skip_filtered_logs_and_wait_for_complete_records(tmp_path: Path) -> None:

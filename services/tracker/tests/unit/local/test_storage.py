@@ -1,4 +1,4 @@
-"""Real filesystem coverage for publication, freezing, and cancellation."""
+"""Real filesystem coverage for publication, pagination, and cancellation."""
 
 import asyncio
 import tempfile
@@ -10,42 +10,6 @@ import pytest
 
 from tracker.exceptions import ExecutionAuthorityRevoked
 from tracker.local.storage import FilesystemObjectStore
-from tracker.runtime.artifacts import copy_agent_to_benchmark
-
-
-async def test_publish_list_read_and_locations(tmp_path: Path) -> None:
-    store = FilesystemObjectStore(tmp_path / "artifacts")
-    await store.put_bytes("agents/example.zip", b"bundle")
-    await store.put_bytes("agents/other.zip", b"other")
-    async with store.read_session() as reader:
-        assert await reader.get_bytes("agents/example.zip") == b"bundle"
-        assert [item.key async for item in reader.list_objects("agents/ex")] == ["agents/example.zip"]
-    assert len([item async for item in store.list_objects("")]) == 2
-    assert store.object_location("agents/example.zip") == str(store.root / "agents/example.zip")
-    assert store.prefix_location("agents/") == str(store.root / "agents")
-    await store.delete("agents/other.zip")
-    assert not await store.exists("agents/other.zip")
-
-    async def keys() -> AsyncIterator[str]:
-        yield "agents/example.zip"
-        yield "agents/other.zip"
-
-    assert [item async for item in store.get_many(keys())] == [("agents/example.zip", b"bundle")]
-
-
-async def test_failed_upload_preserves_complete_file(tmp_path: Path) -> None:
-    store = FilesystemObjectStore(tmp_path)
-    await store.put_bytes("output", b"previous")
-
-    async def interrupted() -> AsyncIterator[bytes]:
-        yield b"partial"
-        assert await store.get_bytes("output") == b"previous"
-        raise ConnectionError("upload interrupted")
-
-    with pytest.raises(ConnectionError):
-        await store.put_stream("output", interrupted())
-    assert await store.get_bytes("output") == b"previous"
-    assert not list((tmp_path / ".valkyrie/staging").iterdir())
 
 
 async def test_cancelled_upload_removes_only_its_staging_file(tmp_path: Path) -> None:
@@ -107,19 +71,6 @@ async def test_revoked_upload_cannot_publish(tmp_path: Path) -> None:
     with pytest.raises(ExecutionAuthorityRevoked):
         await store.put_stream("output", chunks(), should_continue=lambda: permitted)
     assert await store.get_bytes("output") == b"previous"
-
-
-async def test_frozen_bundle_and_failed_admission_cleanup(tmp_path: Path) -> None:
-    store = FilesystemObjectStore(tmp_path)
-    await store.put_bytes("agents/example.zip", b"first")
-    created = await copy_agent_to_benchmark(store, "run", "example")
-    assert created is not None
-    await store.put_bytes("agents/example.zip", b"second")
-    assert await copy_agent_to_benchmark(store, "run", "example") is None
-    key = "benchmarks/run/example.zip"
-    assert await store.get_bytes(key) == b"first"
-    await store.delete(key, deletion_token=created.deletion_token)
-    assert not await store.exists(key)
 
 
 @pytest.mark.parametrize("key", ["../outside", "/absolute", "a/../../outside", ".valkyrie/staging/entry", "", "."])

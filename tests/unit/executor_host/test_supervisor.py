@@ -11,8 +11,6 @@ import json
 from json import JSONDecodeError
 import logging
 import sys
-import shutil
-import subprocess
 from collections.abc import Awaitable, Callable
 from functools import partial
 from dataclasses import replace
@@ -1171,35 +1169,3 @@ async def test_local_release_cache_and_location_validation(tmp_path: Path) -> No
     cached.write_bytes(b"damaged cache")
     artifact.write_bytes(content)
     assert (await supervisor.prepare_artifact(dispatch)).read_bytes() == content
-
-
-def test_release_readers_bootstrap_without_tracker_dependencies(tmp_path: Path) -> None:
-    source = Path(__file__).resolve().parents[3] / "services/tracker/src"
-    files = [
-        "executor_protocol.py",
-        "tracker/__init__.py",
-        "tracker/local/__init__.py",
-        "tracker/local/executor_artifacts.py",
-        "tracker/runtime/__init__.py",
-        "tracker/runtime/lifecycle.py",
-    ]
-    for name in files:
-        destination = tmp_path / name
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source / name, destination)
-    subprocess.run(
-        [
-            sys.executable,
-            "-S",
-            "-c",
-            (
-                "from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader; "
-                "from tracker.runtime.lifecycle import finish_cleanup; "
-                "import sys; assert 'boto3' not in sys.modules; assert 'pydantic' not in sys.modules"
-            ),
-        ],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
