@@ -70,6 +70,7 @@
         "type": "object"
       },
       "AWSResources": {
+        "additionalProperties": false,
         "properties": {
           "log_group": {
             "title": "Log Group",

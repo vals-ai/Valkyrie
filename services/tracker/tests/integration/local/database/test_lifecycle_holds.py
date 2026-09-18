@@ -4,25 +4,38 @@ import asyncio
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from time import monotonic, sleep
+from typing import Any
 from uuid import uuid4
 
 import pytest
-from services.executor_host.supervisor import ArtifactDispatch, DispatchAuthority, PostgresExecutorDispatchStore
+import services.executor_host.supervisor as host_supervisor
+from services.executor_host.supervisor import (
+    ArtifactDispatch,
+    DispatchAuthority,
+    DispatchAuthorityLostError,
+    ExecutorProcessPayload,
+    ExecutorSupervisor,
+    PostgresExecutorDispatchStore,
+    run_executor_dispatch,
+)
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlmodel import Session
 
-from tests.factories import make_benchmark
+from tests.factories import make_benchmark, make_task
 from tracker.aws.runtime import AWSResources
 from tracker.database.models import (
     Benchmark,
+    BenchmarkStatus,
     ExecutorDispatch,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
     Org,
     RunLifecycle,
+    TaskStatus,
 )
 from tracker.exceptions import ExecutionAuthorityRevoked
 from tracker.executor.dispatch_control import admit_recovery_dispatch, reconcile_expired_dispatches
@@ -280,7 +293,7 @@ def test_hold_serializes_with_execution(postgres_session: Session, postgres_engi
         assert future.result(timeout=5) == "rejected"
 
 
-@pytest.mark.parametrize("mismatch", [None, "operation", "digest", "dispatch", "host", "current_host"])
+@pytest.mark.parametrize("mismatch", [None, "operation", "digest", "dispatch", "host", "current_host", "future_cutoff"])
 def test_legacy_external_drain_is_exact_and_distinct(postgres_session: Session, mismatch: str | None) -> None:
     identity, scope, _, dispatch, _ = seeded_run(postgres_session)
     dispatch.status = ExecutorDispatchStatus.FAILED
@@ -327,6 +340,8 @@ def test_legacy_external_drain_is_exact_and_distinct(postgres_session: Session, 
         external = external.model_copy(update={"dispatch_ids": (uuid4(),)})
     elif mismatch == "host":
         external = external.model_copy(update={"host_inventory": ("other-host",)})
+    elif mismatch == "future_cutoff":
+        contract = contract.model_copy(update={"acknowledgement_required_since": datetime.now(UTC) + timedelta(days=1)})
     elif mismatch == "current_host":
         dispatch.started_at = datetime.now(UTC)
         postgres_session.add(dispatch)
@@ -466,3 +481,137 @@ def test_stale_released_hold_cannot_replace_new_owner(
         assert persisted_record.purpose == new_purpose
         assert persisted_record.released_at is None
         assert OperationIdentity.model_validate_json(persisted_record.identity_json) == new_identity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hold_after_poll", [True, False])
+async def test_host_failure_respects_hold_after_authority_poll(
+    postgres_session: Session,
+    postgres_engine: Engine,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hold_after_poll: bool,
+) -> None:
+    identity, scope, run, dispatch, _ = seeded_run(postgres_session)
+    marker = tmp_path / "child-started"
+    script = (
+        f"from pathlib import Path\nimport time\nPath({str(marker)!r}).touch()\n"
+        + ("time.sleep(60)\n" if hold_after_poll else "raise SystemExit(1)\n")
+    ).encode()
+    digest = hashlib.sha256(script).hexdigest()
+    (tmp_path / f"{digest}.pex").write_bytes(script)
+    dispatch.status = ExecutorDispatchStatus.QUEUED
+    dispatch.started_at = None
+    dispatch.executor_artifact_uri = "s3://releases/executors/test.pex"
+    dispatch.executor_artifact_digest = digest
+    task = make_task(run, "task", status=TaskStatus.IN_PROGRESS)
+    task.started_at = dispatch.created_at - timedelta(seconds=1)
+    postgres_session.add_all([dispatch, task])
+    postgres_session.commit()
+    artifact = ArtifactDispatch.from_payload(
+        {
+            "executor_release_id": dispatch.executor_release_id,
+            "executor_artifact_uri": dispatch.executor_artifact_uri,
+            "executor_artifact_digest": digest,
+            "executor_protocol_version": dispatch.executor_protocol_version,
+        }
+    )
+    url = postgres_engine.url
+    store = PostgresExecutorDispatchStore(
+        host=str(url.host),
+        port=str(url.port),
+        dbname=str(url.database),
+        user=str(url.username),
+        password=str(url.password),
+    )
+    supervisor = ExecutorSupervisor(
+        cache_dir=tmp_path, artifact_bucket="releases", artifact_prefix="executors", authority_check_interval=0.01
+    )
+    monkeypatch.setattr(host_supervisor, "ECS_AGENT_URI", "")
+    monkeypatch.setattr(host_supervisor, "_AUTHORITY_LOSS_GRACE_SECONDS", 0.01)
+    original_is_current = store.is_current
+    held_snapshots: list[dict[str, Any]] = []
+
+    async def check_then_hold(authority: DispatchAuthority) -> bool:
+        current = await original_is_current(authority)
+        if hold_after_poll and current and marker.exists() and not held_snapshots:
+            acquire_hold(postgres_session, identity=identity, scope=scope, purpose="deletion")
+            postgres_session.commit()
+            for row in (run, dispatch, task):
+                postgres_session.refresh(row)
+                held_snapshots.append(row.model_dump())
+            postgres_session.commit()
+        return current
+
+    monkeypatch.setattr(store, "is_current", check_then_hold)
+    payload = ExecutorProcessPayload.from_payload(
+        {"benchmark_id_str": str(run.id), "start_benchmark_request_json": {}, "verified_task_ids": [task.task_id]},
+        telemetry_context={"request_id": "", "trace_headers": {}},
+    )
+    expected_error = DispatchAuthorityLostError if hold_after_poll else RuntimeError
+    async with asyncio.timeout(5):
+        with pytest.raises(expected_error):
+            await run_executor_dispatch(
+                supervisor,
+                store,
+                executor_dispatch_id=str(dispatch.id),
+                dispatch=artifact,
+                process_payload=payload,
+                heartbeat_interval_seconds=3600,
+            )
+    for row in (run, dispatch, task):
+        postgres_session.refresh(row)
+    assert dispatch.process_exited_at is not None
+    if hold_after_poll:
+        assert len(held_snapshots) == 3
+        assert run.model_dump() == held_snapshots[0]
+        assert dispatch.model_dump(exclude={"process_exited_at"}) == {
+            key: value for key, value in held_snapshots[1].items() if key != "process_exited_at"
+        }
+        assert task.model_dump() == held_snapshots[2]
+    else:
+        assert run.status == BenchmarkStatus.ERROR
+        assert dispatch.status == ExecutorDispatchStatus.FAILED
+        assert task.status == TaskStatus.ERROR
+
+
+@pytest.mark.parametrize("keep_dispatch", [True, False])
+def test_drain_rechecks_observation_age_and_retains_hold(postgres_session: Session, keep_dispatch: bool) -> None:
+    identity, scope, _, dispatch, _ = seeded_run(postgres_session)
+    dispatch.status = ExecutorDispatchStatus.QUEUED
+    dispatch.started_at = None
+    postgres_session.add(dispatch)
+    if not keep_dispatch:
+        postgres_session.delete(dispatch)
+    record = acquire_hold(postgres_session, identity=identity, scope=scope, purpose="deletion")
+    postgres_session.commit()
+    observed_at = datetime.now(UTC)
+    observation = HostContractObservation(
+        contract="stable-host-lifecycle-v1",
+        deployment_sha256="a" * 64,
+        host_inventory=("host-1",),
+        observed_at=observed_at,
+        acknowledgement_required_since=observed_at - timedelta(days=1),
+        verifier="operator",
+    )
+    fresh = verify_drain(
+        postgres_session,
+        identity=identity,
+        scope=scope,
+        purpose="deletion",
+        host_contract=observation,
+        now=observed_at + timedelta(minutes=15),
+    )
+    assert [item.provenance for item in fresh] == (["held_unclaimed"] if keep_dispatch else [])
+    with pytest.raises(LifecycleConflict, match="fresh operator inspection"):
+        verify_drain(
+            postgres_session,
+            identity=identity,
+            scope=scope,
+            purpose="deletion",
+            host_contract=observation,
+            now=observed_at + timedelta(minutes=15, microseconds=1),
+        )
+    postgres_session.refresh(record)
+    assert record.released_at is None
+    assert record.phase == "held"

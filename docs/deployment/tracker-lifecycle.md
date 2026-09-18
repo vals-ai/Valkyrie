@@ -93,6 +93,17 @@ not loaded as trusted input from a parent report. Its fields are `contract` (lit
 `stable-host-lifecycle-v1`), `deployment_sha256`, sorted unique nonempty
 `host_inventory`, timezone-aware `observed_at`, timezone-aware
 `acknowledgement_required_since`, named `verifier`, and `legacy_dispatch_ids`.
+`validate_host_contract_observation` checks observations at use, including each
+`classify_dispatch` and `verify_drain` call. The observation and acknowledgement
+cutoff must use UTC. The observation cannot be in the future or more than 15 minutes
+old, and the cutoff cannot be later than the observation. Exactly 15 minutes is
+accepted. Invalid or expired observations raise `LifecycleConflict`; drain remains
+pending and the hold stays active. Apply and resume paths must repeat this check,
+including paths where the dispatch rows have already been removed. The optional
+`now` argument supplies an explicit UTC clock for tests; operators use current time.
+This validation does not inspect deployment. A named operator must perform a fresh
+inspection and supply its observations.
+
 The cutoff and legacy IDs come from the inspected rollout/inventory. They must not
 be chosen to relabel a current host acknowledgement failure as legacy.
 
@@ -135,8 +146,10 @@ state evidence before relocation. No copy record or phase name authorizes action
 The companion [JSON schema](tracker-lifecycle.schema.json) is the exact report
 shape. [Example JSON](tracker-lifecycle-example.json) shows a held deletion plan
 receipt with no drain claim. These files are portable; consumers need no runtime
-imports from this repository. Unknown fields are rejected. `write_report` verifies
-the full sorted run scope, writes a mode-0600 temporary file, flushes it, and
+imports from this repository. Unknown fields are rejected, including unknown AWS
+resource fields. The published schemas enforce nonempty, unique run IDs and host inventories. Sorting, exact scope
+relationships, timestamp order and freshness are runtime checks; JSON Schema alone
+does not prove them. `write_report` verifies the full sorted run scope, writes a mode-0600 temporary file, flushes it, and
 atomically replaces the report.
 
 The parent must bind the report to its exact plan and perform fresh read-only

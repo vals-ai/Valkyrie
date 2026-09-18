@@ -432,6 +432,8 @@ class PostgresExecutorDispatchStore:
                 WHERE id = %s::uuid
                   AND benchmark_id = %s::uuid
                   AND status = 'RUNNING'
+                  AND NOT EXISTS (SELECT 1 FROM runlifecycle
+                                  WHERE run_id = executordispatch.benchmark_id AND released_at IS NULL)
                 RETURNING id
                 """,
                 (authority.dispatch_id, authority.benchmark_id),

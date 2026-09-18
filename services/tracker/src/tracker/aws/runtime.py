@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated
 
-from pydantic import Field
+from pydantic import ConfigDict, Field, with_config
 
 from tracker.aws.clients import AWSClientProvider, ExplicitCredentialsAWSClientProvider
 
@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from tracker.types import HarnessConfig
 
 
+@with_config(ConfigDict(extra="forbid"))
 @dataclass(frozen=True)
 class AWSResources:
     region: Annotated[str, Field(min_length=1)]
