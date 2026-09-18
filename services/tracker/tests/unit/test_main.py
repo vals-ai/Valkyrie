@@ -2885,7 +2885,7 @@ class TestTrackerAPI:
 
         async def _mock_list_objects(_store: object, prefix: str) -> AsyncIterator[StoredObject]:
             observed_prefixes.append(prefix)
-            yield StoredObject(key=f"{prefix}output.txt")
+            yield StoredObject(key=f"{prefix}output.txt", size=0)
 
         async def _mock_get_many(_store: object, keys: AsyncIterator[str]) -> AsyncIterator[tuple[str, bytes]]:
             async for key in keys:
@@ -2928,12 +2928,12 @@ class TestTrackerAPI:
         database_session.commit()
 
         async def _mock_list_objects(_store: object, prefix: str) -> AsyncIterator[StoredObject]:
-            yield StoredObject(key=f"{prefix}task/../../outside.txt")
-            yield StoredObject(key=f"{prefix}task/..\\outside.txt")
-            yield StoredObject(key=f"{prefix}C:/outside.txt")
-            yield StoredObject(key=f"{prefix}task//outside.txt")
-            yield StoredObject(key=f"{prefix}task/hidden\x00.txt")
-            yield StoredObject(key=f"{prefix}task/output.txt")
+            yield StoredObject(key=f"{prefix}task/../../outside.txt", size=0)
+            yield StoredObject(key=f"{prefix}task/..\\outside.txt", size=0)
+            yield StoredObject(key=f"{prefix}C:/outside.txt", size=0)
+            yield StoredObject(key=f"{prefix}task//outside.txt", size=0)
+            yield StoredObject(key=f"{prefix}task/hidden\x00.txt", size=0)
+            yield StoredObject(key=f"{prefix}task/output.txt", size=0)
 
         async def _mock_get_many(_store: object, keys: AsyncIterator[str]) -> AsyncIterator[tuple[str, bytes]]:
             async for key in keys:
@@ -2963,8 +2963,8 @@ class TestTrackerAPI:
         database_session.commit()
 
         async def _mock_list_objects(_store: object, prefix: str) -> AsyncIterator[StoredObject]:
-            yield StoredObject(key=f"{prefix}task/../../outside.txt")
-            yield StoredObject(key=f"{prefix}task/hidden\x00.txt")
+            yield StoredObject(key=f"{prefix}task/../../outside.txt", size=0)
+            yield StoredObject(key=f"{prefix}task/hidden\x00.txt", size=0)
 
         get_many = MagicMock()
         monkeypatch.setattr(main_module.S3ObjectStore, "list_objects", _mock_list_objects)
@@ -3299,7 +3299,7 @@ async def test_local_start_persists_server_root_without_credentials(
     queued_request = payload["start_benchmark_request_json"]
     assert queued_request["properties"] == root.model_dump(mode="json")
     assert "local-model-key" not in str(payload)
-    resumed_request = benchmark.local_start_benchmark_request()
+    resumed_request = benchmark.local_start_benchmark_request(service_headers={})
     assert resumed_request.properties == root
     assert resumed_request.contract.secrets == {"MODEL_KEY": "model-key"}
 

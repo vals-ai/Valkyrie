@@ -1034,11 +1034,16 @@ async def fetch_benchmark(
     - 200 OK if benchmark is found
     - 404 Not Found if benchmark is not found
     """
+    s3_bucket_url = (
+        str(http_request.url_for("list_run_artifacts", benchmark_id=benchmark_row.id))
+        if benchmark_row.arguments.environment == "local"
+        else runtime.artifacts.prefix_location(benchmark_artifact_prefix(str(benchmark_row.id)))
+    )
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
     if connect:
         return StreamingResponse(
-            stream_benchmark_results(benchmark_id, session, runtime.artifacts, org),
+            stream_benchmark_results(benchmark_id, session, s3_bucket_url, org),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1053,11 +1058,7 @@ async def fetch_benchmark(
         benchmark_name=benchmark_row.name,
         benchmark_id=benchmark_row.id,
         details=benchmark_context.benchmark_details,
-        s3_bucket_url=(
-            str(http_request.url_for("list_run_artifacts", benchmark_id=benchmark_row.id))
-            if benchmark_row.arguments.environment == "local"
-            else runtime.artifacts.prefix_location(benchmark_artifact_prefix(str(benchmark_row.id)))
-        ),
+        s3_bucket_url=s3_bucket_url,
         storage_bucket=runtime.aws_runtime.resources.s3_bucket if isinstance(runtime, CloudRuntimeServices) else None,
         label=benchmark_row.label,
         final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,

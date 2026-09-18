@@ -140,7 +140,7 @@ class FilesystemObjectStore:
                 try:
                     if checked.is_file():
                         stat = checked.stat()
-                        objects.append(StoredObject(key, datetime.fromtimestamp(stat.st_mtime, UTC), stat.st_size))
+                        objects.append(StoredObject(key, datetime.fromtimestamp(stat.st_mtime, UTC), size=stat.st_size))
                 except FileNotFoundError:
                     continue
             return objects
@@ -154,7 +154,7 @@ class FilesystemObjectStore:
             if not path.is_file():
                 raise FileNotFoundError(key)
             stat = path.stat()
-            return StoredObject(key, datetime.fromtimestamp(stat.st_mtime, UTC), stat.st_size)
+            return StoredObject(key, datetime.fromtimestamp(stat.st_mtime, UTC), size=stat.st_size)
 
         return await _io(metadata)
 

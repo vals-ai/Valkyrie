@@ -1,7 +1,7 @@
 """Provider-neutral object storage capabilities used by Tracker and the CLI."""
 
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -12,7 +12,7 @@ class StoredObject:
 
     key: str
     last_modified: datetime | None = None
-    size: int = 0
+    size: int = field(kw_only=True)
 
 
 @dataclass(frozen=True)
