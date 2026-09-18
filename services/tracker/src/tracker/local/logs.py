@@ -14,6 +14,7 @@ from tracker.runtime.logs import (
     LogPage,
     LogProviderError,
     RunLogReference,
+    RunTaskLogReference,
     TaskLogReference,
     task_log_stream_name,
 )
@@ -127,10 +128,19 @@ class FilesystemLogs:
         poll_interval: float = 1.0,
     ) -> AsyncGenerator[LogEvent]:
         cursor: str | None = None
+        run = RunLogReference(reference.run_id, (RunTaskLogReference(reference.task_id, reference.started_at),))
+        start = start_time.timestamp() if start_time is not None else None
+        end = end_time.timestamp() if end_time is not None else None
         while True:
-            page = await self.fetch(reference, query=query, start_time=start_time, end_time=end_time, cursor=cursor)
+            page = await self.fetch(run, cursor=cursor)
             for event in page.events:
                 cursor = event.event_id
+                if event.task_id != reference.task_id or (query and query not in event.message):
+                    continue
+                if start is not None and event.timestamp.timestamp() < start:
+                    continue
+                if end is not None and event.timestamp.timestamp() > end:
+                    continue
                 yield event
             if page.next_cursor is not None:
                 continue
