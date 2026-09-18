@@ -2,12 +2,18 @@
 
 import json
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from benchmark_service import SandboxNotFoundError
+from botocore.exceptions import ClientError
+from jsonschema import Draft202012Validator
+from jsonschema import validate as validate_schema
+from jsonschema.exceptions import ValidationError as SchemaValidationError
 from pydantic import ValidationError
 
 import tracker.run_purge.providers as providers
@@ -50,7 +56,7 @@ def setup() -> Setup:
                 "Sid": "ValSmithOwnerDeletion" + identity.operation_id.hex,
                 "Effect": "Deny",
                 "Principal": "*",
-                "Action": "s3:PutObject",
+                "Action": ["s3:PutObject", "s3:DeleteObject"],
                 "Resource": "arn:aws:s3:::vs-dev-owner-42/*",
             }
         ],
@@ -116,7 +122,26 @@ async def test_current_fence_exact_statement_and_full_hash(setup: Setup) -> None
 @pytest.mark.asyncio
 async def test_all_versions_markers_uploads_and_exact_logs(setup: Setup) -> None:
     boundary, identity, run, client, logs = setup
+    await boundary.verify_fence(identity, run)
+    statement = json.loads(client.get_bucket_policy.return_value["Policy"])["Statement"][0]
+    schema = json.loads((Path(__file__).parents[4] / "docs/deployment/tracker-purge.schema.json").read_text())
+    validate_schema(statement, schema["OwnerDeletionFence"], cls=Draft202012Validator)
+    for invalid_actions in ("s3:PutObject", [*statement["Action"], "s3:DeleteObjectVersion"]):
+        with pytest.raises(SchemaValidationError):
+            validate_schema(
+                {**statement, "Action": invalid_actions}, schema["OwnerDeletionFence"], cls=Draft202012Validator
+            )
+
+    async def delete_with_policy(**arguments: Any) -> None:
+        action = "s3:DeleteObjectVersion" if "VersionId" in arguments else "s3:DeleteObject"
+        if action in statement["Action"]:
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "DeleteObject")
+
+    client.delete_object.side_effect = delete_with_policy
     prefix = run.scope.object_prefix
+    with pytest.raises(ClientError, match="AccessDenied"):
+        await client.delete_object(Bucket=run.scope.original_resources.s3_bucket, Key=prefix + "delayed-delete")
+    client.delete_object.reset_mock()
     client.list_object_versions.side_effect = [
         {
             "IsTruncated": False,
@@ -264,4 +289,181 @@ async def test_missing_pagination_proof_cannot_count_as_empty_storage(setup: Set
     boundary, identity, run, client, _ = setup
     client.list_object_versions.return_value = {}
     with pytest.raises(LifecycleConflict, match="pagination"):
+        await boundary.verify_storage_absence(identity, run)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "actions, accepted",
+    [
+        ("s3:PutObject", False),
+        (["s3:PutObject", "s3:DeleteObject"], True),
+        (["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"], False),
+    ],
+)
+async def test_fence_blocks_marker_creation_but_permits_version_cleanup(
+    setup: Setup, actions: Any, accepted: bool
+) -> None:
+    boundary, identity, run, client, _ = setup
+    policy = json.loads(client.get_bucket_policy.return_value["Policy"])
+    policy["Statement"][0]["Action"] = actions
+    client.get_bucket_policy.return_value = {"Policy": json.dumps(policy)}
+    boundary.fence_receipts = (boundary.fence_receipts[0].model_copy(update={"policy_sha256": policy_digest(policy)}),)
+    if accepted:
+        await boundary.verify_fence(identity, run)
+        await boundary.purge_objects(identity, run)
+    else:
+        with pytest.raises(LifecycleConflict):
+            await boundary.verify_fence(identity, run)
+        client.delete_object.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ["account", "owner", "missing_receipt", "future_receipt"])
+async def test_authority_failures_prevent_storage_mutation(setup: Setup, mismatch: str) -> None:
+    boundary, identity, run, client, _ = setup
+    if mismatch == "account":
+        clients = cast(Any, boundary.clients)
+        clients.sts_client.return_value.get_caller_identity.return_value = {"Account": "999999999999"}
+    elif mismatch == "owner":
+        identity = identity.model_copy(update={"github_owner_id": 43})
+    elif mismatch == "missing_receipt":
+        boundary.fence_receipts = ()
+    else:
+        boundary.fence_receipts = (
+            boundary.fence_receipts[0].model_copy(update={"observed_at": datetime.now(UTC) + timedelta(minutes=1)}),
+        )
+    with pytest.raises(LifecycleConflict):
+        if mismatch in {"account", "owner"}:
+            await boundary.validate(identity, run)
+        else:
+            await boundary.verify_fence(identity, run)
+    client.delete_object.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("uploads", [False, True])
+@pytest.mark.parametrize("broken", [False, True])
+async def test_inventory_pages_all_items_or_refuses_repeated_markers(setup: Setup, uploads: bool, broken: bool) -> None:
+    boundary, identity, run, client, _ = setup
+    key = run.scope.object_prefix + "payload"
+    collection, identifier, next_marker = (
+        ("Uploads", "UploadId", "NextUploadIdMarker") if uploads else ("Versions", "VersionId", "NextVersionIdMarker")
+    )
+    first = {
+        "IsTruncated": True,
+        "NextKeyMarker": key,
+        next_marker: "first",
+        collection: [{"Key": key, identifier: "first"}],
+    }
+    second = first if broken else {"IsTruncated": False, collection: [{"Key": key, identifier: "second"}]}
+    listing = client.list_multipart_uploads if uploads else client.list_object_versions
+    listing.side_effect = [first, second, {"IsTruncated": False}]
+    if broken:
+        with pytest.raises(LifecycleConflict, match="pagination"):
+            await boundary.purge_objects(identity, run)
+        client.delete_object.assert_not_called()
+        client.abort_multipart_upload.assert_not_called()
+    else:
+        await boundary.purge_objects(identity, run)
+        deletions = client.abort_multipart_upload if uploads else client.delete_object
+        assert {call.kwargs[identifier] for call in deletions.call_args_list} == {"first", "second"}
+        assert listing.call_args_list[1].kwargs["KeyMarker"] == key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_code", ["NoSuchUpload", "AccessDenied"])
+async def test_multipart_race_requires_verified_absence(setup: Setup, error_code: str) -> None:
+    boundary, identity, run, client, _ = setup
+    client.list_multipart_uploads.side_effect = [
+        {"IsTruncated": False, "Uploads": [{"Key": run.scope.object_prefix + "data", "UploadId": "upload"}]},
+        {"IsTruncated": False},
+    ]
+    client.abort_multipart_upload.side_effect = ClientError({"Error": {"Code": error_code}}, "AbortMultipartUpload")
+    if error_code == "NoSuchUpload":
+        await boundary.purge_objects(identity, run)
+        assert client.list_multipart_uploads.call_count == 2
+    else:
+        with pytest.raises(ClientError):
+            await boundary.purge_objects(identity, run)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["repeated_token", "access_denied", "disappeared", "retained"])
+async def test_log_pagination_and_delete_races_are_strict(setup: Setup, failure: str) -> None:
+    boundary, _, run, _, logs = setup
+    page = {"logGroups": [{"logGroupName": run.scope.log_group + "-other"}], "nextToken": "next"}
+    target = {"logGroups": [{"logGroupName": run.scope.log_group}]}
+    logs.describe_log_groups.side_effect = [
+        page,
+        page if failure == "repeated_token" else target,
+        target if failure == "retained" else {"logGroups": []},
+    ]
+    if failure in {"access_denied", "disappeared"}:
+        code = "AccessDeniedException" if failure == "access_denied" else "ResourceNotFoundException"
+        logs.delete_log_group.side_effect = ClientError({"Error": {"Code": code}}, "DeleteLogGroup")
+    if failure == "disappeared":
+        await boundary.purge_logs(run)
+        assert logs.describe_log_groups.call_count == 3
+    else:
+        with pytest.raises((LifecycleConflict, ClientError)):
+            await boundary.purge_logs(run)
+    if failure == "repeated_token":
+        logs.delete_log_group.assert_not_called()
+    else:
+        logs.delete_log_group.assert_called_once_with(logGroupName=run.scope.log_group)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["absent", "remains", "wrong_run", "delete_not_found"])
+async def test_sandbox_inventory_scope_and_not_found_cleanup(
+    setup: Setup, monkeypatch: pytest.MonkeyPatch, scenario: str
+) -> None:
+    boundary, _, run, _, _ = setup
+    sandbox = MagicMock(id="sandbox", labels={"Id": str(uuid4() if scenario == "wrong_run" else run.scope.run_id)})
+
+    async def inventory(query: Any) -> AsyncIterator[Any]:
+        assert query.labels == {"Id": str(run.scope.run_id)}
+        if scenario != "absent":
+            yield sandbox
+
+    provider = MagicMock()
+    provider.list_sandboxes = inventory
+    provider.delete_sandbox = AsyncMock(side_effect=SandboxNotFoundError("gone"))
+    provider.close = AsyncMock()
+    configuration = MagicMock()
+    configuration.create_provider.return_value = provider
+
+    def lookup(*_arguments: Any) -> Any:
+        return configuration
+
+    monkeypatch.setattr(providers, "fetch_sandbox_provider_config", lookup)
+    if scenario == "delete_not_found":
+        await boundary.cleanup_sandboxes(run)
+    elif scenario == "absent":
+        await boundary.verify_absence(run)
+    else:
+        with pytest.raises(LifecycleConflict):
+            await boundary.verify_absence(run)
+        provider.delete_sandbox.assert_not_called()
+    provider.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remaining", ["version", "upload", "logs"])
+async def test_final_storage_absence_rejects_any_remaining_resource(setup: Setup, remaining: str) -> None:
+    boundary, identity, run, client, logs = setup
+    if remaining == "version":
+        client.list_object_versions.return_value = {
+            "IsTruncated": False,
+            "Versions": [{"Key": run.scope.object_prefix + "data", "VersionId": "version"}],
+        }
+    elif remaining == "upload":
+        client.list_multipart_uploads.return_value = {
+            "IsTruncated": False,
+            "Uploads": [{"Key": run.scope.object_prefix + "data", "UploadId": "upload"}],
+        }
+    else:
+        logs.describe_log_groups.return_value = {"logGroups": [{"logGroupName": run.scope.log_group}]}
+    with pytest.raises(LifecycleConflict):
         await boundary.verify_storage_absence(identity, run)

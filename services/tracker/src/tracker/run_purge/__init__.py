@@ -14,6 +14,7 @@ from tracker.lifecycle_evidence import (
     ExternalHostDrain,
     HostContractObservation,
     RunReport,
+    validate_host_contract_observation,
     verify_drain,
 )
 from tracker.run_purge.contracts import (
@@ -241,13 +242,8 @@ class PurgeOperator:
                 original_ids = tuple(item.dispatch_id for item in checkpoint.original_dispatches)
                 if tuple(item.dispatch_id for item in drains) != original_ids:
                     raise LifecycleConflict("Dispatch scope changed after hold")
-            elif (
-                self.host_contract is None
-                or any(item.provenance == "pending" for item in checkpoint.dispatch_drain)
-                or tuple(item.dispatch_id for item in checkpoint.dispatch_drain)
-                != tuple(item.dispatch_id for item in checkpoint.original_dispatches)
-            ):
-                raise LifecycleConflict("Durable drain checkpoint is incomplete")
+            else:
+                self._validate_host_observation()
             if benchmark is None and checkpoint.external_host_drain is not None:
                 external, _ = self._external(run)
                 if external != checkpoint.external_host_drain:
@@ -258,13 +254,7 @@ class PurgeOperator:
             fence_digest = await self.boundary.verify_fence(self.plan.identity, run)
             await self.boundary.verify_absence(run)
             if benchmark is None:
-                await self.boundary.verify_storage_absence(self.plan.identity, run)
-                _, _, checkpoint = self._lock(run)
-                verify_rows_absent(self.session, checkpoint.rows)
-                self._save(
-                    run, checkpoint.model_copy(update={"phase": "complete", "fence_policy_sha256": fence_digest})
-                )
-                self.session.commit()
+                await self._complete_run(run)
                 continue
             _, _, checkpoint = self._lock(run)
             rows = inventory_rows(self.session, run.scope.run_id, self.plan.identity.org_id)
@@ -293,13 +283,24 @@ class PurgeOperator:
             record.phase = "rows_removed"
             self.session.add(record)
             self.session.commit()
-            await self.boundary.verify_absence(run)
-            await self.boundary.verify_storage_absence(self.plan.identity, run)
-            _, _, checkpoint = self._lock(run)
-            verify_rows_absent(self.session, checkpoint.rows)
-            self._save(run, checkpoint.model_copy(update={"phase": "complete"}))
-            self.session.commit()
+            await self._complete_run(run)
         return self.report(outcome="checked")
+
+    def _validate_host_observation(self) -> None:
+        if self.host_contract is None:
+            raise LifecycleConflict("Current host deployment contract is required for drain")
+
+        validate_host_contract_observation(self.host_contract)
+
+    async def _complete_run(self, run: PurgeRun) -> None:
+        fence_digest = await self.boundary.verify_fence(self.plan.identity, run)
+        await self.boundary.verify_absence(run)
+        await self.boundary.verify_storage_absence(self.plan.identity, run)
+        _, _, checkpoint = self._lock(run)
+        self._validate_host_observation()
+        verify_rows_absent(self.session, checkpoint.rows)
+        self._save(run, checkpoint.model_copy(update={"phase": "complete", "fence_policy_sha256": fence_digest}))
+        self.session.commit()
 
     def report(self, *, outcome: Literal["checked", "incomplete"] = "incomplete") -> PurgeReport:
         runs: list[RunReport] = []
@@ -314,6 +315,9 @@ class PurgeOperator:
                 )
             )
         self.session.rollback()
+        if outcome == "checked":
+            self._validate_host_observation()
+
         return PurgeReport(
             child_plan_sha256=self.plan.digest(),
             outcome=outcome,

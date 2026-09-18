@@ -35,7 +35,8 @@ not stop the host inventory or run the external legacy gate.
 ## Input and output contracts
 
 [tracker-purge.schema.json](tracker-purge.schema.json) contains `PurgePlan`,
-`PurgeReport`, `FenceReceipts` (an array), and the private `PurgeCheckpoint`.
+`PurgeReport`, `FenceReceipts` (an array), the exact `OwnerDeletionFence` statement,
+and the private `PurgeCheckpoint`.
 These reuse the shared identity, scope and drain models in
 [tracker-lifecycle.schema.json](tracker-lifecycle.schema.json).
 
@@ -118,12 +119,17 @@ the write probe. The exact statement is:
   "Sid": "ValSmithOwnerDeletion<operation UUID without hyphens>",
   "Effect": "Deny",
   "Principal": "*",
-  "Action": "s3:PutObject",
+  "Action": ["s3:PutObject", "s3:DeleteObject"],
   "Resource": "arn:aws:s3:::<exact validated owner bucket>/*"
 }
 ```
 
-No condition or extra statement fields are accepted for that SID. The parent
+The action array must use this exact order. The old PutObject-only fence is
+refused: an unversioned DeleteObject request can create a late delete marker.
+DeleteObjectVersion remains allowed for exact-version cleanup, including a
+probe version returned by an unexpected successful write. No condition or extra
+statement fields are accepted for that SID. The schema fixes the action shape;
+runtime checks also bind Sid and Resource to the current operation and bucket. The parent
 preserves unrelated policy statements. Each fence receipt contains the full
 operation `identity`, exact `bucket`, SHA-256 `policy_sha256` of canonical full
 policy JSON, UTC-aware `observed_at`, and:
@@ -157,6 +163,9 @@ uv run --project services/tracker python services/tracker/scripts/purge_run_data
 Use `resume` with the same arguments and immutable plan to retry an incomplete
 purge. The command always checks current provider absence and fence authority.
 An absent run without a strict matching checkpoint never counts as success.
+The shared host observation freshness checks apply on every resume, including
+a run whose Benchmark row is already absent. Evidence must use UTC, cannot be
+future-dated, and cannot be more than 15 minutes old at use.
 
 ## Phases and retained state
 
@@ -185,7 +194,10 @@ Shared task breakdowns remain. The row transaction briefly locks these tables to
 prevent foreign-key schema changes and concurrent child inserts during deletion.
 A SQL error rolls back row deletion but retains previous provider phases for
 resume. The row-removal checkpoint commits atomically with those deletes. Fresh
-provider and row post-checks precede `complete`.
+policy, sandbox, storage and row post-checks run after that checkpoint and
+precede `complete`. Host observation freshness is checked again after the final
+provider calls and before a checked report. A late marker or failed final check
+leaves the row-removal checkpoint available for the same-plan resume.
 
 Database and provider changes are not one distributed transaction. A failure can
 leave already removed provider data with retained rows. This is deliberate:
