@@ -465,8 +465,11 @@ def init_org(
 
 
 async def _resolve_contract_from_s3(request: StartBenchmarkRequest, object_store: ObjectStore) -> AgentContractRequest:
-    """Resolve install_cmd/run_cmd/etc by parsing the agent's contract file inside its S3 zip."""
-    zip_bytes = await object_store.get_bytes(agent_bundle_key(request.contract.name))
+    """Resolve the published agent contract from the configured object store."""
+    try:
+        zip_bytes = await object_store.get_bytes(agent_bundle_key(request.contract.name))
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=f"Agent '{request.contract.name}' not found") from error
     agent_config = AgentConfig(model=request.contract.model, kwargs=dict(request.contract.kwargs))
     resolved = get_contract_from_zip_bytes(request.contract.name, zip_bytes, agent_config)
     if request.contract.secrets:

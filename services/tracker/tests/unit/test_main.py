@@ -2739,3 +2739,24 @@ async def test_local_start_rejects_invalid_root_before_admission(
     assert not database_session.exec(select(Benchmark)).all()
     assert not database_session.exec(select(ExecutorDispatch)).all()
     assert not mock_kicker.queued_calls
+
+
+async def test_local_start_missing_agent_returns_not_found(
+    tmp_path: Path, monkeypatch: MonkeyPatch, database_session: Session, mock_kicker: Any
+) -> None:
+    from tracker.local import config as local_config
+    from tracker.local.resources import LocalResources
+
+    monkeypatch.setattr(local_config, "resources", LocalResources(data_root=tmp_path))
+    response = client.post(
+        "/start-benchmark",
+        json={
+            "environment": "local",
+            "sandbox_provider": "docker",
+            "benchmark_name": "test",
+            "contract": {"name": "missing-agent"},
+        },
+    )
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == "Agent 'missing-agent' not found"
+    assert not mock_kicker.queued_calls
