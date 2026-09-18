@@ -57,7 +57,7 @@ def initialize_release(
     admission = lock_executor_admission(session)
     if admission.release_id is not None and not replace_active:
         active = select_active_release(session)
-        with reader.open(active.artifact_uri) as source:
+        with reader.validate(active.artifact_uri).open("rb") as source:
             if hashlib.file_digest(source, "sha256").hexdigest() != active.artifact_digest:
                 raise ReleaseControlError("Active local executor artifact has an invalid digest")
         return active
