@@ -56,7 +56,8 @@ class ObjectStore(Protocol):
     def list_objects(self, prefix: str) -> AsyncIterator[StoredObject]:
         raise NotImplementedError  # pragma: no cover
 
-    async def temporary_download_url(self, key: str, *, expires_in: int) -> str:
+    async def temporary_download_url(self, key: str, *, expires_in: int) -> str | None:
+        """Return a signed URL, or None when callers must transfer the object bytes."""
         raise NotImplementedError  # pragma: no cover
 
 
