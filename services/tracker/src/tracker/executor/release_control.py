@@ -421,13 +421,8 @@ def _validate_release_manifest(release: ExecutorRelease) -> None:
         raise ReleaseControlError(str(error)) from error
     if release.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
         raise ReleaseControlError(f"Unsupported executor protocol version: {release.protocol_version}")
-    parsed = urlparse(release.artifact_uri)
-    if parsed.scheme not in {"s3", "file"} or not parsed.path or parsed.query or parsed.fragment:
-        raise ReleaseControlError("Executor artifact URI must use s3:// or file://")
-    if parsed.scheme == "s3" and not parsed.netloc:
-        raise ReleaseControlError("Executor artifact URI must identify an S3 object")
-    if parsed.scheme == "file" and (parsed.netloc or not parsed.path.startswith("/")):
-        raise ReleaseControlError("Local executor artifact URI must use file:///absolute/path")
+    if not release.artifact_uri.startswith(("s3://", "file:///")):
+        raise ReleaseControlError("Executor artifact URI must use s3:// or file:///")
 
 
 def _get_release(
