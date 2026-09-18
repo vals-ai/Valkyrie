@@ -4,8 +4,11 @@ Run: uv run pytest tests/unit/utils/test_benchmark_service_failures.py
 """
 
 import asyncio
+import re
 import socket
 import time
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, Never
 from unittest.mock import AsyncMock, Mock
 
@@ -18,6 +21,7 @@ from benchmark_service.client import (
     BenchmarkServiceError,
     BenchmarkServiceStreamClosedError,
 )
+from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.schemas import RetrieveTaskResponse
 from sqlmodel import Session, desc, select
 from websockets.datastructures import Headers
@@ -704,6 +708,77 @@ class TestBenchmarkServiceFailures:
         assert task_row.status == TaskStatus.ERROR
         error_message = self._latest_task_error(database_session, task_row)
         assert "ProgramBench task container failed to start" in error_message
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_agent_reported_error_reaches_task_api(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        """An error the agent writes to $VALKYRIE_ERROR_PATH is what operators read back for the task."""
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        error_files: dict[str, str] = {}
+
+        async def _command(command: str) -> AsyncIterator[str]:
+            match = re.search(r"export VALKYRIE_ERROR_PATH=([^;\s]+)", command)
+            assert match is not None
+            error_files[match.group(1)] = "AgentError: model returned no patch\n"
+            yield "raw model output\n"
+            raise ProviderSandboxCommandError(1)
+
+        async def _exec(command: str) -> ExecResult:
+            if command.startswith("head -c "):
+                path = command.rsplit(" ", 1)[1]
+                return (
+                    ExecResult(exit_code=0, output=error_files[path])
+                    if path in error_files
+                    else ExecResult(exit_code=1)
+                )
+            if command.startswith("rm -f "):
+                for path in command.split()[2:]:
+                    error_files.pop(path, None)
+            return ExecResult(exit_code=0)
+
+        @asynccontextmanager
+        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Mock]:
+            sandbox = Mock()
+            sandbox.id = "mock-sandbox-id"
+            sandbox.name = "mock-sandbox"
+            sandbox.command = _command
+            sandbox.exec = _exec
+            yield sandbox
+
+        async def _mock_install_agent_dependencies(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        monkeypatch.setattr(utils_module, "create_sandbox", _mock_create_sandbox)
+        monkeypatch.setattr(utils_module, "run_agent", sandbox_module.run_agent)
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", _mock_install_agent_dependencies)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+
+        assert result == {"task_0": None}
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        error_result = self._latest_task_error_result(database_session, task_row)
+        assert error_result.error_message == (
+            "Sandbox error: Agent command failed with exit code 1: AgentError: model returned no patch"
+        )
+        assert error_result.error_type == "AgentRunFailedError"
+        assert error_result.category == FailureCategory.AGENT
+        assert error_files == {}
+
+        api_response = TestClient(app).get(f"/benchmarks/{benchmark_id}/tasks/{task_row.task_id}")
+        assert api_response.status_code == 200
+        body = api_response.json()
+        assert body["failure_category"] == "agent"
+        assert body["error_message"] == error_result.error_message
+        assert "raw model output" not in body["error_message"]
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_empty_network_error_stores_visible_message(

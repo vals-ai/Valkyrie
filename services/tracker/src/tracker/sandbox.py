@@ -436,6 +436,7 @@ async def _install_agent_dependencies_once(
         sandbox,
         f"cd {shlex.quote(str(contract_path))} && {install_cmd}",
         log_output,
+        failure_subject=f"Dependency installation for contract {contract.name}",
     )
     if exit_reason == AgentCausedExitReason.TIMEOUT:
         raise SandboxError(
@@ -486,6 +487,9 @@ _TIMEOUT_EXIT_CODE: int = 124
 _OS_KILL_EXIT_CODE: int = 137
 _SUCCESS_EXIT_CODE: int = 0
 _STATUS_DIR = "/tmp/.valkyrie"
+AGENT_ERROR_PATH_ENV = "VALKYRIE_ERROR_PATH"
+_AGENT_ERROR_MAX_CHARS = 2048
+_POST_EXIT_READ_TIMEOUT_SECONDS = 5
 _EGRESS_RETRY = retry(
     retry=retry_if_exception_type(ProviderSandboxError) & retry_if_not_exception_type(SandboxNotFoundError),
     reraise=True,
@@ -555,15 +559,19 @@ async def stream_command_output(
     sandbox: Sandbox,
     command: str,
     on_output: Callable[[str], None],
+    *,
+    failure_subject: str = "Agent command",
 ) -> tuple[AgentCausedExitReason | None, float]:
     run_id = uuid.uuid4().hex
     start_ns_path = f"{_STATUS_DIR}/{run_id}.start_ns"
     end_ns_path = f"{_STATUS_DIR}/{run_id}.end_ns"
+    error_path = f"{_STATUS_DIR}/{run_id}.error"
     # Timing is embedded in the sandbox command so it excludes the tracker->sandbox
     # request round-trip and program cold-start (~5-6s), keeping the measurement accurate.
     timed_command = (
         f"mkdir -p {shlex.quote(_STATUS_DIR)}"
         f" && date +%s%N > {shlex.quote(start_ns_path)}"
+        f"; export {AGENT_ERROR_PATH_ENV}={shlex.quote(error_path)}"
         f"; {command}"
         f"; exit_code=$?"
         f"; date +%s%N > {shlex.quote(end_ns_path)}"
@@ -598,22 +606,51 @@ async def stream_command_output(
             return AgentCausedExitReason.OS_KILLED, duration
 
         sentry_sdk.set_tag("agent_exit_code", str(exit_code))
-        raise AgentRunFailedError(f"Agent command failed with exit code {exit_code}")
+        message = f"{failure_subject} failed with exit code {exit_code}"
+        reported_error = await _read_agent_error(sandbox, error_path)
+        if reported_error:
+            message = f"{message}: {reported_error}"
+        raise AgentRunFailedError(message)
     finally:
         try:
-            await _exec(sandbox, f"rm -f {shlex.quote(start_ns_path)} {shlex.quote(end_ns_path)}")
+            await _exec(
+                sandbox,
+                f"rm -f {shlex.quote(start_ns_path)} {shlex.quote(end_ns_path)} {shlex.quote(error_path)}",
+            )
         except Exception:
             pass
 
 
+async def _read_post_exit_file(sandbox: Sandbox, command: str) -> str | None:
+    """Best-effort read of a file the command wrote before exiting.
+
+    Runs after the command's exit code is already known, so nothing raised here may
+    replace the original outcome: any failure (sandbox gone, transport error, hang)
+    yields ``None``.
+    """
+    try:
+        result = await asyncio.wait_for(_exec(sandbox, command), timeout=_POST_EXIT_READ_TIMEOUT_SECONDS)
+    except Exception:
+        return None
+    if result.exit_code != _SUCCESS_EXIT_CODE:
+        return None
+    return result.output
+
+
+async def _read_agent_error(sandbox: Sandbox, error_path: str) -> str:
+    """Return the error the agent wrote to ``$VALKYRIE_ERROR_PATH``, or "" when absent or unreadable."""
+    content = await _read_post_exit_file(sandbox, f"head -c {_AGENT_ERROR_MAX_CHARS} {shlex.quote(error_path)}")
+    return "" if content is None else " ".join(content.split())
+
+
 async def _read_sandbox_duration(sandbox: Sandbox, start_ns_path: str, end_ns_path: str, fallback: float) -> float:
     """Read the sandbox-side command duration, degrading to ``fallback`` on any failure."""
-    start_result = await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")
-    end_result = await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")
-    if start_result.exit_code != _SUCCESS_EXIT_CODE or end_result.exit_code != _SUCCESS_EXIT_CODE:
+    start_ns = await _read_post_exit_file(sandbox, f"cat {shlex.quote(start_ns_path)}")
+    end_ns = await _read_post_exit_file(sandbox, f"cat {shlex.quote(end_ns_path)}")
+    if start_ns is None or end_ns is None:
         return fallback
     try:
-        return (int(end_result.stdout.strip()) - int(start_result.stdout.strip())) / 1e9
+        return (int(end_ns.strip()) - int(start_ns.strip())) / 1e9
     except ValueError:
         return fallback
 
