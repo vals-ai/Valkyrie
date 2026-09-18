@@ -325,8 +325,10 @@
             "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
             "type": "string"
           },
+          "minItems": 1,
           "title": "Host Inventory",
-          "type": "array"
+          "type": "array",
+          "uniqueItems": true
         },
         "observed_at": {
           "format": "date-time",
@@ -503,8 +505,10 @@
             "format": "uuid",
             "type": "string"
           },
+          "minItems": 1,
           "title": "Run Ids",
-          "type": "array"
+          "type": "array",
+          "uniqueItems": true
         }
       },
       "required": [

@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 from uuid import UUID
@@ -34,6 +34,7 @@ from tracker.storage_migration_exchange import (
 
 
 class RelocationBoundary(Protocol):
+    async def validate_source(self, identity: OperationIdentity, run: PurgeRun, /) -> None: ...
     async def validate(self, identity: OperationIdentity, run: PurgeRun, /) -> None: ...
     async def verify_absence(self, run: PurgeRun, /) -> None: ...
     async def cleanup_sandboxes(self, run: PurgeRun, /) -> None: ...
@@ -141,12 +142,12 @@ class RelocationOperator:
     def _drain(
         self, request: TrackerRequest, identity: OperationIdentity, run: RelocationRun, record: RunLifecycle
     ) -> tuple[DispatchObservation, ...]:
-        if (
-            request.host_contract is None
-            or not datetime.now(UTC) - timedelta(minutes=15) <= request.host_contract.observed_at <= datetime.now(UTC)
-            or request.host_contract.acknowledgement_required_since > request.host_contract.observed_at
-        ):
+        if request.host_contract is None:
             raise LifecycleConflict("Current named host contract observation is required")
+        try:
+            request.host_contract.require_current()
+        except ValueError as error:
+            raise LifecycleConflict("Current named host contract observation is required") from error
         host = HostContractObservation.model_validate(request.host_contract.model_dump(mode="json"))
         dispatches = self._dispatches(run.scope.run_id)
         if any(dispatch.status.value in {"QUEUED", "RUNNING"} for dispatch in dispatches):
@@ -354,7 +355,7 @@ class RelocationOperator:
             existing = self.session.get(RunLifecycle, run.scope.run_id)
             if existing is None or existing.identity_json != identity.model_dump_json():
                 self._validate_run(benchmark, arguments, run, None)
-                await self.boundary.validate(identity, provider_run)
+                await self.boundary.validate_source(identity, provider_run)
                 destination = provider_run.model_copy(
                     update={
                         "scope": RunScope.model_validate(
@@ -402,7 +403,7 @@ class RelocationOperator:
         dispatches = self._drain(request, identity, run, record)
         if tuple(item.dispatch_id for item in dispatches) != checkpoint.dispatch_ids:
             raise LifecycleConflict("Dispatch scope changed after hold")
-        await self.boundary.validate(identity, provider_run)
+        await self.boundary.validate_source(identity, provider_run)
         destination = provider_run.model_copy(
             update={"scope": RunScope(run_id=run.scope.run_id, original_resources=checkpoint.destination_resources)}
         )

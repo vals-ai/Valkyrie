@@ -3,8 +3,9 @@
 This operator consumes the ValSmith version 1 migration exchange. The request and
 response schemas are `storage-migration-request-v1.schema.json` and
 `storage-migration-response-v1.schema.json` in this directory. The typed consumer is
-`tracker.storage_migration_exchange`. It matches the producer at ValSmith commit
-`87b244ab9de08ab1782967822822c023e438f472`. There is no runtime import across repositories.
+`tracker.storage_migration_exchange`. Its generated schemas match the published
+producer schemas, including nonempty, unique run and host inventories. There is no
+runtime import across repositories.
 
 Run the fixed command through a trusted absolute interpreter and script path:
 
@@ -75,9 +76,16 @@ are not converted to success.
 
 Same-account plans can change only the bucket. Region, account, log group, log
 retention, organization, owner, labels, full saved execution arguments, and the child
-plan digest must match. Both bucket authorities are checked for account, region,
-managed tags, exact owner tag, and versioning. Cross-account requests fail before
-mutation and require the separate paired transfer contract.
+plan digest must match. Both bucket authorities are checked for account and region.
+The destination requires managed tags, exact owner identity, and Enabled versioning. The source is the exact
+saved bucket and run prefix. A legacy shared source needs no owner tag; any present
+organization tag must match. A managed-name source or a source with an owner-account
+tag must pass managed-owner validation, with no fallback after a mismatch. Source
+versioning is observed as Enabled, Suspended, or never enabled; unknown states fail.
+Legacy source `null` VersionIds are accepted only under the fresh operation fence
+and exact byte/current-state proof. Destination versions must have non-null IDs.
+Cross-account requests fail before mutation and require the separate paired transfer
+contract.
 
 A named `stable-host-lifecycle-v1` observation identifies the complete deployed host
 inventory. It is external operator evidence, not a claim that this command inspected

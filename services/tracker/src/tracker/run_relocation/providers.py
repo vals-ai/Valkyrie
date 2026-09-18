@@ -1,5 +1,6 @@
 """Read-only full-version proof and strict sandbox cleanup for relocation."""
 
+import asyncio
 import hashlib
 import json
 import re
@@ -8,7 +9,12 @@ from datetime import datetime
 from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
-from tracker.lifecycle import LifecycleConflict
+from botocore.exceptions import ClientError
+
+from tracker.aws.managed_storage import ManagedStoragePolicy, validate_managed_storage_bucket
+from tracker.aws.runtime import AWSRuntime
+from tracker.lifecycle import LifecycleConflict, OperationIdentity
+from tracker.run_purge.contracts import PurgeRun
 from tracker.run_purge.providers import AWSProviderBoundary
 from tracker.storage_migration_exchange import (
     ExecutionReference,
@@ -80,11 +86,55 @@ class Version:
 
 
 class RelocationAWSBoundary(AWSProviderBoundary):
+    async def validate_source(self, identity: OperationIdentity, run: PurgeRun) -> None:
+        resources = run.scope.original_resources
+        clients = self.clients.with_region(resources.region)
+        if clients.credential_source != "managed" or resources.region != identity.region:
+            raise LifecycleConflict("Source authority or saved region differs")
+        account = await asyncio.to_thread(lambda: clients.sts_client().get_caller_identity()["Account"])
+        if account != identity.source_aws_account_id:
+            raise LifecycleConflict("Source caller account differs")
+        arguments = {"Bucket": resources.s3_bucket, "ExpectedBucketOwner": identity.source_aws_account_id}
+        tags: list[dict[str, str]]
+        async with clients.s3_client() as client:
+            head = await client.head_bucket(**arguments)
+            if head.get("BucketRegion") != resources.region:
+                raise LifecycleConflict("Source bucket region differs from saved scope")
+            try:
+                tags = (await client.get_bucket_tagging(**arguments)).get("TagSet", [])
+            except ClientError as error:
+                if error.response.get("Error", {}).get("Code") != "NoSuchTagSet":
+                    raise
+                tags = []
+            versioning = await client.get_bucket_versioning(**arguments)
+        if (
+            set(versioning) - {"Status", "MFADelete", "ResponseMetadata"}
+            or ("Status" in versioning and versioning["Status"] not in {"Enabled", "Suspended"})
+            or ("MFADelete" in versioning and versioning["MFADelete"] not in {"Enabled", "Disabled"})
+        ):
+            raise LifecycleConflict("Unknown source versioning state")
+        owners = [tag["Value"] for tag in tags if tag.get("Key") == "valsmith:owner-account-id"]
+        organizations = [tag["Value"] for tag in tags if tag.get("Key") == "valsmith:valkyrie-org-id"]
+        if organizations and organizations != [str(identity.org_id)]:
+            raise LifecycleConflict("Source organization tag differs")
+        if resources.s3_bucket.startswith("vs-") or owners:
+            if owners != [str(identity.github_owner_id)]:
+                raise LifecycleConflict("Managed source owner differs; legacy fallback is forbidden")
+            await validate_managed_storage_bucket(
+                AWSRuntime(resources, clients, identity.source_aws_account_id),
+                org_id=identity.org_id,
+                bucket_name=resources.s3_bucket,
+                policy=ManagedStoragePolicy(
+                    identity.source_aws_account_id, {identity.org_id: frozenset({identity.environment})}
+                ),
+            )
+
     async def _bytes(self, client: Any, request: TrackerRequest, bucket: str, key: str, version_id: str) -> bytes:
         response = await client.get_object(
             Bucket=bucket, Key=key, VersionId=version_id, ExpectedBucketOwner=request.source_aws_account_id
         )
-        if response.get("VersionId") != version_id:
+        returned_version = response.get("VersionId")
+        if returned_version != version_id and not (version_id == "null" and returned_version is None):
             raise LifecycleConflict("Provider returned another object version")
         async with response["Body"] as body:
             content = await body.read()
@@ -175,14 +225,14 @@ class RelocationAWSBoundary(AWSProviderBoundary):
                 item.source_bucket != source_bucket
                 or item.destination_bucket != destination_bucket
                 or not item.source_version_id
-                or not item.destination_version_id
+                or item.destination_version_id in {"", "null"}
             ):
                 raise LifecycleConflict("Copy account or bucket scope differs")
         for item in history:
             if (
                 item.bucket != destination_bucket
                 or not item.key.startswith(run.scope.object_prefix)
-                or not item.version_id
+                or item.version_id in {"", "null"}
             ):
                 raise LifecycleConflict("Destination history is outside exact scope")
             if item.is_delete_marker and (item.sha256 is not None or item.size != 0):
