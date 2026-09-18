@@ -1,0 +1,65 @@
+# Paired Tracker history transfer, version 1
+
+This private command transfers terminal history between two explicitly named PostgreSQL databases and two AWS accounts. It does not deploy software, provision releases or secrets, copy owner objects, change ValSmith locations, or replay historical events into CloudWatch. Keep the owner frozen until the parent cutover has verified deployed settings and application reads.
+
+Use a fixed trusted absolute interpreter and script path, with an argument array and no shell. The script is `services/tracker/scripts/transfer_run_history.py`. Read credentials only from named environment variables. Select two independent AWS profiles through named environment variables; STS and bucket ownership checks establish their actual accounts. Profile names are not authority evidence.
+
+```text
+<absolute trusted interpreter> <absolute trusted checkout>/services/tracker/scripts/transfer_run_history.py
+  --request <absolute private request.json>
+  --report <absolute private response.json>
+  --source-database-url-env TRACKER_SOURCE_DATABASE_URL
+  --destination-database-url-env TRACKER_DESTINATION_DATABASE_URL
+  --expected-source-database-target <reviewed source target>
+  --expected-destination-database-target <reviewed destination target>
+  --source-aws-profile-env TRACKER_SOURCE_AWS_PROFILE
+  --destination-aws-profile-env TRACKER_DESTINATION_AWS_PROFILE
+  --journal-directory <absolute private durable journal directory>
+  [--apply]
+```
+
+`database_target` is exactly `postgresql:<configured host or socket>:<port>/<current_database()>`. Supply the actual reviewed values; do not infer them from profile names. Both targets and accounts must differ. URLs, passwords and secret values must not appear in argv or reports. The command returns zero only after the requested checks and private atomic report write complete. Errors return 2 and an exception class, without provider messages or row data. An absent report is incomplete work, not success. Compare response nonce, action, child digest and both identities with the exact request.
+
+## Published exchange
+
+- [Request schema](../contracts/tracker-transfer-request-v1.schema.json)
+- [Response schema](../contracts/tracker-transfer-response-v1.schema.json)
+- [Current-state inspect schema](../contracts/tracker-transfer-inspect-v1.schema.json)
+- Fixtures: `services/tracker/tests/fixtures/tracker-transfer-{plan,response,inspect}-v1.json`.
+- Typed source: `services/tracker/src/tracker/run_transfer/contracts.py`.
+- Regenerate schemas with `uv run --project services/tracker python services/tracker/scripts/generate_transfer_schemas.py` from the checkout.
+
+The request contains `schema_version`, `action`, a fresh `nonce`, the immutable paired `plan`, `copied_objects`, `destination_versions`, a fresh `source_host_contract`, optional exact external legacy-host evidence and evidence files, and optional `parent_completion`. Unknown fields are rejected. The two local identities bind the same operation UUID, parent SHA-256, owner ID, organization UUID, account pair, environment and sorted run set. Only database target and region differ. Each run names its exact source and destination resources, original row digest, execution policy, optional exact completed predecessor, optional explicit reference edits, object transformations and unmasked log-read authorization. The archive prefix is fixed by the run and operation: `benchmarks/<run>/log-history/<operation>/v1/`. This prefix is part of the approved paired plan before any archive write.
+
+All document hashes use SHA-256 over UTF-8 JSON with sorted keys and compact separators. `plan.sha256` hashes the entire validated plan including defaults. Row hashes additionally include every stored column, every child set and a separate record of SQL NULL versus JSON null. UUIDs use canonical strings; stored datetimes use `isoformat()`. No rows are written to plans, reports or journals. Per-table counts and private content hashes establish exact resume; equal run UUIDs or counts alone do not.
+
+## Operator phases
+
+1. `plan` is the default. It reads both schemas, complete scoped rows, organization and release mappings and conflicts. It does not read secret values, call AWS, acquire holds or create journals. Populate each `source_rows_sha256` from this provisional inventory, review the completed plan, and freeze its digest. Planning refuses a declared existing `log_history` archive before any mutation: its previous VersionIds cannot be transplanted into another bucket. This version requires a separately approved archive-remap implementation for such runs.
+2. `prepare --apply` validates the local source and destination AWS resources, installs the exact source hold, verifies terminal tasks and positive dispatch drain, and performs the existing scoped sandbox cleanup and repeated absence checks. A failed drain leaves the hold active. Legacy started dispatches require the existing named external host-drain evidence; failure status, expired leases and stop requests do not prove exit. Provider proof can resolve only the saved source provider secret into memory. It does not export the secret. Historical row/archive transport and history APIs do not fetch secret values.
+3. The parent installs the exact operation-bound source prefix write fence and copies/verifies all object versions. Preserve the fence and both sources of evidence. A legacy saved source can have null VersionIds under exact account, region, fence, complete inventory and byte proofs. Managed destination owner tags, protections and Enabled versioning remain mandatory; destination versions cannot be null.
+4. `import --apply` rechecks holds, process/provider absence, saved resources, schema and complete content. It verifies the source fence before archive writes. The reviewed archive writer scans every retained stream/event twice and writes bounded versioned chunks and a manifest. The private journal permits exact retry after uncertain upload. Exact-version reads verify every chunk and aggregate digest, then the actual `HistoricalLogProvider.fetch` path reads all archived events and verifies its count. Object verification uses independent source/destination clients and includes the archive's exact generated versions. No event is re-dated, deduplicated or replayed. The destination rows and destination-local active hold commit in one transaction. Source rows/logs remain intact. A crash after that commit resumes only from exact destination content and the same hold/checkpoint.
+5. `inspect` reads current local holds/resources, provider absence, process evidence, all row/child hashes, object versions and archive readback. It creates no archive or journal and does not mutate rows. Supply the exact original object proofs on every resume/inspect. Retired source dispatch evidence comes from the strict source checkpoint and is explicitly labeled `retired_source_checkpoint`; provider absence is still queried through its original saved locator. The response contains both planned local identities/scopes and actual hold identities/scopes, phases, checkpoint digests, table hashes/counts, reference classes/pointer/value hashes, archive receipt and observation time. Top-level `copied_objects_sha256` and `destination_versions_sha256` bind verified object inputs; `parent_completion_sha256` binds accepted cleanup/finalize authorization. These fields remain null until their checks complete.
+6. After the parent verifies ValSmith locations, deployed settings, application history reads and the object cutover, it supplies `parent_completion`: exact operation/parent/child digests, `valsmith_commit_sha256`, `object_completion_sha256`, `destination_rows_sha256` and `archives_sha256`. The two external hashes bind the parent's separately reviewed evidence; this command does not query the ValSmith database. The destination rows digest hashes the sorted plan-run list of `{run_id, sha256}`; the archive digest hashes the corresponding list of full `ArchiveReport` JSON objects. These two hashes are independently compared with current destination state. They are not caller success flags.
+7. Remove copied source object versions through the parent operator before `cleanup --apply`. Cleanup requires their independently observed absence, exact destination objects/archive/readback, current source row hashes under locks, positive process/provider drain and the separate parent authorization. It deletes only the exact source log group after a fresh frozen scan matches the archived content. It then removes FK-safe scoped rows. A partial failure leaves source rows intact; a log-delete retry accepts an already absent group only with the exact persisted archive proof. The original source control remains active as `transferred_source_retired` with its original identity/scope. It must never be released or reused.
+8. `finalize --apply` requires the retired source, the same parent authorization and repeated destination/object/archive checks. Portable runs require repeated execution-reference checks and release only the destination hold. History-only runs retain `transferred_history_only`, readable history and blocked ordinary retry/resume. Repeated finalization preserves the release timestamp. Keep source bucket and provider-proof access until this final inspection completes. Later owner-wide retirement is a parent action.
+
+## Row and reference scope
+
+The closure contains Benchmark, Task, referenced TaskBreakdown, every EvaluationResult and ErrorResult, every FinalEvaluation and every ExecutorDispatch. Direct stored-column reads/inserts preserve excluded priority/queue pool fields, historical timestamps, all attempt history, UUIDs and SQL/JSON null distinctions. Organization rows and release catalog rows must already exist. No organization credentials, executor admission, readiness state or full release catalog are copied. Exact catalog mappings cover original/current Benchmark releases and every dispatch, with equal artifact digest/protocol and checked denormalized snapshots. Only approved release IDs/artifact URIs, destination resources, archive reference and exact reference edits change.
+
+Version 1 reference edits are deliberately limited to `/arguments/dataset`, `/arguments/sandbox_provider_secret_name`, and `/webhook_secret_name`. Each binds the exact original string hash and replacement locator. There is no broad JSON string replacement. Other execution references stay preserved and unknown portability retains history-only restrictions.
+
+Portable verification proves only these facts:
+
+- A version-pinned S3 dataset or contract locator resolves in the destination account to the exact requested immutable version, complete bytes and checksum. Unversioned, null-version or unknown dataset locators are unresolved.
+- A provider/webhook/contract secret locator has destination Secrets Manager metadata in the exact account/region, has an AWSCURRENT version, and is not scheduled for deletion. `DescribeSecret` does not retrieve values, test their validity, or prove provider login, webhook delivery or permissions for the runtime role.
+- Contract values are scanned for secret references and external locators. Unknown URLs, ARNs, local paths, callback Lambdas and custom services are refused for portable finalization. Preserve them under explicit history-only policy.
+
+This is not a live execution rehearsal. Release readiness, runtime-role access, service discovery, provider credential validity, callback behavior, full application configuration and approved public/private workflow tests remain parent/operator gates. The parent must keep the owner frozen until those deployed checks succeed.
+
+## Predecessors and deployment
+
+A transfer may atomically replace only the exact reviewed released or completed history-only relocation predecessor. It validates the prior typed checkpoint, old identity/scope and proved current location under refreshed locks. The local owner/org/database/region/environment must match, and the old destination account must equal the new source account. This narrow adapter does not weaken ordinary same-account helpers and never replaces an in-progress hold, deletion tombstone or retired-source hold. Final production integration owns general later deletion of completed transfer-history holds.
+
+Deploy the current additive schema (`9d0e1f2a3b4c`), compatible hold-aware hosts and runtime first. Keep one Alembic head. Deploy the dedicated lifecycle role with exact source provider-secret read authority for drain proof, scoped source log scans/unmask/deletion, source prefix inventory, and destination versioned archive writes/reads. Ordinary history readers need only destination archive-read authority. No deployment or account operation is established by local tests.
