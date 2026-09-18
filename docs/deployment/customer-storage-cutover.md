@@ -1,5 +1,7 @@
 # Production customer storage cutover
 
+**Cutover is blocked on historical log completeness.** The paired Tracker production boundary refuses archive creation and acceptance of existing archives. No live operator input currently enables completion. Planning and preparation may run, but source data and holds must remain. The legacy cross-account migration requirement is unmet; the ordered procedure below is not permission to bypass this gate. See [the transfer safety limit](tracker-transfer.md).
+
 This is an operator procedure. Local tests do not prove deployment, account access, data migration, a completed backup, or a working application. The external production account, organization and operator identities require verified inputs. A profile name is not identity evidence. Keep an operations record with exact release revisions, plans, file hashes, fresh reports, approved identities and gate results; keep credentials and customer payloads out of that record.
 
 Merge the reviewed storage and lifecycle foundations, then the relocation corrections, then this Valkyrie production slice. Merge the separate ValSmith migration/deletion corrections and final production adapter before applying cutover. The adapter must consume the exact versioned contracts below without runtime imports from this repository. Its mixed-location and paired-database tests are a separate delivery gate. The service-registry reader IAM and destination Lambda deployment are also required dependencies. No merge or deployed revision is established by this document.

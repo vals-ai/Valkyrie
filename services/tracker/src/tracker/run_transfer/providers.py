@@ -137,6 +137,10 @@ class TransferAWSBoundary:
         self.source_session = source_session
         self.destination_session = destination_session
 
+    def _require_log_completeness(self) -> None:
+        # Process exit and matching queries do not prove complete CloudWatch ingestion.
+        raise LifecycleConflict("Historical log completeness is unproved; transfer remains pending")
+
     def _sessions(self) -> tuple[Any, Any]:
         if self.source_session is None:
             assert self.source is not None
@@ -212,6 +216,7 @@ class TransferAWSBoundary:
         await boundary.verify_absence(provider_run)
 
     async def archive(self, request: TransferRequest, run: TransferRun) -> ArchiveReport:
+        self._require_log_completeness()
         source, destination = self._sessions()
         (self.journal / str(request.plan.source_identity.operation_id)).mkdir(parents=True, exist_ok=True, mode=0o700)
         return await asyncio.to_thread(
@@ -223,6 +228,7 @@ class TransferAWSBoundary:
         )
 
     async def verify_archive(self, request: TransferRequest, run: TransferRun, archive: ArchiveReport) -> None:
+        self._require_log_completeness()
         _, destination = self._sessions()
         scope = self._scope(request, run)
         manifest = await asyncio.to_thread(read_manifest, archive.reference, scope, destination)
@@ -275,6 +281,7 @@ class TransferAWSBoundary:
         identity = request.plan.source_identity
         history = request.destination_versions
         if archive is not None:
+            self._require_log_completeness()
             _, destination = self._sessions()
             manifest = read_manifest(archive.reference, self._scope(request, run), destination)
             history += tuple(

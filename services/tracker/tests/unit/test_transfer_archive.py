@@ -1,4 +1,4 @@
-"""The paired boundary uses the real historical writer and reader."""
+"""Observed-event transport uses real archive code, without production completeness authority."""
 
 import asyncio
 from pathlib import Path
@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 
 from tests.relocation_support import VersionStore
+from tests.transfer_support import ObservedEventsBoundary
 from tests.unit.aws.test_historical_log_provider import LiveLogs
 from tests.unit.aws.test_log_history_archive import FakeLogs, FakeS3, FakeSession, scoped_input
 from tests.unit.test_relocation_providers import setup
@@ -46,7 +47,7 @@ def test_paired_archive_uses_verified_exact_versions_and_actual_reader(tmp_path:
         }
     )
     logs, storage = FakeLogs(), FakeS3()
-    boundary = TransferAWSBoundary(
+    boundary = ObservedEventsBoundary(
         None,
         None,
         tmp_path,
@@ -199,7 +200,7 @@ def archive_boundary(tmp_path: Path) -> tuple[TransferRequest, TransferAWSBounda
         }
     )
     logs, storage = FakeLogs(), FakeS3()
-    boundary = TransferAWSBoundary(
+    boundary = ObservedEventsBoundary(
         Mock(),
         Mock(),
         tmp_path,

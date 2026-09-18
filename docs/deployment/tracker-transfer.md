@@ -2,6 +2,12 @@
 
 This private command transfers terminal history between two explicitly named PostgreSQL databases and two AWS accounts. It does not deploy software, provision releases or secrets, copy owner objects, change ValSmith locations, or replay historical events into CloudWatch. Keep the owner frozen until the parent cutover has verified deployed settings and application reads.
 
+**Production completion is blocked.** The production AWS boundary has no supported proof that all legacy CloudWatch events have been ingested and returned. It refuses archive creation and acceptance of existing archives, including inspection, cleanup and finalization that depend on them. Planning and preparation remain available. No operator input enables a completion path. Source data and holds must remain; the legacy cross-account migration requirement is not complete.
+
+Matching scans verify integrity only for observed events. Process exit and empty or absent query results do not establish log completeness. The phase descriptions below define the intended protocol and isolated test behavior; they do not override this production gate. Existing transport/reader tests and injected orchestration doubles do not establish a deployed completeness provider.
+
+A future implementation can assess a completed [AWS S3 export](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/S3Export.html) with a proved publisher cutoff and lossless archive reconciliation, or a durable publisher ledger for future runs. Neither option is implemented. AWS's export availability delay does not establish a completeness bound for [FilterLogEvents](https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_FilterLogEvents.html). Export format, cutoff evidence, retention protection, and safe archive replacement remain unresolved. Do not delete journals, replace manifest versions, or reuse old parent completion to bypass this gate.
+
 Use a fixed trusted absolute interpreter and script path, with an argument array and no shell. The script is `services/tracker/scripts/transfer_run_history.py`. Read credentials only from named environment variables. Select two independent AWS profiles through named environment variables; STS and bucket ownership checks establish their actual accounts. Profile names are not authority evidence.
 
 ```text
