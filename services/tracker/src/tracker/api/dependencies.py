@@ -58,13 +58,11 @@ class RunAWSContext:
 
 
 async def get_run_aws_context(
-    benchmark_id: TrackedBenchmarkId,
+    benchmark: RunBenchmarkDependency,
     request: Request,
-    session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> RunAWSContext:
     """Return an organization-scoped run with its persisted AWS authority."""
-    benchmark = get_run_benchmark(benchmark_id, session, org)
     if benchmark.arguments.environment == "local":
         raise HTTPException(status_code=400, detail="This operation requires an AWS run")
     assert benchmark.arguments.properties is None or not isinstance(benchmark.arguments.properties, LocalResources)
@@ -87,19 +85,17 @@ RunAWSDependency = Annotated[RunAWSContext, Depends(get_run_aws_context)]
 
 
 async def get_run_runtime(
-    benchmark_id: TrackedBenchmarkId,
+    benchmark: RunBenchmarkDependency,
     request: Request,
-    session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> RuntimeServices:
     """Compose services for one authorized run operation."""
-    benchmark = get_run_benchmark(benchmark_id, session, org)
     arguments = benchmark.arguments
     if arguments.environment == "local":
         assert isinstance(arguments.properties, LocalResources)
         return LocalRuntimeFactory.create_runtime(arguments.properties.data_root, org.id)
 
-    run_context = get_run_aws_context(benchmark_id, request, session, org)
+    run_context = await get_run_aws_context(benchmark, request, org)
     return CloudRuntimeFactory.create_runtime(
         run_context.aws_runtime,
         sandbox_provider=arguments.sandbox_provider,

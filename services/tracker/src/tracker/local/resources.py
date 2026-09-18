@@ -14,4 +14,4 @@ class LocalResources(BaseModel, frozen=True):
     def validate_absolute_path(cls, value: Path | None) -> Path | None:
         if value is not None and not value.is_absolute():
             raise ValueError("Local resource paths must be absolute")
-        return value
+        return value.resolve() if value is not None else None
