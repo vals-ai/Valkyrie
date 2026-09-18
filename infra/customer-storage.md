@@ -99,6 +99,10 @@ has no `DeleteBucketPolicy` permission. It cannot delete the shared system bucke
 or mutate the legacy shared source. Source migration and deletion use a separate
 source role/client with exact reviewed resource grants. A foreign `vs-prod-*`
 bucket remains denied even during cross-account migration.
+Separate clients alone do not authorize S3 `CopyObject`: its caller needs both
+source-read and destination-write access. The future migration transport must use
+source-authenticated `GetObject` and stream its bytes into destination-authenticated
+`PutObject` or multipart upload. Keep the foreign-owner denies on both roles.
 
 The lifecycle role can start backups only into this vault and pass only the backup
 role to `backup.amazonaws.com`. Recovery-point deletion is granted by this vault's

@@ -263,6 +263,35 @@ class CustomerStorageTest(unittest.TestCase):
         self.assertNotIn("Conditions", system)
         self.assertNotIn("vs-prod-*", json.dumps(system["Resources"]))
 
+    def test_operator_arn_rejects_invalid_role_names_and_paths(self) -> None:
+        resources = (
+            "role//",
+            "role/operators/",
+            f"role/{'a' * 65}",
+            f"role/{'a' * 511}/Operator",
+            "role/operators with spaces/Operator",
+            "role/operators\x7f/Operator",
+            "role/operators/Operator!",
+            "role/operators*/Operator",
+            "role/operators?/Operator",
+        )
+        for resource in resources:
+            with (
+                self.subTest(resource=resource),
+                self.assertRaisesRegex(ValueError, "VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN"),
+            ):
+                synth(
+                    environment={**INPUTS, "VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:{resource}"}
+                )
+
+    def test_operator_arn_accepts_valid_role_name_and_path_boundaries(self) -> None:
+        for resource in (f"role/{'a' * 64}", "role/teams!/@finance/Operator_+=,.@-", f"role/{'a' * 510}/Operator"):
+            operator = f"arn:aws:iam::{ACCOUNT}:{resource}"
+            with self.subTest(resource=resource):
+                template = synth(environment={**INPUTS, "VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN": operator})
+                _, properties, _ = role(template, "ValSmithLifecycle-prod")
+                self.assertEqual(properties["AssumeRolePolicyDocument"]["Statement"][0]["Principal"], {"AWS": operator})
+
     def test_trust_is_exact_and_app_lambda_have_no_lifecycle_permissions(self) -> None:
         template = synth()
         for name, principal, action in (
