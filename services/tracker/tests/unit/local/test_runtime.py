@@ -14,7 +14,7 @@ async def test_local_runtime_scopes_files_and_clears_secrets(tmp_path: Path) -> 
     """Persist artifacts without allowing another organization to read them."""
     org_id = uuid4()
     references = {"API_KEY": "agent-key"}
-    async with LocalRuntimeFactory.open(
+    with LocalRuntimeFactory.open(
         tmp_path, org_id, secret_references=references, execution_secrets={"API_KEY": "transient-value"}
     ) as runtime:
         await runtime.objects.put_bytes("agent.zip", b"agent")
