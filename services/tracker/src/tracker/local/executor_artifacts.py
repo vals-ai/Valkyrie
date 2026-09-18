@@ -1,6 +1,5 @@
 """Filesystem release reader shared by Tracker and the minimal ExecutorHost."""
 
-from io import BufferedReader
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -24,6 +23,3 @@ class FilesystemExecutorArtifactReader:
         if not path.is_relative_to(self.root) or path == self.root:
             raise ValueError("Executor artifact URI is outside the configured local release root")
         return path
-
-    def open(self, artifact_uri: str) -> BufferedReader:
-        return self.validate(artifact_uri).open("rb")
