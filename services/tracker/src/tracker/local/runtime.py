@@ -1,7 +1,5 @@
 """Compose local runtime services from process configuration."""
 
-from collections.abc import Generator, Mapping
-from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID
 
@@ -48,18 +46,3 @@ class LocalRuntimeFactory:
             artifacts=objects,
             sandbox_provider="docker",
         )
-
-    @staticmethod
-    @contextmanager
-    def open(
-        data_root: Path,
-        org_id: UUID,
-        *,
-        secret_references: Mapping[str, str],
-        execution_secrets: Mapping[str, str],
-    ) -> Generator[LocalRuntimeServices]:
-        secrets = InMemorySecretStore(secret_references, execution_secrets)
-        try:
-            yield LocalRuntimeFactory.create_runtime(data_root, org_id, secrets=secrets)
-        finally:
-            secrets.close()
