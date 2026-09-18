@@ -81,11 +81,11 @@ class RunsResource:
         provider_name, provider_secret_name = self._sdk.config.resolve_sandbox_provider(provider)
         intervals = self._resolve_webhook_intervals(webhook_intervals)
         effective_service_headers = self._service_headers(benchmark, service_headers)
-        access_key_harness_config = (
-            self._sdk.config.harness_config(provider_secret_name)
-            if self._sdk.config.aws_access_key_id is not None
-            else None
-        )
+        access_key_harness_config = None
+        if self._sdk.config.aws_access_key_id is not None:
+            # Static AWS configuration requires a configured provider secret.
+            assert provider_secret_name is not None
+            access_key_harness_config = self._sdk.config.harness_config(provider_secret_name)
 
         payload = StartBenchmarkRequest(
             contract=contract,

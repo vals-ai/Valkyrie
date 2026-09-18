@@ -120,12 +120,12 @@ class ValkyrieConfig(BaseModel):
             raise ValkyrieConfigError(f"Unknown sandbox provider '{provider_name}'. Configured providers: {configured}")
         return provider_name, secret_name
 
-    def harness_config(self, provider_secret_name: str | None) -> HarnessConfig:
+    def harness_config(self, provider_secret_name: str) -> HarnessConfig:
         """Build the nested harness config expected by the tracker."""
         if self.aws_access_key_id is None or self.aws_secret_access_key is None:
             raise ValkyrieConfigError("Static AWS access keys are not configured")
-        if self.aws_default_region is None or self.s3_bucket is None or provider_secret_name is None:
-            raise ValkyrieConfigError("AWS region, bucket and sandbox provider secret must be configured")
+        if self.aws_default_region is None or self.s3_bucket is None:
+            raise ValkyrieConfigError("AWS region and bucket must be configured")
         return HarnessConfig(
             aws=AWSCredentials(
                 aws_access_key_id=self.aws_access_key_id.get_secret_value(),
