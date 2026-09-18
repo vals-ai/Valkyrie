@@ -48,6 +48,7 @@ from tracker.auth import (
 )
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.aws.resolver import (
+    deployment_aws_runtime,
     resolve_aws_runtime_metadata,
     resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
@@ -56,6 +57,7 @@ from tracker.aws.secrets import SecretsManagerStore
 from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
+    S3ObjectCopier,
     S3ObjectStore,
     create_benchmark_url,
     create_console_url,
@@ -592,6 +594,13 @@ async def start_benchmark(
     object_store = S3ObjectStore(aws_runtime)
     effective_harness_config = runtime_resolution.access_key_harness_config
     aws_managed = runtime_resolution.aws_managed
+    library_runtime = deployment_aws_runtime(run_starter.org.id) if aws_managed else aws_runtime
+    library_store = S3ObjectStore(library_runtime)
+    agent_copier = (
+        S3ObjectCopier(library_runtime, aws_runtime)
+        if library_runtime.resources.s3_bucket != aws_runtime.resources.s3_bucket
+        else None
+    )
 
     if aws_managed:
         if not request.sandbox_provider or not request.sandbox_provider_secret_name:
@@ -700,13 +709,13 @@ async def start_benchmark(
             )
 
     if not request.contract.install_cmd and not request.contract.run_cmd:
-        request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request, object_store)})
+        request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request, library_store)})
         if aws_managed:
             try:
                 validate_managed_execution_request(request)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-    elif aws_managed and not await object_store.exists(agent_bundle_key(request.contract.name)):
+    elif aws_managed and not await library_store.exists(agent_bundle_key(request.contract.name)):
         raise HTTPException(
             status_code=404,
             detail=f"Agent '{request.contract.name}' is not available in the deployment bucket.",
@@ -756,6 +765,7 @@ async def start_benchmark(
             object_store,
             str(benchmark_row.id),
             request.contract.name,
+            copier=agent_copier,
         )
         commit_task = asyncio.create_task(
             asyncio.to_thread(

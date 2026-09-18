@@ -74,6 +74,13 @@ class ObjectStore(Protocol):
         raise NotImplementedError  # pragma: no cover
 
 
+class ObjectCopier(Protocol):
+    """Copy objects between provider-owned storage scopes."""
+
+    def copy(self, source_key: str, destination_key: str) -> Coroutine[Any, Any, StoredObjectCopy]:
+        raise NotImplementedError  # pragma: no cover
+
+
 class ArtifactLocations(Protocol):
     """Provider-native artifact locations for display or navigation."""
 

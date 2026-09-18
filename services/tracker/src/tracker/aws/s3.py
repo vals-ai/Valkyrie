@@ -25,6 +25,7 @@ S3_BENCHMARKS_PREFIX = "benchmarks"
 
 # S3 multipart uploads require every part except the last to be at least 5 MiB.
 _MULTIPART_PART_BYTES = 8 * 1024 * 1024
+_MAX_SINGLE_COPY_BYTES = 5 * 1024**3
 
 
 @dataclass(frozen=True)
@@ -453,6 +454,44 @@ async def list_agents(runtime: AWSRuntime) -> list[tuple[str, datetime | None]]:
                 agents.append((tail[: -len(".zip")], s3_object.get("LastModified")))
 
     return agents
+
+
+class S3ObjectCopier:
+    """Copy one object between two S3 runtimes with separate authority."""
+
+    def __init__(self, source: AWSRuntime, destination: AWSRuntime) -> None:
+        self._source = source
+        self._destination = destination
+
+    @handle_s3_error(message="Failed to copy S3 object")
+    async def copy(self, source_key: str, destination_key: str) -> StoredObjectCopy:
+        source_owner_arguments = s3_owner_arguments(self._source)
+        async with self._source.clients.s3_client() as source_client:
+            source_head = await source_client.head_object(
+                Bucket=self._source.resources.s3_bucket,
+                Key=source_key,
+                **source_owner_arguments,
+            )
+
+        if source_head["ContentLength"] > _MAX_SINGLE_COPY_BYTES:
+            raise S3Error(f"Agent bundle exceeds the 5 GiB single-copy limit: {source_key}")
+
+        copy_owner_arguments = s3_owner_arguments(self._destination)
+        if expected_source_owner := source_owner_arguments.get("ExpectedBucketOwner"):
+            copy_owner_arguments["ExpectedSourceBucketOwner"] = expected_source_owner
+
+        async with self._destination.clients.s3_client() as destination_client:
+            response = await destination_client.copy_object(
+                Bucket=self._destination.resources.s3_bucket,
+                Key=destination_key,
+                CopySource={"Bucket": self._source.resources.s3_bucket, "Key": source_key},
+                CopySourceIfMatch=source_head["ETag"],
+                **copy_owner_arguments,
+            )
+
+        version_id = response.get("VersionId")
+
+        return StoredObjectCopy(deletion_token=str(version_id) if version_id is not None else None)
 
 
 class _S3ObjectReadSession:
