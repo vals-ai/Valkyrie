@@ -147,7 +147,6 @@ async def get_task_artifacts(
                     path=f"{task_id}/agent_output.tar.gz", download="true"
                 )
             )
-            ttl_seconds = 0
 
     return TaskArtifactsResponse(
         cloudwatch_url=cloudwatch_url,

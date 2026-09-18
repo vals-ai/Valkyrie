@@ -54,7 +54,7 @@ async def test_local_runtime_transfers_and_executes_frozen_agent(tmp_path: Path,
             'cat "$1" > /tmp/final-output/result.txt\nprintf "agent completed\\n"\n'
             f"exit {exit_code}\n",
         )
-    async with LocalRuntimeFactory.open(
+    with LocalRuntimeFactory.open(
         tmp_path, org_id, secret_references=contract.secrets, execution_secrets={"LOCAL_TEST_KEY": "transient-value"}
     ) as runtime:
         await runtime.objects.put_bytes(agent_bundle_key(contract.name), stream.getvalue())
