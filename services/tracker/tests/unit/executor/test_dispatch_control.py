@@ -14,6 +14,7 @@ from tracker.database.models import (
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
+    FailureCategory,
     Task,
     TaskStatus,
 )
@@ -406,6 +407,7 @@ def test_running_dispatch_failure_preserves_active_sibling(
         producer="tracker",
         operation="process_benchmark",
         error_type="RuntimeError",
+        category=FailureCategory.UNKNOWN,
     )
     database_session.commit()
     database_session.refresh(example_benchmark_object)

@@ -1045,6 +1045,18 @@
         "title": "Body_stop_benchmark",
         "type": "object"
       },
+      "FailureCategory": {
+        "description": "Coarse classification of a task or run failure, decided where the failure is caught.",
+        "enum": [
+          "infrastructure",
+          "benchmark_service",
+          "agent",
+          "cancelled",
+          "unknown"
+        ],
+        "title": "FailureCategory",
+        "type": "string"
+      },
       "FetchBenchmarkMetadataResponse": {
         "properties": {
           "benchmark_arguments": {
@@ -1388,6 +1400,20 @@
               }
             ],
             "title": "Task Errors"
+          },
+          "task_failure_categories": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/FailureCategory"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Failure Categories"
           },
           "tasks_stopped": {
             "anyOf": [
@@ -2287,6 +2313,16 @@
             ],
             "title": "Evaluation Result"
           },
+          "failure_category": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FailureCategory"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "finished_at": {
             "anyOf": [
               {
@@ -2704,6 +2740,16 @@
               }
             ],
             "title": "Error Message"
+          },
+          "failure_category": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FailureCategory"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "finished_at": {
             "anyOf": [

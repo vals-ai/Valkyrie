@@ -26,6 +26,7 @@ from tracker.database.models import (
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
+    FailureCategory,
     Org,
     Task,
     TaskBreakdown,
@@ -52,8 +53,12 @@ def _history_result(created_at: datetime, result: dict[str, Any]) -> dict[str, A
     return {"created_at": created_at.isoformat(), "result": dict(result)}
 
 
-def _history_error(created_at: datetime, error_message: str) -> dict[str, Any]:
-    return {"created_at": created_at.isoformat(), "error_message": error_message}
+def _history_error(created_at: datetime, error_message: str, category: FailureCategory | None) -> dict[str, Any]:
+    return {
+        "created_at": created_at.isoformat(),
+        "error_message": error_message,
+        "failure_category": category.value if category else None,
+    }
 
 
 class TaskCounts(NamedTuple):
@@ -159,7 +164,7 @@ def _fetch_result_histories(
 
     # Fetch all of the error results from the provided task_rows (A task can have a error message and a evaluation result depending on if its been reran)
     error_rows = session.exec(
-        select(ErrorResult.task, ErrorResult.created_at, ErrorResult.error_message)
+        select(ErrorResult.task, ErrorResult.created_at, col(ErrorResult.error_message), col(ErrorResult.category))
         .where(col(ErrorResult.task).in_(task_row_ids))
         .where(col(ErrorResult.org_id) == org_id)
         .where(col(ErrorResult.retry_scheduled).is_(False))
@@ -170,8 +175,8 @@ def _fetch_result_histories(
     histories: dict[UUID, list[dict[str, Any]]] = {}
     for _result_id, task_row_id, created_at, result in evaluation_rows:
         histories.setdefault(task_row_id, []).append(_history_result(created_at, result))
-    for task_row_id, created_at, error_message in error_rows:
-        histories.setdefault(task_row_id, []).append(_history_error(created_at, error_message))
+    for task_row_id, created_at, error_message, category in error_rows:
+        histories.setdefault(task_row_id, []).append(_history_error(created_at, error_message, category))
 
     return {
         task_row_id: sorted(entries, key=lambda entry: entry["created_at"], reverse=True)
@@ -536,6 +541,7 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
         .where(col(Task.status) == TaskStatus.STOPPED)
     ).one()
 
+    task_failures = benchmark_row.fetch_task_failures(session)
     final_view: FinalViewResponse = FinalViewResponse(
         benchmark_name=benchmark_row.name,
         status=benchmark_row.status,
@@ -547,7 +553,12 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
         tasks_stopped=tasks_stopped or None,  # NOTE: Only include if we stopped the benchmark
         final_evaluation=benchmark_row.final_evaluation,
         evaluation_results=benchmark_row.fetch_evaluation_results(session),
-        task_errors=benchmark_row.fetch_tasks_with_errors(session),
+        task_errors={task_id: message for task_id, (message, _) in task_failures.items()} if task_failures else None,
+        task_failure_categories=(
+            {task_id: category for task_id, (_, category) in task_failures.items() if category is not None}
+            if task_failures
+            else None
+        ),
         average_task_breakdown=fetch_average_task_breakdown(benchmark_row.id, session, org.id),
     )
 

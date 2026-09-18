@@ -77,11 +77,12 @@ def tasks(
         {
             "Task": terminal_safe(task.task_id, preserve_newlines=False),
             "Status": task.status.value,
+            "Category": task.failure_category.value if task.failure_category else "",
             "Error": terminal_safe(task.error_message or "", preserve_newlines=False),
         }
         for task in response.tasks
     ]
-    format_table(rows, ["Task", "Status", "Error"], total_count=response.total_count, item_name="task")
+    format_table(rows, ["Task", "Status", "Category", "Error"], total_count=response.total_count, item_name="task")
 
 
 async def _tasks(run_id: UUID, request: FetchTasksRequest) -> TasksResponse:

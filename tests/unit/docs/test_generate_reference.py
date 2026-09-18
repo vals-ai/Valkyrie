@@ -110,6 +110,7 @@ _EXPECTED_TYPES = {
         "UpdateBenchmarkConcurrencyRequest",
         "UpdateBenchmarkConcurrencyResponse",
         "BenchmarkStatus",
+        "FailureCategory",
         "Order",
         "RetryMode",
         "TaskStatus",

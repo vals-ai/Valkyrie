@@ -384,6 +384,10 @@
     "destination": "/reference/sdk/models/benchmarks#benchmark-status-response"
   },
   {
+    "source": "/reference/sdk/models/runs/failure-category",
+    "destination": "/reference/sdk/models/runs#failure-category"
+  },
+  {
     "source": "/reference/sdk/models/runs/fetch-benchmark-response",
     "destination": "/reference/sdk/models/runs#fetch-benchmark-response"
   },

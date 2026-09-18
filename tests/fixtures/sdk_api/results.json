@@ -58,7 +58,8 @@
         "score": 1
       }
     },
-    "task_errors": null
+    "task_errors": null,
+    "task_failure_categories": null
   },
   "s3": {
     "s3_url": "s3://runs-bucket/results.json",

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 import click
+from tracker.database.models import FailureCategory
 from tracker.types import FinalViewResponse
 
 from valkyrie.cli.display import terminal_safe
@@ -43,14 +44,18 @@ def _format_task_id_preview(task_ids: tuple[str, ...]) -> str:
     return f"{preview} (+{omitted_count} more)" if omitted_count else preview
 
 
-def group_task_errors(task_errors: Mapping[str, str]) -> list[tuple[str, tuple[str, ...]]]:
-    """Group task IDs by identical raw messages in deterministic display order."""
-    grouped: defaultdict[str, list[str]] = defaultdict(list)
+def group_task_errors(
+    task_errors: Mapping[str, str],
+    task_failure_categories: Mapping[str, FailureCategory] | None = None,
+) -> list[tuple[FailureCategory | None, str, tuple[str, ...]]]:
+    """Group task IDs by identical (category, raw message) in deterministic display order."""
+    categories = task_failure_categories or {}
+    grouped: defaultdict[tuple[FailureCategory | None, str], list[str]] = defaultdict(list)
     for task_id, message in task_errors.items():
-        grouped[message].append(task_id)
+        grouped[(categories.get(task_id), message)].append(task_id)
 
-    groups = [(message, tuple(sorted(task_ids))) for message, task_ids in grouped.items()]
-    return sorted(groups, key=lambda group: (-len(group[1]), group[1][0]))
+    groups = [(category, message, tuple(sorted(task_ids))) for (category, message), task_ids in grouped.items()]
+    return sorted(groups, key=lambda group: (-len(group[2]), group[2][0]))
 
 
 def build_run_errors_payload(
@@ -60,6 +65,9 @@ def build_run_errors_payload(
 ) -> dict[str, object]:
     """Build a versioned allowlist containing only run-error diagnostics."""
     task_errors = dict(sorted((response.task_errors or {}).items()))
+    task_failure_categories = {
+        task_id: category.value for task_id, category in sorted((response.task_failure_categories or {}).items())
+    }
     return {
         "schema_version": 1,
         "kind": "run_errors",
@@ -70,6 +78,7 @@ def build_run_errors_payload(
         "error_message": response.error_message,
         "task_error_count": len(task_errors),
         "task_errors": task_errors,
+        "task_failure_categories": task_failure_categories,
     }
 
 
@@ -86,7 +95,7 @@ def format_run_errors_json(response: FinalViewResponse) -> str:
 def format_run_errors_text(response: FinalViewResponse) -> None:
     """Render stored run and current task errors for a human reader."""
     task_errors = response.task_errors or {}
-    groups = group_task_errors(task_errors)
+    groups = group_task_errors(task_errors, response.task_failure_categories)
 
     click.echo(click.style("Run Errors", bold=True))
     click.echo(f"{'Run ID:':<12}{response.benchmark_id}")
@@ -108,9 +117,12 @@ def format_run_errors_text(response: FinalViewResponse) -> None:
             )
         )
 
-        for message, task_ids in groups:
+        for category, message, task_ids in groups:
             click.echo()
-            click.echo(f"[{_count_label(len(task_ids), 'task')}] {_format_task_id_preview(task_ids)}")
+            label = _count_label(len(task_ids), "task")
+            if category is not None:
+                label = f"{label}, {category.value}"
+            click.echo(f"[{label}] {_format_task_id_preview(task_ids)}")
             click.echo(_indent_message(_display_error_message(message)))
     elif response.error_message is None:
         click.echo()

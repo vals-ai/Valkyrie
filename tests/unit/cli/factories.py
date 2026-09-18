@@ -8,6 +8,7 @@ from tracker.database.models import (
     BenchmarkArguments,
     BenchmarkStatus,
     DocentReadingStatus,
+    FailureCategory,
     TaskStatus,
 )
 from tracker.types import BenchmarkDetails, FetchBenchmarkMetadataResponse, FetchBenchmarkResponse, FinalViewResponse
@@ -70,6 +71,7 @@ def make_final_view(
     status: BenchmarkStatus = BenchmarkStatus.ERROR,
     error_message: str | None = "No tasks were completed successfully",
     task_errors: dict[str, str] | None = None,
+    task_failure_categories: dict[str, FailureCategory] | None = None,
     evaluation_results: dict[str, dict[str, object]] | None = None,
 ) -> FinalViewResponse:
     """Build a complete final-view response for CLI behavior tests."""
@@ -93,4 +95,5 @@ def make_final_view(
         average_task_breakdown=None,
         evaluation_results=evaluation_results or {"successful-task": {"private": "excluded-evaluation-value"}},
         task_errors=task_errors,
+        task_failure_categories=task_failure_categories,
     )
