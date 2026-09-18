@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
+from uuid import UUID
 
 import pytest
 import sentry_sdk
@@ -27,8 +28,9 @@ from sentry_sdk.types import Event, Hint, Log
 
 import tracker.observability.sentry as sentry_module
 import tracker.observability.tracing as tracing_module
+import tracker.utils.run_orchestration as run_orchestration
 import tracker.utils.task_execution as task_execution
-from tracker.database.models import Org, Task
+from tracker.database.models import FailureCategory, Org, Task
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.exceptions import SandboxError, SandboxSetupError, SSLConnectionError
 from tracker.logging.context import (
@@ -513,3 +515,26 @@ async def test_retry_attempt_clears_previous_sandbox_identity(
     retry_tags = cast(dict[str, str], retry_event.get("tags", {}))
     assert retry_tags == {"task_id": "task-0", "attempt_started_at": "2026-04-01T12:00:00+00:00"}
     assert "sandbox" not in retry_event.get("contexts", {})
+
+
+def test_run_error_failure_category_tag_does_not_leak_to_later_events() -> None:
+    events: list[Event] = []
+
+    with sentry_sdk.init(
+        dsn="https://public@example.com/1",
+        transport=events.append,
+        default_integrations=False,
+        before_send=_before_send(),
+    ):
+        run_orchestration._capture_run_error(  # pyright: ignore[reportPrivateUsage]
+            RuntimeError("runtime resolution failed"),
+            UUID("00000000-0000-0000-0000-000000000811"),
+            producer="tracker",
+            operation="process_benchmark",
+            category=FailureCategory.INFRASTRUCTURE,
+        )
+        sentry_sdk.capture_exception(RuntimeError("unrelated later failure in the same worker"))
+
+    run_event, later_event = events
+    assert cast(dict[str, str], run_event.get("tags", {}))["failure_category"] == "infrastructure"
+    assert "failure_category" not in later_event.get("tags", {})

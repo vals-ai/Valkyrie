@@ -768,8 +768,9 @@ async def _process_task_attempt(
                     "failure_category": category.value,
                 },
             )
-            sentry_sdk.set_tag("failure_category", category.value)
-            capture_exception(exc)
+            with sentry_sdk.new_scope() as scope:
+                scope.set_tag("failure_category", category.value)
+                capture_exception(exc)
         with open_task_session() as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
             commit_task_error(

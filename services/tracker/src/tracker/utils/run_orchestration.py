@@ -261,8 +261,9 @@ def _capture_run_error(
                 "failure_category": category.value,
             },
         )
-        sentry_sdk.set_tag("failure_category", category.value)
-        capture_exception(exc)
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("failure_category", category.value)
+            capture_exception(exc)
 
 
 def _record_run_finalized(benchmark_id: UUID, status: BenchmarkStatus, authority: ExecutionAuthority) -> None:
