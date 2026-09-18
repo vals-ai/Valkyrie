@@ -76,6 +76,9 @@ def build_run_snapshot(
             task_status.value: details.task_breakdown.get(task_status, 0) for task_status in TaskStatus
         },
         "progress_percent": round(progress_percent, 4),
+        "model_api_cost_usd": (
+            str(details.model_api_cost_usd) if details.model_api_cost_usd is not None else None
+        ),
         "max_concurrency": arguments.concurrency if arguments is not None else None,
         "final_score": _finite_score_or_none(response.final_score),
         "error_message": response.error_message if details.status == BenchmarkStatus.ERROR else None,

@@ -8,6 +8,7 @@ import shlex
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
+from decimal import Decimal
 from typing import Any, Never, cast
 from unittest.mock import AsyncMock, Mock, call
 
@@ -46,8 +47,11 @@ from tracker.exceptions import (
     SandboxSetupError,
 )
 from tracker.sandbox import (
+    MODEL_API_COST_REPORT_MAX_BYTES,
+    MODEL_API_COST_REPORT_PATH,
     OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES,
     create_sandbox,
+    read_model_api_cost_report,
     run_agent,
     upload_agent_artifacts,
     upload_output_artifacts,
@@ -56,6 +60,10 @@ from tracker.sandbox import (
 
 def _ignore_output(_message: str) -> None:
     pass
+
+
+def _is_run_agent_setup_command(command: str) -> bool:
+    return command.startswith("mkdir -p") or command == f"rm -f -- {shlex.quote(MODEL_API_COST_REPORT_PATH)}"
 
 
 def _mock_object_store() -> Mock:
@@ -570,8 +578,285 @@ class TestArchiveAndUploadOutput:
         assert exec_commands[-1].startswith("rm -f ")
 
 
+class TestModelAPICostReport:
+    async def test_reads_exact_decimal_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        contents = '{"model_api_cost_usd":"0.123456789012345678"}'
+        commands: list[str] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            commands.append(command)
+            return ExecResult(exit_code=0, output=contents if command.startswith("head") else "")
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+
+        cost = await read_model_api_cost_report(Mock(), _ignore_output)
+
+        assert cost == Decimal("0.123456789012345678")
+        assert len(commands) == 3
+
+    @pytest.mark.parametrize(
+        "contents",
+        [
+            '{"model_api_cost_usd":0.25}',
+            '{"model_api_cost_usd":"-0.01"}',
+            '{"model_api_cost_usd":"NaN"}',
+            '{"model_api_cost_usd":"1e100000"}',
+            '{"model_api_cost_usd":"0.25","extra":true}',
+            '{"model_api_cost_usd":"1","model_api_cost_usd":"2"}',
+            "not-json",
+        ],
+    )
+    async def test_invalid_report_is_non_fatal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        contents: str,
+    ) -> None:
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            return ExecResult(exit_code=0, output=contents if command.startswith("head") else "")
+
+        warnings: list[str] = []
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+
+        cost = await read_model_api_cost_report(Mock(), warnings.append)
+
+        assert cost is None
+        assert warnings
+
+    async def test_missing_report_is_silent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            sandbox_module,
+            "_exec",
+            AsyncMock(return_value=ExecResult(exit_code=1, output="")),
+        )
+        warnings: list[str] = []
+
+        cost = await read_model_api_cost_report(Mock(), warnings.append)
+
+        assert cost is None
+        assert warnings == []
+
+    async def test_non_regular_report_is_non_fatal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        responses = iter(
+            [
+                ExecResult(exit_code=0, output=""),
+                ExecResult(exit_code=1, output=""),
+            ]
+        )
+
+        async def fake_exec(_sandbox: Any, _command: str) -> ExecResult:
+            return next(responses)
+
+        warnings: list[str] = []
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+
+        cost = await read_model_api_cost_report(Mock(), warnings.append)
+
+        assert cost is None
+        assert warnings
+
+    async def test_oversized_received_report_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            output = "x" * (MODEL_API_COST_REPORT_MAX_BYTES + 1) if command.startswith("head") else ""
+            return ExecResult(exit_code=0, output=output)
+
+        warnings: list[str] = []
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+
+        cost = await read_model_api_cost_report(Mock(), warnings.append)
+
+        assert cost is None
+        assert warnings
+
+    async def test_unreadable_report_is_non_fatal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            return ExecResult(exit_code=1 if command.startswith("head") else 0, output="")
+
+        warnings: list[str] = []
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+
+        cost = await read_model_api_cost_report(Mock(), warnings.append)
+
+        assert cost is None
+        assert warnings
+
+
 class TestRunAgent:
     """Agent execution, output collection, and runtime command construction."""
+
+    async def test_cost_callbacks_wrap_a_failed_agent_command(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        events: list[str] = []
+
+        async def install_dependencies(*_args: Any, **_kwargs: Any) -> None:
+            events.append("dependencies")
+
+        async def start_attempt() -> None:
+            events.append("started")
+
+        async def fail_command(*_args: Any, **_kwargs: Any) -> Never:
+            assert events == ["dependencies", "started"]
+            events.append("command")
+            raise AgentRunFailedError("agent failed")
+
+        async def read_cost(*_args: Any, **_kwargs: Any) -> Decimal:
+            events.append("read")
+            return Decimal("0.25")
+
+        async def record_cost(cost: Decimal) -> None:
+            assert cost == Decimal("0.25")
+            events.append("recorded")
+
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", install_dependencies)
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0, output="")))
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fail_command)
+        monkeypatch.setattr(sandbox_module, "read_model_api_cost_report", read_cost)
+
+        with pytest.raises(AgentRunFailedError):
+            await run_agent(
+                Mock(),
+                AgentContractRequest(name="agent", run_cmd="run {problem_statement_path}"),
+                "/problem",
+                "task-1",
+                _ignore_output,
+                "/work",
+                _mock_object_store(),
+                on_agent_start=start_attempt,
+                on_model_api_cost=record_cost,
+            )
+
+        assert events == ["dependencies", "started", "command", "read", "recorded"]
+
+    async def test_timeout_attempt_records_cost(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        start_attempt = AsyncMock()
+        record_cost = AsyncMock()
+        exec_commands: list[str] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            exec_commands.append(command)
+            return ExecResult(exit_code=0, output="")
+
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(
+            sandbox_module,
+            "stream_command_output",
+            AsyncMock(return_value=(AgentCausedExitReason.TIMEOUT, 1.0)),
+        )
+        monkeypatch.setattr(
+            sandbox_module,
+            "read_model_api_cost_report",
+            AsyncMock(return_value=Decimal("0.50")),
+        )
+
+        exit_reason, _ = await run_agent(
+            Mock(),
+            AgentContractRequest(name="agent", run_cmd="run {problem_statement_path}"),
+            "/problem",
+            "task-1",
+            _ignore_output,
+            "/work",
+            _mock_object_store(),
+            on_agent_start=start_attempt,
+            on_model_api_cost=record_cost,
+        )
+
+        assert exit_reason == AgentCausedExitReason.TIMEOUT
+        assert f"rm -f -- {shlex.quote(MODEL_API_COST_REPORT_PATH)}" in exec_commands
+        start_attempt.assert_awaited_once_with()
+        record_cost.assert_awaited_once_with(Decimal("0.50"))
+
+    @pytest.mark.parametrize("failure", ["cleanup_exit", "cleanup_exception", "persist"])
+    async def test_cost_failure_does_not_fail_agent(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: str,
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command.startswith("rm -f"):
+                if failure == "cleanup_exception":
+                    raise SandboxError("sandbox unavailable")
+                if failure == "cleanup_exit":
+                    return ExecResult(exit_code=1, output="")
+            return ExecResult(exit_code=0, output="")
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", AsyncMock(return_value=(None, 1.0)))
+        read_cost = AsyncMock(return_value=Decimal("0.50"))
+        monkeypatch.setattr(sandbox_module, "read_model_api_cost_report", read_cost)
+        record_cost = AsyncMock(side_effect=RuntimeError("database unavailable"))
+        start_attempt = AsyncMock()
+        warnings: list[str] = []
+
+        result = await run_agent(
+            Mock(),
+            AgentContractRequest(name="agent", run_cmd="run {problem_statement_path}"),
+            "/problem",
+            "task-1",
+            warnings.append,
+            "/work",
+            _mock_object_store(),
+            on_agent_start=start_attempt,
+            on_model_api_cost=record_cost,
+        )
+
+        assert result == (None, 1.0)
+        assert warnings
+        start_attempt.assert_awaited_once()
+        if failure == "persist":
+            record_cost.assert_awaited_once_with(Decimal("0.50"))
+        else:
+            read_cost.assert_not_awaited()
+            record_cost.assert_not_awaited()
+
+    async def test_egress_setup_failure_does_not_start_cost_accounting(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0, output="")))
+        monkeypatch.setattr(
+            sandbox_module,
+            "_apply_egress_allowlist",
+            AsyncMock(side_effect=SandboxSetupError("egress failed")),
+        )
+        monkeypatch.setattr(sandbox_module, "_clear_egress_allowlist", AsyncMock())
+        read_cost = AsyncMock()
+        upload_artifacts = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "read_model_api_cost_report", read_cost)
+        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", upload_artifacts)
+        start_attempt = AsyncMock()
+        record_cost = AsyncMock()
+
+        with pytest.raises(SandboxSetupError, match="egress failed"):
+            await run_agent(
+                Mock(),
+                AgentContractRequest(
+                    name="agent",
+                    run_cmd="run {problem_statement_path}",
+                    egress_allowlist=["https://api.openai.com"],
+                    output_artifacts=["artifacts/result.json"],
+                ),
+                "/problem",
+                "task-1",
+                _ignore_output,
+                "/work",
+                _mock_object_store(),
+                benchmark_id="benchmark-1",
+                on_agent_start=start_attempt,
+                on_model_api_cost=record_cost,
+            )
+
+        upload_artifacts.assert_awaited_once()
+        start_attempt.assert_not_awaited()
+        read_cost.assert_not_awaited()
+        record_cost.assert_not_awaited()
 
     async def test_run_agent_uploads_declared_output_artifacts(
         self,
@@ -589,7 +874,7 @@ class TestRunAgent:
         artifact_calls: list[str] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            if command.startswith("mkdir -p") or command == "test -e /logs":
+            if _is_run_agent_setup_command(command) or command == "test -e /logs":
                 return ExecResult(exit_code=0, output="")
             raise AssertionError(f"unexpected command: {command}")
 
@@ -644,7 +929,7 @@ class TestRunAgent:
         upload_artifacts = AsyncMock()
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            if command.startswith("mkdir -p") or command == "test -e /logs":
+            if _is_run_agent_setup_command(command) or command == "test -e /logs":
                 return ExecResult(exit_code=0, output="")
             raise AssertionError(f"unexpected command: {command}")
 
@@ -689,7 +974,7 @@ class TestRunAgent:
         upload_artifacts = AsyncMock()
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            if command.startswith("mkdir -p") or command == "test -e /logs":
+            if _is_run_agent_setup_command(command) or command == "test -e /logs":
                 return ExecResult(exit_code=0, output="")
             raise AssertionError(f"unexpected command: {command}")
 
@@ -736,7 +1021,7 @@ class TestRunAgent:
         archive_calls: list[str] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            if command.startswith("mkdir -p") or command.startswith("test -e"):
+            if _is_run_agent_setup_command(command) or command.startswith("test -e"):
                 return ExecResult(exit_code=0)
             raise AssertionError(f"unexpected command: {command}")
 
@@ -812,7 +1097,7 @@ class TestRunAgent:
 
         async def fake_exec(sandbox: Any, command: str) -> ExecResult:
             observed_sandboxes.append(sandbox)
-            assert command == "mkdir -p /workspace"
+            assert _is_run_agent_setup_command(command)
             return ExecResult(exit_code=0)
 
         async def fake_stream_command_output(sandbox: Any, command: str, _log_output: Any) -> tuple[None, float]:
@@ -865,7 +1150,7 @@ class TestRunAgent:
         observed_commands: list[str] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            assert command == "mkdir -p /workspace"
+            assert _is_run_agent_setup_command(command)
             return ExecResult(exit_code=0)
 
         async def fake_stream_command_output(_sandbox: Any, command: str, _log_output: Any) -> tuple[None, float]:
@@ -1761,6 +2046,9 @@ class TestEgressAllowlist:
         async def mock_clear_egress_rules() -> None:
             events.append("clear")
 
+        async def mark_command_start() -> None:
+            events.append("start")
+
         monkeypatch.setattr(sandbox_module, "stream_command_output", mock_stream_command_output)
 
         mock_sandbox = Mock()
@@ -1776,10 +2064,11 @@ class TestEgressAllowlist:
             "run-agent.sh",
             on_output=ignore_output,
             allowed_addresses=["https://api.openai.com"],
+            on_command_start=mark_command_start,
         )
 
         assert result == (None, 2.5)
-        assert events == ["modify:https://api.openai.com", "stream", "clear"]
+        assert events == ["modify:https://api.openai.com", "start", "stream", "clear"]
 
     async def test_stream_command_output_skips_egress_rules_without_allowlist(
         self,
@@ -1800,6 +2089,7 @@ class TestEgressAllowlist:
         mock_sandbox = Mock()
         mock_sandbox.modify_egress_rules = AsyncMock()
         mock_sandbox.clear_egress_rules = AsyncMock()
+        mark_command_start = AsyncMock()
 
         def ignore_output(_message: str) -> None:
             pass
@@ -1809,9 +2099,11 @@ class TestEgressAllowlist:
             "run-agent.sh",
             on_output=ignore_output,
             allowed_addresses=[],
+            on_command_start=mark_command_start,
         )
 
         assert result == (None, 1.0)
+        mark_command_start.assert_awaited_once_with()
         mock_sandbox.modify_egress_rules.assert_not_awaited()
         mock_sandbox.clear_egress_rules.assert_not_awaited()
 

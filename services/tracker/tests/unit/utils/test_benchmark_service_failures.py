@@ -625,7 +625,10 @@ class TestBenchmarkServiceFailures:
             return None, 0.0
 
         async def _mock_exec(_sandbox: Any, command: str) -> ExecResult:
-            if command == "mkdir -p /testbed":
+            if command in {
+                "mkdir -p /testbed",
+                f"rm -f -- {sandbox_module.MODEL_API_COST_REPORT_PATH}",
+            }:
                 return ExecResult(exit_code=0, output="")
             if command == "test -f /tmp/valkyrie/artifacts/missing.json":
                 return ExecResult(exit_code=1, output="")
