@@ -5,15 +5,16 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from pydantic import BaseModel
 
-from tracker.runtime.log_history import ArchiveError, ArchiveLocation, ArchiveObject
+from tracker.runtime.log_history import ArchiveError, ArchiveLocation, ArchiveObject, ScanEvidence
 
 
 def encode(value: BaseModel | dict[str, Any] | list[str]) -> bytes:
@@ -112,9 +113,105 @@ class ArchiveVersionStore:
 class UploadJournal:
     """A local durable volume is required. Unknown acceptance is never adopted."""
 
-    def __init__(self, directory: Path, scope_sha256: str) -> None:
+    def __init__(self, directory: Path, scope_sha256: str, prefix: str, max_chunks: int) -> None:
         self.directory = directory
         self.scope_sha256 = scope_sha256
+        self.prefix = prefix
+        self.max_chunks = max_chunks
+        self.objects: dict[str, ArchiveObject] = {}
+        self.inventory: ScanEvidence | None = None
+
+    @property
+    def manifest(self) -> ArchiveObject | None:
+        return self.objects.get(f"{self.prefix}manifest.json")
+
+    def _read_json(self, path: Path) -> dict[str, Any]:
+        with path.open("rb") as source:
+            content = source.read(16_385)
+
+        if len(content) > 16_384:
+            raise ArchiveError("journal size limit exceeded")
+
+        value = json.loads(content)
+        if not isinstance(value, dict):
+            raise ArchiveError("invalid journal record")
+
+        return cast(dict[str, Any], value)
+
+    def _validate_key(self, key: str) -> None:
+        if key == f"{self.prefix}manifest.json":
+            return
+
+        match = re.fullmatch(re.escape(self.prefix) + r"chunks/([0-9]{8})\.json", key)
+        if match is None or int(match[1]) >= self.max_chunks:
+            raise ArchiveError("unexplained journal object scope")
+
+    def _load(self) -> None:
+        binding = {"journal_version": 1, "scope_sha256": self.scope_sha256, "prefix": self.prefix}
+        binding_path = self.directory / "scope.json"
+        if binding_path.exists():
+            if self._read_json(binding_path) != binding:
+                raise ArchiveError("journal identity conflict")
+        else:
+            if any(path.name != "lock" for path in self.directory.iterdir()):
+                raise ArchiveError("unbound prior journal state requires reconciliation")
+
+            self._persist(binding_path, binding)
+
+        self.objects.clear()
+        self.inventory = None
+        for count, path in enumerate(self.directory.iterdir(), start=1):
+            if count > self.max_chunks + 4:
+                raise ArchiveError("journal entry count limit exceeded")
+
+            if path.name in {"lock", "scope.json"}:
+                continue
+
+            if path.name == "inventory.json":
+                saved = self._read_json(path)
+                if set(saved) != {"scope_sha256", "scan"} or saved["scope_sha256"] != self.scope_sha256:
+                    raise ArchiveError("journal inventory identity conflict")
+
+                self.inventory = ScanEvidence.model_validate(saved["scan"])
+                continue
+
+            if not re.fullmatch(r"[0-9a-f]{64}\.json", path.name):
+                raise ArchiveError("unexplained prior journal state requires reconciliation")
+
+            saved = self._read_json(path)
+            if saved.get("scope_sha256") != self.scope_sha256:
+                raise ArchiveError("journal identity conflict")
+
+            if not saved.get("version_id"):
+                raise ArchiveError("unresolved upload intent requires operator reconciliation")
+
+            reference = ArchiveObject.model_validate(
+                {key: value for key, value in saved.items() if key != "scope_sha256"}
+            )
+            self._validate_key(reference.key)
+            if path.name != f"{digest(reference.key.encode())}.json" or reference.key in self.objects:
+                raise ArchiveError("journal object identity conflict")
+
+            self.objects[reference.key] = reference
+
+    def remember_inventory(self, evidence: ScanEvidence) -> None:
+        if self.inventory is not None:
+            if not same_inventory(self.inventory, evidence):
+                raise ArchiveError("source inventory conflicts with prior journal scan")
+
+            return
+
+        self._persist(
+            self.directory / "inventory.json",
+            {"scope_sha256": self.scope_sha256, "scan": evidence.model_dump(mode="json")},
+        )
+        self.inventory = evidence
+
+    def require_chunks(self, references: list[ArchiveObject]) -> None:
+        expected = {reference.key: reference for reference in references}
+        actual = {key: reference for key, reference in self.objects.items() if key != f"{self.prefix}manifest.json"}
+        if len(expected) != len(references) or actual != expected:
+            raise ArchiveError("unexplained prior journal chunks differ from current inventory")
 
     @contextmanager
     def locked(self) -> Generator[None]:
@@ -132,6 +229,7 @@ class UploadJournal:
                 raise ArchiveError("archive journal already in use") from None
 
             try:
+                self._load()
                 yield
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
@@ -154,29 +252,28 @@ class UploadJournal:
         if len(content) > maximum_bytes:
             raise ArchiveError("archive object byte limit exceeded")
 
-        path = self.directory / f"{digest(key.encode())}.json"
-        expected = {
-            "scope_sha256": self.scope_sha256,
-            "key": key,
-            "sha256": digest(content),
-            "size_bytes": len(content),
-        }
-        if path.exists():
-            if path.stat().st_size > 16_384:
-                raise ArchiveError("journal size limit exceeded")
-
-            saved = json.loads(path.read_bytes())
-            if {name: saved.get(name) for name in expected} != expected:
+        self._validate_key(key)
+        checksum = digest(content)
+        reference = self.objects.get(key)
+        if reference is not None:
+            if reference.sha256 != checksum or reference.size_bytes != len(content):
                 raise ArchiveError("journal identity or content conflict")
-
-            version = saved.get("version_id")
-            if not version:
-                raise ArchiveError("unresolved upload intent requires operator reconciliation")
         else:
+            if self.manifest is not None:
+                raise ArchiveError("published archive inventory cannot gain objects")
+
+            path = self.directory / f"{digest(key.encode())}.json"
+            expected = {"scope_sha256": self.scope_sha256, "key": key, "sha256": checksum, "size_bytes": len(content)}
             self._persist(path, expected)
             version = store.write(key, content)
             self._persist(path, {**expected, "version_id": version})
+            reference = ArchiveObject(key=key, version_id=version, sha256=checksum, size_bytes=len(content))
+            self.objects[key] = reference
 
-        reference = ArchiveObject(key=key, version_id=version, sha256=digest(content), size_bytes=len(content))
         store.read(reference, maximum_bytes)
         return reference
+
+
+def same_inventory(first: ScanEvidence, second: ScanEvidence) -> bool:
+    fields = {"group_pages", "stream_pages", "event_pages"}
+    return first.model_dump(exclude=fields) == second.model_dump(exclude=fields)

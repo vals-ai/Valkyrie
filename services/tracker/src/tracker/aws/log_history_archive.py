@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from tracker.aws.log_history_source import FrozenLogSource
-from tracker.aws.log_history_store import ArchiveVersionStore, UploadJournal, digest, encode
+from tracker.aws.log_history_store import ArchiveVersionStore, UploadJournal, digest, encode, same_inventory
 from tracker.runtime.log_history import (
     ArchiveChunk,
     ArchivedLogEvent,
@@ -24,13 +24,7 @@ from tracker.runtime.log_history import (
     FrozenLogScope,
     LogHistoryManifest,
     LogHistoryReference,
-    ScanEvidence,
 )
-
-
-def _same_inventory(first: ScanEvidence, second: ScanEvidence) -> bool:
-    fields = {"group_pages", "stream_pages", "event_pages"}
-    return first.model_dump(exclude=fields) == second.model_dump(exclude=fields)
 
 
 class _ChunkWriter:
@@ -108,15 +102,17 @@ def archive_logs(
         scope_sha256 = digest(
             encode({"scope": scope.model_dump(mode="json"), "limits": limits.model_dump(mode="json")})
         )
-        journal = UploadJournal(journal_directory, scope_sha256)
+        journal = UploadJournal(journal_directory, scope_sha256, scope.prefix, limits.max_chunks)
         with journal.locked():
             writer = _ChunkWriter(scope, limits, journal, store)
             streams, first = source.scan(writer.append)
+            journal.remember_inventory(first)
             writer.flush()
             second_streams, second = source.scan(lambda _event: None)
-            if streams != second_streams or not _same_inventory(first, second):
+            if streams != second_streams or not same_inventory(first, second):
                 raise ArchiveError("frozen source changed between scans")
 
+            journal.require_chunks([chunk.object for chunk in writer.chunks])
             manifest = LogHistoryManifest(
                 run_id=scope.source.run_id,
                 operation_id=scope.source_identity.operation_id,
@@ -134,9 +130,27 @@ def archive_logs(
                 first_scan=first,
                 second_scan=second,
             )
-            manifest_object = journal.put(
-                store, f"{scope.prefix}manifest.json", encode(manifest), limits.manifest_bytes
-            )
+            manifest_object = journal.manifest
+            if manifest_object is None:
+                manifest_object = journal.put(
+                    store, f"{scope.prefix}manifest.json", encode(manifest), limits.manifest_bytes
+                )
+            else:
+                saved_reference = LogHistoryReference(
+                    run_id=scope.source.run_id,
+                    operation_id=scope.source_identity.operation_id,
+                    parent_plan_sha256=scope.source_identity.parent_plan_sha256,
+                    manifest=manifest_object,
+                )
+                saved = read_manifest(saved_reference, scope.location, destination_session)
+                observations = {"source_principal_arn", "first_scan", "second_scan"}
+                if (
+                    saved.model_dump(exclude=observations) != manifest.model_dump(exclude=observations)
+                    or not same_inventory(saved.first_scan, first)
+                    or not same_inventory(saved.second_scan, second)
+                ):
+                    raise ArchiveError("saved manifest scope or inventory conflict")
+
             reference = LogHistoryReference(
                 run_id=scope.source.run_id,
                 operation_id=scope.source_identity.operation_id,
@@ -176,7 +190,7 @@ def read_manifest(
             or manifest.operation_id != reference.operation_id
             or manifest.parent_plan_sha256 != reference.parent_plan_sha256
             or manifest.destination != location
-            or not _same_inventory(manifest.first_scan, manifest.second_scan)
+            or not same_inventory(manifest.first_scan, manifest.second_scan)
             or reference.manifest.size_bytes > manifest.limits.manifest_bytes
             or manifest.stream_names != tuple(sorted(set(manifest.stream_names)))
             or len(manifest.stream_names) != manifest.first_scan.stream_count
