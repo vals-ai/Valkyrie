@@ -127,7 +127,10 @@ def acquire_hold(
     with session.no_autoflush:
         benchmark = _lock_run(session, scope.run_id)
         previous = session.exec(
-            select(RunLifecycle).where(col(RunLifecycle.run_id) == scope.run_id).with_for_update()
+            select(RunLifecycle)
+            .where(col(RunLifecycle.run_id) == scope.run_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
         ).one_or_none()
         if previous is not None:
             previous_identity = OperationIdentity.model_validate_json(previous.identity_json)

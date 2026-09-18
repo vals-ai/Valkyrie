@@ -28,7 +28,14 @@ from tracker.exceptions import ExecutionAuthorityRevoked
 from tracker.executor.dispatch_control import admit_recovery_dispatch, reconcile_expired_dispatches
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.executor.release_control import create_executor_dispatch, promote_release, register_release
-from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, acquire_hold, release_relocation_hold
+from tracker.lifecycle import (
+    LifecycleConflict,
+    OperationIdentity,
+    Purpose,
+    RunScope,
+    acquire_hold,
+    release_relocation_hold,
+)
 from tracker.lifecycle_evidence import ExternalHostDrain, HostContractObservation, verify_drain
 from tracker.utils.resources import update_benchmark_concurrency, update_benchmark_resume_arguments
 from tracker.utils.run_control import apply_stop_benchmark
@@ -405,3 +412,57 @@ def test_lease_recovery_does_not_change_held_run(postgres_session: Session) -> N
     assert reconcile_expired_dispatches(postgres_session) == 0
     postgres_session.refresh(run)
     assert run.status == original_status
+
+
+@pytest.mark.parametrize("new_purpose", ["deletion", "relocation"])
+def test_stale_released_hold_cannot_replace_new_owner(
+    postgres_session: Session, postgres_engine: Engine, new_purpose: Purpose
+) -> None:
+    original_identity, scope, _, _, _ = seeded_run(postgres_session)
+    cached_record = acquire_hold(postgres_session, identity=original_identity, scope=scope, purpose="relocation")
+
+    def verify_completion(_session: Session, record: RunLifecycle) -> None:
+        assert record.phase == "held"
+
+    release_relocation_hold(
+        postgres_session, identity=original_identity, scope=scope, verify_completion=verify_completion
+    )
+    postgres_session.commit()
+    assert cached_record.released_at is not None
+
+    new_identity = original_identity.model_copy(update={"operation_id": uuid4()})
+    with Session(postgres_engine) as replacing_session:
+        new_record = acquire_hold(
+            replacing_session,
+            identity=new_identity,
+            scope=scope,
+            purpose=new_purpose,
+            replace_released_operation_id=original_identity.operation_id,
+        )
+        replacing_session.commit()
+        replacing_session.refresh(new_record)
+        saved_record = new_record.model_dump()
+
+    # Keep the old ORM instance alive to reproduce identity-map reuse after locking.
+    assert cached_record.purpose == "relocation"
+    assert cached_record.released_at is not None
+    assert OperationIdentity.model_validate_json(cached_record.identity_json) == original_identity
+
+    attempted_identity = original_identity.model_copy(update={"operation_id": uuid4()})
+    with pytest.raises(LifecycleConflict, match="Another lifecycle operation owns this run"):
+        acquire_hold(
+            postgres_session,
+            identity=attempted_identity,
+            scope=scope,
+            purpose="relocation",
+            replace_released_operation_id=original_identity.operation_id,
+        )
+    postgres_session.commit()
+
+    with Session(postgres_engine) as verification_session:
+        persisted_record = verification_session.get(RunLifecycle, scope.run_id)
+        assert persisted_record is not None
+        assert persisted_record.model_dump() == saved_record
+        assert persisted_record.purpose == new_purpose
+        assert persisted_record.released_at is None
+        assert OperationIdentity.model_validate_json(persisted_record.identity_json) == new_identity
