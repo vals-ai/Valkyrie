@@ -1,0 +1,44 @@
+{
+  "identity": {
+    "schema_version": 1,
+    "operation_id": "10000000-0000-0000-0000-000000000001",
+    "parent_plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "github_owner_id": 42,
+    "org_id": "20000000-0000-0000-0000-000000000001",
+    "source_aws_account_id": "111111111111",
+    "destination_aws_account_id": "111111111111",
+    "region": "us-east-1",
+    "environment": "prod",
+    "database_target": "postgresql:localhost:5432/tracker",
+    "run_ids": [
+      "30000000-0000-0000-0000-000000000001"
+    ]
+  },
+  "runs": [
+    {
+      "expected_run_label": "owner-42",
+      "scope": {
+        "run_id": "30000000-0000-0000-0000-000000000001",
+        "original_resources": {
+          "region": "us-east-1",
+          "s3_bucket": "vs-prod-42-fixture",
+          "log_group": "/fixture/tracker",
+          "log_retention_days": 30
+        },
+        "object_prefix": "benchmarks/30000000-0000-0000-0000-000000000001/",
+        "log_group": "/fixture/tracker/30000000-0000-0000-0000-000000000001"
+      },
+      "provider": {
+        "kind": "daytona",
+        "secret_name": "fixture/provider"
+      },
+      "completed_history": {
+        "kind": "completed_history_only",
+        "operation_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "identity_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "scope_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "completion_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 """Shared API dependencies."""
 
+from asyncio import to_thread
 from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
@@ -9,6 +10,7 @@ from opentelemetry import trace
 from sqlmodel import Session, select
 
 from tracker.auth import get_current_org
+from tracker.aws.historical_logs import historical_log_reader
 from tracker.aws.resolver import (
     resolve_agent_library_aws_runtime,
     resolve_run_aws_runtime_and_access_key_config,
@@ -16,10 +18,11 @@ from tracker.aws.resolver import (
 )
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
-from tracker.database.models import Benchmark, Org, Task
+from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.logging import benchmark_id_var
+from tracker.runtime.logs import LogProviderError
 from tracker.runtime.services import RuntimeServices
 
 
@@ -78,6 +81,24 @@ async def get_run_runtime(run_context: RunAWSDependency) -> RuntimeServices:
         sandbox_provider=arguments.sandbox_provider,
         sandbox_provider_secret_name=arguments.sandbox_provider_secret_name,
     )
+    benchmark = run_context.benchmark
+    if benchmark.log_history is not None:
+        if benchmark.arguments.properties is None:
+            raise HTTPException(status_code=502, detail="Historical archive requires saved runtime resources")
+
+        try:
+            runtime.log_reader = await to_thread(
+                historical_log_reader,
+                aws_runtime,
+                benchmark.id,
+                benchmark.org_id,
+                benchmark.log_history,
+                runtime.log_reader,
+                terminal=benchmark.status in {BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED},
+            )
+        except LogProviderError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
     return runtime
 
 

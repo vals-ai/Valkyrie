@@ -413,3 +413,87 @@ async def test_saved_immutable_s3_locator_verifies_exact_version_bytes() -> None
         {"dataset": "s3://retained/manifest.json?versionId=v1"}, TrackerRequest.model_validate(payload), None
     )
     assert (reference.kind, reference.version_id, reference.sha256) == ("retained_s3_object", "v1", checksum(b"{}"))
+
+
+@pytest.mark.asyncio
+async def test_hold_only_proves_destination_history_without_source_copy_or_cleanup() -> None:
+    boundary, store, payload = setup()
+    planned = payload["plan"]["runs"][0]
+    planned["scope"]["original_resources"]["s3_bucket"] = "destination"
+    planned["location_policy"] = "hold_only"
+    payload["copied_objects"] = []
+    payload["destination_versions"][0]["provenance"] = "existing"
+    store.fence_statement = None
+    parsed = TrackerRequest.model_validate(payload)
+    assert parsed.plan is not None
+    await boundary.verify_objects(parsed, parsed.plan.runs[0], source_removed=True)
+    store.versions["destination"].append(("late", b"new"))
+    with pytest.raises(LifecycleConflict, match="history"):
+        await boundary.verify_objects(parsed, parsed.plan.runs[0], source_removed=True)
+
+
+@pytest.mark.asyncio
+async def test_hold_only_retained_execution_reference_is_not_retired_source() -> None:
+    boundary, store, payload = setup()
+    run = payload["plan"]["runs"][0]
+    run["location_policy"] = "hold_only"
+    run["scope"]["original_resources"]["s3_bucket"] = "destination"
+    store.execution_objects["destination", "manifest.json"] = ("pinned", b"{}")
+    request = TrackerRequest.model_validate(payload)
+    assert request.plan is not None
+    references = await boundary.execution_references(
+        {"dataset": "s3://destination/manifest.json?versionId=pinned"}, request, request.plan.runs[0]
+    )
+    assert references[0].kind == "retained_s3_object"
+    assert references[0].version_id == "pinned"
+    payload["copied_objects"][0]["source_bucket"] = "destination"
+    parsed = TrackerRequest.model_validate(payload)
+    with pytest.raises(LifecycleConflict, match="cannot claim copied"):
+        await boundary.verify_objects(parsed, request.plan.runs[0])
+
+
+@pytest.mark.asyncio
+async def test_hold_only_checks_restored_manifest_edits_against_retained_original() -> None:
+    boundary, store, payload = setup()
+    planned = payload["plan"]["runs"][0]
+    planned["location_policy"] = "hold_only"
+    planned["scope"]["original_resources"]["s3_bucket"] = "destination"
+    original = b'{"uri":"s3://legacy/object"}'
+    rewritten = b'{"uri":"s3://destination/object"}'
+    transformation = ObjectTransformation(
+        source_bucket="destination",
+        key=store.key,
+        source_version_id="original",
+        original_size=len(original),
+        original_sha256=checksum(original),
+        rewritten_size=len(rewritten),
+        rewritten_sha256=checksum(rewritten),
+        edits=(JsonLocatorEdit(pointer="/uri", original="s3://legacy/object", replacement="s3://destination/object"),),
+    )
+    planned["transformations"] = [transformation.model_dump(mode="json")]
+    payload["copied_objects"] = []
+    payload["destination_versions"] = [
+        {
+            "run_id": payload["run_ids"][0],
+            "bucket": "destination",
+            "key": store.key,
+            "version_id": version,
+            "is_delete_marker": False,
+            "size": len(content),
+            "sha256": checksum(content),
+            "is_current": version == "restored",
+            "provenance": "restored" if version == "restored" else "existing",
+            "restored_from_version_id": "original" if version == "restored" else None,
+            "transformation_sha256": canonical_digest(transformation.model_dump(mode="json"))
+            if version == "restored"
+            else None,
+        }
+        for version, content in (("restored", rewritten), ("original", original))
+    ]
+    store.versions["destination"] = [("restored", rewritten), ("original", original)]
+    request = TrackerRequest.model_validate(payload)
+    assert request.plan is not None
+    await boundary.verify_objects(request, request.plan.runs[0], source_removed=True)
+    store.versions["destination"] = [("restored", rewritten)]
+    with pytest.raises(LifecycleConflict, match="history"):
+        await boundary.verify_objects(request, request.plan.runs[0], source_removed=True)

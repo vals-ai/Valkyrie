@@ -75,7 +75,7 @@ async def get_single_benchmark(
     if aws_runtime:
         aws_resources = aws_runtime.resources
         s3_bucket_url = create_benchmark_url(str(benchmark.id), aws_resources)
-        if aws_resources.log_group:
+        if aws_resources.log_group and benchmark.log_history is None:
             cloudwatch_url = CloudWatchBenchmarkLogLocations(aws_resources).benchmark_location(str(benchmark.id))
 
     return SingleBenchmarkResponse(

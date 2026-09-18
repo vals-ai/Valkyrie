@@ -43,6 +43,10 @@ class AWSClientProvider(ABC):
     def _s3_session(self) -> aioboto3.Session:
         return aioboto3.Session(**self._client_kwargs())
 
+    def boto3_session(self) -> Any:
+        """Use this runtime authority for synchronous exact-version archive reads."""
+        return cast(Any, boto3.Session)(**self._client_kwargs())
+
     def s3_client(self) -> Any:
         return self._s3_session().client(  # pyright: ignore[reportUnknownMemberType]
             "s3",
