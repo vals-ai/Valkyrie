@@ -1,5 +1,6 @@
 """Compose local runtime services from process configuration."""
 
+from asyncio import to_thread
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,9 +18,9 @@ from tracker.types import FinalViewResponse, StartBenchmarkRequest
 class LocalRuntimeServices(RuntimeServices):
     """Local adapters with no AWS credential or resource resolution."""
 
-    def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
+    async def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
         """Initialize the run log file."""
-        self.logs.create_benchmark(str(benchmark_id), retention_days=0)
+        await to_thread(self.logs.create_benchmark, str(benchmark_id), retention_days=0)
 
     async def get_sandbox_provider_config(self) -> SandboxProviderConfig:
         return DockerProviderConfig()
@@ -42,7 +43,6 @@ class LocalRuntimeFactory:
         return LocalRuntimeServices(
             objects=objects,
             secrets=secrets,
-            async_secrets=secrets,
             logs=logs,
             log_reader=logs,
             log_locations=logs,
