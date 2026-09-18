@@ -34,11 +34,10 @@ class _LogRecord(BaseModel):
 class FilesystemLogs:
     """Store each run's append-only logs in a local JSONL file."""
 
-    def __init__(self, root: Path, host_root: Path) -> None:
-        if not root.is_absolute() or not host_root.is_absolute():
-            raise ValueError("Local log roots must be absolute")
+    def __init__(self, root: Path) -> None:
+        if not root.is_absolute():
+            raise ValueError("Local log root must be absolute")
         self.root = root.resolve()
-        self.host_root = host_root
 
     def _path(self, benchmark_id: str) -> Path:
         return local_path(self.root, f"{benchmark_id}/logs.jsonl")
@@ -60,7 +59,7 @@ class FilesystemLogs:
             output.flush()
 
     def benchmark_location(self, benchmark_id: str) -> str:
-        return str(self.host_root / self._path(benchmark_id).relative_to(self.root))
+        return str(self._path(benchmark_id))
 
     def task_location(self, benchmark_id: str, task_stream_id: str) -> str:
         return self.benchmark_location(benchmark_id)

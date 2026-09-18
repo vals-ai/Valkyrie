@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 
 from tracker.exceptions import ExecutionAuthorityRevoked
-from tracker.local.storage import FilesystemArtifactLocations, FilesystemObjectStore
+from tracker.local.storage import FilesystemObjectStore
 from tracker.runtime.artifacts import copy_agent_to_benchmark
 
 
-async def test_publish_list_read_and_host_locations(tmp_path: Path) -> None:
+async def test_publish_list_read_and_locations(tmp_path: Path) -> None:
     store = FilesystemObjectStore(tmp_path / "artifacts")
     await store.put_bytes("agents/example.zip", b"bundle")
     await store.put_bytes("agents/other.zip", b"other")
@@ -19,9 +19,8 @@ async def test_publish_list_read_and_host_locations(tmp_path: Path) -> None:
         assert await reader.get_bytes("agents/example.zip") == b"bundle"
         assert [item.key async for item in reader.list_objects("agents/ex")] == ["agents/example.zip"]
     assert len([item async for item in store.list_objects("")]) == 2
-    locations = FilesystemArtifactLocations(store.root, Path("/host/artifacts"))
-    assert locations.object_location("agents/example.zip") == "/host/artifacts/agents/example.zip"
-    assert locations.prefix_location("agents/") == "/host/artifacts/agents"
+    assert store.object_location("agents/example.zip") == str(store.root / "agents/example.zip")
+    assert store.prefix_location("agents/") == str(store.root / "agents")
     await store.delete("agents/other.zip")
     assert not await store.exists("agents/other.zip")
 
