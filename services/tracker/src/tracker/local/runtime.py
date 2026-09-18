@@ -32,6 +32,25 @@ class LocalRuntimeFactory:
     """Scope local storage by organization and credentials by operation."""
 
     @staticmethod
+    def create_runtime(
+        data_root: Path, org_id: UUID, *, secrets: InMemorySecretStore | None = None
+    ) -> LocalRuntimeServices:
+        root = data_root / "orgs" / str(org_id)
+        secrets = secrets if secrets is not None else InMemorySecretStore({}, {})
+        logs = FilesystemLogs(root / "logs")
+        objects = FilesystemObjectStore(root / "objects")
+        return LocalRuntimeServices(
+            objects=objects,
+            secrets=secrets,
+            async_secrets=secrets,
+            logs=logs,
+            log_reader=logs,
+            log_locations=logs,
+            artifacts=objects,
+            sandbox_provider="docker",
+        )
+
+    @staticmethod
     @asynccontextmanager
     async def open(
         data_root: Path,
@@ -40,20 +59,8 @@ class LocalRuntimeFactory:
         secret_references: Mapping[str, str] | None = None,
         execution_secrets: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[LocalRuntimeServices]:
-        root = data_root / "orgs" / str(org_id)
         secrets = InMemorySecretStore(secret_references or {}, execution_secrets or {})
-        logs = FilesystemLogs(root / "logs")
-        objects = FilesystemObjectStore(root / "objects")
         try:
-            yield LocalRuntimeServices(
-                objects=objects,
-                secrets=secrets,
-                async_secrets=secrets,
-                logs=logs,
-                log_reader=logs,
-                log_locations=logs,
-                artifacts=objects,
-                sandbox_provider="docker",
-            )
+            yield LocalRuntimeFactory.create_runtime(data_root, org_id, secrets=secrets)
         finally:
             secrets.close()

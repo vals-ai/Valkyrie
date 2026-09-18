@@ -59,7 +59,7 @@ def start_benchmark_request_to_benchmark(
     queue_pool_id: str | None = None,
 ) -> Benchmark:
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
-    if aws_managed != (request.harness_config is None):
+    if request.environment == "aws" and aws_managed != (request.harness_config is None):
         raise ValueError("Benchmark AWS mode does not match the start request")
     provider_secret_name = request.sandbox_provider_secret_reference
     if aws_managed and (not request.sandbox_provider or not provider_secret_name):

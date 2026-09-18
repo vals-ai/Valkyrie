@@ -202,7 +202,15 @@ async def test_object_store_read_session_and_listing_preserve_object_metadata(
     monkeypatch: pytest.MonkeyPatch, aws_runtime: AWSRuntime
 ) -> None:
     paginator = ObjectListPaginator(
-        [{"Contents": [{"Key": "agents/alpha.zip"}, {"LastModified": "ignored"}, {"Key": "agents/beta.zip"}]}]
+        [
+            {
+                "Contents": [
+                    {"Key": "agents/alpha.zip", "Size": 5},
+                    {"LastModified": "ignored"},
+                    {"Key": "agents/beta.zip", "Size": 4},
+                ]
+            }
+        ]
     )
     client = ReadClient({"agents/alpha.zip": b"alpha"}, paginator)
     monkeypatch.setattr(type(aws_runtime.clients), "s3_client", lambda _provider: client)

@@ -480,8 +480,11 @@
             "title": "Dataset"
           },
           "environment": {
-            "const": "aws",
             "default": "aws",
+            "enum": [
+              "aws",
+              "local"
+            ],
             "title": "Environment",
             "type": "string"
           },
@@ -502,9 +505,13 @@
                 "$ref": "#/components/schemas/AWSResources"
               },
               {
+                "$ref": "#/components/schemas/LocalResources"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Properties"
           },
           "sandbox_provider": {
             "default": "daytona",
@@ -1472,6 +1479,32 @@
           "sandbox_provider_secret_name"
         ],
         "title": "HarnessConfig",
+        "type": "object"
+      },
+      "LocalResources": {
+        "properties": {
+          "data_root": {
+            "format": "path",
+            "title": "Data Root",
+            "type": "string"
+          },
+          "secrets_file": {
+            "anyOf": [
+              {
+                "format": "path",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secrets File"
+          }
+        },
+        "required": [
+          "data_root"
+        ],
+        "title": "LocalResources",
         "type": "object"
       },
       "LogEventResponse": {
@@ -2601,8 +2634,11 @@
             "title": "Dataset"
           },
           "environment": {
-            "const": "aws",
             "default": "aws",
+            "enum": [
+              "aws",
+              "local"
+            ],
             "title": "Environment",
             "type": "string"
           },
@@ -2669,9 +2705,13 @@
                 "$ref": "#/components/schemas/AWSResources"
               },
               {
+                "$ref": "#/components/schemas/LocalResources"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Properties"
           },
           "sandbox_provider": {
             "default": "daytona",
@@ -4214,7 +4254,7 @@
     },
     "/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts": {
       "get": {
-        "description": "CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page.",
+        "description": "Return log and agent output locations for the task detail page.",
         "operationId": "get_task_artifacts",
         "parameters": [
           {

@@ -480,3 +480,32 @@ async def test_windows_artifact_download_rejects_colons_before_writing(make_clie
         with pytest.raises(ValueError, match="Windows filenames"):
             await client.artifacts.download(uuid4(), tmp_path / "outputs")
     assert not (tmp_path / "outputs").exists()
+
+
+async def test_local_artifact_download_requires_explicit_local_storage(sdk_config, tmp_path):
+    from valkyrie.sdk.downloads import download_chunks
+
+    root = tmp_path / "storage"
+    root.mkdir()
+    artifact = root / "result with spaces.txt"
+    artifact.write_bytes(b"result")
+    local_config = sdk_config(
+        execution_environment="local",
+        local_data_root=root,
+        AWS_ACCESS_KEY_ID=None,
+        AWS_SECRET_ACCESS_KEY=None,
+        AWS_SESSION_TOKEN=None,
+    )
+    async with httpx.AsyncClient() as client:
+        assert (
+            b"".join([chunk async for chunk in download_chunks(client, artifact.as_uri(), local_config)]) == b"result"
+        )
+        with pytest.raises(ValueError, match="explicitly configured"):
+            _ = [chunk async for chunk in download_chunks(client, artifact.as_uri(), sdk_config())]
+        outside = tmp_path / "private.txt"
+        outside.write_text("private")
+        link = root / "escape"
+        link.symlink_to(outside)
+        for url in (outside.as_uri(), link.as_uri()):
+            with pytest.raises(ValueError, match="escapes"):
+                _ = [chunk async for chunk in download_chunks(client, url, local_config)]

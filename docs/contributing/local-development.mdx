@@ -61,7 +61,62 @@ creates a disposable container, transfers a frozen agent bundle, executes it, ve
 its output, and deletes the container. Local transfers use provider file upload and
 preserve executable files without requiring curl or unzip in the image.
 
-These adapters do not yet enable local run submission through the API or CLI.
+To submit local runs, use the same configuration file for Tracker and the CLI:
+
+```yaml
+execution_environment: local
+tracker_url: http://127.0.0.1:8000
+local_data_root: /absolute/path/to/valkyrie-data
+local_secrets_file: /absolute/path/to/existing.env
+custom_benchmark_services:
+  my-benchmark: http://127.0.0.1:8001
+```
+
+`local_secrets_file` is optional for agents without secrets. The executor reads only
+keys declared by the agent contract, directly from that file, for each start or
+resume. Valkyrie stores the file path, not its contents. Keep the file outside the
+artifact directory. All services must use the same filesystem paths and Docker daemon.
+
+Start PostgreSQL and Redis with `docker compose -f services/tracker/docker-compose.yml up -d postgres redis`.
+Set `DATABASE_URL` and `REDIS_URL` for those services, then run the existing migrations
+from `services/tracker` with `uv run alembic upgrade head`. Build the executor on the
+machine where it will run, then initialize its release as shown above:
+
+```bash
+PYTHONPATH=services/tracker/src uv run --project services/tracker python \
+  services/executor_artifact/build.py --output-directory /absolute/path/to/build
+```
+
+Set `CBS_DOCKER_ENABLED=true` and `DOCKER_HOST` for Tracker, ExecutorHost, and your
+local benchmark service. Start Tracker from `services/tracker`:
+
+```bash
+uv run python -m tracker.serve --config /absolute/path/to/local.yaml
+```
+
+In another terminal at the repository root, start ExecutorHost. Set `DB_HOST`,
+`DB_PORT`, `DB_NAME`, `DB_USERNAME`, and `DB_PASSWORD` to the same database used by
+Tracker. ExecutorHost uses these settings in addition to the executor's `DATABASE_URL`.
+
+```bash
+EXECUTOR_RELEASE_ROOT=/absolute/path/to/releases \
+EXECUTOR_CACHE_DIR=/absolute/path/to/executor-cache \
+PYTHONPATH=services/tracker/src uv run --project services/tracker python -m taskiq worker \
+  --workers 1 --no-configure-logging services.executor_host.supervisor:broker services.executor_host.supervisor
+```
+
+Start your benchmark service at its configured address. Then publish an agent and run it:
+
+```bash
+export VALKYRIE_CONFIG_PATH=/absolute/path/to/local.yaml
+valkyrie agent push ./my-agent
+valkyrie run start --agent my-agent --benchmark my-benchmark --concurrency 1
+```
+
+Use the returned run ID with `run fetch`, `run logs`, `run results`, `run outputs`,
+`run stop`, `run retry`, and `run resume`. Local artifact URLs refer to files under
+`local_data_root`, so the CLI must share that directory. Local execution supports
+image-based Docker tasks; AWS callbacks and cloud secret references are unavailable.
 
 ### Run it with hosted-mode authentication
 

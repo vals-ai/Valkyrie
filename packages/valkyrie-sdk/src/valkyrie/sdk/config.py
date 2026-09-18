@@ -24,15 +24,19 @@ class ValkyrieConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     environment: Literal["bench", "prod", "dev"] = "bench"
+    execution_environment: Literal["aws", "local"] = "aws"
+    tracker_url_override: str | None = Field(default=None, alias="tracker_url")
+    local_data_root: Path | None = None
+    local_secrets_file: Path | None = None
     api_key: SecretStr | None = Field(default=None, repr=False)
     aws_access_key_id: SecretStr | None = Field(default=None, alias="AWS_ACCESS_KEY_ID", repr=False)
     aws_secret_access_key: SecretStr | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY", repr=False)
-    aws_default_region: str = Field(alias="AWS_DEFAULT_REGION")
+    aws_default_region: str = Field(default="", alias="AWS_DEFAULT_REGION")
     aws_session_token: SecretStr | None = Field(default=None, alias="AWS_SESSION_TOKEN", repr=False)
-    s3_bucket: str = Field(alias="S3_BUCKET")
+    s3_bucket: str = Field(default="", alias="S3_BUCKET")
     log_group: str = Field(default="benchmarks", alias="LOG_GROUP")
     log_retention_policy: int = Field(default=365, alias="LOG_RETENTION_POLICY", gt=0)
-    sandbox_providers: dict[str, str] = Field(min_length=1, repr=False)
+    sandbox_providers: dict[str, str] = Field(default_factory=dict, repr=False)
     default_sandbox_provider: str | None = None
     custom_benchmark_services: dict[str, str] = Field(default_factory=dict)
     benchmark_auth: dict[str, SecretStr] = Field(default_factory=dict, repr=False)
@@ -61,6 +65,20 @@ class ValkyrieConfig(BaseModel):
     @model_validator(mode="after")
     def validate_access_key_configuration(self) -> "ValkyrieConfig":
         """Require a complete static credential set or none at all."""
+        if self.execution_environment == "local":
+            if self.local_data_root is None or not self.local_data_root.is_absolute():
+                raise ValueError("local_data_root must be an absolute path for local execution")
+            if self.local_secrets_file is not None and not self.local_secrets_file.is_absolute():
+                raise ValueError("local_secrets_file must be an absolute path")
+            if (
+                self.aws_access_key_id is not None
+                or self.aws_secret_access_key is not None
+                or self.aws_session_token is not None
+            ):
+                raise ValueError("Local execution cannot include AWS credentials")
+            return self
+        if not self.aws_default_region or not self.s3_bucket or not self.sandbox_providers:
+            raise ValueError("AWS_DEFAULT_REGION, S3_BUCKET and sandbox_providers are required for AWS execution")
         if (self.aws_access_key_id is None) != (self.aws_secret_access_key is None):
             raise ValueError("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together")
         if self.aws_access_key_id is None and self.aws_session_token is not None:
@@ -70,6 +88,10 @@ class ValkyrieConfig(BaseModel):
     @property
     def tracker_url(self) -> str:
         """Tracker base URL for the configured environment."""
+        if self.tracker_url_override:
+            return self.tracker_url_override.rstrip("/")
+        if self.execution_environment == "local":
+            return "http://localhost:8000"
         if self.environment not in TRACKER_URLS:
             raise ValkyrieConfigError(
                 f"Unsupported environment {self.environment!r}; expected one of: {', '.join(TRACKER_URLS)}"
@@ -104,6 +126,10 @@ class ValkyrieConfig(BaseModel):
 
     def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str, str]:
         """Resolve the selected sandbox provider and secret name."""
+        if self.execution_environment == "local":
+            if provider not in (None, "docker"):
+                raise ValkyrieConfigError("Local execution requires the docker sandbox provider")
+            return "docker", ""
         provider_name = provider or self.default_sandbox_provider or next(iter(self.sandbox_providers))
         secret_name = self.sandbox_providers.get(provider_name)
         if secret_name is None:
