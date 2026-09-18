@@ -63,6 +63,7 @@ _CALLER_AWS_HEADERS = {
 
 def _configure_managed_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "deployment-region")
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket")
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group")
@@ -129,7 +130,7 @@ def _start_request(contract: AgentContractRequest, harness_config: HarnessConfig
     )
 
 
-def test_managed_start_and_resume_emit_credential_free_v2(
+def test_managed_start_and_resume_emit_credential_free_v3(
     contract: AgentContractRequest,
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -159,7 +160,7 @@ def test_managed_start_and_resume_emit_credential_free_v2(
     assert len(payloads) == 1
     assert set(payloads[0]) == _MANAGED_TASK_KWARGS
     start_context = payloads[0]["execution_context_json"]
-    assert start_context["version"] == 2
+    assert start_context["version"] == 3
     assert start_context["start_benchmark_request"]["harness_config"] is None
     _assert_no_aws_authority(start_context)
 
@@ -177,7 +178,7 @@ def test_managed_start_and_resume_emit_credential_free_v2(
     assert len(payloads) == 1
     assert set(payloads[0]) == _MANAGED_TASK_KWARGS
     resume_context = payloads[0]["execution_context_json"]
-    assert resume_context["version"] == 2
+    assert resume_context["version"] == 3
     assert resume_context["benchmark_id"] == str(benchmark.id)
     assert resume_context["verified_task_ids"] == ["task-2"]
     assert resume_context["start_benchmark_request"]["harness_config"] is None
@@ -310,17 +311,34 @@ def test_managed_start_rejects_aws_authority_from_resolved_contract(
     assert payloads == []
 
 
+@pytest.mark.parametrize("protocol_version", ["1", "2"])
+@pytest.mark.parametrize("owner_storage", [False, True])
 def test_managed_start_requires_a_compatible_executor_release(
+    owner_storage: bool,
+    protocol_version: str,
     contract: AgentContractRequest,
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_managed_runtime(monkeypatch)
-    _promote_test_release(database_session, protocol_version="1")
+    _promote_test_release(database_session, protocol_version=protocol_version)
+    copy = AsyncMock()
+    monkeypatch.setattr("main.copy_agent_to_benchmark", copy)
 
-    response = client.post("/start-benchmark", json=_start_request(contract, None).model_dump(mode="json"))
+    request = _start_request(contract, None)
+    route = "/start-benchmark"
+    if owner_storage:
+        route = "/start-benchmark-with-storage"
+        request = request.model_copy(update={"managed_s3_bucket": "vs-dev-owner-42"})
+        monkeypatch.setattr(config, "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED", True)
+        monkeypatch.setattr(config, "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS", json.dumps({str(TEST_ORG_ID): ["dev"]}))
+        monkeypatch.setattr(main, "validate_managed_storage_bucket", AsyncMock())
+        monkeypatch.setattr(main, "validate_managed_storage_bucket_versioning", AsyncMock())
+
+    response = client.post(route, json=request.model_dump(mode="json"))
 
     assert response.status_code == 503
+    copy.assert_not_awaited()
     assert response.json()["detail"] == "Activate an executor release that supports managed runs"
     assert database_session.exec(select(Benchmark).where(Benchmark.name == "producer-contract-test")).all() == []
 

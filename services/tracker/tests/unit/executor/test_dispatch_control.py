@@ -69,11 +69,13 @@ def test_start_admission_selects_active_release(
     assert dispatch.executor_release_id == "active"
 
 
+@pytest.mark.parametrize("protocol_version", ["1", "2"])
 def test_managed_start_requires_a_compatible_active_release(
+    protocol_version: str,
     database_session: Session,
     example_benchmark_object: Benchmark,
 ) -> None:
-    register_release(database_session, _release("legacy"))
+    register_release(database_session, _release("legacy", protocol_version=protocol_version))
     promote_release(database_session, "legacy")
     database_session.commit()
     example_benchmark_object.aws_managed = True
