@@ -116,7 +116,14 @@ def _normalized_attempt_time(value: datetime) -> datetime:
 
 
 def _exception_message(exc: BaseException) -> str:
-    return str(exc).strip() or type(exc).__name__
+    message = str(exc).strip() or type(exc).__name__
+    cause = exc.__cause__
+    while cause is not None:
+        cause_text = str(cause).strip() or type(cause).__name__
+        if cause_text not in message:
+            message = f"{message} (caused by {type(cause).__name__}: {cause_text})"
+        cause = cause.__cause__
+    return message
 
 
 def _record_failure_before_retry(

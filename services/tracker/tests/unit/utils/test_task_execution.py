@@ -14,8 +14,40 @@ from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import Benchmark, Org, Task, TaskStatus
+from tracker.exceptions import SandboxError, SandboxSetupError
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.utils import ResizableLimiter, TaskMonitor, TrackedTask, TrackedTaskStatus
+from tracker.utils import task_execution
+
+_exception_message = getattr(task_execution, "_exception_message")
+
+
+class TestExceptionMessage:
+    """Persisted task error text keeps the original error behind tracker wrappers."""
+
+    def test_wrapper_with_new_text_appends_original_type_and_message(self) -> None:
+        try:
+            try:
+                raise TimeoutError("egress rule update exceeded 30s")
+            except TimeoutError as e:
+                raise SandboxSetupError("Failed to clear egress rules") from e
+        except SandboxSetupError as wrapped:
+            message = _exception_message(wrapped)
+
+        assert message == (
+            "Sandbox error: Failed to clear egress rules (caused by TimeoutError: egress rule update exceeded 30s)"
+        )
+
+    def test_wrapper_that_already_carries_cause_text_is_not_duplicated(self) -> None:
+        try:
+            try:
+                raise RuntimeError("provider unavailable")
+            except RuntimeError as e:
+                raise SandboxError(str(e)) from e
+        except SandboxError as wrapped:
+            message = _exception_message(wrapped)
+
+        assert message == "Sandbox error: provider unavailable"
 
 
 class TestTaskExecution:
