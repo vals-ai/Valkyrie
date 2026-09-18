@@ -81,7 +81,7 @@ def _capacity_provider(
         "deployment_aws_runtime",
         Mock(return_value=SimpleNamespace(clients=Mock())),
     )
-    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config_async", fetch_config)
+    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config", fetch_config)
     return provider, fetch_config
 
 
@@ -109,7 +109,7 @@ def _capacity_enrichment_case(
         "deployment_aws_runtime",
         Mock(return_value=SimpleNamespace(clients=Mock())),
     )
-    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config_async", fetch_config)
+    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config", fetch_config)
     monkeypatch.setattr(scheduler_overview_api, "_CAPACITY_READ_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(scheduler_overview_api, "_CAPACITY_REQUEST_TIMEOUT_SECONDS", 0.03)
     monkeypatch.setattr(scheduler_overview_api, "_PROVIDER_CLOSE_TIMEOUT_SECONDS", 10.0)
@@ -666,7 +666,7 @@ async def test_capacity_enrichment_bounds_concurrent_provider_reads(monkeypatch:
     )
     monkeypatch.setattr(
         scheduler_overview_api,
-        "fetch_sandbox_provider_config_async",
+        "fetch_sandbox_provider_config",
         blocking_provider_config,
     )
 

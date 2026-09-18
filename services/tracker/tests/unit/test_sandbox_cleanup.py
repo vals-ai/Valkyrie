@@ -232,7 +232,7 @@ def test_lambda_handler_fails_for_each_unsuccessful_outcome(monkeypatch: pytest.
     config = cast(SandboxProviderConfig, object())
     failure_outcome = "invalid_metadata"
 
-    def fake_fetch_config(
+    async def fake_fetch_config(
         _secret_name: str,
         _aws: object | None,
         _provider_type: str,
@@ -268,7 +268,9 @@ def test_load_provider_config_builds_the_cleanup_default_chain_store(monkeypatch
         assert provider is expected_provider
         return expected_store
 
-    def fetch_provider_config(secret_name: str, secret_store: object, provider_type: str) -> SandboxProviderConfig:
+    async def fetch_provider_config(
+        secret_name: str, secret_store: object, provider_type: str
+    ) -> SandboxProviderConfig:
         assert secret_name == "cleanup-secret"
         assert secret_store is expected_store
         assert provider_type == "daytona"
@@ -290,7 +292,7 @@ def test_lambda_handler_preserves_shutdown_margin_around_config_loading(monkeypa
     monkeypatch.setattr(cleanup_module, "AWS_DEPLOYMENT_REGION", "us-east-1")
     load_calls = 0
 
-    def fake_fetch_config(*_args: object, **_kwargs: object) -> SandboxProviderConfig:
+    async def fake_fetch_config(*_args: object, **_kwargs: object) -> SandboxProviderConfig:
         nonlocal load_calls
         load_calls += 1
         return cast(SandboxProviderConfig, object())

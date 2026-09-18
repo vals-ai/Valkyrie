@@ -31,17 +31,19 @@ class CloudRuntimeServices(RuntimeServices):
 
     aws_runtime: AWSRuntime
 
-    def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
+    async def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
         """Prepare logs before sandbox work."""
-        self.logs.create_benchmark(str(benchmark_id), retention_days=self.aws_runtime.resources.log_retention_days)
+        await to_thread(
+            self.logs.create_benchmark, str(benchmark_id), retention_days=self.aws_runtime.resources.log_retention_days
+        )
         if self.aws_runtime.clients.credential_source != "managed":
             return
 
-        resolve_secrets(request.contract.secrets, self.secrets)
+        await resolve_secrets(request.contract.secrets, self.secrets)
         if request.webhook_secret_name and request.webhook_intervals:
-            self.secrets.get(request.webhook_secret_name)
+            await self.secrets.get(request.webhook_secret_name)
         if request.lambda_function:
-            dry_run_lambda(self.aws_runtime.clients, request.lambda_function)
+            await to_thread(dry_run_lambda, self.aws_runtime.clients, request.lambda_function)
 
     async def run_completion_callback(self, final_view: FinalViewResponse) -> None:
         arguments = final_view.benchmark_arguments
@@ -80,7 +82,6 @@ class CloudRuntimeFactory:
             aws_runtime=runtime,
             objects=S3ObjectStore(runtime),
             secrets=secrets,
-            async_secrets=secrets,
             logs=CloudWatchBenchmarkLogSink(clients, resources.log_group),
             log_reader=CloudWatchLogProvider(clients, resources.log_group),
             log_locations=CloudWatchBenchmarkLogLocations(resources),
@@ -111,5 +112,5 @@ class CloudRuntimeFactory:
             sandbox_provider=request.sandbox_provider,
             sandbox_provider_secret_name=request.sandbox_provider_secret_reference,
         )
-        await to_thread(runtime.prepare_execution, request, benchmark_id)
+        await runtime.prepare_execution(request, benchmark_id)
         return runtime

@@ -138,7 +138,7 @@ class TestForceStop:
             org=Org(id=TEST_ORG_ID, name="default"),
         )
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        provider_config = fetch_sandbox_provider_config(
+        provider_config = await fetch_sandbox_provider_config(
             daytona_secret_name, SecretsManagerStore(aws_runtime.clients), "daytona"
         )
         provider = benchmark_service.get_sandbox_provider(provider_config)
@@ -220,7 +220,7 @@ class TestForceStop:
         database_session.add(example_benchmark_object)
         database_session.commit()
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        provider_config = fetch_sandbox_provider_config(
+        provider_config = await fetch_sandbox_provider_config(
             daytona_secret_name, SecretsManagerStore(aws_runtime.clients), "daytona"
         )
         provider = benchmark_service.get_sandbox_provider(provider_config)
@@ -349,7 +349,7 @@ class TestForceStop:
                 )
             )
 
-            provider_config = fetch_sandbox_provider_config(
+            provider_config = await fetch_sandbox_provider_config(
                 daytona_secret_name, SecretsManagerStore(aws_runtime.clients), "daytona"
             )
             provider = benchmark_service.get_sandbox_provider(provider_config)

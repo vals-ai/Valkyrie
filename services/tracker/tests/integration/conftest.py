@@ -162,12 +162,12 @@ async def benchmark_service(service_headers: dict[str, str]) -> AsyncGenerator[B
 
 
 @pytest.fixture
-def sandbox_provider_config(
+async def sandbox_provider_config(
     daytona_secret_name: str,
     live_aws_credentials: AWSCredentials,
 ) -> SandboxProviderConfig:
     """Return the real provider configuration used by live service calls."""
-    return fetch_sandbox_provider_config(
+    return await fetch_sandbox_provider_config(
         daytona_secret_name,
         SecretsManagerStore(ExplicitCredentialsAWSClientProvider(live_aws_credentials)),
         "daytona",

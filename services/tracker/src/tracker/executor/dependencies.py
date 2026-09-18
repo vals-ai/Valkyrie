@@ -36,7 +36,7 @@ async def get_execution_runtime(
             )
         finally:
             values.clear()
-        await to_thread(runtime.prepare_execution, request, benchmark.id)
+        await runtime.prepare_execution(request, benchmark.id)
         return runtime
     assert properties is None or isinstance(properties, AWSResources)
     return await CloudRuntimeFactory.create_execution_runtime(request, org.id, benchmark.id, properties=properties)
