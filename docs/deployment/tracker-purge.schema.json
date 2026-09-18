@@ -140,6 +140,17 @@
           },
           "provider": {
             "$ref": "#/$defs/ProviderLocator"
+          },
+          "released_relocation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ReleasedRelocation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -147,6 +158,45 @@
           "provider"
         ],
         "title": "PurgeRun",
+        "type": "object"
+      },
+      "ReleasedRelocation": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "identity_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Identity Sha256",
+            "type": "string"
+          },
+          "scope_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Scope Sha256",
+            "type": "string"
+          },
+          "acquired_at": {
+            "format": "date-time",
+            "title": "Acquired At",
+            "type": "string"
+          },
+          "released_at": {
+            "format": "date-time",
+            "title": "Released At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "identity_sha256",
+          "scope_sha256",
+          "acquired_at",
+          "released_at"
+        ],
+        "title": "ReleasedRelocation",
         "type": "object"
       },
       "RunScope": {
@@ -1102,6 +1152,45 @@
         "title": "ProviderLocator",
         "type": "object"
       },
+      "ReleasedRelocation": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "identity_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Identity Sha256",
+            "type": "string"
+          },
+          "scope_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Scope Sha256",
+            "type": "string"
+          },
+          "acquired_at": {
+            "format": "date-time",
+            "title": "Acquired At",
+            "type": "string"
+          },
+          "released_at": {
+            "format": "date-time",
+            "title": "Released At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "identity_sha256",
+          "scope_sha256",
+          "acquired_at",
+          "released_at"
+        ],
+        "title": "ReleasedRelocation",
+        "type": "object"
+      },
       "RowScope": {
         "additionalProperties": false,
         "properties": {
@@ -1150,6 +1239,17 @@
       },
       "provider": {
         "$ref": "#/$defs/ProviderLocator"
+      },
+      "released_relocation": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ReleasedRelocation"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
       },
       "original_dispatches": {
         "items": {

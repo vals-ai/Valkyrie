@@ -3,12 +3,15 @@
 import asyncio
 import hashlib
 import json
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Connection, text
 from sqlalchemy.exc import DBAPIError
 from sqlmodel import Session, select
 
@@ -28,9 +31,18 @@ from tracker.database.models import (
     TaskBreakdown,
 )
 from tracker.exceptions import TrackerServiceError
-from tracker.lifecycle import LifecycleConflict
+from tracker.lifecycle import (
+    LifecycleConflict,
+    OperationIdentity,
+    Purpose,
+    RunScope,
+    acquire_hold,
+    release_relocation_hold,
+)
 from tracker.lifecycle_evidence import ExternalHostDrain, HostContractObservation
 from tracker.run_purge import PurgeOperator, build_plan
+from tracker.run_purge.cli import main as purge_cli_main
+from tracker.run_purge.contracts import PurgeCheckpoint, PurgePlan
 from tracker.run_purge.locking import database_target
 
 
@@ -396,3 +408,269 @@ async def test_legacy_external_proof_is_retained_and_required_after_row_removal(
     with pytest.raises(LifecycleConflict, match="evidence bytes"):
         await operator.purge()
     assert operator.report().outcome == "incomplete"
+
+
+def relocated_operator(session: Session) -> tuple[PurgeOperator, MemoryBoundary, OperationIdentity, RunScope]:
+    operator, boundary = prepared_operator(session)
+    original = operator.plan.runs[0].scope
+    relocation = operator.plan.identity.model_copy(update={"operation_id": uuid4(), "parent_plan_sha256": "c" * 64})
+    acquire_hold(session, identity=relocation, scope=original, purpose="relocation")
+    session.commit()
+    benchmark = session.get(Benchmark, original.run_id)
+    assert benchmark is not None
+    destination = replace(original.original_resources, s3_bucket="migrated-owner-data")
+    benchmark.arguments = benchmark.arguments.model_copy(update={"properties": destination})
+    session.add(benchmark)
+    session.commit()
+
+    def verify_completion(current_session: Session, record: RunLifecycle) -> None:
+        current_session.refresh(benchmark)
+        assert benchmark.arguments.properties == destination
+        assert record.purpose == "relocation" and record.released_at is None
+
+    release_relocation_hold(session, identity=relocation, scope=original, verify_completion=verify_completion)
+    session.commit()
+    return (
+        PurgeOperator(session, build_plan(session, operator.plan.identity), boundary, host_contract=contract()),
+        boundary,
+        relocation,
+        original,
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_replaces_exact_completed_relocation_and_resumes(postgres_session: Session) -> None:
+    operator, boundary, relocation, original = relocated_operator(postgres_session)
+    planned = operator.plan.runs[0]
+    assert planned.scope.original_resources.s3_bucket == "migrated-owner-data"
+    assert original.original_resources.s3_bucket == "owner-data"
+    report = await operator.prepare()
+    assert report.runs[0].phase == "prepared"
+    record = postgres_session.get(RunLifecycle, original.run_id)
+    assert record is not None and record.purpose == "deletion" and record.released_at is None
+    assert OperationIdentity.model_validate_json(record.identity_json) == operator.plan.identity
+    checkpoint = PurgeCheckpoint.model_validate_json(record.checkpoint_json or "null")
+    assert checkpoint.released_relocation == planned.released_relocation
+    assert checkpoint.released_relocation is not None
+    assert checkpoint.released_relocation.operation_id == relocation.operation_id
+    await operator.prepare()
+    boundary.fenced = True
+    await operator.purge()
+    await operator.purge()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement_purpose", ["relocation", "deletion"])
+async def test_stale_relocation_plan_cannot_replace_new_active_owner(
+    postgres_session: Session, replacement_purpose: Purpose
+) -> None:
+    operator, boundary, relocation, original = relocated_operator(postgres_session)
+    cached = postgres_session.get(RunLifecycle, original.run_id)
+    assert cached is not None and cached.released_at is not None
+    replacement = operator.plan.identity.model_copy(update={"operation_id": uuid4()})
+    with Session(postgres_session.get_bind()) as concurrent:
+        record = acquire_hold(
+            concurrent,
+            identity=replacement,
+            scope=operator.plan.runs[0].scope,
+            purpose=replacement_purpose,
+            replace_released_operation_id=relocation.operation_id,
+        )
+        concurrent.commit()
+        concurrent.refresh(record)
+        saved = record.model_dump()
+    assert cached.released_at is not None
+    with pytest.raises(LifecycleConflict):
+        await operator.prepare()
+    assert "cleanup" not in boundary.calls
+    postgres_session.refresh(cached)
+    assert cached.model_dump() == saved
+
+
+@pytest.mark.asyncio
+async def test_stale_plan_cannot_replace_different_released_relocation(postgres_session: Session) -> None:
+    operator, boundary, relocation, original = relocated_operator(postgres_session)
+    replacement = operator.plan.identity.model_copy(update={"operation_id": uuid4()})
+    scope = operator.plan.runs[0].scope
+    with Session(postgres_session.get_bind()) as concurrent:
+        record = acquire_hold(
+            concurrent,
+            identity=replacement,
+            scope=scope,
+            purpose="relocation",
+            replace_released_operation_id=relocation.operation_id,
+        )
+        release_relocation_hold(
+            concurrent, identity=replacement, scope=scope, verify_completion=lambda _session, _record: None
+        )
+        concurrent.commit()
+        concurrent.refresh(record)
+        saved = record.model_dump()
+    with pytest.raises(LifecycleConflict):
+        await operator.prepare()
+    assert "cleanup" not in boundary.calls
+    record = postgres_session.get(RunLifecycle, original.run_id)
+    assert record is not None and record.model_dump() == saved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", ["identity", "scope", "release_time"])
+async def test_predecessor_facts_changed_after_plan_are_refused(postgres_session: Session, changed: str) -> None:
+    operator, boundary, _, original = relocated_operator(postgres_session)
+    with Session(postgres_session.get_bind()) as concurrent:
+        record = concurrent.get(RunLifecycle, original.run_id)
+        assert record is not None and record.released_at is not None
+        if changed == "identity":
+            previous = OperationIdentity.model_validate_json(record.identity_json)
+            record.identity_json = previous.model_copy(update={"parent_plan_sha256": "f" * 64}).model_dump_json()
+        elif changed == "scope":
+            previous_scope = RunScope.model_validate_json(record.scope_json)
+            record.scope_json = previous_scope.model_copy(
+                update={
+                    "original_resources": replace(
+                        previous_scope.original_resources, s3_bucket="different-original-bucket"
+                    )
+                }
+            ).model_dump_json()
+        else:
+            record.released_at += timedelta(seconds=1)
+        concurrent.add(record)
+        concurrent.commit()
+        concurrent.refresh(record)
+        saved = record.model_dump()
+    with pytest.raises(LifecycleConflict):
+        await operator.prepare()
+    assert "cleanup" not in boundary.calls
+    record = postgres_session.get(RunLifecycle, original.run_id)
+    assert record is not None and record.model_dump() == saved
+
+
+@pytest.mark.parametrize("purpose", ["relocation", "deletion"])
+def test_plan_refuses_active_or_permanent_predecessor(postgres_session: Session, purpose: Purpose) -> None:
+    operator, _ = prepared_operator(postgres_session)
+    previous = operator.plan.identity.model_copy(update={"operation_id": uuid4()})
+    scope = operator.plan.runs[0].scope
+    record = acquire_hold(postgres_session, identity=previous, scope=scope, purpose=purpose)
+    postgres_session.commit()
+    postgres_session.refresh(record)
+    original = record.model_dump()
+    with pytest.raises(LifecycleConflict, match="released relocation"):
+        build_plan(postgres_session, operator.plan.identity)
+    postgres_session.rollback()
+    postgres_session.refresh(record)
+    assert record.model_dump() == original
+
+
+@pytest.mark.asyncio
+async def test_unplanned_released_predecessor_is_not_automatically_replaced(postgres_session: Session) -> None:
+    operator, boundary = prepared_operator(postgres_session)
+    scope = operator.plan.runs[0].scope
+    relocation = operator.plan.identity.model_copy(update={"operation_id": uuid4()})
+    record = acquire_hold(postgres_session, identity=relocation, scope=scope, purpose="relocation")
+    release_relocation_hold(
+        postgres_session, identity=relocation, scope=scope, verify_completion=lambda _session, _record: None
+    )
+    postgres_session.commit()
+    postgres_session.refresh(record)
+    original = record.model_dump()
+    with pytest.raises(LifecycleConflict, match="predecessor changed"):
+        await operator.prepare()
+    assert "cleanup" not in boundary.calls
+    postgres_session.refresh(record)
+    assert record.model_dump() == original
+
+
+@pytest.mark.asyncio
+async def test_matching_deletion_resume_preserves_legacy_plan_digest(postgres_session: Session) -> None:
+    operator, boundary = prepared_operator(postgres_session)
+    legacy_plan = operator.plan.model_dump(mode="json")
+    for run in legacy_plan["runs"]:
+        run.pop("released_relocation", None)
+    legacy_digest = hashlib.sha256(json.dumps(legacy_plan, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    await operator.prepare()
+    record = postgres_session.get(RunLifecycle, operator.plan.identity.run_ids[0])
+    assert record is not None and record.checkpoint_json is not None
+    legacy_checkpoint = json.loads(record.checkpoint_json)
+    legacy_checkpoint.pop("released_relocation", None)
+    legacy_checkpoint["child_plan_sha256"] = legacy_digest
+    record.checkpoint_json = json.dumps(legacy_checkpoint)
+    postgres_session.add(record)
+    postgres_session.commit()
+    await operator.prepare()
+    boundary.fenced = True
+    report = await operator.purge()
+    assert report.child_plan_sha256 == legacy_digest and report.outcome == "checked"
+
+
+@pytest.mark.asyncio
+async def test_multiple_runs_use_their_own_released_predecessors(postgres_session: Session) -> None:
+    first, boundary, first_relocation, _ = relocated_operator(postgres_session)
+    second = make_benchmark(org_id=first.plan.identity.org_id)
+    second_resources = replace(first.plan.runs[0].scope.original_resources, s3_bucket="second-original-bucket")
+    second.arguments = second.arguments.model_copy(
+        update={"properties": second_resources, "sandbox_provider_secret_name": "second-provider"}
+    )
+    postgres_session.add(second)
+    postgres_session.commit()
+    scope = RunScope(run_id=second.id, original_resources=second_resources)
+    second_relocation = first.plan.identity.model_copy(update={"operation_id": uuid4(), "run_ids": (second.id,)})
+    acquire_hold(postgres_session, identity=second_relocation, scope=scope, purpose="relocation")
+    second.arguments = second.arguments.model_copy(
+        update={"properties": replace(second_resources, s3_bucket="second-destination-bucket")}
+    )
+    postgres_session.add(second)
+    postgres_session.commit()
+    release_relocation_hold(
+        postgres_session, identity=second_relocation, scope=scope, verify_completion=lambda _session, _record: None
+    )
+    postgres_session.commit()
+    identity = first.plan.identity.model_copy(
+        update={"run_ids": tuple(sorted((*first.plan.identity.run_ids, second.id), key=str))}
+    )
+    plan = build_plan(postgres_session, identity)
+    predecessors = {run.released_relocation.operation_id for run in plan.runs if run.released_relocation is not None}
+    assert predecessors == {first_relocation.operation_id, second_relocation.operation_id}
+    operator = PurgeOperator(postgres_session, plan, boundary, host_contract=contract())
+    report = await operator.prepare()
+    assert tuple(run.phase for run in report.runs) == ("prepared", "prepared")
+    for run in plan.runs:
+        record = postgres_session.get(RunLifecycle, run.scope.run_id)
+        assert record is not None and record.checkpoint_json is not None
+        assert (
+            PurgeCheckpoint.model_validate_json(record.checkpoint_json).released_relocation == run.released_relocation
+        )
+
+
+def test_cli_plan_reads_released_predecessor_without_mutating_hold(
+    postgres_session: Session, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    operator, _, _, original = relocated_operator(postgres_session)
+    record = postgres_session.get(RunLifecycle, original.run_id)
+    assert record is not None
+    postgres_session.refresh(record)
+    before = record.model_dump()
+    identity_path = tmp_path / "identity.json"
+    plan_path = tmp_path / "plan.json"
+    identity_path.write_text(operator.plan.identity.model_dump_json())
+    binding = postgres_session.get_bind()
+    engine = binding.engine if isinstance(binding, Connection) else binding
+    monkeypatch.setenv("PURGE_FIX_TEST_DATABASE", engine.url.render_as_string(hide_password=False))
+    result = purge_cli_main(
+        [
+            "--database-url-env",
+            "PURGE_FIX_TEST_DATABASE",
+            "--expected-database-target",
+            operator.plan.identity.database_target,
+            "--identity",
+            str(identity_path),
+            "--plan",
+            str(plan_path),
+        ]
+    )
+    assert result == 0
+    plan = PurgePlan.model_validate_json(plan_path.read_text())
+    assert plan.runs[0].released_relocation == operator.plan.runs[0].released_relocation
+    assert plan.digest() == operator.plan.digest()
+    assert plan_path.stat().st_mode & 0o777 == 0o600
+    postgres_session.refresh(record)
+    assert record.model_dump() == before
