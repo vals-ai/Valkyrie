@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from uuid import UUID
 
 from pydantic import BaseModel, TypeAdapter
 from sqlmodel import Session, create_engine
@@ -18,13 +19,13 @@ from tracker.run_purge.contracts import PurgePlan
 from tracker.run_purge.providers import AWSProviderBoundary, FenceReceipt
 
 
-def write_plan(path: Path, plan: BaseModel) -> None:
+def write_plan(path: Path, plan: BaseModel, *, exclude_none: bool = True) -> None:
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w") as output:
             os.fchmod(output.fileno(), 0o600)
-            output.write(plan.model_dump_json(indent=2, exclude_none=True))
+            output.write(plan.model_dump_json(indent=2, exclude_none=exclude_none))
             output.flush()
             os.fsync(output.fileno())
         temporary.replace(path)
@@ -34,8 +35,9 @@ def write_plan(path: Path, plan: BaseModel) -> None:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Prepare, then purge exact tracker run data behind permanent holds")
-    result.add_argument("action", nargs="?", choices=("plan", "prepare", "purge", "resume"), default="plan")
+    result.add_argument("action", nargs="?", choices=("plan", "inspect", "prepare", "purge", "resume"), default="plan")
     result.add_argument("--apply", action="store_true")
+    result.add_argument("--request-nonce", type=UUID)
     result.add_argument("--database-url-env", required=True)
     result.add_argument("--expected-database-target", required=True)
     result.add_argument("--identity", type=Path)
@@ -50,7 +52,11 @@ def parser() -> argparse.ArgumentParser:
 
 def main(arguments: list[str] | None = None) -> int:
     options = parser().parse_args(arguments)
-    if options.action != "plan" and not options.apply:
+    if options.action == "inspect" and options.apply:
+        print("Read-only inspection forbids --apply", file=sys.stderr)
+        return 2
+
+    if options.action not in {"plan", "inspect"} and not options.apply:
         print("Mutations require --apply", file=sys.stderr)
         return 2
     engine = None
@@ -88,12 +94,17 @@ def main(arguments: list[str] | None = None) -> int:
             if (
                 plan.identity.database_target != options.expected_database_target
                 or options.report is None
-                or options.host_contract is None
+                or (options.action != "inspect" and options.host_contract is None)
+                or (options.action == "inspect" and options.request_nonce is None)
             ):
                 raise LifecycleConflict(
-                    "Apply requires matching database target, report path and current host contract"
+                    "Operation requires matching database target, report path and its current evidence"
                 )
-            host = HostContractObservation.model_validate_json(options.host_contract.read_text())
+            host = (
+                HostContractObservation.model_validate_json(options.host_contract.read_text())
+                if options.host_contract is not None
+                else None
+            )
             receipts = (
                 TypeAdapter(tuple[FenceReceipt, ...]).validate_json(options.fence_receipts.read_text())
                 if options.fence_receipts
@@ -107,6 +118,12 @@ def main(arguments: list[str] | None = None) -> int:
             operator = PurgeOperator(
                 session, plan, boundary, host_contract=host, external=external, external_evidence=evidence
             )
+            if options.action == "inspect":
+                inspection = asyncio.run(operator.inspect(request_nonce=options.request_nonce))
+                write_plan(options.report, inspection, exclude_none=False)
+                print(f"inspect: {len(inspection.runs)} runs checked; child plan SHA256 {plan.digest()}")
+                return 0
+
             try:
                 report = asyncio.run(operator.prepare() if options.action == "prepare" else operator.purge())
             except Exception:

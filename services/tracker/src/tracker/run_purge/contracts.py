@@ -27,6 +27,7 @@ class ReleasedRelocation(ContractModel):
 
 
 class PurgeRun(ContractModel):
+    expected_run_label: str | None = None
     scope: RunScope
     provider: ProviderLocator
     released_relocation: ReleasedRelocation | None = None
@@ -133,3 +134,72 @@ class PurgeCheckpoint(ContractModel):
 class PurgeReport(LifecycleReport):
     child_plan_sha256: Digest
     outcome: Literal["checked", "incomplete"]
+
+
+class InspectionCheckpoint(ContractModel):
+    phase: Literal["held", "prepared", "objects_removed", "logs_removed", "rows_removed", "complete"]
+    checkpoint_sha256: Digest
+    child_plan_sha256: Digest
+
+
+class InspectionRun(ContractModel):
+    scope: RunScope
+    provider: ProviderLocator
+    expected_run_label: str | None
+
+
+class PresentUnheldInspection(InspectionRun):
+    state: Literal["present_unheld"] = "present_unheld"
+    current_label: str | None
+    released_relocation: ReleasedRelocation | None
+
+
+class PresentHeldInspection(InspectionRun):
+    state: Literal["present_held"] = "present_held"
+    current_label: str | None
+    checkpoint: InspectionCheckpoint
+
+
+class RemovedInspection(InspectionRun):
+    state: Literal["removed"] = "removed"
+    checkpoint: InspectionCheckpoint
+    fence_policy_sha256: Digest
+    absence: Literal["rows_sandboxes_objects_logs"] = "rows_sandboxes_objects_logs"
+
+    @model_validator(mode="after")
+    def validate_removed(self) -> "RemovedInspection":
+        if self.checkpoint.phase not in {"rows_removed", "complete"}:
+            raise ValueError("Removed observation requires a durable row-removal checkpoint")
+
+        return self
+
+
+PurgeInspectionRun = Annotated[
+    PresentUnheldInspection | PresentHeldInspection | RemovedInspection, Field(discriminator="state")
+]
+
+
+class PurgeInspection(ContractModel):
+    schema_version: Literal[1] = 1
+    action: Literal["inspect"] = "inspect"
+    request_nonce: UUID
+    identity: OperationIdentity
+    child_plan_sha256: Digest
+    observed_at: AwareDatetime
+    runs: tuple[PurgeInspectionRun, ...]
+
+    @model_validator(mode="after")
+    def validate_runs(self) -> "PurgeInspection":
+        if tuple(run.scope.run_id for run in self.runs) != self.identity.run_ids:
+            raise ValueError("Inspection run scope does not match identity")
+
+        for run in self.runs:
+            if isinstance(run, (PresentHeldInspection, RemovedInspection)):
+                if run.checkpoint.child_plan_sha256 != self.child_plan_sha256:
+                    raise ValueError("Inspection checkpoint differs from child plan")
+
+            if isinstance(run, (PresentHeldInspection, PresentUnheldInspection)):
+                if run.expected_run_label is not None and run.current_label != run.expected_run_label:
+                    raise ValueError("Observed label differs from bound label")
+
+        return self
