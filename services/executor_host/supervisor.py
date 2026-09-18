@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import signal
-import socket
 import shutil
 import sys
 import tempfile
@@ -36,8 +35,6 @@ from executor_protocol import (
     normalize_executor_telemetry_context,
     validate_executor_digest,
 )
-from services.executor_host.local.secrets import LocalExecutionSecretsClient
-from tracker.local.secret_pipe import SECRET_SOCKET_ENV, LocalSecretsError, send_execution_secrets
 from services.executor_host.observability import (
     capture_dispatch_error,
     configure_observability,
@@ -182,14 +179,6 @@ class ExecutorProcessPayload:
     benchmark_id: str
     verified_task_ids: list[str]
     arguments: dict[str, object]
-
-    @property
-    def is_local(self) -> bool:
-        request = self.arguments.get("start_benchmark_request_json")
-        context = self.arguments.get("execution_context_json")
-        if isinstance(context, Mapping):
-            request = context.get("start_benchmark_request")
-        return isinstance(request, Mapping) and request.get("environment") == "local"
 
     @classmethod
     def from_payload(
@@ -597,8 +586,6 @@ class ExecutorSupervisor:
         try:
             with self.artifact_reader.open(dispatch.artifact_uri) as source, temporary_path.open("wb") as destination:
                 shutil.copyfileobj(source, destination)
-                destination.flush()
-                os.fsync(destination.fileno())
             verify_file_digest(temporary_path, dispatch.artifact_digest)
             temporary_path.chmod(temporary_path.stat().st_mode | 0o111)
             temporary_path.replace(artifact_path)
@@ -630,62 +617,20 @@ class ExecutorSupervisor:
                 dispatch.artifact_digest,
                 dispatch.protocol_version,
             )
-            client = None
-            values: dict[str, str] = {}
-            parent_socket = None
-            child_socket = None
-            process = None
+            process = await asyncio.create_subprocess_exec(
+                self.python_executable,
+                str(artifact_path),
+                str(payload_path),
+                start_new_session=True,
+                env={**os.environ, "SENTRY_RELEASE": dispatch.release_id},
+            )
             try:
-                environment = {**os.environ, "SENTRY_RELEASE": dispatch.release_id}
-                environment.pop(SECRET_SOCKET_ENV, None)
-                pass_fds: tuple[int, ...] = ()
-                if process_payload.is_local:
-                    client = await asyncio.to_thread(LocalExecutionSecretsClient.from_env, authority.dispatch_id)
-                    values = await asyncio.to_thread(client.receive)
-                    parent_socket, child_socket = socket.socketpair()
-                    pass_fds = (child_socket.fileno(),)
-                    environment[SECRET_SOCKET_ENV] = str(child_socket.fileno())
-                spawn_task = asyncio.create_task(
-                    asyncio.create_subprocess_exec(
-                        self.python_executable,
-                        str(artifact_path),
-                        str(payload_path),
-                        start_new_session=True,
-                        env=environment,
-                        pass_fds=pass_fds,
-                    )
-                )
-                try:
-                    process = await asyncio.shield(spawn_task)
-                except asyncio.CancelledError:
-                    process = await spawn_task
-                    raise
-                if child_socket is not None:
-                    child_socket.close()
-                if parent_socket is not None and client is not None:
-                    await asyncio.to_thread(send_execution_secrets, parent_socket, values)
-                    values.clear()
-                    try:
-                        await asyncio.to_thread(client.acknowledge)
-                    except LocalSecretsError:
-                        logger.warning(
-                            "Local execution secret acknowledgment failed; pending credentials will be reaped"
-                        )
                 return_code = await self._wait_with_authority(process, is_current)
-                if return_code != 0:
-                    raise RuntimeError(
-                        f"Executor for benchmark {authority.benchmark_id} exited with status {return_code}"
-                    )
             except BaseException:
-                if process is not None:
-                    await _terminate_process_group(process)
+                await _terminate_process_group(process)
                 raise
-            finally:
-                values.clear()
-                if parent_socket is not None:
-                    parent_socket.close()
-                if child_socket is not None:
-                    child_socket.close()
+            if return_code != 0:
+                raise RuntimeError(f"Executor for benchmark {authority.benchmark_id} exited with status {return_code}")
 
     async def _wait_with_authority(
         self,
