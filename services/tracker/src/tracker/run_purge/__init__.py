@@ -27,11 +27,17 @@ from tracker.lifecycle_evidence import (
 )
 from tracker.run_purge.contracts import (
     DispatchSnapshot,
+    InspectionCheckpoint,
+    PresentHeldInspection,
+    PresentUnheldInspection,
     ProviderLocator,
     PurgeCheckpoint,
+    PurgeInspection,
+    PurgeInspectionRun,
     PurgePlan,
     PurgeReport,
     PurgeRun,
+    RemovedInspection,
 )
 from tracker.run_purge.locking import OperationLock, exclusive_operation, verify_database_target
 from tracker.run_purge.predecessor import acquire_deletion_hold, capture_predecessor
@@ -148,6 +154,9 @@ class PurgeOperator:
         self.external_evidence = external_evidence
 
     def _validate_saved_run(self, benchmark: Benchmark, run: PurgeRun) -> None:
+        if run.expected_run_label is not None and benchmark.label != run.expected_run_label:
+            raise LifecycleConflict("Saved run label changed")
+
         if (
             benchmark.org_id != self.plan.identity.org_id
             or benchmark.arguments.properties != run.scope.original_resources
@@ -250,6 +259,101 @@ class PurgeOperator:
             raise LifecycleConflict("Process drain remains pending")
         return drains
 
+    async def inspect(self, *, request_nonce: UUID) -> PurgeInspection:
+        with self.session.no_autoflush, exclusive_operation(self.session, self.plan.identity):
+            observations = tuple([await self._inspect_run(run) for run in self.plan.runs])
+            if any(
+                isinstance(item, RemovedInspection)
+                or isinstance(item, PresentHeldInspection)
+                and item.checkpoint.phase != "held"
+                for item in observations
+            ):
+                self._validate_host_observation()
+
+            return PurgeInspection(
+                request_nonce=request_nonce,
+                identity=self.plan.identity,
+                child_plan_sha256=self.plan.digest(),
+                observed_at=datetime.now(UTC),
+                runs=observations,
+            )
+
+    async def _inspect_run(self, run: PurgeRun) -> PurgeInspectionRun:
+        benchmark = self.session.exec(
+            select(Benchmark)
+            .where(col(Benchmark.id) == run.scope.run_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        ).one_or_none()
+        record = self.session.exec(
+            select(RunLifecycle)
+            .where(col(RunLifecycle.run_id) == run.scope.run_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        ).one_or_none()
+        if record is None or record.released_at is not None:
+            if benchmark is None:
+                raise LifecycleConflict("Absent run has no exact deletion checkpoint")
+
+            self._validate_saved_run(benchmark, run)
+            predecessor = capture_predecessor(self.session, self.plan.identity, run.scope.run_id)
+            if predecessor != run.released_relocation:
+                raise LifecycleConflict("Planned relocation predecessor changed")
+
+            await self.boundary.validate(self.plan.identity, run)
+            return PresentUnheldInspection(
+                scope=run.scope,
+                provider=run.provider,
+                expected_run_label=run.expected_run_label,
+                current_label=benchmark.label,
+                released_relocation=predecessor,
+            )
+
+        benchmark, record, checkpoint = self._lock(run)
+        proof = InspectionCheckpoint(
+            phase=checkpoint.phase,
+            checkpoint_sha256=hashlib.sha256((record.checkpoint_json or "").encode()).hexdigest(),
+            child_plan_sha256=checkpoint.child_plan_sha256,
+        )
+        if benchmark is None:
+            self._validate_host_observation()
+            if checkpoint.external_host_drain is not None:
+                external, _ = self._external(run)
+                if external != checkpoint.external_host_drain:
+                    raise LifecycleConflict("Saved external drain evidence must be supplied on inspection")
+            verify_foreign_keys(self.session)
+            verify_rows_absent(self.session, checkpoint.rows)
+            await self.boundary.validate(self.plan.identity, run)
+            fence_digest = await self.boundary.verify_fence(self.plan.identity, run)
+            if fence_digest != checkpoint.fence_policy_sha256:
+                raise LifecycleConflict("Current fence differs from saved removal checkpoint")
+            await self.boundary.verify_absence(run)
+            await self.boundary.verify_storage_absence(self.plan.identity, run)
+            return RemovedInspection(
+                scope=run.scope,
+                provider=run.provider,
+                expected_run_label=run.expected_run_label,
+                checkpoint=proof,
+                fence_policy_sha256=fence_digest,
+            )
+
+        await self.boundary.validate(self.plan.identity, run)
+        if checkpoint.phase != "held":
+            drains = self._drain(run)
+            if tuple(item.dispatch_id for item in drains) != tuple(
+                item.dispatch_id for item in checkpoint.original_dispatches
+            ):
+                raise LifecycleConflict("Dispatch scope changed after hold")
+            await self.boundary.verify_absence(run)
+
+        return PresentHeldInspection(
+            scope=run.scope,
+            provider=run.provider,
+            expected_run_label=run.expected_run_label,
+            current_label=benchmark.label,
+            checkpoint=proof,
+        )
+
     async def prepare(self) -> PurgeReport:
         with exclusive_operation(self.session, self.plan.identity) as lock:
             return await self._prepare(lock)
@@ -257,6 +361,15 @@ class PurgeOperator:
     async def _prepare(self, lock: OperationLock) -> PurgeReport:
         for run in self.plan.runs:
             await self.boundary.validate(self.plan.identity, run)
+            saved_run = self.session.exec(
+                select(Benchmark)
+                .where(col(Benchmark.id) == run.scope.run_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            ).one_or_none()
+            if saved_run is not None:
+                self._validate_saved_run(saved_run, run)
+
             record = acquire_deletion_hold(self.session, self.plan.identity, run)
             saved_run = self.session.get(Benchmark, run.scope.run_id)
             if saved_run is not None:

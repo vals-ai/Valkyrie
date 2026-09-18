@@ -264,3 +264,16 @@ Database and provider changes are not one distributed transaction. A failure can
 leave already removed provider data with retained rows. This is deliberate:
 permanent holds, immutable scope and checkpoints let the same operation resume.
 The parent owner freeze and write fence must remain until all parent checks pass.
+
+## Inspection and expected labels
+
+Use the separate [read-only inspection contract](tracker-purge-inspection.md)
+for current deletion progress. It works with an existing immutable plan before
+prepare, during a failed prepare, and after partial or complete row removal.
+It never invokes destructive resume to obtain an observation.
+
+A run can carry `expected_run_label` in its immutable plan. Every supplied
+non-null label must match the fresh locked Benchmark row before prepare or purge
+mutates the run or provider data. An omitted or null label preserves the old
+plan digest and provides no checked-label authority. After row removal, the
+exact durable child-plan digest retains only labels already bound in that plan.

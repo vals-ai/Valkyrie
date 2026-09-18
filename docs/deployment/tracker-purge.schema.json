@@ -177,6 +177,18 @@
       "PurgeRun": {
         "additionalProperties": false,
         "properties": {
+          "expected_run_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Run Label"
+          },
           "scope": {
             "$ref": "#/$defs/RunScope"
           },

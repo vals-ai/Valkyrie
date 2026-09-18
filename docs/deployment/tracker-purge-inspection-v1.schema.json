@@ -1,0 +1,467 @@
+{
+  "$defs": {
+    "AWSResources": {
+      "additionalProperties": false,
+      "properties": {
+        "region": {
+          "minLength": 1,
+          "title": "Region",
+          "type": "string"
+        },
+        "s3_bucket": {
+          "minLength": 1,
+          "title": "S3 Bucket",
+          "type": "string"
+        },
+        "log_group": {
+          "title": "Log Group",
+          "type": "string"
+        },
+        "log_retention_days": {
+          "exclusiveMinimum": 0,
+          "title": "Log Retention Days",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "region",
+        "s3_bucket",
+        "log_group",
+        "log_retention_days"
+      ],
+      "title": "AWSResources",
+      "type": "object"
+    },
+    "InspectionCheckpoint": {
+      "additionalProperties": false,
+      "properties": {
+        "phase": {
+          "enum": [
+            "held",
+            "prepared",
+            "objects_removed",
+            "logs_removed",
+            "rows_removed",
+            "complete"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "checkpoint_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Checkpoint Sha256",
+          "type": "string"
+        },
+        "child_plan_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Child Plan Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "phase",
+        "checkpoint_sha256",
+        "child_plan_sha256"
+      ],
+      "title": "InspectionCheckpoint",
+      "type": "object"
+    },
+    "OperationIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "format": "uuid",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "parent_plan_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Parent Plan Sha256",
+          "type": "string"
+        },
+        "github_owner_id": {
+          "exclusiveMinimum": 0,
+          "title": "Github Owner Id",
+          "type": "integer"
+        },
+        "org_id": {
+          "format": "uuid",
+          "title": "Org Id",
+          "type": "string"
+        },
+        "source_aws_account_id": {
+          "pattern": "^[0-9]{12}$",
+          "title": "Source Aws Account Id",
+          "type": "string"
+        },
+        "destination_aws_account_id": {
+          "pattern": "^[0-9]{12}$",
+          "title": "Destination Aws Account Id",
+          "type": "string"
+        },
+        "region": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Region",
+          "type": "string"
+        },
+        "environment": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Environment",
+          "type": "string"
+        },
+        "database_target": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Database Target",
+          "type": "string"
+        },
+        "run_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Run Ids",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "operation_id",
+        "parent_plan_sha256",
+        "github_owner_id",
+        "org_id",
+        "source_aws_account_id",
+        "destination_aws_account_id",
+        "region",
+        "environment",
+        "database_target",
+        "run_ids"
+      ],
+      "title": "OperationIdentity",
+      "type": "object"
+    },
+    "PresentHeldInspection": {
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/RunScope"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderLocator"
+        },
+        "expected_run_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Expected Run Label"
+        },
+        "state": {
+          "const": "present_held",
+          "default": "present_held",
+          "title": "State",
+          "type": "string"
+        },
+        "current_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Current Label"
+        },
+        "checkpoint": {
+          "$ref": "#/$defs/InspectionCheckpoint"
+        }
+      },
+      "required": [
+        "scope",
+        "provider",
+        "expected_run_label",
+        "current_label",
+        "checkpoint"
+      ],
+      "title": "PresentHeldInspection",
+      "type": "object"
+    },
+    "PresentUnheldInspection": {
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/RunScope"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderLocator"
+        },
+        "expected_run_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Expected Run Label"
+        },
+        "state": {
+          "const": "present_unheld",
+          "default": "present_unheld",
+          "title": "State",
+          "type": "string"
+        },
+        "current_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Current Label"
+        },
+        "released_relocation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReleasedRelocation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "scope",
+        "provider",
+        "expected_run_label",
+        "current_label",
+        "released_relocation"
+      ],
+      "title": "PresentUnheldInspection",
+      "type": "object"
+    },
+    "ProviderLocator": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "secret_name": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "title": "Secret Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "secret_name"
+      ],
+      "title": "ProviderLocator",
+      "type": "object"
+    },
+    "ReleasedRelocation": {
+      "additionalProperties": false,
+      "properties": {
+        "operation_id": {
+          "format": "uuid",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "identity_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Identity Sha256",
+          "type": "string"
+        },
+        "scope_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Scope Sha256",
+          "type": "string"
+        },
+        "acquired_at": {
+          "format": "date-time",
+          "title": "Acquired At",
+          "type": "string"
+        },
+        "released_at": {
+          "format": "date-time",
+          "title": "Released At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id",
+        "identity_sha256",
+        "scope_sha256",
+        "acquired_at",
+        "released_at"
+      ],
+      "title": "ReleasedRelocation",
+      "type": "object"
+    },
+    "RemovedInspection": {
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/RunScope"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderLocator"
+        },
+        "expected_run_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Expected Run Label"
+        },
+        "state": {
+          "const": "removed",
+          "default": "removed",
+          "title": "State",
+          "type": "string"
+        },
+        "checkpoint": {
+          "$ref": "#/$defs/InspectionCheckpoint"
+        },
+        "fence_policy_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Fence Policy Sha256",
+          "type": "string"
+        },
+        "absence": {
+          "const": "rows_sandboxes_objects_logs",
+          "default": "rows_sandboxes_objects_logs",
+          "title": "Absence",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope",
+        "provider",
+        "expected_run_label",
+        "checkpoint",
+        "fence_policy_sha256"
+      ],
+      "title": "RemovedInspection",
+      "type": "object"
+    },
+    "RunScope": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "original_resources": {
+          "$ref": "#/$defs/AWSResources"
+        },
+        "object_prefix": {
+          "default": "",
+          "title": "Object Prefix",
+          "type": "string"
+        },
+        "log_group": {
+          "default": "",
+          "title": "Log Group",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "original_resources"
+      ],
+      "title": "RunScope",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "action": {
+      "const": "inspect",
+      "default": "inspect",
+      "title": "Action",
+      "type": "string"
+    },
+    "request_nonce": {
+      "format": "uuid",
+      "title": "Request Nonce",
+      "type": "string"
+    },
+    "identity": {
+      "$ref": "#/$defs/OperationIdentity"
+    },
+    "child_plan_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Child Plan Sha256",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "runs": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "present_held": "#/$defs/PresentHeldInspection",
+            "present_unheld": "#/$defs/PresentUnheldInspection",
+            "removed": "#/$defs/RemovedInspection"
+          },
+          "propertyName": "state"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/PresentUnheldInspection"
+          },
+          {
+            "$ref": "#/$defs/PresentHeldInspection"
+          },
+          {
+            "$ref": "#/$defs/RemovedInspection"
+          }
+        ]
+      },
+      "title": "Runs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "request_nonce",
+    "identity",
+    "child_plan_sha256",
+    "observed_at",
+    "runs"
+  ],
+  "title": "PurgeInspection",
+  "type": "object"
+}

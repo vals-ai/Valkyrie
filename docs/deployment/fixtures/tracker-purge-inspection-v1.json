@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "action": "inspect",
+  "request_nonce": "40000000-0000-0000-0000-000000000001",
+  "identity": {
+    "schema_version": 1,
+    "operation_id": "10000000-0000-0000-0000-000000000001",
+    "parent_plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "github_owner_id": 42,
+    "org_id": "20000000-0000-0000-0000-000000000001",
+    "source_aws_account_id": "111111111111",
+    "destination_aws_account_id": "111111111111",
+    "region": "us-east-1",
+    "environment": "prod",
+    "database_target": "postgresql:localhost:5432/tracker",
+    "run_ids": [
+      "30000000-0000-0000-0000-000000000001",
+      "30000000-0000-0000-0000-000000000002",
+      "30000000-0000-0000-0000-000000000003"
+    ]
+  },
+  "child_plan_sha256": "2f6ecca27529fc5a33c6556432d99cf27b724ec7bf3ecb70f730696dcc6e66af",
+  "observed_at": "2026-09-18T12:00:00Z",
+  "runs": [
+    {
+      "scope": {
+        "run_id": "30000000-0000-0000-0000-000000000001",
+        "original_resources": {
+          "region": "us-east-1",
+          "s3_bucket": "vs-prod-42-fixture",
+          "log_group": "/fixture/tracker",
+          "log_retention_days": 30
+        },
+        "object_prefix": "benchmarks/30000000-0000-0000-0000-000000000001/",
+        "log_group": "/fixture/tracker/30000000-0000-0000-0000-000000000001"
+      },
+      "provider": {
+        "kind": "daytona",
+        "secret_name": "fixture/provider"
+      },
+      "expected_run_label": "owner-42",
+      "state": "present_unheld",
+      "current_label": "owner-42",
+      "released_relocation": null
+    },
+    {
+      "scope": {
+        "run_id": "30000000-0000-0000-0000-000000000002",
+        "original_resources": {
+          "region": "us-east-1",
+          "s3_bucket": "vs-prod-42-fixture",
+          "log_group": "/fixture/tracker",
+          "log_retention_days": 30
+        },
+        "object_prefix": "benchmarks/30000000-0000-0000-0000-000000000002/",
+        "log_group": "/fixture/tracker/30000000-0000-0000-0000-000000000002"
+      },
+      "provider": {
+        "kind": "daytona",
+        "secret_name": "fixture/provider"
+      },
+      "expected_run_label": "owner-42",
+      "state": "present_held",
+      "current_label": "owner-42",
+      "checkpoint": {
+        "phase": "held",
+        "checkpoint_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "child_plan_sha256": "2f6ecca27529fc5a33c6556432d99cf27b724ec7bf3ecb70f730696dcc6e66af"
+      }
+    },
+    {
+      "scope": {
+        "run_id": "30000000-0000-0000-0000-000000000003",
+        "original_resources": {
+          "region": "us-east-1",
+          "s3_bucket": "vs-prod-42-fixture",
+          "log_group": "/fixture/tracker",
+          "log_retention_days": 30
+        },
+        "object_prefix": "benchmarks/30000000-0000-0000-0000-000000000003/",
+        "log_group": "/fixture/tracker/30000000-0000-0000-0000-000000000003"
+      },
+      "provider": {
+        "kind": "daytona",
+        "secret_name": "fixture/provider"
+      },
+      "expected_run_label": "owner-42",
+      "state": "removed",
+      "checkpoint": {
+        "phase": "complete",
+        "checkpoint_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "child_plan_sha256": "2f6ecca27529fc5a33c6556432d99cf27b724ec7bf3ecb70f730696dcc6e66af"
+      },
+      "fence_policy_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "absence": "rows_sandboxes_objects_logs"
+    }
+  ]
+}
