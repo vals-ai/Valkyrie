@@ -43,7 +43,7 @@ class AgentsResource:
         return await self._sdk.request_model("GET", "/agents", AgentsResponse)
 
     async def download_url(self, name: str) -> AgentDownloadURLResponse:
-        """Get a signed URL or an authenticated relative route for an uploaded agent."""
+        """Create a temporary download URL for an uploaded agent."""
         validate_agent_name(name)
 
         return await self._sdk.request_model(
@@ -103,12 +103,7 @@ class AgentsResource:
             # A separate client must never inherit Tracker credentials for presigned transfers.
             async with httpx.AsyncClient(timeout=120) as client:
                 with tempfile.TemporaryFile() as stream:
-                    download_context = (
-                        self._sdk.stream_response("GET", response.download_url)
-                        if response.download_url.startswith("/agents/")
-                        else client.stream("GET", response.download_url)
-                    )
-                    async with download_context as download:
+                    async with client.stream("GET", response.download_url) as download:
                         download.raise_for_status()
                         downloaded_bytes = 0
                         async for chunk in download.aiter_bytes(chunk_size=1024 * 1024):

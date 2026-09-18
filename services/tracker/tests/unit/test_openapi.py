@@ -40,29 +40,25 @@ def test_openapi_declares_required_harness_headers() -> None:
         "HarnessAwsAccessKeyId": {
             "name": "X-Harness-AWS-Access-Key-Id",
             "in": "header",
-            "required": False,
-            "description": "Required for access-key AWS mode; omitted in managed AWS and local modes.",
+            "required": True,
             "schema": {"type": "string"},
         },
         "HarnessAwsSecretAccessKey": {
             "name": "X-Harness-AWS-Secret-Access-Key",
             "in": "header",
-            "required": False,
-            "description": "Required for access-key AWS mode; omitted in managed AWS and local modes.",
+            "required": True,
             "schema": {"type": "string"},
         },
         "HarnessAwsDefaultRegion": {
             "name": "X-Harness-AWS-Default-Region",
             "in": "header",
-            "required": False,
-            "description": "Required for access-key AWS mode; omitted in managed AWS and local modes.",
+            "required": True,
             "schema": {"type": "string"},
         },
         "HarnessS3Bucket": {
             "name": "X-Harness-S3-Bucket",
             "in": "header",
-            "required": False,
-            "description": "Required for access-key AWS mode; omitted in managed AWS and local modes.",
+            "required": True,
             "schema": {"type": "string"},
         },
     }

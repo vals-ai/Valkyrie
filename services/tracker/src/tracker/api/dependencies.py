@@ -1,9 +1,6 @@
 """Shared API dependencies."""
 
-import os
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
@@ -19,7 +16,6 @@ from tracker.database.models import Benchmark, Org, Task
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.logging import benchmark_id_var
-from tracker.local.runtime import LocalRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 
 
@@ -83,14 +79,12 @@ RunRuntimeDependency = Annotated[RuntimeServices, Depends(get_run_runtime)]
 async def get_agent_library_runtime(
     request: Request,
     org: Org = Depends(get_current_org),
-) -> AsyncGenerator[RuntimeServices]:
+) -> RuntimeServices:
     """Open agent storage without constructing sandbox access."""
-    if os.environ.get("VALKYRIE_RUNTIME") == "local":
-        async with LocalRuntimeFactory.open(Path(os.environ["VALKYRIE_LOCAL_DATA_ROOT"]), org.id) as runtime:
-            yield runtime
-        return
     aws_runtime = resolve_agent_library_aws_runtime(request, org.id)
-    yield CloudRuntimeFactory.create_runtime(aws_runtime)
+
+    runtime = CloudRuntimeFactory.create_runtime(aws_runtime)
+    return runtime
 
 
 AgentLibraryRuntimeDependency = Annotated[RuntimeServices, Depends(get_agent_library_runtime)]

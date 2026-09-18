@@ -307,21 +307,3 @@ class TestAgentArchive:
         assert (backup / "demo" / "keep").read_text() == "original"
         assert str(backup) in caplog.text
         assert "manually" in caplog.text
-
-
-
-async def test_local_agent_download_uses_tracker_transport(
-    make_client: ClientFactory, tmp_path: Path,
-) -> None:
-    """Download a relative local archive through the existing Tracker connection."""
-    def handle(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("download-url"):
-            return httpx.Response(200, json={
-                "name": "demo", "download_url": "/agents/demo/download", "expires_in": 0,
-            })
-        assert request.url.path == "/agents/demo/download"
-        return httpx.Response(200, content=_archive())
-
-    async with make_client(handle) as client:
-        path = await client.agents.download("demo", tmp_path)
-    assert (path / "run.py").read_text() == "agent content"

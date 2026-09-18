@@ -8,7 +8,6 @@ import stat
 import struct
 import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -288,26 +287,5 @@ class TestAgentRoutes:
         response = _client.get("/agents/missing/download-url", headers=harness_headers)
 
         assert response.status_code == 404
-        assert response.json()["detail"] == "Agent 'missing' not found"
+        assert response.json()["detail"] == "Agent 'missing' not found in S3"
         exists.assert_awaited_once_with("agents/missing.zip", aws_runtime)
-
-
-
-def test_local_agent_library_uses_filesystem_and_authenticated_download(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Push, list, download, and delete a local agent without AWS credentials."""
-    monkeypatch.setenv("VALKYRIE_RUNTIME", "local")
-    monkeypatch.setenv("VALKYRIE_LOCAL_DATA_ROOT", str(tmp_path))
-    content = _agent_archive()
-    response = _client.put("/agents/demo", content=content, headers={"Content-Type": "application/zip"})
-    assert response.status_code == 200
-    assert _client.get("/agents").json()["agents"][0]["name"] == "demo"
-    link = _client.get("/agents/demo/download-url").json()
-    assert link["download_url"] == "/agents/demo/download"
-    download = _client.get(link["download_url"])
-    assert download.status_code == 200
-    assert download.content == content
-    assert download.headers["cache-control"] == "no-store"
-    assert _client.delete("/agents/demo").status_code == 200
-    assert _client.get(link["download_url"]).status_code == 404

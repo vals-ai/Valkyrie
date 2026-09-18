@@ -2,37 +2,33 @@
   "components": {
     "parameters": {
       "HarnessAwsAccessKeyId": {
-        "description": "Required for access-key AWS mode; omitted in managed AWS and local modes.",
         "in": "header",
         "name": "X-Harness-AWS-Access-Key-Id",
-        "required": false,
+        "required": true,
         "schema": {
           "type": "string"
         }
       },
       "HarnessAwsDefaultRegion": {
-        "description": "Required for access-key AWS mode; omitted in managed AWS and local modes.",
         "in": "header",
         "name": "X-Harness-AWS-Default-Region",
-        "required": false,
+        "required": true,
         "schema": {
           "type": "string"
         }
       },
       "HarnessAwsSecretAccessKey": {
-        "description": "Required for access-key AWS mode; omitted in managed AWS and local modes.",
         "in": "header",
         "name": "X-Harness-AWS-Secret-Access-Key",
-        "required": false,
+        "required": true,
         "schema": {
           "type": "string"
         }
       },
       "HarnessS3Bucket": {
-        "description": "Required for access-key AWS mode; omitted in managed AWS and local modes.",
         "in": "header",
         "name": "X-Harness-S3-Bucket",
-        "required": false,
+        "required": true,
         "schema": {
           "type": "string"
         }
@@ -3044,62 +3040,9 @@
         "summary": "Push Agent Endpoint"
       }
     },
-    "/agents/{name}/download": {
-      "get": {
-        "description": "Download the library archive using the caller's existing authorization.",
-        "operationId": "download_agent_archive",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "title": "Name",
-              "type": "string"
-            }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/zip": {
-                "schema": {
-                  "format": "binary",
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Download Agent Archive"
-      }
-    },
     "/agents/{name}/download-url": {
       "get": {
-        "description": "Return a signed URL or a relative route requiring Tracker authorization.",
+        "description": "Return a 5-minute presigned URL to download agents/<name>.zip.",
         "operationId": "get_agent_download_url",
         "parameters": [
           {
