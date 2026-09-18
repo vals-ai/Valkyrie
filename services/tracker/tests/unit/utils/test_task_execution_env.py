@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from benchmark_service import SandboxSource, TargetedSnapshotSource
@@ -165,7 +165,7 @@ class TestProcessTaskEnvironment:
         )
         captured_env_vars: list[dict[str, str]] = []
 
-        def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        async def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {
                 "RUN_ID": "secret-run-id",
                 "TASK_ID": "secret-task-id",
@@ -229,7 +229,7 @@ class TestProcessTaskEnvironment:
         )
         captured_env_vars: list[dict[str, str]] = []
 
-        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", AsyncMock(return_value={}))
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
@@ -260,7 +260,7 @@ class TestProcessTaskEnvironment:
         )
         captured_env_vars: list[dict[str, str]] = []
 
-        def _mock_resolve_no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        async def _mock_resolve_no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {}
 
         monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_no_secrets)
@@ -302,7 +302,7 @@ class TestProcessTaskEnvironment:
         captured: dict[str, dict[str, str]] = {}
         resolved_inputs: list[dict[str, str]] = []
 
-        def _mock_resolve_secrets(secrets: dict[str, str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
+        async def _mock_resolve_secrets(secrets: dict[str, str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
             resolved_inputs.append(secrets)
             return {"LEGACY_API_KEY": "legacy-value"}
 

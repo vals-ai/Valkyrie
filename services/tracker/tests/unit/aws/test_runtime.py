@@ -23,7 +23,7 @@ async def test_runtime_reuses_and_closes_provider(
     provider_config = MagicMock()
     provider_config.create_provider.return_value = provider
     resolve = AsyncMock(return_value={"api_key": "test-provider-key"})
-    monkeypatch.setattr(SecretsManagerStore, "get_async", resolve)
+    monkeypatch.setattr(SecretsManagerStore, "get", resolve)
     monkeypatch.setattr(
         "tracker.runtime.secrets.sandbox_provider_config_from_mapping", MagicMock(return_value=provider_config)
     )
@@ -78,7 +78,7 @@ async def test_cancelled_shutdown_drains_provider(monkeypatch: pytest.MonkeyPatc
     provider = MagicMock(close=AsyncMock(side_effect=close))
     provider_config = MagicMock()
     provider_config.create_provider.return_value = provider
-    monkeypatch.setattr(SecretsManagerStore, "get_async", AsyncMock(return_value={"api_key": "test-provider-key"}))
+    monkeypatch.setattr(SecretsManagerStore, "get", AsyncMock(return_value={"api_key": "test-provider-key"}))
     monkeypatch.setattr(
         "tracker.runtime.secrets.sandbox_provider_config_from_mapping", MagicMock(return_value=provider_config)
     )

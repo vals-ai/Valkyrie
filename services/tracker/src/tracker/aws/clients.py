@@ -57,10 +57,6 @@ class AWSClientProvider(ABC):
             **self._client_kwargs(),
         )
 
-    @lru_cache(maxsize=32)
-    def secretsmanager_client(self) -> Any:
-        return _boto3_client("secretsmanager", **self._client_kwargs())
-
     def secretsmanager_async_client(self) -> Any:
         return self._s3_session().client("secretsmanager")  # pyright: ignore[reportUnknownMemberType]
 
