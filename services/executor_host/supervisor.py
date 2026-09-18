@@ -43,8 +43,6 @@ from services.executor_host.observability import (
     record_dispatch_cancellation,
     record_dispatch_completion,
 )
-from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader
-from tracker.runtime.lifecycle import finish_cleanup
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -532,8 +530,11 @@ def _required_string(payload: Mapping[str, object], key: str) -> str:
 
 
 def verify_file_digest(path: Path, expected_digest: str) -> None:
+    digest = hashlib.sha256()
     with path.open("rb") as artifact:
-        actual_digest = hashlib.file_digest(artifact, "sha256").hexdigest()
+        for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual_digest = digest.hexdigest()
     if actual_digest != expected_digest:
         raise ValueError(f"Executor artifact digest mismatch: expected {expected_digest}, got {actual_digest}")
 
@@ -561,7 +562,6 @@ class ExecutorSupervisor:
         cache_dir: Path,
         *,
         s3_client: S3Client | None = None,
-        artifact_reader: FilesystemExecutorArtifactReader | None = None,
         python_executable: str = sys.executable,
         artifact_bucket: str | None = None,
         artifact_prefix: str | None = None,
@@ -569,28 +569,23 @@ class ExecutorSupervisor:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.cache_dir = cache_dir
+        self.s3_client = s3_client
         self.python_executable = python_executable
         self.artifact_bucket = artifact_bucket or os.environ.get("EXECUTOR_RELEASE_BUCKET", "agentic-harness")
         self.artifact_prefix = artifact_prefix or os.environ.get(
             "EXECUTOR_RELEASE_PREFIX",
             DEFAULT_EXECUTOR_RELEASE_PREFIX,
         )
-        self.s3_client = s3_client
-        self.artifact_reader = artifact_reader
         self.authority_check_interval = authority_check_interval
         self.sleep = sleep
 
     async def prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
-        return await finish_cleanup(asyncio.create_task(asyncio.to_thread(self._prepare_artifact, dispatch)))
-
-    def _prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
-        if self.artifact_reader is not None:
-            artifact_path = self.artifact_reader.validate(dispatch.artifact_uri)
-            verify_file_digest(artifact_path, dispatch.artifact_digest)
-            return artifact_path
-
+        bucket, key = validate_executor_artifact_uri(
+            dispatch.artifact_uri,
+            self.artifact_bucket,
+            self.artifact_prefix,
+        )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        bucket, key = validate_executor_artifact_uri(dispatch.artifact_uri, self.artifact_bucket, self.artifact_prefix)
         artifact_path = self.cache_dir / f"{dispatch.artifact_digest}.pex"
         try:
             verify_file_digest(artifact_path, dispatch.artifact_digest)
@@ -599,16 +594,29 @@ class ExecutorSupervisor:
         except (OSError, ValueError):
             pass
 
-        with tempfile.TemporaryDirectory(dir=self.cache_dir) as staging:
-            temporary_path = Path(staging) / "executor.pex"
+        temporary_fd, temporary_name = tempfile.mkstemp(
+            dir=self.cache_dir,
+            prefix=f".{dispatch.artifact_digest}.",
+            suffix=".tmp",
+        )
+        os.close(temporary_fd)
+        temporary_path = Path(temporary_name)
+        try:
             client = self.s3_client or cast(
                 S3Client,
                 boto3.client("s3"),  # pyright: ignore[reportUnknownMemberType]
             )
-            client.download_file(bucket, key, str(temporary_path))
+
+            def download() -> None:
+                client.download_file(bucket, key, str(temporary_path))
+
+            await asyncio.to_thread(download)
             verify_file_digest(temporary_path, dispatch.artifact_digest)
             temporary_path.chmod(temporary_path.stat().st_mode | 0o111)
             temporary_path.replace(artifact_path)
+        except BaseException:
+            temporary_path.unlink(missing_ok=True)
+            raise
         return artifact_path
 
     async def run(
@@ -628,7 +636,7 @@ class ExecutorSupervisor:
         if lease_lost.is_set():
             raise DispatchAuthorityLostError(f"Executor dispatch {authority.dispatch_id} lease expired before spawn")
         payload = {**process_payload.arguments, "executor_dispatch_id": authority.dispatch_id}
-        with tempfile.TemporaryDirectory(prefix=".dispatch-") as temporary_directory:
+        with tempfile.TemporaryDirectory(dir=self.cache_dir, prefix=".dispatch-") as temporary_directory:
             payload_path = Path(temporary_directory) / "payload.json"
             payload_path.write_text(json.dumps(payload))
             logger.info(
@@ -754,14 +762,7 @@ async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:
     configure_observability()
 
 
-supervisor = ExecutorSupervisor(
-    CACHE_DIR,
-    artifact_reader=(
-        FilesystemExecutorArtifactReader(Path(os.environ["EXECUTOR_RELEASE_ROOT"]))
-        if os.environ.get("EXECUTOR_RELEASE_ROOT")
-        else None
-    ),
-)
+supervisor = ExecutorSupervisor(CACHE_DIR)
 dispatch_store = PostgresExecutorDispatchStore.from_environment()
 
 

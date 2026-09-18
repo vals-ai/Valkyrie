@@ -9,8 +9,8 @@ from typing import cast
 
 import yaml
 from botocore.exceptions import ClientError
+from tracker import handle_s3_error
 from tracker.aws.s3 import (
-    handle_s3_error,
     copy_s3_object,
     download_from_s3,
     get_benchmark_contract_s3_key,

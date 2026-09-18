@@ -31,7 +31,7 @@ from sqlalchemy.engine import Connection
 from sqlmodel import Session, col, select, update
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
-from tracker.runtime.logs import task_log_stream_name
+from tracker.aws.cloudwatch_logs import task_log_stream_name
 from tracker.runtime.secrets import resolve_secrets
 from tracker.runtime.services import RuntimeServices
 from tracker.runtime.artifacts import task_artifact_key
