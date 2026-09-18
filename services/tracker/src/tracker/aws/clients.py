@@ -39,7 +39,6 @@ class AWSClientProvider(ABC):
         """Return SDK arguments for this credential source."""
         raise NotImplementedError
 
-    @lru_cache(maxsize=32)
     def _s3_session(self) -> aioboto3.Session:
         return aioboto3.Session(**self._client_kwargs())
 

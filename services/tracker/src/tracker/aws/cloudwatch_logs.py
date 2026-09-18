@@ -124,14 +124,13 @@ class CloudWatchBenchmarkLogSink(BenchmarkLogSink):
         log_group_name = benchmark_log_group_name(self._log_group, benchmark_id)
         try:
             async with self._clients.cloudwatch_logs_async_client() as client:
-                await client.create_log_group(logGroupName=log_group_name)
+                try:
+                    await client.create_log_group(logGroupName=log_group_name)
+                except ClientError as error:
+                    if error.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
+                        raise
                 await client.put_retention_policy(logGroupName=log_group_name, retentionInDays=retention_days)
         except (ClientError, BotoCoreError) as error:
-            if (
-                isinstance(error, ClientError)
-                and error.response.get("Error", {}).get("Code") == "ResourceAlreadyExistsException"
-            ):
-                return
             raise CloudWatchError(f"Failed to create log group: {error}") from error
 
     @handle_cloudwatch_error(message="Failed to create cloudwatch stream")
