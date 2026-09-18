@@ -489,6 +489,7 @@ _SUCCESS_EXIT_CODE: int = 0
 _STATUS_DIR = "/tmp/.valkyrie"
 AGENT_ERROR_PATH_ENV = "VALKYRIE_ERROR_PATH"
 _AGENT_ERROR_MAX_CHARS = 2048
+_POST_EXIT_READ_TIMEOUT_SECONDS = 5
 _EGRESS_RETRY = retry(
     retry=retry_if_exception_type(ProviderSandboxError) & retry_if_not_exception_type(SandboxNotFoundError),
     reraise=True,
@@ -620,25 +621,36 @@ async def stream_command_output(
             pass
 
 
+async def _read_post_exit_file(sandbox: Sandbox, command: str) -> str | None:
+    """Best-effort read of a file the command wrote before exiting.
+
+    Runs after the command's exit code is already known, so nothing raised here may
+    replace the original outcome: any failure (sandbox gone, transport error, hang)
+    yields ``None``.
+    """
+    try:
+        result = await asyncio.wait_for(_exec(sandbox, command), timeout=_POST_EXIT_READ_TIMEOUT_SECONDS)
+    except Exception:
+        return None
+    if result.exit_code != _SUCCESS_EXIT_CODE:
+        return None
+    return result.output
+
+
 async def _read_agent_error(sandbox: Sandbox, error_path: str) -> str:
     """Return the error the agent wrote to ``$VALKYRIE_ERROR_PATH``, or "" when absent or unreadable."""
-    try:
-        result = await _exec(sandbox, f"head -c {_AGENT_ERROR_MAX_CHARS} {shlex.quote(error_path)}")
-    except SandboxError:
-        return ""
-    if result.exit_code != _SUCCESS_EXIT_CODE:
-        return ""
-    return " ".join(result.output.split())
+    content = await _read_post_exit_file(sandbox, f"head -c {_AGENT_ERROR_MAX_CHARS} {shlex.quote(error_path)}")
+    return "" if content is None else " ".join(content.split())
 
 
 async def _read_sandbox_duration(sandbox: Sandbox, start_ns_path: str, end_ns_path: str, fallback: float) -> float:
     """Read the sandbox-side command duration, degrading to ``fallback`` on any failure."""
-    start_result = await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")
-    end_result = await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")
-    if start_result.exit_code != _SUCCESS_EXIT_CODE or end_result.exit_code != _SUCCESS_EXIT_CODE:
+    start_ns = await _read_post_exit_file(sandbox, f"cat {shlex.quote(start_ns_path)}")
+    end_ns = await _read_post_exit_file(sandbox, f"cat {shlex.quote(end_ns_path)}")
+    if start_ns is None or end_ns is None:
         return fallback
     try:
-        return (int(end_result.stdout.strip()) - int(start_result.stdout.strip())) / 1e9
+        return (int(end_ns.strip()) - int(start_ns.strip())) / 1e9
     except ValueError:
         return fallback
 

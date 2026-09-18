@@ -2040,6 +2040,58 @@ class TestStreamCommandOutputAgentFailure:
 
         assert str(exc_info.value) == "Sandbox error: Agent command failed with exit code 3"
 
+    @pytest.mark.parametrize("read_prefix", ["head -c ", "cat "])
+    async def test_sandbox_lost_during_post_exit_read_keeps_exit_code_error(
+        self, monkeypatch: pytest.MonkeyPatch, read_prefix: str
+    ) -> None:
+        """Sandbox disappearing after the agent exited must not replace the agent's failure."""
+
+        async def stream_command(_command: str) -> AsyncIterator[str]:
+            yield ""
+            raise ProviderSandboxCommandError(4)
+
+        async def exec_command(command: str) -> ExecResult:
+            if command.startswith(read_prefix):
+                raise SandboxNotFoundError("sandbox-123")
+            return ExecResult(exit_code=0)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "test-sandbox"
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = exec_command
+        monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", _ignore_tag)
+
+        with pytest.raises(AgentRunFailedError) as exc_info:
+            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+
+        assert str(exc_info.value) == "Sandbox error: Agent command failed with exit code 4"
+
+    async def test_hanging_post_exit_read_times_out_and_keeps_exit_code_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def stream_command(_command: str) -> AsyncIterator[str]:
+            yield ""
+            raise ProviderSandboxCommandError(5)
+
+        async def exec_command(command: str) -> ExecResult:
+            if command.startswith("head -c "):
+                await asyncio.Event().wait()
+            return ExecResult(exit_code=0)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "test-sandbox"
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = exec_command
+        monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", _ignore_tag)
+        monkeypatch.setattr("tracker.sandbox._POST_EXIT_READ_TIMEOUT_SECONDS", 0.01)
+
+        with pytest.raises(AgentRunFailedError) as exc_info:
+            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+
+        assert str(exc_info.value) == "Sandbox error: Agent command failed with exit code 5"
+
     async def test_install_failure_names_the_install_phase(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def stream_command(_command: str) -> AsyncIterator[str]:
             yield ""
