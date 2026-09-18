@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from botocore.exceptions import ClientError
 from sqlmodel import Session
 
 from tracker.aws.runtime import AWSResources
@@ -15,6 +16,24 @@ from tracker.run_transfer.contracts import TransferRequest, TransferRun
 from tracker.run_transfer.rows import RowClosure
 from tracker.runtime.log_history import ArchiveReport, LogHistoryReference
 from tracker.runtime.log_history_reference import ArchiveObject
+
+
+class SecretMetadataSession:
+    def __init__(self, metadata: dict[str, dict[str, Any]]) -> None:
+        self.metadata = metadata
+        self.requested: list[str] = []
+
+    def client(self, service: str, *, region_name: str) -> "SecretMetadataSession":
+        assert service == "secretsmanager"
+        assert region_name == "us-west-2"
+        return self
+
+    def describe_secret(self, *, SecretId: str) -> dict[str, Any]:
+        self.requested.append(SecretId)
+        if SecretId not in self.metadata:
+            raise ClientError({"Error": {"Code": "ResourceNotFoundException"}}, "DescribeSecret")
+
+        return self.metadata[SecretId]
 
 
 def transfer_request(source: Session, destination: Session, org: Org, run: Benchmark) -> dict[str, Any]:

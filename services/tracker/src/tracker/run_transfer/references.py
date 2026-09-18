@@ -77,7 +77,16 @@ def verify_portable_references(rows: RowClosure, session: Any, account: str, reg
         if isinstance(value, dict):
             for name, child in cast(dict[str, Any], value).items():
                 child_pointer = pointer + "/" + name.replace("~", "~0").replace("/", "~1")
-                if "secret" in name.lower():
+                if child_pointer == "/arguments/contract/secrets":
+                    if not isinstance(child, dict):
+                        raise LifecycleConflict("Unknown contract secret map format")
+
+                    for environment_name, locator in cast(dict[str, Any], child).items():
+                        if not isinstance(locator, str):
+                            raise LifecycleConflict("Unknown contract secret locator format")
+
+                        secret(locator, child_pointer + "/" + environment_name.replace("~", "~0").replace("/", "~1"))
+                elif "secret" in name.lower():
                     if isinstance(child, list):
                         for index, item in enumerate(cast(list[Any], child)):
                             secret(item, child_pointer + "/" + str(index))
@@ -115,7 +124,11 @@ def inventory_references(rows: RowClosure) -> tuple[StoredReference, ...]:
             def visit(value: Any, pointer: str, key: str) -> None:
                 if isinstance(value, dict):
                     for name, child in cast(dict[str, Any], value).items():
-                        visit(child, pointer + "/" + name.replace("~", "~0").replace("/", "~1"), name)
+                        visit(
+                            child,
+                            pointer + "/" + name.replace("~", "~0").replace("/", "~1"),
+                            "secrets" if table == "benchmark" and pointer == "/arguments/contract/secrets" else name,
+                        )
                 elif isinstance(value, list):
                     for index, child in enumerate(cast(list[Any], value)):
                         visit(child, pointer + "/" + str(index), key)

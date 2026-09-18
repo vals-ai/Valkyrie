@@ -16,8 +16,9 @@ from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine
 
 from tests.factories import make_benchmark
-from tests.transfer_support import FakeTransferBoundary, transfer_request
+from tests.transfer_support import FakeTransferBoundary, SecretMetadataSession, transfer_request
 from tracker.database.models import (
+    AgentContractRequest,
     Benchmark,
     BenchmarkStatus,
     ErrorResult,
@@ -37,6 +38,7 @@ from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, re
 from tracker.lifecycle_completion import RelocationCheckpoint, capture_predecessor
 from tracker.run_transfer import TransferOperator
 from tracker.run_transfer.contracts import TransferCheckpoint, TransferRequest, TransferRun
+from tracker.run_transfer.providers import TransferAWSBoundary
 from tracker.run_transfer.rows import RowClosure, digest
 
 
@@ -574,13 +576,27 @@ def test_declared_source_archive_is_refused_before_any_hold(pair: tuple[Session,
 def test_portable_destination_releases_only_after_separate_cleanup(
     pair: tuple[Session, Session], tmp_path: Path
 ) -> None:
+    metadata = SecretMetadataSession(
+        {
+            name: {
+                "ARN": f"arn:aws:secretsmanager:us-west-2:222222222222:secret:{name}-ABC123",
+                "VersionIdsToStages": {"version-one": ["AWSCURRENT"]},
+            }
+            for name in ("source-provider", "agent-reference")
+        }
+    )
+    real_boundary = TransferAWSBoundary(None, None, tmp_path, source_session=object(), destination_session=metadata)
 
     class AvailableBoundary(FakeTransferBoundary):
         async def portable(self, request: TransferRequest, run: TransferRun, rows: RowClosure) -> None:
-            assert rows.rows["benchmark"][0]["arguments"]["properties"]["region"] == "us-west-2"
+            await real_boundary.portable(request, run, rows)
 
     source, destination = pair
     org, run, _task = seed_rows(source, destination)
+    contract = AgentContractRequest(name="test", secrets={"API_KEY": "agent-reference"})
+    run.arguments = run.arguments.model_copy(update={"contract": contract})
+    source.add(run)
+    source.commit()
     request = transfer_request(source, destination, org, run)
     request["plan"]["runs"][0]["execution_policy"] = "portable"
     operator = TransferOperator(source, destination, AvailableBoundary(tmp_path))
@@ -593,6 +609,9 @@ def test_portable_destination_releases_only_after_separate_cleanup(
     request["plan"]["runs"][0]["source_rows_sha256"] = observed.runs[0].source_rows_sha256
     execute("prepare")
     imported = execute("import")
+    assert destination.get_one(Benchmark, run.id).arguments.contract == contract
+    assert source.get_one(Benchmark, run.id).arguments.contract == contract
+    assert metadata.requested == ["source-provider", "agent-reference"]
     plan = TransferRequest.model_validate(request).plan
     request["parent_completion"] = {
         "operation_id": str(plan.source_identity.operation_id),
@@ -615,6 +634,7 @@ def test_portable_destination_releases_only_after_separate_cleanup(
     execute("finalize")
     assert destination.get_one(RunLifecycle, run.id).released_at == released
     assert source.get_one(RunLifecycle, run.id).phase == "transferred_source_retired"
+    assert destination.get_one(Benchmark, run.id).arguments.contract == contract
 
 
 @pytest.mark.parametrize("status", [ExecutorDispatchStatus.QUEUED, ExecutorDispatchStatus.FAILED])
