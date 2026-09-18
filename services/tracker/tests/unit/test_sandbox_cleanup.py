@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from collections.abc import AsyncGenerator, Mapping
 from datetime import UTC, datetime, timedelta
@@ -290,7 +291,8 @@ def test_lambda_handler_preserves_shutdown_margin_around_config_loading(monkeypa
     async def fake_fetch_config(*_args: object, **_kwargs: object) -> SandboxProviderConfig:
         nonlocal load_calls
         load_calls += 1
-        return cast(SandboxProviderConfig, object())
+        await asyncio.Event().wait()
+        raise AssertionError("Secret retrieval should time out")
 
     monkeypatch.setattr(cleanup_module, "fetch_sandbox_provider_config", fake_fetch_config)
 
@@ -298,6 +300,6 @@ def test_lambda_handler_preserves_shutdown_margin_around_config_loading(monkeypa
         cleanup_module.lambda_handler({}, FakeLambdaContext(60_000))
     assert load_calls == 0
 
-    with pytest.raises(RuntimeError, match="Insufficient Lambda time"):
-        cleanup_module.lambda_handler({}, FakeLambdaContext(840_000, 60_000))
+    with pytest.raises(TimeoutError):
+        cleanup_module.lambda_handler({}, FakeLambdaContext(60_001))
     assert load_calls == 1
