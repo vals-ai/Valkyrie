@@ -4,6 +4,7 @@ Run: uv run pytest tests/unit/test_main.py
 """
 
 import io
+import json
 import logging
 import re
 import tarfile
@@ -36,6 +37,7 @@ from main import app, tracker_service_error_handler
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.aws.clients import DefaultChainAWSClientProvider
+from tracker.aws.managed_storage import ManagedStorageError
 from tracker.aws.resolver import AWSRuntimeResolution
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.s3 import S3ObjectCopier
@@ -117,6 +119,195 @@ class TestTrackerAPI:
 
     async def _mock_verify_task_ids_error(self, *_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
         raise Exception("Error verifying task ids")
+
+    async def test_managed_storage_start_persists_and_returns_selected_bucket(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: Any,
+    ) -> None:
+        owner_bucket = "vs-dev-acme-123"
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_REGION", "us-east-1")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "shared-library")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30")
+        monkeypatch.setattr("tracker.config.AWS_MANAGED_SUBMISSIONS_ENABLED", True)
+        monkeypatch.setattr("tracker.config.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED", True)
+        monkeypatch.setattr(
+            "tracker.config.AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS",
+            json.dumps({str(TEST_ORG_ID): ["dev"]}),
+        )
+        validate_bucket = AsyncMock()
+        monkeypatch.setattr(main_module, "validate_managed_storage_bucket", validate_bucket, raising=False)
+        validate_versioning = AsyncMock()
+        monkeypatch.setattr(
+            main_module,
+            "validate_managed_storage_bucket_versioning",
+            validate_versioning,
+            raising=False,
+        )
+        monkeypatch.setattr(main_module.S3ObjectStore, "exists", AsyncMock(return_value=True))
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            managed_s3_bucket=owner_bucket,
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="provider-secret",
+        )
+
+        response = client.post("/start-benchmark-with-storage", json=request.model_dump(mode="json"))
+
+        assert response.status_code == 200, response.text
+        response_body = response.json()
+        assert response_body["storage_bucket"] == owner_bucket
+        benchmark = database_session.get(Benchmark, UUID(response_body["benchmark_id"]))
+        assert benchmark is not None
+        assert benchmark.arguments.properties is not None
+        assert benchmark.arguments.properties.s3_bucket == owner_bucket
+        validate_bucket.assert_awaited_once()
+        validate_versioning.assert_awaited_once()
+        queued_request = mock_kicker.queued_calls[0]["execution_context_json"]["start_benchmark_request"]
+        assert "managed_s3_bucket" not in queued_request
+
+    async def test_managed_storage_start_rejects_unversioned_bucket_before_copy_or_commit(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: Any,
+    ) -> None:
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_REGION", "us-east-1")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "shared-library")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30")
+        monkeypatch.setattr("tracker.config.AWS_MANAGED_SUBMISSIONS_ENABLED", True)
+        monkeypatch.setattr("tracker.config.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED", True)
+        monkeypatch.setattr(
+            "tracker.config.AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS",
+            json.dumps({str(TEST_ORG_ID): ["dev"]}),
+        )
+        monkeypatch.setattr(main_module, "validate_managed_storage_bucket", AsyncMock())
+        monkeypatch.setattr(
+            main_module,
+            "validate_managed_storage_bucket_versioning",
+            AsyncMock(
+                side_effect=ManagedStorageError(
+                    "Managed storage bucket is not authorized",
+                    status_code=403,
+                )
+            ),
+        )
+        copy_agent = AsyncMock()
+        monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            managed_s3_bucket="vs-dev-acme-123",
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="provider-secret",
+        )
+
+        response = client.post("/start-benchmark-with-storage", json=request.model_dump(mode="json"))
+
+        assert response.status_code == 403
+        copy_agent.assert_not_awaited()
+        assert database_session.exec(select(Benchmark)).all() == []
+        assert database_session.exec(select(Task)).all() == []
+        assert database_session.exec(select(ExecutorDispatch)).all() == []
+        assert mock_kicker.queued_calls == []
+
+    @pytest.mark.parametrize(
+        "conflict",
+        ["header", "partial_header", "body", "properties"],
+    )
+    async def test_managed_storage_start_rejects_other_aws_configuration_without_side_effects(
+        self,
+        conflict: str,
+        contract: AgentContractRequest,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        harness_headers: dict[str, str],
+        monkeypatch: MonkeyPatch,
+        mock_kicker: Any,
+    ) -> None:
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_REGION", "us-east-1")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "shared-library")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30")
+        monkeypatch.setattr("tracker.config.AWS_MANAGED_SUBMISSIONS_ENABLED", True)
+        monkeypatch.setattr("tracker.config.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED", True)
+        copy_agent = AsyncMock()
+        monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            managed_s3_bucket="vs-dev-acme-123",
+            harness_config=harness_config if conflict == "body" else None,
+            properties=(
+                AWSResources(
+                    region="us-east-1",
+                    s3_bucket="shared-library",
+                    log_group="deployment-log-group",
+                    log_retention_days=30,
+                )
+                if conflict == "properties"
+                else None
+            ),
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="provider-secret",
+        )
+        headers: dict[str, str] = {}
+        if conflict == "header":
+            headers = harness_headers
+        elif conflict == "partial_header":
+            headers = {"x-harness-aws-access-key-id": "partial"}
+
+        response = client.post(
+            "/start-benchmark-with-storage",
+            headers=headers,
+            json=request.model_dump(mode="json"),
+        )
+
+        assert response.status_code == 400
+        copy_agent.assert_not_awaited()
+        assert database_session.exec(select(Benchmark)).all() == []
+        assert database_session.exec(select(Task)).all() == []
+        assert database_session.exec(select(ExecutorDispatch)).all() == []
+        assert mock_kicker.queued_calls == []
+
+    async def test_ordinary_start_rejects_managed_storage_override(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: Any,
+    ) -> None:
+        copy_agent = AsyncMock()
+        monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            managed_s3_bucket="vs-dev-acme-123",
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="provider-secret",
+        )
+
+        response = client.post("/start-benchmark", json=request.model_dump(mode="json"))
+
+        assert response.status_code == 400
+        copy_agent.assert_not_awaited()
+        assert database_session.exec(select(Benchmark)).all() == []
+        assert database_session.exec(select(Task)).all() == []
+        assert database_session.exec(select(ExecutorDispatch)).all() == []
+        assert mock_kicker.queued_calls == []
 
     def test_health_check(self, monkeypatch: MonkeyPatch) -> None:
         """Test health check of the fastapi server.
@@ -915,7 +1106,7 @@ class TestTrackerAPI:
             assert process_payload.arguments == {
                 "start_benchmark_request_json": request.model_copy(
                     update={"properties": benchmark.arguments.properties}
-                ).model_dump(),
+                ).model_dump(exclude={"managed_s3_bucket"}),
                 "benchmark_id_str": str(benchmark.id),
                 "verified_task_ids": ["task_0"],
                 "telemetry_context_json": child_telemetry_context,
@@ -2620,6 +2811,105 @@ class TestTrackerAPI:
         response = client.get(f"/fetch-benchmark-metadata/{bench.id}")
         assert response.status_code == 200
         assert response.json()["started_by_email"] == "alice@vals.ai"
+
+    async def test_fetch_and_metadata_use_saved_storage_after_deployment_default_changes(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        owner_bucket = "vs-dev-acme-123"
+        saved_resources = AWSResources(
+            region="us-east-1",
+            s3_bucket=owner_bucket,
+            log_group="saved-log-group",
+            log_retention_days=30,
+        )
+        benchmark = Benchmark(
+            org_id=TEST_ORG_ID,
+            name="swebench",
+            aws_managed=True,
+            arguments=BenchmarkArguments(
+                contract=contract,
+                concurrency=1,
+                properties=saved_resources,
+                sandbox_provider_secret_name="provider-secret",
+            ),
+        )
+        database_session.add(benchmark)
+        database_session.commit()
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_REGION", "us-east-1")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "new-shared-default")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "new-log-group")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "7")
+        validate_bucket = AsyncMock()
+        monkeypatch.setattr(
+            "tracker.aws.resolver.validate_managed_storage_bucket",
+            validate_bucket,
+            raising=False,
+        )
+
+        fetch_response = client.get("/fetch-benchmark", params={"benchmark_id": str(benchmark.id)})
+        metadata_response = client.get(f"/fetch-benchmark-metadata/{benchmark.id}")
+
+        assert fetch_response.status_code == 200, fetch_response.text
+        assert fetch_response.json()["storage_bucket"] == owner_bucket
+        assert owner_bucket in fetch_response.json()["s3_bucket_url"]
+        assert metadata_response.status_code == 200, metadata_response.text
+        assert metadata_response.json()["storage_bucket"] == owner_bucket
+        assert validate_bucket.await_count == 2
+
+    async def test_legacy_managed_metadata_uses_current_deployment_bucket(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        benchmark = Benchmark(
+            org_id=TEST_ORG_ID,
+            name="swebench",
+            aws_managed=True,
+            arguments=BenchmarkArguments(
+                contract=contract,
+                concurrency=1,
+                properties=None,
+                sandbox_provider_secret_name="provider-secret",
+            ),
+        )
+        database_session.add(benchmark)
+        database_session.commit()
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_REGION", "us-east-1")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "legacy-shared")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "logs")
+        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30")
+
+        response = client.get(f"/fetch-benchmark-metadata/{benchmark.id}")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["storage_bucket"] == "legacy-shared"
+
+    async def test_legacy_access_key_metadata_without_credentials_has_no_storage_bucket(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+    ) -> None:
+        benchmark = Benchmark(
+            org_id=TEST_ORG_ID,
+            name="swebench",
+            aws_managed=False,
+            arguments=BenchmarkArguments(contract=contract, concurrency=1, properties=None),
+        )
+        database_session.add(benchmark)
+        database_session.commit()
+
+        response = client.get(f"/fetch-benchmark-metadata/{benchmark.id}")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["storage_bucket"] is None
 
     async def test_fetch_run_outputs_streams_tar(
         self,

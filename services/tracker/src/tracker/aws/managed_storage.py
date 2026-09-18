@@ -176,3 +176,28 @@ async def validate_managed_storage_bucket(
         or not _name_matches_owner_tag(bucket_name, environment, owner_id)
     ):
         raise ManagedStorageError(_DENIED_MESSAGE, status_code=403)
+
+
+async def validate_managed_storage_bucket_versioning(
+    runtime: AWSRuntime,
+    *,
+    bucket_name: str,
+) -> None:
+    """Require exact-version rollback support before managed owner admission."""
+    if runtime.clients.credential_source != "managed" or runtime.expected_bucket_owner is None:
+        raise ManagedStorageError("Managed storage requires deployment AWS authority", status_code=400)
+
+    request = {
+        "Bucket": bucket_name,
+        "ExpectedBucketOwner": runtime.expected_bucket_owner,
+    }
+    try:
+        async with runtime.clients.s3_client() as client:
+            response = await client.get_bucket_versioning(**request)
+    except ClientError as error:
+        raise _safe_aws_error(error) from error
+    except BotoCoreError as error:
+        raise ManagedStorageError(_UNAVAILABLE_MESSAGE, status_code=503) from error
+
+    if response.get("Status") != "Enabled":
+        raise ManagedStorageError(_DENIED_MESSAGE, status_code=403)

@@ -8,6 +8,11 @@ from fastapi import HTTPException, Request
 
 from tracker import config
 from tracker.aws.clients import DefaultChainAWSClientProvider
+from tracker.aws.managed_storage import (
+    ManagedStorageError,
+    load_managed_storage_policy,
+    validate_managed_storage_bucket,
+)
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.types import AWSCredentials, HarnessConfig
 
@@ -296,6 +301,23 @@ def resolve_run_metadata_aws_runtime(
     if harness_config is None:
         return None
     return AWSRuntime.from_harness_config(harness_config).with_resources(properties)
+
+
+async def validate_saved_managed_storage_runtime(runtime: AWSRuntime, *, org_id: UUID) -> None:
+    """Revalidate persisted owner storage before a managed read uses it."""
+    if not runtime.resources.s3_bucket.startswith(("vs-dev-", "vs-prod-")):
+        return
+
+    try:
+        policy = load_managed_storage_policy()
+        await validate_managed_storage_bucket(
+            runtime,
+            org_id=org_id,
+            bucket_name=runtime.resources.s3_bucket,
+            policy=policy,
+        )
+    except ManagedStorageError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 def resolve_agent_library_aws_runtime(
