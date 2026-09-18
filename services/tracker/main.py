@@ -30,7 +30,7 @@ from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
-from tracker.api.dependencies import RunAWSDependency, RunBenchmarkDependency, RunRuntimeDependency
+from tracker.api.dependencies import get_run_aws_context, RunBenchmarkDependency, RunRuntimeDependency
 from tracker.api.filter_options import router as filter_options_router
 from tracker.api.logs import router as logs_router
 from tracker.api.scheduler_overview import router as scheduler_overview_router
@@ -911,7 +911,8 @@ async def fetch_benchmark(
 @app.post("/analyze-benchmark/{benchmark_id}", response_model=None)
 async def analyze_benchmark(
     benchmark_id: TrackedBenchmarkId,
-    run_context: RunAWSDependency,
+    benchmark_row: RunBenchmarkDependency,
+    http_request: Request,
     body: AnalyzeBenchmarkRequest,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
@@ -924,7 +925,9 @@ async def analyze_benchmark(
     Cache short-circuit: when the benchmark already has docent_reading_status=DONE and
     no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
     """
-    benchmark_row = run_context.benchmark
+    if benchmark_row.arguments.environment == "local":
+        raise HTTPException(status_code=400, detail="This operation requires an AWS run")
+    run_context = get_run_aws_context(benchmark_row, http_request, org)
     aws_runtime = run_context.aws_runtime
 
     if benchmark_row.status != BenchmarkStatus.FINISHED:

@@ -59,8 +59,6 @@ def get_run_aws_context(
     org: Org = Depends(get_current_org),
 ) -> RunAWSContext:
     """Return an organization-scoped run with its persisted AWS authority."""
-    if benchmark.arguments.environment == "local":
-        raise HTTPException(status_code=400, detail="This operation requires an AWS run")
     assert benchmark.arguments.properties is None or not isinstance(benchmark.arguments.properties, LocalResources)
     return RunAWSContext(
         benchmark=benchmark,
@@ -71,9 +69,6 @@ def get_run_aws_context(
             org_id=org.id,
         ).runtime,
     )
-
-
-RunAWSDependency = Annotated[RunAWSContext, Depends(get_run_aws_context)]
 
 
 def get_run_runtime(
