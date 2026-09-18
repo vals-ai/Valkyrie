@@ -19,11 +19,6 @@ _S3_CLIENT_CONFIG = Config(max_pool_connections=200, retries={"mode": "standard"
 _DEFAULT_CHAIN_MAXIMUM_PRESIGN_TTL_SECONDS = 3600
 
 
-def _boto3_client(service_name: str, **kwargs: Any) -> Any:
-    client_factory = cast(Any, boto3.client)  # pyright: ignore[reportUnknownMemberType]
-    return client_factory(service_name, **kwargs)
-
-
 class AWSClientProvider(ABC):
     """Construct AWS service clients for one authentication source."""
 
@@ -50,7 +45,8 @@ class AWSClientProvider(ABC):
 
     @lru_cache(maxsize=32)
     def cloudwatch_logs_client(self) -> Any:
-        return _boto3_client(
+        client_factory = cast(Any, boto3.client)  # pyright: ignore[reportUnknownMemberType]
+        return client_factory(
             "logs",
             config=_HIGH_CONCURRENCY_CLIENT_CONFIG,
             **self._client_kwargs(),
@@ -60,7 +56,7 @@ class AWSClientProvider(ABC):
         return self._s3_session().client("secretsmanager")  # pyright: ignore[reportUnknownMemberType]
 
     def cloudwatch_logs_async_client(self) -> Any:
-        return cast(Any, self._s3_session().client("logs", config=_HIGH_CONCURRENCY_CLIENT_CONFIG))  # pyright: ignore[reportUnknownMemberType]
+        return self._s3_session().client("logs")  # pyright: ignore[reportUnknownMemberType]
 
     def lambda_client(self, config: Config | None = None) -> Any:
         return cast(Any, self._s3_session().client("lambda", config=config))  # pyright: ignore[reportUnknownMemberType]
