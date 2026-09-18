@@ -126,6 +126,7 @@ class RunsResource:
         )
 
         payload = StartBenchmarkRequest(
+            environment=self._sdk.config.execution_environment,
             contract=contract,
             benchmark_name=benchmark,
             concurrency=concurrency,
@@ -143,7 +144,9 @@ class RunsResource:
             ),
             service_headers=effective_service_headers,
             sandbox_provider=provider_name,
-            sandbox_provider_secret_name=(provider_secret_name if access_key_harness_config is None else None),
+            sandbox_provider_secret_name=(
+                provider_secret_name if access_key_harness_config is None and provider_secret_name else None
+            ),
             webhook_secret_name=self._sdk.config.webhook if intervals else None,
             webhook_intervals=intervals,
         )
@@ -154,7 +157,7 @@ class RunsResource:
                 StartBenchmarkResponse,
                 json=payload.model_dump(
                     mode="json",
-                    exclude={"environment"}
+                    exclude=({"environment"} if payload.environment == "aws" else set[str]())
                     | {
                         name
                         for name in ("priority", "properties", "managed_s3_bucket")

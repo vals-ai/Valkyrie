@@ -11,6 +11,8 @@ from tracker.types import StartBenchmarkResponse
 
 from valkyrie.sdk.errors import ValkyrieSDKError
 
+from valkyrie.cli.runtime_config import execution_environment
+
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
@@ -100,8 +102,8 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ {'Started at:':<17} {local_time(start_benchmark_response.started_at)}")
     click.echo(f"│ {'Max concurrency:':<17} {start_benchmark_response.concurrency}")
     click.echo(f"│ {'Total tasks:':<17} {start_benchmark_response.task_count}")
-    click.echo(f"│ {'CloudWatch:':<17} {start_benchmark_response.cloudwatch_url}")
-    click.echo(f"│ {'S3 Bucket:':<17} {start_benchmark_response.s3_bucket_url}")
+    click.echo(f"│ {'Logs:':<17} {start_benchmark_response.cloudwatch_url}")
+    click.echo(f"│ {'Artifacts:':<17} {start_benchmark_response.s3_bucket_url}")
     click.echo("├" + "─" * 79)
     if not connect:
         click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan"))
@@ -363,11 +365,17 @@ def start(
 
         config_kwargs["kwargs"] = {key: value for key, value in kwargs}
         agent_config = AgentConfig(**config_kwargs)
+        local_execution = execution_environment() == "local"
+        managed_execution = not TrackerService.parse_config_keys()
 
         agent_path = Path(agent)
 
         # If the user specified an agent on their machine we upload it first
         if agent_path.is_dir():
+            if local_execution:
+                raise click.UsageError(
+                    "Publish the local agent with `valkyrie agent push` first, then start it by name."
+                )
             contract_file = next(
                 (
                     agent_path / f"contract{ext}"

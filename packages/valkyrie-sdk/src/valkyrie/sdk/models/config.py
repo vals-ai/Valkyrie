@@ -1,6 +1,8 @@
 """Nested configuration models sent to the Valkyrie API."""
 
-from pydantic import BaseModel, Field
+from pathlib import Path
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class AWSCredentials(BaseModel, frozen=True):
@@ -27,3 +29,15 @@ class HarnessConfig(BaseModel):
     log_group: str
     log_retention_policy: int
     sandbox_provider_secret_name: str
+
+
+class LocalResources(BaseModel, frozen=True):
+    data_root: Path
+    secrets_file: Path | None = None
+
+    @field_validator("data_root", "secrets_file")
+    @classmethod
+    def validate_absolute_path(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("Local resource paths must be absolute")
+        return value

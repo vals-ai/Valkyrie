@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, col, desc, select
 
-from tracker.api.dependencies import RunAWSDependency, TrackedBenchmarkId, load_task_for_benchmark_or_404
+from tracker.api.dependencies import (
+    RunBenchmarkDependency,
+    RunRuntimeDependency,
+    TrackedBenchmarkId,
+    load_task_for_benchmark_or_404,
+)
 from tracker.auth import get_current_org
-from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.runtime.logs import task_log_stream_name
-from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, create_presigned_url, s3_object_exists
+from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
+from tracker.aws.services import CloudRuntimeServices
 from tracker.database.models import (
     Benchmark,
     ErrorResult,
@@ -105,36 +111,33 @@ def get_single_task(
 async def get_task_artifacts(
     benchmark_id: TrackedBenchmarkId,
     task_id: str,
-    run_context: RunAWSDependency,
+    benchmark: RunBenchmarkDependency,
+    runtime: RunRuntimeDependency,
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> TaskArtifactsResponse:
-    """CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page."""
-    task = load_task_for_benchmark_or_404(run_context.benchmark, task_id, org, session)
-    aws_runtime = run_context.aws_runtime
-
-    cloudwatch_url: str | None = None
-    if aws_runtime.resources.log_group and aws_runtime.resources.region:
-        log_locations = CloudWatchBenchmarkLogLocations(aws_runtime.resources)
-        if any(character in task.task_id for character in ":*%"):
-            # Renamed streams may use either encoding; link to the run without guessing.
-            cloudwatch_url = log_locations.benchmark_location(str(benchmark_id))
-        else:
-            cloudwatch_url = log_locations.task_location(
-                str(benchmark_id),
-                task_log_stream_name(task.task_id, task.started_at),
-            )
+    """Return log and agent output locations for the task detail page."""
+    task = load_task_for_benchmark_or_404(benchmark, task_id, org, session)
+    cloudwatch_url: str | None
+    if isinstance(runtime, CloudRuntimeServices) and not runtime.aws_runtime.resources.log_group:
+        cloudwatch_url = None
+    elif any(character in task.task_id for character in ":*%"):
+        # Renamed streams may use either encoding; link to the run without guessing.
+        cloudwatch_url = runtime.log_locations.benchmark_location(str(benchmark_id))
+    else:
+        cloudwatch_url = runtime.log_locations.task_location(
+            str(benchmark_id), task_log_stream_name(task.task_id, task.started_at)
+        )
 
     agent_output_url: str | None = None
     ttl_seconds: int | None = None
     key = f"{_task_prefix(benchmark_id, task_id)}agent_output.tar.gz"
-    if await s3_object_exists(key, aws_runtime):
-        ttl_seconds = aws_runtime.clients.maximum_presign_ttl(300)
-        agent_output_url = await create_presigned_url(
-            s3_key=key,
-            runtime=aws_runtime,
-            expiration=ttl_seconds,
-        )
+    if await runtime.objects.exists(key):
+        ttl_seconds = runtime.objects.maximum_download_ttl(300)
+        agent_output_url = await runtime.objects.temporary_download_url(key, expires_in=ttl_seconds)
+        if agent_output_url is None:
+            agent_output_url = Path(runtime.artifacts.object_location(key)).as_uri()
+            ttl_seconds = 0
 
     return TaskArtifactsResponse(
         cloudwatch_url=cloudwatch_url,

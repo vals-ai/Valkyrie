@@ -885,3 +885,24 @@ async def test_start_validates_inputs_before_request(make_client, sdk_config) ->
         assert isinstance(exc_info.value, ValkyrieRunError)
 
     assert request_count == 0
+
+
+async def test_local_start_sends_configuration_without_credentials(tmp_path: Path) -> None:
+    config = ValkyrieConfig(
+        execution_environment="local", local_data_root=tmp_path, local_secrets_file=tmp_path / "source.env"
+    )
+    requests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=load_sdk_fixture("start.json")["response"])
+
+    async with ValkyrieClient(config, transport=httpx.MockTransport(handler)) as client:
+        await client.runs.start("agent", "test")
+    assert len(requests) == 1
+    assert "execution_secrets" not in requests[0]
+    assert "properties" not in requests[0]
+    assert requests[0]["environment"] == "local"
+    assert requests[0]["harness_config"] is None
+    assert requests[0]["sandbox_provider"] == "docker"
+    assert not config.request_headers()
