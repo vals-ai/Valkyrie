@@ -5,15 +5,15 @@ Revises: 6a7b8c9d0e1f
 Create Date: 2026-09-17 00:00:00.000000
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "b4c5d6e7f8a9"
-down_revision: Union[str, Sequence[str], None] = "6a7b8c9d0e1f"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "6a7b8c9d0e1f"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 _ENUM_NAME = "failurecategory"
 _ENUM_VALUES = ("INFRASTRUCTURE", "BENCHMARK_SERVICE", "AGENT", "CANCELLED", "UNKNOWN")
