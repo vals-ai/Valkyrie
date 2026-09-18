@@ -58,9 +58,9 @@ The initializer verifies and activates the supplied build for future runs. Repea
 ## Test local runtime adapters
 
 The local adapters compose filesystem artifacts, per-run JSONL logs, transient secrets,
-and the CBS Docker provider. They use separate service-visible and host-visible data
-roots. Artifacts are scoped to the organization. Closing the runtime discards its
-execution secrets while preserving artifacts and logs.
+and the CBS Docker provider. Containerized services mount the data directory at the
+same absolute path as the host. Artifacts are scoped to the organization. Closing the
+runtime discards its execution secrets while preserving artifacts and logs.
 
 Run the Docker integration check from `services/tracker`:
 
