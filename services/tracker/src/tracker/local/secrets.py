@@ -22,6 +22,3 @@ class InMemorySecretStore:
             return self._values[name]
         except KeyError:
             raise SecretsError(f"Local execution has no values for secret reference '{name}'") from None
-
-    def close(self) -> None:
-        self._values.clear()
