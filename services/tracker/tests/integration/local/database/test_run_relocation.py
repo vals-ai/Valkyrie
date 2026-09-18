@@ -661,3 +661,55 @@ def test_legacy_shared_source_moves_through_real_provider_checks_without_touchin
     assert store.unrelated == unrelated
     assert store.versions[source] == [(source_version, content)]
     assert relocation_session.get_one(RunLifecycle, run.id).released_at is None
+
+
+@pytest.mark.parametrize("action", ["inventory", "prepare", "inspect", "relocate", "release"])
+@pytest.mark.parametrize("invalid_time", ["expired", "future", "cutoff", "non_utc"])
+def test_invalid_host_observation_is_rejected_before_run_or_hold_lookup(
+    relocation_session: Session, action: str, invalid_time: str
+) -> None:
+    run, _, request = seed(relocation_session)
+    now = datetime.now(UTC)
+    if invalid_time == "expired":
+        request["host_contract"]["observed_at"] = (now - timedelta(minutes=16)).isoformat()
+    elif invalid_time == "future":
+        request["host_contract"]["observed_at"] = (now + timedelta(seconds=1)).isoformat()
+    elif invalid_time == "cutoff":
+        request["host_contract"]["acknowledgement_required_since"] = (now + timedelta(seconds=1)).isoformat()
+    else:
+        request["host_contract"]["observed_at"] = now.astimezone(timezone(timedelta(hours=1))).isoformat()
+
+    relocation_session.delete(run)
+    relocation_session.commit()
+    with pytest.raises(LifecycleConflict, match="Host contract observation"):
+        execute(relocation_session, request, action)
+    assert relocation_session.get(RunLifecycle, run.id) is None
+
+
+def test_stale_prepare_does_not_create_a_hold(relocation_session: Session) -> None:
+    run, _, request = seed(relocation_session)
+    request["host_contract"]["observed_at"] = (datetime.now(UTC) - timedelta(minutes=16)).isoformat()
+    with pytest.raises(LifecycleConflict):
+        execute(relocation_session, request, "prepare")
+    relocation_session.rollback()
+    assert relocation_session.get(RunLifecycle, run.id) is None
+
+
+@pytest.mark.parametrize("age_minutes", [0, 15])
+def test_prepare_accepts_inclusive_host_freshness_boundary_without_dispatches(
+    relocation_session: Session, monkeypatch: pytest.MonkeyPatch, age_minutes: int
+) -> None:
+    run, _, request = seed(relocation_session)
+    now = datetime.now(UTC)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return now
+
+    monkeypatch.setattr("tracker.lifecycle_evidence.datetime", FixedDateTime)
+    request["host_contract"]["observed_at"] = (now - timedelta(minutes=age_minutes)).isoformat()
+    response = execute(relocation_session, request, "prepare")
+    assert response.runs[0].dispatches == ()
+    record = relocation_session.get(RunLifecycle, run.id)
+    assert record is not None and record.phase == "prepared" and record.released_at is None

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -204,17 +204,6 @@ class HostContractObservation(ContractModel):
         if not value or value != tuple(sorted(set(value))):
             raise ValueError("host inventory must be complete, sorted and unique")
         return value
-
-    def require_current(self) -> None:
-        now = datetime.now(UTC)
-        if (
-            self.observed_at.utcoffset() != timedelta(0)
-            or self.acknowledgement_required_since.utcoffset() != timedelta(0)
-            or self.observed_at > now
-            or now - self.observed_at > timedelta(minutes=15)
-            or self.acknowledgement_required_since > self.observed_at
-        ):
-            raise ValueError("host observation is stale, future, non-UTC, or has a later cutoff")
 
 
 class ExternalHostDrain(ContractModel):
