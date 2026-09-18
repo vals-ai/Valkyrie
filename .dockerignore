@@ -30,7 +30,3 @@ services/tracker/src/tracker/runtime/*
 !services/tracker/src/tracker/runtime/__init__.py
 !services/tracker/src/tracker/runtime/executor_artifacts.py
 !services/tracker/src/tracker/runtime/lifecycle.py
-
-!services/executor_host/local/
-!services/executor_host/local/**
-!services/tracker/src/tracker/local/secret_pipe.py

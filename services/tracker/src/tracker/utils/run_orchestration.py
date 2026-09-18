@@ -17,7 +17,6 @@ from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
 from tracker.executor.dependencies import get_execution_runtime
-from tracker.local.runtime import LocalRuntimeConfig, LocalRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
@@ -630,7 +629,6 @@ async def process_benchmark(
     execution_context_json: dict[str, Any] | None = None,
     *,
     executor_dispatch_id: str,
-    execution_secrets: dict[str, str] | None = None,
 ) -> None:
     async with AsyncExitStack() as runtime_stack:
         await _process_benchmark(
@@ -640,7 +638,6 @@ async def process_benchmark(
             execution_context_json,
             executor_dispatch_id=executor_dispatch_id,
             runtime_stack=runtime_stack,
-            execution_secrets=execution_secrets,
         )
 
 
@@ -652,7 +649,6 @@ async def _process_benchmark(
     *,
     executor_dispatch_id: str,
     runtime_stack: AsyncExitStack,
-    execution_secrets: dict[str, str] | None = None,
 ) -> None:
     benchmark_id = _queued_benchmark_id(
         benchmark_id_str,
@@ -733,18 +729,7 @@ async def _process_benchmark(
                 auth_required=AUTH_REQUIRED,
             )
 
-        if execution_secrets is not None:
-            runtime = await runtime_stack.enter_async_context(
-                LocalRuntimeFactory.open(
-                    LocalRuntimeConfig.from_env(),
-                    org.id,
-                    secret_references=start_benchmark_request.contract.secrets,
-                    execution_secrets=execution_secrets,
-                )
-            )
-            await asyncio.to_thread(runtime.prepare_execution, start_benchmark_request, benchmark_row.id)
-        else:
-            runtime = await get_execution_runtime(start_benchmark_request, benchmark_row, org)
+        runtime = await get_execution_runtime(start_benchmark_request, benchmark_row, org)
         benchmark_service = await runtime_stack.enter_async_context(start_benchmark_request.benchmark_service)
         sandbox_provider_config = await runtime.get_sandbox_provider_config()
 

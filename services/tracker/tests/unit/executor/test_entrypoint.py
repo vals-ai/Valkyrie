@@ -139,7 +139,6 @@ def test_main_forwards_executor_payload(
         verified_task_ids=payload["verified_task_ids"],
         execution_context_json=None,
         executor_dispatch_id=payload["executor_dispatch_id"],
-        execution_secrets=None,
     )
 
 
@@ -169,7 +168,6 @@ def test_main_forwards_managed_execution_payload(
         verified_task_ids=None,
         execution_context_json=payload["execution_context_json"],
         executor_dispatch_id=payload["executor_dispatch_id"],
-        execution_secrets=None,
     )
 
 
