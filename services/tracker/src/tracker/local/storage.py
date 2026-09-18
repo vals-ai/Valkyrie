@@ -10,7 +10,7 @@ from typing import BinaryIO, ParamSpec, TypeVar
 
 from tracker.exceptions import ExecutionAuthorityRevoked
 from tracker.runtime.lifecycle import finish_cleanup
-from tracker.runtime.storage import ObjectReadSession, StoredObject, StoredObjectCopy
+from tracker.runtime.storage import StoredObject, StoredObjectCopy
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -42,10 +42,6 @@ class FilesystemObjectStore:
         if not root.is_absolute():
             raise ValueError("Local artifact root must be absolute")
         self.root = root.resolve()
-
-    @asynccontextmanager
-    async def read_session(self) -> AsyncGenerator[ObjectReadSession]:
-        yield self
 
     @asynccontextmanager
     async def _staging_file(self) -> AsyncGenerator[tuple[BinaryIO, Path]]:
