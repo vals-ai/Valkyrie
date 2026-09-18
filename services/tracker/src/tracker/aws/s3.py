@@ -36,10 +36,13 @@ class S3ObjectCopy:
 
 def s3_owner_arguments(runtime: AWSRuntime) -> dict[str, str]:
     """Add an account guard only for deployment-managed S3 calls."""
-    if runtime.clients.credential_source == "managed" and runtime.expected_bucket_owner is not None:
-        return {"ExpectedBucketOwner": runtime.expected_bucket_owner}
+    if runtime.clients.credential_source != "managed":
+        return {}
 
-    return {}
+    if runtime.expected_bucket_owner is None:
+        raise ValueError("Managed AWS runtime is missing the expected bucket owner")
+
+    return {"ExpectedBucketOwner": runtime.expected_bucket_owner}
 
 
 def get_contract_s3_key(contract_name: str) -> str:

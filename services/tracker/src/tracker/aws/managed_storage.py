@@ -85,13 +85,18 @@ def _validate_name_before_aws(bucket_name: str) -> str:
     _, environment, remainder = bucket_name.split("-", 2)
     components = remainder.split("-")
     final_component = components[-1]
-    has_owner_id = _OWNER_ID_PATTERN.fullmatch(final_component) is not None
-    has_owner_id_and_suffix = (
+    candidate_logins: list[str] = []
+    if _OWNER_ID_PATTERN.fullmatch(final_component) is not None:
+        candidate_logins.append("-".join(components[:-1]))
+
+    if (
         len(components) >= 3
         and _COLLISION_SUFFIX_PATTERN.fullmatch(final_component) is not None
         and _OWNER_ID_PATTERN.fullmatch(components[-2]) is not None
-    )
-    if len(components) < 2 or not (has_owner_id or has_owner_id_and_suffix):
+    ):
+        candidate_logins.append("-".join(components[:-2]))
+
+    if not any(_LOGIN_PATTERN.fullmatch(login) is not None for login in candidate_logins):
         raise ManagedStorageError(_INVALID_NAME_MESSAGE, status_code=400)
 
     return environment
@@ -111,7 +116,7 @@ def _name_matches_owner_tag(bucket_name: str, environment: str, owner_id: str) -
             return False
         login = candidate[: -len(owner_marker)]
 
-    return len(login) <= 39 and "--" not in login and _LOGIN_PATTERN.fullmatch(login) is not None
+    return _LOGIN_PATTERN.fullmatch(login) is not None
 
 
 def _safe_aws_error(error: ClientError) -> ManagedStorageError:
