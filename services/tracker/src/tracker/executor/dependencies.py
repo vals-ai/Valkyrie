@@ -30,7 +30,7 @@ async def get_execution_runtime(
             raise SecretsError("Saved local run has no filesystem resource configuration")
         values = await to_thread(load_execution_secrets, properties.secrets_file, request.contract.secrets)
         try:
-            runtime = await runtime_stack.enter_async_context(
+            runtime = runtime_stack.enter_context(
                 LocalRuntimeFactory.open(
                     properties.data_root, org.id, secret_references=request.contract.secrets, execution_secrets=values
                 )

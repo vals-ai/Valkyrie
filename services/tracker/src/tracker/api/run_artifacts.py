@@ -123,5 +123,4 @@ async def get_run_artifact_url(
                     path=path, download="true"
                 )
             )
-            ttl = 0
     return RunArtifactDownloadResponse(path=path, download_url=url, expires_in=ttl, size=metadata.size)
