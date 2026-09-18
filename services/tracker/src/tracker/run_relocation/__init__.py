@@ -18,7 +18,13 @@ from tracker.lifecycle_completion import (
     acquire_successor_hold,
     capture_predecessor,
 )
-from tracker.lifecycle_evidence import ExternalHostDrain, HostContractObservation, classify_dispatch, verify_drain
+from tracker.lifecycle_evidence import (
+    ExternalHostDrain,
+    HostContractObservation,
+    classify_dispatch,
+    validate_host_contract_observation,
+    verify_drain,
+)
 from tracker.run_purge.contracts import ProviderLocator, PurgeRun
 from tracker.run_purge.locking import database_target, exclusive_operation
 from tracker.storage_migration_exchange import (
@@ -139,16 +145,18 @@ class RelocationOperator:
             or task.eval_resume_state is not None
         )
 
+    def _host_contract(self, request: TrackerRequest) -> HostContractObservation:
+        if request.host_contract is None:
+            raise LifecycleConflict("Current named host contract observation is required")
+
+        host = HostContractObservation.model_validate(request.host_contract.model_dump(mode="json"))
+        validate_host_contract_observation(host)
+        return host
+
     def _drain(
         self, request: TrackerRequest, identity: OperationIdentity, run: RelocationRun, record: RunLifecycle
     ) -> tuple[DispatchObservation, ...]:
-        if request.host_contract is None:
-            raise LifecycleConflict("Current named host contract observation is required")
-        try:
-            request.host_contract.require_current()
-        except ValueError as error:
-            raise LifecycleConflict("Current named host contract observation is required") from error
-        host = HostContractObservation.model_validate(request.host_contract.model_dump(mode="json"))
+        host = self._host_contract(request)
         dispatches = self._dispatches(run.scope.run_id)
         if any(dispatch.status.value in {"QUEUED", "RUNNING"} for dispatch in dispatches):
             raise LifecycleConflict("Active dispatch requires terminal cleanup before relocation")
@@ -267,6 +275,9 @@ class RelocationOperator:
         self.session.flush()
 
     async def execute(self, request: TrackerRequest) -> TrackerResponse:
+        if request.action != "inventory" or request.host_contract is not None:
+            self._host_contract(request)
+
         if request.source_aws_account_id != request.destination_aws_account_id:
             raise LifecycleConflict("Cross-account relocation requires the paired transfer operator")
         if (
@@ -347,6 +358,7 @@ class RelocationOperator:
         self, request: TrackerRequest, identity: OperationIdentity, run: RelocationRun
     ) -> RunObservation:
         assert request.plan is not None
+        self._host_contract(request)
         benchmark, arguments = self._run(request, run.scope.run_id)
         provider_run = self._provider_run(arguments, run.scope.run_id).model_copy(
             update={"scope": RunScope.model_validate(run.scope.model_dump(mode="json"))}
