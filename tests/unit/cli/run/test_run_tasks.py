@@ -1,6 +1,6 @@
 """Tests for the run tasks command.
 
-Run: uv run pytest tests/unit/cli/run/test_tasks.py
+Run: uv run pytest tests/unit/cli/run/test_run_tasks.py
 """
 
 from __future__ import annotations
