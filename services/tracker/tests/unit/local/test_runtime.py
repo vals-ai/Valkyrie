@@ -25,10 +25,10 @@ async def test_local_runtime_scopes_files_and_clears_secrets(tmp_path: Path) -> 
         assert (await runtime.get_sandbox_provider_config()).type == "docker"
     with pytest.raises(SecretsError, match="no values"):
         await resolve_secrets(references, runtime.secrets)
-    async with LocalRuntimeFactory.open(tmp_path, org_id) as reopened:
-        assert await reopened.objects.get_bytes("agent.zip") == b"agent"
-    async with LocalRuntimeFactory.open(tmp_path, uuid4()) as other:
-        assert not await other.objects.exists("agent.zip")
+    reopened = LocalRuntimeFactory.create_runtime(tmp_path, org_id)
+    assert await reopened.objects.get_bytes("agent.zip") == b"agent"
+    other = LocalRuntimeFactory.create_runtime(tmp_path, uuid4())
+    assert not await other.objects.exists("agent.zip")
     assert all(b"transient-value" not in path.read_bytes() for path in tmp_path.rglob("*") if path.is_file())
 
 

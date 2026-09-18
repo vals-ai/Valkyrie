@@ -5,6 +5,7 @@ Exercise single-benchmark routes through the real app and local database.
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -22,6 +23,7 @@ from tracker.database.models import (
     Org,
     TaskStatus,
 )
+from tracker.local.resources import LocalResources
 
 
 class TestSingleBenchmark:
@@ -142,18 +144,31 @@ class TestBenchmarkStatusStream:
         assert streamed_statuses[0]["details"]["task_breakdown"] == {}
         assert streamed_statuses[1]["details"]["task_breakdown"] == {"FINISHED": 1}
 
+    @pytest.mark.parametrize("local", [False, True])
     def test_terminal_benchmark_streams_status_and_completes(
         self,
         client: TestClient,
         database_session: Session,
+        tmp_path: Path,
+        local: bool,
     ) -> None:
         """Terminal run streams must return persisted state and close without polling.
 
         Test cases:
         - A finished benchmark emits its current payload as a data event.
         - The stream emits a completion event with SSE response headers.
+        - Local and AWS streams retain the artifact URL from ordinary fetches.
         """
         benchmark = make_benchmark(name="streamed-benchmark", status=BenchmarkStatus.FINISHED, session=database_session)
+        if local:
+            benchmark.arguments = benchmark.arguments.model_copy(
+                update={
+                    "environment": "local",
+                    "properties": LocalResources(data_root=tmp_path),
+                    "sandbox_provider": "docker",
+                }
+            )
+            database_session.add(benchmark)
         database_session.add_all(
             [
                 make_task(benchmark, "completed-task", status=TaskStatus.FINISHED),
@@ -180,6 +195,11 @@ class TestBenchmarkStatusStream:
         assert streamed_status["benchmark_name"] == "streamed-benchmark"
         assert streamed_status["details"]["status"] == "FINISHED"
         assert streamed_status["final_score"] == 0.75
+        fetched = client.get("/fetch-benchmark", params={"benchmark_id": str(benchmark.id)}, headers=_HARNESS_HEADERS)
+        assert fetched.status_code == 200
+        assert streamed_status["s3_bucket_url"] == fetched.json()["s3_bucket_url"]
+        if local:
+            assert streamed_status["s3_bucket_url"] == f"http://testserver/benchmarks/{benchmark.id}/artifacts"
 
     def test_error_benchmark_streams_release_provenance_and_message(
         self,
