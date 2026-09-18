@@ -42,7 +42,7 @@ class OperationIdentity(ContractModel):
     region: SafeIdentity
     environment: SafeIdentity
     database_target: SafeIdentity
-    run_ids: tuple[UUID, ...]
+    run_ids: Annotated[tuple[UUID, ...], Field(min_length=1, json_schema_extra={"uniqueItems": True})]
 
     @field_validator("run_ids")
     @classmethod

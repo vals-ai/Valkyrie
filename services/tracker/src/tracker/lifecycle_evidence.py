@@ -3,7 +3,7 @@
 import hashlib
 import os
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import UUID
@@ -32,7 +32,7 @@ class HostContractObservation(ContractModel):
 
     contract: Literal["stable-host-lifecycle-v1"]
     deployment_sha256: Digest
-    host_inventory: tuple[SafeIdentity, ...]
+    host_inventory: Annotated[tuple[SafeIdentity, ...], Field(min_length=1, json_schema_extra={"uniqueItems": True})]
     observed_at: AwareDatetime
     acknowledgement_required_since: AwareDatetime
     verifier: SafeIdentity
@@ -76,8 +76,28 @@ def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
-def classify_dispatch(dispatch: ExecutorDispatch, *, host_contract: HostContractObservation | None) -> DispatchDrain:
+def validate_host_contract_observation(observation: HostContractObservation, *, now: datetime | None = None) -> None:
+    """Require a recent operator inspection; this does not inspect deployment itself."""
+    current_time = now if now is not None else datetime.now(UTC)
+    if (
+        current_time.utcoffset() != timedelta(0)
+        or observation.observed_at.utcoffset() != timedelta(0)
+        or observation.acknowledgement_required_since.utcoffset() != timedelta(0)
+        or observation.acknowledgement_required_since > observation.observed_at
+        or not timedelta(0) <= current_time - observation.observed_at <= timedelta(minutes=15)
+    ):
+        raise LifecycleConflict(
+            "Host contract observation is invalid or expired; fresh operator inspection is required"
+        )
+
+
+def classify_dispatch(
+    dispatch: ExecutorDispatch, *, host_contract: HostContractObservation | None, now: datetime | None = None
+) -> DispatchDrain:
     """Classify a freshly read dispatch while its run is held by the caller."""
+    if host_contract is not None:
+        validate_host_contract_observation(host_contract, now=now)
+
     provenance: Literal["host_process_exit", "verified_finished_contract", "held_unclaimed", "pending"] = "pending"
     if dispatch.process_exited_at is not None:
         provenance = "host_process_exit"
@@ -98,6 +118,7 @@ def verify_drain(
     host_contract: HostContractObservation | None,
     external: ExternalHostDrain | None = None,
     external_evidence: bytes | None = None,
+    now: datetime | None = None,
 ) -> tuple[DispatchDrain, ...]:
     """Read current dispatch evidence under exact active ownership; return pending gaps.
 
@@ -114,7 +135,13 @@ def verify_drain(
         .execution_options(populate_existing=True)
         .with_for_update()
     ).all()
-    results = tuple(classify_dispatch(dispatch, host_contract=host_contract) for dispatch in dispatches)
+    current_time = now if now is not None else datetime.now(UTC)
+    if host_contract is not None:
+        validate_host_contract_observation(host_contract, now=current_time)
+
+    results = tuple(
+        classify_dispatch(dispatch, host_contract=host_contract, now=current_time) for dispatch in dispatches
+    )
     if external is None:
         return results
 
@@ -129,7 +156,7 @@ def verify_drain(
         or external.run_id != scope.run_id
         or external.hold_acquired_at != _aware(record.acquired_at)
         or external.observed_at < _aware(record.acquired_at)
-        or external.observed_at > datetime.now(UTC)
+        or external.observed_at > current_time
         or external.dispatch_ids != legacy_ids
         or not legacy_ids
         or external.host_inventory != host_contract.host_inventory
