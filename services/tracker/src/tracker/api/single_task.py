@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlmodel import Session, col, desc, select
 
 from tracker.api.dependencies import (
@@ -113,13 +112,18 @@ async def get_task_artifacts(
     task_id: str,
     benchmark: RunBenchmarkDependency,
     runtime: RunRuntimeDependency,
+    request: Request,
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> TaskArtifactsResponse:
     """Return log and agent output locations for the task detail page."""
     task = load_task_for_benchmark_or_404(benchmark, task_id, org, session)
     cloudwatch_url: str | None
-    if isinstance(runtime, CloudRuntimeServices) and not (
+    if benchmark.arguments.environment == "local":
+        cloudwatch_url = str(
+            request.url_for("get_logs", benchmark_id=benchmark_id).include_query_params(task_id=task_id)
+        )
+    elif isinstance(runtime, CloudRuntimeServices) and not (
         runtime.aws_runtime.resources.log_group and runtime.aws_runtime.resources.region
     ):
         cloudwatch_url = None
@@ -138,7 +142,11 @@ async def get_task_artifacts(
         ttl_seconds = runtime.objects.maximum_download_ttl(300)
         agent_output_url = await runtime.objects.temporary_download_url(key, expires_in=ttl_seconds)
         if agent_output_url is None:
-            agent_output_url = Path(runtime.artifacts.object_location(key)).as_uri()
+            agent_output_url = str(
+                request.url_for("get_run_artifact_url", benchmark_id=benchmark_id).include_query_params(
+                    path=f"{task_id}/agent_output.tar.gz", download="true"
+                )
+            )
             ttl_seconds = 0
 
     return TaskArtifactsResponse(

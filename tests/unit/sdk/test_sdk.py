@@ -173,7 +173,7 @@ def test_from_config_wraps_file_and_yaml_errors(tmp_path: Path) -> None:
         ValkyrieClient.from_config(malformed_path)
 
     incomplete_path = tmp_path / "incomplete.yaml"
-    incomplete_path.write_text("api_key: key\n", encoding="utf-8")
+    incomplete_path.write_text("AWS_ACCESS_KEY_ID: key\n", encoding="utf-8")
     with pytest.raises(ValkyrieConfigError, match="Invalid Valkyrie config"):
         ValkyrieClient.from_config(incomplete_path)
 
@@ -887,18 +887,17 @@ async def test_start_validates_inputs_before_request(make_client, sdk_config) ->
     assert request_count == 0
 
 
-async def test_local_start_sends_configuration_without_credentials(tmp_path: Path) -> None:
-    config = ValkyrieConfig(
-        execution_environment="local", local_data_root=tmp_path, local_secrets_file=tmp_path / "source.env"
-    )
+async def test_tracker_url_only_start_sends_configuration_without_credentials() -> None:
+    config = ValkyrieConfig(tracker_url="http://127.0.0.1:8765")
 
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         assert "execution_secrets" not in payload
         assert "properties" not in payload
-        assert payload["environment"] == "local"
+        assert "environment" not in payload
+        assert request.url.host == "127.0.0.1"
         assert payload["harness_config"] is None
-        assert payload["sandbox_provider"] == "docker"
+        assert payload["sandbox_provider_secret_name"] is None
         assert not config.request_headers()
         return httpx.Response(200, json=load_sdk_fixture("start.json")["response"])
 

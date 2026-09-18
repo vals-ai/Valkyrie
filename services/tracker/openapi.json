@@ -3354,7 +3354,7 @@
     },
     "/agents/{name}/download-url": {
       "get": {
-        "description": "Return a 5-minute presigned URL to download agents/<name>.zip.",
+        "description": "Return a download URL for the authorized agent.",
         "operationId": "get_agent_download_url",
         "parameters": [
           {
@@ -3364,6 +3364,16 @@
             "schema": {
               "title": "Name",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "download",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Download",
+              "type": "boolean"
             }
           },
           {
@@ -3743,6 +3753,16 @@
               "minLength": 1,
               "title": "Path",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "download",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Download",
+              "type": "boolean"
             }
           }
         ],

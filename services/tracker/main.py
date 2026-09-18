@@ -639,19 +639,23 @@ async def _start_benchmark(
 
     bind = session.get_bind()
     session.close()
-    if request.environment == "local":
-        if local_config.resources is None:
-            raise HTTPException(status_code=400, detail="Server has no local configuration")
+    if local_config.resources is not None:
         if request.properties is not None:
             raise HTTPException(status_code=400, detail="Local resources are configured by the server")
-        request = request.model_copy(update={"properties": local_config.resources})
+        request = request.model_copy(
+            update={"environment": "local", "sandbox_provider": "docker", "properties": local_config.resources}
+        )
+        try:
+            request.validate_execution_environment()
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
         runtime = LocalRuntimeFactory.create_runtime(local_config.resources.data_root, run_starter.org.id)
         aws_managed = False
         effective_harness_config = None
         managed_s3_bucket = None
     else:
-        if local_config.resources is not None:
-            raise HTTPException(status_code=400, detail="Local server requires environment=local")
+        if request.environment == "local":
+            raise HTTPException(status_code=400, detail="Server has no local configuration")
         assert not isinstance(request.properties, LocalResources)
         runtime_resolution = resolve_start_aws_runtime(
             http_request, request.harness_config, run_starter.org.id, request.properties
@@ -952,8 +956,16 @@ async def _start_benchmark(
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,
         task_count=len(verify_response.task_ids),
-        cloudwatch_url=runtime.log_locations.benchmark_location(str(benchmark_row.id)),
-        s3_bucket_url=runtime.artifacts.prefix_location(benchmark_artifact_prefix(str(benchmark_row.id))),
+        cloudwatch_url=(
+            str(http_request.url_for("get_logs", benchmark_id=benchmark_row.id))
+            if request.environment == "local"
+            else runtime.log_locations.benchmark_location(str(benchmark_row.id))
+        ),
+        s3_bucket_url=(
+            str(http_request.url_for("list_run_artifacts", benchmark_id=benchmark_row.id))
+            if request.environment == "local"
+            else runtime.artifacts.prefix_location(benchmark_artifact_prefix(str(benchmark_row.id)))
+        ),
         storage_bucket=aws_runtime.resources.s3_bucket if request.environment == "aws" else None,
         executor_release_id=benchmark_row.executor_release_id,
         current_execution_release_id=benchmark_row.current_execution_release_id,
@@ -1001,6 +1013,7 @@ async def fetch_benchmark_tasks(
 
 @app.get("/fetch-benchmark", response_model=None)
 async def fetch_benchmark(
+    http_request: Request,
     benchmark_id: TrackedBenchmarkId,
     runtime: RunRuntimeDependency,
     benchmark_row: RunBenchmarkDependency,
@@ -1040,7 +1053,11 @@ async def fetch_benchmark(
         benchmark_name=benchmark_row.name,
         benchmark_id=benchmark_row.id,
         details=benchmark_context.benchmark_details,
-        s3_bucket_url=runtime.artifacts.prefix_location(benchmark_artifact_prefix(str(benchmark_row.id))),
+        s3_bucket_url=(
+            str(http_request.url_for("list_run_artifacts", benchmark_id=benchmark_row.id))
+            if benchmark_row.arguments.environment == "local"
+            else runtime.artifacts.prefix_location(benchmark_artifact_prefix(str(benchmark_row.id)))
+        ),
         storage_bucket=runtime.aws_runtime.resources.s3_bucket if isinstance(runtime, CloudRuntimeServices) else None,
         label=benchmark_row.label,
         final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
