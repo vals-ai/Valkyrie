@@ -154,3 +154,14 @@ including object/delete-marker ties. Checksums prove bytes, not relative version
 Inspection with omitted copy/history inputs loads checkpoint proof and hashes the
 effective evidence for all runs, in plan run order with each run's proof order retained.
 Explicitly supplied proof keeps its original order for response digest compatibility.
+
+The request JSON and external evidence paths are trusted local operator inputs. Keep
+them under operator control. This CLI is not a remote request endpoint. Evidence
+bytes are read only for a supplied external drain record and its exact digest; they
+are never returned in reports. No fixed directory allowlist is imposed.
+
+Portable S3 execution references must pin exactly one nonempty immutable versionId
+in the saved locator itself. Discovering a current object's version does not make
+an unpinned locator portable. Missing, blank, duplicate, or null versions remain
+unknown without fetching the current object. History-only plans retain these stored
+arguments and keep their admission hold.

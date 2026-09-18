@@ -759,8 +759,10 @@
         "format": "uuid",
         "type": "string"
       },
+      "minItems": 1,
       "title": "Run Ids",
-      "type": "array"
+      "type": "array",
+      "uniqueItems": true
     },
     "plan": {
       "anyOf": [

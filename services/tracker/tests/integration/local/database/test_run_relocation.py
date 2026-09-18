@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import runpy
 import subprocess
 import sys
 from collections.abc import Generator
@@ -15,6 +16,7 @@ from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -39,7 +41,7 @@ from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, re
 from tracker.lifecycle_completion import acquire_successor_hold, capture_predecessor
 from tracker.run_relocation import RelocationOperator
 from tracker.run_relocation.providers import RelocationAWSBoundary
-from tracker.storage_migration_exchange import ExecutionReference, TrackerRequest, TrackerResponse
+from tracker.storage_migration_exchange import ExecutionReference, RelocationRun, TrackerRequest, TrackerResponse
 
 
 def digest(value: object) -> str:
@@ -84,7 +86,9 @@ class EmptyBoundary:
     ) -> None:
         pass
 
-    async def execution_references(self, *_arguments: object) -> tuple[ExecutionReference, ...]:
+    async def execution_references(
+        self, arguments: dict[str, Any], request: TrackerRequest, run_scope: RelocationRun | None, /
+    ) -> tuple[ExecutionReference, ...]:
         return ()
 
 
@@ -637,9 +641,7 @@ def test_legacy_shared_source_moves_through_real_provider_checks_without_touchin
     inventory = asyncio.run(
         operator.execute(TrackerRequest.model_validate({**request, "action": "inventory", "plan": None}))
     )
-    assert inventory.runs[0].execution_references[0].kind == (
-        "unknown" if source_version == "null" else "retained_s3_object"
-    )
+    assert inventory.runs[0].execution_references[0].kind == "unknown"
     assert inventory.runs[0].execution_arguments_sha256 == planned["execution_arguments_sha256"]
     asyncio.run(operator.execute(TrackerRequest.model_validate(request)))
     content_digest = hashlib.sha256(content).hexdigest()
@@ -801,3 +803,279 @@ def test_checkpoint_inspection_hashes_nonempty_evidence_for_every_run(relocation
     assert len(inspected.runs) == 2
     assert inspected.copied_objects_sha256 == relocated.copied_objects_sha256 != digest([])
     assert inspected.destination_versions_sha256 == relocated.destination_versions_sha256 != digest([])
+
+
+def test_evidence_paths_are_not_read_without_a_supplied_external_drain(
+    relocation_session: Session, tmp_path: Path
+) -> None:
+    run, _, request = seed(relocation_session)
+    request["external_evidence_files"] = [str(tmp_path / "not-needed-and-absent")]
+    response = execute(relocation_session, request, "prepare")
+    assert response.runs[0].hold_phase == "prepared"
+    assert relocation_session.get_one(RunLifecycle, run.id).released_at is None
+
+
+def test_actual_cli_main_uses_private_database_and_atomic_report_in_process(
+    relocation_session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+
+    _, _, request = seed(relocation_session)
+    request.update(action="inventory", plan=None, host_contract=None)
+    request_path, report_path = tmp_path / "request.json", tmp_path / "report.json"
+    request_path.write_text(json.dumps(request))
+    script = Path(__file__).resolve().parents[4] / "scripts/relocate_run_storage.py"
+    monkeypatch.setenv(
+        "PRIVATE_RELOCATION_DATABASE", relocation_session.get_bind().engine.url.render_as_string(hide_password=False)
+    )
+    monkeypatch.setenv("DATABASE_URL", os.environ.get("DATABASE_URL", ""))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(script),
+            "--request",
+            str(request_path),
+            "--report",
+            str(report_path),
+            "--database-url-env",
+            "PRIVATE_RELOCATION_DATABASE",
+            "--expected-database-target",
+            request["database_target"],
+        ],
+    )
+    main = runpy.run_path(str(script))["main"]
+    assert main() == 0
+    report = json.loads(report_path.read_text())
+    assert report["nonce"] == request["nonce"] and report["runs"][0]["hold_identity"] is None
+    assert report_path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("policy, pinned", [("portable", False), ("history_only", False), ("portable", True)])
+def test_saved_s3_locator_policy_is_enforced_at_release(relocation_session: Session, policy: str, pinned: bool) -> None:
+    run, _, request = seed(relocation_session, policy)
+    run.arguments = run.arguments.model_copy(
+        update={"dataset": "s3://retained/manifest.json" + ("?versionId=v1" if pinned else "")}
+    )
+    relocation_session.add(run)
+    relocation_session.commit()
+    raw = (
+        relocation_session.connection()
+        .execute(text("SELECT arguments FROM benchmark WHERE id=:id"), {"id": run.id})
+        .scalar_one()
+    )
+    raw["properties"].pop("s3_bucket")
+    request["plan"]["runs"][0]["execution_arguments_sha256"] = digest(raw)
+    store = VersionStore(str(run.id))
+    store.execution_objects["retained", "manifest.json"] = ("v1", b"{}")
+    clients = Mock()
+    clients.with_region.return_value = clients
+    clients.s3_client.return_value = store
+    provider = RelocationAWSBoundary(clients)
+
+    class ReferenceBoundary(EmptyBoundary):
+        async def execution_references(
+            self, arguments: dict[str, Any], request: TrackerRequest, run_scope: RelocationRun | None
+        ) -> tuple[ExecutionReference, ...]:
+            return await provider.execution_references(arguments, request, run_scope)
+
+    operator = RelocationOperator(relocation_session, ReferenceBoundary())
+    for action in ("prepare", "relocate"):
+        asyncio.run(operator.execute(TrackerRequest.model_validate({**request, "action": action})))
+    final_request = TrackerRequest.model_validate({**request, "action": "release", "completion_sha256": "c" * 64})
+    if policy == "portable" and not pinned:
+        with pytest.raises(LifecycleConflict, match="Portable execution"):
+            asyncio.run(operator.execute(final_request))
+        assert relocation_session.get_one(RunLifecycle, run.id).released_at is None
+    else:
+        result = asyncio.run(operator.execute(final_request))
+        assert result.runs[0].hold_phase == ("released" if pinned else "relocated_history_only")
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "missing-run",
+        "missing-provider",
+        "host-missing",
+        "cross-account",
+        "missing-plan",
+        "same-bucket",
+        "checkpoint-digest",
+        "child-digest",
+        "proof-digest",
+        "completion-missing",
+    ],
+)
+def test_operator_rejects_changed_scope_and_incomplete_checkpoints(relocation_session: Session, failure: str) -> None:
+    run, _, request = seed(relocation_session)
+    action = "prepare"
+    if failure in {"checkpoint-digest", "child-digest", "proof-digest", "completion-missing"}:
+        execute(relocation_session, request, "prepare")
+        action = "inspect"
+    if failure == "missing-run":
+        relocation_session.delete(run)
+        relocation_session.commit()
+    elif failure == "missing-provider":
+        run.arguments = run.arguments.model_copy(update={"sandbox_provider_secret_name": None})
+        relocation_session.add(run)
+        relocation_session.commit()
+    elif failure == "host-missing":
+        request["host_contract"] = None
+    elif failure == "cross-account":
+        request["destination_aws_account_id"] = "999999999999"
+    elif failure == "missing-plan":
+        request["plan"] = None
+    elif failure == "same-bucket":
+        request["plan"]["runs"][0]["destination_resources"]["s3_bucket"] = "valsmith-dev-42-source"
+    elif failure in {"checkpoint-digest", "child-digest"}:
+        record = relocation_session.get_one(RunLifecycle, run.id)
+        checkpoint = json.loads(record.checkpoint_json or "null")
+        checkpoint["identity_sha256" if failure == "checkpoint-digest" else "child_plan_sha256"] = "e" * 64
+        record.checkpoint_json = json.dumps(checkpoint)
+        relocation_session.add(record)
+        relocation_session.commit()
+    elif failure == "proof-digest":
+        execute(relocation_session, request, "relocate")
+        request["destination_versions"] = [
+            {
+                "run_id": str(run.id),
+                "bucket": "valsmith-dev-42-destination",
+                "key": f"benchmarks/{run.id}/unexpected",
+                "version_id": "v1",
+                "is_delete_marker": False,
+                "size": 1,
+                "sha256": "a" * 64,
+                "is_current": True,
+                "provenance": "existing",
+            }
+        ]
+    else:
+        action = "release"
+    with pytest.raises(LifecycleConflict):
+        execute(relocation_session, request, action)
+    relocation_session.rollback()
+    record = relocation_session.get(RunLifecycle, run.id)
+    assert record is None or record.released_at is None
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["dispatch-order", "missing-proof", "evidence-digest", "completed-policy", "scope-change", "wrong-purpose"],
+)
+def test_corrupt_completion_cannot_be_used_as_successor(relocation_session: Session, failure: str) -> None:
+
+    run, _, request = seed(relocation_session)
+    for action in ("prepare", "relocate"):
+        execute(relocation_session, request, action)
+    request["completion_sha256"] = "c" * 64
+    execute(relocation_session, request, "release")
+    identity = OperationIdentity.model_validate(request["plan"]["identity"])
+    scope = RunScope(run_id=run.id, original_resources=request["plan"]["runs"][0]["destination_resources"])
+    record = relocation_session.get_one(RunLifecycle, run.id)
+    checkpoint = json.loads(record.checkpoint_json or "null")
+    if failure == "dispatch-order":
+        checkpoint["dispatch_ids"] = [str(uuid4())] * 2
+    elif failure == "missing-proof":
+        checkpoint["copied_objects_sha256"] = None
+    elif failure == "evidence-digest":
+        checkpoint["copied_objects_sha256"] = "b" * 64
+    elif failure == "completed-policy":
+        checkpoint["execution_policy"] = "portable"
+    elif failure == "scope-change":
+        checkpoint["identity_sha256"] = "a" * 64
+    else:
+        record.purpose = "deletion"
+    record.checkpoint_json = json.dumps(checkpoint)
+    relocation_session.add(record)
+    relocation_session.commit()
+    with pytest.raises((ValidationError, LifecycleConflict)):
+        capture_predecessor(record, identity, scope)
+    assert record.released_at is None
+
+
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_inventory_binds_completed_predecessor_to_current_owner(relocation_session: Session, mismatch: bool) -> None:
+    run, _, request = seed(relocation_session)
+    for action in ("prepare", "relocate"):
+        execute(relocation_session, request, action)
+    request["completion_sha256"] = "c" * 64
+    execute(relocation_session, request, "release")
+    if mismatch:
+        request["github_owner_id"] = 99
+        with pytest.raises(LifecycleConflict, match="Prior lifecycle owner"):
+            execute(relocation_session, request, "inventory")
+    else:
+        observed = execute(relocation_session, request, "inventory").runs[0]
+        assert observed.predecessor is not None
+        assert observed.predecessor.kind == "completed_history_only"
+        assert observed.run_id == run.id
+
+
+@pytest.mark.parametrize("failure", ["identity", "cutoff", "duplicate", "pending"])
+def test_released_legacy_run_requires_original_positive_external_drain(
+    relocation_session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    run, _, request = seed(relocation_session, "portable")
+
+    async def retained_reference(self: EmptyBoundary, *_arguments: object) -> tuple[ExecutionReference, ...]:
+        return (
+            ExecutionReference(
+                pointer="/dataset",
+                value_sha256="a" * 64,
+                kind="retained_s3_object",
+                bucket="retained",
+                key="manifest",
+                version_id="v1",
+                sha256="b" * 64,
+            ),
+        )
+
+    monkeypatch.setattr(EmptyBoundary, "execution_references", retained_reference)
+    release = ExecutorRelease(
+        id="legacy", artifact_uri="s3://releases/test", artifact_digest="a" * 64, protocol_version="1"
+    )
+    relocation_session.add(release)
+    relocation_session.flush()
+    dispatch = create_executor_dispatch(run.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4())
+    dispatch.status = ExecutorDispatchStatus.FAILED
+    dispatch.started_at = datetime.now(UTC) - timedelta(days=2)
+    relocation_session.add(dispatch)
+    relocation_session.commit()
+    with pytest.raises(LifecycleConflict):
+        execute(relocation_session, request, "prepare")
+    relocation_session.rollback()
+    hold = relocation_session.get_one(RunLifecycle, run.id)
+    evidence = tmp_path / "drain.txt"
+    evidence.write_bytes(b"operator attests exact legacy host drain")
+    request["host_contract"]["legacy_dispatch_ids"] = [str(dispatch.id)]
+    request["external_evidence_files"] = [str(evidence)]
+    request["external_host_drains"] = [
+        {
+            "provenance": "externally_confirmed_host_drain",
+            "identity": request["plan"]["identity"],
+            "run_id": str(run.id),
+            "hold_acquired_at": hold.acquired_at.replace(tzinfo=UTC).isoformat(),
+            "dispatch_ids": [str(dispatch.id)],
+            "host_inventory": ["host-1"],
+            "deployed_host_contract": "stable-host-lifecycle-v1",
+            "observed_at": datetime.now(UTC).isoformat(),
+            "verifier": "test-operator",
+            "evidence_sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
+            "confirmation": "all_inventory_hosts_terminated_and_old_claims_disabled",
+        }
+    ]
+    request["completion_sha256"] = "c" * 64
+    for action in ("prepare", "relocate", "release", "inspect"):
+        observed = execute(relocation_session, request, action).runs[0]
+        assert observed.dispatches[0].evidence == "externally_confirmed_host_drain"
+    assert relocation_session.get_one(RunLifecycle, run.id).released_at is not None
+    if failure == "identity":
+        request["external_host_drains"][0]["identity"] = {**request["plan"]["identity"], "operation_id": str(uuid4())}
+    elif failure == "cutoff":
+        request["host_contract"]["acknowledgement_required_since"] = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+    elif failure == "duplicate":
+        request["external_host_drains"] *= 2
+    else:
+        request["external_host_drains"] = []
+    with pytest.raises(LifecycleConflict):
+        execute(relocation_session, request, "inspect")

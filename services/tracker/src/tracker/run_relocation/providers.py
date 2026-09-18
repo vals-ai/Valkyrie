@@ -451,8 +451,12 @@ class RelocationAWSBoundary(AWSProviderBoundary):
                 if parsed.netloc == source_bucket:
                     reference = reference.model_copy(update={"kind": "retired_source"})
                 elif parsed.netloc and key and not parsed.fragment:
-                    versions = parse_qs(parsed.query)
-                    if set(versions) - {"versionId"} or any(len(items) != 1 for items in versions.values()):
+                    versions = parse_qs(parsed.query, keep_blank_values=True)
+                    if (
+                        set(versions) != {"versionId"}
+                        or len(versions["versionId"]) != 1
+                        or versions["versionId"][0] in {"", "null"}
+                    ):
                         references.append(reference)
                         continue
                     async with self.clients.with_region(request.region).s3_client() as client:

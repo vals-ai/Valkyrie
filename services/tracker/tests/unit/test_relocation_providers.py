@@ -377,3 +377,39 @@ async def test_unversioned_retained_reference_is_unknown_and_cannot_claim_an_imm
         await boundary.execution_references(
             {"dataset": "s3://retained/manifest.json?versionId=immutable"}, request, None
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "",
+        "?versionId=",
+        "?versionId=null",
+        "?versionId=v1&versionId=",
+        "?versionId=v1&versionId=v2",
+        "?other=v1",
+        "?versionId=v1#fragment",
+    ],
+)
+async def test_unpinned_saved_s3_locator_is_unknown_without_fetching_current_object(suffix: str) -> None:
+    boundary, store, payload = setup()
+
+    async def unavailable_object(**_arguments: Any) -> dict[str, Any]:
+        raise AssertionError("Unpinned locator must not fetch the mutable current object")
+
+    store.get_object = unavailable_object
+    (reference,) = await boundary.execution_references(
+        {"dataset": "s3://retained/manifest.json" + suffix}, TrackerRequest.model_validate(payload), None
+    )
+    assert reference.kind == "unknown" and reference.version_id is None
+
+
+@pytest.mark.asyncio
+async def test_saved_immutable_s3_locator_verifies_exact_version_bytes() -> None:
+    boundary, store, payload = setup()
+    store.execution_objects["retained", "manifest.json"] = ("v1", b"{}")
+    (reference,) = await boundary.execution_references(
+        {"dataset": "s3://retained/manifest.json?versionId=v1"}, TrackerRequest.model_validate(payload), None
+    )
+    assert (reference.kind, reference.version_id, reference.sha256) == ("retained_s3_object", "v1", checksum(b"{}"))
