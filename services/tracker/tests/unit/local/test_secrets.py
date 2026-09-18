@@ -9,7 +9,7 @@ from tracker.runtime.secrets import resolve_secrets
 
 async def test_resolves_shared_references_and_releases_values() -> None:
     references = {"API_KEY": "agent", "TOKEN": "agent"}
-    values = {"API_KEY": "first", "TOKEN": "second"}
+    values = {"API_KEY": "first", "TOKEN": "second", "UNDECLARED": "ignored"}
     store = InMemorySecretStore(references, values)
     values["API_KEY"] = "changed"
     assert resolve_secrets(references, store) == {"API_KEY": "first", "TOKEN": "second"}
@@ -19,8 +19,7 @@ async def test_resolves_shared_references_and_releases_values() -> None:
         resolve_secrets(references, store)
 
 
-@pytest.mark.parametrize("values", [{}, {"API_KEY": "sensitive", "UNDECLARED": "sensitive"}])
-def test_rejects_missing_or_undeclared_keys_without_exposing_values(values: dict[str, str]) -> None:
+def test_rejects_missing_keys_without_exposing_values() -> None:
     with pytest.raises(SecretsError) as error:
-        InMemorySecretStore({"API_KEY": "agent"}, values)
+        InMemorySecretStore({"API_KEY": "agent", "TOKEN": "agent"}, {"API_KEY": "sensitive"})
     assert "sensitive" not in str(error.value)

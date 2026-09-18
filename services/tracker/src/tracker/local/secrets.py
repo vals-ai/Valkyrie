@@ -11,21 +11,15 @@ class InMemorySecretStore:
 
     def __init__(self, references: Mapping[str, str], values: Mapping[str, str]) -> None:
         missing = references.keys() - values.keys()
-        unexpected = values.keys() - references.keys()
-        if missing or unexpected:
-            details: list[str] = []
-            if missing:
-                details.append(f"missing keys: {', '.join(sorted(missing))}")
-            if unexpected:
-                details.append(f"undeclared keys: {', '.join(sorted(unexpected))}")
-            raise SecretsError("Invalid local execution secrets; " + "; ".join(details))
+        if missing:
+            raise SecretsError(f"Local execution secrets missing keys: {', '.join(sorted(missing))}")
         self._values: dict[str, dict[str, SecretValue]] = {}
         for name, reference in references.items():
             self._values.setdefault(reference, {})[name] = values[name]
 
     def get(self, name: str) -> SecretValue:
         try:
-            return dict(self._values[name])
+            return self._values[name]
         except KeyError:
             raise SecretsError(f"Local execution has no values for secret reference '{name}'") from None
 
