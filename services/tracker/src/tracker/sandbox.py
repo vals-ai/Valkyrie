@@ -889,6 +889,8 @@ async def run_agent(
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
     async def upload_outputs(*, preserve_agent_error: bool = False) -> None:
+        if execution_is_current is not None and not execution_is_current():
+            return
         errors: list[Exception] = []
         if contract.final_output:
             try:
