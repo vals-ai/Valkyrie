@@ -103,13 +103,14 @@ class RunsResource:
                 None if ignore_custom_services else self._sdk.config.custom_benchmark_services.get(benchmark)
             ),
             service_headers=effective_service_headers,
-            sandbox_provider=provider_name,
             sandbox_provider_secret_name=(
                 provider_secret_name if access_key_harness_config is None and provider_secret_name else None
             ),
             webhook_secret_name=self._sdk.config.webhook if intervals else None,
             webhook_intervals=intervals,
         )
+        if provider_name is not None:
+            payload.sandbox_provider = provider_name
         return await self._sdk.request_model(
             "POST",
             "/start-benchmark",
@@ -117,6 +118,7 @@ class RunsResource:
             json=payload.model_dump(
                 mode="json",
                 exclude={"environment"}
+                | ({"sandbox_provider"} if provider_name is None else set[str]())
                 | {name for name in ("priority", "properties") if getattr(payload, name) is None},
             ),
         )

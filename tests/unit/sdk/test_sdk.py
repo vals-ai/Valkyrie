@@ -733,11 +733,18 @@ async def test_start_validates_inputs_before_request(make_client, sdk_config) ->
     assert request_count == 0
 
 
-async def test_tracker_url_only_start_sends_configuration_without_credentials() -> None:
+@pytest.mark.parametrize("provider", [None, "modal"])
+async def test_tracker_url_only_start_sends_configuration_without_credentials(provider: str | None) -> None:
     config = ValkyrieConfig(tracker_url="http://127.0.0.1:8765")
+    assert config.aws_default_region is None
+    assert config.s3_bucket is None
 
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
+        if provider is None:
+            assert "sandbox_provider" not in payload
+        else:
+            assert payload["sandbox_provider"] == provider
         assert "execution_secrets" not in payload
         assert "properties" not in payload
         assert "environment" not in payload
@@ -748,4 +755,4 @@ async def test_tracker_url_only_start_sends_configuration_without_credentials() 
         return httpx.Response(200, json=load_sdk_fixture("start.json")["response"])
 
     async with ValkyrieClient(config, transport=httpx.MockTransport(handler)) as client:
-        await client.runs.start("agent", "test")
+        await client.runs.start("agent", "test", provider=provider)
