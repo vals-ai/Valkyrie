@@ -11,7 +11,13 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
 from uuid import UUID
 
 from valkyrie.sdk.output_archive import extract_output_archive
-from valkyrie.sdk.errors import ValkyrieConfigError, ValkyrieRunError, ValkyrieStreamError, handle_httpx_stream_errors
+from valkyrie.sdk.errors import (
+    ValkyrieAPIError,
+    ValkyrieConfigError,
+    ValkyrieRunError,
+    ValkyrieStreamError,
+    handle_httpx_stream_errors,
+)
 from valkyrie.sdk.models import (
     AWSResources,
     AgentContractRequest,
@@ -38,6 +44,31 @@ from valkyrie.sdk.models import (
 
 if TYPE_CHECKING:
     from valkyrie.sdk.client import ValkyrieClient
+
+
+def _accepted_managed_run_id(error: ValkyrieAPIError) -> UUID | None:
+    if error.status_code != 503 or not isinstance(error.detail, dict):
+        return None
+
+    detail = cast(dict[str, object], error.detail)
+    if set(detail) != {"message", "benchmark_id", "executor_dispatch_id"}:
+        return None
+
+    if detail["message"] != "Executor dispatch enqueue acknowledgement failed; use Retry to continue":
+        return None
+
+    benchmark_id = detail["benchmark_id"]
+    dispatch_id = detail["executor_dispatch_id"]
+    if not isinstance(benchmark_id, str) or not isinstance(dispatch_id, str):
+        return None
+
+    try:
+        run_id = UUID(benchmark_id)
+        UUID(dispatch_id)
+    except ValueError:
+        return None
+
+    return run_id
 
 
 class RunsResource:
@@ -115,16 +146,32 @@ class RunsResource:
             webhook_secret_name=self._sdk.config.webhook if intervals else None,
             webhook_intervals=intervals,
         )
-        response = await self._sdk.request_model(
-            "POST",
-            "/start-benchmark-with-storage" if managed_s3_bucket is not None else "/start-benchmark",
-            StartBenchmarkResponse,
-            json=payload.model_dump(
-                mode="json",
-                exclude={"environment"}
-                | {name for name in ("priority", "properties", "managed_s3_bucket") if getattr(payload, name) is None},
-            ),
-        )
+        try:
+            response = await self._sdk.request_model(
+                "POST",
+                "/start-benchmark-with-storage" if managed_s3_bucket is not None else "/start-benchmark",
+                StartBenchmarkResponse,
+                json=payload.model_dump(
+                    mode="json",
+                    exclude={"environment"}
+                    | {
+                        name
+                        for name in ("priority", "properties", "managed_s3_bucket")
+                        if getattr(payload, name) is None
+                    },
+                ),
+            )
+        except ValkyrieAPIError as error:
+            run_id = _accepted_managed_run_id(error) if managed_s3_bucket is not None else None
+            if run_id is None:
+                raise
+
+            raise ValkyrieRunError(
+                f"Run {run_id} was accepted but dispatch was not confirmed; "
+                "use the existing run ID to reconcile or retry execution",
+                run_id=run_id,
+            ) from error
+
         if managed_s3_bucket is not None and response.storage_bucket != managed_s3_bucket:
             raise ValkyrieRunError(
                 f"Run {response.benchmark_id} did not confirm requested storage bucket {managed_s3_bucket!r}",
