@@ -1,9 +1,13 @@
 """Read immutable old logs through the same bounded provider used by routes."""
 
+import base64
+import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -23,6 +27,7 @@ from tests.unit.aws.test_log_history_archive import (
 from tracker.aws import log_history_archive
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchLogProvider, task_log_stream_name
+from tracker.aws.historical_logs import historical_log_reader
 from tracker.database.models import Benchmark
 from tracker.runtime.log_history import ArchiveLimits
 from tracker.runtime.logs import (
@@ -45,7 +50,7 @@ class LiveLogs:
         following = position + len(events)
         return LogPage(events, str(following) if following < len(self.events) else None)
 
-    async def stream_task(self, reference: Any, **kwargs: Any) -> Any:
+    async def stream_task(self, reference: Any, **kwargs: Any) -> AsyncIterator[LogEvent]:
         for event in self.events:
             yield event
 
@@ -263,3 +268,72 @@ async def test_terminal_archive_follow_finishes_when_live_group_is_absent(tmp_pa
     provider.live = CloudWatchLogProvider(cast(AWSClientProvider, MockClients(MockLogsClient([missing]))), "logs")
     reference = TaskLogReference(RUN_ID, "old", datetime(2020, 1, 1, tzinfo=UTC))
     assert [event async for event in provider.stream_task(reference)] == []
+
+
+@pytest.mark.parametrize(
+    "fault", ["archive_offset", "archive_end", "archive_chunk", "live_offset", "oversized", "invalid", "limit"]
+)
+async def test_invalid_cursor_positions_fail_without_returning_partial_history(tmp_path: Path, fault: str) -> None:
+    provider, storage, _ = reader(tmp_path)
+    reference = RunLogReference(RUN_ID)
+    page = await provider.fetch(reference, limit=1)
+    assert page.next_cursor is not None
+    position = json.loads(base64.urlsafe_b64decode(page.next_cursor))
+    if fault == "archive_offset":
+        position["offset"] = 999
+    elif fault == "archive_end":
+        position.update(chunk=1, offset=1)
+    elif fault == "archive_chunk":
+        position.update(chunk=999, offset=0)
+    elif fault == "live_offset":
+        position["live_offset"] = 999
+    cursor = base64.urlsafe_b64encode(json.dumps(position).encode()).decode()
+    if fault == "oversized":
+        cursor = "a" * 32769
+    elif fault == "invalid":
+        cursor = "invalid!"
+    before = len(storage.requests)
+
+    with pytest.raises(LogProviderError, match="cursor|page limit"):
+        await provider.fetch(reference, cursor=cursor, limit=0 if fault == "limit" else 1000)
+
+    if fault in {"oversized", "invalid", "limit"}:
+        assert len(storage.requests) == before
+
+
+async def test_live_pagination_cycle_does_not_return_archive_as_complete(tmp_path: Path) -> None:
+    provider, _, _ = reader(tmp_path)
+    live = LiveLogs()
+    live.fetch = AsyncMock(return_value=LogPage([], "repeat"))
+    provider.live = live
+
+    with pytest.raises(LogProviderError, match="did not advance"):
+        await provider.fetch(RunLogReference(RUN_ID))
+
+    assert live.fetch.await_count == 2
+
+
+async def test_follow_maps_chunk_failure_without_exposing_provider_details(tmp_path: Path) -> None:
+    provider, storage, _ = reader(tmp_path)
+    key = next(key for key in storage.objects if "/chunks/" in key[0])
+    storage.objects.pop(key)
+    reference = TaskLogReference(RUN_ID, "old", datetime(2020, 1, 1, tzinfo=UTC))
+
+    with pytest.raises(LogProviderError, match="Historical archive verification failed"):
+        _ = [event async for event in provider.stream_task(reference)]
+
+
+@pytest.mark.parametrize("fault", ["account", "organization"])
+def test_saved_runtime_authority_is_verified_before_reading_events(tmp_path: Path, fault: str) -> None:
+    provider, storage, report = reader(tmp_path)
+    runtime = Mock()
+    runtime.clients.boto3_session.return_value = provider.session
+    runtime.resources = scoped_input(log_history_archive).destination.original_resources
+    runtime.expected_bucket_owner = "999999999999" if fault == "account" else DESTINATION_ACCOUNT
+    organization = uuid4() if fault == "organization" else scoped_input(log_history_archive).location.org_id
+    storage.requests.clear()
+
+    with pytest.raises(LogProviderError, match="authority verification"):
+        historical_log_reader(runtime, RUN_ID, organization, report.reference, LiveLogs(), terminal=True)
+
+    assert not any(method == "get" for method, _ in storage.requests)

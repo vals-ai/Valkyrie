@@ -105,7 +105,21 @@ def test_contract_secret_map_requires_each_destination_metadata_record(invalid: 
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "version", "size", "unversioned", "null", "fragment", "unknown", "secret-map", "secret-list"]
+    "failure",
+    [
+        None,
+        "version",
+        "size",
+        "unversioned",
+        "null",
+        "fragment",
+        "unknown",
+        "secret-map",
+        "secret-list",
+        "nonstring-secret",
+        "callback",
+        "dataset",
+    ],
 )
 def test_portable_object_requires_exact_version_bytes_and_closes_body(failure: str | None) -> None:
     rows = contract_rows(AgentContractRequest(name="test"))
@@ -123,6 +137,12 @@ def test_portable_object_requires_exact_version_bytes_and_closes_body(failure: s
         arguments["contract"] = {"secrets": []}
     elif failure == "secret-list":
         arguments["contract"] = {"other_secrets": [""]}
+    elif failure == "nonstring-secret":
+        arguments["contract"] = {"secrets": {"TOKEN": 42}}
+    elif failure == "callback":
+        arguments["lambda_function"] = "unresolved-function"
+    elif failure == "dataset":
+        arguments["dataset"] = "https://unknown/data"
     body = BytesIO(b"full body")
     calls: list[dict[str, Any]] = []
 
@@ -150,3 +170,23 @@ def test_portable_object_requires_exact_version_bytes_and_closes_body(failure: s
             {"Bucket": "destination", "Key": "data", "VersionId": "immutable", "ExpectedBucketOwner": "222222222222"}
         ]
         assert body.closed
+
+
+def test_nested_secret_lists_require_each_exact_metadata_locator() -> None:
+    rows = contract_rows(AgentContractRequest(name="test"))
+    rows.rows["benchmark"][0]["arguments"]["contract"] = {"nested": [{"provider_secrets": ["first", "second"]}]}
+    session = SecretMetadataSession(
+        {
+            name: {
+                "ARN": f"arn:aws:secretsmanager:us-west-2:222222222222:secret:{name}",
+                "VersionIdsToStages": {"v1": ["AWSCURRENT"]},
+            }
+            for name in ("first", "second")
+        }
+    )
+    before = copy.deepcopy(rows)
+
+    verify_portable_references(rows, session, "222222222222", "us-west-2")
+
+    assert session.requested == ["first", "second"]
+    assert rows == before

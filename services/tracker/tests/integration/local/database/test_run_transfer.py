@@ -916,3 +916,145 @@ def test_actual_same_account_history_then_transfer_keeps_source_held(
             require_unheld(session, run.id)
     with pytest.raises(LifecycleConflict):
         execute(source, relocation, "release")
+
+
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("source_org", "exact organization"),
+        ("unknown_argument", "Unknown stored execution|Extra inputs are not permitted"),
+        ("resources", "Saved source resources"),
+        ("active_run", "not terminal"),
+        ("active_task", "Active or resumable"),
+        ("digest", "planned source row content"),
+        ("missing_digest", "Reviewed source content"),
+        ("missing_host", "Fresh source host"),
+        ("cleanup_early", "Verified destination"),
+        ("reference_edit", "reference edit source"),
+        ("held_import", "Prepared intact source"),
+    ],
+)
+def test_transfer_rejects_unproved_source_without_import(
+    pair: tuple[Session, Session], tmp_path: Path, fault: str, message: str
+) -> None:
+    source, destination = pair
+    org, run, task = seed_rows(source, destination)
+    run_id = run.id
+    request = transfer_request(source, destination, org, run)
+    boundary = FakeTransferBoundary(tmp_path)
+    operator = TransferOperator(source, destination, boundary)
+    if fault == "reference_edit":
+        request["plan"]["runs"][0]["reference_edits"] = [
+            {
+                "pointer": "/arguments/sandbox_provider_secret_name",
+                "original_sha256": "f" * 64,
+                "replacement": "new-provider",
+            }
+        ]
+    observed = asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+    request["plan"]["runs"][0]["source_rows_sha256"] = observed.runs[0].source_rows_sha256
+    request["action"] = "prepare"
+    if fault == "source_org":
+        source.connection().execute(text("UPDATE org SET name='different-name' WHERE id=:id"), {"id": org.id})
+        request["action"] = "plan"
+    elif fault == "unknown_argument":
+        values = RowClosure.read(source, run_id, org.id).rows["benchmark"][0]["arguments"]
+        values["unknown_executable_input"] = "private"
+        source.connection().execute(
+            text("UPDATE benchmark SET arguments=CAST(:arguments AS JSON) WHERE id=:id"),
+            {"id": run_id, "arguments": json.dumps(values)},
+        )
+    elif fault == "resources":
+        request["plan"]["runs"][0]["source"]["original_resources"]["s3_bucket"] = "different-source"
+    elif fault == "active_run":
+        source.connection().execute(text("UPDATE benchmark SET status='IN_PROGRESS' WHERE id=:id"), {"id": run_id})
+    elif fault == "active_task":
+        source.connection().execute(text("UPDATE task SET status='IN_PROGRESS' WHERE id=:id"), {"id": task.id})
+    elif fault == "digest":
+        request["plan"]["runs"][0]["source_rows_sha256"] = "f" * 64
+    elif fault == "missing_digest":
+        request["plan"]["runs"][0]["source_rows_sha256"] = None
+    elif fault == "missing_host":
+        request["source_host_contract"] = None
+    elif fault == "held_import":
+        boundary.absent = False
+        with pytest.raises(RuntimeError, match="provider still active"):
+            asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+        boundary.absent = True
+        request["action"] = "import"
+    else:
+        asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+        request["action"] = "cleanup" if fault == "cleanup_early" else "import"
+    source.commit()
+
+    with pytest.raises((LifecycleConflict, ValueError), match=message):
+        asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+
+    destination.rollback()
+    assert (
+        source.connection().execute(text("SELECT id FROM benchmark WHERE id=:id"), {"id": run_id}).scalar_one()
+        == run_id
+    )
+    assert destination.get(Benchmark, run_id) is None
+    assert destination.get(RunLifecycle, run_id) is None
+    held = source.get(RunLifecycle, run_id)
+    if held is not None:
+        assert held.released_at is None
+
+
+@pytest.mark.parametrize(
+    "fault", ["checkpoint", "copied_evidence", "archive", "dispatches", "completion", "parent_identity"]
+)
+def test_changed_transfer_proof_cannot_authorize_cleanup(
+    pair: tuple[Session, Session], tmp_path: Path, fault: str
+) -> None:
+    source, destination = pair
+    org, run, _ = seed_rows(source, destination)
+    request = transfer_request(source, destination, org, run)
+    operator = TransferOperator(source, destination, FakeTransferBoundary(tmp_path))
+    observed = asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+    request["plan"]["runs"][0]["source_rows_sha256"] = observed.runs[0].source_rows_sha256
+    for action in ("prepare", "import"):
+        request["action"] = action
+        imported = asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+    plan = TransferRequest.model_validate(request).plan
+    receipt = imported.runs[0].archive
+    assert receipt is not None
+    request["parent_completion"] = {
+        "operation_id": str(plan.source_identity.operation_id),
+        "parent_plan_sha256": plan.source_identity.parent_plan_sha256,
+        "child_plan_sha256": plan.sha256,
+        "valsmith_commit_sha256": "e" * 64,
+        "object_completion_sha256": "f" * 64,
+        "destination_rows_sha256": digest(
+            [{"run_id": str(run.id), "sha256": imported.runs[0].destination_rows_sha256}]
+        ),
+        "archives_sha256": digest([receipt.model_dump(mode="json")]),
+    }
+    request["action"] = "cleanup"
+    record = destination.get_one(RunLifecycle, run.id)
+    checkpoint = json.loads(record.checkpoint_json or "null")
+    if fault == "checkpoint":
+        checkpoint["scope_sha256"] = "f" * 64
+    elif fault == "copied_evidence":
+        checkpoint["copied_objects_sha256"] = "f" * 64
+    elif fault == "archive":
+        checkpoint["archive"] = None
+    elif fault == "dispatches":
+        checkpoint["dispatches"] = [{"dispatch_id": str(uuid4()), "provenance": "held_unclaimed"}]
+    elif fault == "completion":
+        request["parent_completion"]["archives_sha256"] = "a" * 64
+    else:
+        request["parent_completion"]["operation_id"] = str(uuid4())
+    record.checkpoint_json = json.dumps(checkpoint)
+    destination.add(record)
+    destination.commit()
+    before = RowClosure.read(destination, run.id, org.id).sha256
+
+    with pytest.raises((LifecycleConflict, ValueError)):
+        asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+
+    assert source.get(Benchmark, run.id) is not None
+    assert RowClosure.read(destination, run.id, org.id).sha256 == before
+    assert destination.get_one(RunLifecycle, run.id).released_at is None
+    assert source.get_one(RunLifecycle, run.id).phase == "transferred"
