@@ -28,6 +28,7 @@ from tracker.executor.release_control import (
     resolve_current_execution_release,
     select_active_release,
 )
+from tracker.lifecycle import active_hold, require_unheld
 
 _ACTIVE_DISPATCH_STATUSES = (
     ExecutorDispatchStatus.QUEUED,
@@ -65,6 +66,7 @@ def admit_start_dispatch(
 ) -> ExecutorDispatch:
     """Select the active release and persist one start dispatch."""
     with session.no_autoflush:
+        require_unheld(session, benchmark.id)
         release = select_active_release(session, for_update=True)
     _require_compatible_release(benchmark, release)
     session.add(benchmark)
@@ -93,6 +95,8 @@ def admit_recovery_dispatch(
     """Persist additive in-progress work or replace a terminal execution."""
     with session.no_autoflush:
         lock_executor_admission(session)
+        session.exec(select(Benchmark).where(col(Benchmark.id) == benchmark.id).with_for_update()).one()
+        require_unheld(session, benchmark.id)
         if pre_action_status == BenchmarkStatus.IN_PROGRESS:
             release = resolve_current_execution_release(session, benchmark, for_update=True)
         else:
@@ -255,6 +259,9 @@ def record_dispatch_failure(
         .execution_options(populate_existing=True)
         .with_for_update()
     ).one()
+
+    if active_hold(session, benchmark.id) is not None:
+        return False
 
     dispatch_query = (
         select(ExecutorDispatch)

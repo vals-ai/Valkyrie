@@ -1,0 +1,40 @@
+{
+  "identity": {
+    "schema_version": 1,
+    "operation_id": "00000000-0000-0000-0000-000000000001",
+    "parent_plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "github_owner_id": 42,
+    "org_id": "00000000-0000-0000-0000-000000000002",
+    "source_aws_account_id": "123456789012",
+    "destination_aws_account_id": "123456789012",
+    "region": "us-west-2",
+    "environment": "test",
+    "database_target": "tracker-test",
+    "run_ids": [
+      "00000000-0000-0000-0000-000000000003"
+    ]
+  },
+  "purpose": "deletion",
+  "observed_at": "2026-09-18T00:00:00Z",
+  "host_contract": null,
+  "runs": [
+    {
+      "scope": {
+        "run_id": "00000000-0000-0000-0000-000000000003",
+        "original_resources": {
+          "region": "us-west-2",
+          "s3_bucket": "owner-example",
+          "log_group": "runs",
+          "log_retention_days": 7
+        },
+        "object_prefix": "benchmarks/00000000-0000-0000-0000-000000000003/",
+        "log_group": "runs/00000000-0000-0000-0000-000000000003"
+      },
+      "phase": "held",
+      "destination_resources": null,
+      "copied_objects": [],
+      "dispatch_drain": [],
+      "external_host_drain": null
+    }
+  ]
+}

@@ -16,6 +16,7 @@ from tracker.database.models import (
     Task,
 )
 from tracker.exceptions import TrackerServiceError
+from tracker.lifecycle import require_unheld
 from tracker.outbound_security import validate_service_headers, validate_service_url_syntax
 from tracker.runtime.secrets import AsyncSecretStore, SecretStore, sandbox_provider_config_from_secret
 from tracker.types import (
@@ -156,6 +157,7 @@ def update_benchmark_concurrency(
 ) -> BenchmarkConcurrencyUpdate:
     """Lock an org-scoped run and persist a new active-run concurrency limit."""
     benchmark_row = _fetch_locked_benchmark(benchmark_id, session, org)
+    require_unheld(session, benchmark_id)
     if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
         return BenchmarkConcurrencyUpdate(
             benchmark_id=benchmark_row.id,
@@ -184,6 +186,7 @@ def update_benchmark_resume_arguments(
 ) -> Benchmark:
     """Lock and persist argument and service URL overrides used by resume and retry."""
     benchmark_row = _fetch_locked_benchmark(benchmark_id, session, org)
+    require_unheld(session, benchmark_id)
     arguments = benchmark_row.arguments
 
     if secrets:

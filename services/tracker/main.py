@@ -1,11 +1,11 @@
 import asyncio
 import io
+import json
 import logging
 import tarfile
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
-import json
 from datetime import UTC, datetime
 from typing import Annotated, Any, cast
 from uuid import UUID, uuid4
@@ -20,24 +20,26 @@ from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from opentelemetry.propagate import inject
-from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, select, update
 
+from executor_protocol import EXECUTOR_TASK_NAME, ExecutorTelemetryContext, executor_task_signature
 from tracker import config
 from tracker._lambda import invoke_lambda
+from tracker.agent.contract import get_contract_from_zip_bytes
+from tracker.agent.schemas import AgentConfig
 from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
-from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
-from tracker.api.dependencies import RunAWSDependency
+from tracker.api.dependencies import RunAWSDependency, TrackedBenchmarkId, bind_benchmark_id
 from tracker.api.filter_options import router as filter_options_router
 from tracker.api.logs import router as logs_router
+from tracker.api.run_artifacts import router as run_artifacts_router
 from tracker.api.scheduler_overview import router as scheduler_overview_router
 from tracker.api.single_benchmark import router as single_benchmark_router
 from tracker.api.single_task import router as single_task_router
-from tracker.api.run_artifacts import router as run_artifacts_router
 from tracker.auth import (
     RequestIdentity,
     extract_api_key,
@@ -60,32 +62,22 @@ from tracker.aws.resolver import (
     http_validate_saved_managed_storage_runtime,
     inspect_harness_headers,
     resolve_aws_runtime_metadata,
-    resolve_run_metadata_aws_runtime,
     resolve_run_aws_runtime_and_access_key_config,
+    resolve_run_metadata_aws_runtime,
     resolve_start_aws_runtime,
 )
-from tracker.aws.secrets import SecretsManagerStore
-from tracker.agent.contract import get_contract_from_zip_bytes
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     S3ObjectCopier,
     S3ObjectStore,
+    copy_s3_object,
     create_benchmark_url,
     create_console_url,
-    copy_s3_object,
     create_presigned_url,
     s3_object_exists,
 )
-from tracker.aws.runtime import AWSResources, AWSRuntime
-from tracker.runtime.artifacts import (
-    agent_bundle_key,
-    benchmark_agent_bundle_key,
-    benchmark_prefix as benchmark_artifact_prefix,
-    copy_agent_to_benchmark,
-)
-from tracker.runtime.secrets import resolve_secrets
-from tracker.runtime.storage import ObjectStore, StoredObjectCopy
-from tracker.agent.schemas import AgentConfig
+from tracker.aws.secrets import SecretsManagerStore
 from tracker.config import (
     AUTH_REQUIRED,
     ENVIRONMENT,
@@ -108,6 +100,11 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.scoping import assert_org, get_scoped
+from tracker.database.session import check_database_connection, get_session
+from tracker.docent_analysis import (
+    analyze_event_stream,
+)
+from tracker.exceptions import TrackerServiceError
 from tracker.executor.dispatch_control import (
     EnqueueFailureResolution,
     admit_recovery_dispatch,
@@ -115,19 +112,24 @@ from tracker.executor.dispatch_control import (
     resolve_enqueue_failure,
     validate_managed_execution_release,
 )
-from tracker.database.session import check_database_connection, get_session
-from tracker.docent_analysis import (
-    analyze_event_stream,
-)
-from tracker.exceptions import TrackerServiceError
-from executor_protocol import EXECUTOR_TASK_NAME, ExecutorTelemetryContext, executor_task_signature
-from tracker.logging import configure_logging, get_logger, request_id_var
-from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
 from tracker.executor.dispatch_recovery import AutomaticDispatchRecovery
+from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
 from tracker.executor.release_retirement import AutomaticReleaseRetirement
+from tracker.lifecycle import LifecycleConflict, require_unheld
+from tracker.logging import configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.outbound_security import validate_custom_service_destination, validate_service_url_syntax
+from tracker.runtime.artifacts import (
+    agent_bundle_key,
+    benchmark_agent_bundle_key,
+    copy_agent_to_benchmark,
+)
+from tracker.runtime.artifacts import (
+    benchmark_prefix as benchmark_artifact_prefix,
+)
+from tracker.runtime.secrets import resolve_secrets
+from tracker.runtime.storage import ObjectStore, StoredObjectCopy
 from tracker.scheduler.store import queue_pool_id, try_task_evaluation_transaction_lock
 from tracker.types import (
     AnalyzeBenchmarkRequest,
@@ -168,9 +170,9 @@ from tracker.utils import (
     reset_to_in_progress_status,
     start_benchmark_request_to_benchmark,
     stream_benchmark_results,
-    upload_final_view,
     update_benchmark_concurrency,
     update_benchmark_resume_arguments,
+    upload_final_view,
 )
 from tracker.utils.resources import fetch_sandbox_provider_config
 from tracker.utils.run_control import RetryState, prepare_retry_state
@@ -1635,7 +1637,14 @@ def _apply_recovery(
     preparation: RecoveryPreparation,
     verified_task_ids: list[str],
 ) -> AdmissionResult | None:
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    with session.no_autoflush:
+        lock_executor_admission(session)
+    benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+    try:
+        require_unheld(session, benchmark_id)
+    except LifecycleConflict as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     if benchmark_row.status == BenchmarkStatus.STOPPING:
         raise HTTPException(
@@ -1713,6 +1722,7 @@ def _apply_recovery(
         with session.no_autoflush:
             lock_executor_admission(session)
         benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        require_unheld(session, benchmark_row.id)
         effective_benchmark_url = benchmark_url if benchmark_url is not None else benchmark_row.custom_benchmark_service
         if effective_benchmark_url is not None:
             _authorize_custom_benchmark_destination(effective_benchmark_url, org)
