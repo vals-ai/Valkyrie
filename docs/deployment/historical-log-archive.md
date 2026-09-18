@@ -1,8 +1,9 @@
 # Historical log archive, version 1
 
 This module stores retained CloudWatch history in private, versioned S3 objects.
-It does not replay events into CloudWatch. It does not modify database rows,
-acquire run holds, remove source data, or compose the public log reader.
+The writer does not replay events into CloudWatch, modify database rows, acquire
+run holds, or remove source data. The reader composes this history behind the
+existing authenticated log endpoints.
 
 ## Transfer caller contract (Task 2)
 
@@ -193,3 +194,66 @@ No delete permission is used by this provider. Role alignment belongs to Task 4.
 Same-account relocation must remap and verify every referenced object version
 and rewrite the typed reference, or report the archive unresolved. Copying the
 manifest bytes alone leaves old version IDs and destination identity in place.
+
+## Existing application reader and stored-column transfer
+
+Migration `9d0e1f2a3b4c`, after purge checkpoint `8c9d0e1f2a3b`, adds nullable
+`benchmark.log_history` JSON. Ordinary runs keep SQL NULL. The database adapter
+validates `LogHistoryReference` on write and read. Its schema-only definition is
+in `tracker.runtime.log_history_reference`; the existing writer import remains
+available through `tracker.runtime.log_history`. No log messages enter this
+column. Deleting Benchmark removes the reference; do not copy this customer
+history into retained `RunLifecycle` identities, plans or checkpoints.
+
+Task 2 must explicitly include this stored column in export/import. Preserve SQL
+NULL separately from a JSON reference. Serialize the reference with
+`model_dump(mode="json")`; preserve all version IDs, byte counts, checksums and
+operation identity, and check run ID equality. Do not use an API response or
+`Benchmark.arguments` as the stored-column export. The actual historical read
+route must verify the imported reference before source cleanup.
+
+`get_run_runtime` composes `HistoricalLogProvider` only when the authorized
+Benchmark declares history. It requires saved resources. A session from the
+resolved runtime verifies STS account, expected bucket owner, region, versioning,
+owner enforcement, organization and owner/environment bucket tags. The owner ID
+comes from that checked bucket identity. All synchronous AWS calls and object
+parsing run in worker threads. Reader requests cannot supply storage locators.
+The existing authenticated run/task log endpoints remain the history path. Run
+and task metadata omit native CloudWatch links for runs with archived history;
+those links cannot show the archived events.
+
+Snapshot ordering uses original timestamp, then ingestion time. Archived events
+come before live events at an equal pair; archive ties retain original ordinals.
+The live provider retains its existing page order. There is no message or ID
+deduplication across these sources. Source logs must never be replayed into the
+destination group. A run read includes every archived stream; only exact current
+canonical or unambiguous legacy task stream names receive a task identity. Old
+attempts and unknown streams stay visible in aggregate reads.
+
+Literal, case-sensitive substring queries retain current behavior. Snapshot and
+follow archive bounds include both specified milliseconds; sub-millisecond
+bounds are floored as in the CloudWatch reader. The live follow adapter retains
+its existing exclusive GetLogEvents end conversion. Follow emits matching
+archived events once, then follows the destination task stream. For a run that
+is already terminal at request time, live following ends at the request's
+current time (or an earlier requested end), so an absent destination group does
+not poll forever. Start a new request after a later retry.
+
+Version 1 composite cursors bind the full immutable reference, run/task and
+sibling identities, query, normalized time bounds, archive chunk/event position,
+and live page token/offset. They contain no bucket or object key authority.
+Changing page size is supported; changing a bound or task requires a new read.
+Each response scans at most 16 archive chunks and 16 live pages of 1,000 events,
+and returns at most the requested limit (maximum 10,000). It holds one bounded
+chunk and live page. A bounded scan can return no events with a continuation
+cursor; clients must continue until the cursor is absent. Missing or corrupt
+manifest/chunk versions fail closed without a live-only fallback. Previously
+returned pages cannot prove integrity of chunks not yet read. Live CloudWatch
+pagination retains its existing behavior when new writes arrive; it is not an
+immutable snapshot. Cursor size is limited to 32 KiB.
+
+Same-account relocation must remap every immutable chunk version, rewrite the
+manifest's destination and chunk references, verify its new exact version, and
+save the new typed reference, or explicitly report the run unresolved. Rewriting
+saved bucket/region while keeping old version IDs is unsupported. The production
+integration must enforce this requirement in the relocation tool before use.

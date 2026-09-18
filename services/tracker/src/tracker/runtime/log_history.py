@@ -5,6 +5,11 @@ from uuid import UUID
 
 from pydantic import Field, model_validator
 
+from tracker.runtime.log_history_reference import (
+    ArchiveObject as ArchiveObject,
+    LogHistoryReference as LogHistoryReference,
+)
+
 from tracker.lifecycle import AccountId, ContractModel, Digest, OperationIdentity, RunScope
 
 Positive = Annotated[int, Field(gt=0, strict=True)]
@@ -85,39 +90,6 @@ class FrozenLogScope(ContractModel):
     @property
     def prefix(self) -> str:
         return f"benchmarks/{self.source.run_id}/log-history/{self.source_identity.operation_id}/v1/"
-
-
-class ArchiveObject(ContractModel):
-    key: Nonempty
-    version_id: Nonempty
-    sha256: Digest
-    size_bytes: Positive
-
-    @model_validator(mode="after")
-    def immutable_version(self) -> "ArchiveObject":
-        if self.version_id == "null":
-            raise ValueError("immutable version required")
-
-        return self
-
-
-class LogHistoryReference(ContractModel):
-    format_version: Literal[1] = 1
-    run_id: UUID
-    operation_id: UUID
-    parent_plan_sha256: Digest
-    manifest: ArchiveObject
-
-    @property
-    def prefix(self) -> str:
-        return f"benchmarks/{self.run_id}/log-history/{self.operation_id}/v1/"
-
-    @model_validator(mode="after")
-    def manifest_key(self) -> "LogHistoryReference":
-        if self.manifest.key != f"{self.prefix}manifest.json":
-            raise ValueError("manifest key does not match run and operation")
-
-        return self
 
 
 class ArchivedLogEvent(ContractModel):
