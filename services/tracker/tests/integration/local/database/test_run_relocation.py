@@ -578,13 +578,23 @@ def test_legacy_shared_source_moves_through_real_provider_checks_without_touchin
 
     run, _, request = seed(relocation_session)
     source, destination = "legacy-shared-storage", "vs-dev-owner-42"
-    run.arguments = run.arguments.model_copy(update={"properties": AWSResources("us-east-1", source, "runs", 7)})
+    run.arguments = run.arguments.model_copy(
+        update={"properties": AWSResources("us-east-1", source, "runs", 7), "dataset": f"s3://{source}/manifest.json"}
+    )
     relocation_session.add(run)
     relocation_session.commit()
     planned = request["plan"]["runs"][0]
     planned["scope"]["original_resources"]["s3_bucket"] = source
     planned["destination_resources"]["s3_bucket"] = destination
+    arguments = (
+        relocation_session.connection()
+        .execute(text("SELECT arguments FROM benchmark WHERE id=:id"), {"id": run.id})
+        .scalar_one()
+    )
+    arguments["properties"].pop("s3_bucket")
+    planned["execution_arguments_sha256"] = digest(arguments)
     store = VersionStore(str(run.id))
+    store.execution_objects[source, "manifest.json"] = (None if source_version == "null" else source_version, b"{}")
     content = b"retained result"
     store.versions = {source: [(source_version, content)], destination: [("destination-v1", content)]}
     store.versioning[source] = {} if source_version == "null" else {"Status": "Suspended"}
@@ -624,6 +634,13 @@ def test_legacy_shared_source_moves_through_real_provider_checks_without_touchin
 
     monkeypatch.setattr("tracker.run_purge.providers.fetch_sandbox_provider_config", sandbox_configuration)
     operator = RelocationOperator(relocation_session, RelocationAWSBoundary(clients))
+    inventory = asyncio.run(
+        operator.execute(TrackerRequest.model_validate({**request, "action": "inventory", "plan": None}))
+    )
+    assert inventory.runs[0].execution_references[0].kind == (
+        "unknown" if source_version == "null" else "retained_s3_object"
+    )
+    assert inventory.runs[0].execution_arguments_sha256 == planned["execution_arguments_sha256"]
     asyncio.run(operator.execute(TrackerRequest.model_validate(request)))
     content_digest = hashlib.sha256(content).hexdigest()
     request["copied_objects"] = [
@@ -660,6 +677,21 @@ def test_legacy_shared_source_moves_through_real_provider_checks_without_touchin
     assert response.runs[0].resources.s3_bucket == destination
     assert store.unrelated == unrelated
     assert store.versions[source] == [(source_version, content)]
+    inspected = asyncio.run(
+        operator.execute(
+            TrackerRequest.model_validate(
+                {**request, "action": "inspect", "copied_objects": [], "destination_versions": []}
+            )
+        )
+    )
+    assert inspected.copied_objects_sha256 == response.copied_objects_sha256
+    assert inspected.destination_versions_sha256 == response.destination_versions_sha256
+    store.versions[source] = []
+    released = asyncio.run(
+        operator.execute(TrackerRequest.model_validate({**request, "action": "release", "completion_sha256": "c" * 64}))
+    )
+    assert released.runs[0].hold_phase == "relocated_history_only"
+    assert released.runs[0].execution_references[0].kind == "retired_source"
     assert relocation_session.get_one(RunLifecycle, run.id).released_at is None
 
 
@@ -713,3 +745,59 @@ def test_prepare_accepts_inclusive_host_freshness_boundary_without_dispatches(
     assert response.runs[0].dispatches == ()
     record = relocation_session.get(RunLifecycle, run.id)
     assert record is not None and record.phase == "prepared" and record.released_at is None
+
+
+def test_checkpoint_inspection_hashes_nonempty_evidence_for_every_run(relocation_session: Session) -> None:
+    first, _, request = seed(relocation_session)
+    second, _, second_request = seed(relocation_session)
+    second.org_id = first.org_id
+    relocation_session.add(second)
+    relocation_session.commit()
+    request["run_ids"] = sorted([str(first.id), str(second.id)])
+    request["plan"]["identity"]["run_ids"] = request["run_ids"]
+    request["plan"]["runs"] += second_request["plan"]["runs"]
+    planned_runs: list[dict[str, Any]] = request["plan"]["runs"]
+    planned_runs.sort(key=lambda item: item["scope"]["run_id"])
+    execute(relocation_session, request, "prepare")
+    copies: list[dict[str, Any]] = []
+    history: list[dict[str, Any]] = []
+    for run_id in request["run_ids"]:
+        key = f"benchmarks/{run_id}/results.json"
+        copies.append(
+            {
+                "run_id": run_id,
+                "key": key,
+                "source_bucket": "valsmith-dev-42-source",
+                "source_version_id": "source-v1",
+                "destination_bucket": "valsmith-dev-42-destination",
+                "destination_version_id": "destination-v1",
+                "is_delete_marker": False,
+                "source_sha256": "a" * 64,
+                "destination_sha256": "a" * 64,
+                "source_size": 10,
+                "destination_size": 10,
+                "is_current": True,
+            }
+        )
+        history.append(
+            {
+                "run_id": run_id,
+                "key": key,
+                "bucket": "valsmith-dev-42-destination",
+                "version_id": "destination-v1",
+                "is_delete_marker": False,
+                "sha256": "a" * 64,
+                "size": 10,
+                "is_current": True,
+                "provenance": "copied",
+            }
+        )
+    request["copied_objects"] = copies
+    request["destination_versions"] = history
+    relocated = execute(relocation_session, request, "relocate")
+    request["copied_objects"] = []
+    request["destination_versions"] = []
+    inspected = execute(relocation_session, request, "inspect")
+    assert len(inspected.runs) == 2
+    assert inspected.copied_objects_sha256 == relocated.copied_objects_sha256 != digest([])
+    assert inspected.destination_versions_sha256 == relocated.destination_versions_sha256 != digest([])

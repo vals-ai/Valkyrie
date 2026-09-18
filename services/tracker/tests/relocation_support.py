@@ -15,6 +15,7 @@ class VersionStore:
         self.versioning: dict[str, dict[str, str]] = {}
         self.region = "us-east-1"
         self.unrelated: dict[tuple[str, str], bytes] = {}
+        self.execution_objects: dict[tuple[str, str], tuple[str | None, bytes]] = {}
         self.key = f"benchmarks/{run_id}/results.json"
         self.versions: dict[str, list[tuple[str, bytes | None]]] = {
             "source": [("s1", b'{"value":1}')],
@@ -75,6 +76,13 @@ class VersionStore:
         return {"Uploads": [], "IsTruncated": False}
 
     async def get_object(self, **arguments: Any) -> dict[str, Any]:
+        execution_object = self.execution_objects.get((arguments["Bucket"], arguments["Key"]))
+        if execution_object is not None:
+            identifier, content = execution_object
+            stream = AsyncMock()
+            stream.__aenter__.return_value = stream
+            stream.read.return_value = content
+            return {"Body": stream, "ContentLength": len(content), **({"VersionId": identifier} if identifier else {})}
         content = next(
             content
             for identifier, content in self.versions[arguments["Bucket"]]

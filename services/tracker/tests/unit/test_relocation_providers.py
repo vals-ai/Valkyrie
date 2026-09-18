@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import Mock
@@ -309,3 +310,70 @@ async def test_source_authority_never_falls_back_from_foreign_managed_scope(chan
         clients.sts_client.return_value.get_caller_identity.return_value = {"Account": "999999999999"}
     with pytest.raises(LifecycleConflict):
         await boundary.validate_source(identity, run)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("historical_marker", [False, True])
+async def test_tied_source_history_cannot_prove_copy_order(historical_marker: bool) -> None:
+    boundary, store, request = setup()
+    historical = None if historical_marker else b"older2"
+    store.versions["source"] += [("s2", historical), ("s3", b"older3")]
+    store.versions["destination"] += [("d3", b"older3"), ("d2", historical)]
+    original_list = store.list_object_versions
+
+    async def tied_source(**arguments: Any) -> dict[str, Any]:
+        result = await original_list(**arguments)
+        if arguments["Bucket"] == "source":
+            for item in result["Versions"] + result["DeleteMarkers"]:
+                if not item["IsLatest"]:
+                    item["LastModified"] = datetime(2025, 1, 1, tzinfo=UTC)
+        return result
+
+    store.list_object_versions = tied_source
+    for number, content in [(3, b"older3"), (2, historical)]:
+        size = len(content or b"")
+        content_digest = None if content is None else checksum(content)
+        request["copied_objects"].append(
+            {
+                **request["copied_objects"][0],
+                "source_version_id": f"s{number}",
+                "destination_version_id": f"d{number}",
+                "source_size": size,
+                "destination_size": size,
+                "source_sha256": content_digest,
+                "destination_sha256": content_digest,
+                "is_current": False,
+                "is_delete_marker": content is None,
+            }
+        )
+        request["destination_versions"].append(
+            {
+                **request["destination_versions"][0],
+                "version_id": f"d{number}",
+                "size": size,
+                "sha256": content_digest,
+                "is_current": False,
+                "is_delete_marker": content is None,
+            }
+        )
+    parsed = TrackerRequest.model_validate(request)
+    assert parsed.plan is not None
+    with pytest.raises(LifecycleConflict, match="ambiguous"):
+        await boundary.verify_objects(parsed, parsed.plan.runs[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identifier", [None, "null"])
+async def test_unversioned_retained_reference_is_unknown_and_cannot_claim_an_immutable_version(
+    identifier: str | None,
+) -> None:
+    boundary, store, payload = setup()
+    store.execution_objects["retained", "manifest.json"] = (identifier, b"{}")
+    request = TrackerRequest.model_validate(payload)
+    references = await boundary.execution_references({"dataset": "s3://retained/manifest.json"}, request, None)
+    assert len(references) == 1
+    assert references[0].kind == "unknown" and references[0].version_id is None
+    with pytest.raises(LifecycleConflict, match="another version"):
+        await boundary.execution_references(
+            {"dataset": "s3://retained/manifest.json?versionId=immutable"}, request, None
+        )

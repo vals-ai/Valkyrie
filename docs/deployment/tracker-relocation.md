@@ -143,3 +143,14 @@ history attribute when that production column is integrated. Final production
 integration must remap every exact archive VersionId/reference or preserve the
 refusal. A bucket-only update cannot preserve version-pinned archive locators.
 Cross-account actual runs remain outside this operator.
+
+Inventory reports S3 execution references with a missing or null version as unknown.
+This permits an explicit history-only plan for a saved legacy dataset. Portable
+release still requires exact immutable retained references. A requested immutable
+version that does not match the provider response is rejected.
+
+Source and destination histories with equal timestamps for the same key are rejected,
+including object/delete-marker ties. Checksums prove bytes, not relative version order.
+Inspection with omitted copy/history inputs loads checkpoint proof and hashes the
+effective evidence for all runs, in plan run order with each run's proof order retained.
+Explicitly supplied proof keeps its original order for response digest compatibility.
