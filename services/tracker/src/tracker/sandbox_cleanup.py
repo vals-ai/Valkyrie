@@ -169,7 +169,7 @@ def _cleanup_secret_store() -> SecretsManagerStore:
 
 def _load_provider_config(secret_name: str, provider_type: str) -> SandboxProviderConfig:
     try:
-        return fetch_sandbox_provider_config(secret_name, _cleanup_secret_store(), provider_type)
+        return asyncio.run(fetch_sandbox_provider_config(secret_name, _cleanup_secret_store(), provider_type))
     except (TypeError, ValueError):
         # Provider validation may echo credentials, so do not expose or chain it.
         raise RuntimeError(f"Sandbox cleanup secret is invalid for provider {provider_type!r}") from None

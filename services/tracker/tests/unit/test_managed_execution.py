@@ -353,11 +353,11 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         calls.append("logs")
 
     async def fetch_provider(runtime: RuntimeServices, _name: str) -> SandboxProviderConfig:
-        assert runtime.async_secrets is not aws_runtime.clients
+        assert runtime.secrets is not aws_runtime.clients
         calls.append("provider-secret")
         return provider_config
 
-    def resolve_agent_secrets(_secrets: object, secret_store: object) -> dict[str, str]:
+    async def resolve_agent_secrets(_secrets: object, secret_store: object) -> dict[str, str]:
         assert secret_store is not aws_runtime.clients
         calls.append("agent-secrets")
         return {"MODEL_API_KEY": "resolved"}
@@ -443,11 +443,11 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         calls.append("sandbox_provider_secret")
         return provider_config
 
-    def resolve_agent_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+    async def resolve_agent_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
         calls.append("agent_secrets")
         return {"AGENT_TOKEN": "resolved"}
 
-    def get_webhook_secret(_store: object, _name: str) -> dict[str, str]:
+    async def get_webhook_secret(_store: object, _name: str) -> dict[str, str]:
         calls.append("webhook_secret")
         return {"url": "https://example.com"}
 
@@ -465,7 +465,7 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         sandbox_provider=request.sandbox_provider,
         sandbox_provider_secret_name=request.sandbox_provider_secret_reference,
     )
-    runtime.prepare_execution(request, benchmark_id)
+    await runtime.prepare_execution(request, benchmark_id)
     result = await runtime.get_sandbox_provider_config()
 
     assert result is provider_config

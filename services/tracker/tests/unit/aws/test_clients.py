@@ -71,7 +71,6 @@ class TestAWSClientProviders:
 
         provider.s3_client()
         provider.cloudwatch_logs_client()
-        provider.secretsmanager_client()
         provider.secretsmanager_async_client()
         provider.lambda_client()
 
@@ -84,7 +83,6 @@ class TestAWSClientProviders:
         session.client.assert_has_calls([call("s3", config=ANY), call("secretsmanager")])
         assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
             "logs",
-            "secretsmanager",
             "lambda",
         }
         for constructed in boto_client_factory.call_args_list:
@@ -105,7 +103,6 @@ class TestAWSClientProviders:
 
         provider.s3_client()
         provider.cloudwatch_logs_client()
-        provider.secretsmanager_client()
         provider.secretsmanager_async_client()
         provider.lambda_client()
 
@@ -113,7 +110,6 @@ class TestAWSClientProviders:
         session.client.assert_has_calls([call("s3", config=ANY), call("secretsmanager")])
         assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
             "logs",
-            "secretsmanager",
             "lambda",
         }
         credential_arguments = {"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}

@@ -1,7 +1,7 @@
 """Services shared by one API operation or executor execution."""
 
 from abc import ABC, abstractmethod
-from asyncio import create_task, to_thread
+from asyncio import create_task
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -13,7 +13,7 @@ from benchmark_service import SandboxProvider, SandboxProviderConfig
 from tracker.exceptions import InvalidSandboxConfigurationError
 from tracker.runtime.lifecycle import finish_cleanup
 from tracker.runtime.logs import BenchmarkLogLocations, BenchmarkLogSink, LogProvider
-from tracker.runtime.secrets import AsyncSecretStore, SecretStore, resolve_secrets, sandbox_provider_config_from_secret
+from tracker.runtime.secrets import SecretStore, resolve_secrets, sandbox_provider_config_from_secret
 from tracker.runtime.storage import ArtifactLocations, ObjectStore
 
 
@@ -27,7 +27,6 @@ class RuntimeServices(ABC):
 
     objects: ObjectStore
     secrets: SecretStore
-    async_secrets: AsyncSecretStore
     logs: BenchmarkLogSink
     log_reader: LogProvider
     log_locations: BenchmarkLogLocations
@@ -36,7 +35,7 @@ class RuntimeServices(ABC):
     sandbox_provider_secret_name: str | None = None
 
     @abstractmethod
-    def prepare_execution(self, request: "StartBenchmarkRequest", benchmark_id: UUID) -> None:
+    async def prepare_execution(self, request: "StartBenchmarkRequest", benchmark_id: UUID) -> None:
         """Prepare backend resources before sandbox work."""
         raise NotImplementedError
 
@@ -53,7 +52,7 @@ class RuntimeServices(ABC):
         return await self._load_sandbox_provider_config(self.sandbox_provider_secret_name)
 
     async def _load_sandbox_provider_config(self, secret_name: str) -> SandboxProviderConfig:
-        secret = await self.async_secrets.get_async(secret_name)
+        secret = await self.secrets.get(secret_name)
         return sandbox_provider_config_from_secret(secret, self.sandbox_provider)
 
     @asynccontextmanager
@@ -67,4 +66,4 @@ class RuntimeServices(ABC):
 
     async def resolve_secrets(self, references: dict[str, str]) -> dict[str, str]:
         """Resolve agent environment values without blocking execution."""
-        return await to_thread(resolve_secrets, references, self.secrets)
+        return await resolve_secrets(references, self.secrets)
