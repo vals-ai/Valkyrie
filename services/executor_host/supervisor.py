@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Protocol, Unpack, cast
 
+import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
 from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
 from redis.asyncio import Redis
@@ -33,6 +34,7 @@ from executor_protocol import (
     ExecutorTelemetryContext,
     executor_payload_benchmark_id,
     normalize_executor_telemetry_context,
+    validate_executor_artifact_uri,
     validate_executor_digest,
 )
 from services.executor_host.observability import (
@@ -42,9 +44,7 @@ from services.executor_host.observability import (
     record_dispatch_cancellation,
     record_dispatch_completion,
 )
-from tracker.aws.executor_artifacts import S3ExecutorArtifactClient, S3ExecutorArtifactReader
 from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader
-from tracker.runtime.executor_artifacts import ExecutorArtifactReader
 from tracker.runtime.lifecycle import finish_cleanup
 
 logger = logging.getLogger(__name__)
@@ -145,6 +145,11 @@ async def _await_task_completion(task: asyncio.Task[None]) -> None:
         except asyncio.CancelledError:
             pass
     await task
+
+
+class S3Client(Protocol):
+    def download_file(self, bucket: str, key: str, filename: str) -> None:
+        pass
 
 
 @dataclass(frozen=True)
@@ -541,8 +546,8 @@ class ExecutorSupervisor:
         self,
         cache_dir: Path,
         *,
-        s3_client: S3ExecutorArtifactClient | None = None,
-        artifact_reader: ExecutorArtifactReader | None = None,
+        s3_client: S3Client | None = None,
+        artifact_reader: FilesystemExecutorArtifactReader | None = None,
         python_executable: str = sys.executable,
         artifact_bucket: str | None = None,
         artifact_prefix: str | None = None,
@@ -556,9 +561,8 @@ class ExecutorSupervisor:
             "EXECUTOR_RELEASE_PREFIX",
             DEFAULT_EXECUTOR_RELEASE_PREFIX,
         )
-        self.artifact_reader = artifact_reader or S3ExecutorArtifactReader(
-            s3_client, expected_bucket=self.artifact_bucket, expected_prefix=self.artifact_prefix
-        )
+        self.s3_client = s3_client
+        self.artifact_reader = artifact_reader
         self.authority_check_interval = authority_check_interval
         self.sleep = sleep
 
@@ -566,7 +570,10 @@ class ExecutorSupervisor:
         return await finish_cleanup(asyncio.create_task(asyncio.to_thread(self._prepare_artifact, dispatch)))
 
     def _prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
-        self.artifact_reader.validate(dispatch.artifact_uri)
+        if self.artifact_reader is not None:
+            self.artifact_reader.validate(dispatch.artifact_uri)
+        else:
+            validate_executor_artifact_uri(dispatch.artifact_uri, self.artifact_bucket, self.artifact_prefix)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = self.cache_dir / f"{dispatch.artifact_digest}.pex"
         try:
@@ -584,8 +591,21 @@ class ExecutorSupervisor:
         os.close(temporary_fd)
         temporary_path = Path(temporary_name)
         try:
-            with self.artifact_reader.open(dispatch.artifact_uri) as source, temporary_path.open("wb") as destination:
-                shutil.copyfileobj(source, destination)
+            if self.artifact_reader is not None:
+                with (
+                    self.artifact_reader.open(dispatch.artifact_uri) as source,
+                    temporary_path.open("wb") as destination,
+                ):
+                    shutil.copyfileobj(source, destination)
+            else:
+                bucket, key = validate_executor_artifact_uri(
+                    dispatch.artifact_uri, self.artifact_bucket, self.artifact_prefix
+                )
+                client = self.s3_client or cast(
+                    S3Client,
+                    boto3.client("s3"),  # pyright: ignore[reportUnknownMemberType]
+                )
+                client.download_file(bucket, key, str(temporary_path))
             verify_file_digest(temporary_path, dispatch.artifact_digest)
             temporary_path.chmod(temporary_path.stat().st_mode | 0o111)
             temporary_path.replace(artifact_path)
