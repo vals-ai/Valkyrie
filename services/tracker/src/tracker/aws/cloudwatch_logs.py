@@ -5,7 +5,7 @@ import hashlib
 import re
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from functools import wraps
@@ -322,7 +322,7 @@ class CloudWatchLogProvider(LogProvider):
             return None
 
     @asynccontextmanager
-    async def _get_client(self) -> AsyncIterator[Any]:
+    async def _get_client(self) -> AsyncGenerator[Any]:
         try:
             async with self._clients.cloudwatch_logs_async_client() as client:
                 yield client
