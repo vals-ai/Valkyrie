@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from tracker.api.dependencies import RunAWSDependency, TrackedBenchmarkId
-from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
+from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, s3_owner_arguments
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/benchmarks")
@@ -78,6 +78,7 @@ async def list_run_artifacts(
     root = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
     runtime = run_context.aws_runtime
     arguments: dict[str, Any] = {"Bucket": runtime.resources.s3_bucket, "Prefix": root + prefix, "MaxKeys": limit}
+    arguments.update(s3_owner_arguments(runtime))
     if cursor is not None:
         arguments["ContinuationToken"] = cursor
     with _storage_errors():
@@ -106,7 +107,11 @@ async def get_run_artifact_url(
     ttl = runtime.clients.maximum_presign_ttl(300)
     with _storage_errors():
         async with runtime.clients.s3_client() as client:
-            metadata = await client.head_object(Bucket=runtime.resources.s3_bucket, Key=key)
+            metadata = await client.head_object(
+                Bucket=runtime.resources.s3_bucket,
+                Key=key,
+                **s3_owner_arguments(runtime),
+            )
             url = await client.generate_presigned_url(
                 "get_object", Params={"Bucket": runtime.resources.s3_bucket, "Key": key}, ExpiresIn=ttl
             )
