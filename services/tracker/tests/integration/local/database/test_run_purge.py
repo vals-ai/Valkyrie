@@ -15,6 +15,7 @@ from sqlalchemy import Connection, text
 from sqlalchemy.exc import DBAPIError
 from sqlmodel import Session, select
 
+import tracker.run_purge.cli as purge_cli
 import tracker.utils.run_orchestration as orchestration
 from tests.factories import make_benchmark, make_task
 from tests.integration.local.database.test_lifecycle_holds import seeded_run
@@ -44,6 +45,167 @@ from tracker.run_purge import PurgeOperator, build_plan
 from tracker.run_purge.cli import main as purge_cli_main
 from tracker.run_purge.contracts import PurgeCheckpoint, PurgePlan
 from tracker.run_purge.locking import database_target
+
+
+def test_cli_apply_failure_and_resume_preserve_durable_proof(
+    postgres_session: Session, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    operator, boundary = prepared_operator(postgres_session)
+    binding = postgres_session.get_bind()
+    engine = binding.engine if isinstance(binding, Connection) else binding
+    monkeypatch.setenv("PURGE_CLI_TEST_DATABASE", engine.url.render_as_string(hide_password=False))
+
+    def boundary_factory(*_args: Any, **_kwargs: Any) -> MemoryBoundary:
+        return boundary
+
+    monkeypatch.setattr(purge_cli, "AWSProviderBoundary", boundary_factory)
+    plan_path, host_path, report_path = (tmp_path / name for name in ("plan.json", "host.json", "report.json"))
+    purge_cli.write_plan(plan_path, operator.plan)
+    assert operator.host_contract is not None
+    host_path.write_text(operator.host_contract.model_dump_json())
+    arguments = [
+        "--apply",
+        "--database-url-env",
+        "PURGE_CLI_TEST_DATABASE",
+        "--expected-database-target",
+        operator.plan.identity.database_target,
+        "--plan",
+        str(plan_path),
+        "--host-contract",
+        str(host_path),
+        "--report",
+        str(report_path),
+    ]
+    assert purge_cli.main(["prepare", *arguments]) == 0
+    assert json.loads(report_path.read_text())["runs"][0]["phase"] == "prepared"
+    boundary.fenced = True
+    boundary.fail = "logs"
+    assert purge_cli.main(["purge", *arguments]) == 2
+    failed = json.loads(report_path.read_text())
+    assert failed["outcome"] == "incomplete" and failed["runs"][0]["phase"] == "objects_removed"
+    assert "logs unavailable" not in capsys.readouterr().err
+    boundary.fail = None
+    assert purge_cli.main(["resume", *arguments]) == 0
+    complete = json.loads(report_path.read_text())
+    assert complete["outcome"] == "checked" and complete["runs"][0]["phase"] == "complete"
+    assert report_path.stat().st_mode & 0o777 == 0o600
+    postgres_session.expire_all()
+    run_id = operator.plan.identity.run_ids[0]
+    assert postgres_session.get(Benchmark, run_id) is None
+    record = postgres_session.get(RunLifecycle, run_id)
+    assert record is not None and record.released_at is None
+
+    def fail_report(*_args: Any) -> None:
+        raise OSError("private storage error")
+
+    monkeypatch.setattr(purge_cli, "write_report", fail_report)
+    assert purge_cli.main(["resume", *arguments]) == 2
+    assert "private storage error" not in capsys.readouterr().err
+    boundary.objects.add("late")
+    assert purge_cli.main(["resume", *arguments]) == 2
+    postgres_session.refresh(record)
+    assert record.phase == "complete" and record.released_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing",
+        "digest",
+        "provider",
+        "phase",
+        "dispatch_scope",
+        "pending",
+        "exit",
+        "unclaimed",
+        "finished",
+        "external",
+        "row_tables",
+        "row_duplicates",
+        "row_fence",
+        "row_run",
+        "dispatch_duplicates",
+    ],
+)
+async def test_corrupt_saved_checkpoint_refuses_before_provider_mutation(
+    postgres_session: Session, corruption: str
+) -> None:
+    operator, boundary = prepared_operator(postgres_session)
+    await operator.prepare()
+    boundary.fenced = True
+    boundary.fail = "objects"
+    with pytest.raises(RuntimeError):
+        await operator.purge()
+    record = postgres_session.get(RunLifecycle, operator.plan.identity.run_ids[0])
+    assert record is not None and record.checkpoint_json is not None
+    checkpoint = json.loads(record.checkpoint_json)
+    drain = checkpoint["dispatch_drain"][0]
+    if corruption == "digest":
+        checkpoint["child_plan_sha256"] = "0" * 64
+    elif corruption == "provider":
+        checkpoint["provider"]["secret_name"] = "changed"
+    elif corruption == "phase":
+        checkpoint["phase"] = "objects_removed"
+    elif corruption == "dispatch_scope":
+        checkpoint["dispatch_drain"] = []
+    elif corruption in {"pending", "unclaimed", "finished", "external"}:
+        drain["provenance"] = {
+            "pending": "pending",
+            "unclaimed": "held_unclaimed",
+            "finished": "verified_finished_contract",
+            "external": "externally_confirmed_host_drain",
+        }[corruption]
+    elif corruption == "exit":
+        drain["observed_exit_at"] = None
+    elif corruption == "row_tables":
+        checkpoint["rows"] = checkpoint["rows"][:-1]
+    elif corruption == "row_duplicates":
+        checkpoint["rows"][0]["ids"] *= 2
+    elif corruption == "row_fence":
+        checkpoint["fence_policy_sha256"] = None
+    elif corruption == "row_run":
+        next(row for row in checkpoint["rows"] if row["table"] == "benchmark")["ids"] = [str(uuid4())]
+    elif corruption == "dispatch_duplicates":
+        checkpoint["original_dispatches"] *= 2
+    record.checkpoint_json = None if corruption == "missing" else json.dumps(checkpoint)
+    postgres_session.add(record)
+    postgres_session.commit()
+    before = record.model_dump()
+    boundary.calls.clear()
+    with pytest.raises(LifecycleConflict):
+        await operator.purge()
+    assert boundary.calls == []
+    postgres_session.refresh(record)
+    assert record.model_dump() == before and record.released_at is None
+    assert postgres_session.get(Benchmark, record.run_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_final_host_observation_expiry_retains_row_checkpoint(postgres_session: Session) -> None:
+    operator, boundary = prepared_operator(postgres_session)
+    await operator.prepare()
+    boundary.fenced = True
+    original_check = boundary.verify_storage_absence
+
+    async def expire_observation(*arguments: Any) -> None:
+        await original_check(*arguments)
+        if postgres_session.get(Benchmark, operator.plan.identity.run_ids[0]) is None:
+            assert operator.host_contract is not None
+            operator.host_contract = operator.host_contract.model_copy(
+                update={"observed_at": datetime.now(UTC) - timedelta(minutes=16)}
+            )
+
+    boundary.verify_storage_absence = expire_observation
+    with pytest.raises(LifecycleConflict, match="expired"):
+        await operator.purge()
+    postgres_session.rollback()
+    assert operator.report().runs[0].phase == "rows_removed"
+    with pytest.raises(LifecycleConflict, match="expired"):
+        operator.report(outcome="checked")
+    operator.host_contract = contract()
+    boundary.verify_storage_absence = original_check
+    assert (await operator.purge()).runs[0].phase == "complete"
 
 
 class MemoryBoundary:
@@ -674,3 +836,52 @@ def test_cli_plan_reads_released_predecessor_without_mutating_hold(
     assert plan_path.stat().st_mode & 0o777 == 0o600
     postgres_session.refresh(record)
     assert record.model_dump() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("minutes", [-16, 1])
+async def test_absent_run_resume_rejects_expired_or_future_host_observation(
+    postgres_session: Session, minutes: int
+) -> None:
+    operator, boundary = prepared_operator(postgres_session)
+    await operator.prepare()
+    boundary.fenced = True
+    await operator.purge()
+    run_id = operator.plan.identity.run_ids[0]
+    record = postgres_session.get(RunLifecycle, run_id)
+    assert record is not None
+    original = record.model_dump()
+    assert operator.host_contract is not None
+    operator.host_contract = operator.host_contract.model_copy(
+        update={"observed_at": datetime.now(UTC) + timedelta(minutes=minutes)}
+    )
+    boundary.calls.clear()
+    with pytest.raises(LifecycleConflict, match="expired"):
+        await operator.purge()
+    assert boundary.calls == []
+    assert postgres_session.get(Benchmark, run_id) is None
+    postgres_session.refresh(record)
+    assert record.model_dump() == original
+
+
+@pytest.mark.asyncio
+async def test_late_delete_marker_after_row_removal_keeps_purge_incomplete(postgres_session: Session) -> None:
+    operator, boundary = prepared_operator(postgres_session)
+    await operator.prepare()
+    boundary.fenced = True
+    original_verify = boundary.verify_storage_absence
+
+    async def late_marker(*arguments: Any) -> None:
+        if postgres_session.get(Benchmark, operator.plan.identity.run_ids[0]) is None:
+            boundary.objects.add("late-delete-marker")
+        await original_verify(*arguments)
+
+    boundary.verify_storage_absence = late_marker
+    with pytest.raises(LifecycleConflict, match="Storage remains"):
+        await operator.purge()
+    record = postgres_session.get(RunLifecycle, operator.plan.identity.run_ids[0])
+    assert record is not None and record.phase == "rows_removed"
+    assert operator.report().outcome == "incomplete"
+    boundary.verify_storage_absence = original_verify
+    boundary.objects.clear()
+    assert (await operator.purge()).outcome == "checked"

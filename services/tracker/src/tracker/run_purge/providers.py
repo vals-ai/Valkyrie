@@ -23,6 +23,14 @@ from tracker.run_purge.contracts import PurgeRun
 from tracker.utils.resources import fetch_sandbox_provider_config
 
 
+class OwnerDeletionFence(ContractModel):
+    Sid: str
+    Effect: Literal["Deny"]
+    Principal: Literal["*"]
+    Action: tuple[Literal["s3:PutObject"], Literal["s3:DeleteObject"]]
+    Resource: str
+
+
 class WriteProbe(ContractModel):
     key: str
     outcome: Literal["AccessDenied"]
@@ -87,13 +95,13 @@ class AWSProviderBoundary:
         async with self.clients.with_region(identity.region).s3_client() as client:
             response = await client.get_bucket_policy(Bucket=bucket, ExpectedBucketOwner=identity.source_aws_account_id)
         policy = json.loads(response["Policy"])
-        expected = {
-            "Sid": "ValSmithOwnerDeletion" + identity.operation_id.hex,
-            "Effect": "Deny",
-            "Principal": "*",
-            "Action": "s3:PutObject",
-            "Resource": f"arn:aws:s3:::{bucket}/*",
-        }
+        expected = OwnerDeletionFence(
+            Sid="ValSmithOwnerDeletion" + identity.operation_id.hex,
+            Effect="Deny",
+            Principal="*",
+            Action=("s3:PutObject", "s3:DeleteObject"),
+            Resource=f"arn:aws:s3:::{bucket}/*",
+        ).model_dump(mode="json")
         statements = policy.get("Statement", [])
         found = [statement for statement in statements if statement.get("Sid") == expected["Sid"]]
         digest = policy_digest(policy)

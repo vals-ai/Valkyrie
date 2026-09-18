@@ -1331,5 +1331,53 @@
     ],
     "title": "PurgeCheckpoint",
     "type": "object"
+  },
+  "OwnerDeletionFence": {
+    "additionalProperties": false,
+    "properties": {
+      "Sid": {
+        "title": "Sid",
+        "type": "string"
+      },
+      "Effect": {
+        "const": "Deny",
+        "title": "Effect",
+        "type": "string"
+      },
+      "Principal": {
+        "const": "*",
+        "title": "Principal",
+        "type": "string"
+      },
+      "Action": {
+        "maxItems": 2,
+        "minItems": 2,
+        "prefixItems": [
+          {
+            "const": "s3:PutObject",
+            "type": "string"
+          },
+          {
+            "const": "s3:DeleteObject",
+            "type": "string"
+          }
+        ],
+        "title": "Action",
+        "type": "array"
+      },
+      "Resource": {
+        "title": "Resource",
+        "type": "string"
+      }
+    },
+    "required": [
+      "Sid",
+      "Effect",
+      "Principal",
+      "Action",
+      "Resource"
+    ],
+    "title": "OwnerDeletionFence",
+    "type": "object"
   }
 }
