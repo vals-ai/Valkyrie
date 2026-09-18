@@ -61,7 +61,7 @@ async def test_executor_reads_only_declared_credentials_fresh_for_each_dispatch(
             runtime = await get_execution_runtime(request, benchmark, org, runtime_stack=stack)
             assert await runtime.resolve_secrets(contract.secrets) == {"MODEL_KEY": value}
             with pytest.raises(SecretsError, match="no values"):
-                runtime.secrets.get("UNRELATED_KEY")
+                await runtime.secrets.get("UNRELATED_KEY")
         assert value not in benchmark.model_dump_json()
         assert all(value.encode() not in path.read_bytes() for path in root.rglob("*") if path.is_file())
     assert source.read_text(encoding="utf-8") == "MODEL_KEY=rotated-key\nUNRELATED_KEY=must-not-inject\n"

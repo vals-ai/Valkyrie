@@ -26,9 +26,6 @@ class InMemorySecretStore:
         except KeyError:
             raise SecretsError(f"Local execution has no values for secret reference '{name}'") from None
 
-    async def get_async(self, name: str) -> SecretValue:
-        return self.get(name)
-
     def close(self) -> None:
         self._values.clear()
 
