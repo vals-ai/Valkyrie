@@ -153,14 +153,14 @@ async def run_cleanup(secret_name: str, provider_type: str, context: LambdaConte
     """Load credentials and perform one cleanup sweep on the same event loop."""
     if AWS_DEPLOYMENT_REGION is None:
         raise RuntimeError("Sandbox cleanup requires AWS_DEPLOYMENT_REGION")
-    secret_store = SecretsManagerStore(DefaultChainAWSClientProvider(AWS_DEPLOYMENT_REGION))
-    try:
-        provider_config = await fetch_sandbox_provider_config(secret_name, secret_store, provider_type)
-    except (TypeError, ValueError):
-        # Provider validation may echo credentials, so do not expose or chain it.
-        raise RuntimeError(f"Sandbox cleanup secret is invalid for provider {provider_type!r}") from None
-
     async with asyncio.timeout(_remaining_cleanup_seconds(context)):
+        secret_store = SecretsManagerStore(DefaultChainAWSClientProvider(AWS_DEPLOYMENT_REGION))
+        try:
+            provider_config = await fetch_sandbox_provider_config(secret_name, secret_store, provider_type)
+        except (TypeError, ValueError):
+            # Provider validation may echo credentials, so do not expose or chain it.
+            raise RuntimeError(f"Sandbox cleanup secret is invalid for provider {provider_type!r}") from None
+
         async with provider_config.create_provider() as provider:
             return await cleanup_old_sandboxes(provider, now=datetime.now(UTC))
 
@@ -175,7 +175,6 @@ def _remaining_cleanup_seconds(context: LambdaContext) -> float:
 def lambda_handler(_event: object, context: LambdaContext) -> dict[str, object]:
     """Run one bounded cleanup sweep from EventBridge Scheduler."""
     configure_logging()
-    _remaining_cleanup_seconds(context)
 
     provider_type = os.environ.get("SANDBOX_CLEANUP_PROVIDER", "daytona").strip().casefold()
     if not provider_type:
