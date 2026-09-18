@@ -156,7 +156,7 @@ class FilesystemObjectStore:
             stat = path.stat()
             return StoredObject(key, datetime.fromtimestamp(stat.st_mtime, UTC), size=stat.st_size)
 
-        return await _io(metadata)
+        return await asyncio.to_thread(metadata)
 
     async def list_objects_page(
         self, prefix: str, *, cursor: str | None, limit: int
