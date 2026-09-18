@@ -58,6 +58,10 @@ class AWSClientProvider(ABC):
         )
 
     @lru_cache(maxsize=32)
+    def sts_client(self) -> Any:
+        return _boto3_client("sts", **self._client_kwargs())
+
+    @lru_cache(maxsize=32)
     def secretsmanager_client(self) -> Any:
         return _boto3_client("secretsmanager", **self._client_kwargs())
 
