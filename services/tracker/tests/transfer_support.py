@@ -13,9 +13,17 @@ from tracker.database.models import Benchmark, Org
 from tracker.lifecycle import RunScope
 from tracker.run_purge.locking import database_target
 from tracker.run_transfer.contracts import TransferRequest, TransferRun
+from tracker.run_transfer.providers import TransferAWSBoundary
 from tracker.run_transfer.rows import RowClosure
 from tracker.runtime.log_history import ArchiveReport, LogHistoryReference
 from tracker.runtime.log_history_reference import ArchiveObject
+
+
+class ObservedEventsBoundary(TransferAWSBoundary):
+    """Test observed-event transport only; this supplies no production completeness proof."""
+
+    def _require_log_completeness(self) -> None:
+        pass
 
 
 class SecretMetadataSession:
@@ -89,6 +97,8 @@ def transfer_request(source: Session, destination: Session, org: Org, run: Bench
 
 
 class FakeTransferBoundary:
+    """Isolated orchestration double, not a deployed complete-ingestion provider."""
+
     def __init__(self, directory: Path) -> None:
         self.directory = directory
         self.fail_archive = False

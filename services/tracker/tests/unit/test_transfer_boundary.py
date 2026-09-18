@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
+from tests.transfer_support import ObservedEventsBoundary
 from tests.unit.aws.test_log_history_archive import FakeLogs, FakeS3, FakeSession
 from tracker.lifecycle import LifecycleConflict
 from tracker.run_transfer.contracts import TransferRequest
@@ -97,7 +98,9 @@ async def test_import_requires_separate_accounts_and_exact_source_fence(tmp_path
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fault", [None, "changed", "retained", "already_absent"])
-async def test_source_log_cleanup_requires_archive_and_fresh_complete_source(tmp_path: Path, fault: str | None) -> None:
+async def test_observed_log_cleanup_checks_integrity_without_production_completeness(
+    tmp_path: Path, fault: str | None
+) -> None:
     request = request_fixture()
     payload = request.model_dump(mode="json")
     for side in ("source_identity", "destination_identity"):
@@ -118,7 +121,7 @@ async def test_source_log_cleanup_requires_archive_and_fresh_complete_source(tmp
     source, destination = Mock(), Mock()
     source.boto3_session.return_value = FakeSession("111111111111", logs)
     destination.boto3_session.return_value = FakeSession("222222222222", objects)
-    boundary = TransferAWSBoundary(source, destination, tmp_path)
+    boundary = ObservedEventsBoundary(source, destination, tmp_path)
     archive = await boundary.archive(request, request.plan.runs[0])
     if fault == "changed":
         logs.events[0]["message"] = "late event"
