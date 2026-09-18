@@ -348,3 +348,7 @@ The entire agent directory is bundled to `/bundle/<agent_name>/` in the sandbox 
 ## Integrations
 
 - **Docent ingestion**: set `ingest_lambda` in `contract.yaml` to declare which AWS Lambda converts this agent's output into Docent records. Run it after a run finishes with `valkyrie run analyze <run-id>`. See [Analyze runs with Docent](/integrations/docent).
+
+## Reporting an agent error
+
+An agent can opt in to reporting a controlled error by writing UTF-8 text to the unique file path in `VALKYRIE_ERROR_PATH` before exiting with a nonzero status: for example, `printf 'ValueError\nUnsupported model configuration' > "$VALKYRIE_ERROR_PATH"; exit 1`. Put the exception type on the first line (1–128 ASCII letters, digits, underscores, or dots, beginning with a letter or underscore), followed by a newline and a nonempty message. Tracker reads at most 4096 bytes, truncating longer messages, and includes the type and message in the existing task `error_message` and error diagnostics. Supply a deliberate error description without prompts, credentials, or model/tool output. Missing, unreadable, or malformed files fall back to the exit-code-only message; streamed stdout/stderr never supplies error details. Successful exits and the existing timeout (124) and OS-kill (137) evaluation paths ignore the file. Tracker removes the file during command cleanup.

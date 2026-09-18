@@ -4,6 +4,7 @@ Run: uv run pytest tests/unit/utils/test_benchmark_service_failures.py
 """
 
 import asyncio
+from collections.abc import AsyncIterator
 import socket
 import time
 from typing import Any, Never
@@ -12,6 +13,7 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 from benchmark_service import ExecResult
+from benchmark_service.sandbox import SandboxCommandError
 from benchmark_service.client import (
     BenchmarkServiceClient,
     BenchmarkServiceError,
@@ -47,6 +49,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.types import HarnessConfig
+from tracker.api.single_task import get_single_task
 from tracker.utils import (
     fetch_benchmark_row,
     process_benchmark,
@@ -807,3 +810,57 @@ class TestBenchmarkServiceFailures:
             assert "Final score failed with status code 404" in benchmark_row.error_message
         captured_error = capture_exception.call_args.args[0]
         assert isinstance(captured_error, BenchmarkServiceError)
+
+    @pytest.mark.parametrize("failure_source", ["agent_file", "cause", "context"])
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_original_error_reaches_storage_api_and_diagnostics(
+        self,
+        failure_source: str,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        request, task, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
+        captured = Mock()
+        logged = Mock()
+        monkeypatch.setattr(utils_module, "capture_exception", captured)
+        monkeypatch.setattr(utils_module.logger, "error", logged)
+
+        async def fail(*_args: Any, **_kwargs: Any) -> Any:
+            if failure_source == "agent_file":
+
+                async def command(_command: str) -> AsyncIterator[str]:
+                    yield "streamed output excluded"
+                    raise SandboxCommandError(1)
+
+                sandbox = Mock(id="sandbox-123", name="test-sandbox", command=command)
+                sandbox.exec = AsyncMock(return_value=ExecResult(exit_code=0, output="ValueError\nInvalid model"))
+                await sandbox_module.stream_command_output(sandbox, "agent", on_output=lambda _: None)
+            try:
+                raise ValueError("Invalid model")
+            except ValueError as cause:
+                if failure_source == "cause":
+                    raise RuntimeError("Evaluation failed") from cause
+                raise RuntimeError("Evaluation failed")
+
+        if failure_source == "agent_file":
+            monkeypatch.setattr(utils_module, "run_agent", fail)
+        else:
+            monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", fail)
+        assert await run_process_task(request, task, benchmark_id, runtime_services, authority) == {"task_0": None}
+        error = self._latest_task_error_result(database_session, task)
+        assert "ValueError: Invalid model" in error.error_message
+        assert "streamed output" not in error.error_message
+        database_session.refresh(task)
+        response = get_single_task(benchmark_id, task.task_id, TEST_ORG, database_session)
+        assert response.error_message == error.error_message
+        exception = captured.call_args.args[0]
+        assert logged.call_args.kwargs["exc_info"][1] is exception
+        if failure_source != "agent_file":
+            assert isinstance(exception.__context__, ValueError)
+            assert exception.__traceback__ is not None
+            assert "RuntimeError: Evaluation failed" in error.error_message
+        else:
+            assert "ValueError: Invalid model" in str(exception)

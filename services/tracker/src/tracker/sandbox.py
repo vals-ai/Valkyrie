@@ -1,6 +1,7 @@
 """Sandbox management utilities for the tracker service."""
 
 import asyncio
+import re
 import shlex
 import time
 import uuid
@@ -559,11 +560,13 @@ async def stream_command_output(
     run_id = uuid.uuid4().hex
     start_ns_path = f"{_STATUS_DIR}/{run_id}.start_ns"
     end_ns_path = f"{_STATUS_DIR}/{run_id}.end_ns"
+    error_path = f"{_STATUS_DIR}/{run_id}.error"
     # Timing is embedded in the sandbox command so it excludes the tracker->sandbox
     # request round-trip and program cold-start (~5-6s), keeping the measurement accurate.
     timed_command = (
         f"mkdir -p {shlex.quote(_STATUS_DIR)}"
         f" && date +%s%N > {shlex.quote(start_ns_path)}"
+        f"; export VALKYRIE_ERROR_PATH={shlex.quote(error_path)}"
         f"; {command}"
         f"; exit_code=$?"
         f"; date +%s%N > {shlex.quote(end_ns_path)}"
@@ -586,9 +589,12 @@ async def stream_command_output(
         # Prefer the sandbox-measured duration; fall back to the tracker-side monotonic
         # duration if the timing files are missing/unparseable (e.g. the agent removed
         # /tmp/.valkyrie), rather than crashing on `int()` of a `cat` error string.
-        duration = await _read_sandbox_duration(
-            sandbox, start_ns_path, end_ns_path, fallback=time.monotonic() - monotonic_start
-        )
+        duration = time.monotonic() - monotonic_start
+        try:
+            duration = await _read_sandbox_duration(sandbox, start_ns_path, end_ns_path, fallback=duration)
+        except Exception:
+            if exit_code == _SUCCESS_EXIT_CODE:
+                raise
 
         if exit_code == _SUCCESS_EXIT_CODE:
             return None, duration
@@ -598,10 +604,27 @@ async def stream_command_output(
             return AgentCausedExitReason.OS_KILLED, duration
 
         sentry_sdk.set_tag("agent_exit_code", str(exit_code))
-        raise AgentRunFailedError(f"Agent command failed with exit code {exit_code}")
+        message = f"Agent command failed with exit code {exit_code}"
+        try:
+            # Read only the opt-in file, never the command's streamed output.
+            result = await asyncio.wait_for(
+                _exec(sandbox, f"test -f {shlex.quote(error_path)} && head -c 4096 {shlex.quote(error_path)}"),
+                timeout=5,
+            )
+            if result.exit_code == _SUCCESS_EXIT_CODE:
+                detail = result.stdout.encode("utf-8")[:4096].decode("utf-8", errors="ignore")
+                error_type, separator, error_message = detail.partition("\n")
+                if separator and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,127}", error_type) and error_message.strip():
+                    message += f": {error_type}: {error_message.strip()}"
+        except Exception:
+            # Missing, unreadable, or malformed reports must preserve the exit failure.
+            pass
+        raise AgentRunFailedError(message)
     finally:
         try:
-            await _exec(sandbox, f"rm -f {shlex.quote(start_ns_path)} {shlex.quote(end_ns_path)}")
+            await _exec(
+                sandbox, f"rm -f {shlex.quote(start_ns_path)} {shlex.quote(end_ns_path)} {shlex.quote(error_path)}"
+            )
         except Exception:
             pass
 

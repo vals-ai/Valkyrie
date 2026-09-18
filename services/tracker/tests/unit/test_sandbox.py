@@ -4,6 +4,7 @@ Run: pytest services/tracker/tests/unit/test_sandbox.py
 """
 
 import asyncio
+from pathlib import Path
 import shlex
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -673,10 +674,12 @@ class TestRunAgent:
         archive_output.assert_awaited_once()
         upload_artifacts.assert_awaited_once()
 
+    @pytest.mark.parametrize("artifact_error", [None, OutputArtifactError("artifact upload failed")])
     async def test_run_agent_preserves_agent_error_when_terminal_upload_fails(
         self,
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
+        artifact_error: Exception | None,
     ) -> None:
         store = _mock_object_store()
         contract = AgentContractRequest(
@@ -686,7 +689,7 @@ class TestRunAgent:
             final_output="/logs",
             output_artifacts=["artifacts/result.json"],
         )
-        upload_artifacts = AsyncMock()
+        upload_artifacts = AsyncMock(side_effect=artifact_error)
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
             if command.startswith("mkdir -p") or command == "test -e /logs":
@@ -1966,3 +1969,83 @@ class TestStreamCommandOutputAgentFailure:
         assert "prompt" not in str(exc_info.value)
         assert "secret" not in str(exc_info.value)
         assert "run-agent.sh" not in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "report,expected",
+        [
+            ("ValueError\nUnsupported model", "ValueError: Unsupported model"),
+            ("ValueError\n" + "prompt-like text " * 400, "ValueError: " + ("prompt-like text " * 400)[:4085].strip()),
+            ("malformed prompt-like text", None),
+            ("ValueError\n", None),
+            ("invalid type\nmessage", None),
+        ],
+    )
+    async def test_controlled_error_file_is_bounded_and_validated(self, report: str, expected: str | None) -> None:
+        commands: list[str] = []
+
+        async def stream_command(command: str) -> AsyncIterator[str]:
+            assert "export VALKYRIE_ERROR_PATH=" in command
+            yield "streamed output must stay out of errors"
+            raise ProviderSandboxCommandError(1)
+
+        async def exec_command(command: str) -> ExecResult:
+            commands.append(command)
+            if command.startswith("test -f "):
+                assert "head -c 4096 " in command
+                return ExecResult(exit_code=0, output=report)
+            if command.startswith("rm -f "):
+                raise RuntimeError("cleanup failure")
+            return ExecResult(exit_code=1)
+
+        sandbox = Mock(id="sandbox-123", name="test-sandbox", command=stream_command, exec=exec_command)
+        with pytest.raises(AgentRunFailedError) as error:
+            await sandbox_module.stream_command_output(sandbox, "run-agent.sh", on_output=lambda _: None)
+        message = "Sandbox error: Agent command failed with exit code 1"
+        assert str(error.value) == message + (f": {expected}" if expected else "")
+        assert "streamed output" not in str(error.value)
+        assert commands[-1].startswith("rm -f ") and ".error" in commands[-1]
+
+    async def test_report_and_timing_read_failures_preserve_agent_exit(self) -> None:
+        async def stream_command(_command: str) -> AsyncIterator[str]:
+            yield "ignored output"
+            raise ProviderSandboxCommandError(2)
+
+        sandbox = Mock(id="sandbox-123", name="test-sandbox", command=stream_command)
+        sandbox.exec = AsyncMock(side_effect=RuntimeError("read failure"))
+        with pytest.raises(AgentRunFailedError, match="Agent command failed with exit code 2$"):
+            await sandbox_module.stream_command_output(sandbox, "run-agent.sh", on_output=lambda _: None)
+
+    @pytest.mark.parametrize("exit_code", [0, 124, 137])
+    async def test_success_and_special_exits_ignore_error_file(self, exit_code: int) -> None:
+        async def stream_command(_command: str) -> AsyncIterator[str]:
+            yield "done"
+            if exit_code:
+                raise ProviderSandboxCommandError(exit_code)
+
+        sandbox = Mock(id="sandbox-123", name="test-sandbox", command=stream_command)
+        sandbox.exec = AsyncMock(return_value=ExecResult(exit_code=1))
+        await sandbox_module.stream_command_output(sandbox, "run-agent.sh", on_output=lambda _: None)
+        assert all("head -c" not in call.args[0] for call in sandbox.exec.call_args_list)
+
+    async def test_error_file_contract_through_shell(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sandbox_module, "_STATUS_DIR", str(tmp_path))
+
+        async def exec_command(command: str) -> ExecResult:
+            process = await asyncio.create_subprocess_shell(command, stdout=asyncio.subprocess.PIPE)
+            stdout, _ = await process.communicate()
+            return ExecResult(exit_code=process.returncode, output=stdout.decode())
+
+        async def stream_command(command: str) -> AsyncIterator[str]:
+            result = await exec_command(command)
+            yield result.stdout
+            if result.exit_code:
+                raise ProviderSandboxCommandError(result.exit_code)
+
+        sandbox = Mock(id="local", name="local", command=stream_command, exec=exec_command)
+        with pytest.raises(AgentRunFailedError, match="ValueError: Invalid model$"):
+            await sandbox_module.stream_command_output(
+                sandbox,
+                'sh -c \'printf "ValueError\\nInvalid model" > "$VALKYRIE_ERROR_PATH"; exit 1\'',
+                on_output=lambda _: None,
+            )
+        assert list(tmp_path.iterdir()) == []

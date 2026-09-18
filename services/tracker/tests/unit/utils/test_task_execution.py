@@ -244,3 +244,17 @@ class TestTaskExecution:
         assert waiting.task is not None
         with pytest.raises(asyncio.CancelledError):
             waiting.task.result()
+
+
+@pytest.mark.parametrize("suppressed", [False, True])
+def test_exception_message_respects_context_suppression_and_cycles(suppressed: bool) -> None:
+    from tracker.utils.task_execution import _exception_message
+
+    cause = ValueError("original failure")
+    wrapper = RuntimeError("wrapper failure")
+    wrapper.__context__ = cause
+    wrapper.__suppress_context__ = suppressed
+    cause.__context__ = wrapper
+    message = _exception_message(wrapper)
+    assert ("ValueError: original failure" in message) is (not suppressed)
+    assert "wrapper failure" in message

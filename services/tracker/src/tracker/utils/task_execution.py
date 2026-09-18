@@ -116,7 +116,11 @@ def _normalized_attempt_time(value: datetime) -> datetime:
 
 
 def _exception_message(exc: BaseException) -> str:
-    return str(exc).strip() or type(exc).__name__
+    message = str(exc).strip() or type(exc).__name__
+    if exc.__cause__ is not None or (exc.__context__ is not None and not exc.__suppress_context__):
+        # Python preserves explicit causes, implicit context, suppression, and cycles.
+        message += "\n" + "".join(traceback.TracebackException.from_exception(exc, limit=0).format()).strip()
+    return message
 
 
 def _record_failure_before_retry(
@@ -744,6 +748,9 @@ async def _process_task_attempt(
         category: FailureCategory,
         cause_code: str | None = None,
     ) -> dict[str, dict[str, Any] | None]:
+        detail = _exception_message(exc)
+        if detail not in error_message:
+            error_message += f"\n{detail}"
         with error_span(
             "task.error",
             exc,
@@ -1363,7 +1370,7 @@ async def _process_task_attempt(
         error_message = _exception_message(e)
         # This is necessary because Daytona routes tasks to bad nodes. We should
         # remove this when Daytona fixes their infrastructure.
-        if "docker daemon is not ready inside the sandbox" in error_message:
+        if "docker daemon is not ready inside the sandbox" in str(e):
             if not return_queued_task_to_pending():
                 return {task_id: None}
             log_output(f"\n[ERROR] {error_message}")

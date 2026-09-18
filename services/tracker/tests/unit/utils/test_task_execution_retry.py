@@ -273,7 +273,9 @@ class TestTaskExecutionRetry:
         error_results = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all()
         retry_results = [result for result in error_results if result.retry_scheduled]
         assert len(retry_results) == 1
-        assert retry_results[0].error_message == f"Sandbox error: {service_error}"
+        assert retry_results[0].error_message.startswith(f"Sandbox error: {service_error}")
+        assert f"BenchmarkServiceError: {service_error}" in retry_results[0].error_message
+        assert "direct cause" in retry_results[0].error_message
         assert retry_results[0].producer == "sandbox_provider"
         assert retry_results[0].operation == "setup"
         assert retry_results[0].error_type == "SandboxSetupError"
