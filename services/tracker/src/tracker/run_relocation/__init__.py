@@ -166,7 +166,7 @@ class RelocationOperator:
         if len(external) > 1:
             raise LifecycleConflict("Duplicate host drain evidence")
         supplied = ExternalHostDrain.model_validate(external[0].model_dump(mode="json")) if external else None
-        evidence = [Path(path).read_bytes() for path in request.external_evidence_files]
+        evidence = [Path(path).read_bytes() for path in request.external_evidence_files] if supplied is not None else []
         matched = [
             item
             for item in evidence

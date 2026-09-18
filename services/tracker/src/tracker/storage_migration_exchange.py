@@ -301,7 +301,7 @@ class TrackerRequest(ContractModel):
     region: SafeIdentity
     environment: SafeIdentity
     database_target: SafeIdentity
-    run_ids: tuple[UUID, ...]
+    run_ids: tuple[UUID, ...] = Field(min_length=1, json_schema_extra={"uniqueItems": True})
     plan: RelocationPlan | None = None
     copied_objects: tuple[CopiedObject, ...] = ()
     completion_sha256: Digest | None = None
@@ -309,6 +309,13 @@ class TrackerRequest(ContractModel):
     host_contract: HostContractObservation | None = None
     external_host_drains: tuple[ExternalHostDrain, ...] = ()
     external_evidence_files: tuple[str, ...] = ()
+
+    @field_validator("run_ids")
+    @classmethod
+    def sorted_runs(cls, value: tuple[UUID, ...]) -> tuple[UUID, ...]:
+        if value != tuple(sorted(set(value), key=str)):
+            raise ValueError("run_ids must be nonempty, sorted and unique")
+        return value
 
 
 class TrackerResponse(ContractModel):
