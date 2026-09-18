@@ -134,6 +134,22 @@ page limits bound individual provider responses.
 
 ## Upload failures and recovery
 
+Before any source scan, the journal persists a `scope.json` binding to the
+complete scoped-input digest and exact operation prefix. Every resume checks
+that binding and every existing journal entry under the exclusive lock. Entries
+are bounded by `max_chunks + 4` (chunks, manifest, binding, inventory, and lock);
+each JSON record is limited to 16 KiB. A foreign operation, unknown entry,
+unbound older journal, or any unresolved upload intent stops the operation
+before source scanning or object writes. No older entry is silently adopted.
+
+The first completed source scan also persists `inventory.json`, containing its
+counts, digests, group-absence state, and original page counts. Resume compares
+stable inventory content; page counts may change. Before publishing a manifest,
+the exact set of all recorded chunk versions must match the new scan's chunks.
+A smaller or empty scan cannot hide a previous known chunk, unknown accepted
+upload, or recorded complete inventory. A saved manifest prevents new object
+keys from being added to the same operation.
+
 Each object write persists and fsyncs an intent containing scoped-input digest,
 key, content digest, and byte count before `PutObject`. Writes use `AES256`, a
 SHA-256 upload checksum, expected bucket owner, and `IfNoneMatch=*`. The exact
@@ -144,12 +160,22 @@ last. Journal files contain no event content. Directory entries are fsynced;
 an exclusive filesystem lock prevents simultaneous use of the same journal.
 
 A known returned version resumes by verifying the same version without another
-upload. An intent without a version is unresolved, including a timeout after
+upload. A recorded manifest is read and verified by its original exact version,
+digest, and bytes. Fresh authority checks and two complete frozen scans still
+run. Its stable scope, limits, streams, chunks, and content must match the fresh
+result; the original source session ARN and page counts remain historical
+observations. Normal session renewal and changed page boundaries do not rewrite
+the manifest or create a replacement version. This also permits resume after
+the manifest version was recorded but its readback or report delivery failed.
+
+An intent without a version is unresolved, including a timeout after
 acceptance, a missing version response, or a crash before version persistence.
 The provider does not list/adopt a candidate version, overwrite the key, or
 remove any version. A separate reviewed reconciliation must prove ownership or
 start a newly approved operation/prefix. Do not erase the intent to retry.
-Changed scope, limits, or content conflicts with the journal.
+Changed scope, limits, or content conflicts with the whole journal. Preserve
+all journal files, including its binding and inventory; do not move individual
+object receipts into a new directory to bypass a failed operation.
 
 This is crash safety, not automatic recovery from unknown acceptance. The local
 journal filesystem must honor `fsync` and file locks. No cloud or database

@@ -493,3 +493,217 @@ def test_empty_archive_iterator_still_checks_destination_scope(archive: Any, tmp
     changed_location = location.model_copy(update={"bucket": "foreign-bucket"})
     with pytest.raises(archive.ArchiveError, match="destination"):
         list(archive.read_events(manifest, changed_location, session))
+
+
+@pytest.mark.parametrize("remaining_events", [0, 2])
+def test_unknown_prior_chunk_blocks_smaller_scan(archive: Any, tmp_path: Path, remaining_events: int) -> None:
+    class UncertainSecondChunk(FakeS3):
+        def put_object(self, **request: Any) -> dict[str, Any]:
+            self.uncertain = request["Key"].endswith("00000001.json")
+            return super().put_object(**request)
+
+    logs, storage = FakeLogs(), UncertainSecondChunk()
+    logs.events *= 4
+    limits = archive.ArchiveLimits(chunk_bytes=512)
+    with pytest.raises(archive.ArchiveError):
+        run_archive(archive, tmp_path, logs, storage, limits=limits)
+
+    prior_versions = dict(storage.objects)
+    logs.events = logs.events[:remaining_events]
+    with pytest.raises(archive.ArchiveError, match="unresolved upload"):
+        run_archive(archive, tmp_path, logs, storage, limits=limits)
+
+    assert storage.objects == prior_versions
+    assert not any(key.endswith("manifest.json") for key, _ in storage.objects)
+
+
+def test_known_prior_chunk_cannot_disappear_on_resume(archive: Any, tmp_path: Path) -> None:
+    logs, storage = FakeLogs(), FakeS3()
+    storage.corrupt = True
+    with pytest.raises(archive.ArchiveError, match="content verification"):
+        run_archive(archive, tmp_path, logs, storage)
+
+    prior_versions = dict(storage.objects)
+    storage.corrupt = False
+    logs.events = []
+    with pytest.raises(archive.ArchiveError, match="inventory|unexplained"):
+        run_archive(archive, tmp_path, logs, storage)
+
+    assert storage.objects == prior_versions
+    assert not any(key.endswith("manifest.json") for key, _ in storage.objects)
+
+
+def test_journal_is_bound_before_source_scan_to_one_operation(archive: Any, tmp_path: Path) -> None:
+    logs, storage = FakeLogs(), FakeS3()
+    logs.failure = "AccessDeniedException"
+    with pytest.raises(archive.ArchiveError):
+        run_archive(archive, tmp_path, logs, storage)
+
+    scope = scoped_input(archive)
+    changed_scope = scope.model_copy(
+        update={
+            "source_identity": scope.source_identity.model_copy(update={"operation_id": UUID(int=999)}),
+            "destination_identity": scope.destination_identity.model_copy(update={"operation_id": UUID(int=999)}),
+        }
+    )
+    logs.failure = None
+    prior_scans = logs.scan
+    with pytest.raises(archive.ArchiveError, match="journal identity"):
+        archive.archive_logs(
+            changed_scope,
+            source_session=FakeSession(SOURCE_ACCOUNT, logs),
+            destination_session=FakeSession(DESTINATION_ACCOUNT, storage),
+            journal_directory=tmp_path,
+        )
+
+    assert logs.scan == prior_scans
+    assert storage.objects == {}
+
+
+@pytest.mark.parametrize("failed_readback", [False, True])
+@pytest.mark.parametrize("change", ["session", "pages", "both"])
+def test_manifest_resume_preserves_original_observations(
+    archive: Any, tmp_path: Path, failed_readback: bool, change: str
+) -> None:
+    class SessionIdentity(FakeSession):
+        def __init__(self, client: FakeLogs, session_name: str) -> None:
+            super().__init__(SOURCE_ACCOUNT, client)
+            self.session_name = session_name
+
+        def get_caller_identity(self) -> dict[str, str]:
+            return {
+                "Account": self.account,
+                "Arn": f"arn:aws:sts::{self.account}:assumed-role/archive/{self.session_name}",
+            }
+
+    class PageLayout(FakeLogs):
+        single_page = False
+
+        def filter_log_events(self, **request: Any) -> dict[str, Any]:
+            if self.single_page:
+                self.requests.append(("events", request))
+                return {"events": deepcopy(self.events)}
+            return super().filter_log_events(**request)
+
+    class ManifestReadback(FakeS3):
+        fail_manifest_read = False
+
+        def get_object(self, **request: Any) -> dict[str, Any]:
+            if self.fail_manifest_read and request["Key"].endswith("manifest.json"):
+                raise TimeoutError("private readback error")
+            return super().get_object(**request)
+
+    logs, storage = PageLayout(), ManifestReadback()
+    source = SessionIdentity(logs, "session-one")
+    destination = FakeSession(DESTINATION_ACCOUNT, storage)
+    storage.fail_manifest_read = failed_readback
+    original_result = None
+    if failed_readback:
+        with pytest.raises(archive.ArchiveError):
+            archive.archive_logs(
+                scoped_input(archive),
+                source_session=source,
+                destination_session=destination,
+                journal_directory=tmp_path,
+            )
+    else:
+        original_result = archive.archive_logs(
+            scoped_input(archive), source_session=source, destination_session=destination, journal_directory=tmp_path
+        )
+
+    original_objects = dict(storage.objects)
+    assert len(original_objects) == 2
+    storage.fail_manifest_read = False
+    logs.single_page = change in {"pages", "both"}
+    source.session_name = "session-two" if change in {"session", "both"} else "session-one"
+    result = archive.archive_logs(
+        scoped_input(archive), source_session=source, destination_session=destination, journal_directory=tmp_path
+    )
+    manifest = archive.read_manifest(result.reference, scoped_input(archive).location, destination)
+
+    assert storage.objects == original_objects
+    assert result.event_count == 2
+    assert manifest.source_principal_arn.endswith("/session-one")
+    assert manifest.first_scan.event_pages == manifest.second_scan.event_pages == 2
+    assert logs.scan == 4
+    assert list(archive.read_events(manifest, scoped_input(archive).location, destination))
+    if original_result is not None:
+        assert result == original_result
+
+
+def test_partial_scan_cannot_hide_known_chunks_without_complete_inventory(archive: Any, tmp_path: Path) -> None:
+    logs, storage = FakeLogs(), FakeS3()
+    logs.events *= 4
+    storage.corrupt = True
+    limits = archive.ArchiveLimits(chunk_bytes=512)
+    with pytest.raises(archive.ArchiveError, match="content verification"):
+        run_archive(archive, tmp_path, logs, storage, limits=limits)
+
+    assert not (tmp_path / "inventory.json").exists()
+    original_objects = dict(storage.objects)
+    storage.corrupt = False
+    logs.events = []
+    with pytest.raises(archive.ArchiveError, match="unexplained prior journal chunks"):
+        run_archive(archive, tmp_path, logs, storage, limits=limits)
+
+    assert storage.objects == original_objects
+
+
+def test_unknown_manifest_acceptance_blocks_changed_retry(archive: Any, tmp_path: Path) -> None:
+    class UncertainManifest(FakeS3):
+        def put_object(self, **request: Any) -> dict[str, Any]:
+            self.uncertain = request["Key"].endswith("manifest.json")
+            return super().put_object(**request)
+
+    logs, storage = FakeLogs(), UncertainManifest()
+    with pytest.raises(archive.ArchiveError):
+        run_archive(archive, tmp_path, logs, storage)
+
+    original_objects = dict(storage.objects)
+    assert len(original_objects) == 2
+    logs.events = []
+    with pytest.raises(archive.ArchiveError, match="unresolved upload"):
+        run_archive(archive, tmp_path, logs, storage)
+
+    assert storage.objects == original_objects
+
+
+def test_saved_manifest_content_is_reverified_on_resume(archive: Any, tmp_path: Path) -> None:
+    logs, storage = FakeLogs(), FakeS3()
+    result = run_archive(archive, tmp_path, logs, storage)
+    identity = (result.reference.manifest.key, result.reference.manifest.version_id)
+    original_content = storage.objects[identity]
+    storage.objects[identity] = b"x" * len(original_content)
+    with pytest.raises(archive.ArchiveError, match="content verification"):
+        run_archive(archive, tmp_path, logs, storage)
+
+    assert len(storage.objects) == 2
+    assert logs.scan == 4
+
+
+def test_completed_inventory_retains_empty_streams_before_manifest_publication(archive: Any, tmp_path: Path) -> None:
+    class FewerStreams(FakeLogs):
+        def describe_log_streams(self, **request: Any) -> dict[str, Any]:
+            return {"logStreams": [{"logStreamName": "old"}]}
+
+    logs, storage = FakeLogs(), FakeS3()
+    limits = archive.ArchiveLimits(manifest_bytes=1024)
+    with pytest.raises(archive.ArchiveError, match="byte limit"):
+        run_archive(archive, tmp_path, logs, storage, limits=limits)
+
+    original_objects = dict(storage.objects)
+    with pytest.raises(archive.ArchiveError, match="inventory conflicts"):
+        run_archive(archive, tmp_path, FewerStreams(), storage, limits=limits)
+
+    assert storage.objects == original_objects
+    assert not any(key.endswith("manifest.json") for key, _ in storage.objects)
+
+
+def test_existing_unbound_journal_is_not_adopted(archive: Any, tmp_path: Path) -> None:
+    (tmp_path / "legacy.json").write_text("{}")
+    logs, storage = FakeLogs(), FakeS3()
+    with pytest.raises(archive.ArchiveError, match="unbound prior journal"):
+        run_archive(archive, tmp_path, logs, storage)
+
+    assert storage.objects == {}
+    assert logs.scan == 0
