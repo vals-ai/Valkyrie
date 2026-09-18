@@ -299,7 +299,6 @@ def test_local_agent_library_uses_filesystem_and_authenticated_download(
     """Push, list, download, and delete a local agent without AWS credentials."""
     monkeypatch.setenv("VALKYRIE_RUNTIME", "local")
     monkeypatch.setenv("VALKYRIE_LOCAL_DATA_ROOT", str(tmp_path))
-    monkeypatch.setenv("VALKYRIE_LOCAL_HOST_DATA_ROOT", str(tmp_path))
     content = _agent_archive()
     response = _client.put("/agents/demo", content=content, headers={"Content-Type": "application/zip"})
     assert response.status_code == 200

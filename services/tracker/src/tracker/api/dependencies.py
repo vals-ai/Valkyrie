@@ -3,6 +3,7 @@
 import os
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
@@ -18,7 +19,7 @@ from tracker.database.models import Benchmark, Org, Task
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.logging import benchmark_id_var
-from tracker.local.runtime import LocalRuntimeConfig, LocalRuntimeFactory
+from tracker.local.runtime import LocalRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 
 
@@ -85,7 +86,7 @@ async def get_agent_library_runtime(
 ) -> AsyncGenerator[RuntimeServices]:
     """Open agent storage without constructing sandbox access."""
     if os.environ.get("VALKYRIE_RUNTIME") == "local":
-        async with LocalRuntimeFactory.open(LocalRuntimeConfig.from_env(), org.id) as runtime:
+        async with LocalRuntimeFactory.open(Path(os.environ["VALKYRIE_LOCAL_DATA_ROOT"]), org.id) as runtime:
             yield runtime
         return
     aws_runtime = resolve_agent_library_aws_runtime(request, org.id)

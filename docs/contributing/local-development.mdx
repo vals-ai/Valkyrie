@@ -74,9 +74,8 @@ creates a disposable container, transfers a frozen agent bundle, executes it, ve
 its output, and deletes the container. Local transfers use provider file upload and
 preserve executable files without requiring curl or unzip in the image.
 
-Set `VALKYRIE_RUNTIME=local`, `VALKYRIE_LOCAL_DATA_ROOT`, and
-`VALKYRIE_LOCAL_HOST_DATA_ROOT` on Tracker to use the filesystem agent library.
-Both roots must be absolute paths. Agent upload, listing, download, and removal then
+Set `VALKYRIE_RUNTIME=local` and an absolute `VALKYRIE_LOCAL_DATA_ROOT` on Tracker
+to use the filesystem agent library. Agent upload, listing, download, and removal then
 use local storage without AWS credentials. Downloads use an authenticated Tracker
 route; the SDK handles this route through its existing connection.
 
