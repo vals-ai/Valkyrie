@@ -135,6 +135,7 @@ async def test_validator_checks_account_region_and_required_tags(managed_runtime
         pytest.param("vs-dev-acme--123", _policy(), 400, id="double-hyphen"),
         pytest.param("vs-dev-acme-", _policy(), 400, id="trailing-hyphen"),
         pytest.param("vs-dev-acme", _policy(), 400, id="missing-owner-id"),
+        pytest.param("vs-dev-" + "a" * 40 + "-123", _policy(), 400, id="overlong-login"),
         pytest.param("vs-prod-acme-123", _policy(), 403, id="wrong-environment"),
         pytest.param("vs-dev-acme-123", _policy(org_id=_OTHER_ORG_ID), 403, id="unauthorized-org"),
         pytest.param("vs-dev-" + "a" * 57, _policy(), 400, id="64-characters"),
