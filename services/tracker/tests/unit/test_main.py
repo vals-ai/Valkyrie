@@ -569,6 +569,7 @@ class TestTrackerAPI:
         database_session: Session,
         example_benchmark_object: Benchmark,
         harness_headers: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Docent analysis must reject invalid runs and return a completed cached result.
 
@@ -613,6 +614,18 @@ class TestTrackerAPI:
             "status": "done",
             "reading_plan_url": "https://results.example/reading-plan",
         }
+
+        example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(
+            update={"environment": "local"}
+        )
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        resolver = Mock(side_effect=AssertionError("Local analysis must not resolve AWS"))
+        monkeypatch.setattr("main.get_run_aws_context", resolver)
+        local_response = client.post(f"/analyze-benchmark/{example_benchmark_object.id}", json={})
+        assert local_response.status_code == 400
+        assert local_response.json()["detail"] == "This operation requires an AWS run"
+        resolver.assert_not_called()
 
     async def test_tracker_service_error_hides_internal_detail(
         self,
