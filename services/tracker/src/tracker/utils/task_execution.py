@@ -287,10 +287,13 @@ class TrackedTask:
                 # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
                 return {task_row.task_id: None}
             except Exception as e:
+                category = classify_failure(e)
                 error_message = f"Task error was not handled: {_exception_message(e)}\n{traceback.format_exc()}"
-                logger.error(error_message)
+                logger.error(error_message, extra={"failure_category": category.value})
                 logfire.exception("tracked_task_run failed")
-                capture_exception(e)
+                with sentry_sdk.new_scope() as scope:
+                    scope.set_tag("failure_category", category.value)
+                    capture_exception(e)
                 with Session(bind=engine) as session:
                     task = fetch_task_row(task_row.id, session, self._org)
                     commit_task_error(
@@ -300,7 +303,7 @@ class TrackedTask:
                         producer="sandbox_provider" if isinstance(e, SandboxSetupError) else "tracker",
                         operation="setup" if isinstance(e, SandboxSetupError) else "process_task",
                         error_type=type(e).__name__,
-                        category=classify_failure(e),
+                        category=category,
                         expected_started_at=task_row.started_at,
                         authority=self._authority,
                     )

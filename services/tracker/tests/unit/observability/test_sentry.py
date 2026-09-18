@@ -450,6 +450,7 @@ async def test_task_scope_isolates_concurrent_sandbox_events_and_outer_capture(
         "attempt_started_at": "2026-04-01T13:00:00",
         "sandbox_id": "sandbox-b",
         "sandbox_name": "sandbox-b-name",
+        "failure_category": "unknown",
     }
     assert events[-1].get("tags") == {}
 
@@ -515,6 +516,61 @@ async def test_retry_attempt_clears_previous_sandbox_identity(
     retry_tags = cast(dict[str, str], retry_event.get("tags", {}))
     assert retry_tags == {"task_id": "task-0", "attempt_started_at": "2026-04-01T12:00:00+00:00"}
     assert "sandbox" not in retry_event.get("contexts", {})
+
+
+@pytest.mark.asyncio
+async def test_unhandled_task_error_tags_sentry_and_log_with_stored_category(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    events: list[Event] = []
+    committed: dict[str, Any] = {}
+
+    class FakeSession:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> "FakeSession":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    def commit_task_error(*_args: Any, **kwargs: Any) -> None:
+        committed.update(kwargs)
+
+    row = SimpleNamespace(id="task-0", task_id="task-0", started_at=datetime(2026, 4, 1, 12, tzinfo=UTC))
+
+    def fetch_task(*_args: object) -> SimpleNamespace:
+        return row
+
+    monkeypatch.setattr(task_execution, "Session", FakeSession)
+    monkeypatch.setattr(task_execution, "fetch_task_row", fetch_task)
+    monkeypatch.setattr(task_execution, "commit_task_error", commit_task_error)
+
+    async def body() -> dict[str, dict[str, object] | None]:
+        raise SandboxSetupError("provider rejected the sandbox request")
+
+    with sentry_sdk.init(
+        dsn="https://public@example.com/1",
+        transport=events.append,
+        default_integrations=False,
+        before_send=_before_send(),
+    ):
+        task_execution.logger.addHandler(caplog.handler)
+        try:
+            tracked = task_execution.TrackedTask(
+                body(), cast(Org, object()), cast(ExecutionAuthority, object()), row.started_at
+            )
+            await tracked.run(None, cast(Task, row))
+        finally:
+            task_execution.logger.removeHandler(caplog.handler)
+
+    stored_category = committed["category"]
+    assert stored_category == FailureCategory.INFRASTRUCTURE
+    (exception_event,) = [event for event in events if "exception" in event]
+    assert cast(dict[str, str], exception_event.get("tags", {}))["failure_category"] == stored_category.value
+    (record,) = [r for r in caplog.records if "Task error was not handled" in r.getMessage()]
+    assert getattr(record, "failure_category") == stored_category.value
 
 
 def test_run_error_failure_category_tag_does_not_leak_to_later_events() -> None:
