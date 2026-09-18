@@ -10,8 +10,7 @@ from sqlmodel import Session, col, desc, select
 
 from tracker.api.dependencies import RunAWSDependency, TrackedBenchmarkId, load_task_for_benchmark_or_404
 from tracker.auth import get_current_org
-from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
-from tracker.runtime.logs import task_log_stream_name
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations, task_log_stream_name
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, create_presigned_url, s3_object_exists
 from tracker.database.models import (
     Benchmark,

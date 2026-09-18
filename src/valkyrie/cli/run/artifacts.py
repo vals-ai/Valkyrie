@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 from typing import cast
 
-from tracker.aws.s3 import handle_s3_error
+from tracker import handle_s3_error
 from tracker.exceptions import S3Error
 
 from valkyrie.cli import s3_config as cli_s3

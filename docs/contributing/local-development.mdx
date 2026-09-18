@@ -41,20 +41,6 @@ make tracker-service
 
 The API is available at `http://localhost:8000`. Local Compose runs the tracker, PostgreSQL, and Redis only. It does not execute benchmarks. See [Tracker service](/contributing/tracker-service) for the individual targets and test suites.
 
-### Initialize a filesystem executor release
-
-After applying database migrations, register an executor artifact built for the ARM64 machine that will run it using its generated `manifest.json`:
-
-```bash
-uv run --project services/tracker python -m tracker.local.releases \
-  --manifest /absolute/path/to/build/manifest.json \
-  --release-root /absolute/path/to/releases
-```
-
-Set `DATABASE_URL` to the local PostgreSQL database. Set `EXECUTOR_RELEASE_ROOT` on ExecutorHost to the same absolute release directory. Containerized services must mount that directory at the same path.
-
-The initializer verifies the artifact digest and preserves the active release on restart. Add `--replace-active` to activate a rebuilt executor for future runs. Existing artifacts remain on disk for saved dispatches. This command configures executor releases only; the Compose stack above does not yet start ExecutorHost or a local sandbox provider.
-
 ### Run it with hosted-mode authentication
 
 ```bash

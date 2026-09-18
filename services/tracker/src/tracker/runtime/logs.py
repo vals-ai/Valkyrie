@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-import hashlib
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -108,20 +107,3 @@ class LogProvider(Protocol):
     ) -> AsyncIterator[LogEvent]:
         """Yield existing and newly-arriving task logs."""
         raise NotImplementedError
-
-
-def _sanitize_log_stream_name(task_id: str) -> str:
-    """Escape rejected characters and distinguish the result from legacy names."""
-    escaped = task_id.replace("%", "%25").replace(":", "%3A").replace("*", "%2A")
-    if escaped == task_id:
-        return task_id
-    digest = hashlib.sha256(task_id.encode()).hexdigest()[:16]
-    return f"{escaped}-{digest}"
-
-
-def task_log_stream_name(task_id: str, started_at: datetime) -> str:
-    """Return the canonical versioned log stream for a task attempt."""
-    if started_at.utcoffset() is None:
-        started_at = started_at.replace(tzinfo=timezone.utc)
-    suffix = f"{int(started_at.timestamp() * 1_000_000):x}"
-    return f"{_sanitize_log_stream_name(task_id)}_{suffix}"

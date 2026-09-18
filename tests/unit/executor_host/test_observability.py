@@ -126,10 +126,7 @@ def test_missing_production_sentry_configuration_skips_sentry(monkeypatch: pytes
     init_mock.assert_not_called()
 
 
-def test_dispatch_context_correlates_cloudwatch_logs_and_child_trace(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    caplog.set_level(logging.INFO)
+def test_dispatch_context_correlates_cloudwatch_logs_and_child_trace(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sentry_sdk, "get_traceparent", lambda: "sentry-child-trace")
     monkeypatch.setattr(sentry_sdk, "get_baggage", lambda: "sentry-child-baggage")
     output = io.StringIO()
