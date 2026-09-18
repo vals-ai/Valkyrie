@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable
 from functools import partial
 from dataclasses import replace
 from pathlib import Path
+from threading import Event
 from typing import cast
 from unittest.mock import Mock
 
@@ -1017,20 +1018,45 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_during_claim", [False, True])
 async def test_cancellation_after_claim_terminalizes_dispatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    cancel_during_claim: bool,
 ) -> None:
     artifact = b"unused"
     store = FakeDispatchStore()
     supervisor = _supervisor(tmp_path, content=artifact)
     entered_run = asyncio.Event()
+    entered_claim = asyncio.Event()
+    release_claim = Event()
+    entered_terminalize = asyncio.Event()
+    release_terminalize = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    async def block_claim(dispatch_id: str, benchmark_id: str, dispatch: ArtifactDispatch) -> DispatchAuthority:
+        def claim() -> DispatchAuthority:
+            loop.call_soon_threadsafe(entered_claim.set)
+            assert release_claim.wait(5)
+            store.claimed.append((dispatch_id, benchmark_id, dispatch))
+            store.authority = DispatchAuthority(dispatch_id, benchmark_id)
+            return store.authority
+
+        return await asyncio.to_thread(claim)
+
+    async def block_terminalize(authority: DispatchAuthority, task_ids: list[str]) -> bool:
+        entered_terminalize.set()
+        await release_terminalize.wait()
+        store.terminalized.append(authority)
+        return True
 
     async def block_run(*args: object, **kwargs: object) -> None:
         entered_run.set()
         await asyncio.Event().wait()
 
     monkeypatch.setattr(supervisor, "run", block_run)
+    monkeypatch.setattr(store, "claim", block_claim)
+    monkeypatch.setattr(store, "terminalize", block_terminalize)
     task = asyncio.create_task(
         run_executor_dispatch(
             supervisor,
@@ -1040,11 +1066,29 @@ async def test_cancellation_after_claim_terminalizes_dispatch(
             process_payload=_process_payload(),
         )
     )
-    await entered_run.wait()
-    task.cancel()
+    try:
+        await entered_claim.wait()
+        if not cancel_during_claim:
+            release_claim.set()
+            await entered_run.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        if cancel_during_claim:
+            task.cancel()
+            await asyncio.sleep(0)
+            release_claim.set()
+        await asyncio.wait_for(entered_terminalize.wait(), timeout=5)
+        task.cancel()
+        await asyncio.sleep(0)
+        release_terminalize.set()
 
-    with pytest.raises(asyncio.CancelledError):
-        await task
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release_claim.set()
+        release_terminalize.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     assert store.terminalized == [store.authority]
     assert store.finished == []
