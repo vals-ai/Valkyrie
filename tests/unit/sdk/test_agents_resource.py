@@ -54,16 +54,20 @@ class TestAgentsResource:
                 with pytest.raises(ValueError, match="Invalid agent name"):
                     await operation(name)
 
+    @pytest.mark.parametrize("download_host", ["download.test", "tracker.test"])
     async def test_download_never_forwards_tracker_credentials(
         self,
         make_client: ClientFactory,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
+        download_host: str,
     ) -> None:
         async def download(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
-            assert request.url.host == "download.test"
-            assert "authorization" not in request.headers
-            assert not any(header.startswith("x-harness") for header in request.headers)
+            assert request.url.host == download_host
+            assert ("x-api-key" in request.headers) == (download_host == "tracker.test")
+            assert any(header.startswith("x-harness") for header in request.headers) == (
+                download_host == "tracker.test"
+            )
 
             return httpx.Response(200, content=_archive())
 
@@ -74,7 +78,7 @@ class TestAgentsResource:
                 200,
                 json={
                     "name": "demo",
-                    "download_url": "https://download.test/demo.zip",
+                    "download_url": f"https://{download_host}/demo.zip",
                     "expires_in": 300,
                 },
             )

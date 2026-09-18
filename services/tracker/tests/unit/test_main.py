@@ -2686,9 +2686,7 @@ async def test_local_start_persists_server_root_without_credentials(
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
     monkeypatch.setattr(main_module, "SANDBOX_QUEUE_ENABLED", False)
     contract = contract.model_copy(update={"secrets": {"MODEL_KEY": "model-key"}})
-    request = StartBenchmarkRequest(
-        environment="local", sandbox_provider="docker", contract=contract, benchmark_name="swebench"
-    )
+    request = StartBenchmarkRequest(contract=contract, benchmark_name="swebench")
 
     response = client.post("/start-benchmark", json=request.model_dump(mode="json"))
 
@@ -2697,6 +2695,7 @@ async def test_local_start_persists_server_root_without_credentials(
     benchmark = database_session.get(Benchmark, benchmark_id)
     assert benchmark is not None
     assert benchmark.arguments.environment == "local"
+    assert benchmark.arguments.sandbox_provider == "docker"
     assert benchmark.arguments.properties == root
     assert not benchmark.aws_managed
     assert "local-model-key" not in benchmark.model_dump_json()
@@ -2725,19 +2724,20 @@ async def test_local_start_rejects_invalid_root_before_admission(
         local_config, "resources", None if failure == "server-unconfigured" else LocalResources(data_root=tmp_path)
     )
     request = {
-        "environment": "local",
-        "sandbox_provider": "docker",
         "benchmark_name": "swebench",
         "contract": contract.model_dump(mode="json"),
     }
-    if failure == "caller-root":
+    if failure == "server-unconfigured":
+        request.update(environment="local", sandbox_provider="docker")
+    elif failure == "caller-root":
         request["properties"] = {"data_root": str(tmp_path / "caller-root")}
     elif failure == "missing-agent":
         request["contract"] = {"name": "missing-agent"}
 
     response = client.post("/start-benchmark", json=request)
 
-    assert response.status_code == (404 if failure == "missing-agent" else 400), response.text
+    expected_status = {"server-unconfigured": 400, "caller-root": 422, "missing-agent": 404}[failure]
+    assert response.status_code == expected_status, response.text
     assert not database_session.exec(select(Benchmark)).all()
     assert not database_session.exec(select(ExecutorDispatch)).all()
     assert not mock_kicker.queued_calls

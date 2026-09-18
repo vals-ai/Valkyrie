@@ -17,7 +17,6 @@ from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatu
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.local.resources import LocalResources
-from tracker.local.runtime import LocalRuntimeFactory
 from tracker.types import SingleBenchmarkResponse, TasksResponse, TaskSummary
 
 router = APIRouter(prefix="/benchmarks")
@@ -66,10 +65,8 @@ def get_single_benchmark(
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
     if benchmark.arguments.environment == "local":
-        assert isinstance(benchmark.arguments.properties, LocalResources)
-        runtime = LocalRuntimeFactory.create_runtime(benchmark.arguments.properties.data_root, org.id)
-        cloudwatch_url = runtime.log_locations.benchmark_location(str(benchmark.id))
-        s3_bucket_url = runtime.artifacts.prefix_location(f"benchmarks/{benchmark.id}/")
+        cloudwatch_url = str(request.url_for("get_logs", benchmark_id=benchmark.id))
+        s3_bucket_url = str(request.url_for("list_run_artifacts", benchmark_id=benchmark.id))
     else:
         assert not isinstance(benchmark.arguments.properties, LocalResources)
         aws_runtime = resolve_run_metadata_aws_runtime(

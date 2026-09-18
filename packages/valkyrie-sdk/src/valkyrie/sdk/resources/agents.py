@@ -21,7 +21,6 @@ from valkyrie.sdk.agent_bundle import (
 )
 from valkyrie.sdk.agent_install import checkout_agent
 from valkyrie.sdk.errors import ValkyrieTransportError
-from valkyrie.sdk.downloads import download_chunks
 from valkyrie.sdk.models import AgentDownloadURLResponse, AgentEntry, AgentsResponse
 
 if TYPE_CHECKING:
@@ -104,12 +103,17 @@ class AgentsResource:
             # A separate client must never inherit Tracker credentials for presigned transfers.
             async with httpx.AsyncClient(timeout=120) as client:
                 with tempfile.TemporaryFile() as stream:
-                    downloaded_bytes = 0
-                    async for chunk in download_chunks(client, response.download_url, self._sdk.config):
-                        downloaded_bytes += len(chunk)
-                        if downloaded_bytes > max_archive_bytes:
-                            raise ValueError("Agent archive exceeds max_archive_bytes")
-                        await asyncio.to_thread(stream.write, chunk)
+                    headers = self._sdk.download_headers(response.download_url)
+                    async with client.stream(
+                        "GET", response.download_url, headers=headers, follow_redirects=not headers
+                    ) as download:
+                        download.raise_for_status()
+                        downloaded_bytes = 0
+                        async for chunk in download.aiter_bytes(chunk_size=1024 * 1024):
+                            downloaded_bytes += len(chunk)
+                            if downloaded_bytes > max_archive_bytes:
+                                raise ValueError("Agent archive exceeds max_archive_bytes")
+                            await asyncio.to_thread(stream.write, chunk)
                     await asyncio.to_thread(stream.seek, 0)
 
                     return await asyncio.to_thread(

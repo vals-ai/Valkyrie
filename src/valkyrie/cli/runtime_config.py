@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import yaml
 
@@ -79,8 +79,6 @@ def tracker_service_url() -> str:
     config = cast(dict[str, Any], (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {})
     if url := config.get("tracker_url"):
         return str(url).rstrip("/")
-    if config.get("execution_environment") == "local":
-        return "http://localhost:8000"
     return _TRACKER_URLS[selected_environment()]
 
 
@@ -93,12 +91,3 @@ def config_location() -> Path:
     if environment_override is not None and _environment_from_override(environment_override) == DEV_ENVIRONMENT:
         return DEV_CONFIG_PATH.expanduser()
     return HOSTED_CONFIG_PATH.expanduser()
-
-
-def execution_environment() -> Literal["aws", "local"]:
-    path = config_location()
-    config = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
-    value = config.get("execution_environment", "aws")
-    if value not in ("aws", "local"):
-        raise ValueError("execution_environment must be aws or local")
-    return value

@@ -88,7 +88,6 @@ class RunsResource:
         )
 
         payload = StartBenchmarkRequest(
-            environment=self._sdk.config.execution_environment,
             contract=contract,
             benchmark_name=benchmark,
             concurrency=concurrency,
@@ -117,7 +116,7 @@ class RunsResource:
             StartBenchmarkResponse,
             json=payload.model_dump(
                 mode="json",
-                exclude=({"environment"} if payload.environment == "aws" else set[str]())
+                exclude={"environment"}
                 | {name for name in ("priority", "properties") if getattr(payload, name) is None},
             ),
         )

@@ -7,12 +7,14 @@ from collections.abc import Generator
 from pathlib import Path
 
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from tracker.api.dependencies import RunRuntimeDependency, TrackedBenchmarkId
 from tracker.runtime.artifacts import benchmark_prefix
 from tracker.exceptions import S3Error
+from tracker.local.storage import FilesystemObjectStore
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/benchmarks")
@@ -100,16 +102,26 @@ async def list_run_artifacts(
 
 @router.get("/{benchmark_id}/artifacts/download-url", response_model=RunArtifactDownloadResponse)
 async def get_run_artifact_url(
-    benchmark_id: TrackedBenchmarkId, run_context: RunRuntimeDependency, path: str = Query(min_length=1)
-) -> RunArtifactDownloadResponse:
+    benchmark_id: TrackedBenchmarkId,
+    run_context: RunRuntimeDependency,
+    request: Request,
+    path: str = Query(min_length=1),
+    download: bool = False,
+) -> RunArtifactDownloadResponse | FileResponse:
     """Return a temporary download URL for an exact artifact in the authorized run."""
     path = _path(path)
     key = benchmark_prefix(str(benchmark_id)) + path
     ttl = run_context.objects.maximum_download_ttl(300)
     with _storage_errors():
         metadata = await run_context.objects.stat(key)
+        if download and isinstance(run_context.objects, FilesystemObjectStore):
+            return FileResponse(run_context.objects.object_location(key), filename=Path(path).name)
         url = await run_context.objects.temporary_download_url(key, expires_in=ttl)
         if url is None:
-            url = Path(run_context.artifacts.object_location(key)).as_uri()
+            url = str(
+                request.url_for("get_run_artifact_url", benchmark_id=benchmark_id).include_query_params(
+                    path=path, download="true"
+                )
+            )
             ttl = 0
     return RunArtifactDownloadResponse(path=path, download_url=url, expires_in=ttl, size=metadata.size)

@@ -258,7 +258,7 @@ def test_logs_handles_ctrl_c_without_traceback(monkeypatch: pytest.MonkeyPatch) 
 def test_logs_uses_selected_cli_config_and_tracker_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "local.yaml"
     path.write_text(
-        f"execution_environment: local\nlocal_data_root: {tmp_path}\ntracker_url: http://127.0.0.1:8765\n",
+        "tracker_url: http://127.0.0.1:8765\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("VALKYRIE_CONFIG_PATH", str(path))

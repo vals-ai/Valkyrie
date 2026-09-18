@@ -100,22 +100,18 @@ def _parse_model_response(response: Response, action: str, model: type[ModelT]) 
 def _resolve_sandbox_provider_config(
     config: dict[str, Any], config_values: dict[str, str], provider: str | None = None
 ) -> tuple[str, str]:
-    if config.get("execution_environment") == "local":
-        if provider not in (None, "docker"):
-            raise TrackerServiceError("Local execution requires the docker sandbox provider")
-        return "docker", ""
     providers = _sandbox_providers(config)
 
     # Fall back to the legacy Daytona secret when named providers are not configured.
     if not providers:
-        if provider is not None:
-            raise TrackerServiceError(
-                f"Unknown sandbox provider '{provider}'. Configure it with `{_PROVIDER_SETUP_COMMAND}`."
-            )
         secret_name = config.get("DAYTONA_SECRET_NAME")
-        if not secret_name:
-            raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
-        return "daytona", secret_name
+        if secret_name:
+            if provider is not None:
+                raise TrackerServiceError(
+                    f"Unknown sandbox provider '{provider}'. Configure it with `{_PROVIDER_SETUP_COMMAND}`."
+                )
+            return "daytona", secret_name
+        return provider or config.get("default_sandbox_provider") or "daytona", ""
 
     # Use the requested provider, configured default, or first configured provider.
     provider_name = str(provider or config.get("default_sandbox_provider") or next(iter(providers)))
@@ -256,12 +252,6 @@ class TrackerService:
         with open(config_path) as f:
             harness_config: dict[str, Any] = yaml.safe_load(f) or {}
 
-        if harness_config.get("execution_environment") == "local":
-            return {}
-
-        if not (_sandbox_providers(harness_config) or "DAYTONA_SECRET_NAME" in harness_config):
-            raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
-
         access_key_fields = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
         configured_access_key_fields = [field for field in access_key_fields if field in harness_config]
         if configured_access_key_fields and len(configured_access_key_fields) != len(access_key_fields):
@@ -270,6 +260,8 @@ class TrackerService:
             if "AWS_SESSION_TOKEN" in harness_config:
                 raise TrackerServiceError("AWS_SESSION_TOKEN requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.")
             return {}
+        if not (_sandbox_providers(harness_config) or "DAYTONA_SECRET_NAME" in harness_config):
+            raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
         if any(
             not isinstance(harness_config[field], str) or not harness_config[field].strip()
             for field in access_key_fields
@@ -287,10 +279,7 @@ class TrackerService:
             "webhook",
             "api_key",
             "default_sandbox_provider",
-            "execution_environment",
             "tracker_url",
-            "local_data_root",
-            "local_secrets_file",
         }
 
         # Skip custom_benchmark_services to avoid adding them inside of the header
@@ -471,9 +460,7 @@ class TrackerService:
                 if self._config_values
                 else None
             )
-            local_execution = self._config.get("execution_environment") == "local"
             payload = StartBenchmarkRequest(
-                environment="local" if local_execution else "aws",
                 contract=contract,
                 benchmark_name=benchmark_name,
                 concurrency=concurrency,
@@ -498,7 +485,7 @@ class TrackerService:
                 webhook_intervals=webhook_intervals,
             )
 
-            body = payload.model_dump()
+            body = payload.model_dump(exclude={"environment"})
 
             response = self._client.post(f"{self._base_url}/start-benchmark", json=body)
 

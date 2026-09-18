@@ -9,8 +9,6 @@ from uuid import UUID
 
 import httpx
 
-from valkyrie.sdk.downloads import download_chunks
-from valkyrie.sdk.config import ValkyrieConfig
 from valkyrie.sdk.errors import ValkyrieStreamError, ValkyrieTransportError
 from valkyrie.sdk.models.artifacts import RunArtifactsResponse, RunArtifactDownloadResponse
 
@@ -101,7 +99,11 @@ class ArtifactsResource:
                             destination = staging / relative
                             await asyncio.to_thread(destination.parent.mkdir, parents=True, exist_ok=True)
                             size += await _download_file(
-                                download_client, url.download_url, destination, max_bytes - size, self._sdk.config
+                                download_client,
+                                url.download_url,
+                                destination,
+                                max_bytes - size,
+                                self._sdk.download_headers(url.download_url),
                             )
                         if page.next_cursor is None:
                             break
@@ -120,17 +122,19 @@ class ArtifactsResource:
 
 
 async def _download_file(
-    client: httpx.AsyncClient, url: str, destination: Path, max_bytes: int, config: ValkyrieConfig
+    client: httpx.AsyncClient, url: str, destination: Path, max_bytes: int, headers: dict[str, str]
 ) -> int:
     """Stream one artifact to disk and return its downloaded size."""
     size = 0
     output = await asyncio.to_thread(destination.open, "xb")
     try:
-        async for chunk in download_chunks(client, url, config):
-            size += len(chunk)
-            if size > max_bytes:
-                raise ValueError("Artifacts exceed download limits")
-            await asyncio.to_thread(output.write, chunk)
+        async with client.stream("GET", url, headers=headers, follow_redirects=not headers) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise ValueError("Artifacts exceed download limits")
+                await asyncio.to_thread(output.write, chunk)
     finally:
         await asyncio.to_thread(output.close)
 
