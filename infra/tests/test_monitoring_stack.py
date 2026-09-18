@@ -8,6 +8,7 @@ import os
 import unittest
 from typing import Any, cast
 from unittest import mock
+from uuid import UUID
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -251,6 +252,56 @@ def service_templates(
 
 
 class MonitoringStackTest(unittest.TestCase):
+    def test_managed_storage_environment_map_defaults_closed_and_is_immutable(self) -> None:
+        with mock.patch.dict(os.environ, TEST_BENCH_ENV, clear=True):
+            managed_aws = config_for(Stage(BENCH)).managed_aws
+
+        self.assertEqual(dict(managed_aws.managed_storage_org_environments), {})
+        self.assertFalse(managed_aws.managed_storage_submissions_enabled)
+        with self.assertRaises(TypeError):
+            managed_aws.managed_storage_org_environments[UUID(TEST_MANAGED_ORG_ID)] = frozenset({"dev"})  # type: ignore[index]
+
+    def test_bench_managed_storage_environment_map_is_explicit(self) -> None:
+        environment_cases = (
+            (["dev"], frozenset({"dev"})),
+            (["prod"], frozenset({"prod"})),
+            (["prod", "dev"], frozenset({"dev", "prod"})),
+        )
+        for configured_environments, expected_environments in environment_cases:
+            with self.subTest(environments=configured_environments):
+                environment = {
+                    **TEST_BENCH_ENV,
+                    "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS": json.dumps({TEST_MANAGED_ORG_ID: configured_environments}),
+                    "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED": "true",
+                }
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    managed_aws = config_for(Stage(BENCH)).managed_aws
+
+                self.assertEqual(
+                    managed_aws.managed_storage_org_environments,
+                    {UUID(TEST_MANAGED_ORG_ID): expected_environments},
+                )
+                self.assertTrue(managed_aws.managed_storage_submissions_enabled)
+
+    def test_managed_storage_environment_map_rejects_invalid_or_unmanaged_orgs(self) -> None:
+        invalid_mappings: tuple[dict[str, list[str]], ...] = (
+            {"not-a-uuid": ["dev"]},
+            {"AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA": ["dev"]},
+            {"00000000-0000-0000-0000-000000000002": ["dev"]},
+            {TEST_MANAGED_ORG_ID: []},
+            {TEST_MANAGED_ORG_ID: ["dev", "dev"]},
+            {TEST_MANAGED_ORG_ID: ["bench"]},
+        )
+        for mapping in invalid_mappings:
+            with self.subTest(mapping=mapping):
+                environment = {
+                    **TEST_BENCH_ENV,
+                    "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS": json.dumps(mapping),
+                }
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    with self.assertRaisesRegex(ValueError, "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS"):
+                        config_for(Stage(BENCH))
+
     def test_hosted_managed_runtime_requires_deployment_authority(self) -> None:
         for stage_name, stage_environment in (
             (DEV, TEST_DEV_ENV),
