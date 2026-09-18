@@ -1,0 +1,849 @@
+{
+  "$defs": {
+    "AWSResources": {
+      "additionalProperties": false,
+      "properties": {
+        "region": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Region",
+          "type": "string"
+        },
+        "s3_bucket": {
+          "maxLength": 63,
+          "minLength": 3,
+          "title": "S3 Bucket",
+          "type": "string"
+        },
+        "log_group": {
+          "title": "Log Group",
+          "type": "string"
+        },
+        "log_retention_days": {
+          "exclusiveMinimum": 0,
+          "title": "Log Retention Days",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "region",
+        "s3_bucket",
+        "log_group",
+        "log_retention_days"
+      ],
+      "title": "AWSResources",
+      "type": "object"
+    },
+    "CopiedObject": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "source_bucket": {
+          "title": "Source Bucket",
+          "type": "string"
+        },
+        "source_version_id": {
+          "title": "Source Version Id",
+          "type": "string"
+        },
+        "destination_bucket": {
+          "title": "Destination Bucket",
+          "type": "string"
+        },
+        "destination_version_id": {
+          "title": "Destination Version Id",
+          "type": "string"
+        },
+        "is_delete_marker": {
+          "title": "Is Delete Marker",
+          "type": "boolean"
+        },
+        "source_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source Sha256"
+        },
+        "destination_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Destination Sha256"
+        },
+        "source_size": {
+          "minimum": 0,
+          "title": "Source Size",
+          "type": "integer"
+        },
+        "destination_size": {
+          "minimum": 0,
+          "title": "Destination Size",
+          "type": "integer"
+        },
+        "is_current": {
+          "title": "Is Current",
+          "type": "boolean"
+        },
+        "transformation_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transformation Sha256"
+        }
+      },
+      "required": [
+        "run_id",
+        "key",
+        "source_bucket",
+        "source_version_id",
+        "destination_bucket",
+        "destination_version_id",
+        "is_delete_marker",
+        "source_sha256",
+        "destination_sha256",
+        "source_size",
+        "destination_size",
+        "is_current"
+      ],
+      "title": "CopiedObject",
+      "type": "object"
+    },
+    "DestinationVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "bucket": {
+          "title": "Bucket",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "version_id": {
+          "title": "Version Id",
+          "type": "string"
+        },
+        "is_delete_marker": {
+          "title": "Is Delete Marker",
+          "type": "boolean"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sha256"
+        },
+        "is_current": {
+          "title": "Is Current",
+          "type": "boolean"
+        },
+        "provenance": {
+          "enum": [
+            "existing",
+            "copied",
+            "restored"
+          ],
+          "title": "Provenance",
+          "type": "string"
+        },
+        "restored_from_version_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Restored From Version Id"
+        },
+        "transformation_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transformation Sha256"
+        }
+      },
+      "required": [
+        "run_id",
+        "bucket",
+        "key",
+        "version_id",
+        "is_delete_marker",
+        "size",
+        "sha256",
+        "is_current",
+        "provenance"
+      ],
+      "title": "DestinationVersion",
+      "type": "object"
+    },
+    "ExternalHostDrain": {
+      "additionalProperties": false,
+      "properties": {
+        "provenance": {
+          "const": "externally_confirmed_host_drain",
+          "title": "Provenance",
+          "type": "string"
+        },
+        "identity": {
+          "$ref": "#/$defs/OperationIdentity"
+        },
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "hold_acquired_at": {
+          "format": "date-time",
+          "title": "Hold Acquired At",
+          "type": "string"
+        },
+        "dispatch_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Dispatch Ids",
+          "type": "array"
+        },
+        "host_inventory": {
+          "items": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "type": "string"
+          },
+          "title": "Host Inventory",
+          "type": "array"
+        },
+        "deployed_host_contract": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Deployed Host Contract",
+          "type": "string"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "verifier": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Verifier",
+          "type": "string"
+        },
+        "evidence_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Evidence Sha256",
+          "type": "string"
+        },
+        "confirmation": {
+          "const": "all_inventory_hosts_terminated_and_old_claims_disabled",
+          "title": "Confirmation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provenance",
+        "identity",
+        "run_id",
+        "hold_acquired_at",
+        "dispatch_ids",
+        "host_inventory",
+        "deployed_host_contract",
+        "observed_at",
+        "verifier",
+        "evidence_sha256",
+        "confirmation"
+      ],
+      "title": "ExternalHostDrain",
+      "type": "object"
+    },
+    "HostContractObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "const": "stable-host-lifecycle-v1",
+          "title": "Contract",
+          "type": "string"
+        },
+        "deployment_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Deployment Sha256",
+          "type": "string"
+        },
+        "host_inventory": {
+          "items": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Host Inventory",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "acknowledgement_required_since": {
+          "format": "date-time",
+          "title": "Acknowledgement Required Since",
+          "type": "string"
+        },
+        "verifier": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Verifier",
+          "type": "string"
+        },
+        "legacy_dispatch_ids": {
+          "default": [],
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Legacy Dispatch Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "contract",
+        "deployment_sha256",
+        "host_inventory",
+        "observed_at",
+        "acknowledgement_required_since",
+        "verifier"
+      ],
+      "title": "HostContractObservation",
+      "type": "object"
+    },
+    "JsonLocatorEdit": {
+      "additionalProperties": false,
+      "properties": {
+        "pointer": {
+          "title": "Pointer",
+          "type": "string"
+        },
+        "original": {
+          "title": "Original",
+          "type": "string"
+        },
+        "replacement": {
+          "title": "Replacement",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pointer",
+        "original",
+        "replacement"
+      ],
+      "title": "JsonLocatorEdit",
+      "type": "object"
+    },
+    "ObjectTransformation": {
+      "additionalProperties": false,
+      "properties": {
+        "source_bucket": {
+          "title": "Source Bucket",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "source_version_id": {
+          "title": "Source Version Id",
+          "type": "string"
+        },
+        "original_size": {
+          "minimum": 0,
+          "title": "Original Size",
+          "type": "integer"
+        },
+        "original_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Original Sha256",
+          "type": "string"
+        },
+        "rewritten_size": {
+          "minimum": 0,
+          "title": "Rewritten Size",
+          "type": "integer"
+        },
+        "rewritten_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Rewritten Sha256",
+          "type": "string"
+        },
+        "edits": {
+          "items": {
+            "$ref": "#/$defs/JsonLocatorEdit"
+          },
+          "title": "Edits",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source_bucket",
+        "key",
+        "source_version_id",
+        "original_size",
+        "original_sha256",
+        "rewritten_size",
+        "rewritten_sha256",
+        "edits"
+      ],
+      "title": "ObjectTransformation",
+      "type": "object"
+    },
+    "OperationIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "operation_id": {
+          "format": "uuid",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "parent_plan_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Parent Plan Sha256",
+          "type": "string"
+        },
+        "github_owner_id": {
+          "exclusiveMinimum": 0,
+          "title": "Github Owner Id",
+          "type": "integer"
+        },
+        "org_id": {
+          "format": "uuid",
+          "title": "Org Id",
+          "type": "string"
+        },
+        "source_aws_account_id": {
+          "pattern": "^[0-9]{12}$",
+          "title": "Source Aws Account Id",
+          "type": "string"
+        },
+        "destination_aws_account_id": {
+          "pattern": "^[0-9]{12}$",
+          "title": "Destination Aws Account Id",
+          "type": "string"
+        },
+        "region": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Region",
+          "type": "string"
+        },
+        "environment": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Environment",
+          "type": "string"
+        },
+        "database_target": {
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+          "title": "Database Target",
+          "type": "string"
+        },
+        "run_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Run Ids",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "operation_id",
+        "parent_plan_sha256",
+        "github_owner_id",
+        "org_id",
+        "source_aws_account_id",
+        "destination_aws_account_id",
+        "region",
+        "environment",
+        "database_target",
+        "run_ids"
+      ],
+      "title": "OperationIdentity",
+      "type": "object"
+    },
+    "RelocationPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "identity": {
+          "$ref": "#/$defs/OperationIdentity"
+        },
+        "runs": {
+          "items": {
+            "$ref": "#/$defs/RelocationRun"
+          },
+          "title": "Runs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "identity",
+        "runs"
+      ],
+      "title": "RelocationPlan",
+      "type": "object"
+    },
+    "RelocationPredecessor": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "released_relocation",
+            "completed_history_only"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "operation_id": {
+          "format": "uuid",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "identity_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Identity Sha256",
+          "type": "string"
+        },
+        "scope_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Scope Sha256",
+          "type": "string"
+        },
+        "completion_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completion Sha256"
+        }
+      },
+      "required": [
+        "kind",
+        "operation_id",
+        "identity_sha256",
+        "scope_sha256"
+      ],
+      "title": "RelocationPredecessor",
+      "type": "object"
+    },
+    "RelocationRun": {
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/RunScope"
+        },
+        "destination_resources": {
+          "$ref": "#/$defs/AWSResources"
+        },
+        "expected_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Expected Label"
+        },
+        "execution_policy": {
+          "enum": [
+            "portable",
+            "history_only"
+          ],
+          "title": "Execution Policy",
+          "type": "string"
+        },
+        "execution_arguments_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Execution Arguments Sha256",
+          "type": "string"
+        },
+        "predecessor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RelocationPredecessor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "transformations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ObjectTransformation"
+          },
+          "title": "Transformations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "scope",
+        "destination_resources",
+        "expected_label",
+        "execution_policy",
+        "execution_arguments_sha256"
+      ],
+      "title": "RelocationRun",
+      "type": "object"
+    },
+    "RunScope": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "original_resources": {
+          "$ref": "#/$defs/AWSResources"
+        },
+        "object_prefix": {
+          "title": "Object Prefix",
+          "type": "string"
+        },
+        "log_group": {
+          "title": "Log Group",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "original_resources",
+        "object_prefix",
+        "log_group"
+      ],
+      "title": "RunScope",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "action": {
+      "enum": [
+        "inventory",
+        "prepare",
+        "inspect",
+        "relocate",
+        "release"
+      ],
+      "title": "Action",
+      "type": "string"
+    },
+    "nonce": {
+      "format": "uuid",
+      "title": "Nonce",
+      "type": "string"
+    },
+    "github_owner_id": {
+      "exclusiveMinimum": 0,
+      "title": "Github Owner Id",
+      "type": "integer"
+    },
+    "org_id": {
+      "format": "uuid",
+      "title": "Org Id",
+      "type": "string"
+    },
+    "source_aws_account_id": {
+      "pattern": "^[0-9]{12}$",
+      "title": "Source Aws Account Id",
+      "type": "string"
+    },
+    "destination_aws_account_id": {
+      "pattern": "^[0-9]{12}$",
+      "title": "Destination Aws Account Id",
+      "type": "string"
+    },
+    "region": {
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+      "title": "Region",
+      "type": "string"
+    },
+    "environment": {
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+      "title": "Environment",
+      "type": "string"
+    },
+    "database_target": {
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
+      "title": "Database Target",
+      "type": "string"
+    },
+    "run_ids": {
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Run Ids",
+      "type": "array",
+      "uniqueItems": true
+    },
+    "plan": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RelocationPlan"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "copied_objects": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CopiedObject"
+      },
+      "title": "Copied Objects",
+      "type": "array"
+    },
+    "completion_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completion Sha256"
+    },
+    "destination_versions": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/DestinationVersion"
+      },
+      "title": "Destination Versions",
+      "type": "array"
+    },
+    "host_contract": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HostContractObservation"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "external_host_drains": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ExternalHostDrain"
+      },
+      "title": "External Host Drains",
+      "type": "array"
+    },
+    "external_evidence_files": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "External Evidence Files",
+      "type": "array"
+    }
+  },
+  "required": [
+    "action",
+    "nonce",
+    "github_owner_id",
+    "org_id",
+    "source_aws_account_id",
+    "destination_aws_account_id",
+    "region",
+    "environment",
+    "database_target",
+    "run_ids"
+  ],
+  "title": "TrackerRequest",
+  "type": "object"
+}
