@@ -1,7 +1,6 @@
 """Dependencies scoped to one executor dispatch."""
 
 from asyncio import to_thread
-from contextlib import AsyncExitStack, closing
 
 from tracker.aws.runtime import AWSResources
 from tracker.aws.services import CloudRuntimeFactory
@@ -18,8 +17,6 @@ async def get_execution_runtime(
     request: StartBenchmarkRequest,
     benchmark: Benchmark,
     org: Org,
-    *,
-    runtime_stack: AsyncExitStack,
 ) -> RuntimeServices:
     if request.environment != benchmark.arguments.environment:
         raise SecretsError("Queued runtime environment does not match the saved run")
@@ -28,11 +25,8 @@ async def get_execution_runtime(
         if not isinstance(properties, LocalResources):
             raise SecretsError("Saved local run has no filesystem resource configuration")
         values = await to_thread(load_execution_secrets, properties.secrets_file, request.contract.secrets)
-        try:
-            secrets = runtime_stack.enter_context(closing(InMemorySecretStore(request.contract.secrets, values)))
-            runtime = LocalRuntimeFactory.create_runtime(properties.data_root, org.id, secrets=secrets)
-        finally:
-            values.clear()
+        secrets = InMemorySecretStore(request.contract.secrets, values)
+        runtime = LocalRuntimeFactory.create_runtime(properties.data_root, org.id, secrets=secrets)
         await runtime.prepare_execution(request, benchmark.id)
         return runtime
     assert properties is None or isinstance(properties, AWSResources)
