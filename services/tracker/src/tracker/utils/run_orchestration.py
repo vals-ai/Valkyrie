@@ -1118,7 +1118,17 @@ def _commit_queued_cancellation(
             )
             if task_row.started_at != owned_attempts[task_row.id] or not irrecoverable:
                 continue
-            session.add(ErrorResult(org_id=org.id, task=task_row.id, error_message=error_message))
+            session.add(
+                ErrorResult(
+                    org_id=org.id,
+                    task=task_row.id,
+                    error_message=error_message,
+                    producer="tracker",
+                    operation="process_benchmark",
+                    error_type=asyncio.CancelledError.__name__,
+                    category=FailureCategory.CANCELLED,
+                )
+            )
             task_row.status = TaskStatus.ERROR
             transitioned_task = True
 

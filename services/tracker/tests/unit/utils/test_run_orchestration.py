@@ -10,7 +10,7 @@ from uuid import UUID
 import pytest
 from benchmark_service import SandboxProvider
 from benchmark_service.client import BenchmarkServiceClient
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
@@ -18,8 +18,10 @@ from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkStatus,
+    ErrorResult,
     EvaluationResult,
     ExecutorDispatch,
+    FailureCategory,
     Org,
     Task,
     TaskStatus,
@@ -429,6 +431,12 @@ async def test_queued_cancellation_errors_owned_work_and_preserves_pending_work(
     assert started_task_id is not None
     assert task_statuses[started_task_id] == TaskStatus.ERROR
     assert list(task_statuses.values()).count(TaskStatus.PENDING) == 1
+    error_rows = database_session.exec(
+        select(ErrorResult).join(Task, col(Task.id) == ErrorResult.task).where(Task.benchmark == benchmark.id)
+    ).all()
+    assert [(row.error_message, row.category) for row in error_rows] == [
+        ("Run was interrupted", FailureCategory.CANCELLED)
+    ]
 
 
 @pytest.mark.usefixtures("process_benchmark_env")
