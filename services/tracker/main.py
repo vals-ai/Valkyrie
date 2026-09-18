@@ -1155,8 +1155,7 @@ async def _invoke_preview_lambda(benchmark_row: Benchmark, aws_runtime: AWSRunti
             "preview": True,
         }
     )
-    await asyncio.to_thread(
-        invoke_lambda,
+    await invoke_lambda(
         aws_runtime.clients,
         lambda_function,
         lambda_payload,
