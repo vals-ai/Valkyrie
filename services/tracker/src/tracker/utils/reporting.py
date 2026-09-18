@@ -291,6 +291,7 @@ async def stream_benchmark_results(
                     benchmark_id=fresh_benchmark.id,
                     details=benchmark_context.benchmark_details,
                     s3_bucket_url=create_benchmark_url(str(fresh_benchmark.id), aws_runtime.resources),
+                    storage_bucket=aws_runtime.resources.s3_bucket,
                     label=fresh_benchmark.label,
                     executor_release_id=fresh_benchmark.executor_release_id,
                     current_execution_release_id=fresh_benchmark.current_execution_release_id,

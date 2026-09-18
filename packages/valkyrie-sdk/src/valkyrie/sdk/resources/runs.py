@@ -55,6 +55,7 @@ class RunsResource:
         concurrency: int = 5,
         priority: int | None = None,
         properties: AWSResources | None = None,
+        managed_s3_bucket: str | None = None,
         task_ids: Sequence[str] | None = None,
         slice_str: str | None = None,
         dataset: str | None = None,
@@ -76,6 +77,11 @@ class RunsResource:
             raise ValkyrieRunError("benchmark must not be blank")
         if task_ids and slice_str:
             raise ValkyrieRunError("task_ids and slice_str are mutually exclusive")
+        if managed_s3_bucket is not None and properties is not None:
+            raise ValkyrieRunError("managed_s3_bucket and properties are mutually exclusive")
+
+        if managed_s3_bucket is not None and self._sdk.config.aws_access_key_id is not None:
+            raise ValkyrieRunError("managed_s3_bucket requires deployment-managed AWS access")
 
         contract = self._normalize_contract(agent, model=model, agent_kwargs=agent_kwargs, secrets=secrets)
         provider_name, provider_secret_name = self._sdk.config.resolve_sandbox_provider(provider)
@@ -93,6 +99,7 @@ class RunsResource:
             concurrency=concurrency,
             priority=priority,
             properties=properties,
+            managed_s3_bucket=managed_s3_bucket,
             task_ids=list(task_ids) if task_ids else None,
             slice_str=slice_str,
             dataset=dataset,
@@ -108,16 +115,22 @@ class RunsResource:
             webhook_secret_name=self._sdk.config.webhook if intervals else None,
             webhook_intervals=intervals,
         )
-        return await self._sdk.request_model(
+        response = await self._sdk.request_model(
             "POST",
-            "/start-benchmark",
+            "/start-benchmark-with-storage" if managed_s3_bucket is not None else "/start-benchmark",
             StartBenchmarkResponse,
             json=payload.model_dump(
                 mode="json",
                 exclude={"environment"}
-                | {name for name in ("priority", "properties") if getattr(payload, name) is None},
+                | {name for name in ("priority", "properties", "managed_s3_bucket") if getattr(payload, name) is None},
             ),
         )
+        if managed_s3_bucket is not None and response.storage_bucket != managed_s3_bucket:
+            raise ValkyrieRunError(
+                f"Run {response.benchmark_id} did not confirm requested storage bucket {managed_s3_bucket!r}"
+            )
+
+        return response
 
     async def fetch(self, run_id: UUID) -> FetchBenchmarkResponse:
         """Fetch the latest state of a run."""

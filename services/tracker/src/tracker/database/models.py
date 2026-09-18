@@ -470,6 +470,7 @@ class Benchmark(SQLModel, table=True):
             benchmark_id=self.id,
             benchmark_name=self.name,
             benchmark_arguments=self.arguments,
+            storage_bucket=None,
             started_by_email=self.started_by_email,
             executor_release_id=self.executor_release_id,
             current_execution_release_id=self.current_execution_release_id,

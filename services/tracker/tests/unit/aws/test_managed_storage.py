@@ -13,6 +13,7 @@ from tracker.aws.managed_storage import (
     ManagedStoragePolicy,
     load_managed_storage_policy,
     validate_managed_storage_bucket,
+    validate_managed_storage_bucket_versioning,
 )
 from tracker.aws.runtime import AWSResources, AWSRuntime
 
@@ -31,6 +32,7 @@ class RecordingS3Client:
         tags: Mapping[str, str] | None = None,
         head_error: BaseException | None = None,
         tag_error: BaseException | None = None,
+        versioning_status: str | None = "Enabled",
     ) -> None:
         self.region = region
         self.tags = dict(
@@ -45,8 +47,10 @@ class RecordingS3Client:
         )
         self.head_error = head_error
         self.tag_error = tag_error
+        self.versioning_status = versioning_status
         self.head_requests: list[dict[str, str]] = []
         self.tag_requests: list[dict[str, str]] = []
+        self.versioning_requests: list[dict[str, str]] = []
 
     async def __aenter__(self) -> "RecordingS3Client":
         return self
@@ -67,6 +71,10 @@ class RecordingS3Client:
             raise self.tag_error
 
         return {"TagSet": [{"Key": key, "Value": value} for key, value in self.tags.items()]}
+
+    async def get_bucket_versioning(self, **request: str) -> dict[str, str]:
+        self.versioning_requests.append(request)
+        return {"Status": self.versioning_status} if self.versioning_status is not None else {}
 
 
 @pytest.fixture
@@ -125,6 +133,25 @@ async def test_validator_checks_account_region_and_required_tags(managed_runtime
     expected_request = {"Bucket": "vs-dev-acme-123", "ExpectedBucketOwner": _ACCOUNT_ID}
     assert client.head_requests == [expected_request]
     assert client.tag_requests == [expected_request]
+
+
+@pytest.mark.parametrize("versioning_status", [None, "Suspended"])
+async def test_owner_bucket_admission_requires_enabled_versioning(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_runtime: AWSRuntime,
+    versioning_status: str | None,
+) -> None:
+    client = RecordingS3Client(versioning_status=versioning_status)
+    _inject_client(monkeypatch, client)
+
+    with pytest.raises(ManagedStorageError) as error:
+        await validate_managed_storage_bucket_versioning(
+            managed_runtime,
+            bucket_name="vs-dev-acme-123",
+        )
+
+    assert error.value.status_code == 403
+    assert client.versioning_requests == [{"Bucket": "vs-dev-acme-123", "ExpectedBucketOwner": _ACCOUNT_ID}]
 
 
 @pytest.mark.parametrize(

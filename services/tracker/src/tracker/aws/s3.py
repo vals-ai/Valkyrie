@@ -490,6 +490,10 @@ class S3ObjectCopier:
             )
 
         version_id = response.get("VersionId")
+        if self._destination.clients.credential_source == "managed" and (
+            not isinstance(version_id, str) or not version_id.strip() or version_id.strip().lower() == "null"
+        ):
+            raise S3Error("Managed S3 copy did not return a destination version")
 
         return StoredObjectCopy(deletion_token=str(version_id) if version_id is not None else None)
 
