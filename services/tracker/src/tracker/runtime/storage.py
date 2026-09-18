@@ -1,7 +1,6 @@
 """Provider-neutral object storage capabilities used by Tracker and the CLI."""
 
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Coroutine
-from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -34,10 +33,6 @@ class ObjectReadSession(Protocol):
 
 class ObjectStore(Protocol):
     """Object transfers using opaque, store-relative keys and prefixes."""
-
-    def read_session(self) -> AbstractAsyncContextManager[ObjectReadSession]:
-        """Open one resource scope for related listings and object reads."""
-        raise NotImplementedError  # pragma: no cover
 
     async def put_bytes(self, key: str, content: bytes) -> None:
         raise NotImplementedError  # pragma: no cover
