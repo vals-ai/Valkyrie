@@ -816,7 +816,7 @@ async def test_task_protection_uses_a_renewable_two_hour_lease(monkeypatch: pyte
     monkeypatch.setattr(
         supervisor_module.httpx,
         "AsyncClient",
-        lambda **kwargs: client_factory(transport=httpx.MockTransport(handle), **kwargs),
+        partial(client_factory, transport=httpx.MockTransport(handle)),
     )
 
     set_task_protection = getattr(supervisor_module, "_set_task_protection")
@@ -867,7 +867,7 @@ async def test_task_protection_waits_for_in_flight_refresh_before_cancelling(
     monkeypatch.setattr(
         supervisor_module.httpx,
         "AsyncClient",
-        lambda **kwargs: client_factory(transport=httpx.MockTransport(handle), **kwargs),
+        partial(client_factory, transport=httpx.MockTransport(handle)),
     )
 
     set_task_protection = getattr(supervisor_module, "_set_task_protection")
