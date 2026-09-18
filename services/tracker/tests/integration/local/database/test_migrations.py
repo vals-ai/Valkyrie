@@ -429,3 +429,46 @@ def test_current_execution_ownership_migration_rejects_downgrade(
     assert revision == _CURRENT_OWNERSHIP_REVISION
     assert stored_owner == "migration-test-release"
     engine.dispose()
+
+
+def test_lifecycle_schema_retains_fences_and_never_backfills_exit(migration_database_url: str) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", _DISPATCH_LEASE_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    engine = create_engine(migration_database_url)
+    org_id, run_id, dispatch_id = uuid4(), uuid4(), uuid4()
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO org (id, name) VALUES (:id, 'lifecycle-migration')"), {"id": org_id})
+        connection.execute(
+            text("""INSERT INTO benchmark (id, org_id, name, started_at, status)
+            VALUES (:id, :org, 'lifecycle', CURRENT_TIMESTAMP, 'IN_PROGRESS')"""),
+            {"id": run_id, "org": org_id},
+        )
+        connection.execute(
+            text("""INSERT INTO executorrelease
+            (id, artifact_uri, artifact_digest, protocol_version, status, created_at, readiness_verified, readiness_metadata)
+            VALUES ('lifecycle', 's3://bucket/a', :digest, '1', 'ACTIVE', CURRENT_TIMESTAMP, true, '{}'::json)"""),
+            {"digest": "a" * 64},
+        )
+        connection.execute(
+            text("""INSERT INTO executordispatch
+            (id, benchmark_id, kind, status, executor_release_id, executor_artifact_uri,
+             executor_artifact_digest, executor_protocol_version, created_at, started_at, finished_at)
+            VALUES (:id, :run, 'START', 'FINISHED', 'lifecycle', 's3://bucket/a', :digest, '1',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"""),
+            {"id": dispatch_id, "run": run_id, "digest": "a" * 64},
+        )
+    upgrade = _run_alembic(migration_database_url, "upgrade", "head")
+    assert upgrade.returncode == 0, upgrade.stderr
+    inspector = inspect(engine)
+    assert inspector.get_foreign_keys("runlifecycle") == []
+    with engine.connect() as connection:
+        assert (
+            connection.execute(
+                text("SELECT process_exited_at FROM executordispatch WHERE id = :id"), {"id": dispatch_id}
+            ).scalar_one()
+            is None
+        )
+    downgrade = _run_alembic(migration_database_url, "downgrade", _DISPATCH_LEASE_REVISION)
+    assert downgrade.returncode != 0
+    assert "roll forward" in downgrade.stderr
+    engine.dispose()

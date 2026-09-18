@@ -16,8 +16,7 @@ from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceErr
 from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
-from tracker.executor.dependencies import get_execution_runtime
-from tracker.runtime.services import RuntimeServices
+from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
     Benchmark,
@@ -31,27 +30,28 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import engine
-from tracker.executor.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
 from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
+from tracker.executor.dependencies import get_execution_runtime
+from tracker.executor.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
-from executor_protocol import EXECUTOR_TASK_NAME
+from tracker.lifecycle import require_unheld
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import error_span
 from tracker.observability.sentry import capture_exception
 from tracker.observability.tracing import observability_span
 from tracker.outbound_security import validate_custom_service_destination
+from tracker.runtime.services import RuntimeServices
 from tracker.scheduler.admission import SandboxQueueContext, create_queue_context, recover_queued_pool
 from tracker.types import (
     FinalViewResponse,
     ManagedExecutionContext,
     StartBenchmarkRequest,
 )
-
+from tracker.utils.reporting import create_final_view, upload_final_view
 from tracker.utils.resources import (
     fetch_benchmark_row,
 )
-from tracker.utils.reporting import create_final_view, upload_final_view
 from tracker.utils.task_error_summary import summarize_task_errors
 from tracker.utils.task_execution import ResizableLimiter, TaskMonitor, TrackedTask, process_task
 
@@ -676,6 +676,7 @@ async def _process_benchmark(
         org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
         if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES:
             return
+        require_unheld(session, benchmark_id)
         queued_run = benchmark_row.arguments.queue_pool_id is not None
 
     finalization_deferred = False

@@ -248,6 +248,8 @@ class ExecutorDispatchStore(Protocol):
 
     async def finish(self, authority: DispatchAuthority) -> bool: ...
 
+    async def acknowledge_exit(self, authority: DispatchAuthority) -> None: ...
+
 
 class PostgresExecutorDispatchStore:
     """Persist dispatch lifecycle at the stable process-owner boundary."""
@@ -312,6 +314,7 @@ class PostgresExecutorDispatchStore:
         dispatch: ArtifactDispatch,
     ) -> bool:
         with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM benchmark WHERE id = %s::uuid FOR UPDATE", (benchmark_id,))
             cursor.execute(
                 """
                 UPDATE executordispatch AS dispatch
@@ -330,6 +333,8 @@ class PostgresExecutorDispatchStore:
                   AND dispatch.executor_protocol_version = %s
                   AND dispatch.status = 'QUEUED'
                   AND dispatch.claim_deadline_at > CURRENT_TIMESTAMP
+                  AND NOT EXISTS (SELECT 1 FROM runlifecycle
+                                  WHERE run_id = benchmark.id AND released_at IS NULL)
                 RETURNING dispatch.id
                 """,
                 (
@@ -355,10 +360,13 @@ class PostgresExecutorDispatchStore:
                 FROM executordispatch AS dispatch
                 JOIN benchmark ON benchmark.id = dispatch.benchmark_id
                 WHERE dispatch.id = %s::uuid
+                  AND benchmark.id = %s::uuid
                   AND benchmark.status != 'STOPPED'
                   AND dispatch.status = 'RUNNING'
+                  AND NOT EXISTS (SELECT 1 FROM runlifecycle
+                                  WHERE run_id = benchmark.id AND released_at IS NULL)
                 """,
-                (authority.dispatch_id,),
+                (authority.dispatch_id, authority.benchmark_id),
             )
             return cursor.fetchone() is not None
 
@@ -375,11 +383,28 @@ class PostgresExecutorDispatchStore:
                 WHERE id = %s::uuid
                   AND benchmark_id = %s::uuid
                   AND status = 'RUNNING'
+                  AND NOT EXISTS (SELECT 1 FROM runlifecycle
+                                  WHERE run_id = executordispatch.benchmark_id AND released_at IS NULL)
                 RETURNING id
                 """,
                 (DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS, authority.dispatch_id, authority.benchmark_id),
             )
             return cursor.fetchone() is not None
+
+    async def acknowledge_exit(self, authority: DispatchAuthority) -> None:
+        await asyncio.to_thread(self._acknowledge_exit, authority)
+
+    def _acknowledge_exit(self, authority: DispatchAuthority) -> None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE executordispatch
+                SET process_exited_at = CURRENT_TIMESTAMP
+                WHERE id = %s::uuid AND benchmark_id = %s::uuid
+                  AND process_exited_at IS NULL
+                """,
+                (authority.dispatch_id, authority.benchmark_id),
+            )
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
         return await asyncio.to_thread(self._terminalize, authority, task_ids)
@@ -482,6 +507,8 @@ class PostgresExecutorDispatchStore:
                 WHERE id = %s::uuid
                   AND benchmark_id = %s::uuid
                   AND status = 'RUNNING'
+                  AND NOT EXISTS (SELECT 1 FROM runlifecycle
+                                  WHERE run_id = executordispatch.benchmark_id AND released_at IS NULL)
                 RETURNING id
                 """,
                 (authority.dispatch_id, authority.benchmark_id),
@@ -609,6 +636,7 @@ class ExecutorSupervisor:
         process_payload: ExecutorProcessPayload,
         authority: DispatchAuthority,
         is_current: Callable[[], Awaitable[bool]],
+        acknowledge_exit: Callable[[], Awaitable[None]],
     ) -> None:
         if not await is_current():
             raise DispatchAuthorityLostError(f"Executor dispatch {authority.dispatch_id} was superseded before spawn")
@@ -635,7 +663,12 @@ class ExecutorSupervisor:
                 return_code = await self._wait_with_authority(process, is_current)
             except BaseException:
                 await _terminate_process_group(process)
+                try:
+                    await acknowledge_exit()
+                except Exception:
+                    logger.exception("Failed to acknowledge child exit for %s", authority.dispatch_id)
                 raise
+            await acknowledge_exit()
             if return_code != 0:
                 raise RuntimeError(f"Executor for benchmark {authority.benchmark_id} exited with status {return_code}")
 
@@ -682,10 +715,12 @@ class ExecutorSupervisor:
 
 async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
     if process.returncode is not None:
+        await process.wait()
         return
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
+        await process.wait()
         return
     try:
         await asyncio.wait_for(process.wait(), timeout=30)
@@ -693,7 +728,7 @@ async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
-            return
+            pass
         await process.wait()
 
 
@@ -829,6 +864,7 @@ async def run_executor_dispatch(
                 process_payload=process_payload,
                 authority=authority,
                 is_current=lambda: store.is_current(authority),
+                acknowledge_exit=lambda: store.acknowledge_exit(authority),
             )
             if not await store.finish(authority):
                 logger.warning(

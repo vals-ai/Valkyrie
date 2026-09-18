@@ -1,8 +1,8 @@
 """Operations that stop, resume, or retry a run and tear down its sandboxes."""
 
 import asyncio
-from collections.abc import AsyncGenerator
 import json
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -16,6 +16,8 @@ from benchmark_service import (
 from benchmark_service.client import BenchmarkServiceError
 from sqlmodel import Session, asc, col, func, or_, select, update
 
+from tracker.aws.runtime import AWSRuntime
+from tracker.aws.secrets import SecretsManagerStore
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -25,13 +27,11 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.executor.dispatch_control import terminalize_active_dispatches
 from tracker.exceptions import TrackerServiceError
+from tracker.executor.dispatch_control import terminalize_active_dispatches
+from tracker.lifecycle import require_unheld
 from tracker.logging import get_logger
 from tracker.sandbox import delete_sandbox
-from tracker.aws.runtime import AWSRuntime
-from tracker.aws.secrets import SecretsManagerStore
-
 from tracker.utils.resources import fetch_benchmark_row, fetch_sandbox_provider_config
 
 logger = get_logger(__name__)
@@ -263,6 +263,7 @@ def reset_to_in_progress_status(
     try:
         # Serialize retries with final-score persistence for this benchmark.
         benchmark_row = fetch_benchmark_row(benchmark_row.id, session, org, for_update=True)
+        require_unheld(session, benchmark_row.id)
         existing_rows, new_task_ids = _retry_candidates(
             benchmark_row, session, retry, rerun_task_ids, org, for_update=True
         )
