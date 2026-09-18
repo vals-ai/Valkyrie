@@ -25,12 +25,17 @@ class AWSResources:
 class AWSRuntime:
     resources: AWSResources
     clients: AWSClientProvider
+    expected_bucket_owner: str | None = None
 
     def with_resources(self, resources: AWSResources | None) -> AWSRuntime:
         """Use persisted locations while retaining the resolved credential source."""
         if resources is None or resources == self.resources:
             return self
-        return AWSRuntime(resources=resources, clients=self.clients.with_region(resources.region))
+        return AWSRuntime(
+            resources=resources,
+            clients=self.clients.with_region(resources.region),
+            expected_bucket_owner=self.expected_bucket_owner,
+        )
 
     @classmethod
     def from_harness_config(cls, harness_config: HarnessConfig) -> AWSRuntime:

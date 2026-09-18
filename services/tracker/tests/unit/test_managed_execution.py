@@ -4,12 +4,14 @@ Run: uv run pytest tests/unit/test_managed_execution.py
 """
 
 import json
+from dataclasses import replace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
 from benchmark_service import SandboxProviderConfig
+from fastapi import HTTPException
 from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
@@ -21,6 +23,7 @@ from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org
+from tracker.exceptions import TrackerServiceError
 from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmarkRequest
 from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
 from tracker.utils.run_orchestration import (
@@ -29,12 +32,17 @@ from tracker.utils.run_orchestration import (
 
 
 _TASK_IDS = ["task-1", "task-2"]
+_EXPECTED_BUCKET_OWNER = "123456789012"
 
 
 @pytest.fixture
 def aws_runtime(harness_config: HarnessConfig) -> AWSRuntime:
     resources = AWSRuntime.from_harness_config(harness_config).resources
-    return AWSRuntime(resources, DefaultChainAWSClientProvider(resources.region))
+    return AWSRuntime(
+        resources,
+        DefaultChainAWSClientProvider(resources.region),
+        expected_bucket_owner=_EXPECTED_BUCKET_OWNER,
+    )
 
 
 def _access_key_request(contract: AgentContractRequest, harness_config: HarnessConfig) -> StartBenchmarkRequest:
@@ -318,7 +326,9 @@ async def test_ineligible_managed_execution_marks_run_error(
     assert finalized_span["status"] == "ERROR"
 
 
+@pytest.mark.parametrize("version", [2, 3])
 async def test_managed_execution_completes_with_the_deployment_runtime(
+    version: int,
     contract: AgentContractRequest,
     aws_runtime: AWSRuntime,
     database_session: Session,
@@ -327,7 +337,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     executor_authority_kwargs: Any,
 ) -> None:
     request = _managed_request(contract.model_copy(update={"secrets": {"MODEL_API_KEY": "model-secret"}})).model_copy(
-        update={"lambda_function": "post-run-handler"}
+        update={"lambda_function": "post-run-handler", "properties": aws_runtime.resources}
     )
     benchmark = _persist_benchmark(database_session, request, aws_managed=True)
     calls: list[str] = []
@@ -384,6 +394,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     monkeypatch.setattr("tracker.utils.run_orchestration.observability_span", record_span)
 
     execution_context = _execution_context(request, benchmark.id)
+    execution_context["version"] = version
     # A resume may change stored inputs while this job is queued; the queued job must still run.
     benchmark.arguments = benchmark.arguments.model_copy(update={"concurrency": 20})
     database_session.add(benchmark)
@@ -492,3 +503,118 @@ async def test_managed_preflight_failure_happens_before_sandbox(
     assert benchmark.status == BenchmarkStatus.ERROR
     assert "managed log preflight failed" in (benchmark.error_message or "")
     create_sandbox.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("version", "saved_bucket", "queued_bucket", "error"),
+    [
+        (3, "saved-bucket", "other-bucket", "Queued AWS resources differ from the saved run"),
+        (3, "saved-bucket", None, "Queued AWS resources differ from the saved run"),
+        (3, None, "queued-bucket", "Managed execution has no saved AWS resources"),
+        (2, "vs-dev-owner-42", "vs-dev-owner-42", "Protocol 2 cannot execute owner storage"),
+    ],
+)
+async def test_managed_execution_rejects_invalid_saved_storage_before_runtime(
+    version: int,
+    saved_bucket: str | None,
+    queued_bucket: str | None,
+    error: str,
+    contract: AgentContractRequest,
+    aws_runtime: AWSRuntime,
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    process_benchmark_env: None,
+    executor_authority_kwargs: Any,
+) -> None:
+    saved = replace(aws_runtime.resources, s3_bucket=saved_bucket) if saved_bucket else None
+    queued = replace(aws_runtime.resources, s3_bucket=queued_bucket) if queued_bucket else None
+    request = _managed_request(contract).model_copy(update={"properties": saved})
+    benchmark = _persist_benchmark(database_session, request, aws_managed=True)
+    context = _execution_context(request.model_copy(update={"properties": queued}), benchmark.id)
+    context["version"] = version
+    runtime = AsyncMock()
+    monkeypatch.setattr("tracker.executor.dependencies.CloudRuntimeFactory.create_execution_runtime", runtime)
+
+    await process_benchmark(execution_context_json=context, **executor_authority_kwargs(benchmark))
+
+    database_session.refresh(benchmark)
+    assert benchmark.status == BenchmarkStatus.ERROR
+    assert error in (benchmark.error_message or "")
+    runtime.assert_not_awaited()
+
+
+async def test_runtime_factory_rejects_queued_resources_before_aws(
+    contract: AgentContractRequest,
+    aws_runtime: AWSRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _managed_request(contract).model_copy(
+        update={"properties": replace(aws_runtime.resources, log_group="untrusted-log-group")}
+    )
+    deployment = MagicMock()
+    monkeypatch.setattr("tracker.aws.services.deployment_aws_runtime", deployment)
+
+    with pytest.raises(TrackerServiceError, match="Queued AWS resources differ from the saved run"):
+        await CloudRuntimeFactory.create_execution_runtime(
+            request, TEST_ORG_ID, uuid4(), properties=aws_runtime.resources
+        )
+
+    deployment.assert_not_called()
+
+
+@pytest.mark.parametrize("denied", [False, True])
+async def test_owner_execution_validates_saved_location_before_preparation(
+    denied: bool,
+    contract: AgentContractRequest,
+    aws_runtime: AWSRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resources = replace(aws_runtime.resources, s3_bucket="vs-dev-owner-42")
+    owner_runtime = aws_runtime.with_resources(resources)
+    request = _managed_request(contract).model_copy(update={"properties": resources})
+    deployment = MagicMock(return_value=owner_runtime)
+    validation = AsyncMock(side_effect=HTTPException(403, "denied") if denied else None)
+    runtime = MagicMock(spec=RuntimeServices)
+    compose = MagicMock(return_value=runtime)
+    monkeypatch.setattr("tracker.aws.services.deployment_aws_runtime", deployment)
+    monkeypatch.setattr("tracker.aws.services.validate_saved_managed_storage_runtime", validation)
+    monkeypatch.setattr(CloudRuntimeFactory, "create_runtime", compose)
+
+    if denied:
+        with pytest.raises(HTTPException):
+            await CloudRuntimeFactory.create_execution_runtime(request, TEST_ORG_ID, uuid4(), properties=resources)
+        compose.assert_not_called()
+    else:
+        await CloudRuntimeFactory.create_execution_runtime(request, TEST_ORG_ID, uuid4(), properties=resources)
+        assert compose.call_args.args[0] is owner_runtime
+        runtime.prepare_execution.assert_called_once()
+
+    deployment.assert_called_once_with(TEST_ORG_ID, resources)
+    validation.assert_awaited_once_with(owner_runtime, org_id=TEST_ORG_ID)
+
+
+def test_access_key_dispatch_rejects_managed_override(
+    contract: AgentContractRequest,
+    harness_config: HarnessConfig,
+) -> None:
+    request = _access_key_request(contract, harness_config).model_copy(update={"managed_s3_bucket": "vs-dev-owner-42"})
+    with pytest.raises(ValueError, match="admission-only storage override"):
+        _parse_queued_execution(request.model_dump(mode="json"), str(uuid4()), _TASK_IDS, None)
+
+
+async def test_v2_null_resources_reject_owner_deployment_fallback(
+    contract: AgentContractRequest,
+    aws_runtime: AWSRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_runtime = aws_runtime.with_resources(replace(aws_runtime.resources, s3_bucket="vs-dev-owner-42"))
+    monkeypatch.setattr("tracker.aws.services.deployment_aws_runtime", MagicMock(return_value=owner_runtime))
+    validation = AsyncMock()
+    monkeypatch.setattr("tracker.aws.services.validate_saved_managed_storage_runtime", validation)
+
+    with pytest.raises(TrackerServiceError, match="Protocol 2 cannot execute owner storage"):
+        await CloudRuntimeFactory.create_execution_runtime(
+            _managed_request(contract), TEST_ORG_ID, uuid4(), context_version=2
+        )
+
+    validation.assert_not_awaited()

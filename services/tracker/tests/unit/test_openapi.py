@@ -32,6 +32,7 @@ def test_openapi_declares_authentication() -> None:
     assert schema["paths"]["/health"]["get"]["security"] == []
     assert schema["paths"]["/init"]["post"]["security"] == [{"ApiKeyAuth": []}]
     assert schema["paths"]["/start-benchmark"]["post"]["security"] == [{"ApiKeyAuth": []}]
+    assert schema["paths"]["/start-benchmark-with-storage"]["post"]["security"] == [{"ApiKeyAuth": []}]
 
 
 def test_openapi_declares_required_harness_headers() -> None:

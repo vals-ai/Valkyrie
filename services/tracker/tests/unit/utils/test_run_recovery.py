@@ -8,6 +8,7 @@ Covers task state transitions, sandbox cleanup, and run-control API behavior.
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -20,6 +21,7 @@ from benchmark_service import SandboxProvider, SandboxQuery
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.sandbox import DaytonaProviderConfig
 from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse, VerifyTaskIdsResponse
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session, col, select
@@ -38,7 +40,9 @@ from tests.unit.utils.task_execution_support import (
 from tests.utils import TEST_ORG_ID
 from tracker import config
 from tracker.auth import RequestIdentity
+from tracker.aws.resolver import deployment_aws_runtime
 from tracker.aws.runtime import AWSRuntime
+from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
@@ -1481,6 +1485,7 @@ class TestRunRecovery:
         database_session.commit()
 
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "deployment-region")
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket")
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group")
@@ -2849,3 +2854,209 @@ class TestRunRecovery:
 
         assert result is None
         delete_mock.assert_awaited_once_with(sandbox, provider, initiated_by="force_stop", org_id=str(TEST_ORG_ID))
+
+
+@pytest.fixture
+def managed_recovery_run(
+    example_benchmark_object: Benchmark,
+    database_session: Session,
+    monkeypatch: MonkeyPatch,
+) -> Benchmark:
+    benchmark = example_benchmark_object
+    benchmark.aws_managed = True
+    benchmark.status = BenchmarkStatus.STOPPED
+    benchmark.arguments = benchmark.arguments.model_copy(
+        update={"properties": None, "sandbox_provider": "daytona", "sandbox_provider_secret_name": "provider-secret"}
+    )
+    database_session.add(benchmark)
+    database_session.add(
+        Task(org_id=benchmark.org_id, benchmark=benchmark.id, task_id="task-1", status=TaskStatus.STOPPED)
+    )
+    database_session.commit()
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "us-east-1")
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "legacy-bucket")
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_GROUP", "legacy-logs")
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30")
+    monkeypatch.setattr(
+        BenchmarkServiceClient,
+        "verify_task_ids",
+        AsyncMock(return_value=VerifyTaskIdsResponse(task_ids=["task-1"])),
+    )
+    return benchmark
+
+
+@pytest.mark.parametrize("legacy_null", [False, True])
+async def test_recovery_pins_resources_under_lock_and_execution_uses_saved_bucket(
+    legacy_null: bool,
+    managed_recovery_run: Benchmark,
+    database_session: Session,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    benchmark = managed_recovery_run
+    resources = deployment_aws_runtime(benchmark.org_id).resources
+    if not legacy_null:
+        benchmark.arguments = benchmark.arguments.model_copy(update={"properties": resources})
+        database_session.add(benchmark)
+        database_session.commit()
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "changed-default")
+
+    metadata = client.get(f"/fetch-benchmark-metadata/{benchmark.id}")
+    assert metadata.status_code == 200, metadata.text
+    assert metadata.json()["storage_bucket"] == "legacy-bucket"
+    database_session.refresh(benchmark)
+    assert benchmark.arguments.properties == (None if legacy_null else resources)
+
+    locks: list[UUID] = []
+    original_fetch = main_module.fetch_benchmark_row
+    original_payload = main_module._process_benchmark_kwargs  # pyright: ignore[reportPrivateUsage]
+
+    def fetch_locked(*args: Any, **kwargs: Any) -> Benchmark:
+        row = original_fetch(*args, **kwargs)
+        if kwargs.get("for_update"):
+            locks.append(row.id)
+        return row
+
+    def build_payload(row: Benchmark, request: StartBenchmarkRequest, task_ids: list[str]) -> dict[str, Any]:
+        assert row.id in locks
+        assert row.arguments.properties == resources
+        assert request.properties == resources
+        return original_payload(row, request, task_ids)
+
+    enqueue = AsyncMock()
+    monkeypatch.setattr(main_module, "fetch_benchmark_row", fetch_locked)
+    monkeypatch.setattr(main_module, "_process_benchmark_kwargs", build_payload)
+    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
+
+    response = client.post(f"/retry-or-resume-benchmark/{benchmark.id}")
+
+    assert response.status_code == 200, response.text
+    database_session.refresh(benchmark)
+    assert benchmark.arguments.properties == resources
+    context = enqueue.call_args.kwargs["payload"]["execution_context_json"]
+    assert context["version"] == 3
+    request = StartBenchmarkRequest.model_validate(context["start_benchmark_request"])
+    assert request.properties == resources
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "another-default")
+    metadata_after_recovery = client.get(f"/fetch-benchmark-metadata/{benchmark.id}")
+    assert metadata_after_recovery.status_code == 200, metadata_after_recovery.text
+    assert metadata_after_recovery.json()["storage_bucket"] == "legacy-bucket"
+    runtime = Mock(spec=RuntimeServices)
+    create_runtime = Mock(return_value=runtime)
+    monkeypatch.setattr(CloudRuntimeFactory, "create_runtime", create_runtime)
+
+    await CloudRuntimeFactory.create_execution_runtime(
+        request, benchmark.org_id, benchmark.id, properties=benchmark.arguments.properties
+    )
+
+    assert create_runtime.call_args.args[0].resources == resources
+    runtime.prepare_execution.assert_called_once()
+
+
+def test_recovery_does_not_overwrite_resources_changed_during_verification(
+    managed_recovery_run: Benchmark,
+    database_session: Session,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    benchmark = managed_recovery_run
+    resources = deployment_aws_runtime(benchmark.org_id).resources
+
+    async def change_saved_resources(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+        with Session(database_session.get_bind()) as concurrent_session:
+            row = concurrent_session.get(Benchmark, benchmark.id)
+            assert row is not None
+            row.arguments = row.arguments.model_copy(update={"properties": resources})
+            concurrent_session.add(row)
+            concurrent_session.commit()
+        return VerifyTaskIdsResponse(task_ids=["task-1"])
+
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", change_saved_resources)
+    enqueue = AsyncMock()
+    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
+
+    response = client.post(f"/retry-or-resume-benchmark/{benchmark.id}")
+
+    assert response.status_code == 409
+    database_session.refresh(benchmark)
+    assert benchmark.status == BenchmarkStatus.STOPPED
+    assert benchmark.arguments.properties == resources
+    enqueue.assert_not_awaited()
+
+
+def test_in_progress_v2_recovery_keeps_release_and_arguments(
+    managed_recovery_run: Benchmark,
+    database_session: Session,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    benchmark = managed_recovery_run
+    old_release = ExecutorRelease(
+        id="old-v2-release",
+        artifact_uri="s3://artifacts/old-v2.pex",
+        artifact_digest="b" * 64,
+        protocol_version="2",
+        readiness_verified=True,
+        status=ExecutorReleaseStatus.DRAINING,
+    )
+    database_session.add(old_release)
+    benchmark.status = BenchmarkStatus.IN_PROGRESS
+    benchmark.current_execution_release_id = old_release.id
+    benchmark.executor_release_id = old_release.id
+    benchmark.executor_protocol_version = "2"
+    benchmark.executor_artifact_uri = old_release.artifact_uri
+    benchmark.executor_artifact_digest = old_release.artifact_digest
+    task = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).one()
+    task.status = TaskStatus.ERROR
+    database_session.add_all([benchmark, task])
+    database_session.commit()
+    original_arguments = benchmark.arguments.model_dump(mode="json")
+    enqueue = AsyncMock()
+    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
+
+    response = client.post(
+        f"/retry-or-resume-benchmark/{benchmark.id}?retry=true", json={"secrets": {"TOKEN": "new-secret"}}
+    )
+
+    assert response.status_code == 409
+    assert "supports managed runs" in response.json()["detail"]
+    database_session.refresh(benchmark)
+    database_session.refresh(task)
+    assert benchmark.current_execution_release_id == old_release.id
+    assert benchmark.executor_protocol_version == "2"
+    assert benchmark.arguments.model_dump(mode="json") == original_arguments
+    assert task.status == TaskStatus.ERROR
+    assert (
+        database_session.exec(select(ExecutorDispatch).where(ExecutorDispatch.benchmark_id == benchmark.id)).all() == []
+    )
+    enqueue.assert_not_awaited()
+
+
+def test_owner_recovery_revalidates_saved_org_and_location_before_task_verification(
+    managed_recovery_run: Benchmark,
+    database_session: Session,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    benchmark = managed_recovery_run
+    resources = replace(deployment_aws_runtime(benchmark.org_id).resources, s3_bucket="vs-dev-owner-42")
+    benchmark.arguments = benchmark.arguments.model_copy(update={"properties": resources})
+    database_session.add(benchmark)
+    database_session.commit()
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "changed-default")
+    monkeypatch.setattr(config, "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED", False)
+    validation = AsyncMock(side_effect=HTTPException(403, "denied"))
+    verify = AsyncMock()
+    enqueue = AsyncMock()
+    monkeypatch.setattr(main_module, "validate_saved_managed_storage_runtime", validation)
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
+    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
+
+    response = client.post(f"/retry-or-resume-benchmark/{benchmark.id}")
+
+    assert response.status_code == 403
+    assert validation.call_args.args[0].resources == resources
+    assert validation.call_args.kwargs == {"org_id": benchmark.org_id}
+    verify.assert_not_awaited()
+    enqueue.assert_not_awaited()
+    database_session.refresh(benchmark)
+    assert benchmark.status == BenchmarkStatus.STOPPED
+    assert benchmark.arguments.properties == resources

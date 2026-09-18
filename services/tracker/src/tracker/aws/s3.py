@@ -25,6 +25,7 @@ S3_BENCHMARKS_PREFIX = "benchmarks"
 
 # S3 multipart uploads require every part except the last to be at least 5 MiB.
 _MULTIPART_PART_BYTES = 8 * 1024 * 1024
+_MAX_SINGLE_COPY_BYTES = 5 * 1024**3
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,17 @@ class S3ObjectCopy:
     """Identify an object created by a copy operation."""
 
     version_id: str | None
+
+
+def s3_owner_arguments(runtime: AWSRuntime) -> dict[str, str]:
+    """Add an account guard only for deployment-managed S3 calls."""
+    if runtime.clients.credential_source != "managed":
+        return {}
+
+    if runtime.expected_bucket_owner is None:
+        raise ValueError("Managed AWS runtime is missing the expected bucket owner")
+
+    return {"ExpectedBucketOwner": runtime.expected_bucket_owner}
 
 
 def get_contract_s3_key(contract_name: str) -> str:
@@ -80,7 +92,12 @@ async def upload_to_s3(file_content: bytes, s3_key: str, runtime: AWSRuntime) ->
         S3Error: If upload fails due to AWS errors or network issues
     """
     async with runtime.clients.s3_client() as client:
-        await client.put_object(Bucket=runtime.resources.s3_bucket, Key=s3_key, Body=file_content)
+        await client.put_object(
+            Bucket=runtime.resources.s3_bucket,
+            Key=s3_key,
+            Body=file_content,
+            **s3_owner_arguments(runtime),
+        )
 
 
 @logfire.instrument("upload_stream_to_s3", extract_args=("s3_key",))
@@ -108,8 +125,9 @@ async def upload_stream_to_s3(
     """
     total_bytes = 0
     s3_bucket = runtime.resources.s3_bucket
+    owner_arguments = s3_owner_arguments(runtime)
     async with runtime.clients.s3_client() as client:
-        multipart = await client.create_multipart_upload(Bucket=s3_bucket, Key=s3_key)
+        multipart = await client.create_multipart_upload(Bucket=s3_bucket, Key=s3_key, **owner_arguments)
         upload_id = multipart["UploadId"]
         try:
             parts: list[dict[str, Any]] = []
@@ -120,7 +138,12 @@ async def upload_stream_to_s3(
                     raise S3Error("S3 stream upload authority was revoked")
                 part_number = len(parts) + 1
                 response = await client.upload_part(
-                    Bucket=s3_bucket, Key=s3_key, PartNumber=part_number, UploadId=upload_id, Body=bytes(buffer)
+                    Bucket=s3_bucket,
+                    Key=s3_key,
+                    PartNumber=part_number,
+                    UploadId=upload_id,
+                    Body=bytes(buffer),
+                    **owner_arguments,
                 )
                 parts.append({"ETag": response["ETag"], "PartNumber": part_number})
                 buffer.clear()
@@ -138,11 +161,20 @@ async def upload_stream_to_s3(
                 raise S3Error("S3 stream upload authority was revoked")
 
             await client.complete_multipart_upload(
-                Bucket=s3_bucket, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts}
+                Bucket=s3_bucket,
+                Key=s3_key,
+                UploadId=upload_id,
+                MultipartUpload={"Parts": parts},
+                **owner_arguments,
             )
         except BaseException:
             with suppress(Exception):
-                await client.abort_multipart_upload(Bucket=s3_bucket, Key=s3_key, UploadId=upload_id)
+                await client.abort_multipart_upload(
+                    Bucket=s3_bucket,
+                    Key=s3_key,
+                    UploadId=upload_id,
+                    **owner_arguments,
+                )
             raise
     return total_bytes
 
@@ -163,7 +195,11 @@ async def download_from_s3(s3_key: str, runtime: AWSRuntime) -> bytes:
         S3Error: If download fails due to AWS errors, network issues, or file not found
     """
     async with runtime.clients.s3_client() as client:
-        response = await client.get_object(Bucket=runtime.resources.s3_bucket, Key=s3_key)
+        response = await client.get_object(
+            Bucket=runtime.resources.s3_bucket,
+            Key=s3_key,
+            **s3_owner_arguments(runtime),
+        )
         async with response["Body"] as stream:
             return await stream.read()
 
@@ -189,10 +225,15 @@ async def download_many_from_s3(
     each object is read fully into memory one at a time, so peak memory is
     bounded by the largest single object rather than the whole set.
     """
+    owner_arguments = s3_owner_arguments(runtime)
     async with runtime.clients.s3_client() as client:
         async for s3_key in _as_async_iter(s3_keys):
             try:
-                response = await client.get_object(Bucket=runtime.resources.s3_bucket, Key=s3_key)
+                response = await client.get_object(
+                    Bucket=runtime.resources.s3_bucket,
+                    Key=s3_key,
+                    **owner_arguments,
+                )
                 async with response["Body"] as stream:
                     yield s3_key, await stream.read()
             except (ClientError, BotoCoreError) as e:
@@ -214,9 +255,18 @@ async def delete_from_s3(s3_key: str, runtime: AWSRuntime, *, version_id: str | 
     try:
         async with runtime.clients.s3_client() as client:
             if version_id is None:
-                await client.delete_object(Bucket=runtime.resources.s3_bucket, Key=s3_key)
+                await client.delete_object(
+                    Bucket=runtime.resources.s3_bucket,
+                    Key=s3_key,
+                    **s3_owner_arguments(runtime),
+                )
             else:
-                await client.delete_object(Bucket=runtime.resources.s3_bucket, Key=s3_key, VersionId=version_id)
+                await client.delete_object(
+                    Bucket=runtime.resources.s3_bucket,
+                    Key=s3_key,
+                    VersionId=version_id,
+                    **s3_owner_arguments(runtime),
+                )
     except (ClientError, BotoCoreError) as error:
         raise S3Error(f"Failed to delete object from S3: {error}") from error
 
@@ -234,6 +284,7 @@ async def copy_s3_object(source_key: str, dest_key: str, runtime: AWSRuntime) ->
                 Bucket=runtime.resources.s3_bucket,
                 CopySource={"Bucket": runtime.resources.s3_bucket, "Key": source_key},
                 Key=dest_key,
+                **s3_owner_arguments(runtime),
             )
             version_id = response.get("VersionId")
             return str(version_id) if version_id is not None else None
@@ -275,7 +326,11 @@ async def s3_object_exists(s3_key: str, runtime: AWSRuntime) -> bool:
     """
     async with runtime.clients.s3_client() as client:
         try:
-            await client.head_object(Bucket=runtime.resources.s3_bucket, Key=s3_key)
+            await client.head_object(
+                Bucket=runtime.resources.s3_bucket,
+                Key=s3_key,
+                **s3_owner_arguments(runtime),
+            )
             return True
         except ClientError as e:
             if e.response["Error"]["Code"] == "404":  # pyright: ignore[reportTypedDictNotRequiredAccess]
@@ -301,7 +356,11 @@ async def list_s3_objects(prefix: str, runtime: AWSRuntime) -> AsyncIterator[str
     try:
         async with runtime.clients.s3_client() as client:
             paginator = client.get_paginator("list_objects_v2")
-            async for page in paginator.paginate(Bucket=runtime.resources.s3_bucket, Prefix=prefix):
+            async for page in paginator.paginate(
+                Bucket=runtime.resources.s3_bucket,
+                Prefix=prefix,
+                **s3_owner_arguments(runtime),
+            ):
                 for s3_object in page.get("Contents", []):
                     if "Key" in s3_object:
                         yield s3_object["Key"]
@@ -383,7 +442,11 @@ async def list_agents(runtime: AWSRuntime) -> list[tuple[str, datetime | None]]:
     agents: list[tuple[str, datetime | None]] = []
     async with runtime.clients.s3_client() as client:
         paginator = client.get_paginator("list_objects_v2")
-        async for page in paginator.paginate(Bucket=runtime.resources.s3_bucket, Prefix="agents/"):
+        async for page in paginator.paginate(
+            Bucket=runtime.resources.s3_bucket,
+            Prefix="agents/",
+            **s3_owner_arguments(runtime),
+        ):
             for s3_object in page.get("Contents", []):
                 tail = s3_object["Key"][len("agents/") :]
                 if not tail.endswith(".zip"):
@@ -393,23 +456,66 @@ async def list_agents(runtime: AWSRuntime) -> list[tuple[str, datetime | None]]:
     return agents
 
 
+class S3ObjectCopier:
+    """Copy one object between two S3 runtimes with separate authority."""
+
+    def __init__(self, source: AWSRuntime, destination: AWSRuntime) -> None:
+        self._source = source
+        self._destination = destination
+
+    @handle_s3_error(message="Failed to copy S3 object")
+    async def copy(self, source_key: str, destination_key: str) -> StoredObjectCopy:
+        source_owner_arguments = s3_owner_arguments(self._source)
+        async with self._source.clients.s3_client() as source_client:
+            source_head = await source_client.head_object(
+                Bucket=self._source.resources.s3_bucket,
+                Key=source_key,
+                **source_owner_arguments,
+            )
+
+        if source_head["ContentLength"] > _MAX_SINGLE_COPY_BYTES:
+            raise S3Error(f"Agent bundle exceeds the 5 GiB single-copy limit: {source_key}")
+
+        copy_owner_arguments = s3_owner_arguments(self._destination)
+        if expected_source_owner := source_owner_arguments.get("ExpectedBucketOwner"):
+            copy_owner_arguments["ExpectedSourceBucketOwner"] = expected_source_owner
+
+        async with self._destination.clients.s3_client() as destination_client:
+            response = await destination_client.copy_object(
+                Bucket=self._destination.resources.s3_bucket,
+                Key=destination_key,
+                CopySource={"Bucket": self._source.resources.s3_bucket, "Key": source_key},
+                CopySourceIfMatch=source_head["ETag"],
+                **copy_owner_arguments,
+            )
+
+        version_id = response.get("VersionId")
+        if self._destination.clients.credential_source == "managed" and (
+            not isinstance(version_id, str) or not version_id.strip() or version_id.strip().lower() == "null"
+        ):
+            raise S3Error("Managed S3 copy did not return a destination version")
+
+        return StoredObjectCopy(deletion_token=str(version_id) if version_id is not None else None)
+
+
 class _S3ObjectReadSession:
     """S3 reads scoped to an already-open client."""
 
-    def __init__(self, client: Any, bucket: str) -> None:
+    def __init__(self, client: Any, bucket: str, owner_arguments: dict[str, str]) -> None:
         self._client = client
         self._bucket = bucket
+        self._owner_arguments = owner_arguments
 
     @handle_s3_error(message="Failed to download from S3")
     async def get_bytes(self, key: str) -> bytes:
-        response = await self._client.get_object(Bucket=self._bucket, Key=key)
+        response = await self._client.get_object(Bucket=self._bucket, Key=key, **self._owner_arguments)
         async with response["Body"] as stream:
             return await stream.read()
 
     async def list_objects(self, prefix: str) -> AsyncIterator[StoredObject]:
         try:
             paginator = self._client.get_paginator("list_objects_v2")
-            async for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+            async for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix, **self._owner_arguments):
                 for stored_object in page.get("Contents", []):
                     key = stored_object.get("Key")
                     if key is not None:
@@ -427,7 +533,11 @@ class S3ObjectStore:
     @asynccontextmanager
     async def read_session(self) -> AsyncGenerator[ObjectReadSession, None]:
         async with self._runtime.clients.s3_client() as client:
-            yield _S3ObjectReadSession(client, self._runtime.resources.s3_bucket)
+            yield _S3ObjectReadSession(
+                client,
+                self._runtime.resources.s3_bucket,
+                s3_owner_arguments(self._runtime),
+            )
 
     async def put_bytes(self, key: str, content: bytes) -> None:
         await upload_to_s3(content, key, self._runtime)
@@ -446,10 +556,15 @@ class S3ObjectStore:
             return await reader.get_bytes(key)
 
     async def get_many(self, keys: AsyncIterable[str]) -> AsyncIterator[tuple[str, bytes]]:
+        owner_arguments = s3_owner_arguments(self._runtime)
         async with self._runtime.clients.s3_client() as client:
             async for key in keys:
                 try:
-                    response = await client.get_object(Bucket=self._runtime.resources.s3_bucket, Key=key)
+                    response = await client.get_object(
+                        Bucket=self._runtime.resources.s3_bucket,
+                        Key=key,
+                        **owner_arguments,
+                    )
                     async with response["Body"] as stream:
                         yield key, await stream.read()
                 except (ClientError, BotoCoreError) as error:

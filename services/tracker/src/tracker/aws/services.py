@@ -12,10 +12,11 @@ from tracker.aws.cloudwatch_logs import (
     CloudWatchBenchmarkLogSink,
     CloudWatchLogProvider,
 )
-from tracker.aws.resolver import deployment_aws_runtime
+from tracker.aws.resolver import deployment_aws_runtime, validate_saved_managed_storage_runtime
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.s3 import S3ArtifactLocations, S3ObjectStore
 from tracker.aws.secrets import SecretsManagerStore
+from tracker.exceptions import TrackerServiceError
 from tracker.runtime.services import RuntimeServices
 from tracker.runtime.secrets import resolve_secrets
 from tracker.types import FinalViewResponse, StartBenchmarkRequest
@@ -97,14 +98,24 @@ class CloudRuntimeFactory:
         benchmark_id: UUID,
         *,
         properties: AWSResources | None = None,
+        context_version: int | None = None,
     ) -> RuntimeServices:
         """Select AWS access and prepare services for one dispatch."""
-        properties = request.properties or properties
+        if properties is not None and request.properties is not None and request.properties != properties:
+            raise TrackerServiceError("Queued AWS resources differ from the saved run")
+
+        properties = properties or request.properties
         aws_runtime = (
             deployment_aws_runtime(org_id, properties)
             if request.harness_config is None
             else AWSRuntime.from_harness_config(request.harness_config).with_resources(properties)
         )
+        if context_version == 2 and aws_runtime.resources.s3_bucket.startswith(("vs-dev-", "vs-prod-")):
+            raise TrackerServiceError("Protocol 2 cannot execute owner storage")
+
+        if request.harness_config is None:
+            await validate_saved_managed_storage_runtime(aws_runtime, org_id=org_id)
+
         runtime = cls.create_runtime(
             aws_runtime,
             sandbox_provider=request.sandbox_provider,

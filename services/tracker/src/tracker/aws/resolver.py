@@ -8,6 +8,11 @@ from fastapi import HTTPException, Request
 
 from tracker import config
 from tracker.aws.clients import DefaultChainAWSClientProvider
+from tracker.aws.managed_storage import (
+    ManagedStorageError,
+    load_managed_storage_policy,
+    validate_managed_storage_bucket,
+)
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.types import AWSCredentials, HarnessConfig
 
@@ -195,6 +200,15 @@ def _managed_resources(properties: AWSResources | None = None) -> AWSResources:
     )
 
 
+def _deployment_account_id() -> str:
+    """Return the trusted account that owns deployment-managed buckets."""
+    account_id = config.AWS_DEPLOYMENT_ACCOUNT_ID
+    if account_id is None or len(account_id) != 12 or not account_id.isascii() or not account_id.isdigit():
+        raise ManagedAWSConfigurationError("AWS_DEPLOYMENT_ACCOUNT_ID must be a 12-digit AWS account ID")
+
+    return account_id
+
+
 def organization_can_use_managed_aws(org_id: UUID) -> bool:
     """Return whether an organization may use deployment AWS authority."""
     return org_id in _eligible_org_ids()
@@ -210,6 +224,7 @@ def deployment_aws_runtime(org_id: UUID, properties: AWSResources | None = None)
     return AWSRuntime(
         resources=resources,
         clients=DefaultChainAWSClientProvider(resources.region),
+        expected_bucket_owner=_deployment_account_id(),
     )
 
 
@@ -286,6 +301,23 @@ def resolve_run_metadata_aws_runtime(
     if harness_config is None:
         return None
     return AWSRuntime.from_harness_config(harness_config).with_resources(properties)
+
+
+async def validate_saved_managed_storage_runtime(runtime: AWSRuntime, *, org_id: UUID) -> None:
+    """Revalidate persisted owner storage before a managed read uses it."""
+    if not runtime.resources.s3_bucket.startswith(("vs-dev-", "vs-prod-")):
+        return
+
+    try:
+        policy = load_managed_storage_policy()
+        await validate_managed_storage_bucket(
+            runtime,
+            org_id=org_id,
+            bucket_name=runtime.resources.s3_bucket,
+            policy=policy,
+        )
+    except ManagedStorageError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 def resolve_agent_library_aws_runtime(

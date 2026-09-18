@@ -274,6 +274,177 @@ async def test_start_without_static_keys_builds_managed_request(make_client, sdk
     assert body["sandbox_provider_secret_name"] == "DaytonaSecret"
 
 
+async def test_start_with_managed_storage_uses_guarded_route(make_client, sdk_config) -> None:
+    run_id = uuid4()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "benchmark_name": "swebench",
+                "agent_name": "sweagent",
+                "benchmark_id": str(run_id),
+                "concurrency": 1,
+                "started_at": "2026-07-08T12:00:00Z",
+                "task_count": 1,
+                "cloudwatch_url": "https://logs.test",
+                "s3_bucket_url": "s3://vs-dev-acme-123/benchmarks/run",
+                "storage_bucket": "vs-dev-acme-123",
+            },
+        )
+
+    config = sdk_config(
+        AWS_ACCESS_KEY_ID=None,
+        AWS_SECRET_ACCESS_KEY=None,
+        AWS_SESSION_TOKEN=None,
+        default_sandbox_provider="daytona",
+    )
+    client = make_client(handler, config=config)
+    async with client:
+        response = await client.runs.start(
+            "sweagent",
+            "swebench",
+            managed_s3_bucket="vs-dev-acme-123",
+            ignore_custom_services=True,
+        )
+
+    assert response.storage_bucket == "vs-dev-acme-123"
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.url.path == "/start-benchmark-with-storage"
+    body = json.loads(request.content)
+    assert body["managed_s3_bucket"] == "vs-dev-acme-123"
+    assert "properties" not in body
+    assert "harness_config" not in body or body["harness_config"] is None
+
+
+async def test_start_without_managed_storage_uses_ordinary_route(make_client) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "benchmark_name": "swebench",
+                "agent_name": "sweagent",
+                "benchmark_id": str(uuid4()),
+                "concurrency": 1,
+                "started_at": "2026-07-08T12:00:00Z",
+                "task_count": 1,
+                "cloudwatch_url": "https://logs.test",
+                "s3_bucket_url": "s3://runs-bucket/run",
+            },
+        )
+
+    async with make_client(handler) as client:
+        response = await client.runs.start("sweagent", "swebench")
+
+    assert response.storage_bucket is None
+    assert [request.url.path for request in requests] == ["/start-benchmark"]
+
+
+async def test_start_with_managed_storage_does_not_fallback_after_404(make_client, sdk_config) -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    config = sdk_config(
+        AWS_ACCESS_KEY_ID=None,
+        AWS_SECRET_ACCESS_KEY=None,
+        AWS_SESSION_TOKEN=None,
+    )
+    async with make_client(handler, config=config) as client:
+        with pytest.raises(ValkyrieAPIError):
+            await client.runs.start(
+                "sweagent",
+                "swebench",
+                managed_s3_bucket="vs-dev-acme-123",
+            )
+
+    assert paths == ["/start-benchmark-with-storage"]
+
+
+@pytest.mark.parametrize("returned_bucket", [None, "vs-dev-other-456"])
+async def test_start_with_managed_storage_rejects_unconfirmed_bucket(
+    make_client,
+    sdk_config,
+    returned_bucket: str | None,
+) -> None:
+    run_id = uuid4()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "benchmark_name": "swebench",
+                "agent_name": "sweagent",
+                "benchmark_id": str(run_id),
+                "concurrency": 1,
+                "started_at": "2026-07-08T12:00:00Z",
+                "task_count": 1,
+                "cloudwatch_url": "https://logs.test",
+                "s3_bucket_url": "s3://runs-bucket/run",
+                "storage_bucket": returned_bucket,
+            },
+        )
+
+    config = sdk_config(
+        AWS_ACCESS_KEY_ID=None,
+        AWS_SECRET_ACCESS_KEY=None,
+        AWS_SESSION_TOKEN=None,
+    )
+    async with make_client(handler, config=config) as client:
+        with pytest.raises(ValkyrieRunError, match=str(run_id)) as error:
+            await client.runs.start(
+                "sweagent",
+                "swebench",
+                managed_s3_bucket="vs-dev-acme-123",
+            )
+
+    assert error.value.run_id == run_id
+    assert ValkyrieRunError("invalid input").run_id is None
+    assert str(ValkyrieRunError("invalid input")) == "invalid input"
+
+
+@pytest.mark.parametrize("conflict", ["properties", "access_keys"])
+async def test_start_with_managed_storage_rejects_conflicting_aws_configuration_before_request(
+    make_client,
+    sdk_config,
+    conflict: str,
+) -> None:
+    requests: list[httpx.Request] = []
+    config = sdk_config()
+    properties = None
+    if conflict == "properties":
+        config = sdk_config(
+            AWS_ACCESS_KEY_ID=None,
+            AWS_SECRET_ACCESS_KEY=None,
+            AWS_SESSION_TOKEN=None,
+        )
+        properties = AWSResources(
+            region="us-east-1",
+            s3_bucket="custom-bucket",
+            log_group="custom-logs",
+            log_retention_days=7,
+        )
+
+    async with make_client(lambda request: requests.append(request), config=config) as client:
+        with pytest.raises(ValkyrieRunError):
+            await client.runs.start(
+                "sweagent",
+                "swebench",
+                managed_s3_bucket="vs-dev-acme-123",
+                properties=properties,
+            )
+
+    assert requests == []
+
+
 async def test_start_can_omit_optional_run_configuration(make_client, sdk_config) -> None:
     captured_body: dict[str, object] = {}
 

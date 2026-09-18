@@ -84,7 +84,7 @@ reportAny = false
 reportMissingTypeStubs = false
 enableTypeIgnoreComments = true
 
-exclude = ["src/tracker/database/migrations/versions"]
+exclude = [".venv", "src/tracker/database/migrations/versions"]
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]

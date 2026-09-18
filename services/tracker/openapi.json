@@ -1124,6 +1124,17 @@
               }
             ],
             "title": "Started By Email"
+          },
+          "storage_bucket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Bucket"
           }
         },
         "required": [
@@ -2225,6 +2236,17 @@
           "status": {
             "$ref": "#/components/schemas/BenchmarkStatus"
           },
+          "storage_bucket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Bucket"
+          },
           "task_state_counts": {
             "additionalProperties": {
               "type": "integer"
@@ -2401,6 +2423,17 @@
               }
             ],
             "title": "Lambda Function"
+          },
+          "managed_s3_bucket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Managed S3 Bucket"
           },
           "priority": {
             "anyOf": [
@@ -2603,6 +2636,17 @@
             "format": "date-time",
             "title": "Started At",
             "type": "string"
+          },
+          "storage_bucket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Bucket"
           },
           "task_count": {
             "title": "Task Count",
@@ -4915,7 +4959,6 @@
     },
     "/start-benchmark": {
       "post": {
-        "description": "Start a benchmark run with the uploaded contract.\n\nUsage:\ncurl -X POST http://<endpoint>/start-benchmark       -H \"Content-Type: application/json\"       -d '{\"agent_name\": \"claude_code\", \"benchmark_name\": \"swebench\", \"task_ids\": [\"astropy__astropy-12907\"]}'\n\nReturns:\n    StartBenchmarkResponse\n\nReturns:\n- 200 OK if benchmark starts successfully\n- 400 Bad Request if parameters are invalid\n- 500 Internal Server Error if benchmark fails to start",
         "operationId": "start_benchmark",
         "requestBody": {
           "content": {
@@ -4955,6 +4998,49 @@
           }
         ],
         "summary": "Start Benchmark"
+      }
+    },
+    "/start-benchmark-with-storage": {
+      "post": {
+        "operationId": "start_benchmark_with_storage",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartBenchmarkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartBenchmarkResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Start Benchmark With Storage"
       }
     },
     "/stop-benchmark/{benchmark_id}": {

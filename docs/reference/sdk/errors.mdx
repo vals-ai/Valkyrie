@@ -34,10 +34,10 @@ ValkyrieConfigError(*args: object)
 
 ## `ValkyrieRunError`
 
-A run operation received invalid client-side input.
+A run operation received invalid input or an unconfirmed start response.
 
 ```python
-ValkyrieRunError(*args: object)
+ValkyrieRunError(message: str, *, run_id: uuid.UUID | None = None) -> None
 ```
 
 ## `ValkyrieSDKError`
