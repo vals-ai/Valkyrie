@@ -5035,6 +5035,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
         "summary": "Start Benchmark With Storage"
       }
     },

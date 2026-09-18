@@ -69,6 +69,7 @@ def build_openapi() -> dict[str, Any]:
     schema["paths"]["/health"]["get"]["security"] = []
     schema["paths"]["/init"]["post"]["security"] = API_KEY_ONLY
     schema["paths"]["/start-benchmark"]["post"]["security"] = API_KEY_ONLY
+    schema["paths"]["/start-benchmark-with-storage"]["post"]["security"] = API_KEY_ONLY
     return schema
 
 
