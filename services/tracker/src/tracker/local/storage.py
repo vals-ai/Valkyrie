@@ -1,12 +1,9 @@
 """Filesystem artifacts with atomic publication and operation-scoped cleanup."""
 
 import asyncio
-import fcntl
-import os
-import shutil
 import tempfile
-from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable, Generator
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable
+from contextlib import ExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, ParamSpec, TypeVar
@@ -50,44 +47,29 @@ class FilesystemObjectStore:
     async def read_session(self) -> AsyncGenerator[ObjectReadSession]:
         yield self
 
-    @contextmanager
-    def _lock(self) -> Generator[None]:
-        metadata = self.root / ".valkyrie"
-        metadata.mkdir(parents=True, exist_ok=True)
-        with (metadata / "write.lock").open("a+b") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            yield
-
-    def _temporary_file(self) -> tuple[BinaryIO, Path]:
-        staging = self.root / ".valkyrie" / "staging"
-        staging.mkdir(parents=True, exist_ok=True)
-        descriptor, name = tempfile.mkstemp(dir=staging)
-        return os.fdopen(descriptor, "wb"), Path(name)
-
     @asynccontextmanager
     async def _staging_file(self) -> AsyncGenerator[tuple[BinaryIO, Path]]:
-        pending = asyncio.create_task(asyncio.to_thread(self._temporary_file))
+        stack = ExitStack()
+
+        def create() -> tuple[BinaryIO, Path]:
+            staging = self.root / ".valkyrie" / "staging"
+            staging.mkdir(parents=True, exist_ok=True)
+            directory = stack.enter_context(tempfile.TemporaryDirectory(dir=staging))
+            temporary = Path(directory) / "upload"
+            return stack.enter_context(temporary.open("wb")), temporary
+
         try:
-            yield await asyncio.shield(pending)
+            yield await _io(create)
         finally:
-
-            async def cleanup() -> None:
-                stream, temporary = await pending
-                try:
-                    await _io(stream.close)
-                finally:
-                    await _io(temporary.unlink, missing_ok=True)
-
-            await finish_cleanup(asyncio.create_task(cleanup()))
+            await _io(stack.close)
 
     def _publish(self, stream: BinaryIO, temporary: Path, key: str, should_continue: Callable[[], bool] | None) -> None:
         stream.close()
-        with self._lock():
-            if should_continue is not None and not should_continue():
-                raise ExecutionAuthorityRevoked("Local stream upload authority was revoked")
-            destination = local_path(self.root, key)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            temporary.replace(destination)
+        if should_continue is not None and not should_continue():
+            raise ExecutionAuthorityRevoked("Local stream upload authority was revoked")
+        destination = local_path(self.root, key)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary.replace(destination)
 
     async def put_bytes(self, key: str, content: bytes) -> None:
         async def chunks() -> AsyncIterator[bytes]:
@@ -127,43 +109,13 @@ class FilesystemObjectStore:
                 continue
             yield key, content
 
-    @staticmethod
-    def _deletion_token(path: Path) -> str:
-        stat = path.stat()
-        return f"{stat.st_dev}:{stat.st_ino}:{stat.st_mtime_ns}:{stat.st_size}"
-
     async def delete(self, key: str, *, deletion_token: str | None = None) -> None:
-        def remove() -> None:
-            with self._lock():
-                path = local_path(self.root, key)
-                if not path.exists():
-                    return
-                if deletion_token is None or deletion_token == self._deletion_token(path):
-                    path.unlink()
-
-        await _io(remove)
+        await _io(lambda: local_path(self.root, key).unlink(missing_ok=True))
 
     async def copy(self, source_key: str, destination_key: str) -> StoredObjectCopy:
-        """Freeze an agent bundle; concurrent admission retains the first copy."""
-
-        def copy() -> StoredObjectCopy:
-            with self._lock():
-                source = local_path(self.root, source_key)
-                destination = local_path(self.root, destination_key)
-                if destination.exists():
-                    # A failed admission may only delete the copy it created.
-                    return StoredObjectCopy(deletion_token="existing")
-                stream, temporary = self._temporary_file()
-                try:
-                    stream.close()
-                    shutil.copyfile(source, temporary)
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    temporary.replace(destination)
-                    return StoredObjectCopy(deletion_token=self._deletion_token(destination))
-                finally:
-                    temporary.unlink(missing_ok=True)
-
-        return await _io(copy)
+        # Admission copies into a new run ID; local files do not have versions.
+        await self.put_bytes(destination_key, await self.get_bytes(source_key))
+        return StoredObjectCopy(deletion_token=None)
 
     async def exists(self, key: str) -> bool:
         return await _io(lambda: local_path(self.root, key).is_file())
