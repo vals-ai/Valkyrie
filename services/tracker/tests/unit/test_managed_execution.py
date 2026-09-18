@@ -29,12 +29,17 @@ from tracker.utils.run_orchestration import (
 
 
 _TASK_IDS = ["task-1", "task-2"]
+_EXPECTED_BUCKET_OWNER = "123456789012"
 
 
 @pytest.fixture
 def aws_runtime(harness_config: HarnessConfig) -> AWSRuntime:
     resources = AWSRuntime.from_harness_config(harness_config).resources
-    return AWSRuntime(resources, DefaultChainAWSClientProvider(resources.region))
+    return AWSRuntime(
+        resources,
+        DefaultChainAWSClientProvider(resources.region),
+        expected_bucket_owner=_EXPECTED_BUCKET_OWNER,
+    )
 
 
 def _access_key_request(contract: AgentContractRequest, harness_config: HarnessConfig) -> StartBenchmarkRequest:

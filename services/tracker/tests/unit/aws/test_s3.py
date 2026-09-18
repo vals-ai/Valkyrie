@@ -318,6 +318,28 @@ async def test_explicit_credential_upload_does_not_add_owner_guard(
     client.put_object.assert_awaited_once_with(Bucket="test-bucket", Key="key", Body=b"content")
 
 
+async def test_managed_upload_rejects_missing_expected_bucket_owner(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+) -> None:
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    runtime = AWSRuntime(
+        resources=aws_runtime.resources,
+        clients=DefaultChainAWSClientProvider(region=aws_runtime.resources.region),
+    )
+
+    def s3_client(_provider: DefaultChainAWSClientProvider) -> AsyncMock:
+        return client
+
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", s3_client)
+
+    with pytest.raises(ValueError, match="Managed AWS runtime is missing the expected bucket owner"):
+        await upload_to_s3(b"content", "key", runtime)
+
+    client.put_object.assert_not_awaited()
+
+
 async def test_managed_run_artifact_calls_guard_aws_without_changing_presigned_url_contract(
     monkeypatch: pytest.MonkeyPatch,
     aws_runtime: AWSRuntime,
