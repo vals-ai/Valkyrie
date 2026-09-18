@@ -5,8 +5,9 @@ Cover single-benchmark details and task listing behavior.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import json
+from datetime import datetime, timedelta
+from unittest.mock import AsyncMock
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -176,6 +177,7 @@ def test_single_benchmark_legacy_access_key_without_credentials_omits_storage_li
 
     assert response.status_code == 200
     assert response.json()["s3_bucket_url"] is None
+    assert response.json()["storage_bucket"] is None
 
 
 def test_benchmark_tasks_filter_literal_search_and_latest_error(
@@ -253,3 +255,35 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
     assert literal_search_response.status_code == 200
     assert literal_search_response.json()["total_count"] == 1
     assert literal_search_response.json()["tasks"][0]["task_id"] == "literal_%_match"
+
+
+def test_single_benchmark_returns_saved_bucket_after_default_changes(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    benchmark = example_benchmark_object
+    benchmark.aws_managed = True
+    benchmark.arguments = benchmark.arguments.model_copy(
+        update={
+            "properties": AWSResources(
+                region="us-east-1",
+                s3_bucket="vs-dev-acme-123",
+                log_group="logs",
+                log_retention_days=30,
+            )
+        }
+    )
+    database_session.add(benchmark)
+    database_session.commit()
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "changed-default")
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
+    validation = AsyncMock()
+    monkeypatch.setattr("tracker.api.single_benchmark.validate_saved_managed_storage_runtime", validation)
+
+    response = _client.get(f"/benchmarks/{benchmark.id}")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["storage_bucket"] == "vs-dev-acme-123"
+    assert validation.call_args.args[0].resources.s3_bucket == "vs-dev-acme-123"

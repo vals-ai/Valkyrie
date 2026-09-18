@@ -127,7 +127,8 @@ class RunsResource:
         )
         if managed_s3_bucket is not None and response.storage_bucket != managed_s3_bucket:
             raise ValkyrieRunError(
-                f"Run {response.benchmark_id} did not confirm requested storage bucket {managed_s3_bucket!r}"
+                f"Run {response.benchmark_id} did not confirm requested storage bucket {managed_s3_bucket!r}",
+                run_id=response.benchmark_id,
             )
 
         return response

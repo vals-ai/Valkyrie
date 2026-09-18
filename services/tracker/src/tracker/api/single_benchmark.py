@@ -98,6 +98,7 @@ async def get_single_benchmark(
         error_message=benchmark.error_message,
         cloudwatch_url=cloudwatch_url,
         s3_bucket_url=s3_bucket_url,
+        storage_bucket=aws_runtime.resources.s3_bucket if aws_runtime is not None else None,
     )
 
 
