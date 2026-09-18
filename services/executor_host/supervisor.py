@@ -628,7 +628,7 @@ class ExecutorSupervisor:
         if lease_lost.is_set():
             raise DispatchAuthorityLostError(f"Executor dispatch {authority.dispatch_id} lease expired before spawn")
         payload = {**process_payload.arguments, "executor_dispatch_id": authority.dispatch_id}
-        with tempfile.TemporaryDirectory(dir=self.cache_dir, prefix=".dispatch-") as temporary_directory:
+        with tempfile.TemporaryDirectory(prefix=".dispatch-") as temporary_directory:
             payload_path = Path(temporary_directory) / "payload.json"
             payload_path.write_text(json.dumps(payload))
             logger.info(

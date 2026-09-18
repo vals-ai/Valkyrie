@@ -1482,7 +1482,7 @@ async def test_local_release_digest_and_location_validation(tmp_path: Path) -> N
     root = tmp_path / "releases"
     root.mkdir()
     artifact = root / "executor.pex"
-    content = b"local executor"
+    content = b"pass\n"
     artifact.write_bytes(content)
     digest = hashlib.sha256(content).hexdigest()
     cache_dir = tmp_path / "cache"
@@ -1491,6 +1491,16 @@ async def test_local_release_digest_and_location_validation(tmp_path: Path) -> N
     dispatch = replace(_dispatch(digest=digest), artifact_uri=artifact.as_uri())
 
     assert await supervisor.prepare_artifact(dispatch) == artifact
+    store = FakeDispatchStore()
+    await run_executor_dispatch(
+        supervisor,
+        store,
+        executor_dispatch_id="dispatch-1",
+        dispatch=dispatch,
+        process_payload=_process_payload(),
+    )
+    assert store.finished == [store.authority]
+    assert store.terminalized == []
     assert cache_dir.read_bytes() == b"unavailable cache directory"
     with pytest.raises(ValueError, match="outside"):
         await supervisor.prepare_artifact(replace(dispatch, artifact_uri=(tmp_path / "outside.pex").as_uri()))
