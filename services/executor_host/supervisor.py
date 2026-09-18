@@ -10,13 +10,13 @@ import os
 import signal
 import sys
 import tempfile
-import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Protocol, TypeVar, Unpack, cast
 
 import boto3
+import httpx
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
 from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
 from redis.asyncio import Redis
@@ -72,18 +72,13 @@ async def _set_task_protection(*, enabled: bool) -> bool:
     body: dict[str, object] = {"ProtectionEnabled": enabled}
     if enabled:
         body["ExpiresInMinutes"] = _PROTECTION_EXPIRY_MINUTES
-    request = urllib.request.Request(
-        f"{ECS_AGENT_URI}/task-protection/v1/state",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-        method="PUT",
-    )
 
-    def update() -> None:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            response.read()
+    async def update() -> None:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.put(f"{ECS_AGENT_URI}/task-protection/v1/state", json=body)
+            response.raise_for_status()
 
-    update_task = asyncio.create_task(asyncio.to_thread(update))
+    update_task = asyncio.create_task(update())
     try:
         await asyncio.shield(update_task)
     except asyncio.CancelledError:
