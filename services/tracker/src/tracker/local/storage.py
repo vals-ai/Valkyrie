@@ -124,7 +124,8 @@ class FilesystemObjectStore:
         def list_files() -> list[StoredObject]:
             local_path(self.root, prefix, prefix=True)
             objects: list[StoredObject] = []
-            for path in sorted(self.root.rglob("*")):
+            directory = self.root / prefix.rpartition("/")[0]
+            for path in sorted(directory.rglob("*")):
                 key = path.relative_to(self.root).as_posix()
                 if key == ".valkyrie" or key.startswith(".valkyrie/") or not key.startswith(prefix):
                     continue
