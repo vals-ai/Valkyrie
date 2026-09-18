@@ -738,7 +738,7 @@ def test_local_release_restart_preserves_active_and_replacement_reuses_prior_art
     first = initialize_release(database_session, manifest, root)
     database_session.commit()
     reader = FilesystemExecutorArtifactReader(root)
-    with reader.open(first.artifact_uri) as stream:
+    with reader.validate(first.artifact_uri).open("rb") as stream:
         assert stream.read() == b"first executor"
 
     _local_manifest(manifest.parent, b"second executor")
@@ -751,9 +751,9 @@ def test_local_release_restart_preserves_active_and_replacement_reuses_prior_art
     assert second.id != first.id
     assert second.status == ExecutorReleaseStatus.ACTIVE
     assert first.status == ExecutorReleaseStatus.DRAINING
-    with reader.open(first.artifact_uri) as stream:
+    with reader.validate(first.artifact_uri).open("rb") as stream:
         assert stream.read() == b"first executor"
-    with reader.open(second.artifact_uri) as stream:
+    with reader.validate(second.artifact_uri).open("rb") as stream:
         assert stream.read() == b"second executor"
 
     _local_manifest(manifest.parent, b"first executor")
@@ -793,6 +793,6 @@ def test_local_reader_rejects_escape_and_remote_locations(tmp_path: Path) -> Non
         "s3://bucket/executor.pex",
     ):
         with pytest.raises(ValueError):
-            reader.open(uri)
+            reader.validate(uri)
     with pytest.raises(ValueError, match="traversal"):
-        reader.open(root.as_uri() + "/%2e%2e/outside.pex")
+        reader.validate(root.as_uri() + "/%2e%2e/outside.pex")
