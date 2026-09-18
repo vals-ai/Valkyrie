@@ -422,20 +422,10 @@ class Benchmark(SQLModel, table=True):
     def local_start_benchmark_request(self, service_headers: dict[str, str] | None = None) -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
 
-        if self.arguments.environment != "local":
-            raise ValueError("Local execution requests require a saved local run")
         return StartBenchmarkRequest(
-            environment="local",
-            properties=self.arguments.properties,
-            contract=self.arguments.contract,
+            **self.arguments.model_dump(),
             benchmark_name=self.name,
-            concurrency=self.arguments.concurrency,
-            priority=self.arguments.priority,
             label=self.label,
-            task_ids=self.arguments.task_ids,
-            slice_str=self.arguments.slice_str,
-            dataset=self.arguments.dataset,
-            sandbox_provider="docker",
             custom_benchmark_service=self.custom_benchmark_service,
             service_headers=service_headers or {},
         )

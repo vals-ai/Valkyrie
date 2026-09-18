@@ -2,7 +2,6 @@
 
 import argparse
 import hashlib
-import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -42,13 +41,7 @@ def _publish_artifact(artifact: Path, root: Path, digest: str) -> Path:
             if hashlib.file_digest(source, "sha256").hexdigest() != digest:
                 raise ReleaseControlError("Local executor artifact does not match its manifest digest")
         temporary.chmod(0o444)
-        try:
-            os.link(temporary, destination)
-        except FileExistsError:
-            # Never overwrite a file that a saved dispatch may still reference.
-            with destination.open("rb") as source:
-                if hashlib.file_digest(source, "sha256").hexdigest() != digest:
-                    raise ReleaseControlError("Existing local executor artifact has an invalid digest") from None
+        temporary.replace(destination)
     return destination
 
 

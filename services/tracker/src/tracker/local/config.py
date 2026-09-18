@@ -24,13 +24,8 @@ def configure(path: Path) -> None:
     if config.execution_environment == "local":
         if config.local_data_root is None:
             raise ValueError("local_data_root is required for local execution")
-        if not config.local_data_root.is_absolute():
-            raise ValueError("local_data_root must be an absolute path")
-        secrets_file = config.local_secrets_file
-        if secrets_file is not None:
-            if not secrets_file.is_absolute() or not secrets_file.is_file():
-                raise ValueError("local_secrets_file must name an existing absolute file")
-            secrets_file = secrets_file.resolve()
-        resources = LocalResources(data_root=config.local_data_root.resolve(), secrets_file=secrets_file)
+        resources = LocalResources(data_root=config.local_data_root, secrets_file=config.local_secrets_file)
+        if resources.secrets_file is not None and not resources.secrets_file.is_file():
+            raise ValueError("local_secrets_file must name an existing file")
     else:
         resources = None

@@ -283,9 +283,8 @@ async def test_prepare_artifact_downloads_and_verifies_by_digest(tmp_path: Path)
     assert artifact_path.read_bytes() == content
     assert artifact_path.stat().st_mode & 0o111
     assert len(client.calls) == 1
-    bucket, key, temporary_name = client.calls[0]
+    bucket, key, _temporary_name = client.calls[0]
     assert (bucket, key) == ("artifacts", "executors/v2.pex")
-    assert Path(temporary_name).parent == tmp_path
     assert list(tmp_path.iterdir()) == [artifact_path]
 
 

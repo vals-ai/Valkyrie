@@ -43,7 +43,7 @@ The API is available at `http://localhost:8000`. Local Compose runs the tracker,
 
 ### Initialize a filesystem executor release
 
-After applying database migrations, register an executor artifact built for Linux ARM64 using its generated `manifest.json`:
+After applying database migrations, register an executor artifact built for the ARM64 machine that will run it using its generated `manifest.json`:
 
 ```bash
 uv run --project services/tracker python -m tracker.local.releases \

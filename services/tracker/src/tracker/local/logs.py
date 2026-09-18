@@ -19,12 +19,6 @@ from tracker.runtime.logs import (
 )
 
 
-def _timestamp(value: datetime) -> float:
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    return value.timestamp()
-
-
 class _LogRecord(BaseModel):
     stream: str
     timestamp: float
@@ -48,9 +42,7 @@ class FilesystemLogs:
         path.touch(exist_ok=True)
 
     def write(self, stream_key: str, message: str) -> None:
-        benchmark_id, separator, stream = stream_key.partition(":")
-        if not separator or not benchmark_id or not stream:
-            raise LogProviderError("Invalid local log stream key")
+        benchmark_id, stream = stream_key.split(":", 1)
         record = _LogRecord(stream=stream, timestamp=datetime.now(UTC).timestamp(), message=message)
         with self._path(benchmark_id).open("ab") as output:
             # Separate executor processes can append to the same run.
@@ -73,8 +65,6 @@ class FilesystemLogs:
         cursor: str | None = None,
         limit: int = 1_000,
     ) -> LogPage:
-        if not 1 <= limit <= 10_000:
-            raise LogProviderError("Local log page limit must be between 1 and 10000")
         try:
             offset = int(cursor) if cursor is not None else 0
             if offset < 0:
@@ -82,8 +72,8 @@ class FilesystemLogs:
         except ValueError:
             raise LogProviderError("Invalid local log cursor") from None
 
-        start = _timestamp(start_time) if start_time is not None else None
-        end = _timestamp(end_time) if end_time is not None else None
+        start = start_time.timestamp() if start_time is not None else None
+        end = end_time.timestamp() if end_time is not None else None
         tasks = (reference,) if isinstance(reference, TaskLogReference) else reference.tasks
         task_names = {
             task_log_stream_name(task.task_id, task.started_at).rsplit("_", 1)[0]: task.task_id for task in tasks
@@ -144,6 +134,6 @@ class FilesystemLogs:
                 yield event
             if page.next_cursor is not None:
                 continue
-            if end_time is not None and datetime.now(UTC).timestamp() >= _timestamp(end_time):
+            if end_time is not None and datetime.now(UTC) >= end_time:
                 return
             await asyncio.sleep(poll_interval)
