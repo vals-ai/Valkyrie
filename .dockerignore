@@ -17,10 +17,6 @@ services/tracker/src/*
 !services/tracker/src/tracker/
 services/tracker/src/tracker/*
 !services/tracker/src/tracker/__init__.py
-!services/tracker/src/tracker/aws/
-services/tracker/src/tracker/aws/*
-!services/tracker/src/tracker/aws/__init__.py
-!services/tracker/src/tracker/aws/executor_artifacts.py
 !services/tracker/src/tracker/local/
 services/tracker/src/tracker/local/*
 !services/tracker/src/tracker/local/__init__.py
@@ -28,5 +24,4 @@ services/tracker/src/tracker/local/*
 !services/tracker/src/tracker/runtime/
 services/tracker/src/tracker/runtime/*
 !services/tracker/src/tracker/runtime/__init__.py
-!services/tracker/src/tracker/runtime/executor_artifacts.py
 !services/tracker/src/tracker/runtime/lifecycle.py

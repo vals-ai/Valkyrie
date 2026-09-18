@@ -35,13 +35,9 @@ class LocalReleaseManifest(BaseModel):
 def _publish_artifact(artifact: Path, root: Path, digest: str) -> Path:
     destination = local_path(root, f"{digest}/executor.pex")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(dir=destination.parent, suffix=".tmp")
-    temporary = Path(name)
-    try:
-        with os.fdopen(descriptor, "wb") as output, artifact.open("rb") as source:
-            shutil.copyfileobj(source, output)
-            output.flush()
-            os.fsync(output.fileno())
+    with tempfile.TemporaryDirectory(dir=destination.parent) as staging:
+        temporary = Path(staging) / "executor.pex"
+        shutil.copyfile(artifact, temporary)
         with temporary.open("rb") as source:
             if hashlib.file_digest(source, "sha256").hexdigest() != digest:
                 raise ReleaseControlError("Local executor artifact does not match its manifest digest")
@@ -53,8 +49,6 @@ def _publish_artifact(artifact: Path, root: Path, digest: str) -> Path:
             with destination.open("rb") as source:
                 if hashlib.file_digest(source, "sha256").hexdigest() != digest:
                     raise ReleaseControlError("Existing local executor artifact has an invalid digest") from None
-    finally:
-        temporary.unlink(missing_ok=True)
     return destination
 
 

@@ -56,7 +56,6 @@ class FilesystemLogs:
             # Separate executor processes can append to the same run.
             fcntl.flock(output, fcntl.LOCK_EX)
             output.write(record.model_dump_json().encode() + b"\n")
-            output.flush()
 
     def benchmark_location(self, benchmark_id: str) -> str:
         return str(self._path(benchmark_id))
@@ -83,6 +82,8 @@ class FilesystemLogs:
         except ValueError:
             raise LogProviderError("Invalid local log cursor") from None
 
+        start = _timestamp(start_time) if start_time is not None else None
+        end = _timestamp(end_time) if end_time is not None else None
         tasks = (reference,) if isinstance(reference, TaskLogReference) else reference.tasks
         task_names = {
             task_log_stream_name(task.task_id, task.started_at).rsplit("_", 1)[0]: task.task_id for task in tasks
@@ -105,9 +106,9 @@ class FilesystemLogs:
                         continue
                     if query and query not in record.message:
                         continue
-                    if start_time is not None and record.timestamp < _timestamp(start_time):
+                    if start is not None and record.timestamp < start:
                         continue
-                    if end_time is not None and record.timestamp > _timestamp(end_time):
+                    if end is not None and record.timestamp > end:
                         continue
                     if len(events) == limit:
                         return LogPage(events=events, next_cursor=events[-1].event_id)
