@@ -15,6 +15,7 @@ from benchmark_service import ImageSource, Resources, SandboxQuery
 
 from tracker.database.models import AgentContractRequest, OutputArtifact
 from tracker.exceptions import AgentRunFailedError
+from tracker.runtime.secrets import resolve_secrets
 from tracker.local.runtime import LocalRuntimeFactory
 from tracker.runtime.artifacts import agent_bundle_key, copy_agent_to_benchmark, task_artifact_key
 from tracker.runtime.logs import TaskLogReference, task_log_stream_name
@@ -59,7 +60,7 @@ async def test_local_runtime_transfers_and_executes_frozen_agent(tmp_path: Path,
         await runtime.objects.put_bytes(agent_bundle_key(contract.name), stream.getvalue())
         await copy_agent_to_benchmark(runtime.objects, benchmark_id, contract.name)
         await runtime.objects.put_bytes(agent_bundle_key(contract.name), b"replacement bundle")
-        runtime.logs.create_benchmark(benchmark_id, retention_days=0)
+        await runtime.logs.create_benchmark(benchmark_id, retention_days=0)
         provider_config = await runtime.get_sandbox_provider_config()
         async with runtime.get_sandbox_provider(provider_config) as provider:
             async with create_sandbox(
@@ -68,7 +69,7 @@ async def test_local_runtime_transfers_and_executes_frozen_agent(tmp_path: Path,
                 ImageSource(image="python:3.12-slim"),
                 Resources(vcpu=1, memory=1, disk=1),
                 asyncio.Semaphore(1),
-                env_vars=await runtime.resolve_secrets(contract.secrets),
+                env_vars=await resolve_secrets(contract.secrets, runtime.secrets),
             ) as sandbox:
                 sandbox_id = sandbox.id
                 await upload_agent_artifacts(sandbox, contract, benchmark_id, runtime.objects)
