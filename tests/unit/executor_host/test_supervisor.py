@@ -18,6 +18,7 @@ from threading import Event
 from typing import cast
 from unittest.mock import Mock
 
+import httpx
 import pytest
 
 import services.executor_host.observability as host_observability
@@ -804,23 +805,19 @@ def test_executor_host_uses_one_taskiq_process() -> None:
 async def test_task_protection_uses_a_renewable_two_hour_lease(monkeypatch: pytest.MonkeyPatch) -> None:
     request_bodies: list[dict[str, object]] = []
 
-    class Response:
-        def __enter__(self) -> Response:
-            return self
+    async def handle(request: httpx.Request) -> httpx.Response:
+        assert request.url == "http://ecs-agent/task-protection/v1/state"
+        assert request.method == "PUT"
+        request_bodies.append(json.loads(request.content))
+        return httpx.Response(200)
 
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return b""
-
-    def fake_urlopen(request: object, *, timeout: int) -> Response:
-        assert timeout == 5
-        request_bodies.append(json.loads(cast(bytes, getattr(request, "data"))))
-        return Response()
-
+    client_factory = httpx.AsyncClient
     monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", "http://ecs-agent")
-    monkeypatch.setattr(supervisor_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        supervisor_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: client_factory(transport=httpx.MockTransport(handle), **kwargs),
+    )
 
     set_task_protection = getattr(supervisor_module, "_set_task_protection")
     assert await set_task_protection(enabled=True)
@@ -859,13 +856,19 @@ async def test_task_protection_waits_for_in_flight_refresh_before_cancelling(
     finish_refresh = asyncio.Event()
     refresh_completed = asyncio.Event()
 
-    async def block_to_thread(*_args: object, **_kwargs: object) -> None:
+    async def handle(_request: httpx.Request) -> httpx.Response:
         refresh_started.set()
         await finish_refresh.wait()
         refresh_completed.set()
+        return httpx.Response(200)
 
     monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", "http://ecs-agent")
-    monkeypatch.setattr(supervisor_module.asyncio, "to_thread", block_to_thread)
+    client_factory = httpx.AsyncClient
+    monkeypatch.setattr(
+        supervisor_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: client_factory(transport=httpx.MockTransport(handle), **kwargs),
+    )
 
     set_task_protection = getattr(supervisor_module, "_set_task_protection")
     refresh_task = asyncio.create_task(set_task_protection(enabled=True))
