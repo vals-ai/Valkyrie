@@ -13,7 +13,7 @@ from benchmark_service import SandboxProvider, SandboxProviderConfig
 from tracker.exceptions import InvalidSandboxConfigurationError
 from tracker.runtime.lifecycle import finish_cleanup
 from tracker.runtime.logs import BenchmarkLogLocations, BenchmarkLogSink, LogProvider
-from tracker.runtime.secrets import SecretStore, resolve_secrets, sandbox_provider_config_from_secret
+from tracker.runtime.secrets import SecretStore, sandbox_provider_config_from_secret
 from tracker.runtime.storage import ArtifactLocations, ObjectStore
 
 
@@ -63,7 +63,3 @@ class RuntimeServices(ABC):
             yield provider
         finally:
             await finish_cleanup(create_task(provider.close()))
-
-    async def resolve_secrets(self, references: dict[str, str]) -> dict[str, str]:
-        """Resolve agent environment values without blocking execution."""
-        return await resolve_secrets(references, self.secrets)

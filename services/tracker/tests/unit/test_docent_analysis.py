@@ -37,7 +37,7 @@ class TestInvokeAnalyzer:
 
         lambda_response = {"reading_plan_url": "https://x.test/r/123", "ingested": 5}
 
-        def invoke_lambda_success(*_args: object, **_kwargs: object) -> dict[str, str | int]:
+        async def invoke_lambda_success(*_args: object, **_kwargs: object) -> dict[str, str | int]:
             return lambda_response
 
         monkeypatch.setattr("tracker.docent_analysis.invoke_lambda", invoke_lambda_success)
@@ -64,7 +64,7 @@ class TestInvokeAnalyzer:
         database_session.add(example_benchmark_object)
         database_session.commit()
 
-        def boom(*_args: object, **_kwargs: object) -> None:
+        async def boom(*_args: object, **_kwargs: object) -> None:
             raise RuntimeError("lambda exploded")
 
         monkeypatch.setattr("tracker.docent_analysis.invoke_lambda", boom)
@@ -92,7 +92,7 @@ class TestInvokeAnalyzer:
         database_session.add(example_benchmark_object)
         database_session.commit()
 
-        def invoke_lambda_without_url(*_args: object, **_kwargs: object) -> dict[str, int]:
+        async def invoke_lambda_without_url(*_args: object, **_kwargs: object) -> dict[str, int]:
             return {"ingested": 0}
 
         monkeypatch.setattr("tracker.docent_analysis.invoke_lambda", invoke_lambda_without_url)

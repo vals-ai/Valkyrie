@@ -16,7 +16,7 @@ def _response_status(payload: object) -> int | None:
     return status if isinstance(status, int) else None
 
 
-def invoke_lambda(
+async def invoke_lambda(
     client_provider: AWSClientProvider,
     function_name: str,
     payload: dict[str, Any],
@@ -26,36 +26,36 @@ def invoke_lambda(
 
     Raises LambdaError on AWS errors, Lambda-side FunctionError, or statusCode >= 400.
     """
-    client = client_provider.lambda_client(config)
     try:
-        response: dict[str, Any] = client.invoke(
-            FunctionName=function_name,
-            Payload=json.dumps(payload),
-        )
-
-        function_error = response.get("FunctionError")
-        response_payload: Any = json.loads(response["Payload"].read())
-
-        if function_error:
-            raise LambdaError(
-                f"Lambda function '{function_name}' returned error: {json.dumps(response_payload, indent=4)}"
+        async with client_provider.lambda_client(config) as client:
+            response: dict[str, Any] = await client.invoke(
+                FunctionName=function_name,
+                Payload=json.dumps(payload),
             )
 
-        payload_status = _response_status(response_payload)
-        if payload_status and payload_status >= 400:
-            raise LambdaError(
-                f"Lambda function '{function_name}' returned status {payload_status}: {json.dumps(response_payload, indent=4)}"
-            )
+            function_error = response.get("FunctionError")
+            response_payload: Any = json.loads(await response["Payload"].read())
 
-        return response_payload
+            if function_error:
+                raise LambdaError(
+                    f"Lambda function '{function_name}' returned error: {json.dumps(response_payload, indent=4)}"
+                )
+
+            payload_status = _response_status(response_payload)
+            if payload_status and payload_status >= 400:
+                raise LambdaError(
+                    f"Lambda function '{function_name}' returned status {payload_status}: {json.dumps(response_payload, indent=4)}"
+                )
+
+            return response_payload
     except ClientError as e:
         raise LambdaError(f"Failed to invoke lambda function '{function_name}': {e}") from e
 
 
-def dry_run_lambda(client_provider: AWSClientProvider, function_name: str) -> None:
+async def dry_run_lambda(client_provider: AWSClientProvider, function_name: str) -> None:
     """Verify that the selected AWS authority can invoke a Lambda function."""
-    client = client_provider.lambda_client()
     try:
-        client.invoke(FunctionName=function_name, InvocationType="DryRun")
+        async with client_provider.lambda_client() as client:
+            await client.invoke(FunctionName=function_name, InvocationType="DryRun")
     except ClientError as e:
         raise LambdaError(f"Lambda invoke preflight failed for '{function_name}': {e}") from e

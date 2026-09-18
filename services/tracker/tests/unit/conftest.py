@@ -173,7 +173,7 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequ
     if cast(ModuleType, request.module).__name__ == "tests.unit.aws.test_clients":
         return
 
-    def _mock_create_benchmark(*_args: Any, **_kwargs: Any) -> None:
+    async def _mock_create_benchmark(*_args: Any, **_kwargs: Any) -> None:
         return None
 
     def _mock_write(*_args: Any, **_kwargs: Any) -> None:

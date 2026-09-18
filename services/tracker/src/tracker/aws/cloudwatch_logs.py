@@ -119,20 +119,20 @@ class CloudWatchBenchmarkLogSink(BenchmarkLogSink):
         self._clients = clients
         self._log_group = log_group
 
-    @handle_cloudwatch_error(message="Failed to create log group")
     @logfire.instrument("create_log_group", extract_args=("benchmark_id",))
-    def create_benchmark(self, benchmark_id: str, *, retention_days: int) -> None:
-        client = self._clients.cloudwatch_logs_client()
+    async def create_benchmark(self, benchmark_id: str, *, retention_days: int) -> None:
         log_group_name = benchmark_log_group_name(self._log_group, benchmark_id)
         try:
-            client.create_log_group(logGroupName=log_group_name)  # pyright: ignore[reportUnknownMemberType]
-            client.put_retention_policy(  # pyright: ignore[reportUnknownMemberType]
-                logGroupName=log_group_name,
-                retentionInDays=retention_days,
-            )
-        except ClientError as error:
-            if error.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
-                raise
+            async with self._clients.cloudwatch_logs_async_client() as client:
+                await client.create_log_group(logGroupName=log_group_name)
+                await client.put_retention_policy(logGroupName=log_group_name, retentionInDays=retention_days)
+        except (ClientError, BotoCoreError) as error:
+            if (
+                isinstance(error, ClientError)
+                and error.response.get("Error", {}).get("Code") == "ResourceAlreadyExistsException"
+            ):
+                return
+            raise CloudWatchError(f"Failed to create log group: {error}") from error
 
     @handle_cloudwatch_error(message="Failed to create cloudwatch stream")
     def write(self, stream_key: str, message: str) -> None:

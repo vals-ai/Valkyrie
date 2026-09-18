@@ -1,6 +1,5 @@
 """Compose AWS-backed runtime services."""
 
-from asyncio import to_thread
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -33,8 +32,8 @@ class CloudRuntimeServices(RuntimeServices):
 
     async def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
         """Prepare logs before sandbox work."""
-        await to_thread(
-            self.logs.create_benchmark, str(benchmark_id), retention_days=self.aws_runtime.resources.log_retention_days
+        await self.logs.create_benchmark(
+            str(benchmark_id), retention_days=self.aws_runtime.resources.log_retention_days
         )
         if self.aws_runtime.clients.credential_source != "managed":
             return
@@ -43,7 +42,7 @@ class CloudRuntimeServices(RuntimeServices):
         if request.webhook_secret_name and request.webhook_intervals:
             await self.secrets.get(request.webhook_secret_name)
         if request.lambda_function:
-            await to_thread(dry_run_lambda, self.aws_runtime.clients, request.lambda_function)
+            await dry_run_lambda(self.aws_runtime.clients, request.lambda_function)
 
     async def run_completion_callback(self, final_view: FinalViewResponse) -> None:
         arguments = final_view.benchmark_arguments
@@ -54,8 +53,7 @@ class CloudRuntimeServices(RuntimeServices):
         payload["benchmark_id"] = str(final_view.benchmark_id)
         payload["benchmark_name"] = final_view.benchmark_name
         payload["bucket"] = self.aws_runtime.resources.s3_bucket
-        await to_thread(
-            invoke_lambda,
+        await invoke_lambda(
             self.aws_runtime.clients,
             arguments.lambda_function,
             payload,
