@@ -3,6 +3,7 @@
 Run: uv run pytest tests/unit/aws/test_clients.py
 """
 
+import asyncio
 import re
 from datetime import datetime, timezone
 from typing import cast
@@ -55,8 +56,8 @@ class TestAWSClientProviders:
         monkeypatch: pytest.MonkeyPatch,
         session_token: str | None,
     ) -> None:
-        session = MagicMock()
-        session_factory = MagicMock(return_value=session)
+        sessions = [MagicMock() for _ in range(4)]
+        session_factory = MagicMock(side_effect=sessions)
         boto_client_factory = MagicMock()
         monkeypatch.setattr(aws_clients.aioboto3, "Session", session_factory)
         monkeypatch.setattr(aws_clients.boto3, "client", boto_client_factory)
@@ -75,15 +76,24 @@ class TestAWSClientProviders:
         provider.secretsmanager_async_client()
         provider.lambda_client()
 
-        session_factory.assert_called_once_with(
-            aws_access_key_id=credentials.aws_access_key_id,
-            aws_secret_access_key=credentials.aws_secret_access_key,
-            aws_session_token=session_token,
-            region_name=credentials.aws_default_region,
+        assert (
+            session_factory.call_args_list
+            == [
+                call(
+                    aws_access_key_id=credentials.aws_access_key_id,
+                    aws_secret_access_key=credentials.aws_secret_access_key,
+                    aws_session_token=session_token,
+                    region_name=credentials.aws_default_region,
+                )
+            ]
+            * 4
         )
-        session.client.assert_has_calls(
-            [call("s3", config=ANY), call("logs", config=ANY), call("secretsmanager"), call("lambda", config=None)]
-        )
+        assert [session.client.call_args_list for session in sessions] == [
+            [call("s3", config=ANY)],
+            [call("logs", config=ANY)],
+            [call("secretsmanager")],
+            [call("lambda", config=None)],
+        ]
         assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
             "logs",
         }
@@ -94,8 +104,8 @@ class TestAWSClientProviders:
             assert constructed.kwargs["region_name"] == credentials.aws_default_region
 
     def test_default_chain_provider_omits_explicit_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        session = MagicMock()
-        session_factory = MagicMock(return_value=session)
+        sessions = [MagicMock() for _ in range(4)]
+        session_factory = MagicMock(side_effect=sessions)
         boto_client_factory = MagicMock()
         monkeypatch.setattr(aws_clients.aioboto3, "Session", session_factory)
         monkeypatch.setattr(aws_clients.boto3, "client", boto_client_factory)
@@ -109,10 +119,13 @@ class TestAWSClientProviders:
         provider.secretsmanager_async_client()
         provider.lambda_client()
 
-        session_factory.assert_called_once_with(region_name=region)
-        session.client.assert_has_calls(
-            [call("s3", config=ANY), call("logs", config=ANY), call("secretsmanager"), call("lambda", config=None)]
-        )
+        assert session_factory.call_args_list == [call(region_name=region)] * 4
+        assert [session.client.call_args_list for session in sessions] == [
+            [call("s3", config=ANY)],
+            [call("logs", config=ANY)],
+            [call("secretsmanager")],
+            [call("lambda", config=None)],
+        ]
         assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
             "logs",
         }
@@ -322,16 +335,25 @@ class TestWriteBenchmarkLogEvent:
             retentionInDays=30,
         )
 
-    async def test_create_benchmark_ignores_existing_group(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_create_benchmark_retries_cancelled_retention_for_existing_group(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Retry retention when cancellation leaves an already-created log group."""
         client, _, sink = self._sink_with_mock_client(monkeypatch)
-        client.create_log_group.side_effect = ClientError(
-            {"Error": {"Code": "ResourceAlreadyExistsException"}},
-            "CreateLogGroup",
-        )
+        client.create_log_group.side_effect = [
+            None,
+            ClientError({"Error": {"Code": "ResourceAlreadyExistsException"}}, "CreateLogGroup"),
+        ]
+        client.put_retention_policy.side_effect = [asyncio.CancelledError(), None]
 
+        with pytest.raises(asyncio.CancelledError):
+            await sink.create_benchmark("bench123", retention_days=30)
         await sink.create_benchmark("bench123", retention_days=30)
 
-        client.put_retention_policy.assert_not_awaited()
+        assert client.put_retention_policy.await_args_list == [
+            call(logGroupName="/valkyrie/worker/bench123", retentionInDays=30),
+            call(logGroupName="/valkyrie/worker/bench123", retentionInDays=30),
+        ]
 
     async def test_create_benchmark_translates_non_existing_group_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, _, sink = self._sink_with_mock_client(monkeypatch)
