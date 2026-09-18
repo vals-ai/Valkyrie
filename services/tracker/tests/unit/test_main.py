@@ -2709,7 +2709,7 @@ async def test_local_start_persists_server_root_without_credentials(
     assert resumed_request.contract.secrets == {"MODEL_KEY": "model-key"}
 
 
-@pytest.mark.parametrize("failure", ["server-unconfigured", "caller-root"])
+@pytest.mark.parametrize("failure", ["server-unconfigured", "caller-root", "missing-agent"])
 async def test_local_start_rejects_invalid_root_before_admission(
     tmp_path: Path,
     contract: AgentContractRequest,
@@ -2732,31 +2732,12 @@ async def test_local_start_rejects_invalid_root_before_admission(
     }
     if failure == "caller-root":
         request["properties"] = {"data_root": str(tmp_path / "caller-root")}
+    elif failure == "missing-agent":
+        request["contract"] = {"name": "missing-agent"}
 
     response = client.post("/start-benchmark", json=request)
 
-    assert response.status_code == 400, response.text
+    assert response.status_code == (404 if failure == "missing-agent" else 400), response.text
     assert not database_session.exec(select(Benchmark)).all()
     assert not database_session.exec(select(ExecutorDispatch)).all()
-    assert not mock_kicker.queued_calls
-
-
-async def test_local_start_missing_agent_returns_not_found(
-    tmp_path: Path, monkeypatch: MonkeyPatch, database_session: Session, mock_kicker: Any
-) -> None:
-    from tracker.local import config as local_config
-    from tracker.local.resources import LocalResources
-
-    monkeypatch.setattr(local_config, "resources", LocalResources(data_root=tmp_path))
-    response = client.post(
-        "/start-benchmark",
-        json={
-            "environment": "local",
-            "sandbox_provider": "docker",
-            "benchmark_name": "test",
-            "contract": {"name": "missing-agent"},
-        },
-    )
-    assert response.status_code == 404, response.text
-    assert response.json()["detail"] == "Agent 'missing-agent' not found"
     assert not mock_kicker.queued_calls

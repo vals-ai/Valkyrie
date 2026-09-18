@@ -482,19 +482,14 @@ async def test_windows_artifact_download_rejects_colons_before_writing(make_clie
 
 
 async def test_local_artifact_download_requires_explicit_local_storage(sdk_config, tmp_path):
+    from valkyrie.sdk.config import ValkyrieConfig
     from valkyrie.sdk.downloads import download_chunks
 
     root = tmp_path / "storage"
     root.mkdir()
     artifact = root / "result with spaces.txt"
     artifact.write_bytes(b"result")
-    local_config = sdk_config(
-        execution_environment="local",
-        local_data_root=root,
-        AWS_ACCESS_KEY_ID=None,
-        AWS_SECRET_ACCESS_KEY=None,
-        AWS_SESSION_TOKEN=None,
-    )
+    local_config = ValkyrieConfig(execution_environment="local", local_data_root=root)
     async with httpx.AsyncClient() as client:
         assert (
             b"".join([chunk async for chunk in download_chunks(client, artifact.as_uri(), local_config)]) == b"result"
