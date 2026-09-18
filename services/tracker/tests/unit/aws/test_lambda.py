@@ -88,6 +88,7 @@ async def test_invoke_lambda_raises_for_function_error() -> None:
             cast(AWSClientProvider, provider),
             "analyzer-function",
             {"benchmark_id": "benchmark-1"},
+            config=Config(),
         )
 
 
@@ -107,6 +108,7 @@ async def test_invoke_lambda_raises_for_error_status() -> None:
             cast(AWSClientProvider, provider),
             "analyzer-function",
             {"benchmark_id": "benchmark-1"},
+            config=Config(),
         )
 
 
@@ -123,6 +125,7 @@ async def test_invoke_lambda_returns_non_object_payload() -> None:
         cast(AWSClientProvider, provider),
         "analyzer-function",
         {"benchmark_id": "benchmark-1"},
+        config=Config(),
     )
 
     assert result == ["result"]
