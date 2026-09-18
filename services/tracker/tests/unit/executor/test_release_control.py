@@ -729,7 +729,7 @@ def _local_manifest(directory: Path, content: bytes) -> Path:
     return manifest
 
 
-def test_local_release_restart_preserves_active_and_replacement_reuses_prior_artifact(
+def test_local_release_restart_reuses_matching_build_and_activates_changed_build(
     database_session: Session,
     tmp_path: Path,
 ) -> None:
@@ -741,12 +741,12 @@ def test_local_release_restart_preserves_active_and_replacement_reuses_prior_art
     with reader.validate(first.artifact_uri).open("rb") as stream:
         assert stream.read() == b"first executor"
 
-    _local_manifest(manifest.parent, b"second executor")
     restarted = initialize_release(database_session, manifest, root)
     assert restarted.id == first.id
     assert restarted.activated_at == first.activated_at
 
-    second = initialize_release(database_session, manifest, root, replace_active=True)
+    _local_manifest(manifest.parent, b"second executor")
+    second = initialize_release(database_session, manifest, root)
     database_session.commit()
     assert second.id != first.id
     assert second.status == ExecutorReleaseStatus.ACTIVE
@@ -757,7 +757,7 @@ def test_local_release_restart_preserves_active_and_replacement_reuses_prior_art
         assert stream.read() == b"second executor"
 
     _local_manifest(manifest.parent, b"first executor")
-    restored = initialize_release(database_session, manifest, root, replace_active=True)
+    restored = initialize_release(database_session, manifest, root)
     database_session.commit()
     assert restored.id != first.id
     assert restored.artifact_uri == first.artifact_uri
