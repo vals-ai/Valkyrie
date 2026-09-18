@@ -127,7 +127,7 @@ def build(output_directory: Path, source_revision: str) -> dict[str, object]:
     artifact_digest = sha256(output_path)
     release_id, key = release_identity(source_revision, artifact_digest)
     manifest: dict[str, object] = {
-        "architecture": "linux-arm64",
+        "architecture": f"{platform.system().lower()}-arm64",
         "artifact_digest": artifact_digest,
         "artifact_path": output_path.name,
         "artifact_size_bytes": output_path.stat().st_size,

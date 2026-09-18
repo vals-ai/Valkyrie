@@ -600,14 +600,8 @@ class ExecutorSupervisor:
         except (OSError, ValueError):
             pass
 
-        temporary_fd, temporary_name = tempfile.mkstemp(
-            dir=self.cache_dir,
-            prefix=f".{dispatch.artifact_digest}.",
-            suffix=".tmp",
-        )
-        os.close(temporary_fd)
-        temporary_path = Path(temporary_name)
-        try:
+        with tempfile.TemporaryDirectory(dir=self.cache_dir) as staging:
+            temporary_path = Path(staging) / "executor.pex"
             if self.artifact_reader is not None:
                 with (
                     self.artifact_reader.open(dispatch.artifact_uri) as source,
@@ -626,9 +620,6 @@ class ExecutorSupervisor:
             verify_file_digest(temporary_path, dispatch.artifact_digest)
             temporary_path.chmod(temporary_path.stat().st_mode | 0o111)
             temporary_path.replace(artifact_path)
-        except BaseException:
-            temporary_path.unlink(missing_ok=True)
-            raise
         return artifact_path
 
     async def run(
