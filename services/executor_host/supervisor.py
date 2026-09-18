@@ -98,13 +98,8 @@ async def _renew_task_protection(delay_seconds: float) -> None:
 
 
 async def _await_task_cancellation(task: asyncio.Task[None]) -> None:
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            pass
     try:
-        await task
+        await _await_task_completion(task)
     except asyncio.CancelledError:
         pass
 
@@ -796,8 +791,6 @@ async def _heartbeat_loop(
         renewal_started_at = _monotonic_time()
         try:
             renewed = await store.heartbeat(authority)
-        except asyncio.CancelledError:
-            raise
         except Exception:
             logger.exception(
                 "Failed to heartbeat executor dispatch %s",
