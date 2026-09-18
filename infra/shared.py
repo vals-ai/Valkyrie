@@ -1,5 +1,6 @@
 """Shared infrastructure: VPC, ECS Cluster, Service Discovery namespace, S3, ElastiCache."""
 
+import os
 from typing import Any
 
 import aws_cdk as cdk
@@ -42,6 +43,8 @@ from constants import (
     get_slack_notification_config,
 )
 from constructs import Construct
+from customer_storage import CustomerStorage
+from customer_storage_config import CustomerStorageConfig
 from stage import Stage
 
 DEPLOYMENT_STACK_NAMES = ("SharedStack", "TrackerStack", "DriverStack", "WorkerStack", "MonitoringStack")
@@ -61,6 +64,7 @@ class SharedStack(Stack):
     def __init__(self, scope: Construct, id: str, stage: Stage, **kwargs: Any):
         super().__init__(scope, id, **kwargs)
         self.stage = stage
+        customer_storage_config = CustomerStorageConfig.from_environment(stage, self.account, os.environ)
 
         # shared VPC - public subnets only, no NAT gateway (cost savings)
         self.vpc = aws_ec2.Vpc(
@@ -126,6 +130,10 @@ class SharedStack(Stack):
                 aws_s3.LifecycleRule(abort_incomplete_multipart_upload_after=cdk.Duration.days(1)),
             ],
         )
+
+        self.customer_storage: CustomerStorage | None = None
+        if customer_storage_config is not None:
+            self.customer_storage = CustomerStorage(self, "CustomerStorage", customer_storage_config, self.bucket)
 
         self.tracker_repository: aws_ecr.Repository | None = None
         self.executor_host_repository: aws_ecr.Repository | None = None
