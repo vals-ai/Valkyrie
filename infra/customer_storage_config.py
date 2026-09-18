@@ -75,8 +75,17 @@ class CustomerStorageConfig:
             raise ValueError("VALSMITH_DATASET_VIEW_LAMBDA_NAME must be one literal Lambda function name")
 
         operator = required("VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN")
-        if re.fullmatch(r"arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]+", operator) is None:
+        operator_match = re.fullmatch(r"arn:aws:iam::[0-9]{12}:role(/.*)", operator)
+        if operator_match is None or "*" in operator or "?" in operator:
             raise ValueError("VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN must be one exact IAM role ARN")
+
+        path_prefix, _, role_name = operator_match.group(1).rpartition("/")
+        role_path = f"{path_prefix}/"
+        if re.fullmatch(r"[A-Za-z0-9_+=,.@-]{1,64}", role_name) is None:
+            raise ValueError("VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN requires a valid 1-64 character IAM role name")
+
+        if len(role_path) > 512 or re.fullmatch(r"/|/[\x21-\x7e]+/", role_path) is None:
+            raise ValueError("VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN requires a valid IAM path of at most 512 characters")
 
         runtime_role_names = {
             "ValSmithStorage-prod",
@@ -86,7 +95,7 @@ class CustomerStorageConfig:
             "ValkyrieTrackerTaskRole-prod",
             "ValkyrieExecutorTaskRole-prod",
         }
-        if operator.rsplit("/", 1)[-1] in runtime_role_names:
+        if role_name in runtime_role_names:
             raise ValueError("VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN must be a separate operator role")
 
         legacy_bucket = required("VALSMITH_LEGACY_STORAGE_BUCKET")
