@@ -472,3 +472,30 @@ def test_lifecycle_schema_retains_fences_and_never_backfills_exit(migration_data
     assert downgrade.returncode != 0
     assert "roll forward" in downgrade.stderr
     engine.dispose()
+
+
+def test_purge_checkpoint_is_additive_and_retained(migration_database_url: str) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", "7b8c9d0e1f2a")
+    assert upgrade.returncode == 0, upgrade.stderr
+    engine = create_engine(migration_database_url)
+    run_id = uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO runlifecycle (run_id,identity_json,scope_json,purpose,phase,acquired_at) VALUES (:id,'identity','scope','deletion','held',now())"
+            ),
+            {"id": run_id},
+        )
+    upgrade = _run_alembic(migration_database_url, "upgrade", "8c9d0e1f2a3b")
+    assert upgrade.returncode == 0, upgrade.stderr
+    columns = {column["name"]: column for column in inspect(engine).get_columns("runlifecycle")}
+    assert columns["checkpoint_json"]["nullable"]
+    with engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT identity_json,checkpoint_json FROM runlifecycle WHERE run_id=:id"), {"id": run_id}
+        ).one()
+        assert row == ("identity", None)
+    downgrade = _run_alembic(migration_database_url, "downgrade", "7b8c9d0e1f2a")
+    assert downgrade.returncode != 0 and "retained" in downgrade.stderr
+    assert "checkpoint_json" in {column["name"] for column in inspect(engine).get_columns("runlifecycle")}
+    engine.dispose()

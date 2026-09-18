@@ -13,7 +13,7 @@ from pydantic import (
     field_validator,
     model_serializer,
 )
-from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
+from sqlalchemy import Boolean, Connection, Dialect, Index, Text, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
     JSON,
@@ -322,6 +322,7 @@ class RunLifecycle(SQLModel, table=True):
     phase: str
     acquired_at: datetime
     released_at: datetime | None = None
+    checkpoint_json: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
 
 
 class Benchmark(SQLModel, table=True):
