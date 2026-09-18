@@ -28,9 +28,9 @@ class ValkyrieConfig(BaseModel):
     api_key: SecretStr | None = Field(default=None, repr=False)
     aws_access_key_id: SecretStr | None = Field(default=None, alias="AWS_ACCESS_KEY_ID", repr=False)
     aws_secret_access_key: SecretStr | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY", repr=False)
-    aws_default_region: str = Field(default="", alias="AWS_DEFAULT_REGION")
+    aws_default_region: str | None = Field(default=None, alias="AWS_DEFAULT_REGION")
     aws_session_token: SecretStr | None = Field(default=None, alias="AWS_SESSION_TOKEN", repr=False)
-    s3_bucket: str = Field(default="", alias="S3_BUCKET")
+    s3_bucket: str | None = Field(default=None, alias="S3_BUCKET")
     log_group: str = Field(default="benchmarks", alias="LOG_GROUP")
     log_retention_policy: int = Field(default=365, alias="LOG_RETENTION_POLICY", gt=0)
     sandbox_providers: dict[str, str] = Field(default_factory=dict, repr=False)
@@ -45,9 +45,9 @@ class ValkyrieConfig(BaseModel):
         "log_group",
     )
     @classmethod
-    def reject_blank_required_values(cls, value: str) -> str:
-        """Reject blank required values."""
-        if not value.strip():
+    def reject_blank_required_values(cls, value: str | None) -> str | None:
+        """Reject blank values when configured."""
+        if value is not None and not value.strip():
             raise ValueError("must not be blank")
         return value
 
@@ -109,10 +109,10 @@ class ValkyrieConfig(BaseModel):
         except ValidationError as exc:
             raise ValkyrieConfigError(f"Invalid Valkyrie config at {config_path}: {exc}") from exc
 
-    def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str, str]:
+    def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str | None, str | None]:
         """Resolve the selected sandbox provider and secret name."""
         if not self.sandbox_providers:
-            return provider or self.default_sandbox_provider or "daytona", ""
+            return provider or self.default_sandbox_provider, None
         provider_name = provider or self.default_sandbox_provider or next(iter(self.sandbox_providers))
         secret_name = self.sandbox_providers.get(provider_name)
         if secret_name is None:
@@ -120,10 +120,12 @@ class ValkyrieConfig(BaseModel):
             raise ValkyrieConfigError(f"Unknown sandbox provider '{provider_name}'. Configured providers: {configured}")
         return provider_name, secret_name
 
-    def harness_config(self, provider_secret_name: str) -> HarnessConfig:
+    def harness_config(self, provider_secret_name: str | None) -> HarnessConfig:
         """Build the nested harness config expected by the tracker."""
         if self.aws_access_key_id is None or self.aws_secret_access_key is None:
             raise ValkyrieConfigError("Static AWS access keys are not configured")
+        if self.aws_default_region is None or self.s3_bucket is None or provider_secret_name is None:
+            raise ValkyrieConfigError("AWS region, bucket and sandbox provider secret must be configured")
         return HarnessConfig(
             aws=AWSCredentials(
                 aws_access_key_id=self.aws_access_key_id.get_secret_value(),
