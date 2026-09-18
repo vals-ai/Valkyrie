@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -83,3 +84,65 @@ def test_in_process_cli_rejects_untrusted_database_or_report_target_before_conne
             tmp_path / "journal",
         )
     assert request_path.read_bytes() == fixture.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "fault", ["identity", "database", "accounts", "run_set", "edits", "region", "bucket", "releases"]
+)
+def test_cli_rejects_ambiguous_transfer_authority_before_opening_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    fixture = Path(__file__).resolve().parents[1] / "fixtures/tracker-transfer-plan-v1.json"
+    payload = json.loads(fixture.read_bytes())
+    plan = payload["plan"]
+    run = plan["runs"][0]
+    if fault == "identity":
+        plan["destination_identity"]["github_owner_id"] += 1
+    elif fault == "database":
+        plan["destination_identity"]["database_target"] = plan["source_identity"]["database_target"]
+    elif fault == "accounts":
+        for side in ("source_identity", "destination_identity"):
+            plan[side]["destination_aws_account_id"] = plan[side]["source_aws_account_id"]
+    elif fault == "run_set":
+        plan["runs"] *= 2
+    elif fault == "edits":
+        run["reference_edits"] = [
+            {"pointer": "/arguments/dataset", "original_sha256": "a" * 64, "replacement": "private-destination"}
+        ] * 2
+    elif fault == "region":
+        plan["destination_identity"]["region"] = "eu-west-1"
+    elif fault == "bucket":
+        run["destination"]["original_resources"]["s3_bucket"] = run["source"]["original_resources"]["s3_bucket"]
+    else:
+        plan["releases"] = [
+            {
+                "source_id": "a",
+                "destination_id": "b",
+                "source_artifact_uri": "s3://source/a",
+                "destination_artifact_uri": "s3://destination/b",
+                "artifact_digest": "c" * 64,
+                "protocol_version": "1",
+            }
+        ] * 2
+    engine = Mock()
+    monkeypatch.setattr("tracker.run_transfer.cli.create_engine", engine)
+    report = tmp_path / "report.json"
+    report.write_text("previous verified report")
+
+    with pytest.raises(ValueError):
+        execute(
+            json.dumps(payload).encode(),
+            tmp_path / "request.json",
+            report,
+            "postgresql://localhost/source",
+            "postgresql://localhost/destination",
+            plan["source_identity"]["database_target"],
+            plan["destination_identity"]["database_target"],
+            "source",
+            "destination",
+            tmp_path / "journal",
+        )
+
+    engine.assert_not_called()
+    assert report.read_text() == "previous verified report"
+    assert not (tmp_path / "journal").exists()

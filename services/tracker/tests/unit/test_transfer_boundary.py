@@ -3,14 +3,14 @@
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
 from tests.unit.aws.test_log_history_archive import FakeLogs, FakeS3, FakeSession
 from tracker.lifecycle import LifecycleConflict
 from tracker.run_transfer.contracts import TransferRequest
-from tracker.run_transfer.providers import TransferAWSBoundary
+from tracker.run_transfer.providers import ProfileClients, TransferAWSBoundary
 
 
 def request_fixture() -> TransferRequest:
@@ -132,3 +132,37 @@ async def test_source_log_cleanup_requires_archive_and_fresh_complete_source(tmp
         await boundary.cleanup_logs(request, request.plan.runs[0], archive)
     assert deleted == ([] if fault in {"changed", "already_absent"} else [request.plan.runs[0].source.log_group])
     assert objects.objects
+
+
+def test_selected_profiles_and_regions_are_preserved_for_every_transfer_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    synchronous = Mock()
+    asynchronous = Mock()
+    sync_factory = Mock(return_value=synchronous)
+    async_factory = Mock(return_value=asynchronous)
+    monkeypatch.setattr("tracker.run_transfer.providers.boto3.Session", sync_factory)
+    monkeypatch.setattr("tracker.run_transfer.providers.aioboto3.Session", async_factory)
+    source = ProfileClients("transfer-source", "us-east-1")
+    destination = ProfileClients("transfer-destination", "us-east-1").with_region("us-west-2")
+
+    for clients in (source, destination):
+        sync_factory.reset_mock()
+        async_factory.reset_mock()
+        synchronous.reset_mock()
+        asynchronous.reset_mock()
+        clients.sts_client()
+        clients.secretsmanager_client()
+        clients.cloudwatch_logs_client()
+        clients.s3_client()
+        clients.secretsmanager_async_client()
+        assert synchronous.client.call_args_list == [call("sts"), call("secretsmanager"), call("logs")]
+        assert asynchronous.client.call_args_list == [call("s3"), call("secretsmanager")]
+        assert sync_factory.call_args_list == [call(profile_name=clients.profile, region_name=clients.region)] * 3
+        assert async_factory.call_args_list == [call(profile_name=clients.profile, region_name=clients.region)] * 2
+        clients.sts_client()
+        clients.secretsmanager_client()
+        clients.cloudwatch_logs_client()
+        assert sync_factory.call_count == 3
+
+    assert source.region == "us-east-1"
+    assert destination.region == "us-west-2"
+    assert destination.profile == "transfer-destination"
