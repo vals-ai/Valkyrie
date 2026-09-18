@@ -509,3 +509,39 @@ async def test_local_artifact_download_requires_explicit_local_storage(sdk_confi
         for url in (outside.as_uri(), link.as_uri()):
             with pytest.raises(ValueError, match="escapes"):
                 _ = [chunk async for chunk in download_chunks(client, url, local_config)]
+
+
+async def test_local_download_cancellation_closes_file(tmp_path, monkeypatch):
+    import threading
+    from valkyrie.sdk.config import ValkyrieConfig
+    from valkyrie.sdk.downloads import download_chunks
+
+    artifact = tmp_path / "result.txt"
+    artifact.write_bytes(b"result")
+    config = ValkyrieConfig(execution_environment="local", local_data_root=tmp_path)
+    opened = threading.Event()
+    release = threading.Event()
+    streams = []
+    original_open = Path.open
+
+    def delayed_open(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        streams.append(stream)
+        opened.set()
+        assert release.wait(timeout=5)
+        return stream
+
+    monkeypatch.setattr(Path, "open", delayed_open)
+    async with httpx.AsyncClient() as client:
+        chunks = download_chunks(client, artifact.as_uri(), config)
+        reading = asyncio.create_task(anext(chunks))
+        try:
+            assert await asyncio.to_thread(opened.wait, 5)
+            reading.cancel()
+            await asyncio.sleep(0)
+            reading.cancel()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await reading
+    assert streams and all(stream.closed for stream in streams)

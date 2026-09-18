@@ -34,13 +34,6 @@ async def test_local_runtime_scopes_files_and_clears_secrets(tmp_path: Path) -> 
 
 async def test_local_runtime_discards_secrets_on_cancellation(tmp_path: Path) -> None:
     """Release operation credentials when an executing request is cancelled."""
-    async with LocalRuntimeFactory.open(
-        tmp_path, uuid4(), secret_references={"KEY": "secret"}, execution_secrets={"KEY": "value"}
-    ) as runtime:
-        store = runtime.secrets
-    with pytest.raises(SecretsError):
-        store.get("secret")
-
     with pytest.raises(asyncio.CancelledError):
         async with LocalRuntimeFactory.open(
             tmp_path, uuid4(), secret_references={"KEY": "secret"}, execution_secrets={"KEY": "value"}

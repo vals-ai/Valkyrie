@@ -119,7 +119,9 @@ async def get_task_artifacts(
     """Return log and agent output locations for the task detail page."""
     task = load_task_for_benchmark_or_404(benchmark, task_id, org, session)
     cloudwatch_url: str | None
-    if isinstance(runtime, CloudRuntimeServices) and not runtime.aws_runtime.resources.log_group:
+    if isinstance(runtime, CloudRuntimeServices) and not (
+        runtime.aws_runtime.resources.log_group and runtime.aws_runtime.resources.region
+    ):
         cloudwatch_url = None
     elif any(character in task.task_id for character in ":*%"):
         # Renamed streams may use either encoding; link to the run without guessing.
