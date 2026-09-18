@@ -221,3 +221,30 @@ in the saved locator itself. Discovering a current object's version does not mak
 an unpinned locator portable. Missing, blank, duplicate, or null versions remain
 unknown without fetching the current object. History-only plans retain these stored
 arguments and keep their admission hold.
+
+## Runs already at the destination
+
+A mixed owner plan includes every run. Set `runs[].location_policy=hold_only`
+explicitly for an already-destination run. Its original and destination resources
+must be identical. The default `relocate` policy requires different buckets.
+`RelocationPlan.sha256` omits `location_policy` only when its value is `relocate`,
+which preserves all old omitted-field digests. `hold_only` is included in the
+immutable child digest. Fixtures are in
+`fixtures/storage-migration-default-request-v1.json` and
+`fixtures/storage-migration-hold-only-request-v1.json`.
+
+A hold-only entry performs the full hold, positive drain, provider absence,
+execution-reference, destination history and release checks. It performs no saved
+location update and must have no copied-object entries. Provide every current
+and historical destination version/marker, with `existing` or exact `restored`
+provenance. Planned transformations can rewrite retained destination manifest
+versions; they must bind the retained original version and exact JSON edits.
+Release verifies retained destination history even though source cleanup applies
+only to relocated source prefixes. A retained immutable destination execution
+reference is not a retired-source reference. Explicit history-only execution
+still ends in an active `relocated_history_only` hold.
+
+A populated `Benchmark.log_history` currently blocks inventory/prepare before any
+location mutation. Same-account archive movement requires a separately reviewed
+remap and verification of every immutable manifest/chunk reference. Changing only
+a bucket under old version IDs is unsupported.

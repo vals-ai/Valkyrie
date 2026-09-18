@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
@@ -44,7 +44,8 @@ import tracker.run_relocation as run_relocation
 from tracker.run_purge.locking import OperationLock
 from tracker.run_relocation import RelocationOperator
 from tracker.run_relocation.providers import RelocationAWSBoundary
-from tracker.storage_migration_exchange import ExecutionReference, TrackerRequest, TrackerResponse
+from tracker.runtime.log_history_reference import ArchiveObject, LogHistoryReference
+from tracker.storage_migration_exchange import ExecutionReference, RelocationRun, TrackerRequest, TrackerResponse
 
 
 def digest(value: object) -> str:
@@ -1135,7 +1136,7 @@ def test_operator_rejects_changed_scope_and_incomplete_checkpoints(relocation_se
         ]
     else:
         action = "release"
-    with pytest.raises(LifecycleConflict):
+    with pytest.raises((LifecycleConflict, ValidationError)):
         execute(relocation_session, request, action)
     relocation_session.rollback()
     record = relocation_session.get(RunLifecycle, run.id)
@@ -1263,3 +1264,169 @@ def test_released_legacy_run_requires_original_positive_external_drain(
         request["external_host_drains"] = []
     with pytest.raises(LifecycleConflict):
         execute(relocation_session, request, "inspect")
+
+
+def test_explicit_hold_only_keeps_location_and_history_hold(relocation_session: Session) -> None:
+    run, original, request = seed(relocation_session)
+    planned = request["plan"]["runs"][0]
+    planned["destination_resources"] = dict(original["properties"])
+    planned["location_policy"] = "hold_only"
+    execute(relocation_session, request, "prepare")
+    execute(relocation_session, request, "relocate")
+    request["completion_sha256"] = "c" * 64
+    response = execute(relocation_session, request, "release")
+    assert response.runs[0].hold_phase == "relocated_history_only"
+    assert response.runs[0].resources.s3_bucket == original["properties"]["s3_bucket"]
+    actual = (
+        relocation_session.connection()
+        .execute(text("SELECT arguments FROM benchmark WHERE id=:id"), {"id": run.id})
+        .scalar_one()
+    )
+    assert actual == original
+    with pytest.raises(LifecycleConflict):
+        require_unheld(relocation_session, run.id)
+
+
+@pytest.mark.parametrize("action", ["inventory", "prepare"])
+def test_declared_archive_refuses_before_hold_or_location_change(relocation_session: Session, action: str) -> None:
+    run, original, request = seed(relocation_session)
+    operation_id = uuid4()
+    run.log_history = LogHistoryReference(
+        run_id=run.id,
+        operation_id=operation_id,
+        parent_plan_sha256="a" * 64,
+        manifest=ArchiveObject(
+            key=f"benchmarks/{run.id}/log-history/{operation_id}/v1/manifest.json",
+            version_id="immutable-version",
+            sha256="b" * 64,
+            size_bytes=10,
+        ),
+    )
+    relocation_session.add(run)
+    relocation_session.commit()
+    with pytest.raises(LifecycleConflict, match="Version-pinned log history"):
+        execute(relocation_session, request, action)
+    relocation_session.rollback()
+    assert relocation_session.get(RunLifecycle, run.id) is None
+    assert relocation_session.get_one(Benchmark, run.id).arguments.properties == AWSResources(**original["properties"])
+    assert relocation_session.get_one(Benchmark, run.id).log_history == run.log_history
+
+
+def test_mixed_owner_relocates_source_and_verifies_unchanged_destination(relocation_session: Session) -> None:
+    source_run, original, payload = seed(relocation_session)
+    destination_bucket = payload["plan"]["runs"][0]["destination_resources"]["s3_bucket"]
+    destination_run = make_benchmark(org_id=source_run.org_id, status=BenchmarkStatus.FINISHED)
+    destination_run.arguments = source_run.arguments.model_copy(
+        update={"properties": AWSResources(**{**original["properties"], "s3_bucket": destination_bucket})}
+    )
+    relocation_session.add(destination_run)
+    relocation_session.commit()
+    preserved = (
+        relocation_session.connection()
+        .execute(text("SELECT arguments FROM benchmark WHERE id=:id"), {"id": destination_run.id})
+        .scalar_one()
+    )
+    unchanged = json.loads(json.dumps(payload["plan"]["runs"][0]))
+    unchanged.update(location_policy="hold_only")
+    unchanged["scope"].update(
+        run_id=str(destination_run.id),
+        object_prefix=f"benchmarks/{destination_run.id}/",
+        log_group=f"runs/{destination_run.id}",
+    )
+    unchanged["scope"]["original_resources"]["s3_bucket"] = destination_bucket
+    payload["plan"]["runs"].append(unchanged)
+    cast(list[dict[str, Any]], payload["plan"]["runs"]).sort(key=lambda item: str(item["scope"]["run_id"]))
+    payload["run_ids"] = payload["plan"]["identity"]["run_ids"] = sorted([str(source_run.id), str(destination_run.id)])
+    stores: dict[str, VersionStore] = {}
+    providers: dict[str, RelocationAWSBoundary] = {}
+    content = b'{"value":1}'
+    checksum = hashlib.sha256(content).hexdigest()
+    copied_objects: list[dict[str, Any]] = []
+    destination_versions: list[dict[str, Any]] = []
+    payload["copied_objects"] = copied_objects
+    payload["destination_versions"] = destination_versions
+    for planned in payload["plan"]["runs"]:
+        run_id = planned["scope"]["run_id"]
+        source_bucket = planned["scope"]["original_resources"]["s3_bucket"]
+        store = VersionStore(run_id)
+        store.versions = {destination_bucket: [("destination-version", content)]}
+        if run_id == str(source_run.id):
+            store.versions[source_bucket] = [("source-version", content)]
+            store.fence_statement = {
+                "Sid": "ValSmithOwnerMigration" + payload["plan"]["identity"]["operation_id"].replace("-", ""),
+                "Effect": "Deny",
+                "Principal": "*",
+                "Action": ["s3:PutObject", "s3:DeleteObject"],
+                "Resource": [f"arn:aws:s3:::{source_bucket}/benchmarks/{run_id}/*"],
+            }
+            copied_objects.append(
+                {
+                    "run_id": run_id,
+                    "key": store.key,
+                    "source_bucket": source_bucket,
+                    "source_version_id": "source-version",
+                    "destination_bucket": destination_bucket,
+                    "destination_version_id": "destination-version",
+                    "is_delete_marker": False,
+                    "source_sha256": checksum,
+                    "destination_sha256": checksum,
+                    "source_size": len(content),
+                    "destination_size": len(content),
+                    "is_current": True,
+                }
+            )
+        destination_versions.append(
+            {
+                "run_id": run_id,
+                "bucket": destination_bucket,
+                "key": store.key,
+                "version_id": "destination-version",
+                "is_delete_marker": False,
+                "sha256": checksum,
+                "size": len(content),
+                "is_current": True,
+                "provenance": "copied" if run_id == str(source_run.id) else "existing",
+            }
+        )
+        clients = Mock()
+        clients.with_region.return_value = clients
+        clients.s3_client.return_value = store
+        providers[run_id] = RelocationAWSBoundary(clients)
+        stores[run_id] = store
+
+    class MixedBoundary(EmptyBoundary):
+        async def verify_objects(
+            self,
+            request: TrackerRequest,
+            run: RelocationRun,
+            *,
+            source_removed: bool = False,
+            source_partial: bool = False,
+        ) -> None:
+            await providers[str(run.scope.run_id)].verify_objects(
+                request, run, source_removed=source_removed, source_partial=source_partial
+            )
+
+    operator = RelocationOperator(relocation_session, MixedBoundary())
+    for action in ("prepare", "relocate"):
+        payload["action"] = action
+        asyncio.run(operator.execute(TrackerRequest.model_validate(payload)))
+    stores[str(source_run.id)].versions[original["properties"]["s3_bucket"]] = []
+    payload.update(action="release", completion_sha256="c" * 64)
+    response = asyncio.run(operator.execute(TrackerRequest.model_validate(payload)))
+    assert all(observation.hold_phase == "relocated_history_only" for observation in response.runs)
+    assert all(observation.resources.s3_bucket == destination_bucket for observation in response.runs)
+    assert stores[str(destination_run.id)].versions[destination_bucket] == [("destination-version", content)]
+    assert (
+        relocation_session.connection()
+        .execute(text("SELECT arguments FROM benchmark WHERE id=:id"), {"id": destination_run.id})
+        .scalar_one()
+        == preserved
+    )
+    payload["action"] = "inspect"
+    stores[str(destination_run.id)].versions[destination_bucket].append(("unknown", b"late"))
+    with pytest.raises(LifecycleConflict, match="history"):
+        asyncio.run(operator.execute(TrackerRequest.model_validate(payload)))
+    for run_id in (source_run.id, destination_run.id):
+        with pytest.raises(LifecycleConflict):
+            require_unheld(relocation_session, run_id)

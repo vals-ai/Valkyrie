@@ -63,3 +63,24 @@ acquires or replaces a lifecycle hold, stops a run, deletes provider data or
 rows, updates a checkpoint, flushes pending writes, or commits a transaction.
 It returns mixed present/removed progress explicitly. Unknown missing runs and
 unrelated holds are errors. No destructive resume is needed to inspect state.
+
+## Completed historical predecessors
+
+A new plan can carry `runs[].completed_history` instead of `released_relocation`.
+It uses `kind=completed_history_only`, the exact old operation UUID, canonical
+identity/scope digests and canonical completed-checkpoint digest. Read-only
+inspection returns `state=present_history_held`, current scope/provider/label and
+the exact `completed_history` proof. It does not claim this active history hold
+is unheld or owned by deletion. The other three state shapes remain unchanged.
+See `fixtures/tracker-purge-history-plan-v1.json` and
+`fixtures/tracker-purge-history-inspection-v1.json`.
+
+Only complete `relocated_history_only` or imported `transferred_history_only`
+controls qualify. Validate old identity/scope/checkpoint, current saved resources,
+owner/org/local database/region/environment and old destination account equal to
+the new local source account. The old imported source account can differ. Prepare
+rechecks under refreshed run/control locks and replaces the exact control
+atomically. A new operation UUID is required. In-progress, retired-source and
+deletion holds remain protected, and a stale old operation cannot write over the
+successor. Absent `completed_history` stays omitted in serialized old plans and
+checkpoints; prior plan digests and checkpoint-byte inspection semantics remain.

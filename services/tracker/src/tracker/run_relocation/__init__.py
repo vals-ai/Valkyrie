@@ -95,7 +95,10 @@ def recorded_source_bucket(record: RunLifecycle | None, arguments: dict[str, Any
 def retired_source_buckets(request: TrackerRequest, source_buckets: Sequence[str] = ()) -> frozenset[str]:
     """Every bucket the parent empties for this operation, identical in every action."""
     if request.plan is not None:
-        return frozenset(run.scope.original_resources.s3_bucket for run in request.plan.runs)
+        return frozenset(
+            run.scope.original_resources.s3_bucket for run in request.plan.runs if run.location_policy != "hold_only"
+        )
+
     return frozenset(source_buckets)
 
 
@@ -381,10 +384,6 @@ class RelocationOperator:
             return await self._inventory(request)
         if request.plan is None:
             raise LifecycleConflict("Immutable child plan is required")
-        if any(
-            run.scope.original_resources.s3_bucket == run.destination_resources.s3_bucket for run in request.plan.runs
-        ):
-            raise LifecycleConflict("Relocation requires distinct source and destination buckets")
         identity = OperationIdentity.model_validate(request.plan.identity.model_dump(mode="json"))
         for field in (
             "github_owner_id",
@@ -576,11 +575,12 @@ class RelocationOperator:
             lock.verify()
             if request.action == "relocate" and checkpoint.phase == "prepared":
                 # Direct SQL preserves excluded fields and the exact stored JSON value shape.
-                arguments["properties"]["s3_bucket"] = run.destination_resources.s3_bucket
-                self.session.connection().execute(
-                    text("UPDATE benchmark SET arguments=CAST(:arguments AS JSON) WHERE id=:id"),
-                    {"arguments": json.dumps(arguments), "id": run.scope.run_id},
-                )
+                if run.location_policy == "relocate":
+                    arguments["properties"]["s3_bucket"] = run.destination_resources.s3_bucket
+                    self.session.connection().execute(
+                        text("UPDATE benchmark SET arguments=CAST(:arguments AS JSON) WHERE id=:id"),
+                        {"arguments": json.dumps(arguments), "id": run.scope.run_id},
+                    )
                 checkpoint = checkpoint.model_copy(
                     update={
                         "phase": "relocated",

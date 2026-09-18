@@ -605,6 +605,15 @@
     "RelocationRun": {
       "additionalProperties": false,
       "properties": {
+        "location_policy": {
+          "default": "relocate",
+          "enum": [
+            "relocate",
+            "hold_only"
+          ],
+          "title": "Location Policy",
+          "type": "string"
+        },
         "scope": {
           "$ref": "#/$defs/RunScope"
         },

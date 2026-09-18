@@ -29,6 +29,7 @@ from tracker.run_purge.contracts import (
     DispatchSnapshot,
     InspectionCheckpoint,
     PresentHeldInspection,
+    PresentHistoryHeldInspection,
     PresentUnheldInspection,
     ProviderLocator,
     PurgeCheckpoint,
@@ -40,7 +41,7 @@ from tracker.run_purge.contracts import (
     RemovedInspection,
 )
 from tracker.run_purge.locking import OperationLock, exclusive_operation, verify_database_target
-from tracker.run_purge.predecessor import acquire_deletion_hold, capture_predecessor
+from tracker.run_purge.predecessor import acquire_deletion_hold, capture_completed_history, capture_predecessor
 from tracker.run_purge.rows import delete_rows, inventory_rows, verify_foreign_keys, verify_rows_absent
 from tracker.utils.run_control import apply_stop_benchmark
 
@@ -70,13 +71,15 @@ def build_plan(session: Session, identity: OperationIdentity) -> PurgePlan:
         locator = benchmark.arguments.sandbox_provider_secret_name
         if resources is None or locator is None:
             raise LifecycleConflict("Saved resources or sandbox provider locator are missing")
-        relocation, abandoned = capture_predecessor(session, identity, run_id)
+        scope = RunScope(run_id=run_id, original_resources=resources)
+        relocation, abandoned, history = capture_predecessor(session, identity, scope)
         runs.append(
             PurgeRun(
-                scope=RunScope(run_id=run_id, original_resources=resources),
+                scope=scope,
                 provider=ProviderLocator(kind=benchmark.arguments.sandbox_provider, secret_name=locator),
                 released_relocation=relocation,
                 abandoned_deletion=abandoned,
+                completed_history=history,
             )
         )
     return PurgePlan(identity=identity, runs=tuple(runs))
@@ -182,6 +185,7 @@ class PurgeOperator:
             or checkpoint.child_plan_sha256 != self.plan.digest()
             or checkpoint.provider != run.provider
             or checkpoint.released_relocation != run.released_relocation
+            or checkpoint.completed_history != run.completed_history
             or record.phase != checkpoint.phase
         ):
             raise LifecycleConflict("Purge checkpoint identity does not match")
@@ -291,14 +295,34 @@ class PurgeOperator:
             .execution_options(populate_existing=True)
             .with_for_update()
         ).one_or_none()
+        if run.completed_history is not None and record is not None and record.purpose == "relocation":
+            if benchmark is None:
+                raise LifecycleConflict("Completed history row is absent")
+            self._validate_saved_run(benchmark, run)
+            observed = capture_completed_history(record, self.plan.identity, run.scope)
+            if observed != run.completed_history:
+                raise LifecycleConflict("Planned completed history predecessor changed")
+            await self.boundary.validate(self.plan.identity, run)
+            return PresentHistoryHeldInspection(
+                scope=run.scope,
+                provider=run.provider,
+                expected_run_label=run.expected_run_label,
+                current_label=benchmark.label,
+                completed_history=observed,
+            )
+
         if record is None or record.released_at is not None:
             if benchmark is None:
                 raise LifecycleConflict("Absent run has no exact deletion checkpoint")
 
             self._validate_saved_run(benchmark, run)
-            predecessor = capture_predecessor(self.session, self.plan.identity, run.scope.run_id)
-            if predecessor != run.released_relocation:
-                raise LifecycleConflict("Planned relocation predecessor changed")
+            relocation, abandoned, history = capture_predecessor(self.session, self.plan.identity, run.scope)
+            if (
+                relocation != run.released_relocation
+                or abandoned != run.abandoned_deletion
+                or history != run.completed_history
+            ):
+                raise LifecycleConflict("Planned lifecycle predecessor changed")
 
             await self.boundary.validate(self.plan.identity, run)
             return PresentUnheldInspection(
@@ -306,7 +330,7 @@ class PurgeOperator:
                 provider=run.provider,
                 expected_run_label=run.expected_run_label,
                 current_label=benchmark.label,
-                released_relocation=predecessor,
+                released_relocation=relocation,
             )
 
         benchmark, record, checkpoint = self._lock(run)
@@ -388,6 +412,7 @@ class PurgeOperator:
                     child_plan_sha256=self.plan.digest(),
                     provider=run.provider,
                     released_relocation=run.released_relocation,
+                    completed_history=run.completed_history,
                     original_dispatches=tuple(
                         DispatchSnapshot(
                             dispatch_id=dispatch.id,

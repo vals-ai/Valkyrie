@@ -1,0 +1,68 @@
+{
+  "github_owner_id": 42,
+  "org_id": "36b30886-3684-4cf4-9e5e-3a193ff0876d",
+  "source_aws_account_id": "123456789012",
+  "destination_aws_account_id": "123456789012",
+  "region": "us-east-1",
+  "environment": "dev",
+  "database_target": "postgresql:localhost:5432/test",
+  "run_ids": [
+    "091b043c-2089-4004-9b81-e985f499b87c"
+  ],
+  "nonce": "06973ccb-c738-46de-be83-6032d246cbb9",
+  "action": "relocate",
+  "plan": {
+    "identity": {
+      "operation_id": "96bf7c0e-b545-4a35-9d1b-ad936736d66c",
+      "parent_plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "github_owner_id": 42,
+      "org_id": "36b30886-3684-4cf4-9e5e-3a193ff0876d",
+      "source_aws_account_id": "123456789012",
+      "destination_aws_account_id": "123456789012",
+      "region": "us-east-1",
+      "environment": "dev",
+      "database_target": "postgresql:localhost:5432/test",
+      "run_ids": [
+        "091b043c-2089-4004-9b81-e985f499b87c"
+      ]
+    },
+    "runs": [
+      {
+        "scope": {
+          "run_id": "091b043c-2089-4004-9b81-e985f499b87c",
+          "original_resources": {
+            "region": "us-east-1",
+            "s3_bucket": "source",
+            "log_group": "runs",
+            "log_retention_days": 7
+          },
+          "object_prefix": "benchmarks/091b043c-2089-4004-9b81-e985f499b87c/",
+          "log_group": "runs/091b043c-2089-4004-9b81-e985f499b87c"
+        },
+        "destination_resources": {
+          "region": "us-east-1",
+          "s3_bucket": "destination",
+          "log_group": "runs",
+          "log_retention_days": 7
+        },
+        "expected_label": null,
+        "execution_policy": "history_only",
+        "execution_arguments_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    ]
+  },
+  "copied_objects": [],
+  "destination_versions": [
+    {
+      "run_id": "091b043c-2089-4004-9b81-e985f499b87c",
+      "bucket": "destination",
+      "key": "benchmarks/091b043c-2089-4004-9b81-e985f499b87c/results.json",
+      "version_id": "d1",
+      "is_delete_marker": false,
+      "size": 11,
+      "sha256": "48208f9428d64634bd8e28ff345bf0eab60d53c18fa2fbdb0b9bc1e84df2b5f6",
+      "is_current": true,
+      "provenance": "existing"
+    }
+  ]
+}

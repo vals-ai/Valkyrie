@@ -153,3 +153,46 @@ source deletion, release order, and rollback. Keep intake frozen on a failed gat
 - [Backup access-point dependent permissions](https://docs.aws.amazon.com/aws-backup/latest/devguide/access-control.html)
 - [Vault resource policies](https://docs.aws.amazon.com/aws-backup/latest/devguide/create-a-vault-access-policy.html)
 - [Backup encryption and key permissions](https://docs.aws.amazon.com/aws-backup/latest/devguide/encryption.html)
+
+## Operator-call permission alignment
+
+Application provisioning must inspect complete bucket emptiness with
+`ListBucketVersions` and `ListBucketMultipartUploads`, in addition to `ListBucket`
+for HeadBucket. These owner grants have no prefix filter and remain guarded by
+`s3:ResourceAccount`; ordinary data reads/writes retain their approved roots.
+The lifecycle role includes `GetBucketOwnershipControls` for immutable archive
+validation. Exact object/version/tag reads and bounded owner writes remain scoped
+to the configured account. Application and Lambda still cannot delete owner data
+or manage Backup.
+
+Lifecycle CloudWatch grants include CreateLogGroup, CreateLogStream, PutLogEvents,
+PutRetentionPolicy, DescribeLogStreams, GetLogEvents, FilterLogEvents, Unmask and
+DeleteLogGroup only for UUID-shaped `/valkyrie/benchmarks-prod/<run UUID>` groups in
+the destination account/region. Runtime creation/writing supports future logs;
+old logs remain in verified immutable archives. Only lifecycle authority can
+remove an exact source log group after final proof. Lambda grants stay on its own
+configured function log group.
+
+The **separate source role** must permit STS GetCallerIdentity; bucket HeadBucket
+(ListBucket), GetBucketLocation, GetBucketVersioning, GetBucketTagging,
+GetBucketOwnershipControls for managed archives, GetBucketPolicy and narrowly
+scoped PutBucketPolicy for the exact source fence; ListBucketVersions and
+ListBucketMultipartUploads for reviewed prefixes; GetObject/GetObjectVersion and
+GetObjectTagging/GetObjectVersionTagging for exact copied versions. Cleanup also
+needs DeleteObjectVersion and AbortMultipartUpload on reviewed prefixes. Source
+CloudWatch requires account-local DescribeLogGroups and exact saved-group
+DescribeLogStreams, FilterLogEvents and explicit Unmask authority. Grant
+DeleteLogGroup only to the cleanup lifecycle principal. Source provider drain
+requires GetSecretValue on each exact saved provider secret, and scoped KMS
+Decrypt only for an actual customer-key dependency. Planning and historical
+transport do not export secret values.
+
+Destination portable-reference verification also needs DescribeSecret on the
+reviewed exact destination secret ARNs, plus exact immutable S3 reads. These
+operator-selected secret prerequisites are separate from this construct, which
+has no configured provider secret scope and grants no secret wildcard. Verify
+runtime-role use separately. STS GetCallerIdentity is an identity check, not a
+resource data grant. Source IAM, external bucket policies, secret grants and CI
+settings are operator prerequisites; this construct does not modify them.
+
+Follow the ordered [cutover runbook](../docs/deployment/customer-storage-cutover.md).

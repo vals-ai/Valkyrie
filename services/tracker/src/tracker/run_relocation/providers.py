@@ -290,10 +290,13 @@ class RelocationAWSBoundary(AWSProviderBoundary):
     ) -> None:
         run_id = run.scope.run_id
         source_bucket, destination_bucket = run.scope.original_resources.s3_bucket, run.destination_resources.s3_bucket
-        if source_bucket == destination_bucket:
-            raise LifecycleConflict("Relocation requires distinct buckets")
+        hold_only = run.location_policy == "hold_only"
+        if (source_bucket == destination_bucket) != hold_only:
+            raise LifecycleConflict("Equal buckets require explicit hold_only policy")
         copies = [item for item in request.copied_objects if item.run_id == run_id]
         history = [item for item in request.destination_versions if item.run_id == run_id]
+        if hold_only and copies:
+            raise LifecycleConflict("Hold-only run cannot claim copied source versions")
         if any(item.run_id not in request.run_ids for item in (*request.copied_objects, *request.destination_versions)):
             raise LifecycleConflict("Copy evidence is outside the exact run set")
         if len({item.source_version_id + "\0" + item.key for item in copies}) != len(copies) or len(
@@ -325,38 +328,40 @@ class RelocationAWSBoundary(AWSProviderBoundary):
         async with self.clients.with_region(request.region).s3_client() as client:
             if request.plan is None:
                 raise LifecycleConflict("Copy proof requires an immutable operation plan")
-            policy_response = await client.get_bucket_policy(
-                Bucket=source_bucket, ExpectedBucketOwner=request.source_aws_account_id
-            )
-            policy = json.loads(policy_response["Policy"])
-            expected = {
-                "Sid": "ValSmithOwnerMigration" + request.plan.identity.operation_id.hex,
-                "Effect": "Deny",
-                "Principal": "*",
-                "Action": ["s3:PutObject", "s3:DeleteObject"],
-            }
-            statements = [
-                statement for statement in policy.get("Statement", []) if statement.get("Sid") == expected["Sid"]
-            ]
-            if len(statements) != 1:
-                raise LifecycleConflict("Exact source migration fence is missing or ambiguous")
-            statement = dict(statements[0])
-            resources = statement.pop("Resource", None)
-            fence_scope = f"arn:aws:s3:::{source_bucket}/"
-            planned = {
-                f"{fence_scope}{item.scope.object_prefix}*"
-                for item in request.plan.runs
-                if item.scope.original_resources.s3_bucket == source_bucket
-            }
-            fenced = {str(item) for item in cast(list[Any], resources)} if isinstance(resources, list) else None
-            if (
-                statement != expected
-                or fenced is None
-                or not planned <= fenced
-                or any(not item.startswith(fence_scope) for item in fenced)
-            ):
-                raise LifecycleConflict("Source migration fence differs from exact operation scope")
-            source = await self._versions(client, request, source_bucket, run.scope.object_prefix, reuse_verified)
+            source: tuple[Version, ...] = ()
+            if not hold_only:
+                policy_response = await client.get_bucket_policy(
+                    Bucket=source_bucket, ExpectedBucketOwner=request.source_aws_account_id
+                )
+                policy = json.loads(policy_response["Policy"])
+                expected = {
+                    "Sid": "ValSmithOwnerMigration" + request.plan.identity.operation_id.hex,
+                    "Effect": "Deny",
+                    "Principal": "*",
+                    "Action": ["s3:PutObject", "s3:DeleteObject"],
+                }
+                statements = [
+                    statement for statement in policy.get("Statement", []) if statement.get("Sid") == expected["Sid"]
+                ]
+                if len(statements) != 1:
+                    raise LifecycleConflict("Exact source migration fence is missing or ambiguous")
+                statement = dict(statements[0])
+                resources = statement.pop("Resource", None)
+                fence_scope = f"arn:aws:s3:::{source_bucket}/"
+                planned = {
+                    f"{fence_scope}{item.scope.object_prefix}*"
+                    for item in request.plan.runs
+                    if item.scope.original_resources.s3_bucket == source_bucket
+                }
+                fenced = {str(item) for item in cast(list[Any], resources)} if isinstance(resources, list) else None
+                if (
+                    statement != expected
+                    or fenced is None
+                    or not planned <= fenced
+                    or any(not item.startswith(fence_scope) for item in fenced)
+                ):
+                    raise LifecycleConflict("Source migration fence differs from exact operation scope")
+                source = await self._versions(client, request, source_bucket, run.scope.object_prefix, reuse_verified)
             destination = await self._versions(
                 client, request, destination_bucket, run.scope.object_prefix, reuse_verified
             )

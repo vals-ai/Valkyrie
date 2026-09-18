@@ -78,7 +78,31 @@ class CustomerStorageTest(unittest.TestCase):
             and "s3:prefix" not in json.dumps(item.get("Condition", {}))
         ]
         self.assertEqual(len(unrestricted_owner_lists), 1)
+        self.assertTrue(
+            {"s3:ListBucketVersions", "s3:ListBucketMultipartUploads"} <= actions(unrestricted_owner_lists[0])
+        )
         self.assertEqual(unrestricted_owner_lists[0]["Condition"]["StringEquals"]["s3:ResourceAccount"], ACCOUNT)
+
+    def test_lifecycle_has_scoped_destination_runtime_and_inspection(self) -> None:
+        _, _, statements = role(synth(), "ValSmithLifecycle-prod")
+        allowed = [item for item in statements if item["Effect"] == "Allow"]
+        required = {
+            "logs:CreateLogGroup",
+            "logs:CreateLogStream",
+            "logs:PutLogEvents",
+            "logs:PutRetentionPolicy",
+            "logs:Unmask",
+        }
+        for action in required:
+            matches = [item for item in allowed if action in actions(item)]
+            self.assertEqual(len(matches), 1, action)
+            scope = json.dumps(matches[0]["Resource"])
+            self.assertIn("/valkyrie/benchmarks-prod/????????-????-????-????-????????????", scope)
+            self.assertIn(ACCOUNT, scope)
+            self.assertIn(REGION, scope)
+        ownership = [item for item in allowed if "s3:GetBucketOwnershipControls" in actions(item)]
+        self.assertEqual(len(ownership), 1)
+        self.assertEqual(ownership[0]["Condition"]["StringEquals"]["s3:ResourceAccount"], ACCOUNT)
 
     def test_backup_can_use_only_the_retained_vault_key(self) -> None:
         template = synth()

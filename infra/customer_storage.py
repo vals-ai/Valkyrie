@@ -257,6 +257,8 @@ class CustomerStorage(Construct):
                 "s3:GetBucketTagging",
                 "s3:PutBucketTagging",
                 "s3:ListBucket",
+                "s3:ListBucketVersions",
+                "s3:ListBucketMultipartUploads",
             ],
             [self.owner_arn],
         )
@@ -374,6 +376,7 @@ class CustomerStorage(Construct):
             role,
             [
                 "s3:GetBucketLocation",
+                "s3:GetBucketOwnershipControls",
                 "s3:GetBucketTagging",
                 "s3:GetBucketVersioning",
                 "s3:GetBucketPolicy",
@@ -466,7 +469,17 @@ class CustomerStorage(Construct):
         )
         role.add_to_policy(
             aws_iam.PolicyStatement(
-                actions=["logs:DeleteLogGroup", "logs:DescribeLogStreams", "logs:GetLogEvents", "logs:FilterLogEvents"],
+                actions=[
+                    "logs:DeleteLogGroup",
+                    "logs:DescribeLogStreams",
+                    "logs:GetLogEvents",
+                    "logs:FilterLogEvents",
+                    "logs:Unmask",
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:PutRetentionPolicy",
+                ],
                 resources=[
                     cdk.Stack.of(self).format_arn(
                         service="logs",
