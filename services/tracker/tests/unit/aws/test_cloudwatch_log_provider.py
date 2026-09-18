@@ -6,6 +6,7 @@ Run: uv run pytest services/tracker/tests/unit/aws/test_cloudwatch_log_provider.
 from __future__ import annotations
 
 from collections import deque
+from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
@@ -30,11 +31,11 @@ class MockLogsClient:
         self.filter_requests: list[dict[str, Any]] = []
         self.get_requests: list[dict[str, Any]] = []
 
-    def filter_log_events(self, **request: Any) -> dict[str, Any]:
+    async def filter_log_events(self, **request: Any) -> dict[str, Any]:
         self.filter_requests.append(request)
         return self._response()
 
-    def get_log_events(self, **request: Any) -> dict[str, Any]:
+    async def get_log_events(self, **request: Any) -> dict[str, Any]:
         self.get_requests.append(request)
         return self._response()
 
@@ -51,8 +52,9 @@ class MockClients:
     def __init__(self, logs_client: MockLogsClient) -> None:
         self.logs_client = logs_client
 
-    def cloudwatch_logs_client(self) -> MockLogsClient:
-        return self.logs_client
+    @asynccontextmanager
+    async def cloudwatch_logs_async_client(self) -> AsyncGenerator[MockLogsClient]:
+        yield self.logs_client
 
 
 class FailingClients:
@@ -61,7 +63,7 @@ class FailingClients:
     def __init__(self, error: BaseException) -> None:
         self.error = error
 
-    def cloudwatch_logs_client(self) -> MockLogsClient:
+    def cloudwatch_logs_async_client(self) -> MockLogsClient:
         raise self.error
 
 
