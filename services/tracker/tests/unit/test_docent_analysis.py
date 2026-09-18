@@ -5,6 +5,7 @@ Run: uv run pytest tests/unit/test_docent_analysis.py
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -25,7 +26,7 @@ def patch_engine(monkeypatch: pytest.MonkeyPatch, database_session: Session) -> 
 class TestInvokeAnalyzer:
     """Docent analyzer status transitions and result URLs."""
 
-    def test_invoke_analyzer_success_sets_done_and_url(
+    async def test_invoke_analyzer_success_sets_done_and_url(
         self,
         monkeypatch: pytest.MonkeyPatch,
         database_session: Session,
@@ -42,7 +43,7 @@ class TestInvokeAnalyzer:
 
         monkeypatch.setattr("tracker.docent_analysis.invoke_lambda", invoke_lambda_success)
 
-        result = invoke_analyzer(
+        result = await invoke_analyzer(
             benchmark_id=example_benchmark_object.id,
             lambda_function="analysis-foo",
             payload={"benchmark_id": "x"},
@@ -54,8 +55,10 @@ class TestInvokeAnalyzer:
         assert example_benchmark_object.docent_reading_url == "https://x.test/r/123"
         assert result == lambda_response
 
-    def test_invoke_analyzer_failure_sets_error_and_raises(
+    @pytest.mark.parametrize("error", [RuntimeError("lambda exploded"), asyncio.CancelledError()])
+    async def test_invoke_analyzer_failure_sets_error_and_raises(
         self,
+        error: BaseException,
         monkeypatch: pytest.MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
@@ -65,12 +68,12 @@ class TestInvokeAnalyzer:
         database_session.commit()
 
         async def boom(*_args: object, **_kwargs: object) -> None:
-            raise RuntimeError("lambda exploded")
+            raise error
 
         monkeypatch.setattr("tracker.docent_analysis.invoke_lambda", boom)
 
-        with pytest.raises(RuntimeError, match="lambda exploded"):
-            invoke_analyzer(
+        with pytest.raises(type(error)):
+            await invoke_analyzer(
                 benchmark_id=example_benchmark_object.id,
                 lambda_function="analysis-foo",
                 payload={"benchmark_id": "x"},
@@ -81,7 +84,7 @@ class TestInvokeAnalyzer:
         assert example_benchmark_object.docent_reading_status == DocentReadingStatus.ERROR
         assert example_benchmark_object.docent_reading_url is None
 
-    def test_invoke_analyzer_no_url_still_marks_done(
+    async def test_invoke_analyzer_no_url_still_marks_done(
         self,
         monkeypatch: pytest.MonkeyPatch,
         database_session: Session,
@@ -97,7 +100,7 @@ class TestInvokeAnalyzer:
 
         monkeypatch.setattr("tracker.docent_analysis.invoke_lambda", invoke_lambda_without_url)
 
-        invoke_analyzer(
+        await invoke_analyzer(
             benchmark_id=example_benchmark_object.id,
             lambda_function="analysis-foo",
             payload={},
