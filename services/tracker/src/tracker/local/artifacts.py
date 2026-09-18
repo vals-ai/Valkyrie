@@ -20,13 +20,14 @@ async def upload_local_agent_artifacts(sandbox: Sandbox, content: bytes) -> None
             path = f"/bundle/{member.filename.rstrip('/')}"
             quoted_path = shlex.quote(path)
             if member.is_dir():
-                result = await sandbox.exec(f"mkdir -p {quoted_path}")
+                command = f"mkdir -p {quoted_path}"
             else:
                 data = await finish_cleanup(asyncio.create_task(asyncio.to_thread(archive.read, member)))
                 await sandbox.upload_file(path, data)
-                # Preserve executability while discarding special permission bits.
-                mode = 0o755 if member.external_attr >> 16 & 0o111 else 0o644
-                result = await sandbox.exec(f"chmod {mode:o} {quoted_path}")
+                if not member.external_attr >> 16 & 0o111:
+                    continue
+                command = f"chmod 755 {quoted_path}"
+            result = await sandbox.exec(command)
             if result.exit_code:
                 raise SandboxError(f"Failed to prepare local agent file {member.filename!r}")
     finally:

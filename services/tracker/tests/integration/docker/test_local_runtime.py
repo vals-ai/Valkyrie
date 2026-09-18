@@ -25,6 +25,7 @@ async def test_local_runtime_transfers_and_executes_frozen_agent(tmp_path: Path)
             "local-test/contract.yaml",
             "name: local-test\ninstall_cmd: ''\nrun_cmd: /bundle/local-test/run.sh {problem_statement_path}\n",
         )
+        archive.writestr("local-test/empty/", "")
         executable = zipfile.ZipInfo("local-test/run.sh")
         executable.external_attr = 0o100755 << 16
         archive.writestr(executable, '#!/bin/sh\nprintf "local-result" > /tmp/result.txt\n')
@@ -41,7 +42,10 @@ async def test_local_runtime_transfers_and_executes_frozen_agent(tmp_path: Path)
             ) as sandbox:
                 sandbox_id = sandbox.id
                 await upload_agent_artifacts(sandbox, contract, benchmark_id, runtime.objects)
-                result = await sandbox.exec(contract.run_cmd)
+                result = await sandbox.exec(
+                    "test -d /bundle/local-test/empty && "
+                    "test ! -x /bundle/local-test/contract.yaml && " + contract.run_cmd
+                )
                 assert result.exit_code == 0
                 assert await sandbox.download_file("/tmp/result.txt") == b"local-result"
             assert sandbox_id not in [sandbox.id async for sandbox in provider.list_sandboxes(SandboxQuery(labels={}))]
