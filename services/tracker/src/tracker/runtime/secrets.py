@@ -29,9 +29,6 @@ class SecretStore(Protocol):
 
 async def resolve_secrets(secrets: dict[str, str], secret_store: SecretStore) -> dict[str, str]:
     """Resolve environment-variable secret references to their current values."""
-    if not secrets:
-        return {}
-
     resolved: dict[str, str] = {}
     for env_name, secret_name in secrets.items():
         secret_value = await secret_store.get(secret_name)

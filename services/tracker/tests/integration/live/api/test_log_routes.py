@@ -7,6 +7,7 @@ Covers real CloudWatch writes followed by aggregate, task, time-filtered, and st
 
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -90,7 +91,7 @@ def test_log_routes_round_trip_real_cloudwatch(
     log_group_created = False
 
     try:
-        await log_sink.create_benchmark(str(benchmark.id), retention_days=1)
+        asyncio.run(log_sink.create_benchmark(str(benchmark.id), retention_days=1))
         log_group_created = True
         log_sink.write(
             f"{benchmark.id}:{task_log_stream_name(first_task.task_id, first_task.started_at)}",

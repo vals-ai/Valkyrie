@@ -49,10 +49,7 @@ class RuntimeServices(ABC):
         if not self.sandbox_provider_secret_name:
             raise InvalidSandboxConfigurationError("Sandbox access requires a provider secret name")
 
-        return await self._load_sandbox_provider_config(self.sandbox_provider_secret_name)
-
-    async def _load_sandbox_provider_config(self, secret_name: str) -> SandboxProviderConfig:
-        secret = await self.secrets.get(secret_name)
+        secret = await self.secrets.get(self.sandbox_provider_secret_name)
         return sandbox_provider_config_from_secret(secret, self.sandbox_provider)
 
     @asynccontextmanager

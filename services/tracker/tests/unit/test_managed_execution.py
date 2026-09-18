@@ -341,7 +341,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         assert retention_days == aws_runtime.resources.log_retention_days
         calls.append("logs")
 
-    async def fetch_provider(runtime: RuntimeServices, _name: str) -> SandboxProviderConfig:
+    async def fetch_provider(runtime: RuntimeServices) -> SandboxProviderConfig:
         assert runtime.secrets is not aws_runtime.clients
         calls.append("provider-secret")
         return provider_config
@@ -375,7 +375,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
 
     monkeypatch.setattr("tracker.aws.services.deployment_aws_runtime", deployment_runtime)
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
-    monkeypatch.setattr("tracker.runtime.services.RuntimeServices._load_sandbox_provider_config", fetch_provider)
+    monkeypatch.setattr("tracker.runtime.services.RuntimeServices.get_sandbox_provider_config", fetch_provider)
     monkeypatch.setattr("tracker.aws.services.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.aws.services.dry_run_lambda", dry_run)
@@ -443,7 +443,7 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         calls.append("lambda")
 
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
-    monkeypatch.setattr("tracker.runtime.services.RuntimeServices._load_sandbox_provider_config", fetch_provider)
+    monkeypatch.setattr("tracker.runtime.services.RuntimeServices.get_sandbox_provider_config", fetch_provider)
     monkeypatch.setattr("tracker.aws.services.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get_webhook_secret)
     monkeypatch.setattr("tracker.aws.services.dry_run_lambda", dry_run)
