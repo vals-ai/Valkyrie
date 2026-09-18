@@ -171,7 +171,10 @@ def _observe_task_retry(attempt: SandboxRecoveryAttempt, exc: BaseException) -> 
     """Emit the retry telemetry the Tenacity before_sleep hook owned before recovery
     moved into the benchmark-service client."""
     error_class = type(exc).__name__
-    with observability_span("task.retry", attempt=attempt.number, error_class=error_class):
+    failure_category = classify_failure(exc).value
+    with observability_span(
+        "task.retry", attempt=attempt.number, error_class=error_class, failure_category=failure_category
+    ):
         logger.warning(
             "retry.before_sleep",
             extra={
@@ -180,9 +183,13 @@ def _observe_task_retry(attempt: SandboxRecoveryAttempt, exc: BaseException) -> 
                 "attempt": attempt.number,
                 "idle_for": _SANDBOX_RETRY_DELAY_SECONDS,
                 "error_class": error_class,
+                "failure_category": failure_category,
             },
         )
-        incr(f"{_TASK_RETRY_METRIC}.retry", tags={"error_class": error_class})
+        incr(
+            f"{_TASK_RETRY_METRIC}.retry",
+            tags={"error_class": error_class, "failure_category": failure_category},
+        )
 
 
 class TrackedTaskStatus(str, Enum):
