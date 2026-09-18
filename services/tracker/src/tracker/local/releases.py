@@ -16,7 +16,7 @@ from tracker.executor.release_control import (
     ReleaseControlError,
     register_release,
     promote_release,
-    get_executor_admission,
+    lock_executor_admission,
     select_active_release,
 )
 from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader
@@ -54,9 +54,7 @@ def initialize_release(
 ) -> ExecutorRelease:
     """Verify and activate a content-addressed artifact, preserving prior releases."""
     reader = FilesystemExecutorArtifactReader(release_root)
-    admission = get_executor_admission(session, for_update=True)
-    if admission.maintenance_target_sha is not None:
-        raise ReleaseControlError("Cannot initialize a local release during executor maintenance")
+    admission = lock_executor_admission(session)
     if admission.release_id is not None and not replace_active:
         active = select_active_release(session)
         with reader.open(active.artifact_uri) as source:
