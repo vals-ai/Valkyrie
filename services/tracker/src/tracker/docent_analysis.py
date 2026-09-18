@@ -84,15 +84,9 @@ async def analyze_event_stream(
     )
 
     while not invoke_task.done():
-        try:
-            await asyncio.wait_for(asyncio.shield(invoke_task), timeout=10.0)
-        except asyncio.TimeoutError:
+        done, _ = await asyncio.wait({invoke_task}, timeout=10.0)
+        if not done:
             yield "event: heartbeat\ndata: {}\n\n"
-        except Exception:
-            # Real error from the invocation — break out and let the block below
-            # format the `error` event. Without this, the exception escapes the
-            # generator and FastAPI logs "response already started".
-            break
 
     try:
         result = await invoke_task
