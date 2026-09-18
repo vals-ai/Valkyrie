@@ -141,7 +141,7 @@ async def force_stop_sandboxes(
     benchmark_service = benchmark_row.benchmark_service()
     try:
         provider = benchmark_service.get_sandbox_provider(
-            fetch_sandbox_provider_config(
+            await fetch_sandbox_provider_config(
                 sandbox_provider_secret_name, SecretsManagerStore(aws_runtime.clients), sandbox_provider
             )
         )
