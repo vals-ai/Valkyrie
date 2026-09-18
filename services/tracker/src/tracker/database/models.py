@@ -32,6 +32,7 @@ from sqlmodel import (
 
 from tracker.aws.runtime import AWSResources
 from tracker.database.utils import has_field_changed
+from tracker.runtime.log_history_reference import LogHistoryReference
 from executor_protocol import ExecutorDispatchStatus as ExecutorDispatchStatus
 
 if TYPE_CHECKING:
@@ -225,6 +226,23 @@ class FinalEvaluation(SQLModel, table=True):
         return fetch_evaluation_results(self.benchmark, session, self.org_id)
 
 
+class LogHistoryReferenceType(TypeDecorator[LogHistoryReference]):
+    impl = JSON(none_as_null=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: LogHistoryReference | None, dialect: Dialect) -> dict[str, Any] | None:
+        if value is None:
+            return None
+
+        return LogHistoryReference.model_validate(value).model_dump(mode="json")
+
+    def process_result_value(self, value: dict[str, Any] | None, dialect: Dialect) -> LogHistoryReference | None:
+        if value is None:
+            return None
+
+        return LogHistoryReference.model_validate(value)
+
+
 class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
     """
     Hook for converting benchmark arguments to an object and back again.
@@ -356,6 +374,9 @@ class Benchmark(SQLModel, table=True):
     finished_at: datetime | None = None
     status: BenchmarkStatus = Field(default=BenchmarkStatus.IN_PROGRESS)
     label: str | None = Field(default=None, index=True)
+    log_history: LogHistoryReference | None = Field(
+        default=None, sa_column=Column(LogHistoryReferenceType(), nullable=True)
+    )
     aws_managed: bool = Field(default=False, nullable=False)
     executor_release_id: str | None = Field(default=None, foreign_key="executorrelease.id", index=True)
     current_execution_release_id: str | None = Field(default=None, foreign_key="executorrelease.id", index=True)

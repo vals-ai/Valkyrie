@@ -70,7 +70,7 @@ def _legacy_task_log_stream_name(task_id: str, started_at: datetime) -> str:
     return f"{_legacy_sanitize_log_stream_name(task_id)}_{suffix}"
 
 
-def _task_log_stream_names(reference: TaskLogReference) -> list[str]:
+def task_log_stream_names(reference: TaskLogReference) -> list[str]:
     canonical_name = task_log_stream_name(reference.task_id, reference.started_at)
     legacy_name = _legacy_task_log_stream_name(reference.task_id, reference.started_at)
     if reference.siblings is None:
@@ -201,13 +201,13 @@ class CloudWatchLogProvider(LogProvider):
     ) -> LogPage:
         """Return one filtered page for a run or one task."""
         if isinstance(reference, TaskLogReference):
-            stream_names = _task_log_stream_names(reference)
+            stream_names = task_log_stream_names(reference)
             task_id = reference.task_id
             stream_task_ids = None
         else:
             stream_names = None
             task_id = None
-            stream_task_ids = _stream_task_ids(reference)
+            stream_task_ids = run_stream_task_ids(reference)
 
         response = await self._filter_events(
             str(reference.run_id),
@@ -237,7 +237,7 @@ class CloudWatchLogProvider(LogProvider):
         """Yield a task stream from its current start position, then poll for new events."""
         client = await self._get_client()
         log_group_name = benchmark_log_group_name(self._log_group, str(reference.run_id))
-        stream_names = _task_log_stream_names(reference)
+        stream_names = task_log_stream_names(reference)
         stream_name = stream_names[0]
         legacy_stream_name = stream_names[1] if len(stream_names) > 1 else None
         cursor: str | None = None
@@ -254,9 +254,9 @@ class CloudWatchLogProvider(LogProvider):
             if cursor is not None:
                 request["nextToken"] = cursor
             elif start_time is not None:
-                request["startTime"] = _epoch_milliseconds(start_time)
+                request["startTime"] = epoch_milliseconds(start_time)
             if end_time is not None:
-                request["endTime"] = _epoch_milliseconds(end_time) + 1
+                request["endTime"] = epoch_milliseconds(end_time) + 1
 
             response = await self._request(client.get_log_events, request)
             if response is None:
@@ -318,9 +318,9 @@ class CloudWatchLogProvider(LogProvider):
         if stream_names:
             request["logStreamNames"] = stream_names
         if start_time is not None:
-            request["startTime"] = _epoch_milliseconds(start_time)
+            request["startTime"] = epoch_milliseconds(start_time)
         if end_time is not None:
-            request["endTime"] = _epoch_milliseconds(end_time)
+            request["endTime"] = epoch_milliseconds(end_time)
         if cursor is not None:
             request["nextToken"] = cursor
 
@@ -384,7 +384,7 @@ class CloudWatchLogProvider(LogProvider):
         return LogPage(events=events, next_cursor=next_cursor)
 
 
-def _epoch_milliseconds(value: datetime) -> int:
+def epoch_milliseconds(value: datetime) -> int:
     return floor(value.timestamp() * 1_000)
 
 
@@ -436,7 +436,7 @@ def _parse_events(
     return events
 
 
-def _stream_task_ids(reference: RunLogReference) -> dict[str, str | None]:
+def run_stream_task_ids(reference: RunLogReference) -> dict[str, str | None]:
     stream_task_ids: dict[str, str | None] = {}
     for task in reference.tasks:
         for stream_name in (
