@@ -26,6 +26,16 @@ class TaskStatus(str, Enum):
     ERROR = "ERROR"
 
 
+class FailureCategory(str, Enum):
+    """Coarse classification of a task or run failure."""
+
+    INFRASTRUCTURE = "infrastructure"
+    BENCHMARK_SERVICE = "benchmark_service"
+    AGENT = "agent"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+
+
 class BenchmarkStatus(str, Enum):
     """Lifecycle states for a benchmark run."""
 
@@ -268,6 +278,7 @@ class FinalViewResponse(ResponseModel):
     average_task_breakdown: AverageTaskBreakdown | None
     evaluation_results: dict[str, dict[str, Any]] | None
     task_errors: dict[str, str] | None
+    task_failure_categories: dict[str, FailureCategory] | None = None
 
 
 class S3UploadResultsResponse(ResponseModel):

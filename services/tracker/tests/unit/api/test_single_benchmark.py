@@ -17,6 +17,7 @@ from tests.factories import make_error_result, make_task
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import (
     Benchmark,
+    FailureCategory,
     FinalEvaluation,
     Org,
     TaskStatus,
@@ -132,7 +133,15 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
     database_session.add_all(
         [
             make_error_result(literal_task, "old failure", now - timedelta(minutes=1)),
-            make_error_result(literal_task, "latest failure", now),
+            make_error_result(
+                literal_task,
+                "latest failure",
+                now,
+                producer="benchmark_service",
+                operation="stream",
+                error_type="BenchmarkServiceError",
+                category=FailureCategory.BENCHMARK_SERVICE,
+            ),
             make_error_result(
                 literal_task,
                 "scheduled retry",
@@ -163,6 +172,9 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
     assert [task["status"] for task in sorted_body["tasks"]] == ["ERROR", "ERROR", "FINISHED"]
     literal_row = next(task for task in sorted_body["tasks"] if task["task_id"] == literal_task.task_id)
     assert literal_row["error_message"] == "latest failure"
+    assert literal_row["failure_category"] == "benchmark_service"
+    other_row = next(task for task in sorted_body["tasks"] if task["task_id"] == other_error.task_id)
+    assert other_row["failure_category"] is None
     assert literal_search_response.status_code == 200
     assert literal_search_response.json()["total_count"] == 1
     assert literal_search_response.json()["tasks"][0]["task_id"] == "literal_%_match"

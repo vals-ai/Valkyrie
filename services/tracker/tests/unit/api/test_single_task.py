@@ -20,6 +20,7 @@ from tests.factories import make_error_result, make_evaluation_result, make_task
 from tracker.database.models import (
     AgentCausedExitReason,
     Benchmark,
+    FailureCategory,
     Org,
     TaskStatus,
 )
@@ -74,7 +75,15 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
                 exit_reason=AgentCausedExitReason.TIMEOUT,
             ),
             make_error_result(error_task, "old failure", now - timedelta(minutes=1)),
-            make_error_result(error_task, "latest failure", now),
+            make_error_result(
+                error_task,
+                "latest failure",
+                now,
+                producer="tracker",
+                operation="process_task",
+                error_type="AgentRunFailedError",
+                category=FailureCategory.AGENT,
+            ),
             make_error_result(
                 error_task,
                 "scheduled retry",
@@ -108,6 +117,7 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     assert finished_response.json()["error_message"] is None
     assert error_response.status_code == 200
     assert error_response.json()["error_message"] == "latest failure"
+    assert error_response.json()["failure_category"] == "agent"
     assert error_response.json()["evaluation_result"] is None
     assert pending_response.status_code == 200
     assert pending_response.json()["error_message"] is None

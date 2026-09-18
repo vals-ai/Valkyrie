@@ -98,6 +98,16 @@ class AgentCausedExitReason(str, Enum):
     OS_KILLED = "OS_KILLED"
 
 
+class FailureCategory(str, Enum):
+    """Coarse classification of a task or run failure, decided where the failure is caught."""
+
+    INFRASTRUCTURE = "infrastructure"
+    BENCHMARK_SERVICE = "benchmark_service"
+    AGENT = "agent"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+
+
 class RetryMode(str, Enum):
     AUTO = "auto"
     FROM_SCRATCH = "from_scratch"
@@ -362,8 +372,15 @@ class Benchmark(SQLModel, table=True):
         return fetch_evaluation_results(self.id, session, self.org_id)
 
     def fetch_tasks_with_errors(self, session: Session) -> dict[str, str] | None:
+        errors = self.fetch_task_failures(session)
+        if errors is None:
+            return None
+        return {task_id: message for task_id, (message, _category) in errors.items()}
+
+    def fetch_task_failures(self, session: Session) -> dict[str, tuple[str, FailureCategory | None]] | None:
+        """Latest terminal error message and category keyed by task ID for errored tasks."""
         error_rows = session.exec(
-            select(Task.task_id, ErrorResult.error_message)
+            select(Task.task_id, col(ErrorResult.error_message), col(ErrorResult.category))
             .outerjoin(
                 ErrorResult,
                 (col(ErrorResult.task) == col(Task.id))
@@ -379,9 +396,9 @@ class Benchmark(SQLModel, table=True):
         if not error_rows:
             return None
 
-        errors_by_task_id: dict[str, str] = {}
-        for task_id, error_message in error_rows:
-            errors_by_task_id.setdefault(task_id, error_message or "No error message was provided")
+        errors_by_task_id: dict[str, tuple[str, FailureCategory | None]] = {}
+        for task_id, error_message, category in error_rows:
+            errors_by_task_id.setdefault(task_id, (error_message or "No error message was provided", category))
 
         return errors_by_task_id
 
@@ -631,6 +648,7 @@ class ErrorResult(ResultBase, table=True):
     operation: str | None = Field(default=None)
     error_type: str | None = Field(default=None)
     cause_code: str | None = Field(default=None)
+    category: FailureCategory | None = Field(default=None)
     retry_scheduled: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),

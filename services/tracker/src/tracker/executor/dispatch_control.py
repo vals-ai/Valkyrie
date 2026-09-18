@@ -17,6 +17,7 @@ from tracker.database.models import (
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
+    FailureCategory,
     Task,
     TaskStatus,
 )
@@ -170,6 +171,7 @@ def _terminalize_dispatch_tasks(
     operation: str,
     error_type: str,
     cause_code: str | None,
+    category: FailureCategory,
     finished_at: datetime,
 ) -> None:
     failed_task_attempts = and_(
@@ -221,6 +223,7 @@ def _terminalize_dispatch_tasks(
                 operation=operation,
                 error_type=error_type,
                 cause_code=cause_code,
+                category=category,
             )
         )
         task.status = TaskStatus.ERROR
@@ -238,6 +241,7 @@ def record_dispatch_failure(
     producer: str,
     operation: str,
     error_type: str,
+    category: FailureCategory,
     cause_code: str | None = None,
     failure_reason: str | None = None,
     dispatch_status: ExecutorDispatchStatus = ExecutorDispatchStatus.RUNNING,
@@ -284,6 +288,7 @@ def record_dispatch_failure(
         operation=operation,
         error_type=error_type,
         cause_code=cause_code,
+        category=category,
         finished_at=now,
     )
     dispatch.status = ExecutorDispatchStatus.FAILED
@@ -348,6 +353,7 @@ def reconcile_expired_dispatches(session: Session) -> int:
             operation="dispatch_reconciliation",
             error_type=("ExecutorDispatchLeaseExpired" if is_running else "ExecutorDispatchClaimDeadlineExpired"),
             cause_code=failure_reason,
+            category=FailureCategory.INFRASTRUCTURE,
             failure_reason=failure_reason,
             dispatch_status=dispatch_status,
             only_if_lease_expired=is_running,
@@ -413,6 +419,7 @@ def resolve_enqueue_failure(
         operation="enqueue",
         error_type="ExecutorDispatchEnqueueError",
         cause_code=None,
+        category=FailureCategory.INFRASTRUCTURE,
         finished_at=now,
     )
     session.commit()

@@ -46,6 +46,7 @@ from tracker.database.models import (
     ErrorResult,
     ExecutorDispatch,
     EvaluationResult,
+    FailureCategory,
     Org,
     Task,
     TaskBreakdown,
@@ -72,6 +73,7 @@ from tracker.types import (
     StartBenchmarkRequest,
 )
 
+from tracker.utils.failure_classification import classify_failure
 from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 
 logger = get_logger(__name__)
@@ -154,6 +156,7 @@ def _record_failure_before_retry(
                 producer="sandbox_provider",
                 operation="setup",
                 error_type=type(exc).__name__,
+                category=FailureCategory.INFRASTRUCTURE,
                 retry_scheduled=True,
                 failed_attempt_number=failed_attempt_number,
             )
@@ -297,6 +300,7 @@ class TrackedTask:
                         producer="sandbox_provider" if isinstance(e, SandboxSetupError) else "tracker",
                         operation="setup" if isinstance(e, SandboxSetupError) else "process_task",
                         error_type=type(e).__name__,
+                        category=classify_failure(e),
                         expected_started_at=task_row.started_at,
                         authority=self._authority,
                     )
@@ -737,6 +741,7 @@ async def _process_task_attempt(
         *,
         producer: str,
         operation: str,
+        category: FailureCategory,
         cause_code: str | None = None,
     ) -> dict[str, dict[str, Any] | None]:
         with error_span(
@@ -748,6 +753,7 @@ async def _process_task_attempt(
             operation=operation,
             error_type=type(exc).__name__,
             cause_code=cause_code or "",
+            failure_category=category.value,
         ):
             logger.error(
                 "Task execution failed",
@@ -759,8 +765,10 @@ async def _process_task_attempt(
                     "operation": operation,
                     "error_type": type(exc).__name__,
                     "cause_code": cause_code or "",
+                    "failure_category": category.value,
                 },
             )
+            sentry_sdk.set_tag("failure_category", category.value)
             capture_exception(exc)
         with open_task_session() as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
@@ -771,6 +779,7 @@ async def _process_task_attempt(
                 producer=producer,
                 operation=operation,
                 error_type=type(exc).__name__,
+                category=category,
                 cause_code=cause_code,
                 expected_started_at=attempt_started_at,
                 expected_status=expected_failure_status,
@@ -814,6 +823,7 @@ async def _process_task_attempt(
                 terminal_error,
                 producer="benchmark_service",
                 operation="websocket_connect",
+                category=FailureCategory.BENCHMARK_SERVICE,
                 cause_code="websocket_dns_resolution",
             )
         except Exception as resume_error:
@@ -827,6 +837,7 @@ async def _process_task_attempt(
                 terminal_error,
                 producer="benchmark_service",
                 operation="resume_evaluation",
+                category=FailureCategory.BENCHMARK_SERVICE,
             )
 
         finished_at = time.perf_counter()
@@ -1244,6 +1255,7 @@ async def _process_task_attempt(
             error_message,
             producer="sandbox_provider",
             operation="sandbox_recovery",
+            category=FailureCategory.INFRASTRUCTURE,
         )
     except OutputArtifactError as e:
         if task_is_stopped():
@@ -1257,6 +1269,7 @@ async def _process_task_attempt(
             error_message,
             producer="output_artifact",
             operation="upload_output_artifacts",
+            category=FailureCategory.INFRASTRUCTURE,
         )
     except BenchmarkServiceWebSocketDNSResolutionError as e:
         if task_is_stopped():
@@ -1270,6 +1283,7 @@ async def _process_task_attempt(
             error_message,
             producer="benchmark_service",
             operation="websocket_connect",
+            category=FailureCategory.BENCHMARK_SERVICE,
             cause_code="websocket_dns_resolution",
         )
     except ConnectionClosedError as e:
@@ -1290,6 +1304,7 @@ async def _process_task_attempt(
             error_message,
             producer="benchmark_service",
             operation="websocket",
+            category=FailureCategory.BENCHMARK_SERVICE,
             cause_code="websocket_connection_closed",
         )
     except BenchmarkServiceStreamError as e:
@@ -1307,6 +1322,7 @@ async def _process_task_attempt(
             error_message,
             producer="benchmark_service",
             operation="websocket",
+            category=FailureCategory.BENCHMARK_SERVICE,
             cause_code="websocket_connection_closed",
         )
     except ValidationError as e:
@@ -1323,6 +1339,7 @@ async def _process_task_attempt(
             error_message,
             producer="benchmark_service",
             operation="decode_task_response",
+            category=FailureCategory.BENCHMARK_SERVICE,
             cause_code="incompatible_response",
         )
     except InvalidStatus as e:
@@ -1336,6 +1353,7 @@ async def _process_task_attempt(
             error_message,
             producer="benchmark_service",
             operation="websocket_connect",
+            category=FailureCategory.BENCHMARK_SERVICE,
             cause_code="websocket_http_rejected",
         )
     except BenchmarkServiceError as e:
@@ -1356,6 +1374,7 @@ async def _process_task_attempt(
             error_message,
             producer="benchmark_service",
             operation="request",
+            category=FailureCategory.BENCHMARK_SERVICE,
         )
     except Exception as e:
         if task_is_stopped():
@@ -1371,6 +1390,7 @@ async def _process_task_attempt(
             error_message,
             producer="tracker",
             operation="process_task",
+            category=classify_failure(e),
         )
     finally:
         if evaluation_lock is not None:
@@ -1385,6 +1405,7 @@ def commit_task_error(
     producer: str,
     operation: str,
     error_type: str,
+    category: FailureCategory,
     authority: ExecutionAuthority,
     cause_code: str | None = None,
     expected_started_at: datetime | None = None,
@@ -1399,6 +1420,7 @@ def commit_task_error(
             operation=operation,
             error_type=error_type,
             cause_code=cause_code,
+            category=category,
         )
     )
     return _commit_task_status(

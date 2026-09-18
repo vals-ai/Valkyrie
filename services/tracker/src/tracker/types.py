@@ -26,6 +26,7 @@ from tracker.database.models import (
     BenchmarkArguments,
     BenchmarkStatus,
     DocentReadingStatus,
+    FailureCategory,
     FinalEvaluation,
     TaskStatus,
 )
@@ -214,6 +215,7 @@ class FinalViewResponse(BaseModel):
     average_task_breakdown: AverageTaskBreakdown | None
     evaluation_results: dict[str, dict[str, Any]] | None
     task_errors: dict[str, str] | None
+    task_failure_categories: dict[str, FailureCategory] | None = None
 
 
 class S3UploadResultsResponse(BaseModel):
@@ -475,6 +477,7 @@ class TaskSummary(BaseModel):
     started_at: datetime
     finished_at: datetime | None
     error_message: str | None = None
+    failure_category: FailureCategory | None = None
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:
@@ -499,6 +502,7 @@ class SingleTaskResponse(BaseModel):
     started_at: datetime
     finished_at: datetime | None
     error_message: str | None
+    failure_category: FailureCategory | None
     evaluation_result: dict[str, Any] | None
     agent_caused_exit_reason: str | None
 
