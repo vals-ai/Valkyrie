@@ -81,16 +81,14 @@ def activate_release(
     session: Session,
     candidate: ExecutorRelease,
     *,
-    expected_bucket: str | None = None,
-    expected_prefix: str | None = None,
+    expected_bucket: str,
+    expected_prefix: str,
     artifact_reader: ExecutorArtifactReader,
 ) -> ExecutorRelease:
     """Create-or-match, verify, promote, and assert one immutable release."""
     _validate_release_manifest(candidate)
     try:
-        if expected_bucket is not None or expected_prefix is not None:
-            validate_executor_artifact_uri(candidate.artifact_uri, expected_bucket or "", expected_prefix or "")
-        artifact_reader.validate(candidate.artifact_uri)
+        validate_executor_artifact_uri(candidate.artifact_uri, expected_bucket, expected_prefix)
     except ValueError as error:
         raise ReleaseControlError(str(error)) from error
 
@@ -129,9 +127,13 @@ def verify_release_artifact(
     release = _get_release(session, release_id)
     if release.status == ExecutorReleaseStatus.RETIRED:
         raise ReleaseControlError(f"Retired executor release {release_id!r} cannot be verified")
+    parsed = urlparse(release.artifact_uri)
+    if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.lstrip("/"):
+        raise ReleaseControlError("Executor artifact URI must use s3://bucket/key")
+
     digest = hashlib.sha256()
     artifact_bytes = 0
-    with artifact_reader.open(release.artifact_uri) as body:
+    with artifact_reader.open(parsed.netloc, parsed.path.lstrip("/")) as body:
         while chunk := body.read(1024 * 1024):
             digest.update(chunk)
             artifact_bytes += len(chunk)

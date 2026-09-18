@@ -1,8 +1,7 @@
 """Filesystem release reader shared by Tracker and the minimal ExecutorHost."""
 
-from contextlib import AbstractContextManager
+from io import BufferedReader
 from pathlib import Path
-from typing import BinaryIO
 from urllib.parse import unquote, urlparse
 
 
@@ -29,5 +28,5 @@ class FilesystemExecutorArtifactReader:
     def validate(self, artifact_uri: str) -> None:
         self._path(artifact_uri)
 
-    def open(self, artifact_uri: str) -> AbstractContextManager[BinaryIO]:
+    def open(self, artifact_uri: str) -> BufferedReader:
         return self._path(artifact_uri).open("rb")

@@ -1,4 +1,4 @@
-"""Manage the shared agents/ library through the selected runtime."""
+"""Manage the shared agents/ library using the existing agent AWS runtime."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from typing import BinaryIO
 
 import yaml
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request
 
 from tracker import config
 from tracker.agent.archive import ArchiveLimitError, validate_agent_archive
@@ -41,10 +41,6 @@ def _agent_key(name: str) -> str:
 def _storage_errors() -> Generator[None, None, None]:
     try:
         yield
-    except FileNotFoundError as error:
-        raise HTTPException(status_code=404, detail="Agent archive not found") from error
-    except PermissionError as error:
-        raise HTTPException(status_code=403, detail="Agent library storage permission denied") from error
     except S3Error as error:
         cause = error.__cause__
         if isinstance(cause, ClientError) and (
@@ -85,33 +81,16 @@ async def get_agent_download_url(
     name: str,
     runtime: AgentLibraryRuntimeDependency,
 ) -> AgentDownloadURLResponse:
-    """Return a signed URL or a relative route requiring Tracker authorization."""
+    """Return a 5-minute presigned URL to download agents/<name>.zip."""
     key = _agent_key(name)
     with _storage_errors():
         if not await runtime.objects.exists(key):
-            raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+            raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")
         url = await runtime.objects.temporary_download_url(key, expires_in=PRESIGNED_URL_EXPIRES_SECONDS)
         if url is None:
-            return AgentDownloadURLResponse(name=name, download_url=f"/agents/{name}/download", expires_in=0)
+            raise HTTPException(status_code=400, detail="This storage does not provide download URLs")
 
     return AgentDownloadURLResponse(name=name, download_url=url, expires_in=PRESIGNED_URL_EXPIRES_SECONDS)
-
-
-@router.get(
-    "/{name}/download",
-    response_class=Response,
-    responses={200: {"content": {"application/zip": {"schema": {"type": "string", "format": "binary"}}}}},
-)
-async def download_agent_archive(name: str, runtime: AgentLibraryRuntimeDependency) -> Response:
-    """Download the library archive using the caller's existing authorization."""
-    key = _agent_key(name)
-    with _storage_errors():
-        content = await runtime.objects.get_bytes(key)
-    return Response(
-        content=content,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{name}.zip"', "Cache-Control": "no-store"},
-    )
 
 
 @router.put(
@@ -192,7 +171,7 @@ async def remove_agent_endpoint(
     key = _agent_key(name)
     with _storage_errors():
         if not await runtime.objects.exists(key):
-            raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+            raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")
         await runtime.objects.delete(key)
 
     return AgentEntry(name=name)

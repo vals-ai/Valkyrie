@@ -83,7 +83,8 @@ class FilesystemObjectStore:
 
             await finish_cleanup(asyncio.create_task(cleanup()))
 
-    def _publish(self, temporary: Path, key: str, should_continue: Callable[[], bool] | None = None) -> None:
+    def _publish(self, stream: BinaryIO, temporary: Path, key: str, should_continue: Callable[[], bool] | None) -> None:
+        stream.close()
         with self._lock():
             if should_continue is not None and not should_continue():
                 raise ExecutionAuthorityRevoked("Local stream upload authority was revoked")
@@ -112,10 +113,7 @@ class FilesystemObjectStore:
                     raise ExecutionAuthorityRevoked("Local stream upload authority was revoked")
                 await _io(stream.write, chunk)
                 size += len(chunk)
-            await _io(stream.flush)
-            await _io(os.fsync, stream.fileno())
-            await _io(stream.close)
-            await _io(self._publish, temporary, key, should_continue)
+            await _io(self._publish, stream, temporary, key, should_continue)
             return size
 
     async def get_bytes(self, key: str) -> bytes:
@@ -160,15 +158,12 @@ class FilesystemObjectStore:
                     return StoredObjectCopy(deletion_token="existing")
                 stream, temporary = self._temporary_file()
                 try:
-                    with stream, source.open("rb") as reader:
-                        shutil.copyfileobj(reader, stream)
-                        stream.flush()
-                        os.fsync(stream.fileno())
+                    stream.close()
+                    shutil.copyfile(source, temporary)
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     temporary.replace(destination)
                     return StoredObjectCopy(deletion_token=self._deletion_token(destination))
                 finally:
-                    stream.close()
                     temporary.unlink(missing_ok=True)
 
         return await _io(copy)
