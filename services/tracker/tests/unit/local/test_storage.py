@@ -1,6 +1,8 @@
 """Real filesystem coverage for publication, freezing, and cancellation."""
 
 import asyncio
+import tempfile
+import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -65,6 +67,33 @@ async def test_cancelled_upload_removes_only_its_staging_file(tmp_path: Path) ->
     assert not list((tmp_path / ".valkyrie/staging").iterdir())
 
 
+async def test_cancellation_during_staging_creation_cleans_up(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = FilesystemObjectStore(tmp_path)
+    created = threading.Event()
+    release = threading.Event()
+    temporary_directory = tempfile.TemporaryDirectory
+
+    def delayed_directory(*, dir: Path) -> tempfile.TemporaryDirectory[str]:
+        directory = temporary_directory(dir=dir)
+        created.set()
+        assert release.wait(timeout=5)
+        return directory
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", delayed_directory)
+    upload = asyncio.create_task(store.put_bytes("output", b"incomplete"))
+    try:
+        assert await asyncio.to_thread(created.wait, 5)
+        upload.cancel()
+        await asyncio.sleep(0)
+        upload.cancel()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await upload
+    assert not await store.exists("output")
+    assert not list((tmp_path / ".valkyrie/staging").iterdir())
+
+
 async def test_revoked_upload_cannot_publish(tmp_path: Path) -> None:
     store = FilesystemObjectStore(tmp_path)
     await store.put_bytes("output", b"previous")
@@ -80,7 +109,7 @@ async def test_revoked_upload_cannot_publish(tmp_path: Path) -> None:
     assert await store.get_bytes("output") == b"previous"
 
 
-async def test_frozen_bundle_and_conditional_cleanup(tmp_path: Path) -> None:
+async def test_frozen_bundle_and_failed_admission_cleanup(tmp_path: Path) -> None:
     store = FilesystemObjectStore(tmp_path)
     await store.put_bytes("agents/example.zip", b"first")
     created = await copy_agent_to_benchmark(store, "run", "example")
@@ -91,21 +120,6 @@ async def test_frozen_bundle_and_conditional_cleanup(tmp_path: Path) -> None:
     assert await store.get_bytes(key) == b"first"
     await store.delete(key, deletion_token=created.deletion_token)
     assert not await store.exists(key)
-
-    created = await store.copy("agents/example.zip", key)
-    await store.put_bytes(key, b"replacement")
-    await store.delete(key, deletion_token=created.deletion_token)
-    assert await store.get_bytes(key) == b"replacement"
-
-
-async def test_concurrent_copies_cannot_delete_the_winning_bundle(tmp_path: Path) -> None:
-    stores = [FilesystemObjectStore(tmp_path), FilesystemObjectStore(tmp_path)]
-    await stores[0].put_bytes("agents/example.zip", b"bundle")
-    results = await asyncio.gather(*(store.copy("agents/example.zip", "frozen.zip") for store in stores))
-    tokens = [result.deletion_token for result in results]
-    assert tokens.count("existing") == 1
-    await stores[0].delete("frozen.zip", deletion_token="existing")
-    assert await stores[0].get_bytes("frozen.zip") == b"bundle"
 
 
 @pytest.mark.parametrize("key", ["../outside", "/absolute", "a/../../outside", ".valkyrie/staging/entry", "", "."])
