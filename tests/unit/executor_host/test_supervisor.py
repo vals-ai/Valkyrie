@@ -13,6 +13,7 @@ import logging
 import sys
 from collections.abc import Awaitable, Callable, Coroutine
 from functools import partial
+from dataclasses import replace
 from pathlib import Path
 from threading import Event
 from typing import Any, cast
@@ -35,6 +36,7 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     verify_file_digest,
 )
 from executor_protocol import ExecutorTelemetryContext, validate_executor_artifact_uri
+from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader
 
 
 class FakeDispatchStore:
@@ -281,11 +283,9 @@ async def test_prepare_artifact_downloads_and_verifies_by_digest(tmp_path: Path)
     assert artifact_path.read_bytes() == content
     assert artifact_path.stat().st_mode & 0o111
     assert len(client.calls) == 1
-    bucket, key, temporary_name = client.calls[0]
+    bucket, key, _temporary_name = client.calls[0]
     assert (bucket, key) == ("artifacts", "executors/v2.pex")
-    assert Path(temporary_name).parent == tmp_path
-    assert Path(temporary_name).suffix == ".tmp"
-    assert Path(temporary_name).name != f"{digest}.tmp"
+    assert list(tmp_path.iterdir()) == [artifact_path]
 
 
 def test_validate_artifact_uri_requires_configured_bucket_and_prefix() -> None:
@@ -1479,3 +1479,34 @@ def test_host_accepts_current_and_pinned_legacy_protocols(protocol_version: str)
     )
     assert dispatch.protocol_version == protocol_version
     assert dispatch.release_id == "immutable-release"
+
+
+async def test_local_release_digest_and_location_validation(tmp_path: Path) -> None:
+    root = tmp_path / "releases"
+    root.mkdir()
+    artifact = root / "executor.pex"
+    content = b"pass\n"
+    artifact.write_bytes(content)
+    digest = hashlib.sha256(content).hexdigest()
+    cache_dir = tmp_path / "cache"
+    cache_dir.write_bytes(b"unavailable cache directory")
+    supervisor = ExecutorSupervisor(cache_dir, artifact_reader=FilesystemExecutorArtifactReader(root))
+    dispatch = replace(_dispatch(digest=digest), artifact_uri=artifact.as_uri())
+
+    assert await supervisor.prepare_artifact(dispatch) == artifact
+    store = FakeDispatchStore()
+    await run_executor_dispatch(
+        supervisor,
+        store,
+        executor_dispatch_id="dispatch-1",
+        dispatch=dispatch,
+        process_payload=_process_payload(),
+    )
+    assert store.finished == [store.authority]
+    assert store.terminalized == []
+    assert cache_dir.read_bytes() == b"unavailable cache directory"
+    with pytest.raises(ValueError, match="outside"):
+        await supervisor.prepare_artifact(replace(dispatch, artifact_uri=(tmp_path / "outside.pex").as_uri()))
+    artifact.write_bytes(b"damaged release")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        await supervisor.prepare_artifact(dispatch)
