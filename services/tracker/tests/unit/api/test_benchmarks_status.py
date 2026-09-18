@@ -65,7 +65,7 @@ class TestBenchmarkStatusQueries:
         database_session.add(example_benchmark_object)
         database_session.commit()
         exists_mock = AsyncMock(return_value=True)
-        monkeypatch.setattr("main.s3_object_exists", exists_mock)
+        monkeypatch.setattr("tracker.aws.s3.s3_object_exists", exists_mock)
 
         response = _client.get(
             f"/check-results-exist?benchmark_id={_RESULTS_RUN_ID}",

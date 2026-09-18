@@ -10,6 +10,7 @@ import zlib
 from collections.abc import AsyncIterator, Generator
 from contextlib import contextmanager
 from typing import BinaryIO
+from pathlib import Path
 
 import yaml
 from botocore.exceptions import ClientError
@@ -88,7 +89,9 @@ async def get_agent_download_url(
             raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")
         url = await runtime.objects.temporary_download_url(key, expires_in=PRESIGNED_URL_EXPIRES_SECONDS)
         if url is None:
-            raise HTTPException(status_code=400, detail="This storage does not provide download URLs")
+            return AgentDownloadURLResponse(
+                name=name, download_url=Path(runtime.artifacts.object_location(key)).as_uri(), expires_in=0
+            )
 
     return AgentDownloadURLResponse(name=name, download_url=url, expires_in=PRESIGNED_URL_EXPIRES_SECONDS)
 

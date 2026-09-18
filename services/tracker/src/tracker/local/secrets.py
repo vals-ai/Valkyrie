@@ -1,6 +1,9 @@
 """Resolve only the credentials supplied for the current local execution."""
 
 from collections.abc import Mapping
+from pathlib import Path
+
+from dotenv import dotenv_values
 
 from tracker.exceptions import SecretsError
 from tracker.runtime.secrets import SecretValue
@@ -34,3 +37,13 @@ class InMemorySecretStore:
 
     def close(self) -> None:
         self._values.clear()
+
+
+def load_execution_secrets(path: Path | None, references: Mapping[str, str]) -> dict[str, str]:
+    """Read only contract-declared values from the configured source file."""
+    if not references or path is None:
+        return {}
+    if not path.is_file():
+        raise SecretsError("Configured local secrets file does not exist")
+    values = dotenv_values(path, interpolate=False)
+    return {name: value for name in references if (value := values.get(name)) is not None}

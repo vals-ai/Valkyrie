@@ -413,7 +413,9 @@ class _S3ObjectReadSession:
                 for stored_object in page.get("Contents", []):
                     key = stored_object.get("Key")
                     if key is not None:
-                        yield StoredObject(key=key, last_modified=stored_object.get("LastModified"))
+                        yield StoredObject(
+                            key=key, last_modified=stored_object.get("LastModified"), size=stored_object["Size"]
+                        )
         except (ClientError, BotoCoreError) as error:
             raise S3Error(f"Failed to list objects from S3: {error}") from error
 
@@ -468,6 +470,26 @@ class S3ObjectStore:
         async with self.read_session() as reader:
             async for stored_object in reader.list_objects(prefix):
                 yield stored_object
+
+    async def stat(self, key: str) -> StoredObject:
+        async with self._runtime.clients.s3_client() as client:
+            response = await client.head_object(Bucket=self._runtime.resources.s3_bucket, Key=key)
+        return StoredObject(key, response.get("LastModified"), response["ContentLength"])
+
+    async def list_objects_page(
+        self, prefix: str, *, cursor: str | None, limit: int
+    ) -> tuple[list[StoredObject], str | None]:
+        arguments: dict[str, Any] = {"Bucket": self._runtime.resources.s3_bucket, "Prefix": prefix, "MaxKeys": limit}
+        if cursor is not None:
+            arguments["ContinuationToken"] = cursor
+        async with self._runtime.clients.s3_client() as client:
+            response = await client.list_objects_v2(**arguments)
+        return [
+            StoredObject(item["Key"], item.get("LastModified"), item["Size"]) for item in response.get("Contents", [])
+        ], response.get("NextContinuationToken")
+
+    def maximum_download_ttl(self, requested: int) -> int:
+        return self._runtime.clients.maximum_presign_ttl(requested)
 
     async def temporary_download_url(self, key: str, *, expires_in: int) -> str:
         return await create_presigned_url(key, self._runtime, expiration=expires_in)

@@ -9,6 +9,7 @@ import re
 import tarfile
 from collections.abc import AsyncIterator
 from datetime import timezone
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 from uuid import UUID, uuid4
@@ -35,7 +36,7 @@ from executor_protocol import SUPPORTED_PROTOCOL_VERSION, ExecutorTelemetryConte
 from main import app, tracker_service_error_handler
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.runtime.storage import ObjectStore, StoredObject, StoredObjectCopy
 from tracker.database.models import (
     AgentContractRequest,
@@ -671,7 +672,7 @@ class TestTrackerAPI:
         assert response.status_code == 200, response.text
         benchmark = database_session.get(Benchmark, UUID(response.json()["benchmark_id"]))
         assert benchmark is not None
-        assert benchmark.arguments.properties is not None
+        assert isinstance(benchmark.arguments.properties, AWSResources)
         assert benchmark.arguments.properties.log_group == ""
 
     async def test_start_benchmark(
@@ -2666,3 +2667,75 @@ class TestTrackerAPI:
         assert response.json() == {
             "detail": "This run was started with access-key AWS and requires its legacy AWS configuration."
         }
+
+
+async def test_local_start_persists_server_root_without_credentials(
+    tmp_path: Path,
+    contract: AgentContractRequest,
+    monkeypatch: MonkeyPatch,
+    database_session: Session,
+    mock_kicker: Any,
+) -> None:
+    from tracker.local import config as local_config
+    from tracker.local.resources import LocalResources
+
+    secrets_file = tmp_path / "credentials.env"
+    secrets_file.write_text("MODEL_KEY=local-model-key\n")
+    root = LocalResources(data_root=tmp_path / "server-root", secrets_file=secrets_file)
+    monkeypatch.setattr(local_config, "resources", root)
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+    monkeypatch.setattr(main_module, "SANDBOX_QUEUE_ENABLED", False)
+    contract = contract.model_copy(update={"secrets": {"MODEL_KEY": "model-key"}})
+    request = StartBenchmarkRequest(
+        environment="local", sandbox_provider="docker", contract=contract, benchmark_name="swebench"
+    )
+
+    response = client.post("/start-benchmark", json=request.model_dump(mode="json"))
+
+    assert response.status_code == 200, response.text
+    benchmark_id = UUID(response.json()["benchmark_id"])
+    benchmark = database_session.get(Benchmark, benchmark_id)
+    assert benchmark is not None
+    assert benchmark.arguments.environment == "local"
+    assert benchmark.arguments.properties == root
+    assert not benchmark.aws_managed
+    assert "local-model-key" not in benchmark.model_dump_json()
+    payload = mock_kicker.queued_calls[0]
+    queued_request = payload["start_benchmark_request_json"]
+    assert queued_request["properties"] == root.model_dump(mode="json")
+    assert "local-model-key" not in str(payload)
+    resumed_request = benchmark.local_start_benchmark_request()
+    assert resumed_request.properties == root
+    assert resumed_request.contract.secrets == {"MODEL_KEY": "model-key"}
+
+
+@pytest.mark.parametrize("failure", ["server-unconfigured", "caller-root"])
+async def test_local_start_rejects_invalid_root_before_admission(
+    tmp_path: Path,
+    contract: AgentContractRequest,
+    monkeypatch: MonkeyPatch,
+    database_session: Session,
+    mock_kicker: Any,
+    failure: str,
+) -> None:
+    from tracker.local import config as local_config
+    from tracker.local.resources import LocalResources
+
+    monkeypatch.setattr(
+        local_config, "resources", None if failure == "server-unconfigured" else LocalResources(data_root=tmp_path)
+    )
+    request = {
+        "environment": "local",
+        "sandbox_provider": "docker",
+        "benchmark_name": "swebench",
+        "contract": contract.model_dump(mode="json"),
+    }
+    if failure == "caller-root":
+        request["properties"] = {"data_root": str(tmp_path / "caller-root")}
+
+    response = client.post("/start-benchmark", json=request)
+
+    assert response.status_code == 400, response.text
+    assert not database_session.exec(select(Benchmark)).all()
+    assert not database_session.exec(select(ExecutorDispatch)).all()
+    assert not mock_kicker.queued_calls

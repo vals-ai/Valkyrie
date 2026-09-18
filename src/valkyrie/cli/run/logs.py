@@ -11,6 +11,8 @@ from valkyrie.sdk.client import ValkyrieClient  # pyright: ignore[reportMissingI
 from valkyrie.sdk.errors import ValkyrieSDKError  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.models.logs import LogEvent  # pyright: ignore[reportMissingImports]
 
+from valkyrie.cli.runtime_config import config_location, tracker_service_url
+
 
 @click.command(help="Fetch or follow logs for a run or one task.")
 @click.argument("run_id", type=UUID)
@@ -75,7 +77,7 @@ async def _run_logs(
     follow: bool,
     output_format: str,
 ) -> None:
-    client = ValkyrieClient.from_config()
+    client = ValkyrieClient.from_config(config_location(), base_url=tracker_service_url())
     async with client:
         if follow:
             if task_id is None:

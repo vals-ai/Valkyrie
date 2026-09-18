@@ -100,6 +100,10 @@ def _parse_model_response(response: Response, action: str, model: type[ModelT]) 
 def _resolve_sandbox_provider_config(
     config: dict[str, Any], config_values: dict[str, str], provider: str | None = None
 ) -> tuple[str, str]:
+    if config.get("execution_environment") == "local":
+        if provider not in (None, "docker"):
+            raise TrackerServiceError("Local execution requires the docker sandbox provider")
+        return "docker", ""
     providers = _sandbox_providers(config)
 
     # Fall back to the legacy Daytona secret when named providers are not configured.
@@ -252,6 +256,9 @@ class TrackerService:
         with open(config_path) as f:
             harness_config: dict[str, Any] = yaml.safe_load(f) or {}
 
+        if harness_config.get("execution_environment") == "local":
+            return {}
+
         if not (_sandbox_providers(harness_config) or "DAYTONA_SECRET_NAME" in harness_config):
             raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
 
@@ -276,7 +283,15 @@ class TrackerService:
                 "Run `valkyrie config init` to initialize the Valkyrie config or `valkyrie config set` to update an existing config"
             )
         # Keys that are managed separately and should not be sent as harness headers
-        _SKIP_HEADER_KEYS = {"webhook", "api_key", "default_sandbox_provider"}
+        _SKIP_HEADER_KEYS = {
+            "webhook",
+            "api_key",
+            "default_sandbox_provider",
+            "execution_environment",
+            "tracker_url",
+            "local_data_root",
+            "local_secrets_file",
+        }
 
         # Skip custom_benchmark_services to avoid adding them inside of the header
         for key, value in harness_config.items():
@@ -456,7 +471,9 @@ class TrackerService:
                 if self._config_values
                 else None
             )
+            local_execution = self._config.get("execution_environment") == "local"
             payload = StartBenchmarkRequest(
+                environment="local" if local_execution else "aws",
                 contract=contract,
                 benchmark_name=benchmark_name,
                 concurrency=concurrency,
@@ -473,7 +490,9 @@ class TrackerService:
                 service_headers=service_headers or {},
                 sandbox_provider=provider_name,
                 sandbox_provider_secret_name=(
-                    sandbox_provider_secret_name if access_key_harness_config is None else None
+                    sandbox_provider_secret_name
+                    if access_key_harness_config is None and sandbox_provider_secret_name
+                    else None
                 ),
                 webhook_secret_name=webhook_secret_name,
                 webhook_intervals=webhook_intervals,

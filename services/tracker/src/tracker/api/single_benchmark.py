@@ -16,6 +16,8 @@ from tracker.aws.s3 import create_benchmark_url
 from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
+from tracker.local.resources import LocalResources
+from tracker.local.runtime import LocalRuntimeFactory
 from tracker.types import SingleBenchmarkResponse, TasksResponse, TaskSummary
 
 router = APIRouter(prefix="/benchmarks")
@@ -63,17 +65,24 @@ def get_single_benchmark(
 
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
-    aws_runtime = resolve_run_metadata_aws_runtime(
-        request,
-        aws_managed=benchmark.aws_managed,
-        properties=benchmark.arguments.properties,
-        org_id=org.id,
-    )
-    if aws_runtime:
-        aws_resources = aws_runtime.resources
-        s3_bucket_url = create_benchmark_url(str(benchmark.id), aws_resources)
-        if aws_resources.log_group:
-            cloudwatch_url = CloudWatchBenchmarkLogLocations(aws_resources).benchmark_location(str(benchmark.id))
+    if benchmark.arguments.environment == "local":
+        assert isinstance(benchmark.arguments.properties, LocalResources)
+        runtime = LocalRuntimeFactory.create_runtime(benchmark.arguments.properties.data_root, org.id)
+        cloudwatch_url = runtime.log_locations.benchmark_location(str(benchmark.id))
+        s3_bucket_url = runtime.artifacts.prefix_location(f"benchmarks/{benchmark.id}/")
+    else:
+        assert not isinstance(benchmark.arguments.properties, LocalResources)
+        aws_runtime = resolve_run_metadata_aws_runtime(
+            request,
+            aws_managed=benchmark.aws_managed,
+            properties=benchmark.arguments.properties,
+            org_id=org.id,
+        )
+        if aws_runtime:
+            aws_resources = aws_runtime.resources
+            s3_bucket_url = create_benchmark_url(str(benchmark.id), aws_resources)
+            if aws_resources.log_group:
+                cloudwatch_url = CloudWatchBenchmarkLogLocations(aws_resources).benchmark_location(str(benchmark.id))
 
     return SingleBenchmarkResponse(
         id=benchmark.id,

@@ -6,7 +6,8 @@ Cover task details and artifact-link behavior.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from unittest.mock import ANY, AsyncMock
+from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -14,7 +15,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-import tracker.api.single_task as single_task_module
+from tracker.aws.s3 import S3ObjectStore
+from tracker.local.resources import LocalResources
 from main import app
 from tests.factories import make_error_result, make_evaluation_result, make_task
 from tracker.database.models import (
@@ -137,8 +139,8 @@ def test_task_artifacts_only_presign_existing_output(
 
     object_exists = AsyncMock(return_value=True)
     create_presigned_url = AsyncMock(return_value="https://example.test/presigned")
-    monkeypatch.setattr(single_task_module, "s3_object_exists", object_exists)
-    monkeypatch.setattr(single_task_module, "create_presigned_url", create_presigned_url)
+    monkeypatch.setattr(S3ObjectStore, "exists", object_exists)
+    monkeypatch.setattr(S3ObjectStore, "temporary_download_url", create_presigned_url)
 
     found_response = _client.get(
         f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts",
@@ -158,11 +160,10 @@ def test_task_artifacts_only_presign_existing_output(
     assert "logsV2:log-groups/log-group/" in cloudwatch_url
     assert str(benchmark.id) in cloudwatch_url
     assert ("/log-events/" in cloudwatch_url) is (task_id == "task-with-output")
-    object_exists.assert_awaited_with(expected_key, ANY)
+    object_exists.assert_awaited_with(expected_key)
     create_presigned_url.assert_awaited_once_with(
-        s3_key=expected_key,
-        runtime=ANY,
-        expiration=300,
+        expected_key,
+        expires_in=300,
     )
     assert missing_response.status_code == 200
     assert missing_response.json()["agent_output_url"] is None
@@ -241,3 +242,27 @@ def test_run_artifacts_are_scoped_and_storage_errors_are_mapped(
             ).status_code
             == status
         )
+
+
+def test_local_task_artifacts_use_existing_files(
+    database_session: Session, example_benchmark_object: Benchmark, tmp_path: Path
+) -> None:
+    benchmark = example_benchmark_object
+    benchmark.arguments = benchmark.arguments.model_copy(
+        update={"environment": "local", "properties": LocalResources(data_root=tmp_path), "sandbox_provider": "docker"}
+    )
+    task = make_task(benchmark, "local-task")
+    database_session.add_all([benchmark, task])
+    database_session.commit()
+    root = tmp_path / "orgs" / str(benchmark.org_id)
+    output = root / "objects" / "benchmarks" / str(benchmark.id) / task.task_id / "agent_output.tar.gz"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"archive")
+    endpoint = f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts"
+    response = _client.get(endpoint)
+    assert response.status_code == 200, response.text
+    assert response.json()["agent_output_url"] == output.as_uri()
+    assert response.json()["agent_output_expires_in"] == 0
+    assert str(root / "logs") in response.json()["cloudwatch_url"]
+    output.unlink()
+    assert _client.get(endpoint).json()["agent_output_url"] is None

@@ -20,6 +20,7 @@ from pydantic import (
 )
 
 from tracker.aws.runtime import AWSResources
+from tracker.local.resources import LocalResources
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     AgentContractRequest,
@@ -76,8 +77,8 @@ class HarnessConfig(BaseModel):
 
 
 class StartBenchmarkRequest(BaseModel):
-    environment: Literal["aws"] = "aws"
-    properties: AWSResources | None = None
+    environment: Literal["aws", "local"] = "aws"
+    properties: AWSResources | LocalResources | None = None
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
@@ -96,6 +97,20 @@ class StartBenchmarkRequest(BaseModel):
     service_auth_secret_name: str | None = None
     webhook_secret_name: str | None = None
     webhook_intervals: list[int] | None = None
+
+    @model_validator(mode="after")
+    def validate_execution_environment(self) -> "StartBenchmarkRequest":
+        if self.environment == "aws":
+            if isinstance(self.properties, LocalResources):
+                raise ValueError("AWS execution cannot include local resources")
+            return self
+        if self.harness_config is not None or isinstance(self.properties, AWSResources):
+            raise ValueError("Local execution cannot include AWS configuration")
+        if self.sandbox_provider != "docker" or self.sandbox_provider_secret_name is not None:
+            raise ValueError("Local execution requires Docker without a provider secret")
+        if self.lambda_function or self.webhook_secret_name or self.service_auth_secret_name:
+            raise ValueError("Local execution does not support cloud callbacks or service secret references")
+        return self
 
     @field_validator("benchmark_name")
     @classmethod

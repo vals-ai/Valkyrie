@@ -179,13 +179,41 @@ class FilesystemObjectStore:
                 checked = local_path(self.root, key)
                 try:
                     if checked.is_file():
-                        objects.append(StoredObject(key, datetime.fromtimestamp(checked.stat().st_mtime, UTC)))
+                        stat = checked.stat()
+                        objects.append(StoredObject(key, datetime.fromtimestamp(stat.st_mtime, UTC), stat.st_size))
                 except FileNotFoundError:
                     continue
             return objects
 
         for stored in await _io(list_files):
             yield stored
+
+    async def stat(self, key: str) -> StoredObject:
+        def metadata() -> StoredObject:
+            path = local_path(self.root, key)
+            if not path.is_file():
+                raise FileNotFoundError(key)
+            stat = path.stat()
+            return StoredObject(key, datetime.fromtimestamp(stat.st_mtime, UTC), stat.st_size)
+
+        return await _io(metadata)
+
+    async def list_objects_page(
+        self, prefix: str, *, cursor: str | None, limit: int
+    ) -> tuple[list[StoredObject], str | None]:
+        if cursor is not None and not cursor.startswith(prefix):
+            raise ValueError("Artifact cursor does not match the requested prefix")
+        entries: list[StoredObject] = []
+        async for stored in self.list_objects(prefix):
+            if cursor is not None and stored.key <= cursor:
+                continue
+            if len(entries) == limit:
+                return entries, entries[-1].key
+            entries.append(stored)
+        return entries, None
+
+    def maximum_download_ttl(self, requested: int) -> int:
+        return 0
 
     async def temporary_download_url(self, key: str, *, expires_in: int) -> None:
         return None

@@ -39,6 +39,7 @@ from tests.utils import TEST_ORG_ID
 from tracker import config
 from tracker.auth import RequestIdentity
 from tracker.aws.runtime import AWSRuntime
+from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
@@ -150,6 +151,9 @@ class MockSubsetSandboxProvider:
     async def delete_sandbox(self, sandbox_id: str) -> None:
         self.deleted_sandbox_ids.append(sandbox_id)
 
+    async def close(self) -> None:
+        return None
+
 
 class MockReleasingSandboxProvider:
     """Expose one benchmark sandbox until the executor's own teardown removes it."""
@@ -172,6 +176,9 @@ class MockReleasingSandboxProvider:
 
     async def delete_sandbox(self, sandbox_id: str) -> None:
         self.deleted_sandbox_ids.append(sandbox_id)
+
+    async def close(self) -> None:
+        return None
 
 
 class TestRunRecovery:
@@ -366,7 +373,7 @@ class TestRunRecovery:
         def get_sandbox_provider(*_args: object, **_kwargs: object) -> MockSubsetSandboxProvider:
             return provider
 
-        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", get_sandbox_provider)
+        monkeypatch.setattr(DaytonaProviderConfig, "create_provider", get_sandbox_provider)
 
         graceful_response = client.post(
             f"/stop-benchmark/{benchmark_row.id}?force=false",
@@ -502,7 +509,7 @@ class TestRunRecovery:
         def resumed_attempt_time(_timezone: object) -> datetime:
             return _RESUMED_ATTEMPT_AT
 
-        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", get_sandbox_provider)
+        monkeypatch.setattr(DaytonaProviderConfig, "create_provider", get_sandbox_provider)
         monkeypatch.setattr(
             "tracker.utils.run_control.datetime",
             SimpleNamespace(now=resumed_attempt_time),
@@ -1434,15 +1441,13 @@ class TestRunRecovery:
 
         async def _mock_force_stop_sandboxes(
             _benchmark_row: Benchmark,
-            sandbox_provider_secret_name: str,
-            _aws: Any,
+            runtime: RuntimeServices,
             _org: Org,
             *,
-            sandbox_provider: str,
             task_ids: list[str] | None = None,
         ) -> None:
-            captured["sandbox_provider_secret_name"] = sandbox_provider_secret_name
-            captured["sandbox_provider"] = sandbox_provider
+            captured["sandbox_provider_secret_name"] = runtime.sandbox_provider_secret_name
+            captured["sandbox_provider"] = runtime.sandbox_provider
             captured["task_ids"] = task_ids
 
         monkeypatch.setattr("main.force_stop_sandboxes", _mock_force_stop_sandboxes)
@@ -2778,21 +2783,14 @@ class TestRunRecovery:
         database_session.add(benchmark_row)
         database_session.commit()
         provider = MockReleasingSandboxProvider(_NEVER_RELEASED)
-        monkeypatch.setattr(
-            run_control_module,
-            "fetch_sandbox_provider_config",
-            Mock(
-                return_value=DaytonaProviderConfig(
-                    DAYTONA_API_KEY="key", DAYTONA_API_URL="url", DAYTONA_TARGET="target"
-                )
-            ),
-        )
-        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", Mock(return_value=provider))
+        monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=provider))
 
         await force_stop_sandboxes(
             benchmark_row,
-            harness_config.sandbox_provider_secret_name,
-            AWSRuntime.from_harness_config(harness_config),
+            CloudRuntimeFactory.create_runtime(
+                AWSRuntime.from_harness_config(harness_config),
+                sandbox_provider_secret_name=harness_config.sandbox_provider_secret_name,
+            ),
             self._test_org,
         )
 
@@ -2814,22 +2812,15 @@ class TestRunRecovery:
         database_session.add(benchmark_row)
         database_session.commit()
         provider = MockReleasingSandboxProvider(_NEVER_RELEASED)
-        monkeypatch.setattr(
-            run_control_module,
-            "fetch_sandbox_provider_config",
-            Mock(
-                return_value=DaytonaProviderConfig(
-                    DAYTONA_API_KEY="key", DAYTONA_API_URL="url", DAYTONA_TARGET="target"
-                )
-            ),
-        )
-        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", Mock(return_value=provider))
+        monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=provider))
         monkeypatch.setattr(run_control_module, "delete_sandbox", AsyncMock(side_effect=RuntimeError("unavailable")))
 
         await force_stop_sandboxes(
             benchmark_row,
-            harness_config.sandbox_provider_secret_name,
-            AWSRuntime.from_harness_config(harness_config),
+            CloudRuntimeFactory.create_runtime(
+                AWSRuntime.from_harness_config(harness_config),
+                sandbox_provider_secret_name=harness_config.sandbox_provider_secret_name,
+            ),
             self._test_org,
         )
 
