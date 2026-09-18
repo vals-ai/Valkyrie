@@ -26,9 +26,6 @@ class InMemorySecretStore:
         except KeyError:
             raise SecretsError(f"Local execution has no values for secret reference '{name}'") from None
 
-    def close(self) -> None:
-        self._values.clear()
-
 
 def load_execution_secrets(path: Path | None, references: Mapping[str, str]) -> dict[str, str]:
     """Read only contract-declared values from the configured source file."""
