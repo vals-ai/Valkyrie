@@ -198,20 +198,8 @@ class FilesystemObjectStore:
     async def temporary_download_url(self, key: str, *, expires_in: int) -> str:
         raise NotImplementedError("Local artifacts require provider file transfer or the agent download endpoint")
 
-
-class FilesystemArtifactLocations:
-    """Map service-visible storage keys to paths on the developer's machine."""
-
-    def __init__(self, root: Path, host_root: Path) -> None:
-        if not root.is_absolute() or not host_root.is_absolute():
-            raise ValueError("Local artifact roots must be absolute")
-        self.root = root.resolve()
-        self.host_root = host_root
-
     def object_location(self, key: str) -> str:
-        path = local_path(self.root, key)
-        return str(self.host_root / path.relative_to(self.root))
+        return str(local_path(self.root, key))
 
     def prefix_location(self, prefix: str) -> str:
-        path = local_path(self.root, prefix, prefix=True)
-        return str(self.host_root / path.relative_to(self.root))
+        return str(local_path(self.root, prefix, prefix=True))
