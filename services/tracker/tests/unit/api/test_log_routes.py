@@ -315,7 +315,7 @@ def test_local_logs_use_filesystem_without_aws_resolution(
     database_session.add_all([benchmark, task])
     database_session.commit()
     logs = FilesystemLogs(tmp_path / "orgs" / str(benchmark.org_id) / "logs")
-    logs.create_benchmark(str(benchmark.id), retention_days=0)
+    asyncio.run(logs.create_benchmark(str(benchmark.id), retention_days=0))
     logs.write(f"{benchmark.id}:{task_log_stream_name(task.task_id, task.started_at)}", "local execution output")
 
     def unexpected_aws(*_args: object, **_kwargs: object) -> None:
