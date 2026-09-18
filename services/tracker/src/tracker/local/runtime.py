@@ -55,10 +55,10 @@ class LocalRuntimeFactory:
         data_root: Path,
         org_id: UUID,
         *,
-        secret_references: Mapping[str, str] | None = None,
-        execution_secrets: Mapping[str, str] | None = None,
+        secret_references: Mapping[str, str],
+        execution_secrets: Mapping[str, str],
     ) -> AsyncGenerator[LocalRuntimeServices]:
-        secrets = InMemorySecretStore(secret_references or {}, execution_secrets or {})
+        secrets = InMemorySecretStore(secret_references, execution_secrets)
         try:
             yield LocalRuntimeFactory.create_runtime(data_root, org_id, secrets=secrets)
         finally:

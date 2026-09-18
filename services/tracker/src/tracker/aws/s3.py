@@ -474,7 +474,7 @@ class S3ObjectStore:
     async def stat(self, key: str) -> StoredObject:
         async with self._runtime.clients.s3_client() as client:
             response = await client.head_object(Bucket=self._runtime.resources.s3_bucket, Key=key)
-        return StoredObject(key, response.get("LastModified"), response["ContentLength"])
+        return StoredObject(key, response.get("LastModified"), size=response["ContentLength"])
 
     async def list_objects_page(
         self, prefix: str, *, cursor: str | None, limit: int
@@ -485,7 +485,8 @@ class S3ObjectStore:
         async with self._runtime.clients.s3_client() as client:
             response = await client.list_objects_v2(**arguments)
         return [
-            StoredObject(item["Key"], item.get("LastModified"), item["Size"]) for item in response.get("Contents", [])
+            StoredObject(item["Key"], item.get("LastModified"), size=item["Size"])
+            for item in response.get("Contents", [])
         ], response.get("NextContinuationToken")
 
     def maximum_download_ttl(self, requested: int) -> int:

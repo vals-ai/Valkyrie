@@ -419,7 +419,7 @@ class Benchmark(SQLModel, table=True):
             service_headers=service_headers or {},
         )
 
-    def local_start_benchmark_request(self, service_headers: dict[str, str] | None = None) -> "StartBenchmarkRequest":
+    def local_start_benchmark_request(self, service_headers: dict[str, str]) -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
 
         return StartBenchmarkRequest(
@@ -427,7 +427,7 @@ class Benchmark(SQLModel, table=True):
             benchmark_name=self.name,
             label=self.label,
             custom_benchmark_service=self.custom_benchmark_service,
-            service_headers=service_headers or {},
+            service_headers=service_headers,
         )
 
     def managed_start_benchmark_request(self, service_headers: dict[str, str] | None = None) -> "StartBenchmarkRequest":
