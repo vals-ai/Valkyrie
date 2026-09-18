@@ -56,10 +56,7 @@ class FilesystemObjectStore:
         metadata.mkdir(parents=True, exist_ok=True)
         with (metadata / "write.lock").open("a+b") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
+            yield
 
     def _temporary_file(self) -> tuple[BinaryIO, Path]:
         staging = self.root / ".valkyrie" / "staging"
