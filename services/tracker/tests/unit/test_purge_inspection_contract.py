@@ -69,3 +69,14 @@ def test_invalid_inspection_proof_is_rejected(corruption: str) -> None:
         payload["runs"][2]["current_label"] = "invented"
     with pytest.raises(ValidationError):
         PurgeInspection.model_validate(payload)
+
+
+def test_history_inspection_fixture_binds_exact_completed_plan() -> None:
+    plan = PurgePlan.model_validate(fixture("tracker-purge-history-plan-v1.json"))
+    inspection = PurgeInspection.model_validate(fixture("tracker-purge-history-inspection-v1.json"))
+    assert inspection.child_plan_sha256 == plan.digest()
+    assert inspection.identity == plan.identity
+    assert inspection.runs[0].state == "present_history_held"
+    assert inspection.runs[0].completed_history == plan.runs[0].completed_history
+    for model, value in ((PurgePlan, plan), (PurgeInspection, inspection)):
+        validate_schema(value.model_dump(mode="json"), model.model_json_schema())

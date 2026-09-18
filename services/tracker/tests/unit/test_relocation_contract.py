@@ -112,3 +112,23 @@ def test_invalid_plan_or_copy_proof_cannot_enter_operator(failure: str) -> None:
         }
     with pytest.raises(ValidationError):
         TrackerRequest.model_validate(payload)
+
+
+def test_explicit_hold_only_and_default_relocation_have_stable_plan_digests() -> None:
+    directory = Path(__file__).resolve().parents[4] / "docs/deployment/fixtures"
+    expected = {
+        "default": "53f268875b62181627ee2dbcd9c1021693a2e2121d6eb825394009c58b1f7bee",
+        "hold-only": "a4d0e68bd9f9cf551f4cf24c559aaae397087f152576989b0d855b0cd4fc8bb1",
+    }
+    for name, digest in expected.items():
+        payload = json.loads((directory / f"storage-migration-{name}-request-v1.json").read_text())
+        request = TrackerRequest.model_validate(payload)
+        assert request.plan is not None and request.plan.sha256 == digest
+        if name == "default":
+            payload["plan"]["runs"][0]["location_policy"] = "relocate"
+            explicit = TrackerRequest.model_validate(payload)
+            assert explicit.plan is not None and explicit.plan.sha256 == digest
+        else:
+            payload["plan"]["runs"][0].pop("location_policy")
+            with pytest.raises(ValidationError, match="hold_only"):
+                TrackerRequest.model_validate(payload)

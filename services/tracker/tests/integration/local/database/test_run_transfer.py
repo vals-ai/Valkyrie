@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Generator
@@ -13,9 +14,12 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.engine import URL, make_url
 from sqlmodel import Session, SQLModel, create_engine
 
 from tests.factories import make_benchmark
+from tests.integration.local.database.test_run_purge import MemoryBoundary, contract
+from tests.integration.local.database.test_run_relocation import execute, seed
 from tests.transfer_support import FakeTransferBoundary, SecretMetadataSession, transfer_request
 from tracker.database.models import (
     AgentContractRequest,
@@ -36,30 +40,70 @@ from tracker.database.models import (
 )
 from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, require_unheld
 from tracker.lifecycle_completion import RelocationCheckpoint, capture_predecessor
-from tracker.run_transfer import TransferOperator
+from tracker.run_purge import PurgeOperator, build_plan
+from tracker.run_transfer import TransferOperator, cli
 from tracker.run_transfer.contracts import TransferCheckpoint, TransferRequest, TransferRun
 from tracker.run_transfer.providers import TransferAWSBoundary
 from tracker.run_transfer.rows import RowClosure, digest
 
 
 @pytest.fixture
-def pair() -> Generator[tuple[Session, Session], None, None]:
-    urls = [os.environ[f"TRANSFER_TEST_{side}_DATABASE_URL"] for side in ("SOURCE", "DESTINATION")]
+def pair(request: pytest.FixtureRequest) -> Generator[tuple[Session, Session], None, None]:
+    supplied = [os.getenv(f"TRANSFER_TEST_{side}_DATABASE_URL") for side in ("SOURCE", "DESTINATION")]
+    if any(value is not None for value in supplied) and not all(supplied):
+        raise ValueError("Supply both private transfer database URLs together")
+
+    administrator = None
+    owned_names: list[str] = []
+    urls: list[URL]
+    if all(supplied):
+        urls = [make_url(value) for value in supplied if value is not None]
+    else:
+        container = request.getfixturevalue("postgres_container")
+        base_url = make_url(container.get_connection_url())
+        administrator = create_engine(base_url, isolation_level="AUTOCOMMIT")
+        urls = []
+        try:
+            with administrator.connect() as connection:
+                for _ in range(2):
+                    name = "tracker_transfer_test_" + uuid4().hex
+                    connection.execute(text(f'CREATE DATABASE "{name}"'))
+                    owned_names.append(name)
+                    urls.append(base_url.set(database=name))
+        except BaseException:
+            with administrator.connect() as connection:
+                for name in owned_names:
+                    connection.execute(text(f'DROP DATABASE "{name}"'))
+            administrator.dispose()
+            raise
+
+    if len(set(url.database for url in urls)) != 2 or any(
+        re.fullmatch(r"tracker_transfer_test_[a-z0-9_]+", url.database or "") is None for url in urls
+    ):
+        raise ValueError("Transfer databases must have distinct exact tracker_transfer_test_ names")
     engines = [create_engine(url) for url in urls]
-    assert len({engine.url.database for engine in engines}) == 2
-    for engine in engines:
-        assert str(engine.url.database).startswith("tracker_transfer_test_")
-        SQLModel.metadata.create_all(engine)
     try:
+        for engine in engines:
+            SQLModel.metadata.create_all(engine)
         with (
             Session(engines[0], expire_on_commit=False) as source,
             Session(engines[1], expire_on_commit=False) as destination,
         ):
             yield source, destination
     finally:
-        for engine in engines:
-            SQLModel.metadata.drop_all(engine)
-            engine.dispose()
+        try:
+            for engine in engines:
+                SQLModel.metadata.drop_all(engine)
+        finally:
+            for engine in engines:
+                engine.dispose()
+            if administrator is not None:
+                try:
+                    with administrator.connect() as connection:
+                        for name in owned_names:
+                            connection.execute(text(f'DROP DATABASE "{name}"'))
+                finally:
+                    administrator.dispose()
 
 
 def seed_rows(source: Session, destination: Session) -> tuple[Org, Benchmark, Task]:
@@ -224,6 +268,27 @@ def test_transfer_failure_retains_source_and_exact_holds(
             execute("finalize")
             assert destination.get_one(RunLifecycle, run.id).phase == "transferred_history_only"
             assert destination.get_one(RunLifecycle, run.id).released_at is None
+            local_identity = plan.destination_identity.model_copy(
+                update={
+                    "operation_id": uuid4(),
+                    "source_aws_account_id": plan.destination_identity.destination_aws_account_id,
+                }
+            )
+            purge_boundary = MemoryBoundary()
+            deletion = PurgeOperator(
+                destination, build_plan(destination, local_identity), purge_boundary, host_contract=contract()
+            )
+            assert deletion.plan.runs[0].completed_history is not None
+            history = asyncio.run(deletion.inspect(request_nonce=uuid4())).runs[0]
+            assert history.state == "present_history_held"
+            asyncio.run(deletion.prepare())
+            purge_boundary.fenced = True
+            asyncio.run(deletion.purge())
+            assert destination.get(Benchmark, run.id) is None
+            assert destination.get_one(RunLifecycle, run.id).purpose == "deletion"
+            assert source.get_one(RunLifecycle, run.id).phase == "transferred_source_retired"
+            with pytest.raises(LifecycleConflict):
+                execute("finalize")
             return
     assert source.get(Benchmark, run.id) is not None
     assert source.get_one(RunLifecycle, run.id).released_at is None
@@ -261,7 +326,15 @@ def test_real_cli_plan_is_private_and_creates_no_hold_or_journal(pair: tuple[Ses
             "--journal-directory",
             str(tmp_path / "journal"),
         ],
-        env={**os.environ, "SOURCE_PROFILE": "unused-source", "DESTINATION_PROFILE": "unused-destination"},
+        env={
+            **os.environ,
+            "SOURCE_PROFILE": "unused-source",
+            "DESTINATION_PROFILE": "unused-destination",
+            "TRANSFER_TEST_SOURCE_DATABASE_URL": source.get_bind().engine.url.render_as_string(hide_password=False),
+            "TRANSFER_TEST_DESTINATION_DATABASE_URL": destination.get_bind().engine.url.render_as_string(
+                hide_password=False
+            ),
+        },
         capture_output=True,
         text=True,
     )
@@ -739,7 +812,16 @@ def test_cli_apply_and_inspect_resume_across_processes_with_fake_providers(
             arguments.append("--apply")
         result = subprocess.run(
             arguments,
-            env={**os.environ, "SOURCE_PROFILE": "unused-source", "DESTINATION_PROFILE": "unused-destination"},
+            cwd=script.parent.parent,
+            env={
+                **os.environ,
+                "SOURCE_PROFILE": "unused-source",
+                "DESTINATION_PROFILE": "unused-destination",
+                "TRANSFER_TEST_SOURCE_DATABASE_URL": source.get_bind().engine.url.render_as_string(hide_password=False),
+                "TRANSFER_TEST_DESTINATION_DATABASE_URL": destination.get_bind().engine.url.render_as_string(
+                    hide_password=False
+                ),
+            },
             capture_output=True,
             text=True,
         )
@@ -753,3 +835,84 @@ def test_cli_apply_and_inspect_resume_across_processes_with_fake_providers(
     assert destination.get(Benchmark, run.id, populate_existing=True) is not None
     assert destination.get_one(RunLifecycle, run.id).released_at is None
     assert source.get(Benchmark, run.id, populate_existing=True) is not None
+
+
+def test_transfer_cli_in_process_verifies_plan_and_keeps_old_report_on_failure(
+    pair: tuple[Session, Session], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, destination = pair
+    org, run, _ = seed_rows(source, destination)
+    payload = transfer_request(source, destination, org, run)
+    request_path, report_path = tmp_path / "request.json", tmp_path / "report.json"
+    request_path.write_text(json.dumps(payload))
+    source.rollback()
+    destination.rollback()
+    arguments = (
+        request_path.read_bytes(),
+        request_path,
+        report_path,
+        source.get_bind().engine.url.render_as_string(hide_password=False),
+        destination.get_bind().engine.url.render_as_string(hide_password=False),
+        payload["plan"]["source_identity"]["database_target"],
+        payload["plan"]["destination_identity"]["database_target"],
+        "unused-source",
+        "unused-destination",
+        tmp_path / "journal",
+    )
+    assert cli.execute(*arguments) == 0
+    first = report_path.read_bytes()
+    assert json.loads(first)["nonce"] == payload["nonce"]
+    assert report_path.stat().st_mode & 0o777 == 0o600
+    assert not (tmp_path / "journal").exists()
+    assert source.get(RunLifecycle, run.id) is None
+
+    def refuse_replace(self: Path, target: Path) -> Path:
+        raise OSError("private write failed")
+
+    monkeypatch.setattr(Path, "replace", refuse_replace)
+    with pytest.raises(OSError, match="private write failed"):
+        cli.execute(*arguments)
+    assert report_path.read_bytes() == first
+    assert list(tmp_path.glob(".report.json.*")) == []
+
+
+def test_actual_same_account_history_then_transfer_keeps_source_held(
+    pair: tuple[Session, Session], tmp_path: Path
+) -> None:
+    source, destination = pair
+    run, _, relocation = seed(source)
+    execute(source, relocation, "prepare")
+    execute(source, relocation, "relocate")
+    relocation["completion_sha256"] = "c" * 64
+    execute(source, relocation, "release")
+    source.refresh(run)
+    saved_arguments = run.arguments
+    assert saved_arguments.properties is not None
+    org = source.get_one(Org, run.org_id)
+    destination.add(Org(id=org.id, name=org.name))
+    destination.commit()
+    payload = transfer_request(source, destination, org, run)
+    run.arguments = saved_arguments
+    source.add(run)
+    source.commit()
+    for side in ("source_identity", "destination_identity"):
+        payload["plan"][side].update(source_aws_account_id="123456789012", environment="dev")
+    payload["plan"]["runs"][0]["source"] = RunScope(
+        run_id=run.id, original_resources=saved_arguments.properties
+    ).model_dump(mode="json")
+    operator = TransferOperator(source, destination, FakeTransferBoundary(tmp_path))
+    observation = asyncio.run(operator.execute(TransferRequest.model_validate(payload))).runs[0]
+    assert observation.predecessor is not None
+    payload["plan"]["runs"][0].update(
+        predecessor=observation.predecessor.model_dump(mode="json"), source_rows_sha256=observation.source_rows_sha256
+    )
+    payload["action"] = "prepare"
+    asyncio.run(operator.execute(TransferRequest.model_validate(payload)))
+    payload["action"] = "import"
+    imported = asyncio.run(operator.execute(TransferRequest.model_validate(payload)))
+    assert imported.runs[0].destination_phase == "transferred"
+    for session in (source, destination):
+        with pytest.raises(LifecycleConflict):
+            require_unheld(session, run.id)
+    with pytest.raises(LifecycleConflict):
+        execute(source, relocation, "release")

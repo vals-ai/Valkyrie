@@ -166,6 +166,17 @@
               }
             ],
             "default": null
+          },
+          "completed_history": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RelocationPredecessor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -212,6 +223,55 @@
           "released_at"
         ],
         "title": "ReleasedRelocation",
+        "type": "object"
+      },
+      "RelocationPredecessor": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "released_relocation",
+              "completed_history_only"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "identity_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Identity Sha256",
+            "type": "string"
+          },
+          "scope_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Scope Sha256",
+            "type": "string"
+          },
+          "completion_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completion Sha256"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "identity_sha256",
+          "scope_sha256"
+        ],
+        "title": "RelocationPredecessor",
         "type": "object"
       },
       "RunScope": {

@@ -116,6 +116,7 @@ class ObjectTransformation(ContractModel):
 
 
 class RelocationRun(ContractModel):
+    location_policy: Literal["relocate", "hold_only"] = "relocate"
     scope: RunScope
     destination_resources: AWSResources
     expected_label: str | None
@@ -141,6 +142,8 @@ class RelocationPlan(ContractModel):
             new = run.destination_resources
             if old.region != self.identity.region or old.model_copy(update={"s3_bucket": new.s3_bucket}) != new:
                 raise ValueError("same-account relocation may change only the bucket")
+            if (old.s3_bucket == new.s3_bucket) != (run.location_policy == "hold_only"):
+                raise ValueError("Equal buckets require explicit hold_only location policy")
             seen: set[tuple[str, str, str]] = set()
             for transformation in run.transformations:
                 key = (
@@ -159,7 +162,11 @@ class RelocationPlan(ContractModel):
 
     @property
     def sha256(self) -> str:
-        return canonical_digest(self.model_dump(mode="json"))
+        value = self.model_dump(mode="json")
+        for run in value["runs"]:
+            if run["location_policy"] == "relocate":
+                run.pop("location_policy")
+        return canonical_digest(value)
 
 
 class CopiedObject(ContractModel):
