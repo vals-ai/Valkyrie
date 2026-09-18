@@ -251,7 +251,7 @@ def _process_benchmark_kwargs(
     if benchmark_row.aws_managed:
         return {
             "execution_context_json": ManagedExecutionContext(
-                version=2,
+                version=3,
                 benchmark_id=benchmark_row.id,
                 verified_task_ids=verified_task_ids,
                 start_benchmark_request=request,
@@ -1482,6 +1482,7 @@ class RecoveryPreparation:
     dataset: str | None
     queued_recovery: bool
     properties: AWSResources | None = None
+    resolved_properties: AWSResources | None = None
 
 
 def _prepare_recovery(
@@ -1630,6 +1631,10 @@ async def retry_or_resume_benchmark(
         aws_managed=preparation.aws_managed,
         org_id=org_id,
     )
+    if preparation.aws_managed:
+        await validate_saved_managed_storage_runtime(runtime_resolution.runtime, org_id=org_id)
+        preparation = replace(preparation, resolved_properties=runtime_resolution.runtime.resources)
+
     api_key = http_request.headers.get("x-api-key")
     effective_headers = forward_tracker_api_key(
         service_headers,
@@ -1918,6 +1923,13 @@ def _apply_recovery(
             benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"lambda_function": lambda_function})
 
         if benchmark_row.aws_managed:
+            if benchmark_row.arguments.properties is None:
+                if preparation.resolved_properties is None:
+                    raise TrackerServiceError("Managed recovery has no resolved AWS resources")
+                benchmark_row.arguments = benchmark_row.arguments.model_copy(
+                    update={"properties": preparation.resolved_properties}
+                )
+
             resume_request = benchmark_row.managed_start_benchmark_request(
                 service_headers=effective_service_headers,
             )

@@ -562,6 +562,7 @@ class _QueuedExecution:
     benchmark_id: UUID
     verified_task_ids: list[str]
     aws_managed: bool
+    context_version: int | None = None
 
 
 def _parse_queued_execution(
@@ -576,6 +577,10 @@ def _parse_queued_execution(
         request = _parse_start_benchmark_request(start_benchmark_request_json)
         if request.harness_config is None:
             raise ValueError("Queued access-key benchmark request has no AWS configuration.")
+
+        if request.managed_s3_bucket is not None:
+            raise ValueError("Queued execution cannot include an admission-only storage override.")
+
         return _QueuedExecution(
             request=request,
             benchmark_id=UUID(benchmark_id_str),
@@ -594,6 +599,7 @@ def _parse_queued_execution(
         benchmark_id=context.benchmark_id,
         verified_task_ids=context.verified_task_ids,
         aws_managed=True,
+        context_version=context.version,
     )
 
 
@@ -729,7 +735,9 @@ async def _process_benchmark(
                 auth_required=AUTH_REQUIRED,
             )
 
-        runtime = await get_execution_runtime(start_benchmark_request, benchmark_row, org)
+        runtime = await get_execution_runtime(
+            start_benchmark_request, benchmark_row, org, context_version=execution.context_version
+        )
         benchmark_service = await runtime_stack.enter_async_context(start_benchmark_request.benchmark_service)
         sandbox_provider_config = await runtime.get_sandbox_provider_config()
 
