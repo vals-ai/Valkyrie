@@ -1150,7 +1150,7 @@ async def test_prepare_artifact_rejects_download_digest_mismatch(tmp_path: Path)
     assert list(tmp_path.iterdir()) == []
 
 
-async def test_local_release_cache_and_location_validation(tmp_path: Path) -> None:
+async def test_local_release_digest_and_location_validation(tmp_path: Path) -> None:
     root = tmp_path / "releases"
     root.mkdir()
     artifact = root / "executor.pex"
@@ -1160,12 +1160,10 @@ async def test_local_release_cache_and_location_validation(tmp_path: Path) -> No
     supervisor = ExecutorSupervisor(tmp_path / "cache", artifact_reader=FilesystemExecutorArtifactReader(root))
     dispatch = replace(_dispatch(digest=digest), artifact_uri=artifact.as_uri())
 
-    cached = await supervisor.prepare_artifact(dispatch)
-    assert cached.read_bytes() == content
-    artifact.unlink()
-    assert await supervisor.prepare_artifact(dispatch) == cached
+    assert await supervisor.prepare_artifact(dispatch) == artifact
+    assert not list(supervisor.cache_dir.iterdir())
     with pytest.raises(ValueError, match="outside"):
         await supervisor.prepare_artifact(replace(dispatch, artifact_uri=(tmp_path / "outside.pex").as_uri()))
-    cached.write_bytes(b"damaged cache")
-    artifact.write_bytes(content)
-    assert (await supervisor.prepare_artifact(dispatch)).read_bytes() == content
+    artifact.write_bytes(b"damaged release")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        await supervisor.prepare_artifact(dispatch)

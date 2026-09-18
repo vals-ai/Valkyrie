@@ -13,7 +13,7 @@ class FilesystemExecutorArtifactReader:
             raise ValueError("Local executor release root must be absolute")
         self.root = root.resolve()
 
-    def _path(self, artifact_uri: str) -> Path:
+    def validate(self, artifact_uri: str) -> Path:
         parsed = urlparse(artifact_uri)
         if parsed.scheme != "file" or parsed.netloc or parsed.query or parsed.fragment:
             raise ValueError("Local executor artifact URI must use file:///absolute/path")
@@ -25,8 +25,5 @@ class FilesystemExecutorArtifactReader:
             raise ValueError("Executor artifact URI is outside the configured local release root")
         return path
 
-    def validate(self, artifact_uri: str) -> None:
-        self._path(artifact_uri)
-
     def open(self, artifact_uri: str) -> BufferedReader:
-        return self._path(artifact_uri).open("rb")
+        return self.validate(artifact_uri).open("rb")
