@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 from benchmark_service import ExecResult
 from benchmark_service.client import (
     BenchmarkServiceClient,
@@ -28,6 +29,7 @@ import tracker.sandbox as sandbox_module
 import tracker.utils.run_orchestration as run_orchestration_module
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 import tracker.utils.task_execution as utils_module
+from main import app
 from tests.unit.utils.task_execution_support import (
     TEST_ORG,
     bind_task_to_dispatch,
@@ -42,6 +44,7 @@ from tracker.database.models import (
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
+    FailureCategory,
     Task,
     TaskBreakdown,
     TaskStatus,
@@ -101,8 +104,13 @@ class TestBenchmarkServiceFailures:
         assert error_result.operation == "websocket"
         assert error_result.error_type == "ConnectionClosedError"
         assert error_result.cause_code == "websocket_connection_closed"
+        assert error_result.category == FailureCategory.BENCHMARK_SERVICE
         assert error_result.retry_scheduled is False
         assert error_result.failed_attempt_number is None
+
+        api_response = TestClient(app).get(f"/benchmarks/{benchmark_id}/tasks/{task_row.task_id}")
+        assert api_response.status_code == 200
+        assert api_response.json()["failure_category"] == "benchmark_service"
 
     @pytest.mark.parametrize(
         ("code", "reason"),
@@ -537,6 +545,7 @@ class TestBenchmarkServiceFailures:
         assert "WebSocket" not in error_result.error_message
         assert error_result.producer == "tracker"
         assert error_result.operation == "process_task"
+        assert error_result.category == FailureCategory.UNKNOWN
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_validation_error_produces_human_readable_message(
@@ -661,6 +670,7 @@ class TestBenchmarkServiceFailures:
         assert error_result.operation == "upload_output_artifacts"
         assert error_result.error_type == "OutputArtifactError"
         assert error_result.cause_code is None
+        assert error_result.category == FailureCategory.INFRASTRUCTURE
         assert error_result.retry_scheduled is False
         assert error_result.failed_attempt_number is None
         assert any(expected_log in message for message in logged_messages)
