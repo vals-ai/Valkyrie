@@ -13,7 +13,7 @@ async def test_attempts_pagination_filters_and_reopening(tmp_path: Path) -> None
     logs = FilesystemLogs(tmp_path)
     run_id = uuid4()
     started = datetime.now(UTC)
-    logs.create_benchmark(str(run_id), retention_days=30)
+    await logs.create_benchmark(str(run_id), retention_days=30)
     for index in range(3):
         stream = task_log_stream_name("group/task:one", started + timedelta(seconds=index))
         logs.write(f"{run_id}:{stream}", f"attempt {index}")
@@ -38,7 +38,7 @@ async def test_concurrent_writes_and_follow(tmp_path: Path) -> None:
     logs = FilesystemLogs(tmp_path)
     run_id = uuid4()
     started = datetime.now(UTC)
-    logs.create_benchmark(str(run_id), retention_days=30)
+    await logs.create_benchmark(str(run_id), retention_days=30)
     stream_key = f"{run_id}:{task_log_stream_name('task', started)}"
     await asyncio.gather(*(asyncio.to_thread(logs.write, stream_key, str(index)) for index in range(20)))
     reference = TaskLogReference(run_id, "task", started)
@@ -54,7 +54,7 @@ async def test_byte_cursors_skip_filtered_logs_and_wait_for_complete_records(tmp
     logs = FilesystemLogs(tmp_path)
     run_id = uuid4()
     started = datetime.now(UTC)
-    logs.create_benchmark(str(run_id), retention_days=0)
+    await logs.create_benchmark(str(run_id), retention_days=0)
     stream_key = f"{run_id}:{task_log_stream_name('task', started)}"
     logs.write(stream_key, "match café\nsecond line")
     logs.write(stream_key, "filtered out")

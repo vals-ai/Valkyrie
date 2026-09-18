@@ -618,7 +618,7 @@ class TestRunRecovery:
         ]
         captured_lambda_payloads: list[dict[str, Any]] = []
 
-        def _capture_lambda_payload(
+        async def _capture_lambda_payload(
             _client: Any,
             _function_name: str,
             payload: dict[str, Any],

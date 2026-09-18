@@ -60,9 +60,11 @@ class AWSClientProvider(ABC):
     def secretsmanager_async_client(self) -> Any:
         return self._s3_session().client("secretsmanager")  # pyright: ignore[reportUnknownMemberType]
 
-    @lru_cache(maxsize=32)
+    def cloudwatch_logs_async_client(self) -> Any:
+        return cast(Any, self._s3_session().client("logs", config=_HIGH_CONCURRENCY_CLIENT_CONFIG))  # pyright: ignore[reportUnknownMemberType]
+
     def lambda_client(self, config: Config | None = None) -> Any:
-        return _boto3_client("lambda", config=config, **self._client_kwargs())
+        return cast(Any, self._s3_session().client("lambda", config=config))  # pyright: ignore[reportUnknownMemberType]
 
     def maximum_presign_ttl(self, requested_seconds: int) -> int:
         return requested_seconds
