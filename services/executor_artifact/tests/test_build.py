@@ -1,8 +1,12 @@
+import json
 import zipfile
+from collections.abc import Sequence
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
+import services.executor_artifact.build as builder
 from services.executor_artifact.build import release_identity, verify_archive
 
 
@@ -35,3 +39,27 @@ def test_verify_archive_requires_executor_entrypoint_and_importable_protocol(tmp
 
     with pytest.raises(ValueError, match="executor_protocol"):
         verify_archive(wrong_protocol_location)
+
+
+def test_new_artifact_manifest_requires_protocol_three(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_command(command: Sequence[str], **_kwargs: object) -> None:
+        if "export" in command:
+            Path(command[command.index("--output-file") + 1]).write_text("requirements")
+        elif "--wheel" in command:
+            directory = Path(command[command.index("--out-dir") + 1])
+            (directory / "tracker-test.whl").write_bytes(b"wheel")
+        elif "pex" in command:
+            artifact = Path(command[command.index("-o") + 1])
+            with zipfile.ZipFile(artifact, "w") as archive:
+                archive.writestr("tracker/executor/entrypoint.py", "")
+                archive.writestr("executor_protocol.py", "")
+
+    monkeypatch.setattr(builder.platform, "machine", lambda: "arm64")
+    commands = Mock(side_effect=fake_command)
+    monkeypatch.setattr(builder.subprocess, "run", commands)
+
+    manifest = builder.build(tmp_path, "a" * 40)
+
+    assert manifest["protocol_version"] == "3"
+    assert json.loads((tmp_path / "manifest.json").read_text())["protocol_version"] == "3"
+    assert commands.call_count == 4

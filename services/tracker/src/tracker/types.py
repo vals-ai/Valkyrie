@@ -262,7 +262,7 @@ def validate_managed_execution_request(request: StartBenchmarkRequest) -> None:
 class ManagedExecutionContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal[2]
+    version: Literal[2, 3]
     benchmark_id: UUID
     verified_task_ids: list[str]
     start_benchmark_request: StartBenchmarkRequest
@@ -270,6 +270,9 @@ class ManagedExecutionContext(BaseModel):
     @model_validator(mode="after")
     def validate_credential_free_request(self) -> "ManagedExecutionContext":
         validate_managed_execution_request(self.start_benchmark_request)
+        if self.start_benchmark_request.managed_s3_bucket is not None:
+            raise ValueError("Queued execution cannot include an admission-only storage override")
+
         return self
 
 

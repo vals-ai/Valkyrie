@@ -1148,3 +1148,17 @@ async def test_prepare_artifact_rejects_download_digest_mismatch(tmp_path: Path)
         await supervisor.prepare_artifact(_dispatch(digest="0" * 64))
 
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("protocol_version", ["1", "2", "3"])
+def test_host_accepts_current_and_pinned_legacy_protocols(protocol_version: str) -> None:
+    dispatch = ArtifactDispatch.from_payload(
+        {
+            "executor_release_id": "immutable-release",
+            "executor_artifact_uri": "s3://artifacts/releases/immutable.pex",
+            "executor_artifact_digest": "a" * 64,
+            "executor_protocol_version": protocol_version,
+        }
+    )
+    assert dispatch.protocol_version == protocol_version
+    assert dispatch.release_id == "immutable-release"
