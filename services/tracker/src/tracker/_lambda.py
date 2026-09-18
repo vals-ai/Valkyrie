@@ -20,7 +20,7 @@ async def invoke_lambda(
     client_provider: AWSClientProvider,
     function_name: str,
     payload: dict[str, Any],
-    config: Config | None = None,
+    config: Config,
 ) -> Any:
     """Invoke a Lambda using the provided client source and return its parsed payload.
 

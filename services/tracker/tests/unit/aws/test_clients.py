@@ -89,7 +89,7 @@ class TestAWSClientProviders:
         )
         assert [session.client.call_args_list for session in sessions] == [
             [call("s3", config=ANY)],
-            [call("logs", config=ANY)],
+            [call("logs")],
             [call("secretsmanager")],
             [call("lambda", config=None)],
         ]
@@ -121,7 +121,7 @@ class TestAWSClientProviders:
         assert session_factory.call_args_list == [call(region_name=region)] * 4
         assert [session.client.call_args_list for session in sessions] == [
             [call("s3", config=ANY)],
-            [call("logs", config=ANY)],
+            [call("logs")],
             [call("secretsmanager")],
             [call("lambda", config=None)],
         ]
