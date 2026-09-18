@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from tracker.exceptions import SecretsError
+from tracker.runtime.secrets import resolve_secrets
 from tracker.local.runtime import LocalRuntimeFactory
 
 
@@ -17,13 +18,13 @@ async def test_local_runtime_scopes_files_and_clears_secrets(tmp_path: Path) -> 
         tmp_path, org_id, secret_references=references, execution_secrets={"API_KEY": "transient-value"}
     ) as runtime:
         await runtime.objects.put_bytes("agent.zip", b"agent")
-        assert await runtime.resolve_secrets(references) == {"API_KEY": "transient-value"}
+        assert await resolve_secrets(references, runtime.secrets) == {"API_KEY": "transient-value"}
         assert runtime.artifacts.object_location("agent.zip") == str(
             tmp_path / "orgs" / str(org_id) / "objects/agent.zip"
         )
         assert (await runtime.get_sandbox_provider_config()).type == "docker"
     with pytest.raises(SecretsError, match="no values"):
-        await runtime.resolve_secrets(references)
+        await resolve_secrets(references, runtime.secrets)
     async with LocalRuntimeFactory.open(tmp_path, org_id) as reopened:
         assert await reopened.objects.get_bytes("agent.zip") == b"agent"
     async with LocalRuntimeFactory.open(tmp_path, uuid4()) as other:
@@ -59,7 +60,7 @@ async def test_executor_reads_only_declared_credentials_fresh_for_each_dispatch(
         source.write_text(f"MODEL_KEY={value}\nUNRELATED_KEY=must-not-inject\n", encoding="utf-8")
         async with AsyncExitStack() as stack:
             runtime = await get_execution_runtime(request, benchmark, org, runtime_stack=stack)
-            assert await runtime.resolve_secrets(contract.secrets) == {"MODEL_KEY": value}
+            assert await resolve_secrets(contract.secrets, runtime.secrets) == {"MODEL_KEY": value}
             with pytest.raises(SecretsError, match="no values"):
                 await runtime.secrets.get("UNRELATED_KEY")
         assert value not in benchmark.model_dump_json()

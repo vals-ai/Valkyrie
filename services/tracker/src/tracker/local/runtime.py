@@ -1,6 +1,5 @@
 """Compose local runtime services from process configuration."""
 
-from asyncio import to_thread
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,7 +19,7 @@ class LocalRuntimeServices(RuntimeServices):
 
     async def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
         """Initialize the run log file."""
-        await to_thread(self.logs.create_benchmark, str(benchmark_id), retention_days=0)
+        await self.logs.create_benchmark(str(benchmark_id), retention_days=0)
 
     async def get_sandbox_provider_config(self) -> SandboxProviderConfig:
         return DockerProviderConfig()
