@@ -15,10 +15,10 @@ from executor_protocol import SUPPORTED_PROTOCOL_VERSIONS, validate_executor_dig
 from tracker.database.models import ExecutorRelease
 from tracker.executor.release_control import (
     ReleaseControlError,
-    activate_release,
+    register_release,
+    promote_release,
     get_executor_admission,
     select_active_release,
-    verify_release_artifact,
 )
 from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader
 from tracker.local.storage import local_path
@@ -72,7 +72,9 @@ def initialize_release(
         raise ReleaseControlError("Cannot initialize a local release during executor maintenance")
     if admission.release_id is not None and not replace_active:
         active = select_active_release(session)
-        verify_release_artifact(session, active.id, artifact_reader=reader)
+        with reader.open(active.artifact_uri) as source:
+            if hashlib.file_digest(source, "sha256").hexdigest() != active.artifact_digest:
+                raise ReleaseControlError("Active local executor artifact has an invalid digest")
         return active
 
     manifest = LocalReleaseManifest.model_validate_json(manifest_path.read_bytes())
@@ -87,7 +89,10 @@ def initialize_release(
         artifact_digest=digest,
         protocol_version=manifest.protocol_version,
     )
-    return activate_release(session, candidate, artifact_reader=reader)
+    register_release(session, candidate)
+    candidate.readiness_verified = True
+    session.add(candidate)
+    return promote_release(session, candidate.id)
 
 
 def main() -> None:

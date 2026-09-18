@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import io
 import json
 from json import JSONDecodeError
 import logging
@@ -96,11 +95,11 @@ class FakeDispatchStore:
 class FakeS3Client:
     def __init__(self, content: bytes) -> None:
         self.content = content
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str, str]] = []
 
-    def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
-        self.calls.append((Bucket, Key))
-        return {"Body": io.BytesIO(self.content)}
+    def download_file(self, bucket: str, key: str, filename: str) -> None:
+        self.calls.append((bucket, key, filename))
+        Path(filename).write_bytes(self.content)
 
 
 class RecordingCursor:
@@ -284,8 +283,9 @@ async def test_prepare_artifact_downloads_and_verifies_by_digest(tmp_path: Path)
     assert artifact_path.read_bytes() == content
     assert artifact_path.stat().st_mode & 0o111
     assert len(client.calls) == 1
-    bucket, key = client.calls[0]
+    bucket, key, temporary_name = client.calls[0]
     assert (bucket, key) == ("artifacts", "executors/v2.pex")
+    assert Path(temporary_name).parent == tmp_path
     assert list(tmp_path.iterdir()) == [artifact_path]
 
 
@@ -1463,12 +1463,9 @@ def test_release_readers_bootstrap_without_tracker_dependencies(tmp_path: Path) 
     files = [
         "executor_protocol.py",
         "tracker/__init__.py",
-        "tracker/aws/__init__.py",
-        "tracker/aws/executor_artifacts.py",
         "tracker/local/__init__.py",
         "tracker/local/executor_artifacts.py",
         "tracker/runtime/__init__.py",
-        "tracker/runtime/executor_artifacts.py",
         "tracker/runtime/lifecycle.py",
     ]
     for name in files:
@@ -1482,7 +1479,6 @@ def test_release_readers_bootstrap_without_tracker_dependencies(tmp_path: Path) 
             "-c",
             (
                 "from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader; "
-                "from tracker.aws.executor_artifacts import S3ExecutorArtifactReader; "
                 "from tracker.runtime.lifecycle import finish_cleanup; "
                 "import sys; assert 'boto3' not in sys.modules; assert 'pydantic' not in sys.modules"
             ),
