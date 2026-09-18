@@ -120,6 +120,7 @@ class FakeTransferBoundary:
         run: TransferRun,
         *,
         source_removed: bool = False,
+        source_partial: bool = False,
         archive: ArchiveReport | None = None,
     ) -> None:
         pass

@@ -39,6 +39,7 @@ class TransferBoundary(Protocol):
         run: TransferRun,
         *,
         source_removed: bool = False,
+        source_partial: bool = False,
         archive: ArchiveReport | None = None,
     ) -> None: ...
     async def archive(self, request: TransferRequest, run: TransferRun) -> ArchiveReport: ...
@@ -228,12 +229,12 @@ class TransferOperator:
             exclusive_operation(self.destination, request.plan.destination_identity),
         ):
             self._destination_catalog(request)
+            if request.action == "inspect" and request.parent_completion is not None:
+                self._inspect_completion(request)
+
             observations: list[TransferObservation] = []
             for run in request.plan.runs:
                 observations.append(await self._execute_run(request, run))
-
-            if request.action == "inspect" and request.parent_completion is not None:
-                self._inspect_completion(request)
 
             return TransferResponse(
                 copied_objects_sha256=digest([item.model_dump(mode="json") for item in request.copied_objects])
@@ -477,7 +478,13 @@ class TransferOperator:
                     self.destination.add(destination_record)
                 self.destination.commit()
         if request.action == "inspect" and archive is not None:
-            await self.boundary.verify_objects(request, run, source_removed=retired, archive=archive)
+            await self.boundary.verify_objects(
+                request,
+                run,
+                source_removed=retired,
+                source_partial=request.parent_completion is not None and not retired,
+                archive=archive,
+            )
         return self._observation(
             request, run, source, destination_rows, source_record, destination_record, archive, dispatches
         )
@@ -540,8 +547,17 @@ class TransferOperator:
         assert request.parent_completion is not None
         completion_digest = digest(request.parent_completion.model_dump(mode="json"))
         for run in request.plan.runs:
-            for session, destination in ((self.source, False), (self.destination, True)):
-                _, checkpoint = self._checkpoint(session, request, run, destination=destination)
+            _, source_checkpoint = self._checkpoint(self.source, request, run, destination=False)
+            _, destination_checkpoint = self._checkpoint(self.destination, request, run, destination=True)
+            if (source_checkpoint.phase, destination_checkpoint.phase) not in {
+                ("transferred", "transferred"),
+                ("transferred_source_retired", "transferred"),
+                ("transferred_source_retired", "transferred_history_only"),
+                ("transferred_source_retired", "released"),
+            }:
+                raise LifecycleConflict("Parent completion requires transferred source and destination checkpoints")
+
+            for checkpoint in (source_checkpoint, destination_checkpoint):
                 if checkpoint.parent_completion_sha256 not in {None, completion_digest}:
                     raise LifecycleConflict("Retained parent completion authorization changed")
 
