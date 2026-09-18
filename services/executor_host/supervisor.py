@@ -584,12 +584,12 @@ class ExecutorSupervisor:
         return await finish_cleanup(asyncio.create_task(asyncio.to_thread(self._prepare_artifact, dispatch)))
 
     def _prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
         if self.artifact_reader is not None:
             artifact_path = self.artifact_reader.validate(dispatch.artifact_uri)
             verify_file_digest(artifact_path, dispatch.artifact_digest)
             return artifact_path
 
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         bucket, key = validate_executor_artifact_uri(dispatch.artifact_uri, self.artifact_bucket, self.artifact_prefix)
         artifact_path = self.cache_dir / f"{dispatch.artifact_digest}.pex"
         try:
