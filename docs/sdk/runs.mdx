@@ -23,6 +23,35 @@ run = await client.runs.start(
 
 `priority` accepts `0` (P0, highest) through `4` (P4, lowest). Managed shared-pool runs default to P3 when it is omitted. An explicit priority is rejected when the tracker queue is disabled or the selected provider uses direct execution. See [Start a run](/runs/start#prioritize-work-in-a-managed-sandbox-pool) for the queue behavior.
 
+## Select managed run storage
+
+Use `managed_s3_bucket` for a bucket that your application has provisioned and tagged for your Valkyrie organization:
+
+```python
+from valkyrie.sdk import ValkyrieRunError
+
+try:
+    run = await client.runs.start(
+        agent="sweagent",
+        benchmark="swebench",
+        managed_s3_bucket="vs-dev-acme-123",
+    )
+except ValkyrieRunError as error:
+    # A non-null ID identifies a created run whose bucket was not confirmed.
+    created_run_id = error.run_id
+    raise
+
+actual_bucket = run.storage_bucket
+```
+
+The SDK uses `/start-benchmark-with-storage`. An older tracker returns 404 before it creates a run. Do not retry on `/start-benchmark` or remove the bucket after an error. A missing or different response bucket raises `ValkyrieRunError` with the created UUID in `run_id`; use that value for reconciliation. Existing message-only error construction remains supported and gives `run_id=None`.
+
+The override cannot be combined with access-key credentials or explicit `properties`. The tracker checks the bucket account, region, organization tag, environment, and enabled versioning. Agent-library reads remain in shared storage; the frozen bundle and run artifacts use the selected bucket. See [Managed run storage deployment](/deployment/managed-run-storage) for policy and rollout requirements.
+
+Persist the returned `storage_bucket` for each run. `client.runs.fetch`, `client.runs.metadata`, streaming progress, and `client.benchmarks.fetch` also return the actual bucket. Saved resources remain authoritative after deployment defaults change and during retry or recovery. Legacy managed rows without saved resources use the shared deployment bucket until their first new recovery saves that location. Legacy access-key metadata without enough credentials returns `None`.
+
+Artifact download URLs require no new HTTP header. Use the complete returned URL with an ordinary HTTP client.
+
 ## Fetch or stream progress
 
 ```python

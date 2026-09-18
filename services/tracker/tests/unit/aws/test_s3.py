@@ -6,9 +6,11 @@ Run: uv run pytest tests/unit/aws/test_s3.py
 from collections.abc import AsyncIterator
 from typing import Any, Literal, cast
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import pytest
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from tracker.aws import s3 as s3_module
@@ -828,3 +830,23 @@ class TestUploadStreamToS3:
         assert mock_s3_client.parts == [(1, b"final")]
         assert mock_s3_client.completed_parts is None
         assert mock_s3_client.aborted
+
+
+async def test_managed_presigned_get_requires_only_the_host_header(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+) -> None:
+    """Sign locally with real botocore; URL-only clients must need no owner header."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    monkeypatch.setattr("tracker.aws.clients._S3_CLIENT_CONFIG", Config(signature_version="s3v4"))
+    runtime = AWSRuntime(
+        resources=aws_runtime.resources,
+        clients=DefaultChainAWSClientProvider(region="us-east-1"),
+        expected_bucket_owner="123456789012",
+    )
+    url = await create_presigned_url("benchmarks/run/output.txt", runtime)
+    query = parse_qs(urlparse(url).query)
+
+    assert query["X-Amz-SignedHeaders"] == ["host"]
+    assert "x-amz-expected-bucket-owner" not in query

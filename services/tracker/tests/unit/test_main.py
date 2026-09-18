@@ -34,13 +34,14 @@ import main as main_module
 import services.executor_host.supervisor as executor_host  # pyright: ignore[reportMissingImports]
 from executor_protocol import SUPPORTED_PROTOCOL_VERSION, ExecutorTelemetryContext
 from main import app, tracker_service_error_handler
+from tests.storage_lifecycle_support import MemoryS3
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.aws.clients import DefaultChainAWSClientProvider
 from tracker.aws.managed_storage import ManagedStorageError
 from tracker.aws.resolver import AWSRuntimeResolution
 from tracker.aws.runtime import AWSResources, AWSRuntime
-from tracker.aws.s3 import S3ObjectCopier
+from tracker.aws.s3 import S3ObjectCopier, download_from_s3, upload_to_s3
 from tracker.runtime.storage import ObjectStore, StoredObject, StoredObjectCopy
 from tracker.database.models import (
     AgentContractRequest,
@@ -89,8 +90,9 @@ def active_executor_release(database_session: Session) -> None:
     )
     admission = database_session.get(ExecutorAdmission, 1)
     assert admission is not None
-    admission.release_id = release.id
     database_session.add(release)
+    database_session.flush()
+    admission.release_id = release.id
     database_session.add(admission)
     database_session.commit()
 
@@ -3139,3 +3141,138 @@ class TestTrackerAPI:
         assert response.json() == {
             "detail": "This run was started with access-key AWS and requires its legacy AWS configuration."
         }
+
+
+async def test_owner_storage_lifecycle_keeps_saved_bucket(
+    contract: AgentContractRequest,
+    database_session: Session,
+    monkeypatch: MonkeyPatch,
+    mock_kicker: Any,
+) -> None:
+    storage = MemoryS3()
+    storage.objects["shared-library", f"agents/{contract.name}.zip"] = b"original bundle"
+    for name, value in {
+        "AWS_DEPLOYMENT_ROLE_ORG_IDS": str(TEST_ORG_ID),
+        "AWS_DEPLOYMENT_ACCOUNT_ID": "123456789012",
+        "AWS_DEPLOYMENT_REGION": "us-east-1",
+        "AWS_DEPLOYMENT_S3_BUCKET": "shared-library",
+        "AWS_DEPLOYMENT_LOG_GROUP": "deployment-log-group",
+        "AWS_DEPLOYMENT_LOG_RETENTION_DAYS": "30",
+        "AWS_MANAGED_SUBMISSIONS_ENABLED": True,
+        "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED": True,
+        "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS": json.dumps({str(TEST_ORG_ID): ["dev"]}),
+    }.items():
+        monkeypatch.setattr(f"tracker.config.{name}", value)
+
+    def s3_client(_provider: DefaultChainAWSClientProvider) -> MemoryS3:
+        return storage
+
+    async def get_bytes(store: Any, key: str) -> bytes:
+        return await download_from_s3(key, store._runtime)
+
+    async def put_bytes(store: Any, key: str, content: bytes) -> None:
+        await upload_to_s3(content, key, store._runtime)
+
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", s3_client)
+    monkeypatch.setattr(main_module.S3ObjectStore, "get_bytes", get_bytes)
+    monkeypatch.setattr(main_module.S3ObjectStore, "put_bytes", put_bytes)
+    monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent_artifact_to_benchmark)
+    monkeypatch.setattr(main_module, "get_contract_from_zip_bytes", Mock(return_value=contract))
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+    request = StartBenchmarkRequest(
+        contract=contract.model_copy(update={"install_cmd": "", "run_cmd": ""}),
+        benchmark_name="swebench",
+        managed_s3_bucket="vs-dev-acme-123",
+        sandbox_provider="daytona",
+        sandbox_provider_secret_name="provider-secret",
+    )
+    started = client.post("/start-benchmark-with-storage", json=request.model_dump(mode="json"))
+    assert started.status_code == 200, started.text
+    persisted_response = json.loads(started.content)
+    assert persisted_response["storage_bucket"] == "vs-dev-acme-123"
+    run_id = persisted_response["benchmark_id"]
+    frozen_key = f"benchmarks/{run_id}/{contract.name}.zip"
+    assert storage.objects["vs-dev-acme-123", frozen_key] == b"original bundle"
+    copy_arguments = next(arguments for operation, arguments in storage.calls if operation == "copy")
+    assert copy_arguments["CopySource"] == {"Bucket": "shared-library", "Key": f"agents/{contract.name}.zip"}
+    assert copy_arguments["ExpectedSourceBucketOwner"] == "123456789012"
+    assert copy_arguments["CopySourceIfMatch"] == '"frozen-etag"'
+    storage.objects["shared-library", f"agents/{contract.name}.zip"] = b"new bundle"
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "changed-default")
+    monkeypatch.setattr("tracker.config.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED", False)
+
+    benchmark = database_session.get(Benchmark, UUID(run_id))
+    assert benchmark is not None
+    benchmark.status = BenchmarkStatus.FINISHED
+    task = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).one()
+    task.status = TaskStatus.FINISHED
+    database_session.add(benchmark)
+    database_session.add(task)
+    database_session.flush()
+    database_session.add(EvaluationResult(org_id=TEST_ORG_ID, task=task.id, instance_id="task_0", result={"score": 1}))
+    database_session.add(FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark.id, final_score=1))
+    database_session.commit()
+    output_key = f"benchmarks/{run_id}/task_0/output.txt"
+    storage.objects["vs-dev-acme-123", output_key] = b"output bytes"
+    for endpoint in ["fetch-benchmark", f"fetch-benchmark-metadata/{run_id}", f"benchmarks/{run_id}"]:
+        response = client.get(f"/{endpoint}", params={"benchmark_id": run_id})
+        assert response.status_code == 200, response.text
+        assert response.json()["storage_bucket"] == "vs-dev-acme-123"
+
+    result = client.get("/retrieve-results", params={"benchmark_id": run_id, "s3": True})
+    assert result.status_code == 200, result.text
+    result_key = f"benchmarks/{run_id}/swebench.json"
+    assert result.json()["s3_url"] == f"s3://vs-dev-acme-123/{result_key}"
+    saved_result = storage.objects["vs-dev-acme-123", result_key]
+    assert json.loads(saved_result)["evaluation_results"]["task_0"]["score"] == 1
+    assert client.get("/check-results-exist", params={"benchmark_id": run_id}).json() == {"exists": True}
+    artifacts = client.get(f"/benchmarks/{run_id}/artifacts", params={"prefix": "task_0"})
+    assert artifacts.status_code == 200, artifacts.text
+    assert artifacts.json()["artifacts"][0]["path"] == "task_0/output.txt"
+    download = client.get(f"/benchmarks/{run_id}/artifacts/download-url", params={"path": "task_0/output.txt"})
+    assert download.status_code == 200, download.text
+    assert download.json()["download_url"].startswith("https://vs-dev-acme-123.example/")
+    outputs = client.get(f"/fetch-run-outputs/{run_id}", params={"task_ids": "task_0"})
+    assert outputs.status_code == 200, outputs.text
+    with tarfile.open(fileobj=io.BytesIO(outputs.content)) as archive:
+        output = archive.extractfile("task_0/output.txt")
+        assert output is not None and output.read() == b"output bytes"
+
+    monkeypatch.setattr(
+        BenchmarkServiceClient,
+        "final_score",
+        AsyncMock(
+            return_value=FinalScoreResponse(
+                tasks_evaluated=["task_0"],
+                final_score=0.5,
+                metadata={},
+            )
+        ),
+    )
+    preview = client.get("/preview-results", params={"benchmark_id": run_id})
+    assert preview.status_code == 200, preview.text
+    archived = [
+        content
+        for (bucket, key), content in storage.objects.items()
+        if bucket == "vs-dev-acme-123" and "/archive/" in key
+    ]
+    assert archived == [saved_result]
+    payloads: list[dict[str, Any]] = []
+
+    def invoke_lambda(_clients: object, _function: str, payload: dict[str, Any], **_arguments: Any) -> dict[str, str]:
+        payloads.append(payload)
+        return {"reading_plan_url": "https://analysis.example/result"}
+
+    monkeypatch.setattr("tracker.docent_analysis.engine", database_session.get_bind())
+    monkeypatch.setattr("tracker.docent_analysis.invoke_lambda", invoke_lambda)
+    analysis = client.post(f"/analyze-benchmark/{run_id}", json={"lambda_function": "test-analyzer"})
+    assert analysis.status_code == 200 and "event: done" in analysis.text
+    assert payloads[0]["s3_bucket"] == "vs-dev-acme-123"
+    retry = client.post(f"/retry-or-resume-benchmark/{run_id}", params={"task_ids": "task_0"})
+    assert retry.status_code == 200, retry.text
+    recovery_context = mock_kicker.queued_calls[-1]["execution_context_json"]
+    assert recovery_context["start_benchmark_request"]["properties"]["s3_bucket"] == "vs-dev-acme-123"
+    assert storage.objects["vs-dev-acme-123", frozen_key] == b"original bundle"
+    for operation, arguments in storage.calls:
+        expected_bucket = "shared-library" if arguments.get("Key", "").startswith("agents/") else "vs-dev-acme-123"
+        assert arguments["Bucket"] == expected_bucket, (operation, arguments)

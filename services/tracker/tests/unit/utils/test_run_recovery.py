@@ -2902,6 +2902,12 @@ async def test_recovery_pins_resources_under_lock_and_execution_uses_saved_bucke
         database_session.commit()
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "changed-default")
 
+    metadata = client.get(f"/fetch-benchmark-metadata/{benchmark.id}")
+    assert metadata.status_code == 200, metadata.text
+    assert metadata.json()["storage_bucket"] == "legacy-bucket"
+    database_session.refresh(benchmark)
+    assert benchmark.arguments.properties == (None if legacy_null else resources)
+
     locks: list[UUID] = []
     original_fetch = main_module.fetch_benchmark_row
     original_payload = main_module._process_benchmark_kwargs  # pyright: ignore[reportPrivateUsage]
@@ -2933,6 +2939,9 @@ async def test_recovery_pins_resources_under_lock_and_execution_uses_saved_bucke
     request = StartBenchmarkRequest.model_validate(context["start_benchmark_request"])
     assert request.properties == resources
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "another-default")
+    metadata_after_recovery = client.get(f"/fetch-benchmark-metadata/{benchmark.id}")
+    assert metadata_after_recovery.status_code == 200, metadata_after_recovery.text
+    assert metadata_after_recovery.json()["storage_bucket"] == "legacy-bucket"
     runtime = Mock(spec=RuntimeServices)
     create_runtime = Mock(return_value=runtime)
     monkeypatch.setattr(CloudRuntimeFactory, "create_runtime", create_runtime)

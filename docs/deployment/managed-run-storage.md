@@ -55,3 +55,17 @@ Use this order for each environment:
 3. Leave protocol 3 readers, hosts, artifacts, IAM, and saved locations in service for admitted owner runs.
 
 Do not roll back to production code that cannot parse `BenchmarkArguments.properties` while owner-storage rows exist. Rollback does not rewrite saved bucket fields or move objects. Promotion to production must include the runtime-persistence changes already required from dev and must preserve the unique production CLI environment selection. Do not apply this branch as an isolated change to old production code.
+
+## ValSmith integration contract
+
+`StageRun.storage_bucket` and `ModelRun.storage_bucket` must store the actual bucket returned by Valkyrie for each run. They are run outputs, not values copied from the owner's current bucket. After a lost start response, recover the location with the organization-scoped run detail or metadata endpoint. The SDK exposes a created UUID as `ValkyrieRunError.run_id` when the start response has a missing or different bucket; callers must not parse exception text or submit again without the override.
+
+`DatasetViewRun.source_bucket` is selected per run. A view may read old runs from shared storage and new runs from different owner buckets. `DatasetViewRequest.destination_bucket` remains the dataset bucket. A null legacy per-run column uses ValSmith's documented legacy location. Publication must not replace a saved source with an owner's current bucket.
+
+The provisioner must set `valsmith:valkyrie-org-id` to the canonical Valkyrie organization UUID before admission. ValSmith owns its two per-run columns, database migrations, provisioning, SDK pin, publication, and Lambda source selection. This repository makes none of those changes.
+
+Use a reviewed immutable SDK commit that includes the optional structured `ValkyrieRunError.run_id` and `SingleBenchmarkResponse.storage_bucket` fields. The earlier SDK pin without those fields is insufficient for reconciliation. Registry IAM and external Lambda/OIDC policy deployments must precede owner writes; ValSmith application rollout must follow the compatible tracker, host, and executor-release cutover.
+
+## Verification and remaining release gates
+
+Local tests cover saved locations with fake AWS operations and disposable PostgreSQL databases. They cannot prove deployed IAM or account configuration. Before production writes, complete the non-production smoke run through bundle freeze, terminal results, publication, download, and recovery. Record the tracker and host revisions, immutable executor artifact and protocol, SDK commit, and deployed IAM/account settings. Cloud deployments, service-role changes, and production enablement remain separate operator release gates.
