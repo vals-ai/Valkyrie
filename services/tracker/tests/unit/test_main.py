@@ -1727,7 +1727,7 @@ class TestTrackerAPI:
         ) -> str:
             return f"https://download.example/{s3_key}?expires={expiration}"
 
-        def _mock_invoke_lambda(
+        async def _mock_invoke_lambda(
             _clients: object,
             _function_name: str,
             payload: dict[str, Any],

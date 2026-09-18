@@ -37,10 +37,10 @@ class FilesystemLogs:
     def _path(self, benchmark_id: str) -> Path:
         return local_path(self.root, f"{benchmark_id}/logs.jsonl")
 
-    def create_benchmark(self, benchmark_id: str, *, retention_days: int) -> None:
+    async def create_benchmark(self, benchmark_id: str, *, retention_days: int) -> None:
         path = self._path(benchmark_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch(exist_ok=True)
+        await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(path.touch, exist_ok=True)
 
     def write(self, stream_key: str, message: str) -> None:
         benchmark_id, stream = stream_key.split(":", 1)

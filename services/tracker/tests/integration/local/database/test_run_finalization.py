@@ -5,7 +5,7 @@ Run: uv run pytest tests/integration/local/database/test_run_finalization.py
 
 import asyncio
 from datetime import UTC, datetime
-from threading import Event, Thread, get_ident
+from threading import Event, Thread
 from time import monotonic, sleep
 from typing import Any
 from uuid import UUID, uuid4
@@ -57,7 +57,7 @@ async def _skip_cloud_operation(*_args: Any, **_kwargs: Any) -> None:
     return None
 
 
-def _skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+async def _skip_log_group(*_args: Any, **_kwargs: Any) -> str:
     return "test-log-group"
 
 
@@ -294,7 +294,7 @@ class TestRunFinalization:
         async def skip_cloud_operation(*_args: Any, **_kwargs: Any) -> None:
             return None
 
-        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+        async def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
             return "test-log-group"
 
         async def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
@@ -435,7 +435,7 @@ class TestRunFinalization:
             upload_calls += 1
             return None
 
-        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+        async def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
             return "test-log-group"
 
         async def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
@@ -549,7 +549,6 @@ class TestRunFinalization:
             "notification": {"calls": 0, "lock_held": False},
         }
         lambda_configs: list[Config] = []
-        lambda_thread_ids: list[int] = []
 
         def assert_lock_held(benchmark_id: UUID) -> bool:
             with Session(postgres_engine) as retry_session:
@@ -564,13 +563,12 @@ class TestRunFinalization:
             side_effects["upload"]["calls"] += 1
             side_effects["upload"]["lock_held"] = assert_lock_held(benchmark.id)
 
-        def assert_lambda_lock_held(*_args: Any, **_kwargs: Any) -> None:
+        async def assert_lambda_lock_held(*_args: Any, **_kwargs: Any) -> None:
             side_effects["lambda"]["calls"] += 1
             side_effects["lambda"]["lock_held"] = assert_lock_held(benchmark.id)
             callback_config = _kwargs.get("config")
             assert isinstance(callback_config, Config)
             lambda_configs.append(callback_config)
-            lambda_thread_ids.append(get_ident())
 
         async def assert_notification_lock_held(
             _notifier: SlackNotifier,
@@ -580,7 +578,7 @@ class TestRunFinalization:
             side_effects["notification"]["calls"] += 1
             side_effects["notification"]["lock_held"] = assert_lock_held(benchmark.id)
 
-        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+        async def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
             return "test-log-group"
 
         async def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
@@ -617,7 +615,6 @@ class TestRunFinalization:
         }
         assert lambda_configs[0].read_timeout == 60
         assert lambda_configs[0].retries == {"total_max_attempts": 1}
-        assert lambda_thread_ids[0] != get_ident()
 
     async def test_all_error_finalization_returns_distinct_representatives(
         self,

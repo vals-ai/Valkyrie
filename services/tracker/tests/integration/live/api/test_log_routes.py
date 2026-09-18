@@ -90,7 +90,7 @@ def test_log_routes_round_trip_real_cloudwatch(
     log_group_created = False
 
     try:
-        log_sink.create_benchmark(str(benchmark.id), retention_days=1)
+        await log_sink.create_benchmark(str(benchmark.id), retention_days=1)
         log_group_created = True
         log_sink.write(
             f"{benchmark.id}:{task_log_stream_name(first_task.task_id, first_task.started_at)}",
