@@ -1,5 +1,6 @@
 """Local service composition uses persistent files and transient credentials."""
 
+from contextlib import closing
 from pathlib import Path
 from uuid import uuid4
 
@@ -8,15 +9,15 @@ import pytest
 from tracker.exceptions import SecretsError
 from tracker.runtime.secrets import resolve_secrets
 from tracker.local.runtime import LocalRuntimeFactory
+from tracker.local.secrets import InMemorySecretStore
 
 
 async def test_local_runtime_scopes_files_and_clears_secrets(tmp_path: Path) -> None:
     """Persist artifacts without allowing another organization to read them."""
     org_id = uuid4()
     references = {"API_KEY": "agent-key"}
-    with LocalRuntimeFactory.open(
-        tmp_path, org_id, secret_references=references, execution_secrets={"API_KEY": "transient-value"}
-    ) as runtime:
+    with closing(InMemorySecretStore(references, {"API_KEY": "transient-value"})) as secrets:
+        runtime = LocalRuntimeFactory.create_runtime(tmp_path, org_id, secrets=secrets)
         await runtime.objects.put_bytes("agent.zip", b"agent")
         assert await resolve_secrets(references, runtime.secrets) == {"API_KEY": "transient-value"}
         assert runtime.artifacts.object_location("agent.zip") == str(
@@ -63,6 +64,8 @@ async def test_executor_reads_only_declared_credentials_fresh_for_each_dispatch(
             assert await resolve_secrets(contract.secrets, runtime.secrets) == {"MODEL_KEY": value}
             with pytest.raises(SecretsError, match="no values"):
                 await runtime.secrets.get("UNRELATED_KEY")
+        with pytest.raises(SecretsError, match="no values"):
+            await resolve_secrets(contract.secrets, runtime.secrets)
         assert value not in benchmark.model_dump_json()
         assert all(value.encode() not in path.read_bytes() for path in root.rglob("*") if path.is_file())
     assert source.read_text(encoding="utf-8") == "MODEL_KEY=rotated-key\nUNRELATED_KEY=must-not-inject\n"
