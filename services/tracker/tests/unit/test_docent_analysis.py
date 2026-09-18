@@ -39,6 +39,7 @@ class TestInvokeAnalyzer:
         lambda_response = {"reading_plan_url": "https://x.test/r/123", "ingested": 5}
 
         async def invoke_lambda_success(*_args: object, **_kwargs: object) -> dict[str, str | int]:
+            assert getattr(_kwargs["config"], "retries") == {"total_max_attempts": 1}
             return lambda_response
 
         monkeypatch.setattr("tracker.docent_analysis.invoke_lambda", invoke_lambda_success)

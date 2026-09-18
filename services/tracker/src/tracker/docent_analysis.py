@@ -24,7 +24,7 @@ from tracker.runtime.lifecycle import finish_cleanup
 
 # Analyzer Lambdas can run up to 15 min (AWS Lambda's ceiling); retries
 # disabled because the Lambda is non-idempotent (a retry would re-ingest).
-_ANALYZER_CONFIG = Config(read_timeout=905, retries={"max_attempts": 1})
+_ANALYZER_CONFIG = Config(read_timeout=905, retries={"total_max_attempts": 1})
 
 
 def _set_analyzer_status(benchmark_id: UUID, status: DocentReadingStatus, reading_plan_url: str | None = None) -> None:
