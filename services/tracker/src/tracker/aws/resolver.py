@@ -195,6 +195,15 @@ def _managed_resources(properties: AWSResources | None = None) -> AWSResources:
     )
 
 
+def _deployment_account_id() -> str:
+    """Return the trusted account that owns deployment-managed buckets."""
+    account_id = config.AWS_DEPLOYMENT_ACCOUNT_ID
+    if account_id is None or len(account_id) != 12 or not account_id.isascii() or not account_id.isdigit():
+        raise ManagedAWSConfigurationError("AWS_DEPLOYMENT_ACCOUNT_ID must be a 12-digit AWS account ID")
+
+    return account_id
+
+
 def organization_can_use_managed_aws(org_id: UUID) -> bool:
     """Return whether an organization may use deployment AWS authority."""
     return org_id in _eligible_org_ids()
@@ -210,6 +219,7 @@ def deployment_aws_runtime(org_id: UUID, properties: AWSResources | None = None)
     return AWSRuntime(
         resources=resources,
         clients=DefaultChainAWSClientProvider(resources.region),
+        expected_bucket_owner=_deployment_account_id(),
     )
 
 
