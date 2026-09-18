@@ -275,6 +275,7 @@ class TransferAWSBoundary:
         run: TransferRun,
         *,
         source_removed: bool = False,
+        source_partial: bool = False,
         archive: ArchiveReport | None = None,
     ) -> None:
         assert self.source is not None and self.destination is not None
@@ -331,7 +332,7 @@ class TransferAWSBoundary:
         )
         projected = projected.model_copy(update={"plan": plan})
         await RelocationAWSBoundary(_PairedClients(self.source, self.destination, request, run)).verify_objects(
-            projected, projection_run, source_removed=source_removed
+            projected, projection_run, source_removed=source_removed, source_partial=source_partial
         )
 
     async def cleanup_logs(self, request: TransferRequest, run: TransferRun, archive: ArchiveReport) -> None:
