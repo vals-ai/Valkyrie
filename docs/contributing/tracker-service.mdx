@@ -13,6 +13,14 @@ Runs currently support `environment: "aws"` only. Optional `properties` sets the
 
 New runs retain these locations for retries, resumes, and artifact reads. Older runs without saved properties use the current settings.
 
+## Database connection pools
+
+`DATABASE_POOL_SIZE` sets the maximum number of idle connections retained per process; it must be positive. `DATABASE_MAX_OVERFLOW` allows extra connections while the pool is busy; it must be nonnegative. Defaults are 50 and 10. Hosted dev and release-test use 5 and 2; bench and prod retain the defaults.
+
+Each Tracker task has two worker pools. Each active executor dispatch has its own process and pool, inherited from the ExecutorHost environment. For `T` Tracker tasks and `R` executor processes, the pooled connection ceiling is `(2T + R) × (pool size + overflow)`. Allow additional connections for ExecutorHost control queries, release tasks, migrations, and overlapping deployments. These settings bound individual pools, not total dispatch concurrency.
+
+Closing a session returns its connection to the pool. The one-hour recycle setting replaces old connections when checked out; it does not empty idle pools on a timer. To apply smaller pools, deploy the Tracker image, a compatible executor artifact, and the ExecutorHost task definition through the normal maintenance flow. Old executor artifacts retain their original pool behavior.
+
 ## Benchmark-service authentication
 
 The tracker forwards its inbound Descope API key only when the benchmark-service origin matches the hosted origin derived from the benchmark name and tracker configuration. A custom origin never receives that key. Custom services authenticate with explicit headers or a stored service secret instead. See [Benchmark authentication](/benchmarks/authentication).
