@@ -5,7 +5,6 @@ import hashlib
 import json
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
 
@@ -42,6 +41,7 @@ class ProfileClients(AWSClientProvider):
     def __init__(self, profile: str, region: str) -> None:
         self.profile = profile
         self.region = region
+        self.clients: dict[str, Any] = {}
 
     def with_region(self, region: str) -> "ProfileClients":
         return ProfileClients(self.profile, region)
@@ -49,26 +49,30 @@ class ProfileClients(AWSClientProvider):
     def _client_kwargs(self) -> dict[str, Any]:
         return {"region_name": self.region}
 
+    def _client(self, service: str) -> Any:
+        """Cache per instance; a process-wide cache would outlive the operation."""
+        if service not in self.clients:
+            self.clients[service] = self.boto3_session().client(service)
+
+        return self.clients[service]
+
     def boto3_session(self) -> Any:
         return boto3.Session(profile_name=self.profile, region_name=self.region)
 
     def s3_client(self) -> Any:
         return cast(Any, aioboto3.Session(profile_name=self.profile, region_name=self.region)).client("s3")
 
-    @lru_cache(maxsize=32)
     def sts_client(self) -> Any:
-        return self.boto3_session().client("sts")
+        return self._client("sts")
 
-    @lru_cache(maxsize=32)
     def secretsmanager_client(self) -> Any:
-        return self.boto3_session().client("secretsmanager")
+        return self._client("secretsmanager")
 
     def secretsmanager_async_client(self) -> Any:
         return cast(Any, aioboto3.Session(profile_name=self.profile, region_name=self.region)).client("secretsmanager")
 
-    @lru_cache(maxsize=32)
     def cloudwatch_logs_client(self) -> Any:
-        return self.boto3_session().client("logs")
+        return self._client("logs")
 
 
 class _RoutedClient:
@@ -95,11 +99,18 @@ class _RoutedClient:
         return call
 
 
-class _PairedClients(ProfileClients):
+class _PairedClients(AWSClientProvider):
+    """Paired inspection has no single credential source, so only S3 is available."""
+
+    credential_source = "managed"
+
     def __init__(
         self, source: AWSClientProvider, destination: AWSClientProvider, request: TransferRequest, run: TransferRun
     ) -> None:
         self.source, self.destination, self.request, self.run = source, destination, request, run
+
+    def _client_kwargs(self) -> dict[str, Any]:
+        raise LifecycleConflict("Paired inspection has no single credential source")
 
     def with_region(self, region: str) -> "_PairedClients":
         if region != self.request.plan.source_identity.region:
@@ -206,9 +217,12 @@ class TransferAWSBoundary:
         locator = arguments.get("sandbox_provider_secret_name")
         if not isinstance(locator, str) or not locator:
             raise LifecycleConflict("Exact saved source provider secret locator is missing")
-        provider_run = PurgeRun(
-            scope=run.source, provider=ProviderLocator(kind=arguments["sandbox_provider"], secret_name=locator)
-        )
+
+        kind = arguments.get("sandbox_provider")
+        if not isinstance(kind, str) or not kind:
+            raise LifecycleConflict("Exact saved source provider kind is missing")
+
+        provider_run = PurgeRun(scope=run.source, provider=ProviderLocator(kind=kind, secret_name=locator))
         boundary = RelocationAWSBoundary(self.source)
         if cleanup:
             await boundary.cleanup_sandboxes(provider_run)

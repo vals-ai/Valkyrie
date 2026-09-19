@@ -304,14 +304,22 @@ async def test_provider_drain_uses_saved_locator_and_two_absence_checks(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments,message",
+    [
+        ({"sandbox_provider": "daytona"}, "saved source provider secret"),
+        ({"sandbox_provider_secret_name": "exact-source-secret"}, "saved source provider kind"),
+    ],
+    ids=["secret", "kind"],
+)
 async def test_missing_provider_locator_fails_before_provider_calls(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arguments: dict[str, str], message: str
 ) -> None:
     request, boundary, _, _ = archive_boundary(tmp_path)
     factory = Mock()
     monkeypatch.setattr("tracker.run_transfer.providers.RelocationAWSBoundary", factory)
 
-    with pytest.raises(LifecycleConflict, match="saved source provider secret"):
-        await boundary.drain(request, request.plan.runs[0], {"sandbox_provider": "daytona"}, cleanup=True)
+    with pytest.raises(LifecycleConflict, match=message):
+        await boundary.drain(request, request.plan.runs[0], arguments, cleanup=True)
 
     factory.assert_not_called()
