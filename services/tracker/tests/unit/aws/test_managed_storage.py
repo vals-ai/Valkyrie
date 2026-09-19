@@ -8,7 +8,7 @@ import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
 from tracker import config
-from tracker.aws.clients import DefaultChainAWSClientProvider
+from tracker.aws.clients import DefaultChainAWSClientProvider, ExplicitCredentialsAWSClientProvider
 from tracker.aws.managed_storage import (
     ManagedStorageError,
     ManagedStoragePolicy,
@@ -16,8 +16,12 @@ from tracker.aws.managed_storage import (
     validate_managed_storage_bucket,
     validate_managed_storage_bucket_versioning,
 )
-from tracker.aws.resolver import validate_saved_managed_storage_runtime
+from tracker.aws.resolver import (
+    _MANAGED_STORAGE_VALIDATION_CACHE_LIMIT,  # pyright: ignore[reportPrivateUsage]
+    validate_saved_managed_storage_runtime,
+)
 from tracker.aws.runtime import AWSResources, AWSRuntime
+from tracker.types import AWSCredentials
 
 _ACCOUNT_ID = "123456789012"
 _ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -486,3 +490,57 @@ async def test_submission_validation_stays_uncached_for_the_read_path(
     await validate_saved_managed_storage_runtime(owner_runtime, org_id=_ORG_ID)
 
     assert len(client.head_requests) == 3
+
+
+async def test_saved_storage_validation_is_not_shared_across_credential_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    owner_runtime: AWSRuntime,
+) -> None:
+    monkeypatch.setattr(config, "AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS", 300)
+    _ = _freeze_clock(monkeypatch)
+    access_key_runtime = AWSRuntime(
+        resources=owner_runtime.resources,
+        clients=ExplicitCredentialsAWSClientProvider(
+            AWSCredentials(
+                aws_access_key_id="caller-key",
+                aws_secret_access_key="caller-secret",
+                aws_default_region=owner_runtime.resources.region,
+            )
+        ),
+        expected_bucket_owner=_ACCOUNT_ID,
+    )
+
+    await validate_saved_managed_storage_runtime(owner_runtime, org_id=_ORG_ID)
+
+    with pytest.raises(ManagedStorageError) as error:
+        await validate_saved_managed_storage_runtime(access_key_runtime, org_id=_ORG_ID)
+
+    assert error.value.status_code == 400
+
+
+async def test_saved_storage_validation_cache_evicts_the_least_recently_used_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+    owner_runtime: AWSRuntime,
+) -> None:
+    monkeypatch.setattr(config, "AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS", 300)
+    _ = _freeze_clock(monkeypatch)
+    client = _client(owner_runtime)
+    runtimes = [
+        owner_runtime.with_resources(replace(owner_runtime.resources, s3_bucket=f"vs-dev-acme{index}-123"))
+        for index in range(_MANAGED_STORAGE_VALIDATION_CACHE_LIMIT + 1)
+    ]
+
+    for runtime in runtimes[:-1]:
+        await validate_saved_managed_storage_runtime(runtime, org_id=_ORG_ID)
+
+    assert len(client.head_requests) == _MANAGED_STORAGE_VALIDATION_CACHE_LIMIT
+
+    await validate_saved_managed_storage_runtime(runtimes[-1], org_id=_ORG_ID)
+    await validate_saved_managed_storage_runtime(runtimes[1], org_id=_ORG_ID)
+
+    assert len(client.head_requests) == _MANAGED_STORAGE_VALIDATION_CACHE_LIMIT + 1
+
+    await validate_saved_managed_storage_runtime(runtimes[0], org_id=_ORG_ID)
+
+    assert client.head_requests[-1]["Bucket"] == "vs-dev-acme0-123"
+    assert len(client.head_requests) == _MANAGED_STORAGE_VALIDATION_CACHE_LIMIT + 2
