@@ -29,9 +29,15 @@ def main() -> int:
             raise ValueError("Invalid database environment variable")
         os.environ["DATABASE_URL"] = os.environ[options.database_url_env]
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+        from tracker.lifecycle import LifecycleConflict
         from tracker.run_relocation.cli import execute
 
-        return execute(payload, options.request, options.report, options.expected_database_target)
+        try:
+            return execute(payload, options.request, options.report, options.expected_database_target)
+        except LifecycleConflict as conflict:
+            # Every refusal message in this tool is an authored constant with no provider payload.
+            print(f"Relocation remains incomplete (LifecycleConflict: {conflict})", file=sys.stderr)
+            return 2
     except Exception as error:
         print(f"Relocation remains incomplete ({type(error).__name__})", file=sys.stderr)
         return 2

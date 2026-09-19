@@ -11,8 +11,8 @@ import pytest
 
 from tests.unit.test_relocation_providers import setup
 from tracker.lifecycle import LifecycleConflict
-from tracker.run_relocation.cli import execute, write_response
-from tracker.storage_migration_exchange import TrackerResponse
+from tracker.run_relocation.cli import execute, failure_path, write_failure, write_response
+from tracker.storage_migration_exchange import TrackerRequest, TrackerResponse
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "relocate_run_storage.py"
 
@@ -82,11 +82,14 @@ def test_cli_database_target_mismatch_cannot_reach_provider(tmp_path: Path) -> N
         check=False,
     )
     assert result.returncode == 2
+    assert "Expected database target differs from request" in result.stderr
     assert "do-not-print" not in result.stderr
     assert not (tmp_path / "report.json").exists()
 
 
-@pytest.mark.parametrize("failure", ["target", "request-overwrite", "evidence-overwrite", "backend"])
+@pytest.mark.parametrize(
+    "failure", ["target", "request-overwrite", "evidence-overwrite", "failure-overwrite", "backend"]
+)
 def test_exchange_boundary_refuses_unsafe_targets_before_connecting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
@@ -101,10 +104,13 @@ def test_exchange_boundary_refuses_unsafe_targets_before_connecting(
         report_path = request_path
     elif failure == "evidence-overwrite":
         payload["external_evidence_files"] = [str(report_path)]
+    elif failure == "failure-overwrite":
+        payload["external_evidence_files"] = [str(failure_path(report_path))]
     monkeypatch.setenv("DATABASE_URL", "sqlite://")
     with pytest.raises(LifecycleConflict):
         execute(json.dumps(payload).encode(), request_path, report_path, target)
     assert not report_path.exists()
+    assert not failure_path(report_path).exists()
 
 
 def test_atomic_report_failure_preserves_old_file_and_removes_temporary(
@@ -122,3 +128,19 @@ def test_atomic_report_failure_preserves_old_file_and_removes_temporary(
         write_response(report, TrackerResponse(nonce=uuid4(), action="inventory", runs=()))
     assert report.read_text() == "previous verified receipt"
     assert list(tmp_path.iterdir()) == [report]
+
+
+def test_failure_report_records_the_refusal_and_never_stands_in_for_a_receipt(tmp_path: Path) -> None:
+    _, _, payload = setup()
+    request = TrackerRequest.model_validate(payload)
+    report = tmp_path / "report.json"
+    reason = "Exact source migration fence is missing or ambiguous"
+
+    write_failure(failure_path(report), request, LifecycleConflict(reason))
+
+    document = json.loads(failure_path(report).read_text())
+    assert document["outcome"] == "incomplete"
+    assert document["reason"] == reason
+    assert document["action"] == request.action
+    assert document["run_ids"] == [str(run_id) for run_id in request.run_ids]
+    assert not report.exists()
