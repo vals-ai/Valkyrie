@@ -16,7 +16,7 @@ from tracker.run_purge.locking import database_target
 from tracker.run_transfer.contracts import TransferRequest, TransferRun
 from tracker.run_transfer.providers import TransferAWSBoundary
 from tracker.run_transfer.rows import RowClosure
-from tracker.runtime.log_history import ArchiveReport, LogHistoryManifest, LogHistoryReference
+from tracker.runtime.log_history import ArchiveReport, LogHistoryManifest, LogHistoryReference, ScanEvidence
 from tracker.runtime.log_history_reference import ArchiveObject
 
 
@@ -38,6 +38,7 @@ class ObservedEventsBoundary(TransferAWSBoundary):
         *,
         dispatches: tuple[DispatchDrain, ...],
         acquired_at: datetime,
+        scan: ScanEvidence | None = None,
     ) -> datetime:
         return datetime.now(UTC)
 

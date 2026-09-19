@@ -25,7 +25,13 @@ from tracker.run_transfer.contracts import TransferRequest, TransferRun
 from tracker.run_transfer.references import verify_portable_references
 from tracker.run_transfer.rows import RowClosure, digest
 from tracker.run_transfer.settings import SETTINGS
-from tracker.runtime.log_history import ArchiveReport, FrozenLogScope, LogHistoryManifest
+from tracker.runtime.log_history import (
+    ArchiveLimits,
+    ArchiveReport,
+    FrozenLogScope,
+    LogHistoryManifest,
+    ScanEvidence,
+)
 from tracker.runtime.logs import LogPage, RunLogReference, TaskLogReference
 from tracker.storage_migration_exchange import (
     DestinationVersion,
@@ -36,6 +42,9 @@ from tracker.storage_migration_exchange import (
 from tracker.storage_migration_exchange import (
     OperationIdentity as ExchangeIdentity,
 )
+
+
+_CONTRACT_DRAINS = {"held_unclaimed", "verified_finished_contract"}
 
 
 def _incomplete(clause: str) -> LifecycleConflict:
@@ -166,8 +175,9 @@ class TransferAWSBoundary:
         *,
         dispatches: tuple[DispatchDrain, ...],
         acquired_at: datetime,
+        scan: ScanEvidence | None = None,
     ) -> datetime:
-        """Clauses 2, 3 and 6. Clause 1 is proven by `TransferOperator._source_rows`."""
+        """Clauses 2, 3, 6 and, with a scan, 4. Clause 1 is proven by `_source_rows`."""
         host = request.source_host_contract
         if host is None:
             raise _incomplete("host_observation")
@@ -183,6 +193,9 @@ class TransferAWSBoundary:
 
         observed = [item.observed_exit_at for item in dispatches if item.observed_exit_at is not None]
         observed += [item.observed_at for item in request.external_host_drains if item.run_id == run.source.run_id]
+        if any(item.provenance in _CONTRACT_DRAINS for item in dispatches):
+            observed.append(host.acknowledgement_required_since)
+
         if dispatches and not observed:
             raise _incomplete("dispatch_drain")
 
@@ -191,6 +204,13 @@ class TransferAWSBoundary:
 
         if _utc(acquired_at) >= bound:
             raise _incomplete("hold_quiet_interval")
+
+        if scan is not None and scan.event_count:
+            if scan.newest_event_ms is None or scan.newest_ingestion_ms is None:
+                raise _incomplete("scan_quiet_interval")
+
+            if max(scan.newest_event_ms, scan.newest_ingestion_ms) >= int(bound.timestamp() * 1000):
+                raise _incomplete("scan_quiet_interval")
 
         return bound
 
@@ -205,15 +225,8 @@ class TransferAWSBoundary:
         log_completeness_sha256: str | None,
     ) -> str:
         """Quiet-interval policy: a documented risk acceptance, not an ingestion proof."""
-        bound = self._require_quiet_drained_run(request, run, dispatches=dispatches, acquired_at=acquired_at)
         scan = manifest.first_scan
-        if scan.event_count:
-            if scan.newest_event_ms is None or scan.newest_ingestion_ms is None:
-                raise _incomplete("scan_quiet_interval")
-
-            if max(scan.newest_event_ms, scan.newest_ingestion_ms) >= int(bound.timestamp() * 1000):
-                raise _incomplete("scan_quiet_interval")
-
+        self._require_quiet_drained_run(request, run, dispatches=dispatches, acquired_at=acquired_at, scan=scan)
         if not same_inventory(scan, manifest.second_scan):
             raise _incomplete("matching_scans")
 
@@ -240,6 +253,11 @@ class TransferAWSBoundary:
             assert self.destination is not None
             self.destination_session = self.destination.boto3_session()
         return self.source_session, self.destination_session
+
+    def _scan_evidence(self, source: Any, scope: FrozenLogScope) -> ScanEvidence:
+        """Evidence-only scan; it writes nothing, so a failed clause leaves no archive prefix."""
+        _, evidence = FrozenLogSource(source, scope, ArchiveLimits()).scan(lambda _event: None)
+        return evidence
 
     def _scope(self, request: TransferRequest, run: TransferRun) -> FrozenLogScope:
         return FrozenLogScope(
@@ -317,12 +335,16 @@ class TransferAWSBoundary:
         dispatches: tuple[DispatchDrain, ...],
         acquired_at: datetime,
     ) -> ArchiveReport:
+        # Refuse on the inputs the caller already holds, before a full source traversal.
         self._require_quiet_drained_run(request, run, dispatches=dispatches, acquired_at=acquired_at)
         source, destination = self._sessions()
+        scope = self._scope(request, run)
+        evidence = await asyncio.to_thread(self._scan_evidence, source, scope)
+        self._require_quiet_drained_run(request, run, dispatches=dispatches, acquired_at=acquired_at, scan=evidence)
         (self.journal / str(request.plan.source_identity.operation_id)).mkdir(parents=True, exist_ok=True, mode=0o700)
         return await asyncio.to_thread(
             archive_logs,
-            self._scope(request, run),
+            scope,
             source_session=source,
             destination_session=destination,
             journal_directory=self.journal / str(request.plan.source_identity.operation_id) / str(run.source.run_id),

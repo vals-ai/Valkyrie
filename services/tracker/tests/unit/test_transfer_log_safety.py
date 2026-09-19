@@ -48,14 +48,16 @@ def drained(exit_at: datetime) -> tuple[DispatchDrain, ...]:
     return (DispatchDrain(dispatch_id=DISPATCH_ID, provenance="host_process_exit", observed_exit_at=exit_at),)
 
 
-def quiet_request(request: TransferRequest, *, observation: datetime) -> TransferRequest:
+def quiet_request(
+    request: TransferRequest, *, observation: datetime, acknowledged: timedelta = timedelta(days=7)
+) -> TransferRequest:
     payload = request.model_dump(mode="json")
     payload["source_host_contract"] = {
         "contract": "stable-host-lifecycle-v1",
         "deployment_sha256": "b" * 64,
         "host_inventory": ["host-1"],
         "observed_at": observation.isoformat(),
-        "acknowledgement_required_since": (observation - timedelta(days=7)).isoformat(),
+        "acknowledgement_required_since": (observation - acknowledged).isoformat(),
         "verifier": "local-test",
     }
     return TransferRequest.model_validate(payload)
@@ -181,7 +183,8 @@ async def test_a_quiet_group_without_events_satisfies_the_scan_clause(
         ("host_observation", "expired_host"),
         ("dispatch_drain", "pending_drain"),
         ("dispatch_drain", "recent_exit"),
-        ("dispatch_drain", "no_exit_evidence"),
+        ("dispatch_drain", "recent_contract"),
+        ("dispatch_drain", "no_drain_time"),
         ("hold_quiet_interval", "recent_hold"),
     ],
 )
@@ -199,8 +202,11 @@ async def test_a_failed_quiet_input_clause_keeps_every_operation_pending(
         dispatches = (DispatchDrain(dispatch_id=DISPATCH_ID, provenance="pending"),)
     elif fault == "recent_exit":
         dispatches = drained(now() - timedelta(hours=1))
-    elif fault == "no_exit_evidence":
+    elif fault == "recent_contract":
+        request = quiet_request(request, observation=now(), acknowledged=timedelta(hours=1))
         dispatches = (DispatchDrain(dispatch_id=DISPATCH_ID, provenance="held_unclaimed"),)
+    elif fault == "no_drain_time":
+        dispatches = (DispatchDrain(dispatch_id=DISPATCH_ID, provenance="externally_confirmed_host_drain"),)
     else:
         acquired_at = now() - timedelta(hours=1)
     saved = dict(state.storage.objects)
@@ -211,6 +217,37 @@ async def test_a_failed_quiet_input_clause_keeps_every_operation_pending(
     assert not state.deleted
     assert state.storage.objects == saved
     assert not state.logs.absent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["recent_hold", "recent_events"])
+async def test_a_refused_archive_writes_no_chunk_and_no_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    recent = int((now() - timedelta(minutes=5)).timestamp() * 1000)
+    events = [{"timestamp": recent, "ingestionTime": recent, "message": "late", "eventId": "x", "logStreamName": "old"}]
+    state = quiet_run(tmp_path, monkeypatch, events=events if fault == "recent_events" else None, publish=False)
+    acquired_at = now() - timedelta(hours=1) if fault == "recent_hold" else state.acquired_at
+    clause = "hold_quiet_interval" if fault == "recent_hold" else "scan_quiet_interval"
+
+    with pytest.raises(LifecycleConflict, match=f"clause {clause} failed"):
+        await state.boundary.archive(state.request, state.run, dispatches=state.dispatches, acquired_at=acquired_at)
+
+    assert state.storage.objects == {}
+    assert not (tmp_path / "production-journal").exists()
+    assert state.logs.scan == (0 if fault == "recent_hold" else 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provenance", ["held_unclaimed", "verified_finished_contract"])
+async def test_a_contract_drain_older_than_the_interval_satisfies_the_drain_clause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provenance: str
+) -> None:
+    state = quiet_run(tmp_path, monkeypatch)
+    dispatches = (DispatchDrain.model_validate({"dispatch_id": DISPATCH_ID, "provenance": provenance}),)
+    decision = await run_operation(state, "verify_archive", dispatches=dispatches, log_completeness_sha256=None)
+
+    assert len(decision) == 64
 
 
 @pytest.mark.asyncio
