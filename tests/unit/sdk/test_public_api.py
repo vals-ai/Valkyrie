@@ -72,6 +72,7 @@ EXPECTED_ALL = [
     "ValkyrieClient",
     "ValkyrieConfig",
     "ValkyrieConfigError",
+    "ValkyrieRunAcceptedError",
     "ValkyrieRunError",
     "ValkyrieSDKError",
     "ValkyrieStreamError",

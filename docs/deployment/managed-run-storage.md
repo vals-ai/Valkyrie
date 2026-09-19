@@ -61,13 +61,20 @@ Do not roll back to production code that cannot parse `BenchmarkArguments.proper
 
 ## ValSmith integration contract
 
-`StageRun.storage_bucket` and `ModelRun.storage_bucket` must store the actual bucket returned by Valkyrie for each run. They are run outputs, not values copied from the owner's current bucket. After a lost start response, recover the location with the organization-scoped run detail or metadata endpoint. The SDK exposes a created UUID as `ValkyrieRunError.run_id` when the start response has a missing or different bucket; callers must not parse exception text or submit again without the override.
+`StageRun.storage_bucket` and `ModelRun.storage_bucket` must store the actual bucket returned by Valkyrie for each run. They are run outputs, not values copied from the owner's current bucket. After a lost start response, recover the location with the organization-scoped run detail or metadata endpoint.
+
+`runs.start` reports the two owner-storage failures as two exception types, and callers must branch on the type rather than on `run_id` or on exception text:
+
+- `ValkyrieRunAcceptedError`, a subclass of `ValkyrieRunError`, means Valkyrie created the run in the requested bucket but did not acknowledge the executor dispatch. The storage is correct. Reconcile or retry by `run_id`; do not record a storage rejection. The original `ValkyrieAPIError` is the cause.
+- Plain `ValkyrieRunError` with a `run_id` means the start response carried a missing or different `storage_bucket`. That is a storage rejection. Do not submit again without an explicit override.
+
+A caller that catches only `ValkyrieRunError` still sees both, so an old handler keeps working, but it cannot tell them apart and will quarantine correctly stored runs.
 
 `DatasetViewRun.source_bucket` is selected per run. A view may read old runs from shared storage and new runs from different owner buckets. `DatasetViewRequest.destination_bucket` remains the dataset bucket. A null legacy per-run column uses ValSmith's documented legacy location. Publication must not replace a saved source with an owner's current bucket.
 
 The provisioner must set `valsmith:valkyrie-org-id` to the canonical Valkyrie organization UUID before admission. ValSmith owns its two per-run columns, database migrations, provisioning, SDK pin, publication, and Lambda source selection. This repository makes none of those changes.
 
-Use a reviewed immutable SDK commit that includes the optional structured `ValkyrieRunError.run_id` and `SingleBenchmarkResponse.storage_bucket` fields. The earlier SDK pin without those fields is insufficient for reconciliation. Registry IAM and external Lambda/OIDC policy deployments must precede owner writes; ValSmith application rollout must follow the compatible tracker, host, and executor-release cutover.
+Use a reviewed immutable SDK commit that includes `ValkyrieRunAcceptedError`, the optional structured `ValkyrieRunError.run_id`, and the `SingleBenchmarkResponse.storage_bucket` field. The earlier SDK pin without those fields is insufficient for reconciliation. Registry IAM and external Lambda/OIDC policy deployments must precede owner writes; ValSmith application rollout must follow the compatible tracker, host, and executor-release cutover.
 
 ## Verification and remaining release gates
 

@@ -14,6 +14,7 @@ from valkyrie.sdk.output_archive import extract_output_archive
 from valkyrie.sdk.errors import (
     ValkyrieAPIError,
     ValkyrieConfigError,
+    ValkyrieRunAcceptedError,
     ValkyrieRunError,
     ValkyrieStreamError,
     handle_httpx_stream_errors,
@@ -166,7 +167,7 @@ class RunsResource:
             if run_id is None:
                 raise
 
-            raise ValkyrieRunError(
+            raise ValkyrieRunAcceptedError(
                 f"Run {run_id} was accepted but dispatch was not confirmed; "
                 "use the existing run ID to reconcile or retry execution",
                 run_id=run_id,
