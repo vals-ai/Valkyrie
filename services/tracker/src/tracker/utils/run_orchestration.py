@@ -1159,9 +1159,7 @@ def catch_errors_during_cleanup(
         undetected_exit_tasks_query = undetected_exit_tasks_query.where(col(Task.task_id).in_(task_ids))
     undetected_exit_tasks = session.exec(undetected_exit_tasks_query).all()
 
-    # Sweep stale RUNNING analyzer invocations to ERROR. The invoke_analyzer
-    # helper uses try/finally so this only fires when the executor process was
-    # killed mid-invocation (no try/finally cleanup ran).
+    # Sweep stale RUNNING analyzer invocations to ERROR.
     if benchmark_row.docent_reading_status == DocentReadingStatus.RUNNING:
         benchmark_row.docent_reading_status = DocentReadingStatus.ERROR
         session.add(benchmark_row)
