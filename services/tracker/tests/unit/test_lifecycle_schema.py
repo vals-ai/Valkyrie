@@ -10,14 +10,23 @@ import pytest
 from jsonschema import Draft202012Validator
 from jsonschema import validate as validate_schema
 from jsonschema.exceptions import ValidationError as SchemaValidationError
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from tracker.aws.runtime import AWSResources
 from tracker.lifecycle import OperationIdentity, RunScope
 from tracker.lifecycle_evidence import HostContractObservation, LifecycleReport, RunReport
-from tracker.run_purge.contracts import ProviderLocator, PurgePlan, PurgeReport, PurgeRun
+from tracker.run_purge.contracts import ProviderLocator, PurgeCheckpoint, PurgePlan, PurgeReport, PurgeRun
+from tracker.run_purge.providers import FenceReceipt, OwnerDeletionFence
 
 _DOCUMENTATION = Path(__file__).resolve().parents[4] / "docs" / "deployment"
+
+_PURGE_DEFINITIONS: dict[str, Any] = {
+    "PurgePlan": PurgePlan.model_json_schema(),
+    "PurgeReport": PurgeReport.model_json_schema(),
+    "FenceReceipts": TypeAdapter(tuple[FenceReceipt, ...]).json_schema(),
+    "PurgeCheckpoint": PurgeCheckpoint.model_json_schema(),
+    "OwnerDeletionFence": OwnerDeletionFence.model_json_schema(),
+}
 
 
 @pytest.mark.parametrize("kind", ["scope", "lifecycle_report", "purge_plan", "purge_report"])
@@ -117,3 +126,22 @@ def test_identity_inventories_enforce_nonempty_unique_schema(
         type(instance).model_validate(payload)
     with pytest.raises(SchemaValidationError):
         validate_schema(payload, schema, cls=Draft202012Validator)
+
+
+def test_published_lifecycle_schema_equals_runtime_model() -> None:
+    published = json.loads((_DOCUMENTATION / "tracker-lifecycle.schema.json").read_text())
+
+    assert published == LifecycleReport.model_json_schema()
+
+
+@pytest.mark.parametrize("name", list(_PURGE_DEFINITIONS))
+def test_published_purge_schema_equals_runtime_model(name: str) -> None:
+    published = json.loads((_DOCUMENTATION / "tracker-purge.schema.json").read_text())
+
+    assert published[name] == _PURGE_DEFINITIONS[name]
+
+
+def test_published_purge_schema_publishes_exactly_the_generated_definitions() -> None:
+    published = json.loads((_DOCUMENTATION / "tracker-purge.schema.json").read_text())
+
+    assert list(published) == list(_PURGE_DEFINITIONS)
