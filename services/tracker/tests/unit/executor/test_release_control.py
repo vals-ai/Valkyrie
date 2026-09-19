@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 import hashlib
 import io
+import json
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -18,6 +20,8 @@ from tracker.database.models import (
     ExecutorReleaseStatus,
 )
 from tracker.aws.executor_artifacts import S3ExecutorArtifactReader
+from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader
+from tracker.local.releases import initialize_release
 from tracker.executor.release_control import (
     ReleaseControlError,
     activate_release,
@@ -707,3 +711,88 @@ def test_active_retry_dispatch_blocks_its_release_across_successive_promotions(
     database_session.commit()
 
     assert retire_drained_releases(database_session) == ["v2"]
+
+
+def _local_manifest(directory: Path, content: bytes) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "executor.pex").write_bytes(content)
+    manifest = directory / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "artifact_path": "executor.pex",
+                "artifact_digest": hashlib.sha256(content).hexdigest(),
+                "protocol_version": "2",
+            }
+        )
+    )
+    return manifest
+
+
+def test_local_release_restart_reuses_matching_build_and_activates_changed_build(
+    database_session: Session,
+    tmp_path: Path,
+) -> None:
+    manifest = _local_manifest(tmp_path / "build", b"first executor")
+    root = tmp_path / "releases"
+    first = initialize_release(database_session, manifest, root)
+    database_session.commit()
+    reader = FilesystemExecutorArtifactReader(root)
+    with reader.validate(first.artifact_uri).open("rb") as stream:
+        assert stream.read() == b"first executor"
+
+    restarted = initialize_release(database_session, manifest, root)
+    assert restarted.id == first.id
+    assert restarted.activated_at == first.activated_at
+
+    _local_manifest(manifest.parent, b"second executor")
+    second = initialize_release(database_session, manifest, root)
+    database_session.commit()
+    assert second.id != first.id
+    assert second.status == ExecutorReleaseStatus.ACTIVE
+    assert first.status == ExecutorReleaseStatus.DRAINING
+    with reader.validate(first.artifact_uri).open("rb") as stream:
+        assert stream.read() == b"first executor"
+    with reader.validate(second.artifact_uri).open("rb") as stream:
+        assert stream.read() == b"second executor"
+
+    _local_manifest(manifest.parent, b"first executor")
+    restored = initialize_release(database_session, manifest, root)
+    database_session.commit()
+    assert restored.id != first.id
+    assert restored.artifact_uri == first.artifact_uri
+    assert restored.status == ExecutorReleaseStatus.ACTIVE
+    assert second.status == ExecutorReleaseStatus.DRAINING
+    assert not list(root.rglob("*.tmp"))
+
+
+def test_local_release_rejects_changed_build_and_preserves_admission(database_session: Session, tmp_path: Path) -> None:
+    manifest = _local_manifest(tmp_path / "build", b"executor")
+    (manifest.parent / "executor.pex").write_bytes(b"corrupted")
+    root = tmp_path / "releases"
+    with pytest.raises(ReleaseControlError, match="manifest digest"):
+        initialize_release(database_session, manifest, root)
+    assert not list(root.rglob("executor.pex"))
+    assert not list(root.rglob("*.tmp"))
+    admission = database_session.get(ExecutorAdmission, 1)
+    assert admission is not None
+    assert admission.release_id is None
+
+
+def test_local_reader_rejects_escape_and_remote_locations(tmp_path: Path) -> None:
+    root = tmp_path / "releases"
+    root.mkdir()
+    outside = tmp_path / "outside.pex"
+    outside.write_bytes(b"outside")
+    (root / "linked.pex").symlink_to(outside)
+    reader = FilesystemExecutorArtifactReader(root)
+    for uri in (
+        outside.as_uri(),
+        (root / "linked.pex").as_uri(),
+        "file://host/executor.pex",
+        "s3://bucket/executor.pex",
+    ):
+        with pytest.raises(ValueError):
+            reader.validate(uri)
+    with pytest.raises(ValueError, match="traversal"):
+        reader.validate(root.as_uri() + "/%2e%2e/outside.pex")
