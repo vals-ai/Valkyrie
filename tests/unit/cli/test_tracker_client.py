@@ -213,14 +213,10 @@ def connect_stream_testbed(
         "s3_bucket_url": "s3://bucket/benchmarks/run",
     }
 
-    async def get_contract_from_s3(_agent: str, _agent_config: object) -> AgentContractRequest:
-        return AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run")
-
     def stream_benchmark_status(_tracker: MockTrackerService, run_id: object) -> None:
         streamed_run_ids.append(str(run_id))
 
     monkeypatch.setattr(run_start, "TrackerService", mock_tracker_service)
-    monkeypatch.setattr(run_start, "get_contract_from_s3", get_contract_from_s3)
     monkeypatch.setattr(run_start, "stream_benchmark_status", stream_benchmark_status)
     monkeypatch.setattr(run_resume, "TrackerService", mock_tracker_service)
     monkeypatch.setattr(run_resume, "stream_benchmark_status", stream_benchmark_status)

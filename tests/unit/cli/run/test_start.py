@@ -14,7 +14,6 @@ from uuid import UUID
 import httpx
 import pytest
 from click.testing import CliRunner, Result
-from tracker.agent.schemas import AgentConfig
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, TaskStatus
 
 from valkyrie.cli.exceptions import TrackerServiceError
@@ -57,11 +56,7 @@ class StartTestbed:
         self.tracker.__enter__.return_value = self.tracker
         self.tracker_factory = MagicMock(return_value=self.tracker)
         self.tracker_factory.validate_sandbox_provider.return_value = ("daytona", "DaytonaSecrets")
-        self.tracker_factory.parse_config_keys.return_value = {"AWS_ACCESS_KEY_ID": "key"}
         self.tracker_factory.get_webhook_secret.return_value = None
-        self.resolve_remote = AsyncMock(
-            return_value=AgentContractRequest(name="remote-agent", install_cmd="echo install", run_cmd="echo run")
-        )
         self.publish_local_agent = AsyncMock(return_value=True)
         self.resolve_tasks = MagicMock(return_value=None)
         self.resolve_headers = MagicMock(return_value={})
@@ -71,7 +66,6 @@ class StartTestbed:
         for boundary in (
             self.tracker,
             self.tracker_factory,
-            self.resolve_remote,
             self.resolve_tasks,
             self.resolve_headers,
             self.stream_status,
@@ -93,7 +87,6 @@ class StartTestbed:
                 self.tracker_factory,
                 self.tracker_factory.validate_sandbox_provider,
                 self.tracker_factory.get_webhook_secret,
-                self.resolve_remote,
                 self.resolve_tasks,
                 self.resolve_headers,
             )
@@ -105,7 +98,6 @@ def start_testbed(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> Sta
     """Replace external start-command boundaries with deterministic mocks."""
     testbed = StartTestbed(cli_runner)
     monkeypatch.setattr(start_module, "TrackerService", testbed.tracker_factory)
-    monkeypatch.setattr(start_module, "get_contract_from_s3", testbed.resolve_remote)
     monkeypatch.setattr(start_module, "resolve_task_ids", testbed.resolve_tasks)
     monkeypatch.setattr(start_module, "benchmark_service_headers", testbed.resolve_headers)
     monkeypatch.setattr(start_module, "stream_benchmark_status", testbed.stream_status)
@@ -215,18 +207,11 @@ class TestCountedStarts:
 
         assert result.exit_code == 0, result.output
         assert start_testbed.tracker.start_benchmark.call_count == 2
-        assert start_testbed.resolve_remote.await_count == 1
         assert start_testbed.tracker.__enter__.call_count == 1
-
-        resolved_call = start_testbed.resolve_remote.await_args
-        assert resolved_call is not None
-
-        agent_config = resolved_call.args[1]
-        assert isinstance(agent_config, AgentConfig)
-        assert agent_config.kwargs == {"temperature": "1"}
 
         start_requests = start_testbed.tracker.start_benchmark.call_args_list
         assert start_requests[0].args[0] is start_requests[1].args[0]
+        assert start_requests[0].args[0].kwargs == {"temperature": "1"}
         assert [request.args[6] for request in start_requests] == ["stable", "stable"]
 
         details, summary = result.output.split("2 / 2 requested runs successfully started.", maxsplit=1)
@@ -273,24 +258,24 @@ class TestCountedStarts:
         push_agent.assert_awaited_once_with("local-agent", local_agent)
         assert start_testbed.tracker.start_benchmark.call_count == 2
 
-    def test_managed_start_defers_contract_resolution_to_tracker(
+    def test_start_defers_contract_resolution_to_tracker(
         self,
         start_testbed: StartTestbed,
     ) -> None:
-        start_testbed.tracker_factory.parse_config_keys.return_value = {}
-
-        result = start_testbed.invoke(["--model", "anthropic/claude-opus-5", "-k", "variant", "max"])
+        result = start_testbed.invoke(
+            ["--model", "anthropic/claude-opus-5", "-k", "variant", "max", "-s", "API_KEY", "custom-secret"]
+        )
 
         assert result.exit_code == 0, result.output
-        start_testbed.resolve_remote.assert_not_awaited()
         contract = start_testbed.tracker.start_benchmark.call_args.args[0]
         assert contract == AgentContractRequest(
             name="remote-agent",
             model="anthropic/claude-opus-5",
             kwargs={"variant": "max"},
+            secrets={"API_KEY": "custom-secret"},
         )
 
-    def test_managed_local_start_uploads_then_sends_name_only_contract(
+    def test_local_start_uploads_then_sends_name_only_contract(
         self,
         start_testbed: StartTestbed,
         tmp_path: Path,
@@ -311,7 +296,6 @@ class TestCountedStarts:
         )
         push_agent = start_testbed.publish_local_agent
         monkeypatch.setattr(start_module, "get_contract", get_contract)
-        start_testbed.tracker_factory.parse_config_keys.return_value = {}
 
         result = start_testbed.cli_runner.invoke(
             start_command,
