@@ -1,9 +1,28 @@
 ---
 title: Inspect resources with Python
-description: Query benchmark tasks, agent bundles, and benchmark services.
+description: Query benchmark tasks, scheduler queues, agent bundles, and benchmark services.
 ---
 
 Each method's parameters, defaults, and return types are in the [`client.benchmarks`](/reference/sdk/benchmarks#fetch), [`client.agents`](/reference/sdk/agents#list), and [`client.services`](/reference/sdk/services#catalog) reference.
+
+## Scheduler
+
+Inspect your organization's sandbox queue using [`client.scheduler.overview`](/reference/sdk/scheduler#overview):
+
+```python
+waiting_offset = 0
+while True:
+    page = await client.scheduler.overview(waiting_limit=200, waiting_offset=waiting_offset)
+    for entry in page.waiting_entries:
+        print(entry.benchmark_uuid, entry.external_task_id, entry.priority, entry.position)
+    if page.waiting_next_offset is None:
+        break
+    waiting_offset = page.waiting_next_offset
+```
+
+To iterate active tasks, use `active_entries`, `active_offset`, and `active_next_offset` instead. The two lists advance independently; stop consuming each when its next offset is `None`. Do not reset an exhausted list to offset zero while advancing the other.
+
+Summary and per-pool counts are uncapped. Capped flags indicate more entries after the current page. Queue positions are within each shared pool, not within the returned page. Pages are live, not a frozen snapshot: queue changes between calls can repeat or skip tasks. See [priority queue monitoring](/runs/monitor#inspect-the-priority-queue) for scheduling behavior.
 
 ## Benchmarks and tasks
 

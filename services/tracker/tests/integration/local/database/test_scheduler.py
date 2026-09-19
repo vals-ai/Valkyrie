@@ -20,6 +20,7 @@ from benchmark_service import (
     SandboxProvider,
     SandboxProviderConfig,
     SandboxSource,
+    TargetedSnapshotSource,
 )
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse
@@ -32,6 +33,8 @@ from sqlmodel import Session, create_engine, func, select
 from tests.factories import make_task
 from tracker.aws.resolver import AWSRuntimeResolution
 from tracker.aws.runtime import AWSRuntime
+from tracker.aws.services import CloudRuntimeFactory
+from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -88,9 +91,11 @@ class MockProvider:
         self.events = events
         self.capacity = iter(capacity)
         self.on_check = on_check
+        self.sources: list[SandboxSource] = []
 
-    async def check_admission(self, _source: SandboxSource, _resources: Resources) -> bool:
+    async def check_admission(self, source: SandboxSource, _resources: Resources) -> bool:
         self.events.append("capacity")
+        self.sources.append(source)
         if self.on_check:
             await self.on_check()
         return next(self.capacity, True)
@@ -208,6 +213,37 @@ def test_queue_context_requires_managed_provider() -> None:
         )
 
 
+async def test_targeted_snapshot_reaches_admission_and_creation_unchanged(
+    postgres_engine: Engine,
+    postgres_session: Session,
+    executor_authority: Any,
+) -> None:
+    events: list[str] = []
+    source = TargetedSnapshotSource(snapshot="snapshot", target="us-west-3")
+    provider_pool_id = f"daytona:{uuid4()}"
+    context = _context(postgres_engine, provider_pool_id, events)
+    _, benchmark, (task,) = _run(postgres_session, context.pool_id, [("targeted", TaskStatus.PENDING, _ATTEMPT)])
+    authority = executor_authority(benchmark, session=postgres_session)
+
+    async with AsyncExitStack() as stack:
+        sandbox = await admission.enter_queued_sandbox(
+            stack=stack,
+            context=context,
+            task_row_id=task.id,
+            expected_started_at=task.started_at,
+            authority=authority,
+            source=source,
+            resources=_RESOURCES,
+            create=_sandbox(events),
+        )
+
+        assert sandbox is not None
+        provider = cast(MockProvider, context.provider)
+        assert provider.sources == [source]
+        assert provider.sources[0] is source
+        assert events == ["capacity", "create"]
+
+
 async def _enter(
     stack: AsyncExitStack,
     context: admission.SandboxQueueContext,
@@ -215,6 +251,7 @@ async def _enter(
     events: list[str],
     authority: Any,
     *,
+    source: SandboxSource = _SOURCE,
     on_create: Callable[[], Awaitable[None]] | None = None,
     on_cleanup: Callable[[], Awaitable[None]] | None = None,
 ) -> Sandbox | None:
@@ -224,7 +261,7 @@ async def _enter(
         task_row_id=task.id,
         expected_started_at=task.started_at,
         authority=authority,
-        source=_SOURCE,
+        source=source,
         resources=_RESOURCES,
         create=_sandbox(events, on_create=on_create, on_cleanup=on_cleanup),
     )
@@ -723,6 +760,7 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
     monkeypatch: pytest.MonkeyPatch,
     harness_config: HarnessConfig,
     executor_authority: Any,
+    runtime_services: RuntimeServices,
 ) -> None:
     provider_pool_id = f"daytona:{uuid4()}"
     org, benchmark, (task,) = _run(
@@ -796,7 +834,7 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
     service.resume_evaluation.return_value = {"score": 1.0}
     _use_real_sandbox_recovery(service)
     monkeypatch.setattr(task_execution, "engine", postgres_engine)
-    monkeypatch.setattr(task_execution, "buffer_logs", Mock())
+    monkeypatch.setattr(task_execution.TaskLogBuffer, "buffer_logs", Mock())
     request = benchmark.access_key_start_benchmark_request(harness_config)
 
     async def run(task_row: Task, authority: ExecutionAuthority) -> dict[str, dict[str, Any] | None]:
@@ -806,7 +844,7 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
             cast(BenchmarkServiceClient, service),
             benchmark.id,
             task.task_id,
-            AWSRuntime.from_harness_config(harness_config),
+            runtime_services,
             org,
             sandbox_provider_config=cast(SandboxProviderConfig, object()),
             sandbox_provider=cast(SandboxProvider, object()),
@@ -829,6 +867,7 @@ async def test_resumed_evaluation_uses_lock_connection_for_callback_and_finaliza
     monkeypatch: pytest.MonkeyPatch,
     harness_config: HarnessConfig,
     executor_authority: Any,
+    runtime_services: RuntimeServices,
 ) -> None:
     provider_pool_id = f"daytona:{uuid4()}"
     org, benchmark, (task,) = _run(
@@ -861,7 +900,7 @@ async def test_resumed_evaluation_uses_lock_connection_for_callback_and_finaliza
         pool_timeout=0.05,
     )
     monkeypatch.setattr(task_execution, "engine", single_connection_engine)
-    monkeypatch.setattr(task_execution, "buffer_logs", Mock())
+    monkeypatch.setattr(task_execution.TaskLogBuffer, "buffer_logs", Mock())
     request = benchmark.access_key_start_benchmark_request(harness_config)
     try:
         result = await task_execution.process_task(
@@ -870,7 +909,7 @@ async def test_resumed_evaluation_uses_lock_connection_for_callback_and_finaliza
             cast(BenchmarkServiceClient, service),
             benchmark.id,
             task.task_id,
-            AWSRuntime.from_harness_config(harness_config),
+            runtime_services,
             org,
             sandbox_provider_config=cast(SandboxProviderConfig, object()),
             sandbox_provider=cast(SandboxProvider, object()),
@@ -893,6 +932,7 @@ async def test_setup_retry_reenters_fifo_before_competitor(
     monkeypatch: pytest.MonkeyPatch,
     harness_config: HarnessConfig,
     executor_authority: Any,
+    runtime_services: RuntimeServices,
 ) -> None:
     provider_pool_id = f"daytona:{uuid4()}"
     pool_id = store.queue_pool_id(provider_pool_id)
@@ -932,7 +972,7 @@ async def test_setup_retry_reenters_fifo_before_competitor(
     _use_real_sandbox_recovery(service)
     monkeypatch.setattr(task_execution, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
     monkeypatch.setattr(task_execution, "engine", postgres_engine)
-    monkeypatch.setattr(task_execution, "buffer_logs", Mock())
+    monkeypatch.setattr(task_execution.TaskLogBuffer, "buffer_logs", Mock())
     monkeypatch.setattr(task_execution, "create_sandbox", create_sandbox)
     monkeypatch.setattr(
         task_execution,
@@ -949,7 +989,7 @@ async def test_setup_retry_reenters_fifo_before_competitor(
         cast(BenchmarkServiceClient, service),
         benchmark.id,
         retrying.task_id,
-        AWSRuntime.from_harness_config(harness_config),
+        runtime_services,
         org,
         sandbox_provider_config=cast(SandboxProviderConfig, object()),
         sandbox_provider=context.provider,
@@ -966,3 +1006,13 @@ async def test_setup_retry_reenters_fifo_before_competitor(
     assert len(names) == 2
     assert names[0] == names[1]
     assert retrying.id.hex in names[0]
+
+
+@pytest.fixture
+async def runtime_services(harness_config: HarnessConfig) -> AsyncGenerator[RuntimeServices, None]:
+    """Open real AWS adapters while tests replace their external calls."""
+    aws_runtime = AWSRuntime.from_harness_config(harness_config)
+    runtime = CloudRuntimeFactory.create_runtime(
+        aws_runtime,
+    )
+    yield runtime

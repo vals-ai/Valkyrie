@@ -50,6 +50,7 @@ class FakeDispatchStore:
         self.authority_checks: list[DispatchAuthority] = []
         self.terminalized: list[DispatchAuthority] = []
         self.finished: list[DispatchAuthority] = []
+        self.heartbeats: list[DispatchAuthority] = []
         self.authority: DispatchAuthority | None = None
 
     async def claim(
@@ -72,6 +73,10 @@ class FakeDispatchStore:
         if len(self.authority_results) == 1:
             return self.authority_results[0]
         return self.authority_results.pop(0)
+
+    async def heartbeat(self, authority: DispatchAuthority) -> bool:
+        self.heartbeats.append(authority)
+        return True
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
         _ = task_ids
@@ -327,9 +332,10 @@ async def test_postgres_claim_is_status_fenced_and_returns_authority(
     assert "FROM benchmark" in statement
     assert "benchmark.status = 'IN_PROGRESS'" in statement
     assert "dispatch.status = 'QUEUED'" in statement
+    assert "dispatch.claim_deadline_at > CURRENT_TIMESTAMP" in statement
     assert "SET status = 'RUNNING'" in statement
     assert "started_at = CURRENT_TIMESTAMP" in statement
-    assert parameters[:2] == ("dispatch-1", "benchmark-1")
+    assert parameters[1:3] == ("dispatch-1", "benchmark-1")
 
 
 @pytest.mark.asyncio
@@ -452,10 +458,12 @@ async def test_run_forwards_dispatch_authority_to_executor(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    script = b"""import json, os, sys\nfrom pathlib import Path\npayload = json.loads(Path(sys.argv[1]).read_text())\nresult = {\"payload\": payload, \"sentry_release\": os.environ.get(\"SENTRY_RELEASE\")}\nPath(os.environ[\"EXECUTOR_TEST_MARKER\"]).write_text(json.dumps(result))\n"""
+    script = b"""import json, os, sys\nfrom pathlib import Path\npayload = json.loads(Path(sys.argv[1]).read_text())\nresult = {\"payload\": payload, \"sentry_release\": os.environ.get(\"SENTRY_RELEASE\"), \"pool_size\": os.environ.get(\"DATABASE_POOL_SIZE\"), \"max_overflow\": os.environ.get(\"DATABASE_MAX_OVERFLOW\")}\nPath(os.environ[\"EXECUTOR_TEST_MARKER\"]).write_text(json.dumps(result))\n"""
     digest = hashlib.sha256(script).hexdigest()
     marker = tmp_path / "marker.json"
     monkeypatch.setenv("EXECUTOR_TEST_MARKER", str(marker))
+    monkeypatch.setenv("DATABASE_POOL_SIZE", "5")
+    monkeypatch.setenv("DATABASE_MAX_OVERFLOW", "2")
     store = FakeDispatchStore()
 
     with caplog.at_level(logging.INFO, logger=supervisor_module.logger.name):
@@ -477,11 +485,52 @@ async def test_run_forwards_dispatch_authority_to_executor(
     assert payload["executor_dispatch_id"] == "dispatch-1"
     assert payload["telemetry_context_json"] == {"request_id": "", "trace_headers": {}}
     assert result["sentry_release"] == "release-v2"
+    assert result["pool_size"] == "5"
+    assert result["max_overflow"] == "2"
     assert store.authority_checks
     assert store.finished == [store.authority]
     assert (
         f"Launching benchmark benchmark-1 dispatch_id=dispatch-1 release=release-v2 digest={digest} protocol=1"
     ) in caplog.messages
+
+
+@pytest.mark.asyncio
+async def test_run_renews_heartbeat_and_stops_it_after_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    heartbeat_seen = asyncio.Event()
+
+    class FakeExecutorSupervisor:
+        async def prepare_artifact(self, _dispatch: ArtifactDispatch) -> Path:
+            return tmp_path / "executor.pex"
+
+        async def run(self, *_args: object, **_kwargs: object) -> None:
+            await heartbeat_seen.wait()
+
+    store = FakeDispatchStore()
+    original_heartbeat = store.heartbeat
+
+    async def record_heartbeat(authority: DispatchAuthority) -> bool:
+        result = await original_heartbeat(authority)
+        heartbeat_seen.set()
+        return result
+
+    monkeypatch.setattr(store, "heartbeat", record_heartbeat)
+
+    await run_executor_dispatch(
+        FakeExecutorSupervisor(),  # type: ignore[arg-type]
+        store,
+        executor_dispatch_id="dispatch-1",
+        dispatch=_dispatch(digest="0" * 64),
+        process_payload=_process_payload(),
+        heartbeat_interval_seconds=0,
+    )
+
+    heartbeat_count_after_cleanup = len(store.heartbeats)
+    assert heartbeat_count_after_cleanup >= 1
+    await asyncio.sleep(0)
+    assert len(store.heartbeats) == heartbeat_count_after_cleanup
 
 
 @pytest.mark.asyncio

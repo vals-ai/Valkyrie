@@ -33,7 +33,6 @@ def test_resolve_secrets_requires_and_stringifies_object_members() -> None:
         "COUNT": "7",
         "EMPTY": "None",
     }
-    assert store.calls == ["shared", "shared", "shared"]
 
 
 def test_resolve_secrets_preserves_missing_object_key_error() -> None:

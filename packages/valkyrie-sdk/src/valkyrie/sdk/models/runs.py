@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 from valkyrie.sdk.models.agents import AgentContractRequest
-from valkyrie.sdk.models.config import HarnessConfig
+from valkyrie.sdk.models.config import AWSResources, HarnessConfig
 
 
 class TaskStatus(str, Enum):
@@ -62,6 +62,8 @@ class Order(str, Enum):
 class StartBenchmarkRequest(BaseModel):
     """Wire payload used to start a benchmark run."""
 
+    environment: Literal["aws"] = "aws"
+    properties: AWSResources | None = None
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
@@ -208,6 +210,8 @@ class BenchmarkArguments(ResponseModel):
 
     contract: AgentContractRequest
     concurrency: int
+    environment: Literal["aws"] = "aws"
+    properties: AWSResources | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None
@@ -296,3 +300,27 @@ class StopBenchmarkResponse(StatusResponse):
 
 class RetryOrResumeBenchmarkResponse(StatusResponse):
     """Response returned after retrying or resuming a run."""
+
+
+class UpdateBenchmarkConcurrencyRequest(BaseModel):
+    """A positive concurrency limit for an active run."""
+
+    concurrency: int = Field(ge=1, strict=True)
+
+
+class UpdateBenchmarkConcurrencyResponse(ResponseModel):
+    """The run state after changing its concurrency limit."""
+
+    benchmark_id: UUID
+    status: BenchmarkStatus
+    concurrency: int
+
+
+class FilterOptionsResponse(ResponseModel):
+    """Values available for run filters in the caller's organization."""
+
+    benchmark_names: list[str]
+    agent_names: list[str]
+    models: list[str]
+    datasets: list[str]
+    started_by_emails: list[str]

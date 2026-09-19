@@ -2,20 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import tempfile
+from pathlib import Path
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 from uuid import UUID
 
+from valkyrie.sdk.output_archive import extract_output_archive
 from valkyrie.sdk.errors import ValkyrieConfigError, ValkyrieRunError, ValkyrieStreamError, handle_httpx_stream_errors
 from valkyrie.sdk.models import (
+    AWSResources,
     AgentContractRequest,
     AnalyzeBenchmarkRequest,
     AnalyzeEvent,
+    BenchmarkTableRow,
     FetchBenchmarkResponse,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
+    FilterOptionsResponse,
     FinalViewResponse,
     RetrieveResultsResponse,
     ResultsExistResponse,
@@ -25,6 +32,8 @@ from valkyrie.sdk.models import (
     StartBenchmarkRequest,
     StartBenchmarkResponse,
     StopBenchmarkResponse,
+    UpdateBenchmarkConcurrencyRequest,
+    UpdateBenchmarkConcurrencyResponse,
 )
 
 if TYPE_CHECKING:
@@ -45,6 +54,7 @@ class RunsResource:
         model: str | None = None,
         concurrency: int = 5,
         priority: int | None = None,
+        properties: AWSResources | None = None,
         task_ids: Sequence[str] | None = None,
         slice_str: str | None = None,
         dataset: str | None = None,
@@ -82,6 +92,7 @@ class RunsResource:
             benchmark_name=benchmark,
             concurrency=concurrency,
             priority=priority,
+            properties=properties,
             task_ids=list(task_ids) if task_ids else None,
             slice_str=slice_str,
             dataset=dataset,
@@ -103,7 +114,8 @@ class RunsResource:
             StartBenchmarkResponse,
             json=payload.model_dump(
                 mode="json",
-                exclude={"priority"} if priority is None else None,
+                exclude={"environment"}
+                | {name for name in ("priority", "properties") if getattr(payload, name) is None},
             ),
         )
 
@@ -116,6 +128,10 @@ class RunsResource:
             params={"benchmark_id": str(run_id)},
         )
 
+    async def filter_options(self) -> FilterOptionsResponse:
+        """Discover valid run-filter values from this organization's run history."""
+        return await self._sdk.request_model("GET", "/benchmarks/filter-options", FilterOptionsResponse)
+
     async def list(self, request: FetchBenchmarksRequest | None = None) -> FetchBenchmarksResponse:
         """List runs using typed filters and pagination."""
         resolved_request = request or FetchBenchmarksRequest()
@@ -125,6 +141,27 @@ class RunsResource:
             FetchBenchmarksResponse,
             params=resolved_request.model_dump(exclude_none=True, mode="json"),
         )
+
+    async def iter(self, request: FetchBenchmarksRequest | None = None) -> AsyncIterator[BenchmarkTableRow]:
+        """Iterate matching runs using cursor pagination, starting at the supplied cursor.
+
+        Use list() for explicit offset pagination. Filters and page size are preserved.
+        """
+        request = request or FetchBenchmarksRequest()
+        if request.offset:
+            raise ValueError("Run iteration uses cursors; use list() for offset pagination")
+        cursor = request.cursor or ""
+        seen: set[str] = set()
+        while True:
+            if cursor in seen:
+                raise ValkyrieStreamError("Tracker returned a repeated run-list cursor")
+            seen.add(cursor)
+            page = await self.list(request.model_copy(update={"cursor": cursor}))
+            for run in page.benchmarks:
+                yield run
+            if page.next_cursor is None:
+                return
+            cursor = page.next_cursor
 
     @handle_httpx_stream_errors("Valkyrie stream failed")
     async def stream(self, run_id: UUID) -> AsyncIterator[FetchBenchmarkResponse]:
@@ -298,6 +335,81 @@ class RunsResource:
                 self._sdk.raise_for_status(response)
             async for chunk in response.aiter_bytes():
                 yield chunk
+
+    async def download_outputs(
+        self,
+        run_id: UUID,
+        output_dir: str | Path,
+        *,
+        task_ids: Sequence[str] | None = None,
+        max_archive_bytes: int = 1024**3,
+        max_expanded_bytes: int = 5 * 1024**3,
+        max_entries: int = 100_000,
+    ) -> Path:
+        """Download run outputs into a new directory and unpack nested task tarballs.
+
+        Existing directories are refused. Extraction accepts only regular files and directories.
+        Positive limits bound the downloaded archive, expanded bytes, and total member count.
+        """
+        if min(max_archive_bytes, max_expanded_bytes, max_entries) <= 0:
+            raise ValueError("Output archive limits must be positive")
+        output_dir = Path(output_dir)
+        if await asyncio.to_thread(lambda: output_dir.exists() or output_dir.is_symlink()):
+            raise FileExistsError(f"Output directory already exists: {output_dir}")
+        with tempfile.TemporaryFile() as stream:
+            size = 0
+            async for chunk in self.stream_outputs(run_id, task_ids=task_ids):
+                size += len(chunk)
+                if size > max_archive_bytes:
+                    raise ValueError("Run outputs exceed max_archive_bytes")
+                await asyncio.to_thread(stream.write, chunk)
+            await asyncio.to_thread(stream.seek, 0)
+            await asyncio.to_thread(output_dir.parent.mkdir, parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=output_dir.parent) as temporary:
+                staging = Path(temporary) / "outputs"
+                extraction = asyncio.create_task(
+                    asyncio.to_thread(
+                        extract_output_archive,
+                        stream,
+                        staging,
+                        max_expanded_bytes=max_expanded_bytes,
+                        max_entries=max_entries,
+                    )
+                )
+                try:
+                    await asyncio.shield(extraction)
+                except asyncio.CancelledError:
+                    completion = asyncio.gather(extraction, return_exceptions=True)
+                    while not completion.done():
+                        try:
+                            await asyncio.shield(completion)
+                        except asyncio.CancelledError:
+                            continue
+                    raise
+
+                def publish() -> Path:
+                    if output_dir.exists() or output_dir.is_symlink():
+                        raise FileExistsError(f"Output directory already exists: {output_dir}")
+                    return staging.rename(output_dir)
+
+                # Once publication starts, return its result even if cancellation arrives during the rename.
+                publication = asyncio.create_task(asyncio.to_thread(publish))
+                while not publication.done():
+                    try:
+                        await asyncio.shield(publication)
+                    except asyncio.CancelledError:
+                        continue
+                return publication.result()
+
+    async def update_concurrency(self, run_id: UUID, *, concurrency: int) -> UpdateBenchmarkConcurrencyResponse:
+        """Change an active run's concurrency limit. Existing tasks continue running."""
+        request = UpdateBenchmarkConcurrencyRequest(concurrency=concurrency)
+        return await self._sdk.request_model(
+            "PATCH",
+            f"/benchmarks/{run_id}/concurrency",
+            UpdateBenchmarkConcurrencyResponse,
+            json=request.model_dump(mode="json"),
+        )
 
     async def stop(
         self,

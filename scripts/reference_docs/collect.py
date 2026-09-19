@@ -330,20 +330,24 @@ def collect_sdk_reference() -> SDKReference:
     """Collect the tested top-level SDK contract."""
     import valkyrie.sdk as sdk  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.client import ValkyrieClient  # pyright: ignore[reportMissingImports]
+    from valkyrie.sdk.resources.artifacts import ArtifactsResource
     from valkyrie.sdk.resources.agents import AgentsResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.benchmarks import BenchmarksResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.logs import LogsResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.runs import RunsResource  # pyright: ignore[reportMissingImports]
+    from valkyrie.sdk.resources.scheduler import SchedulerResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.services import BenchmarkServicesResource  # pyright: ignore[reportMissingImports]
 
     sdk_exports: list[str] = getattr(sdk, "__all__")
 
     resource_types = (
+        ("ArtifactsResource", "client.artifacts", ArtifactsResource),
         ("RunsResource", "client.runs", RunsResource),
         ("BenchmarksResource", "client.benchmarks", BenchmarksResource),
         ("AgentsResource", "client.agents", AgentsResource),
         ("BenchmarkServicesResource", "client.services", BenchmarkServicesResource),
         ("LogsResource", "client.logs", LogsResource),
+        ("SchedulerResource", "client.scheduler", SchedulerResource),
     )
     resources = tuple(_collect_resource(name, attribute, resource) for name, attribute, resource in resource_types)
 

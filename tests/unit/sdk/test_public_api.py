@@ -16,9 +16,13 @@ from valkyrie.sdk.resources.agents import AgentsResource  # pyright: ignore[repo
 from valkyrie.sdk.resources.benchmarks import BenchmarksResource  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.resources.logs import LogsResource  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.resources.runs import RunsResource  # pyright: ignore[reportMissingImports]
+from valkyrie.sdk.resources.scheduler import SchedulerResource  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.resources.services import BenchmarkServicesResource  # pyright: ignore[reportMissingImports]
 
 EXPECTED_ALL = [
+    "RunArtifactEntry",
+    "RunArtifactsResponse",
+    "RunArtifactDownloadResponse",
     "AgentContractRequest",
     "AgentDownloadURLResponse",
     "AgentEntry",
@@ -35,6 +39,7 @@ EXPECTED_ALL = [
     "FetchBenchmarkMetadataResponse",
     "FetchBenchmarksRequest",
     "FetchBenchmarksResponse",
+    "FilterOptionsResponse",
     "FetchTasksRequest",
     "FinalViewResponse",
     "LogEvent",
@@ -44,10 +49,21 @@ EXPECTED_ALL = [
     "RetryOrResumeBenchmarkResponse",
     "ResultsExistResponse",
     "S3UploadResultsResponse",
+    "SchedulerActiveEntryResponse",
+    "SchedulerActiveStatus",
+    "SchedulerCapacityDomainResponse",
+    "SchedulerCapacityResponse",
+    "SchedulerOverviewResponse",
+    "SchedulerPoolResponse",
+    "SchedulerResourceCapacityResponse",
+    "SchedulerSummaryResponse",
+    "SchedulerWaitingEntryResponse",
     "SingleBenchmarkResponse",
     "SingleTaskResponse",
     "StartBenchmarkResponse",
     "StopBenchmarkResponse",
+    "UpdateBenchmarkConcurrencyRequest",
+    "UpdateBenchmarkConcurrencyResponse",
     "TaskArtifactsResponse",
     "TasksResponse",
     "TaskSummary",
@@ -68,11 +84,12 @@ EXPECTED_SIGNATURES = {
         "path=~/.config/valkyrie/valkyrie.yaml, *, base_url=None, timeout=120, transport=None"
     ),
     RunsResource.start: (
-        "self, agent, benchmark, *, model=None, concurrency=5, priority=None, task_ids=None, "
+        "self, agent, benchmark, *, model=None, concurrency=5, priority=None, properties=None, task_ids=None, "
         "slice_str=None, dataset=None, "
         "label=None, lambda_function=None, provider=None, agent_kwargs=None, secrets=None, service_headers=None, "
         "webhook_intervals=None, ignore_custom_services=False"
     ),
+    RunsResource.filter_options: "self",
     RunsResource.fetch: "self, run_id",
     RunsResource.list: "self, request=None",
     RunsResource.stream: "self, run_id",
@@ -103,6 +120,9 @@ EXPECTED_SIGNATURES = {
     BenchmarksResource.tasks: "self, run_id, request=None",
     BenchmarksResource.task: "self, run_id, task_id",
     BenchmarksResource.artifacts: "self, run_id, task_id",
+    SchedulerResource.overview: (
+        "self, *, waiting_limit=100, active_limit=100, waiting_offset=0, active_offset=0, include_capacity=False"
+    ),
     AgentsResource.list: "self",
     AgentsResource.download_url: "self, name",
     BenchmarkServicesResource.catalog: "self",
@@ -168,4 +188,5 @@ async def test_client_exposes_v2_resource_namespaces(make_client) -> None:
         assert isinstance(client.benchmarks, BenchmarksResource)
         assert isinstance(client.agents, AgentsResource)
         assert isinstance(client.services, BenchmarkServicesResource)
+        assert isinstance(client.scheduler, SchedulerResource)
         assert not hasattr(client.services, "check")

@@ -85,6 +85,7 @@ def _set_sentry_environment(dsn: str) -> None:
     os.environ["SENTRY_DSN"] = dsn
     os.environ["SENTRY_RELEASE"] = _RELEASE_ID
     os.environ["LOG_LEVEL"] = "INFO"
+    os.environ["LOGFIRE_TRACE_SAMPLE_RATE"] = "1"
 
 
 def _capture_test_error(service_name: str, *, span_name: str | None = None) -> None:
@@ -174,6 +175,7 @@ def _run_executor(dsn: str, context_path: str) -> None:
         {
             "benchmark_id_str": _RUN_ID,
             "telemetry_context_json": telemetry_context,
+            "executor_dispatch_id": _DISPATCH_ID,
         }
     ):
         with logfire.span("observability.smoke.executor"):

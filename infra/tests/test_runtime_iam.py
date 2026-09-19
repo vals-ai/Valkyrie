@@ -296,7 +296,13 @@ class RuntimeIamTest(unittest.TestCase):
                         for statement in statements
                         if _statement_actions(statement) == {"lambda:InvokeFunction"}
                     )
-                    self.assertEqual(lambda_statement["Resource"], _lambda_function_resource("analysis-*"))
+                    self.assertEqual(
+                        lambda_statement["Resource"],
+                        [
+                            _lambda_function_resource(pattern)
+                            for pattern in DEV_CONFIG.managed_aws.tracker_lambda_function_name_patterns
+                        ],
+                    )
 
     def test_bench_managed_runtime_uses_bench_inventory_and_task_roles(self) -> None:
         with mock.patch.dict(os.environ, TEST_BENCH_ENV, clear=True):
@@ -359,7 +365,13 @@ class RuntimeIamTest(unittest.TestCase):
                         if _statement_actions(statement) == {"lambda:InvokeFunction"}
                     ]
                     self.assertEqual(len(lambda_statements), 1)
-                    self.assertEqual(lambda_statements[0]["Resource"], _lambda_function_resource("analysis-*"))
+                    self.assertEqual(
+                        lambda_statements[0]["Resource"],
+                        [
+                            _lambda_function_resource(pattern)
+                            for pattern in BENCH_CONFIG.managed_aws.tracker_lambda_function_name_patterns
+                        ],
+                    )
 
     def test_release_test_managed_runtime_remains_closed(self) -> None:
         with mock.patch.dict(os.environ, TEST_RELEASE_TEST_ENV, clear=True):

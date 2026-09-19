@@ -66,6 +66,7 @@ def get_single_benchmark(
     aws_runtime = resolve_run_metadata_aws_runtime(
         request,
         aws_managed=benchmark.aws_managed,
+        properties=benchmark.arguments.properties,
         org_id=org.id,
     )
     if aws_runtime:

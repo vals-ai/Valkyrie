@@ -12,12 +12,14 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    FiniteFloat,
     PlainSerializer,
     field_serializer,
     field_validator,
     model_validator,
 )
 
+from tracker.aws.runtime import AWSResources
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     AgentContractRequest,
@@ -74,6 +76,8 @@ class HarnessConfig(BaseModel):
 
 
 class StartBenchmarkRequest(BaseModel):
+    environment: Literal["aws"] = "aws"
+    properties: AWSResources | None = None
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
@@ -102,6 +106,13 @@ class StartBenchmarkRequest(BaseModel):
     @classmethod
     def validate_custom_service(cls, value: str | None) -> str | None:
         return validate_service_url_syntax(value) if value is not None else None
+
+    @property
+    def sandbox_provider_secret_reference(self) -> str | None:
+        """Resolve the provider reference from legacy or managed configuration."""
+        if self.harness_config is not None and self.harness_config.sandbox_provider_secret_name:
+            return self.harness_config.sandbox_provider_secret_name
+        return self.sandbox_provider_secret_name
 
     @property
     def benchmark_service(self) -> BenchmarkServiceClient:
@@ -536,9 +547,30 @@ class SchedulerActiveStatus(str, Enum):
     EVALUATING = "EVALUATING"
 
 
+class SchedulerResourceCapacityResponse(BaseModel):
+    available: FiniteFloat = Field(ge=0)
+    total: FiniteFloat = Field(ge=0)
+
+
+class SchedulerCapacityResponse(BaseModel):
+    cpu: SchedulerResourceCapacityResponse
+    memory: SchedulerResourceCapacityResponse
+    disk: SchedulerResourceCapacityResponse
+    gpu: SchedulerResourceCapacityResponse | None = None
+    allowed_gpu_types: list[str] | None = None
+
+
+class SchedulerCapacityDomainResponse(BaseModel):
+    target_id: str = Field(min_length=1)
+    sandbox_class: str = Field(min_length=1)
+    capacity: SchedulerCapacityResponse
+
+
 class SchedulerPoolResponse(BaseModel):
     pool_id: str
     waiting: int
+    provider: str | None = None
+    capacity_domains: list[SchedulerCapacityDomainResponse] | None = None
 
 
 class SchedulerWaitingEntryResponse(BaseModel):
@@ -571,3 +603,5 @@ class SchedulerOverviewResponse(BaseModel):
     active_entries: list[SchedulerActiveEntryResponse]
     waiting_capped: bool
     active_capped: bool
+    waiting_next_offset: int | None = Field(description="Next waiting offset, or null when this list is exhausted.")
+    active_next_offset: int | None = Field(description="Next active offset, or null when this list is exhausted.")

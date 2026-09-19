@@ -718,6 +718,7 @@ class TrackerService:
         service_headers: dict[str, str] | None = None,
         secrets: dict[str, str] | None = None,
         benchmark_url: str | None = None,
+        lambda_function: str | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
         """
         Run a benchmark that has already been created by its benchmark id.
@@ -746,6 +747,8 @@ class TrackerService:
                 body["secrets"] = secrets
             if benchmark_url is not None:
                 body["benchmark_url"] = benchmark_url
+            if lambda_function is not None:
+                body["lambda_function"] = lambda_function
 
             response = self._client.post(
                 f"{self._base_url}/retry-or-resume-benchmark/{benchmark_id}",

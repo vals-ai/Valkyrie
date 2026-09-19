@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import aioboto3
 import boto3
@@ -26,6 +26,13 @@ def _boto3_client(service_name: str, **kwargs: Any) -> Any:
 
 class AWSClientProvider(ABC):
     """Construct AWS service clients for one authentication source."""
+
+    credential_source: ClassVar[Literal["access_key", "managed"]]
+
+    @abstractmethod
+    def with_region(self, region: str) -> "AWSClientProvider":
+        """Select a resource region while retaining this authentication source."""
+        raise NotImplementedError
 
     @abstractmethod
     def _client_kwargs(self) -> dict[str, Any]:
@@ -54,6 +61,9 @@ class AWSClientProvider(ABC):
     def secretsmanager_client(self) -> Any:
         return _boto3_client("secretsmanager", **self._client_kwargs())
 
+    def secretsmanager_async_client(self) -> Any:
+        return self._s3_session().client("secretsmanager")  # pyright: ignore[reportUnknownMemberType]
+
     @lru_cache(maxsize=32)
     def lambda_client(self, config: Config | None = None) -> Any:
         return _boto3_client("lambda", config=config, **self._client_kwargs())
@@ -66,7 +76,11 @@ class AWSClientProvider(ABC):
 class ExplicitCredentialsAWSClientProvider(AWSClientProvider):
     """Construct AWS clients from caller-supplied credentials."""
 
+    credential_source: ClassVar[Literal["access_key", "managed"]] = "access_key"
     credentials: AWSCredentials = field(repr=False)
+
+    def with_region(self, region: str) -> AWSClientProvider:
+        return ExplicitCredentialsAWSClientProvider(self.credentials.model_copy(update={"aws_default_region": region}))
 
     def _client_kwargs(self) -> dict[str, Any]:
         return {
@@ -81,7 +95,11 @@ class ExplicitCredentialsAWSClientProvider(AWSClientProvider):
 class DefaultChainAWSClientProvider(AWSClientProvider):
     """Construct AWS clients through the SDK default credential chain."""
 
+    credential_source: ClassVar[Literal["access_key", "managed"]] = "managed"
     region: str
+
+    def with_region(self, region: str) -> AWSClientProvider:
+        return DefaultChainAWSClientProvider(region)
 
     def _client_kwargs(self) -> dict[str, Any]:
         return {"region_name": self.region}

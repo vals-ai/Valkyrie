@@ -285,6 +285,8 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                             {
                                 "Environment": assertions.Match.array_with(
                                     [
+                                        {"Name": "DATABASE_POOL_SIZE", "Value": "5"},
+                                        {"Name": "DATABASE_MAX_OVERFLOW", "Value": "2"},
                                         {"Name": "AUTH_REQUIRED", "Value": "true"},
                                         {"Name": "DESCOPE_PROJECT_ID", "Value": "dev-project"},
                                     ]
@@ -323,6 +325,11 @@ class DevAccountInfrastructureTest(unittest.TestCase):
             "AWS::SSM::Parameter",
             {"Name": executor_release_launch_parameter(DEV), "Type": "String"},
         )
+        for task in template.find_resources("AWS::ECS::TaskDefinition").values():
+            for container in task["Properties"]["ContainerDefinitions"]:
+                environment = {item["Name"]: item["Value"] for item in container.get("Environment", [])}
+                self.assertEqual(environment["DATABASE_POOL_SIZE"], "5")
+                self.assertEqual(environment["DATABASE_MAX_OVERFLOW"], "2")
         roles = template.find_resources("AWS::IAM::Role")
         release_role_id, release_role = next(
             (logical_id, role)

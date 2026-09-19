@@ -10,6 +10,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Coroutine
 from datetime import datetime, timezone
 from importlib import import_module
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -72,7 +73,7 @@ def _invoke(
     run_id: UUID,
     arguments: list[str],
 ):
-    monkeypatch.setattr(logs_module.ValkyrieClient, "from_config", lambda: client)
+    monkeypatch.setattr(logs_module.ValkyrieClient, "from_config", lambda *_args, **_kwargs: client)
     return CliRunner().invoke(logs, [str(run_id), *arguments])
 
 
@@ -162,13 +163,34 @@ def test_logs_follow_rejects_cleanly_truncated_success(monkeypatch: pytest.Monke
         }
     )
     client = ValkyrieClient(config, base_url="https://tracker.test", transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(logs_module.ValkyrieClient, "from_config", lambda: client)
+    monkeypatch.setattr(logs_module.ValkyrieClient, "from_config", lambda *_args, **_kwargs: client)
 
     result = CliRunner().invoke(logs, [str(run_id), "--task-id", "task-1", "--follow"])
 
     assert result.exit_code == 1
     assert "final" in result.output
     assert "ended before its end event" in result.output
+
+
+def test_logs_uses_cli_config_location(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Logs must use the same config path as the rest of the CLI."""
+    config_path = tmp_path / "dev.yaml"
+    client = MockClient([])
+    seen: dict[str, Any] = {}
+
+    def from_config(path: Path, *, base_url: str) -> MockClient:
+        seen["path"] = path
+        seen["base_url"] = base_url
+        return client
+
+    monkeypatch.setattr(logs_module, "config_location", lambda: config_path)
+    monkeypatch.setattr(logs_module, "tracker_service_url", lambda: "https://tracker.dev")
+    monkeypatch.setattr(logs_module.ValkyrieClient, "from_config", from_config)
+
+    result = CliRunner().invoke(logs, [str(uuid4())])
+
+    assert result.exit_code == 0, result.output
+    assert seen == {"path": config_path, "base_url": "https://tracker.dev"}
 
 
 @pytest.mark.parametrize(

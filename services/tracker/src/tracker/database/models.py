@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -30,6 +30,7 @@ from sqlmodel import (
     select,
 )
 
+from tracker.aws.runtime import AWSResources
 from tracker.database.utils import has_field_changed
 from executor_protocol import ExecutorDispatchStatus as ExecutorDispatchStatus
 
@@ -194,6 +195,8 @@ class BenchmarkArguments(BaseModel):
 
     contract: AgentContractRequest
     concurrency: int
+    environment: Literal["aws"] = "aws"
+    properties: AWSResources | None = None
     priority: int | None = PydanticField(default=None, exclude=True, strict=True, ge=0, le=4)
     queue_pool_id: str | None = Field(default=None, exclude=True)
     task_ids: list[str] | None = None
@@ -282,6 +285,7 @@ class ExecutorDispatch(SQLModel, table=True):
     __table_args__ = (
         Index("ix_executordispatch_release_status", "executor_release_id", "status"),
         Index("ix_executordispatch_benchmark_kind", "benchmark_id", "kind"),
+        Index("ix_executordispatch_status_lease_expires", "status", "lease_expires_at"),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -295,6 +299,11 @@ class ExecutorDispatch(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    assigned_task_ids: list[str] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    claim_deadline_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    lease_expires_at: datetime | None = None
+    failure_reason: str | None = None
 
 
 class Benchmark(SQLModel, table=True):
@@ -391,6 +400,8 @@ class Benchmark(SQLModel, table=True):
             )
 
         return StartBenchmarkRequest(
+            environment=self.arguments.environment,
+            properties=self.arguments.properties,
             contract=self.arguments.contract,
             benchmark_name=self.name,
             concurrency=self.arguments.concurrency,
@@ -416,6 +427,8 @@ class Benchmark(SQLModel, table=True):
             raise ValueError("Managed runs require a sandbox provider secret name")
 
         return StartBenchmarkRequest(
+            environment=self.arguments.environment,
+            properties=self.arguments.properties,
             contract=self.arguments.contract,
             benchmark_name=self.name,
             concurrency=self.arguments.concurrency,

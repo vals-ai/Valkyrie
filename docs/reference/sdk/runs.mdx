@@ -19,6 +19,7 @@ async def start(
     model: str | None = None,
     concurrency: int = 5,
     priority: int | None = None,
+    properties: AWSResources | None = None,
     task_ids: Sequence[str] | None = None,
     slice_str: str | None = None,
     dataset: str | None = None,
@@ -53,6 +54,10 @@ async def start(
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"priority"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int | None · default: <code>{"None"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"properties"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · AWSResources | None · default: <code>{"None"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
@@ -125,6 +130,20 @@ async def fetch(run_id: UUID) -> FetchBenchmarkResponse
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
+## `client.runs.filter_options` {#filter-options}
+
+Discover valid run-filter values from this organization's run history.
+
+```python Signature
+async def filter_options() -> FilterOptionsResponse
+```
+
+**Returns**
+
+<a href="/reference/sdk/models/runs#filter-options-response"><code>FilterOptionsResponse</code></a>
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
 ## `client.runs.list` {#list}
 
 List runs using typed filters and pagination.
@@ -142,6 +161,28 @@ async def list(request: FetchBenchmarksRequest | None = None) -> FetchBenchmarks
 **Returns**
 
 <a href="/reference/sdk/models/runs#fetch-benchmarks-response"><code>FetchBenchmarksResponse</code></a>
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
+## `client.runs.iter` {#iter}
+
+Iterate matching runs using cursor pagination, starting at the supplied cursor.
+
+Use list() for explicit offset pagination. Filters and page size are preserved.
+
+```python Signature
+async def iter(request: FetchBenchmarksRequest | None = None) -> AsyncIterator[BenchmarkTableRow]
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"request"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <a href="/reference/sdk/models/runs#fetch-benchmarks-request"><code>FetchBenchmarksRequest</code></a> | None · default: <code>{"None"}</code></span></div>
+</div>
+
+**Returns**
+
+AsyncIterator[BenchmarkTableRow]
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
@@ -340,6 +381,80 @@ async def stream_outputs(run_id: UUID, *, task_ids: Sequence[str] | None = None)
 **Returns**
 
 AsyncIterator[bytes]
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
+## `client.runs.download_outputs` {#download-outputs}
+
+Download run outputs into a new directory and unpack nested task tarballs.
+
+Existing directories are refused. Extraction accepts only regular files and directories. Positive limits bound the downloaded archive, expanded bytes, and total member count.
+
+```python Signature
+async def download_outputs(
+    run_id: UUID,
+    output_dir: str | Path,
+    *,
+    task_ids: Sequence[str] | None = None,
+    max_archive_bytes: int = 1073741824,
+    max_expanded_bytes: int = 5368709120,
+    max_entries: int = 100000,
+) -> Path
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · UUID</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"output_dir"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · str | Path</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"task_ids"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · Sequence[str] | None · default: <code>{"None"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"max_archive_bytes"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int · default: <code>{"1073741824"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"max_expanded_bytes"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int · default: <code>{"5368709120"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"max_entries"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int · default: <code>{"100000"}</code></span></div>
+</div>
+
+**Returns**
+
+Path
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
+## `client.runs.update_concurrency` {#update-concurrency}
+
+Change an active run's concurrency limit. Existing tasks continue running.
+
+```python Signature
+async def update_concurrency(run_id: UUID, *, concurrency: int) -> UpdateBenchmarkConcurrencyResponse
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · UUID</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"concurrency"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · int</span></div>
+</div>
+
+**Returns**
+
+<a href="/reference/sdk/models/runs#update-benchmark-concurrency-response"><code>UpdateBenchmarkConcurrencyResponse</code></a>
 
 For examples, see the [Python SDK guide](/sdk/runs).
 

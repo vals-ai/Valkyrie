@@ -12,10 +12,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 import pytest
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from services.tracker.main import app
+from tracker.api.filter_options import FilterOptionsResponse
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
@@ -48,6 +50,11 @@ from tracker.types import (
     LogEventResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
+    SchedulerActiveEntryResponse,
+    SchedulerOverviewResponse,
+    SchedulerPoolResponse,
+    SchedulerSummaryResponse,
+    SchedulerWaitingEntryResponse,
     SingleBenchmarkResponse,
     SingleTaskResponse,
     StartBenchmarkRequest,
@@ -57,6 +64,7 @@ from tracker.types import (
     TasksResponse,
     TaskSummary,
 )
+from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
 from valkyrie.sdk.models import (
     AWSCredentials as SDKAWSCredentials,
     AgentContractRequest as SDKAgentContractRequest,
@@ -81,12 +89,18 @@ from valkyrie.sdk.models import (
     FetchBenchmarksRequest as SDKFetchBenchmarksRequest,
     FetchBenchmarksResponse as SDKFetchBenchmarksResponse,
     FinalEvaluation as SDKFinalEvaluation,
+    FilterOptionsResponse as SDKFilterOptionsResponse,
     FinalViewResponse as SDKFinalViewResponse,
     HarnessConfig as SDKHarnessConfig,
     LogEvent as SDKLogEvent,
     OutputArtifact as SDKOutputArtifact,
     RetryOrResumeBenchmarkResponse as SDKRetryResponse,
     S3UploadResultsResponse as SDKS3ResultsResponse,
+    SchedulerActiveEntryResponse as SDKSchedulerActiveEntryResponse,
+    SchedulerOverviewResponse as SDKSchedulerOverviewResponse,
+    SchedulerPoolResponse as SDKSchedulerPoolResponse,
+    SchedulerSummaryResponse as SDKSchedulerSummaryResponse,
+    SchedulerWaitingEntryResponse as SDKSchedulerWaitingEntryResponse,
     SingleBenchmarkResponse as SDKSingleBenchmarkResponse,
     SingleTaskResponse as SDKSingleTaskResponse,
     StartBenchmarkRequest as SDKStartBenchmarkRequest,
@@ -100,6 +114,10 @@ from valkyrie.sdk.models import (
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "sdk_api"
 ROUTES = (
+    ("/benchmarks/filter-options", "get", ""),
+    ("/benchmarks/{benchmark_id}/concurrency", "patch", "benchmark_id"),
+    ("/benchmarks/{benchmark_id}/artifacts", "get", "benchmark_id prefix cursor limit"),
+    ("/benchmarks/{benchmark_id}/artifacts/download-url", "get", "benchmark_id path"),
     ("/start-benchmark", "post", ""),
     ("/fetch-benchmark", "get", "benchmark_id connect"),
     (
@@ -112,6 +130,7 @@ ROUTES = (
     ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id force"),
     ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id retry retry_mode concurrency"),
     ("/benchmarks/status", "get", "ids"),
+    ("/scheduler/overview", "get", "waiting_limit active_limit waiting_offset active_offset include_capacity"),
     ("/benchmarks/{benchmark_id}", "get", "benchmark_id"),
     (
         "/benchmarks/{benchmark_id}/tasks",
@@ -132,6 +151,8 @@ ROUTES = (
     ),
     ("/agents", "get", ""),
     ("/agents/{name}/download-url", "get", "name"),
+    ("/agents/{name}", "put", "name"),
+    ("/agents/{name}", "delete", "name"),
     ("/benchmark-services", "get", ""),
     ("/benchmark-services", "post", ""),
     ("/fetch-benchmark-tasks", "post", ""),
@@ -141,11 +162,13 @@ ROUTES = (
     ("/fetch-run-outputs/{benchmark_id}", "get", "benchmark_id task_ids"),
 )
 RESPONSE_MODELS = {
+    ("/benchmarks/filter-options", "get"): "FilterOptionsResponse",
     ("/start-benchmark", "post"): "StartBenchmarkResponse",
     ("/fetch-benchmarks", "get"): "FetchBenchmarksResponse",
     ("/stop-benchmark/{benchmark_id}", "post"): "StopBenchmarkResponse",
     ("/retry-or-resume-benchmark/{benchmark_id}", "post"): "RetryOrResumeBenchmarkResponse",
     ("/benchmarks/status", "get"): "BenchmarkStatusResponse",
+    ("/scheduler/overview", "get"): "SchedulerOverviewResponse",
     ("/benchmarks/{benchmark_id}", "get"): "SingleBenchmarkResponse",
     ("/benchmarks/{benchmark_id}/tasks", "get"): "TasksResponse",
     ("/benchmarks/{benchmark_id}/tasks/{task_id}", "get"): "SingleTaskResponse",
@@ -153,6 +176,8 @@ RESPONSE_MODELS = {
     ("/benchmarks/{benchmark_id}/logs", "get"): "LogPageResponse",
     ("/agents", "get"): "AgentsResponse",
     ("/agents/{name}/download-url", "get"): "AgentDownloadURLResponse",
+    ("/agents/{name}", "put"): "AgentEntry",
+    ("/agents/{name}", "delete"): "AgentEntry",
     ("/benchmark-services", "get"): "BenchmarkServiceCatalogResponse",
     ("/benchmark-services", "post"): "BenchmarkServicesResponse",
     ("/fetch-benchmark-tasks", "post"): "VerifyTaskIdsResponse",
@@ -160,6 +185,7 @@ RESPONSE_MODELS = {
     ("/preview-results", "get"): "S3UploadResultsResponse",
 }
 MODEL_PAIRS = (
+    (FilterOptionsResponse, SDKFilterOptionsResponse),
     (OutputArtifact, SDKOutputArtifact),
     (AgentContractRequest, SDKAgentContractRequest),
     (AWSCredentials, SDKAWSCredentials),
@@ -181,6 +207,11 @@ MODEL_PAIRS = (
     (RetryOrResumeBenchmarkResponse, SDKRetryResponse),
     (BenchmarkStatusEntry, SDKBenchmarkStatusEntry),
     (BenchmarkStatusResponse, SDKBenchmarkStatusResponse),
+    (SchedulerActiveEntryResponse, SDKSchedulerActiveEntryResponse),
+    (SchedulerOverviewResponse, SDKSchedulerOverviewResponse),
+    (SchedulerPoolResponse, SDKSchedulerPoolResponse),
+    (SchedulerSummaryResponse, SDKSchedulerSummaryResponse),
+    (SchedulerWaitingEntryResponse, SDKSchedulerWaitingEntryResponse),
     (SingleBenchmarkResponse, SDKSingleBenchmarkResponse),
     (TaskSummary, SDKTaskSummary),
     (TasksResponse, SDKTasksResponse),
@@ -201,11 +232,8 @@ MODEL_PAIRS = (
 )
 INTERNAL_ROUTES = {
     ("/aws-runtime", "get"),
-    ("/benchmarks/{benchmark_id}/concurrency", "patch"),
-    ("/benchmarks/filter-options", "get"),
     ("/health", "get"),
     ("/init", "post"),
-    ("/scheduler/overview", "get"),
 }
 
 
@@ -323,18 +351,27 @@ def test_start_priority_override_is_optional_and_strict(model: type[BaseModel]) 
             model.model_validate({**payload, "sandbox_provider": "modal", "priority": invalid})
 
 
-def test_sdk_default_start_request_is_accepted_by_legacy_tracker() -> None:
-    payload = load_fixture("start.json")["request"]
-    payload.pop("concurrency")
-    payload.pop("priority")
-    sdk_request = SDKStartBenchmarkRequest.model_validate(payload)
+async def test_sdk_default_start_request_is_accepted_by_legacy_tracker() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        wire_payload = json.loads(request.content)
+        legacy_request = _LegacyTrackerStartBenchmarkRequest.model_validate(wire_payload)
+        assert legacy_request.concurrency == 5
+        assert "priority" not in wire_payload
+        assert "environment" not in wire_payload
+        assert "properties" not in wire_payload
+        return httpx.Response(200, json=load_fixture("start.json")["response"])
 
-    wire_payload = sdk_request.model_dump(mode="json", exclude={"priority"})
-    legacy_request = _LegacyTrackerStartBenchmarkRequest.model_validate(wire_payload)
-
-    assert wire_payload["concurrency"] == 5
-    assert "priority" not in wire_payload
-    assert legacy_request.concurrency == 5
+    config = ValkyrieConfig(
+        AWS_ACCESS_KEY_ID="test-key",
+        AWS_SECRET_ACCESS_KEY="test-secret",
+        AWS_DEFAULT_REGION="us-west-2",
+        S3_BUCKET="test-bucket",
+        sandbox_providers={"daytona": "DaytonaSecret"},
+    )
+    async with ValkyrieClient(
+        config, base_url="https://tracker.test", transport=httpx.MockTransport(handler)
+    ) as client:
+        await client.runs.start("sweagent", "swebench")
 
 
 def _normalized_wire_schema(value: Any) -> Any:
@@ -399,7 +436,7 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
     retry_schema_ref = retry["requestBody"]["content"]["application/json"]["schema"]["$ref"]
     retry_schema = schema["components"]["schemas"][retry_schema_ref.rsplit("/", 1)[-1]]
     retry_fixture = load_fixture("retry_resume.json")
-    assert set(retry_schema["properties"]) == {*retry_fixture["body"], "benchmark_url"}
+    assert set(retry_schema["properties"]) == {*retry_fixture["body"], "benchmark_url", "lambda_function"}
     retry_properties = retry_schema["properties"]
     assert {
         name: (retry_properties[name]["type"], retry_properties[name]["default"])
@@ -410,6 +447,7 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
         "secrets": ("object", {}),
     }
     assert retry_properties["benchmark_url"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
+    assert retry_properties["lambda_function"]["anyOf"] == [{"type": "string", "minLength": 1}, {"type": "null"}]
 
     retry_parameters = {parameter["name"]: parameter for parameter in retry["parameters"]}
     assert retry_parameters["retry"]["schema"]["default"] == retry_fixture["query"]["retry"]

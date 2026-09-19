@@ -276,6 +276,35 @@ async def test_task_fetch_keeps_empty_changing_page_and_stops_on_stable_cursor()
     ]
 
 
+@pytest.mark.parametrize("available_stream", ["canonical", "legacy", None])
+async def test_task_fetch_reads_existing_stream_when_other_name_is_absent(available_stream: str | None) -> None:
+    reference = TaskLogReference(
+        run_id=uuid4(), task_id="task:one", started_at=datetime(2026, 1, 1, tzinfo=timezone.utc), siblings=()
+    )
+    missing = ClientError({"Error": {"Code": "ResourceNotFoundException"}}, "FilterLogEvents")
+    found = {"events": [{"timestamp": 1_000, "message": "agent output"}], "nextToken": "next-page"}
+    responses: list[dict[str, Any] | BaseException] = [missing]
+    if available_stream != "canonical":
+        responses.append(missing)
+    responses.append(found if available_stream is not None else missing)
+    logs_client = MockLogsClient(responses)
+
+    page = await _provider(logs_client).fetch(reference, cursor="current-page", limit=20)
+
+    assert [event.message for event in page.events] == ([] if available_stream is None else ["agent output"])
+    assert page.next_cursor == (None if available_stream is None else "next-page")
+    assert all(
+        request["nextToken"] == "current-page" and request["limit"] == 20 for request in logs_client.filter_requests
+    )
+    assert logs_client.filter_requests[1]["logStreamNames"] == [
+        task_log_stream_name(reference.task_id, reference.started_at)
+    ]
+    if available_stream != "canonical":
+        assert logs_client.filter_requests[2]["logStreamNames"] == [
+            _legacy_task_log_stream_name(reference.task_id, reference.started_at)
+        ]
+
+
 async def test_follow_deduplicates_poll_results_and_translates_aws_errors() -> None:
     """Follow mode must emit a repeated event once and retain AWS failures as provider causes."""
     run_id = uuid4()

@@ -36,7 +36,7 @@ from main import app, tracker_service_error_handler
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.aws.runtime import AWSRuntime
-from tracker.runtime.storage import StoredObject, StoredObjectCopy
+from tracker.runtime.storage import ObjectStore, StoredObject, StoredObjectCopy
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -645,6 +645,35 @@ class TestTrackerAPI:
         assert blocked.json() == {"detail": "Custom benchmark destination is not allowed"}
         assert canonical.status_code == 200
 
+    @pytest.mark.parametrize("log_group", [None, ""])
+    def test_start_benchmark_accepts_empty_log_group_prefix(
+        self,
+        log_group: str | None,
+        harness_headers: dict[str, str],
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: Any,
+        database_session: Session,
+    ) -> None:
+        """Persist legacy requests that omit or leave the log-group prefix empty."""
+        monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", False)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        headers = {key: value for key, value in harness_headers.items() if key.lower() != "x-harness-log-group"}
+        if log_group is not None:
+            headers["x-harness-log-group"] = log_group
+
+        response = client.post(
+            "/start-benchmark",
+            headers=headers,
+            json={"benchmark_name": "swebench", "contract": contract.model_dump()},
+        )
+
+        assert response.status_code == 200, response.text
+        benchmark = database_session.get(Benchmark, UUID(response.json()["benchmark_id"]))
+        assert benchmark is not None
+        assert benchmark.arguments.properties is not None
+        assert benchmark.arguments.properties.log_group == ""
+
     async def test_start_benchmark(
         self,
         contract: AgentContractRequest,
@@ -678,6 +707,7 @@ class TestTrackerAPI:
 
         # Secondary test. Arguments is correct serialized into the database
         assert benchmark_row.arguments == BenchmarkArguments(
+            properties=AWSRuntime.from_harness_config(harness_config).resources,
             contract=request.contract,
             concurrency=request.concurrency,
             task_ids=None,
@@ -864,7 +894,9 @@ class TestTrackerAPI:
             }
         else:
             assert process_payload.arguments == {
-                "start_benchmark_request_json": request.model_dump(),
+                "start_benchmark_request_json": request.model_copy(
+                    update={"properties": benchmark.arguments.properties}
+                ).model_dump(),
                 "benchmark_id_str": str(benchmark.id),
                 "verified_task_ids": ["task_0"],
                 "telemetry_context_json": child_telemetry_context,
@@ -1006,15 +1038,15 @@ class TestTrackerAPI:
     ) -> None:
         copy_agent = AsyncMock(return_value=StoredObjectCopy(deletion_token="copy-version"))
         delete_agent_copy = AsyncMock()
-        commit = database_session.commit
 
-        def commit_then_fail() -> None:
-            commit()
-            raise RuntimeError("commit acknowledgement lost")
+        class LostAcknowledgementSession(Session):
+            def commit(self) -> None:
+                super().commit()
+                raise RuntimeError("commit acknowledgement lost")
 
         monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent)
         monkeypatch.setattr(main_module.S3ObjectStore, "delete", delete_agent_copy)
-        monkeypatch.setattr(database_session, "commit", commit_then_fail)
+        monkeypatch.setattr(main_module, "Session", LostAcknowledgementSession)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
         request = StartBenchmarkRequest(
             contract=contract,
@@ -1681,9 +1713,8 @@ class TestTrackerAPI:
             return None
 
         async def _mock_upload_final_view(
-            _benchmark_row: Benchmark,
             _final_view: FinalViewResponse,
-            _aws_runtime: AWSRuntime,
+            _object_store: ObjectStore,
         ) -> str:
             uploaded_keys.append(canonical_key)
 
