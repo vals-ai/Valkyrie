@@ -3,9 +3,30 @@
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock
 
 from botocore.exceptions import ClientError
+
+
+class VersionStream:
+    """Body that serves bounded chunks, like the provider's streaming response."""
+
+    def __init__(self, content: bytes) -> None:
+        self.content = content
+        self.position = 0
+        self.reads: list[int | None] = []
+
+    async def __aenter__(self) -> "VersionStream":
+        return self
+
+    async def __aexit__(self, *_arguments: object) -> None:
+        pass
+
+    async def read(self, amount: int | None = None) -> bytes:
+        self.reads.append(amount)
+        end = len(self.content) if amount is None else min(len(self.content), self.position + amount)
+        chunk = self.content[self.position : end]
+        self.position = end
+        return chunk
 
 
 class VersionStore:
@@ -16,6 +37,8 @@ class VersionStore:
         self.region = "us-east-1"
         self.unrelated: dict[tuple[str, str], bytes] = {}
         self.execution_objects: dict[tuple[str, str], tuple[str | None, bytes]] = {}
+        self.streams: list[VersionStream] = []
+        self.body_fetches = 0
         self.key = f"benchmarks/{run_id}/results.json"
         self.versions: dict[str, list[tuple[str, bytes | None]]] = {
             "source": [("s1", b'{"value":1}')],
@@ -76,12 +99,11 @@ class VersionStore:
         return {"Uploads": [], "IsTruncated": False}
 
     async def get_object(self, **arguments: Any) -> dict[str, Any]:
+        self.body_fetches += 1
         execution_object = self.execution_objects.get((arguments["Bucket"], arguments["Key"]))
         if execution_object is not None:
             identifier, content = execution_object
-            stream = AsyncMock()
-            stream.__aenter__.return_value = stream
-            stream.read.return_value = content
+            stream = self.stream(content)
             return {"Body": stream, "ContentLength": len(content), **({"VersionId": identifier} if identifier else {})}
         content = next(
             content
@@ -89,10 +111,12 @@ class VersionStore:
             if identifier == arguments["VersionId"]
         )
         assert content is not None
-        stream = AsyncMock()
-        stream.__aenter__.return_value = stream
-        stream.read.return_value = content
-        response: dict[str, Any] = {"Body": stream, "ContentLength": len(content)}
+        response: dict[str, Any] = {"Body": self.stream(content), "ContentLength": len(content)}
         if arguments["VersionId"] != "null" or self.versioning.get(arguments["Bucket"]) != {}:
             response["VersionId"] = arguments["VersionId"]
         return response
+
+    def stream(self, content: bytes) -> VersionStream:
+        stream = VersionStream(content)
+        self.streams.append(stream)
+        return stream

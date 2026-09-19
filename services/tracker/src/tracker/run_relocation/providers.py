@@ -11,11 +11,12 @@ from urllib.parse import parse_qs, urlsplit
 
 from botocore.exceptions import ClientError
 
+from tracker.aws.clients import AWSClientProvider
 from tracker.aws.managed_storage import ManagedStoragePolicy, validate_managed_storage_bucket
 from tracker.aws.runtime import AWSRuntime
 from tracker.lifecycle import LifecycleConflict, OperationIdentity
 from tracker.run_purge.contracts import PurgeRun
-from tracker.run_purge.providers import AWSProviderBoundary
+from tracker.run_purge.providers import AWSProviderBoundary, FenceReceipt
 from tracker.storage_migration_exchange import (
     ExecutionReference,
     ObjectTransformation,
@@ -23,6 +24,10 @@ from tracker.storage_migration_exchange import (
     TrackerRequest,
     canonical_digest,
 )
+
+
+CHUNK_BYTES = 1024 * 1024
+MAXIMUM_REWRITE_BYTES = 64 * 1024 * 1024
 
 
 def _digest(content: bytes) -> str:
@@ -86,6 +91,10 @@ class Version:
 
 
 class RelocationAWSBoundary(AWSProviderBoundary):
+    def __init__(self, clients: AWSClientProvider, *, fence_receipts: tuple[FenceReceipt, ...] = ()) -> None:
+        super().__init__(clients, fence_receipts=fence_receipts)
+        self.verified_versions: dict[tuple[str, str, str, str, int], str] = {}
+
     async def validate_source(self, identity: OperationIdentity, run: PurgeRun) -> None:
         resources = run.scope.original_resources
         clients = self.clients.with_region(resources.region)
@@ -129,20 +138,64 @@ class RelocationAWSBoundary(AWSProviderBoundary):
                 ),
             )
 
-    async def _bytes(self, client: Any, request: TrackerRequest, bucket: str, key: str, version_id: str) -> bytes:
-        response = await client.get_object(
-            Bucket=bucket, Key=key, VersionId=version_id, ExpectedBucketOwner=request.source_aws_account_id
+    async def _exact_version(
+        self, client: Any, request: TrackerRequest, bucket: str, key: str, version_id: str
+    ) -> dict[str, Any]:
+        response = cast(
+            dict[str, Any],
+            await client.get_object(
+                Bucket=bucket, Key=key, VersionId=version_id, ExpectedBucketOwner=request.source_aws_account_id
+            ),
         )
         returned_version = response.get("VersionId")
         if returned_version != version_id and not (version_id == "null" and returned_version is None):
             raise LifecycleConflict("Provider returned another object version")
+        return response
+
+    async def _bytes(self, client: Any, request: TrackerRequest, bucket: str, key: str, version_id: str) -> bytes:
+        response = await self._exact_version(client, request, bucket, key, version_id)
+        length = response.get("ContentLength")
+        if not isinstance(length, int) or length > MAXIMUM_REWRITE_BYTES:
+            raise LifecycleConflict("Rewritten object exceeds the bounded transformation size")
         async with response["Body"] as body:
             content = await body.read()
-        if not isinstance(content, bytes) or len(content) != response.get("ContentLength"):
+        if not isinstance(content, bytes) or len(content) != length:
             raise LifecycleConflict("Object body length does not match exact version")
         return content
 
-    async def _versions(self, client: Any, request: TrackerRequest, bucket: str, prefix: str) -> tuple[Version, ...]:
+    async def _streamed_digest(
+        self,
+        client: Any,
+        request: TrackerRequest,
+        bucket: str,
+        key: str,
+        version_id: str,
+        modified: datetime,
+        size: int,
+        reuse_verified: bool,
+    ) -> str:
+        memo = (bucket, key, version_id, modified.isoformat(), size)
+        cached = self.verified_versions.get(memo)
+        if reuse_verified and cached is not None:
+            return cached
+
+        response = await self._exact_version(client, request, bucket, key, version_id)
+        checksum = hashlib.sha256()
+        streamed = 0
+        async with response["Body"] as body:
+            while chunk := await body.read(CHUNK_BYTES):
+                checksum.update(chunk)
+                streamed += len(chunk)
+        if streamed != response.get("ContentLength") or streamed != size:
+            raise LifecycleConflict("Object body length does not match exact version")
+
+        if version_id != "null":
+            self.verified_versions[memo] = checksum.hexdigest()
+        return checksum.hexdigest()
+
+    async def _versions(
+        self, client: Any, request: TrackerRequest, bucket: str, prefix: str, reuse_verified: bool
+    ) -> tuple[Version, ...]:
         arguments: dict[str, Any] = {
             "Bucket": bucket,
             "Prefix": prefix,
@@ -167,20 +220,18 @@ class RelocationAWSBoundary(AWSProviderBoundary):
                     ):
                         raise LifecycleConflict("Incomplete or duplicate version identity")
                     seen.add((key, version_id))
-                    content = None if marker else await self._bytes(client, request, bucket, key, version_id)
                     size = 0 if marker else record.get("Size")
-                    if not isinstance(size, int) or (content is not None and len(content) != size):
+                    if not isinstance(size, int):
                         raise LifecycleConflict("Version size does not match bytes")
-                    values.append(
-                        Version(
-                            key,
-                            version_id,
-                            marker,
-                            size,
-                            record["IsLatest"],
-                            record["LastModified"],
-                            None if content is None else _digest(content),
+                    checksum = (
+                        None
+                        if marker
+                        else await self._streamed_digest(
+                            client, request, bucket, key, version_id, record["LastModified"], size, reuse_verified
                         )
+                    )
+                    values.append(
+                        Version(key, version_id, marker, size, record["IsLatest"], record["LastModified"], checksum)
                     )
             truncated = response.get("IsTruncated")
             if not isinstance(truncated, bool):
@@ -207,7 +258,13 @@ class RelocationAWSBoundary(AWSProviderBoundary):
         return tuple(values)
 
     async def verify_objects(
-        self, request: TrackerRequest, run: RelocationRun, *, source_removed: bool = False, source_partial: bool = False
+        self,
+        request: TrackerRequest,
+        run: RelocationRun,
+        *,
+        source_removed: bool = False,
+        source_partial: bool = False,
+        reuse_verified: bool = False,
     ) -> None:
         run_id = run.scope.run_id
         source_bucket, destination_bucket = run.scope.original_resources.s3_bucket, run.destination_resources.s3_bucket
@@ -269,8 +326,10 @@ class RelocationAWSBoundary(AWSProviderBoundary):
                 or f"arn:aws:s3:::{source_bucket}/{run.scope.object_prefix}*" not in resources
             ):
                 raise LifecycleConflict("Source migration fence differs from exact operation scope")
-            source = await self._versions(client, request, source_bucket, run.scope.object_prefix)
-            destination = await self._versions(client, request, destination_bucket, run.scope.object_prefix)
+            source = await self._versions(client, request, source_bucket, run.scope.object_prefix, reuse_verified)
+            destination = await self._versions(
+                client, request, destination_bucket, run.scope.object_prefix, reuse_verified
+            )
             source_map = {(item.key, item.version_id): item for item in source}
             destination_map = {(item.key, item.version_id): item for item in destination}
             copies_map = {(item.key, item.source_version_id): item for item in copies}
@@ -352,20 +411,6 @@ class RelocationAWSBoundary(AWSProviderBoundary):
                         )
                     elif not source_partial and not source_removed:
                         raise LifecycleConflict("Transformation original is missing")
-            for key in {item.key for item in history}:
-                ordered_history = [item for item in history if item.key == key]
-                copied_history = [item for item in ordered_history if item.provenance == "copied"]
-                if copied_history and ordered_history[0].provenance == "existing":
-                    raise LifecycleConflict("Copied versions require an explicit current restoration")
-                source_order = [
-                    source_map[(item.key, proof_by_destination[item.key, item.version_id].source_version_id)]
-                    for item in copied_history
-                    if (item.key, proof_by_destination[item.key, item.version_id].source_version_id) in source_map
-                ]
-                if not source_partial and not source_removed and source_order and not source_order[0].current:
-                    raise LifecycleConflict("Copied history does not preserve the source current version")
-                if any(left.modified < right.modified for left, right in zip(source_order, source_order[1:])):
-                    raise LifecycleConflict("Copied history inverts source version order")
             used_transforms = {item.transformation_sha256 for item in copies if item.transformation_sha256 is not None}
             for item in history:
                 if item.provenance == "copied":
@@ -422,12 +467,25 @@ class RelocationAWSBoundary(AWSProviderBoundary):
                         used_transforms.add(item.transformation_sha256)
             if set(transforms) != used_transforms:
                 raise LifecycleConflict("Planned transformations have incomplete copy proof")
+            for key in {item.key for item in history}:
+                ordered_history = [item for item in history if item.key == key]
+                copied_history = [item for item in ordered_history if item.provenance == "copied"]
+                if copied_history and ordered_history[0].provenance == "existing":
+                    raise LifecycleConflict("Copied versions require an explicit current restoration")
+                source_order = [
+                    source_map[(item.key, proof_by_destination[item.key, item.version_id].source_version_id)]
+                    for item in copied_history
+                    if (item.key, proof_by_destination[item.key, item.version_id].source_version_id) in source_map
+                ]
+                if not source_partial and not source_removed and source_order and not source_order[0].current:
+                    raise LifecycleConflict("Copied history does not preserve the source current version")
+                if any(left.modified < right.modified for left, right in zip(source_order, source_order[1:])):
+                    raise LifecycleConflict("Copied history inverts source version order")
 
     async def execution_references(
-        self, arguments: dict[str, Any], request: TrackerRequest, run: RelocationRun | None
+        self, arguments: dict[str, Any], request: TrackerRequest, retired_buckets: frozenset[str]
     ) -> tuple[ExecutionReference, ...]:
         references: list[ExecutionReference] = []
-        source_bucket = None if run is None else run.scope.original_resources.s3_bucket
         values: list[tuple[str, Any]] = [("/dataset", arguments.get("dataset"))]
         if arguments.get("lambda_function") is not None:
             values.append(("/lambda_function", arguments["lambda_function"]))
@@ -448,7 +506,7 @@ class RelocationAWSBoundary(AWSProviderBoundary):
             if isinstance(value, str) and value.startswith("s3://"):
                 parsed = urlsplit(value)
                 key = parsed.path.lstrip("/")
-                if parsed.netloc == source_bucket:
+                if parsed.netloc in retired_buckets:
                     reference = reference.model_copy(update={"kind": "retired_source"})
                 elif parsed.netloc and key and not parsed.fragment:
                     versions = parse_qs(parsed.query, keep_blank_values=True)

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -10,7 +11,15 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlmodel import Session, col, select
 
-from tracker.database.models import Benchmark, BenchmarkStatus, ExecutorDispatch, RunLifecycle, Task, TaskStatus
+from tracker.database.models import (
+    Benchmark,
+    BenchmarkStatus,
+    EvaluationResult,
+    ExecutorDispatch,
+    RunLifecycle,
+    Task,
+    TaskStatus,
+)
 from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, require_owned_hold
 from tracker.lifecycle_completion import (
     RelocationCheckpoint,
@@ -54,9 +63,10 @@ class RelocationBoundary(Protocol):
         *,
         source_removed: bool = False,
         source_partial: bool = False,
+        reuse_verified: bool = False,
     ) -> None: ...
     async def execution_references(
-        self, arguments: dict[str, Any], request: TrackerRequest, run: RelocationRun | None, /
+        self, arguments: dict[str, Any], request: TrackerRequest, retired_buckets: frozenset[str], /
     ) -> tuple[ExecutionReference, ...]: ...
 
 
@@ -73,6 +83,35 @@ def execution_digest(arguments: dict[str, Any]) -> str:
     value = json.loads(json.dumps(arguments))
     value["properties"].pop("s3_bucket", None)
     return canonical_digest(value)
+
+
+def retired_source_buckets(request: TrackerRequest, saved_arguments: Sequence[dict[str, Any]] = ()) -> frozenset[str]:
+    """Every bucket the parent empties for this operation, identical in every action."""
+    if request.plan is not None:
+        return frozenset(run.scope.original_resources.s3_bucket for run in request.plan.runs)
+    return frozenset(arguments["properties"]["s3_bucket"] for arguments in saved_arguments)
+
+
+def result_locator_references(
+    results: Sequence[tuple[UUID, Any]], retired_buckets: frozenset[str]
+) -> tuple[ExecutionReference, ...]:
+    """Report saved task-result locators into a retired bucket; the tool never rewrites them."""
+    prefixes = tuple(f"s3://{bucket}/" for bucket in sorted(retired_buckets))
+    references: list[ExecutionReference] = []
+
+    def scan(value: Any, pointer: str) -> None:
+        if isinstance(value, dict):
+            for key, child in cast(dict[str, Any], value).items():
+                scan(child, pointer + "/" + key.replace("~", "~0").replace("/", "~1"))
+        elif isinstance(value, list):
+            for index, child in enumerate(cast(list[Any], value)):
+                scan(child, pointer + "/" + str(index))
+        elif isinstance(value, str) and value.startswith(prefixes):
+            references.append(ExecutionReference(pointer=pointer, value_sha256=canonical_digest(value), kind="unknown"))
+
+    for result_id, result in results:
+        scan(result, f"/evaluation_result/{result_id}")
+    return tuple(references)
 
 
 class RelocationOperator:
@@ -146,6 +185,18 @@ class RelocationOperator:
             if task.status not in {TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED}
             or task.eval_resume_state is not None
         )
+
+    def _result_references(self, run_id: UUID, retired_buckets: frozenset[str]) -> tuple[ExecutionReference, ...]:
+        if not retired_buckets:
+            return ()
+
+        results = self.session.exec(
+            select(EvaluationResult)
+            .join(Task, onclause=col(EvaluationResult.task) == col(Task.id))
+            .where(col(Task.benchmark) == run_id)
+            .order_by(col(EvaluationResult.id))
+        ).all()
+        return result_locator_references([(item.id, item.result) for item in results], retired_buckets)
 
     def _host_contract(self, request: TrackerRequest) -> HostContractObservation:
         if request.host_contract is None:
@@ -337,7 +388,7 @@ class RelocationOperator:
             )
 
     async def _inventory(self, request: TrackerRequest) -> TrackerResponse:
-        observations: list[RunObservation] = []
+        scoped: list[tuple[Benchmark, dict[str, Any], RelocationPredecessor | None]] = []
         for run_id in request.run_ids:
             benchmark, arguments = self._run(request, run_id)
             predecessor = None
@@ -358,7 +409,14 @@ class RelocationOperator:
                 predecessor = capture_predecessor(
                     record, identity, RunScope(run_id=run_id, original_resources=arguments["properties"])
                 )
-            references = await self.boundary.execution_references(arguments, request, None)
+            scoped.append((benchmark, arguments, predecessor))
+
+        retired = retired_source_buckets(request, [arguments for _, arguments, _ in scoped])
+        observations: list[RunObservation] = []
+        for benchmark, arguments, predecessor in scoped:
+            references = await self.boundary.execution_references(
+                arguments, request, retired
+            ) + self._result_references(benchmark.id, retired)
             observations.append(
                 self._observation(request, benchmark, arguments, references=references, predecessor=predecessor)
             )
@@ -432,7 +490,10 @@ class RelocationOperator:
         )
         await self.boundary.validate(identity, destination)
         await self.boundary.verify_absence(provider_run)
-        references = await self.boundary.execution_references(arguments, request, run)
+        retired = retired_source_buckets(request)
+        references = await self.boundary.execution_references(arguments, request, retired) + self._result_references(
+            run.scope.run_id, retired
+        )
         if (
             not request.copied_objects
             and not request.destination_versions
@@ -490,7 +551,7 @@ class RelocationOperator:
                 benchmark, arguments = self._run(request, run.scope.run_id)
                 record, checkpoint = self._checkpoint(identity, run)
                 self._validate_run(benchmark, arguments, run, checkpoint)
-                await self.boundary.verify_objects(request, run, source_partial=True)
+                await self.boundary.verify_objects(request, run, source_partial=True, reuse_verified=True)
             elif request.action == "release":
                 if (
                     checkpoint.phase not in {"relocated", "released", "relocated_history_only"}

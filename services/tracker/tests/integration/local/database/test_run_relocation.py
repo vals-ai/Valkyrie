@@ -41,7 +41,7 @@ from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, re
 from tracker.lifecycle_completion import acquire_successor_hold, capture_predecessor
 from tracker.run_relocation import RelocationOperator
 from tracker.run_relocation.providers import RelocationAWSBoundary
-from tracker.storage_migration_exchange import ExecutionReference, RelocationRun, TrackerRequest, TrackerResponse
+from tracker.storage_migration_exchange import ExecutionReference, TrackerRequest, TrackerResponse
 
 
 def digest(value: object) -> str:
@@ -82,12 +82,16 @@ class EmptyBoundary:
         pass
 
     async def verify_objects(
-        self, *_arguments: object, source_removed: bool = False, source_partial: bool = False
+        self,
+        *_arguments: object,
+        source_removed: bool = False,
+        source_partial: bool = False,
+        reuse_verified: bool = False,
     ) -> None:
         pass
 
     async def execution_references(
-        self, arguments: dict[str, Any], request: TrackerRequest, run_scope: RelocationRun | None, /
+        self, arguments: dict[str, Any], request: TrackerRequest, retired_buckets: frozenset[str], /
     ) -> tuple[ExecutionReference, ...]:
         return ()
 
@@ -641,7 +645,7 @@ def test_legacy_shared_source_moves_through_real_provider_checks_without_touchin
     inventory = asyncio.run(
         operator.execute(TrackerRequest.model_validate({**request, "action": "inventory", "plan": None}))
     )
-    assert inventory.runs[0].execution_references[0].kind == "unknown"
+    assert inventory.runs[0].execution_references[0].kind == "retired_source"
     assert inventory.runs[0].execution_arguments_sha256 == planned["execution_arguments_sha256"]
     asyncio.run(operator.execute(TrackerRequest.model_validate(request)))
     content_digest = hashlib.sha256(content).hexdigest()
@@ -874,9 +878,9 @@ def test_saved_s3_locator_policy_is_enforced_at_release(relocation_session: Sess
 
     class ReferenceBoundary(EmptyBoundary):
         async def execution_references(
-            self, arguments: dict[str, Any], request: TrackerRequest, run_scope: RelocationRun | None
+            self, arguments: dict[str, Any], request: TrackerRequest, retired_buckets: frozenset[str]
         ) -> tuple[ExecutionReference, ...]:
-            return await provider.execution_references(arguments, request, run_scope)
+            return await provider.execution_references(arguments, request, retired_buckets)
 
     operator = RelocationOperator(relocation_session, ReferenceBoundary())
     for action in ("prepare", "relocate"):

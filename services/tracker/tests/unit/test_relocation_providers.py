@@ -14,7 +14,8 @@ from tests.relocation_support import VersionStore
 from tracker.aws.runtime import AWSResources
 from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope
 from tracker.run_purge.contracts import ProviderLocator, PurgeRun
-from tracker.run_relocation.providers import RelocationAWSBoundary, rewrite_json
+from tracker.run_relocation import retired_source_buckets
+from tracker.run_relocation.providers import CHUNK_BYTES, RelocationAWSBoundary, rewrite_json
 from tracker.storage_migration_exchange import JsonLocatorEdit, ObjectTransformation, TrackerRequest, canonical_digest
 
 
@@ -370,12 +371,12 @@ async def test_unversioned_retained_reference_is_unknown_and_cannot_claim_an_imm
     boundary, store, payload = setup()
     store.execution_objects["retained", "manifest.json"] = (identifier, b"{}")
     request = TrackerRequest.model_validate(payload)
-    references = await boundary.execution_references({"dataset": "s3://retained/manifest.json"}, request, None)
+    references = await boundary.execution_references({"dataset": "s3://retained/manifest.json"}, request, frozenset())
     assert len(references) == 1
     assert references[0].kind == "unknown" and references[0].version_id is None
     with pytest.raises(LifecycleConflict, match="another version"):
         await boundary.execution_references(
-            {"dataset": "s3://retained/manifest.json?versionId=immutable"}, request, None
+            {"dataset": "s3://retained/manifest.json?versionId=immutable"}, request, frozenset()
         )
 
 
@@ -400,7 +401,7 @@ async def test_unpinned_saved_s3_locator_is_unknown_without_fetching_current_obj
 
     store.get_object = unavailable_object
     (reference,) = await boundary.execution_references(
-        {"dataset": "s3://retained/manifest.json" + suffix}, TrackerRequest.model_validate(payload), None
+        {"dataset": "s3://retained/manifest.json" + suffix}, TrackerRequest.model_validate(payload), frozenset()
     )
     assert reference.kind == "unknown" and reference.version_id is None
 
@@ -410,6 +411,75 @@ async def test_saved_immutable_s3_locator_verifies_exact_version_bytes() -> None
     boundary, store, payload = setup()
     store.execution_objects["retained", "manifest.json"] = ("v1", b"{}")
     (reference,) = await boundary.execution_references(
-        {"dataset": "s3://retained/manifest.json?versionId=v1"}, TrackerRequest.model_validate(payload), None
+        {"dataset": "s3://retained/manifest.json?versionId=v1"}, TrackerRequest.model_validate(payload), frozenset()
     )
     assert (reference.kind, reference.version_id, reference.sha256) == ("retained_s3_object", "v1", checksum(b"{}"))
+
+
+def two_bucket_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    first: dict[str, Any] = payload["plan"]["runs"][0]
+    second_id = str(uuid4())
+    second: dict[str, Any] = {
+        "scope": {
+            "run_id": second_id,
+            "original_resources": {**first["scope"]["original_resources"], "s3_bucket": "other-source"},
+            "object_prefix": f"benchmarks/{second_id}/",
+            "log_group": f"runs/{second_id}",
+        },
+        "destination_resources": dict(first["destination_resources"]),
+        "expected_label": None,
+        "execution_policy": "history_only",
+        "execution_arguments_sha256": "d" * 64,
+    }
+    runs: list[dict[str, Any]] = sorted([first, second], key=lambda item: str(item["scope"]["run_id"]))
+    run_ids = [item["scope"]["run_id"] for item in runs]
+    payload["plan"]["runs"] = runs
+    payload["plan"]["identity"]["run_ids"] = run_ids
+    payload["run_ids"] = run_ids
+    return runs
+
+
+@pytest.mark.asyncio
+async def test_every_plan_source_bucket_is_retired_in_inventory_and_release_alike() -> None:
+    boundary, store, payload = setup()
+    runs = two_bucket_plan(payload)
+    request = TrackerRequest.model_validate(payload)
+    saved = [{"properties": item["scope"]["original_resources"]} for item in runs]
+
+    inventory_buckets = retired_source_buckets(request.model_copy(update={"plan": None}), saved)
+    release_buckets = retired_source_buckets(request)
+    assert inventory_buckets == release_buckets == frozenset({"source", "other-source"})
+
+    store.execution_objects["source", store.key] = ("s1", b'{"value":1}')
+    store.execution_objects["other-source", "manifest.json"] = ("v1", b"{}")
+    for retired in (inventory_buckets, release_buckets):
+        own = await boundary.execution_references(
+            {"dataset": f"s3://source/{store.key}?versionId=s1", "contract": {}}, request, retired
+        )
+        other = await boundary.execution_references(
+            {"dataset": "s3://other-source/manifest.json?versionId=v1", "contract": {}}, request, retired
+        )
+        assert [item.kind for item in own] == ["retired_source"]
+        assert [item.kind for item in other] == ["retired_source"]
+
+
+@pytest.mark.asyncio
+async def test_version_proof_streams_bounded_chunks_and_reuses_proved_versions_after_commit() -> None:
+    boundary, store, payload = setup()
+    request = TrackerRequest.model_validate(payload)
+    assert request.plan is not None
+
+    await boundary.verify_objects(request, request.plan.runs[0])
+    assert store.body_fetches == 2
+    assert store.streams and all(amount == CHUNK_BYTES for stream in store.streams for amount in stream.reads)
+
+    await boundary.verify_objects(request, request.plan.runs[0], source_partial=True, reuse_verified=True)
+    assert store.body_fetches == 2
+
+    store.versions["destination"] = [("replaced", b'{"value":1}')]
+    payload["destination_versions"][0]["version_id"] = "replaced"
+    payload["copied_objects"][0]["destination_version_id"] = "replaced"
+    await boundary.verify_objects(
+        TrackerRequest.model_validate(payload), request.plan.runs[0], source_partial=True, reuse_verified=True
+    )
+    assert store.body_fetches == 3

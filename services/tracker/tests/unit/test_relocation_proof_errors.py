@@ -184,3 +184,17 @@ async def test_reviewed_history_must_match_every_copy_and_retained_version(failu
     assert request.plan is not None
     with pytest.raises(LifecycleConflict):
         await boundary.verify_objects(request, request.plan.runs[0])
+
+
+@pytest.mark.asyncio
+async def test_unproved_copied_destination_version_is_refused_as_a_lifecycle_conflict() -> None:
+    boundary, store, payload = setup()
+    store.versions["destination"].append(("ghost", b'{"value":1}'))
+    payload["destination_versions"].append(
+        {**payload["destination_versions"][0], "version_id": "ghost", "is_current": False}
+    )
+    request = TrackerRequest.model_validate(payload)
+    assert request.plan is not None
+
+    with pytest.raises(LifecycleConflict, match="lacks source proof"):
+        await boundary.verify_objects(request, request.plan.runs[0])
