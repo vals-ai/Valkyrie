@@ -11,7 +11,7 @@ import pytest
 
 from tests.unit.test_relocation_providers import setup
 from tracker.lifecycle import LifecycleConflict
-from tracker.run_relocation.cli import execute, failure_path, write_failure, write_response
+from tracker.run_relocation.cli import execute, failure_path, record_failure, write_failure, write_response
 from tracker.storage_migration_exchange import TrackerRequest, TrackerResponse
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "relocate_run_storage.py"
@@ -144,3 +144,17 @@ def test_failure_report_records_the_refusal_and_never_stands_in_for_a_receipt(tm
     assert document["action"] == request.action
     assert document["run_ids"] == [str(run_id) for run_id in request.run_ids]
     assert not report.exists()
+
+
+def test_an_unwritable_failure_record_annotates_the_refusal_instead_of_replacing_it(tmp_path: Path) -> None:
+    _, _, payload = setup()
+    request = TrackerRequest.model_validate(payload)
+    reason = "Exact source migration fence is missing or ambiguous"
+    refusal = LifecycleConflict(reason)
+    report = tmp_path / "absent-directory" / "report.json"
+
+    record_failure(report, request, refusal)
+
+    assert str(refusal) == reason
+    assert refusal.__notes__ == ["Failure record was not written (FileNotFoundError)"]
+    assert not failure_path(report).exists()

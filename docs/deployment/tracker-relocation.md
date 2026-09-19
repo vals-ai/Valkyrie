@@ -25,7 +25,8 @@ arguments, artifact contents, secret values, or raw provider errors.
 
 A refusal writes no report. It writes `RESPONSE.json.failure` beside the report with
 the nonce, action, run scope, and the authored refusal message, and it prints that
-same message on stderr. The failure document is an operator artifact, not part of the
+same message on stderr. A failure record that cannot itself be written never replaces
+the refusal; the refusal is printed first and the write error is reported after it. The failure document is an operator artifact, not part of the
 version 1 exchange; the parent reads only the report and only on exit code 0. Durable
 per-run progress stays in the run lifecycle checkpoints, so a resume repeats the same
 reviewed plan. The report path, and the failure path beside it, may not name the
@@ -107,9 +108,12 @@ hold; held-unclaimed evidence alone does not permit release.
 
 Every action classifies execution references against the same retired set: every
 source bucket named by the operation, not only the bucket of the run being examined.
-`inventory` derives that set from the current saved resources of every run in scope
-and `prepare`/`relocate`/`release` derive it from the child plan, so a locator into a
-bucket the parent will empty cannot be portable at inventory and retired at release.
+`prepare`, `inspect`, `relocate` and `release` derive that set from the child plan.
+`inventory` derives it from each run's recorded relocation scope when a lifecycle
+record exists, and from the current saved resources otherwise, so an inventory taken
+after the location commit still names the emptied source and never the destination.
+A locator into a bucket the parent will empty cannot be portable at inventory and
+retired at release.
 
 Saved task results are inspected as well. `EvaluationResult.result` is opaque service
 JSON that this tool never rewrites. Any string in it that names a retired bucket is

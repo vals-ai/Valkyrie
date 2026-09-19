@@ -699,6 +699,15 @@ def test_legacy_shared_source_moves_through_real_provider_checks_without_touchin
     assert released.runs[0].hold_phase == "relocated_history_only"
     assert released.runs[0].execution_references[0].kind == "retired_source"
     assert relocation_session.get_one(RunLifecycle, run.id).released_at is None
+    completed = asyncio.run(
+        operator.execute(
+            TrackerRequest.model_validate(
+                {**request, "action": "inventory", "plan": None, "copied_objects": [], "destination_versions": []}
+            )
+        )
+    )
+    assert completed.runs[0].resources.s3_bucket == destination
+    assert completed.runs[0].execution_references[0].kind == "retired_source"
 
 
 @pytest.mark.parametrize("action", ["inventory", "prepare", "inspect", "relocate", "release"])

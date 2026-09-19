@@ -85,11 +85,18 @@ def execution_digest(arguments: dict[str, Any]) -> str:
     return canonical_digest(value)
 
 
-def retired_source_buckets(request: TrackerRequest, saved_arguments: Sequence[dict[str, Any]] = ()) -> frozenset[str]:
+def recorded_source_bucket(record: RunLifecycle | None, arguments: dict[str, Any]) -> str:
+    """The bucket a relocation empties, which after the location commit is no longer the saved one."""
+    if record is None:
+        return cast(str, arguments["properties"]["s3_bucket"])
+    return RunScope.model_validate_json(record.scope_json).original_resources.s3_bucket
+
+
+def retired_source_buckets(request: TrackerRequest, source_buckets: Sequence[str] = ()) -> frozenset[str]:
     """Every bucket the parent empties for this operation, identical in every action."""
     if request.plan is not None:
         return frozenset(run.scope.original_resources.s3_bucket for run in request.plan.runs)
-    return frozenset(arguments["properties"]["s3_bucket"] for arguments in saved_arguments)
+    return frozenset(source_buckets)
 
 
 def result_locator_references(
@@ -388,7 +395,7 @@ class RelocationOperator:
             )
 
     async def _inventory(self, request: TrackerRequest) -> TrackerResponse:
-        scoped: list[tuple[Benchmark, dict[str, Any], RelocationPredecessor | None]] = []
+        scoped: list[tuple[Benchmark, dict[str, Any], RelocationPredecessor | None, str]] = []
         for run_id in request.run_ids:
             benchmark, arguments = self._run(request, run_id)
             predecessor = None
@@ -409,11 +416,11 @@ class RelocationOperator:
                 predecessor = capture_predecessor(
                     record, identity, RunScope(run_id=run_id, original_resources=arguments["properties"])
                 )
-            scoped.append((benchmark, arguments, predecessor))
+            scoped.append((benchmark, arguments, predecessor, recorded_source_bucket(record, arguments)))
 
-        retired = retired_source_buckets(request, [arguments for _, arguments, _ in scoped])
+        retired = retired_source_buckets(request, [bucket for _, _, _, bucket in scoped])
         observations: list[RunObservation] = []
-        for benchmark, arguments, predecessor in scoped:
+        for benchmark, arguments, predecessor, _ in scoped:
             references = await self.boundary.execution_references(
                 arguments, request, retired
             ) + self._result_references(benchmark.id, retired)

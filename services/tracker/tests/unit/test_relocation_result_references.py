@@ -1,10 +1,14 @@
-"""Saved task-result locators into a retired bucket keep a plan out of portable release."""
+"""Retired-bucket derivation and the saved task-result locators that block a portable release."""
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from tracker.run_relocation import result_locator_references
+from tracker.aws.runtime import AWSResources
+from tracker.database.models import RunLifecycle
+from tracker.lifecycle import RunScope
+from tracker.run_relocation import recorded_source_bucket, result_locator_references
 
 
 def test_result_locators_into_a_retired_bucket_are_reported_without_rewriting_saved_json() -> None:
@@ -36,3 +40,23 @@ def test_locators_outside_every_retired_bucket_are_not_reported() -> None:
 
     assert result_locator_references([(uuid4(), result)], frozenset({"legacy-shared-storage"})) == ()
     assert result_locator_references([(uuid4(), result)], frozenset()) == ()
+
+
+def test_a_relocated_run_keeps_its_recorded_source_bucket_as_the_retired_one() -> None:
+    run_id = uuid4()
+    scope = RunScope(
+        run_id=run_id,
+        original_resources=AWSResources("us-east-1", "legacy-shared-storage", "runs", 7),
+    )
+    relocated = {"properties": {"region": "us-east-1", "s3_bucket": "vs-dev-owner-42", "log_group": "runs"}}
+    record = RunLifecycle(
+        run_id=run_id,
+        identity_json="{}",
+        scope_json=scope.model_dump_json(),
+        purpose="relocation",
+        phase="relocated",
+        acquired_at=datetime.now(UTC),
+    )
+
+    assert recorded_source_bucket(record, relocated) == "legacy-shared-storage"
+    assert recorded_source_bucket(None, relocated) == "vs-dev-owner-42"

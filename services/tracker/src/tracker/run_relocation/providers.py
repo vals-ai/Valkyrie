@@ -155,8 +155,11 @@ class RelocationAWSBoundary(AWSProviderBoundary):
     async def _bytes(self, client: Any, request: TrackerRequest, bucket: str, key: str, version_id: str) -> bytes:
         response = await self._exact_version(client, request, bucket, key, version_id)
         length = response.get("ContentLength")
-        if not isinstance(length, int) or length > MAXIMUM_REWRITE_BYTES:
-            raise LifecycleConflict("Rewritten object exceeds the bounded transformation size")
+        if not isinstance(length, int):
+            raise LifecycleConflict("Transformation source version has no usable content length")
+
+        if length > MAXIMUM_REWRITE_BYTES:
+            raise LifecycleConflict("Transformation source version exceeds the bounded rewrite size")
         async with response["Body"] as body:
             content = await body.read()
         if not isinstance(content, bytes) or len(content) != length:

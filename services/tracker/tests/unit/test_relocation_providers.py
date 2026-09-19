@@ -444,7 +444,7 @@ async def test_every_plan_source_bucket_is_retired_in_inventory_and_release_alik
     boundary, store, payload = setup()
     runs = two_bucket_plan(payload)
     request = TrackerRequest.model_validate(payload)
-    saved = [{"properties": item["scope"]["original_resources"]} for item in runs]
+    saved = [str(item["scope"]["original_resources"]["s3_bucket"]) for item in runs]
 
     inventory_buckets = retired_source_buckets(request.model_copy(update={"plan": None}), saved)
     release_buckets = retired_source_buckets(request)

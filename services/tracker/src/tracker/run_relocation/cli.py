@@ -62,6 +62,14 @@ def write_failure(path: Path, request: TrackerRequest, error: Exception) -> None
     )
 
 
+def record_failure(report_path: Path, request: TrackerRequest, error: Exception) -> None:
+    """A failed failure record annotates the refusal; it never replaces it."""
+    try:
+        write_failure(failure_path(report_path), request, error)
+    except Exception as write_error:
+        error.add_note(f"Failure record was not written ({type(write_error).__name__})")
+
+
 def execute(payload: bytes, request_path: Path, report_path: Path, expected_database_target: str) -> int:
     request = TrackerRequest.model_validate_json(payload)
     if request.database_target != expected_database_target:
@@ -80,7 +88,7 @@ def execute(payload: bytes, request_path: Path, report_path: Path, expected_data
             try:
                 response = asyncio.run(RelocationOperator(session, boundary).execute(request))
             except Exception as error:
-                write_failure(failure_path(report_path), request, error)
+                record_failure(report_path, request, error)
                 raise
             write_response(report_path, response)
     finally:

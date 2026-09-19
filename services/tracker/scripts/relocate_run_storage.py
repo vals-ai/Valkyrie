@@ -8,6 +8,11 @@ import sys
 from pathlib import Path
 
 
+def report_notes(error: BaseException) -> None:
+    for note in getattr(error, "__notes__", []):
+        print(note, file=sys.stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify and relocate held terminal runs in one AWS account")
     parser.add_argument("--request", required=True, type=Path)
@@ -37,9 +42,11 @@ def main() -> int:
         except LifecycleConflict as conflict:
             # Every refusal message in this tool is an authored constant with no provider payload.
             print(f"Relocation remains incomplete (LifecycleConflict: {conflict})", file=sys.stderr)
+            report_notes(conflict)
             return 2
     except Exception as error:
         print(f"Relocation remains incomplete ({type(error).__name__})", file=sys.stderr)
+        report_notes(error)
         return 2
 
 
