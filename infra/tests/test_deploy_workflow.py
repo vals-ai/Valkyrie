@@ -30,6 +30,13 @@ def _job_ids(workflow: str) -> list[str]:
     return _JOB_ID.findall(workflow.split("\njobs:\n", maxsplit=1)[1])
 
 
+def _assignment(script: str, name: str) -> str:
+    """Return one shell environment assignment's value, without its optional quotes."""
+    match = re.search(rf"^\s*{re.escape(name)}=('[^']*'|\"[^\"]*\"|\S+)", script, re.MULTILINE)
+    assert match is not None, f"{name} is not assigned in the synthesis helper"
+    return match.group(1).strip("'\"")
+
+
 def _job(workflow: str, job_id: str) -> str:
     """Return the workflow text of one job, up to the next top-level job id."""
     body = workflow.split(f"  {job_id}:", maxsplit=1)[1]
@@ -197,6 +204,14 @@ class DeployWorkflowTest(unittest.TestCase):
                 job = _job(workflow, job_id)
                 for setting in storage_settings:
                     self.assertIn(setting, job)
+
+    def test_classifier_synthesis_keeps_owner_storage_iam_in_the_template_diff(self) -> None:
+        synthesis = WORKER_SYNTHESIS.read_text(encoding="utf-8")
+        organization_id = _assignment(synthesis, "AWS_DEPLOYMENT_ROLE_ORG_IDS")
+        org_environments = json.loads(_assignment(synthesis, "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS"))
+
+        self.assertEqual(_assignment(synthesis, "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED"), "true")
+        self.assertEqual(org_environments, {organization_id: ["dev", "prod"]})
 
     def test_executor_keeps_the_deployed_worker_stack_identity(self) -> None:
         app = (ROOT / "infra" / "app.py").read_text(encoding="utf-8")
