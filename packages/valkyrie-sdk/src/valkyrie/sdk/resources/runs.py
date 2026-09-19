@@ -142,9 +142,7 @@ class RunsResource:
                 None if ignore_custom_services else self._sdk.config.custom_benchmark_services.get(benchmark)
             ),
             service_headers=effective_service_headers,
-            sandbox_provider_secret_name=(
-                provider_secret_name if access_key_harness_config is None and provider_secret_name else None
-            ),
+            sandbox_provider_secret_name=(provider_secret_name if access_key_harness_config is None else None),
             webhook_secret_name=self._sdk.config.webhook if intervals else None,
             webhook_intervals=intervals,
         )

@@ -119,16 +119,16 @@ async def test_rejects_symlink_escape(tmp_path: Path) -> None:
 
 async def test_metadata_and_pagination(tmp_path: Path) -> None:
     store = FilesystemObjectStore(tmp_path)
-    for key in ("run/a", "run/b", "run/c"):
+    for key in ("run/a.txt", "run/a/x", "run/b"):
         await store.put_bytes(key, key.encode())
     first, cursor = await store.list_objects_page("run/", cursor=None, limit=2)
-    assert [entry.key for entry in first] == ["run/a", "run/b"]
-    assert [entry.size for entry in first] == [5, 5]
-    assert cursor == "run/b"
+    assert [entry.key for entry in first] == ["run/a.txt", "run/a/x"]
+    assert [entry.size for entry in first] == [9, 7]
+    assert cursor == "run/a/x"
     last, cursor = await store.list_objects_page("run/", cursor=cursor, limit=2)
-    assert [entry.key for entry in last] == ["run/c"]
+    assert [entry.key for entry in last] == ["run/b"]
     assert cursor is None
-    assert (await store.stat("run/a")).size == 5
+    assert (await store.stat("run/a.txt")).size == 9
     with pytest.raises(FileNotFoundError):
         await store.stat("missing")
     with pytest.raises(ValueError, match="cursor"):
