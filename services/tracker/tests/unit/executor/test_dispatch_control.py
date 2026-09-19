@@ -107,6 +107,42 @@ def test_managed_start_accepts_the_managed_execution_protocol(
     assert dispatch.executor_release_id == release.id
 
 
+def test_in_progress_managed_recovery_refuses_a_pinned_legacy_protocol(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    legacy = _release("legacy", protocol_version="2")
+    register_release(database_session, legacy)
+    promote_release(database_session, legacy.id)
+    example_benchmark_object.aws_managed = True
+    pin_benchmark_to_release(example_benchmark_object, legacy)
+    database_session.add(example_benchmark_object)
+    register_release(database_session, _release("managed", protocol_version=MANAGED_EXECUTION_PROTOCOL_VERSION))
+    promote_release(database_session, "managed")
+    database_session.commit()
+
+    with pytest.raises(ReleaseControlError, match="supports managed runs"):
+        admit_recovery_dispatch(
+            database_session,
+            benchmark=example_benchmark_object,
+            pre_action_status=BenchmarkStatus.IN_PROGRESS,
+            dispatch_id=uuid4(),
+            kind=ExecutorDispatchKind.RETRY,
+        )
+
+    database_session.rollback()
+
+    dispatch = admit_recovery_dispatch(
+        database_session,
+        benchmark=example_benchmark_object,
+        pre_action_status=BenchmarkStatus.STOPPED,
+        dispatch_id=uuid4(),
+        kind=ExecutorDispatchKind.RETRY,
+    )
+
+    assert dispatch.executor_release_id == "managed"
+
+
 def test_in_progress_retry_keeps_release_and_original_dispatch_active(
     database_session: Session,
     example_benchmark_object: Benchmark,
