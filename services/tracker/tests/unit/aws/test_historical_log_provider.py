@@ -323,6 +323,61 @@ async def test_follow_maps_chunk_failure_without_exposing_provider_details(tmp_p
         _ = [event async for event in provider.stream_task(reference)]
 
 
+class ShiftingLiveLogs:
+    """One live page whose events move between two reads of the same token."""
+
+    def __init__(self, pages: list[list[LogEvent]]) -> None:
+        self.pages = pages
+        self.reads = 0
+
+    async def fetch(self, reference: Any, *, cursor: str | None = None, limit: int = 1000, **kwargs: Any) -> LogPage:
+        events = self.pages[min(self.reads, len(self.pages) - 1)]
+        self.reads += 1
+        return LogPage(list(events))
+
+    async def stream_task(self, reference: Any, **kwargs: Any) -> AsyncIterator[LogEvent]:
+        for event in self.pages[0]:
+            yield event
+
+
+def retry_event(milliseconds: int, name: str) -> LogEvent:
+    return LogEvent(datetime.fromtimestamp(milliseconds / 1000, UTC), f"retry {name}", event_id=f"live-{name}")
+
+
+@pytest.mark.parametrize(
+    "shift",
+    [
+        [retry_event(2, "late"), retry_event(2, "a"), retry_event(3, "b"), retry_event(4, "c"), retry_event(5, "d")],
+        [retry_event(4, "c"), retry_event(5, "d")],
+    ],
+    ids=["repeat", "drop"],
+)
+async def test_shifted_live_page_refuses_to_resume_instead_of_dropping_or_repeating(
+    tmp_path: Path, shift: list[LogEvent]
+) -> None:
+    provider, _, _ = reader(tmp_path, terminal=False)
+    original = [retry_event(2, "a"), retry_event(3, "b"), retry_event(4, "c"), retry_event(5, "d")]
+    provider.live = ShiftingLiveLogs([original, shift])
+    reference = RunLogReference(RUN_ID)
+    first = await provider.fetch(reference, limit=4)
+    assert [event.event_id for event in first.events] == ["first", "second", "live-a", "live-b"]
+    assert first.next_cursor is not None
+
+    with pytest.raises(LogProviderError, match="Live log page changed"):
+        await provider.fetch(reference, cursor=first.next_cursor)
+
+
+async def test_unshifted_live_page_still_resumes_after_the_last_emitted_event(tmp_path: Path) -> None:
+    provider, _, _ = reader(tmp_path, terminal=False)
+    original = [retry_event(2, "a"), retry_event(3, "b"), retry_event(4, "c")]
+    provider.live = ShiftingLiveLogs([original, [*original, retry_event(6, "e")]])
+    reference = RunLogReference(RUN_ID)
+    first = await provider.fetch(reference, limit=3)
+    second = await provider.fetch(reference, cursor=first.next_cursor)
+    assert [event.event_id for event in first.events] == ["first", "second", "live-a"]
+    assert [event.event_id for event in second.events] == ["live-b", "live-c", "live-e"]
+
+
 @pytest.mark.parametrize("fault", ["account", "organization"])
 def test_saved_runtime_authority_is_verified_before_reading_events(tmp_path: Path, fault: str) -> None:
     provider, storage, report = reader(tmp_path)

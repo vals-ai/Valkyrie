@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from tracker.aws.cloudwatch_logs import epoch_milliseconds, run_stream_task_ids, task_log_stream_names
 from tracker.aws.log_history_archive import read_chunk, read_manifest
@@ -22,6 +22,7 @@ from tracker.runtime.logs import LogEvent, LogPage, LogProvider, LogProviderErro
 _PAGE_SIZE = 1000
 _READ_BUDGET = 16
 Position = Annotated[int, Field(ge=0, strict=True)]
+Identity = Annotated[str, Field(pattern="^[0-9a-f]{64}$")]
 
 
 class _Cursor(BaseModel):
@@ -32,7 +33,15 @@ class _Cursor(BaseModel):
     offset: Position = 0
     live_token: str | None = None
     live_offset: Position = 0
+    live_event: Identity | None = None
     live_done: bool = False
+
+    @model_validator(mode="after")
+    def _bind_live_position(self) -> "_Cursor":
+        if (self.live_offset > 0) != (self.live_event is not None):
+            raise ValueError("live position and emitted event identity must agree")
+
+        return self
 
     def encode(self) -> str:
         return base64.urlsafe_b64encode(self.model_dump_json().encode()).decode()
@@ -57,6 +66,16 @@ def _binding(
 
 def _sort_key(event: LogEvent) -> tuple[datetime, datetime]:
     return event.timestamp, event.ingestion_time or event.timestamp
+
+
+def _event_identity(event: LogEvent) -> str:
+    value = [
+        epoch_milliseconds(event.timestamp),
+        epoch_milliseconds(event.ingestion_time) if event.ingestion_time else None,
+        event.event_id,
+        event.message,
+    ]
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
 class _ArchivePage:
@@ -146,6 +165,18 @@ class _LivePage:
         self.blocked = False
         self.tokens: set[str] = set()
 
+    def _require_resumed_page(self) -> None:
+        """A re-read page must still hold the exact event this cursor last emitted."""
+        assert self.page is not None
+        if self.position.live_event is None:
+            return
+
+        if self.position.live_offset > len(self.page.events):
+            raise LogProviderError("Invalid live cursor position")
+
+        if _event_identity(self.page.events[self.position.live_offset - 1]) != self.position.live_event:
+            raise LogProviderError("Live log page changed between requests")
+
     async def peek(self) -> LogEvent | None:
         while not self.position.live_done:
             if self.page is None:
@@ -162,15 +193,14 @@ class _LivePage:
                     limit=_PAGE_SIZE,
                 )
                 self.reads += 1
-
-            if self.position.live_offset > len(self.page.events):
-                raise LogProviderError("Invalid live cursor position")
+                self._require_resumed_page()
 
             if self.position.live_offset < len(self.page.events):
                 return self.page.events[self.position.live_offset]
 
             token = self.page.next_cursor
             self.position.live_offset = 0
+            self.position.live_event = None
             self.page = None
             if token is None:
                 self.position.live_done = True
@@ -275,6 +305,7 @@ class HistoricalLogProvider(LogProvider):
                 elif current is not None:
                     events.append(current)
                     position.live_offset += 1
+                    position.live_event = _event_identity(current)
         except LogProviderError:
             raise
         except Exception:
