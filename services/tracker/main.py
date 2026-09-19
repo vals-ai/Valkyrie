@@ -57,12 +57,12 @@ from tracker.aws.managed_storage import (
 from tracker.aws.resolver import (
     AWSRuntimeResolution,
     deployment_aws_runtime,
+    http_validate_saved_managed_storage_runtime,
     inspect_harness_headers,
     resolve_aws_runtime_metadata,
     resolve_run_metadata_aws_runtime,
     resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
-    validate_saved_managed_storage_runtime,
 )
 from tracker.aws.secrets import SecretsManagerStore
 from tracker.agent.contract import get_contract_from_zip_bytes
@@ -1147,7 +1147,7 @@ async def _retrieve_results(
         org_id=org.id,
     ).runtime
     if benchmark_row.aws_managed:
-        await validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
+        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
 
     final_view = create_final_view(benchmark_row, session, org)
     task_ids_set = set(task_ids) if task_ids else None
@@ -1570,7 +1570,7 @@ async def retry_or_resume_benchmark(
         org_id=org_id,
     )
     if preparation.aws_managed:
-        await validate_saved_managed_storage_runtime(runtime_resolution.runtime, org_id=org_id)
+        await http_validate_saved_managed_storage_runtime(runtime_resolution.runtime, org_id=org_id)
         preparation = replace(preparation, resolved_properties=runtime_resolution.runtime.resources)
 
     api_key = http_request.headers.get("x-api-key")
@@ -1974,7 +1974,7 @@ async def fetch_benchmark_metadata(
         org_id=org.id,
     )
     if aws_runtime is not None and benchmark_row.aws_managed:
-        await validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
+        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
 
     return benchmark_row.benchmark_metadata.model_copy(
         update={"storage_bucket": aws_runtime.resources.s3_bucket if aws_runtime is not None else None}

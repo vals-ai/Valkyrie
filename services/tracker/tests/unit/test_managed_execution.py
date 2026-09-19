@@ -18,6 +18,7 @@ from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.aws.clients import DefaultChainAWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
+from tracker.aws.managed_storage import ManagedStorageError
 from tracker.aws.resolver import ManagedAWSEligibilityError
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
@@ -573,7 +574,8 @@ async def test_owner_execution_validates_saved_location_before_preparation(
     owner_runtime = aws_runtime.with_resources(resources)
     request = _managed_request(contract).model_copy(update={"properties": resources})
     deployment = MagicMock(return_value=owner_runtime)
-    validation = AsyncMock(side_effect=HTTPException(403, "denied") if denied else None)
+    denial = ManagedStorageError("Managed storage bucket is not authorized", status_code=403)
+    validation = AsyncMock(side_effect=denial if denied else None)
     runtime = MagicMock(spec=RuntimeServices)
     compose = MagicMock(return_value=runtime)
     monkeypatch.setattr("tracker.aws.services.deployment_aws_runtime", deployment)
@@ -581,8 +583,12 @@ async def test_owner_execution_validates_saved_location_before_preparation(
     monkeypatch.setattr(CloudRuntimeFactory, "create_runtime", compose)
 
     if denied:
-        with pytest.raises(HTTPException):
+        with pytest.raises(TrackerServiceError) as error:
             await CloudRuntimeFactory.create_execution_runtime(request, TEST_ORG_ID, uuid4(), properties=resources)
+
+        assert not isinstance(error.value, HTTPException)
+        assert str(error.value) == "Managed storage bucket is not authorized"
+        assert error.value.__cause__ is denial
         compose.assert_not_called()
     else:
         await CloudRuntimeFactory.create_execution_runtime(request, TEST_ORG_ID, uuid4(), properties=resources)
