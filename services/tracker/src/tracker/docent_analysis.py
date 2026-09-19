@@ -2,7 +2,7 @@
 
 Used by the SSE endpoint behind `valk run analyze` (manual trigger).
 Sets docent_reading_status to RUNNING on entry, DONE on success (with
-the URL), ERROR on failure. try/finally guarantees no stuck-RUNNING rows.
+the URL), ERROR on failure. Status writes are best-effort during cancellation.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from tracker._lambda import invoke_lambda
 from tracker.aws.clients import AWSClientProvider
 from tracker.database.models import Benchmark, DocentReadingStatus
 from tracker.database.session import engine
-from tracker.runtime.lifecycle import finish_cleanup
 
 # Analyzer Lambdas can run up to 15 min (AWS Lambda's ceiling); retries
 # disabled because the Lambda is non-idempotent (a retry would re-ingest).
@@ -47,21 +46,18 @@ async def invoke_analyzer(
     clients: AWSClientProvider,
 ) -> dict[str, Any]:
     """Await the analyzer while keeping synchronous database sessions in worker threads."""
+    # Cancellation here must not race a late RUNNING write against an ERROR write.
+    await asyncio.to_thread(_set_analyzer_status, benchmark_id, DocentReadingStatus.RUNNING)
     status = DocentReadingStatus.ERROR
     reading_plan_url = None
     try:
-        await finish_cleanup(
-            asyncio.create_task(asyncio.to_thread(_set_analyzer_status, benchmark_id, DocentReadingStatus.RUNNING))
-        )
         result = await invoke_lambda(clients, lambda_function, payload, config=_ANALYZER_CONFIG)
         if url := result.get("reading_plan_url"):
             reading_plan_url = str(url)
         status = DocentReadingStatus.DONE
         return result
     finally:
-        await finish_cleanup(
-            asyncio.create_task(asyncio.to_thread(_set_analyzer_status, benchmark_id, status, reading_plan_url))
-        )
+        await asyncio.to_thread(_set_analyzer_status, benchmark_id, status, reading_plan_url)
 
 
 async def analyze_event_stream(
