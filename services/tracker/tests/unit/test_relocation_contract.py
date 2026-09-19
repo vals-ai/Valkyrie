@@ -11,8 +11,23 @@ from jsonschema import validate as validate_schema
 from jsonschema.exceptions import ValidationError as SchemaValidationError
 from pydantic import ValidationError
 
+from pydantic import BaseModel
+
 from tests.unit.test_relocation_providers import setup
-from tracker.storage_migration_exchange import TrackerRequest
+from tracker.storage_migration_exchange import TrackerRequest, TrackerResponse
+
+_DOCUMENTATION = Path(__file__).resolve().parents[4] / "docs" / "deployment"
+
+
+@pytest.mark.parametrize(
+    "model,published",
+    [
+        (TrackerRequest, "storage-migration-request-v1.schema.json"),
+        (TrackerResponse, "storage-migration-response-v1.schema.json"),
+    ],
+)
+def test_published_exchange_schema_equals_the_generated_model_schema(model: type[BaseModel], published: str) -> None:
+    assert json.loads((_DOCUMENTATION / published).read_text()) == model.model_json_schema()
 
 
 @pytest.mark.parametrize("scope", ["empty", "duplicate", "unsorted"])
@@ -29,11 +44,7 @@ def test_request_scope_is_rejected_before_any_operator_use(scope: str) -> None:
     with pytest.raises(ValidationError):
         TrackerRequest.model_validate(payload)
     if scope != "unsorted":
-        schema = json.loads(
-            (
-                Path(__file__).resolve().parents[4] / "docs/deployment/storage-migration-request-v1.schema.json"
-            ).read_text()
-        )
+        schema = json.loads((_DOCUMENTATION / "storage-migration-request-v1.schema.json").read_text())
         with pytest.raises(SchemaValidationError):
             validate_schema(payload, schema, cls=Draft202012Validator)
 
