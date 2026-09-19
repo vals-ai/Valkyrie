@@ -8,9 +8,8 @@ from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from functools import wraps
 from math import floor
-from typing import Any, ParamSpec, TypeVar, cast
+from typing import Any, cast
 from urllib.parse import quote
 
 import logfire
@@ -32,8 +31,6 @@ from tracker.runtime.logs import (
 
 _created_streams: set[str] = set()
 _FOLLOW_DEDUPLICATION_WINDOW = 10_000
-_P = ParamSpec("_P")
-_R = TypeVar("_R")
 
 
 def _sanitize_log_stream_name(task_id: str) -> str:
@@ -91,20 +88,6 @@ def _task_log_stream_names(reference: TaskLogReference) -> list[str]:
     return names
 
 
-def handle_cloudwatch_error(message: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
-    def decorator(func: Callable[_P, _R]) -> Callable[_P, _R]:
-        @wraps(func)
-        def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-            try:
-                return func(*args, **kwargs)
-            except (ClientError, BotoCoreError) as error:
-                raise CloudWatchError(f"{message}: {error}") from error
-
-        return wrapper
-
-    return decorator
-
-
 class CloudWatchBenchmarkLogLocations(BenchmarkLogLocations):
     """CloudWatch console locations for resolved AWS resources."""
 
@@ -150,7 +133,6 @@ class CloudWatchBenchmarkLogSink(BenchmarkLogSink):
         except (ClientError, BotoCoreError) as error:
             raise CloudWatchError(f"Failed to create log group: {error}") from error
 
-    @handle_cloudwatch_error(message="Failed to create cloudwatch stream")
     def write(self, stream_key: str, message: str) -> None:
         if not message.strip():
             return
@@ -159,18 +141,21 @@ class CloudWatchBenchmarkLogSink(BenchmarkLogSink):
         if not benchmark_id or not stream_name:
             raise CloudWatchError(f"Invalid stream key '{stream_key}', expected format 'benchmark_id:stream_name'")
 
-        client = self._clients.cloudwatch_logs_client()
-        log_group_name = benchmark_log_group_name(self._log_group, benchmark_id)
+        try:
+            client = self._clients.cloudwatch_logs_client()
+            log_group_name = benchmark_log_group_name(self._log_group, benchmark_id)
 
-        if stream_key not in _created_streams:
-            try:
-                client.create_log_stream(logGroupName=log_group_name, logStreamName=stream_name)  # pyright: ignore[reportUnknownMemberType]
-            except ClientError as error:
-                if error.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
-                    raise
-            except BotoCoreError as error:
-                raise CloudWatchError(f"Failed to create log stream '{stream_name}': {error}") from error
-            _created_streams.add(stream_key)
+            if stream_key not in _created_streams:
+                try:
+                    client.create_log_stream(logGroupName=log_group_name, logStreamName=stream_name)  # pyright: ignore[reportUnknownMemberType]
+                except ClientError as error:
+                    if error.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
+                        raise
+                except BotoCoreError as error:
+                    raise CloudWatchError(f"Failed to create log stream '{stream_name}': {error}") from error
+                _created_streams.add(stream_key)
+        except (ClientError, BotoCoreError) as error:
+            raise CloudWatchError(f"Failed to create cloudwatch stream: {error}") from error
 
         try:
             client.put_log_events(  # pyright: ignore[reportUnknownMemberType]
