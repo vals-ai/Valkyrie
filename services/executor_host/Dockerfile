@@ -9,7 +9,6 @@ COPY services/executor_host/__init__.py services/executor_host/observability.py 
 COPY services/tracker/src/executor_protocol.py ./
 COPY services/tracker/src/tracker/__init__.py ./tracker/
 COPY services/tracker/src/tracker/local/__init__.py services/tracker/src/tracker/local/executor_artifacts.py ./tracker/local/
-COPY services/tracker/src/tracker/runtime/__init__.py services/tracker/src/tracker/runtime/lifecycle.py ./tracker/runtime/
 RUN useradd --create-home --uid 10001 executor \
     && mkdir -p /var/cache/valkyrie-executors \
     && chown -R executor:executor /app /var/cache/valkyrie-executors
