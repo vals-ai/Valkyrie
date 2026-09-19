@@ -696,10 +696,11 @@ def test_retry_or_resume_sends_retry_mode(
         secrets={"ANTHROPIC_API_KEY": "new-secret"},
         benchmark_url="https://new.example",
         lambda_function="vals-format-lambda",
+        update_agent=True,
     )
 
     assert result.status == "success"
-    assert mock_client.params == {"retry": True, "retry_mode": "from_scratch", "concurrency": 3}
+    assert mock_client.params == {"retry": True, "retry_mode": "from_scratch", "concurrency": 3, "update_agent": True}
     assert mock_client.json == {
         "task_ids": ["task-1"],
         "service_headers": {},

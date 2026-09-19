@@ -33,6 +33,7 @@ class ObjectStore(Protocol):
         chunks: AsyncIterable[bytes],
         *,
         should_continue: Callable[[], bool] | None = None,
+        overwrite: bool = True,
     ) -> int:
         """Store all chunks and return their total byte count."""
         raise NotImplementedError  # pragma: no cover

@@ -121,6 +121,19 @@ class TestAgentsResource:
 
         assert response.name == "alias"
 
+    @pytest.mark.parametrize("overwrite", [False, True])
+    async def test_push_controls_alias_overwrite(
+        self, make_client: ClientFactory, tmp_path: Path, overwrite: bool
+    ) -> None:
+        (tmp_path / "contract.yaml").write_text(_CONTRACT)
+
+        def upload(request: httpx.Request) -> httpx.Response:
+            assert dict(request.url.params) == ({"overwrite": "false"} if not overwrite else {})
+            return httpx.Response(200, json={"name": "demo"})
+
+        async with make_client(upload) as client:
+            await client.agents.push(tmp_path, overwrite=overwrite)
+
     @pytest.mark.parametrize("nested_url", ["https://github.com/example/nested", "https://example.test/nested"])
     async def test_submodules_validate_each_level_before_fetch(
         self, monkeypatch: pytest.MonkeyPatch, nested_url: str
