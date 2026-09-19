@@ -36,7 +36,9 @@ def write_plan(path: Path, plan: BaseModel, *, exclude_none: bool = True) -> Non
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Prepare, then purge exact tracker run data behind permanent holds")
-    result.add_argument("action", nargs="?", choices=("plan", "inspect", "prepare", "purge", "resume", "abandon"), default="plan")
+    result.add_argument(
+        "action", nargs="?", choices=("plan", "inspect", "prepare", "purge", "resume", "abandon"), default="plan"
+    )
     result.add_argument("--apply", action="store_true")
     result.add_argument("--request-nonce", type=UUID)
     result.add_argument("--database-url-env", required=True)

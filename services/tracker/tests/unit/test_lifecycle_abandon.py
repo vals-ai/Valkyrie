@@ -234,10 +234,10 @@ def test_a_corrected_operation_replaces_an_abandoned_deletion_hold(database_sess
     )
     database_session.commit()
     corrected = make_identity(run.id)
-    relocation, abandoned = capture_predecessor(database_session, corrected, run.id)
+    relocation, abandoned, history = capture_predecessor(database_session, corrected, scope)
     purge_run = PurgeRun(scope=scope, provider=_PROVIDER, abandoned_deletion=abandoned)
 
-    assert relocation is None
+    assert relocation is None and history is None
     assert abandoned is not None and abandoned.operation_id == identity.operation_id
     record = acquire_deletion_hold(database_session, corrected, purge_run)
     database_session.commit()
@@ -253,7 +253,7 @@ def test_a_plan_built_before_a_replacement_hold_cannot_replace_it(database_sessi
     )
     database_session.commit()
     stale = make_identity(run.id)
-    stale_relocation, stale_abandoned = capture_predecessor(database_session, stale, run.id)
+    stale_relocation, stale_abandoned, _ = capture_predecessor(database_session, stale, scope)
     replacement = make_identity(run.id)
     acquire_deletion_hold(
         database_session,

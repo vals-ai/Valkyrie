@@ -1402,9 +1402,14 @@ def test_mixed_owner_relocates_source_and_verifies_unchanged_destination(relocat
             *,
             source_removed: bool = False,
             source_partial: bool = False,
+            reuse_verified: bool = False,
         ) -> None:
             await providers[str(run.scope.run_id)].verify_objects(
-                request, run, source_removed=source_removed, source_partial=source_partial
+                request,
+                run,
+                source_removed=source_removed,
+                source_partial=source_partial,
+                reuse_verified=reuse_verified,
             )
 
     operator = RelocationOperator(relocation_session, MixedBoundary())
