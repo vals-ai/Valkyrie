@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import unittest
 from typing import Any, cast
 from unittest import mock
@@ -15,6 +16,7 @@ from stage import Stage
 ACCOUNT = "123456789012"
 REGION = "us-east-1"
 ORG = "00000000-0000-0000-0000-000000000001"
+LEGACY_BUCKET = "legacy-valsmith-shared"
 INPUTS = {
     "VALSMITH_CUSTOMER_STORAGE_ENABLED": "true",
     "PRODUCTION_ACCOUNT_ID": ACCOUNT,
@@ -24,7 +26,7 @@ INPUTS = {
     "VALSMITH_STORAGE_OIDC_SUBJECT": "owner:vals-ai:project:valsmith:environment:production",
     "VALSMITH_DATASET_VIEW_LAMBDA_NAME": "valsmith-dataset-view-prod",
     "VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/StorageOperator",
-    "VALSMITH_LEGACY_STORAGE_BUCKET": "legacy-valsmith-shared",
+    "VALSMITH_LEGACY_STORAGE_BUCKET": LEGACY_BUCKET,
     "VALSMITH_LEGACY_STORAGE_ACCOUNT_ID": "210987654321",
 }
 
@@ -64,6 +66,21 @@ def role(template: assertions.Template, name: str) -> tuple[str, dict[str, Any],
 def actions(statement: dict[str, Any]) -> set[str]:
     value = statement["Action"]
     return {value} if isinstance(value, str) else set(value)
+
+
+def rule(template: assertions.Template, plan_name: str) -> dict[str, Any]:
+    plan = next(
+        item
+        for item in template.find_resources("AWS::Backup::BackupPlan").values()
+        if item["Properties"]["BackupPlan"]["BackupPlanName"] == plan_name
+    )
+    return cast(dict[str, Any], plan["Properties"]["BackupPlan"]["BackupPlanRule"][0])
+
+
+def legacy_scopes(resource: object) -> set[str]:
+    """Return every key scope a resource grants inside the compatibility bucket."""
+    parts = re.findall(rf'"[^"]*{LEGACY_BUCKET}([^"]*)"', json.dumps(resource))
+    return set(parts)
 
 
 class CustomerStorageTest(unittest.TestCase):
@@ -219,15 +236,53 @@ class CustomerStorageTest(unittest.TestCase):
         self.assertEqual(vault["UpdateReplacePolicy"], "Retain")
         self.assertNotIn("LockConfiguration", vault["Properties"])
         self.assertIn("EncryptionKeyArn", vault["Properties"])
-        plan = next(iter(template.find_resources("AWS::Backup::BackupPlan").values()))
-        rule = plan["Properties"]["BackupPlan"]["BackupPlanRule"][0]
-        self.assertEqual(rule["ScheduleExpression"], "cron(0 3 * * ? *)")
-        self.assertEqual(rule["Lifecycle"], {"DeleteAfterDays": 30})
-        self.assertFalse(rule.get("EnableContinuousBackup", False))
+        template.resource_count_is("AWS::Backup::BackupPlan", 2)
+        for plan_name in ("valsmith-customer-storage-prod", "valsmith-system-prod"):
+            periodic = rule(template, plan_name)
+            self.assertEqual(periodic["ScheduleExpression"], "cron(0 3 * * ? *)")
+            self.assertEqual(periodic["Lifecycle"], {"DeleteAfterDays": 30})
+            self.assertFalse(periodic.get("EnableContinuousBackup", False))
+            self.assertIn("BackupVaultName", json.dumps(periodic["TargetBackupVault"]))
         template.resource_count_is("AWS::S3::Bucket", 1)
         bucket = next(iter(template.find_resources("AWS::S3::Bucket").values()))
         self.assertEqual(bucket["DeletionPolicy"], "Retain")
         self.assertNotIn("NoncurrentVersionExpiration", json.dumps(bucket))
+
+    def test_plan_tags_recovery_points_with_the_keys_the_vault_policy_requires(self) -> None:
+        template = synth()
+        expected = {"valsmith:backup": "true", "valsmith:environment": "prod"}
+        self.assertEqual(rule(template, "valsmith-customer-storage-prod")["RecoveryPointTags"], expected)
+        self.assertNotIn("RecoveryPointTags", rule(template, "valsmith-system-prod"))
+        vault = next(iter(template.find_resources("AWS::Backup::BackupVault").values()))
+        deletion = next(
+            item
+            for item in vault["Properties"]["AccessPolicy"]["Statement"]
+            if "backup:DeleteRecoveryPoint" in actions(item)
+        )
+        self.assertEqual(
+            deletion["Condition"]["StringEquals"],
+            {f"aws:ResourceTag/{key}": value for key, value in expected.items()},
+        )
+
+    def test_legacy_read_scope_stays_pinned_to_the_reviewed_roots(self) -> None:
+        template = synth()
+        expected = {
+            "/benchmarks/valsmith-manifests/*",
+            "/benchmarks/valsmith-datasets/*",
+            "/benchmarks/valsmith-dataset-views/*",
+            "/benchmarks/valsmith-repositories/*",
+            "/benchmarks/????????-????-????-????-????????????/*",
+        }
+        for name in ("ValSmithStorage-prod", "ValSmithDatasetView-prod", "ValSmithLifecycle-prod"):
+            _, _, statements = role(template, name)
+            legacy = [item for item in statements if LEGACY_BUCKET in json.dumps(item["Resource"])]
+            objects = next(item for item in legacy if "s3:GetObject" in actions(item))
+            self.assertEqual(legacy_scopes(objects["Resource"]), expected)
+            listing = next(item for item in legacy if "s3:ListBucket" in actions(item))
+            self.assertEqual(legacy_scopes(listing["Resource"]), {""})
+            self.assertEqual(
+                set(listing["Condition"]["StringLike"]["s3:prefix"]), {scope.lstrip("/") for scope in expected}
+            )
 
     def test_defaults_disable_customer_storage_in_every_stage(self) -> None:
         for stage in ("bench", "dev", "release-test", "prod"):

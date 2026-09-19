@@ -58,6 +58,7 @@ class CustomerStorage(Construct):
             arn_format=cdk.ArnFormat.SLASH_RESOURCE_NAME,
         )
         self.vault_name = "valsmith-customer-storage-prod"
+        self.recovery_point_tags = {"valsmith:backup": "true", "valsmith:environment": "prod"}
 
         self.backup_role = aws_iam.Role(
             self,
@@ -126,29 +127,13 @@ class CustomerStorage(Construct):
                 resources=["*"],
                 principals=[self.lifecycle_role],
                 conditions={
-                    "StringEquals": {
-                        "aws:ResourceTag/valsmith:backup": "true",
-                        "aws:ResourceTag/valsmith:environment": "prod",
-                    }
+                    "StringEquals": {f"aws:ResourceTag/{key}": value for key, value in self.recovery_point_tags.items()}
                 },
             )
         )
-        plan = aws_backup.CfnBackupPlan(
-            self,
-            "Plan",
-            backup_plan=aws_backup.CfnBackupPlan.BackupPlanResourceTypeProperty(
-                backup_plan_name="valsmith-customer-storage-prod",
-                backup_plan_rule=[
-                    aws_backup.CfnBackupPlan.BackupRuleResourceTypeProperty(
-                        rule_name="daily",
-                        target_backup_vault=self.vault.backup_vault_name,
-                        schedule_expression="cron(0 3 * * ? *)",
-                        enable_continuous_backup=False,
-                        lifecycle=aws_backup.CfnBackupPlan.LifecycleResourceTypeProperty(delete_after_days=30),
-                    )
-                ],
-            ),
-        )
+        # Recovery-point tags belong to the rule, so owner and system points need separate plans.
+        owner_plan = self._plan("Plan", "valsmith-customer-storage-prod", self.recovery_point_tags)
+        system_plan = self._plan("SystemPlan", "valsmith-system-prod", None)
         # CDK 2.237 treats Conditions as untyped JSON and otherwise emits lower-case keys.
         conditions = {
             "StringEquals": [
@@ -156,9 +141,9 @@ class CustomerStorage(Construct):
                 {"ConditionKey": "aws:ResourceTag/valsmith:environment", "ConditionValue": "prod"},
             ]
         }
-        for name, resources, selection_conditions in (
-            ("owners", [self.owner_arn], conditions),
-            ("system", [system_bucket.bucket_arn], None),
+        for name, plan, resources, selection_conditions in (
+            ("owners", owner_plan, [self.owner_arn], conditions),
+            ("system", system_plan, [system_bucket.bucket_arn], None),
         ):
             selection = aws_backup.CfnBackupSelection(
                 self,
@@ -208,6 +193,27 @@ class CustomerStorage(Construct):
         }
         for name, value in outputs.items():
             cdk.CfnOutput(stack, f"CustomerStorage{name}", value=value)
+
+    def _plan(
+        self, construct_id: str, plan_name: str, recovery_point_tags: dict[str, str] | None
+    ) -> aws_backup.CfnBackupPlan:
+        return aws_backup.CfnBackupPlan(
+            self,
+            construct_id,
+            backup_plan=aws_backup.CfnBackupPlan.BackupPlanResourceTypeProperty(
+                backup_plan_name=plan_name,
+                backup_plan_rule=[
+                    aws_backup.CfnBackupPlan.BackupRuleResourceTypeProperty(
+                        rule_name="daily",
+                        target_backup_vault=self.vault.backup_vault_name,
+                        schedule_expression="cron(0 3 * * ? *)",
+                        enable_continuous_backup=False,
+                        lifecycle=aws_backup.CfnBackupPlan.LifecycleResourceTypeProperty(delete_after_days=30),
+                        recovery_point_tags=recovery_point_tags,
+                    )
+                ],
+            ),
+        )
 
     def _owner_grant(self, role: aws_iam.Role, actions: list[str], resources: list[str]) -> None:
         role.add_to_policy(

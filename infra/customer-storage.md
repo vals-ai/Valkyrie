@@ -54,12 +54,23 @@ rotating KMS key, has no Vault Lock, and has no deletion-deny policy.
 The daily rule starts at 03:00 UTC and retains periodic recovery points for
 30 days. It has no cold transition or continuous/PITR mode.
 
+The daily rule sets `RecoveryPointTags` to exactly `valsmith:backup=true` and
+`valsmith:environment=prod`. These are the two tags the vault access policy
+requires before the lifecycle role can delete a recovery point. Every on-demand
+`StartBackupJob` into this vault must send the same two `RecoveryPointTags`.
+A recovery point without them cannot be deleted by any principal this construct
+creates, so a departing owner's backup data would survive its deletion request.
+Do not rely on AWS Backup to copy the source bucket's tags onto the recovery
+point. A template test compares the rule tags with the vault policy condition.
+
 The owner selection uses `arn:<partition>:s3:::vs-prod-*` and requires both
 `valsmith:backup=true` and `valsmith:environment=prod`. The role's account condition
 and foreign-account deny enforce ownership; S3 bucket ARNs have no account field.
 New matching buckets need no CDK update. The production system bucket has a
-separate explicit selection. CDK creates no owner buckets and adds no object
-expiration rule. Keep bucket versioning, SSE-S3, ownership enforcement, public
+separate explicit selection under a separate plan, `valsmith-system-prod`,
+because recovery-point tags are a property of the plan rule. That plan sets no
+recovery-point tags, so the lifecycle role cannot delete system recovery points.
+CDK creates no owner buckets and adds no object expiration rule. Keep bucket versioning, SSE-S3, ownership enforcement, public
 access blocking, and TLS protection enabled in the owner provisioner.
 
 The custom backup role follows the current S3 backup policy, including
@@ -85,6 +96,32 @@ bucket policies from granting those deletion actions back. The application still
 needs `PutBucketPolicy` for TLS protection. Its freeze guards must prevent
 provisioning from replacing an active lifecycle write fence.
 
+`PutBucketPolicy` on `vs-prod-*` is a known residual exposure. IAM can bound the
+bucket set and the account, but it cannot bound the content of a policy this role
+writes. A compromised or faulty Vercel production deployment could therefore
+grant `s3:GetObject` on one owner bucket to a foreign account, or drop the TLS
+statement. No narrowing was available: S3 does not accept `aws:ResourceTag` on
+bucket-level calls, `s3:ResourceAccount` is already applied and does not limit
+what a written policy grants, and a separate provisioning role would still have
+to be assumable by the same Vercel identity. Compensating controls: the
+unconditional owner deletion deny stays on this role; removal of an active write
+fence is detected, not accepted, by `TransferAWSBoundary.verify_source_fence`,
+`RelocationAWSBoundary.verify_objects` and the whole-policy digest in
+`AWSProviderBoundary.verify_fence`; and ValSmith refuses to re-provision a frozen
+owner. Splitting provisioning from the run-time data plane needs a paired ValSmith
+change and a spec decision; it is not in this slice.
+
+The legacy read grant is wider than ValSmith's own data. `_read` grants
+`s3:GetObject`, `s3:GetObjectVersion` and prefix-scoped listing on the four named
+application roots **and** on `benchmarks/<run UUID>/*` in the compatibility
+bucket. That bucket is the shared Valkyrie bucket, where every tenant's runs use
+the same key shape, so IAM in this account cannot separate ValSmith's legacy runs
+from another tenant's. The narrowing must come from the compatibility bucket's own
+resource policy in the source account, which must list only the migration
+cohort's run prefixes. The cutover runbook makes that a deployment gate. A
+template test pins the exact five key scopes, so a further widening fails the
+build.
+
 `ValSmithDatasetView-prod` trusts only Lambda. It reads the approved owner and
 explicit legacy roots, writes only `benchmarks/valsmith-dataset-views/` in owner
 buckets, and writes logs only for its configured function. Trajectories and
@@ -108,8 +145,11 @@ The lifecycle role can start backups only into this vault and pass only the back
 role to `backup.amazonaws.com`. Recovery-point deletion is granted by this vault's
 resource policy, only to the lifecycle role and only for points with the owner
 backup/environment tags. No identity-wide recovery-point deletion grant exists.
-The separate system selection does not add owner tags, so its recovery points do
-not receive that deletion grant. Never put owner backup tags on the system bucket.
+The owner plan applies those two tags to every recovery point it creates, and
+every on-demand `StartBackupJob` must apply them too. The separate system plan
+applies no recovery-point tags, so its recovery points do not receive that
+deletion grant. Never put owner backup tags on the system bucket or on a system
+recovery point.
 
 Backup access points must be deleted through `DeleteBackupAccessPoint`, never
 through direct S3 cleanup. The operator tool must verify the exact recovery-point
