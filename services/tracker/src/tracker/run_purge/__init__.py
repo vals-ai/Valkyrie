@@ -25,7 +25,7 @@ from tracker.run_purge.contracts import (
     PurgeReport,
     PurgeRun,
 )
-from tracker.run_purge.locking import exclusive_operation, verify_database_target
+from tracker.run_purge.locking import OperationLock, exclusive_operation, verify_database_target
 from tracker.run_purge.predecessor import acquire_deletion_hold, capture_predecessor
 from tracker.run_purge.rows import delete_rows, inventory_rows, verify_foreign_keys, verify_rows_absent
 from tracker.utils.run_control import apply_stop_benchmark
@@ -167,10 +167,10 @@ class PurgeOperator:
         return drains
 
     async def prepare(self) -> PurgeReport:
-        with exclusive_operation(self.session, self.plan.identity):
-            return await self._prepare()
+        with exclusive_operation(self.session, self.plan.identity) as lock:
+            return await self._prepare(lock)
 
-    async def _prepare(self) -> PurgeReport:
+    async def _prepare(self, lock: OperationLock) -> PurgeReport:
         for run in self.plan.runs:
             await self.boundary.validate(self.plan.identity, run)
             record = acquire_deletion_hold(self.session, self.plan.identity, run)
@@ -208,8 +208,10 @@ class PurgeOperator:
             org = self.session.get(Org, self.plan.identity.org_id)
             if benchmark is None or org is None:
                 raise LifecycleConflict("Run or org missing during preparation")
+            lock.verify()
             apply_stop_benchmark(benchmark, self.session, force=True, org=org)
             self.session.commit()
+            lock.verify()
             await self.boundary.cleanup_sandboxes(run)
             _, _, checkpoint = self._lock(run)
             drains = self._drain(run)
@@ -229,10 +231,10 @@ class PurgeOperator:
         return self.report(outcome="checked")
 
     async def purge(self) -> PurgeReport:
-        with exclusive_operation(self.session, self.plan.identity):
-            return await self._purge()
+        with exclusive_operation(self.session, self.plan.identity) as lock:
+            return await self._purge(lock)
 
-    async def _purge(self) -> PurgeReport:
+    async def _purge(self, lock: OperationLock) -> PurgeReport:
         for run in self.plan.runs:
             benchmark, _, checkpoint = self._lock(run)
             if checkpoint.phase == "held":
@@ -260,11 +262,13 @@ class PurgeOperator:
             rows = inventory_rows(self.session, run.scope.run_id, self.plan.identity.org_id)
             self._save(run, checkpoint.model_copy(update={"rows": rows, "fence_policy_sha256": fence_digest}))
             self.session.commit()
+            lock.verify()
             await self.boundary.purge_objects(self.plan.identity, run)
             _, _, checkpoint = self._lock(run)
             self._save(run, checkpoint.model_copy(update={"phase": "objects_removed"}))
             self.session.commit()
             await self.boundary.verify_fence(self.plan.identity, run)
+            lock.verify()
             await self.boundary.purge_logs(run)
             _, _, checkpoint = self._lock(run)
             self._save(run, checkpoint.model_copy(update={"phase": "logs_removed"}))
@@ -277,6 +281,7 @@ class PurgeOperator:
             current_rows = inventory_rows(self.session, run.scope.run_id, self.plan.identity.org_id)
             if current_rows != checkpoint.rows:
                 raise LifecycleConflict("Row scope changed during purge")
+            lock.verify()
             delete_rows(self.session, checkpoint.rows)
             verify_rows_absent(self.session, checkpoint.rows)
             record.checkpoint_json = checkpoint.model_copy(update={"phase": "rows_removed"}).model_dump_json()
