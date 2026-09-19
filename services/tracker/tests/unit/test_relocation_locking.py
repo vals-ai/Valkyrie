@@ -26,17 +26,31 @@ class FakeResult:
     def scalar_one(self) -> object:
         return self.value
 
+    def one(self) -> object:
+        return self.value
+
 
 class FakeConnection:
     def __init__(self, server: FakeServer) -> None:
         self.server = server
         self.held: set[object] = set()
+        self.backend_pid = 4242
+
+    def execution_options(self, **_options: object) -> "FakeConnection":
+        return self
+
+    def invalidate(self) -> None:
+        self.server.locked -= self.held
+        self.held.clear()
 
     def execute(self, statement: object, parameters: dict[str, Any] | None = None) -> FakeResult:
         text = str(statement)
         key = None if parameters is None else parameters.get("key")
         if "current_database" in text:
             return FakeResult(self.server.database)
+
+        if "pg_backend_pid" in text:
+            return FakeResult((self.backend_pid, len(self.held)))
 
         if "pg_try_advisory_lock" in text:
             if key in self.server.locked:
