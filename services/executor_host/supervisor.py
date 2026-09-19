@@ -10,13 +10,13 @@ import os
 import signal
 import sys
 import tempfile
-import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol, Unpack, cast
+from typing import Mapping, Protocol, TypeVar, Unpack, cast
 
 import boto3
+import httpx
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
 from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
 from redis.asyncio import Redis
@@ -45,6 +45,7 @@ from services.executor_host.observability import (
 )
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 DEFAULT_CACHE_DIR = "/var/cache/valkyrie-executors"
 ECS_AGENT_URI = os.environ.get("ECS_AGENT_URI")
@@ -70,18 +71,13 @@ async def _set_task_protection(*, enabled: bool) -> bool:
     body: dict[str, object] = {"ProtectionEnabled": enabled}
     if enabled:
         body["ExpiresInMinutes"] = _PROTECTION_EXPIRY_MINUTES
-    request = urllib.request.Request(
-        f"{ECS_AGENT_URI}/task-protection/v1/state",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-        method="PUT",
-    )
 
-    def update() -> None:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            response.read()
+    async def update() -> None:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.put(f"{ECS_AGENT_URI}/task-protection/v1/state", json=body)
+            response.raise_for_status()
 
-    update_task = asyncio.create_task(asyncio.to_thread(update))
+    update_task = asyncio.create_task(update())
     try:
         await asyncio.shield(update_task)
     except asyncio.CancelledError:
@@ -135,13 +131,13 @@ async def _release_task_protection() -> None:
             await _set_task_protection(enabled=False)
 
 
-async def _await_task_completion(task: asyncio.Task[None]) -> None:
+async def _await_task_completion(task: asyncio.Task[T]) -> T:
     while not task.done():
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
             pass
-    await task
+    return await task
 
 
 class S3Client(Protocol):
@@ -806,9 +802,11 @@ async def run_executor_dispatch(
         try:
             authority = await asyncio.shield(claim_task)
         except asyncio.CancelledError:
-            authority = await claim_task
+            authority = await _await_task_completion(claim_task)
             if authority is not None:
-                await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
+                await _await_task_completion(
+                    asyncio.create_task(_terminalize_after_failure(store, authority, process_payload.verified_task_ids))
+                )
             raise
 
         if authority is None:
@@ -835,11 +833,10 @@ async def run_executor_dispatch(
                     "Executor dispatch %s lost authority before successful finish",
                     authority.dispatch_id,
                 )
-        except asyncio.CancelledError:
-            await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
-            raise
         except BaseException:
-            await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
+            await _await_task_completion(
+                asyncio.create_task(_terminalize_after_failure(store, authority, process_payload.verified_task_ids))
+            )
             raise
         finally:
             heartbeat_task.cancel()

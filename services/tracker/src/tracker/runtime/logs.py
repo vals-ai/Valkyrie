@@ -12,7 +12,7 @@ from uuid import UUID
 class BenchmarkLogSink(Protocol):
     """Create benchmark log destinations and write task log messages."""
 
-    def create_benchmark(self, benchmark_id: str, *, retention_days: int) -> None:
+    async def create_benchmark(self, benchmark_id: str, *, retention_days: int) -> None:
         """Ensure a benchmark log destination exists."""
         raise NotImplementedError
 

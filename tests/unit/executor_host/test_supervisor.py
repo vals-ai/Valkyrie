@@ -14,9 +14,11 @@ import sys
 from collections.abc import Awaitable, Callable
 from functools import partial
 from pathlib import Path
+from threading import Event
 from typing import cast
 from unittest.mock import Mock
 
+import httpx
 import pytest
 
 import services.executor_host.observability as host_observability
@@ -807,23 +809,19 @@ def test_executor_host_uses_one_taskiq_process() -> None:
 async def test_task_protection_uses_a_renewable_two_hour_lease(monkeypatch: pytest.MonkeyPatch) -> None:
     request_bodies: list[dict[str, object]] = []
 
-    class Response:
-        def __enter__(self) -> Response:
-            return self
+    async def handle(request: httpx.Request) -> httpx.Response:
+        assert request.url == "http://ecs-agent/task-protection/v1/state"
+        assert request.method == "PUT"
+        request_bodies.append(json.loads(request.content))
+        return httpx.Response(200)
 
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return b""
-
-    def fake_urlopen(request: object, *, timeout: int) -> Response:
-        assert timeout == 5
-        request_bodies.append(json.loads(cast(bytes, getattr(request, "data"))))
-        return Response()
-
+    client_factory = httpx.AsyncClient
     monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", "http://ecs-agent")
-    monkeypatch.setattr(supervisor_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        supervisor_module.httpx,
+        "AsyncClient",
+        partial(client_factory, transport=httpx.MockTransport(handle)),
+    )
 
     set_task_protection = getattr(supervisor_module, "_set_task_protection")
     assert await set_task_protection(enabled=True)
@@ -862,13 +860,19 @@ async def test_task_protection_waits_for_in_flight_refresh_before_cancelling(
     finish_refresh = asyncio.Event()
     refresh_completed = asyncio.Event()
 
-    async def block_to_thread(*_args: object, **_kwargs: object) -> None:
+    async def handle(_request: httpx.Request) -> httpx.Response:
         refresh_started.set()
         await finish_refresh.wait()
         refresh_completed.set()
+        return httpx.Response(200)
 
     monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", "http://ecs-agent")
-    monkeypatch.setattr(supervisor_module.asyncio, "to_thread", block_to_thread)
+    client_factory = httpx.AsyncClient
+    monkeypatch.setattr(
+        supervisor_module.httpx,
+        "AsyncClient",
+        partial(client_factory, transport=httpx.MockTransport(handle)),
+    )
 
     set_task_protection = getattr(supervisor_module, "_set_task_protection")
     refresh_task = asyncio.create_task(set_task_protection(enabled=True))
@@ -1021,20 +1025,45 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_during_claim", [False, True])
 async def test_cancellation_after_claim_terminalizes_dispatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    cancel_during_claim: bool,
 ) -> None:
     artifact = b"unused"
     store = FakeDispatchStore()
     supervisor = _supervisor(tmp_path, content=artifact)
     entered_run = asyncio.Event()
+    entered_claim = asyncio.Event()
+    release_claim = Event()
+    entered_terminalize = asyncio.Event()
+    release_terminalize = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    async def block_claim(dispatch_id: str, benchmark_id: str, dispatch: ArtifactDispatch) -> DispatchAuthority:
+        def claim() -> DispatchAuthority:
+            loop.call_soon_threadsafe(entered_claim.set)
+            assert release_claim.wait(5)
+            store.claimed.append((dispatch_id, benchmark_id, dispatch))
+            store.authority = DispatchAuthority(dispatch_id, benchmark_id)
+            return store.authority
+
+        return await asyncio.to_thread(claim)
+
+    async def block_terminalize(authority: DispatchAuthority, task_ids: list[str]) -> bool:
+        entered_terminalize.set()
+        await release_terminalize.wait()
+        store.terminalized.append(authority)
+        return True
 
     async def block_run(*args: object, **kwargs: object) -> None:
         entered_run.set()
         await asyncio.Event().wait()
 
     monkeypatch.setattr(supervisor, "run", block_run)
+    monkeypatch.setattr(store, "claim", block_claim)
+    monkeypatch.setattr(store, "terminalize", block_terminalize)
     task = asyncio.create_task(
         run_executor_dispatch(
             supervisor,
@@ -1044,11 +1073,29 @@ async def test_cancellation_after_claim_terminalizes_dispatch(
             process_payload=_process_payload(),
         )
     )
-    await entered_run.wait()
-    task.cancel()
+    try:
+        await entered_claim.wait()
+        if not cancel_during_claim:
+            release_claim.set()
+            await entered_run.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        if cancel_during_claim:
+            task.cancel()
+            await asyncio.sleep(0)
+            release_claim.set()
+        await asyncio.wait_for(entered_terminalize.wait(), timeout=5)
+        task.cancel()
+        await asyncio.sleep(0)
+        release_terminalize.set()
 
-    with pytest.raises(asyncio.CancelledError):
-        await task
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release_claim.set()
+        release_terminalize.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     assert store.terminalized == [store.authority]
     assert store.finished == []

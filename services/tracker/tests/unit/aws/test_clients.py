@@ -3,10 +3,11 @@
 Run: uv run pytest tests/unit/aws/test_clients.py
 """
 
+import asyncio
 import re
 from datetime import datetime, timezone
 from typing import cast
-from unittest.mock import ANY, MagicMock, call
+from unittest.mock import ANY, AsyncMock, MagicMock, call
 
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
@@ -21,7 +22,6 @@ from tracker.aws.clients import (
 from tracker.aws.cloudwatch_logs import (
     CloudWatchBenchmarkLogLocations,
     CloudWatchBenchmarkLogSink,
-    handle_cloudwatch_error,
     task_log_stream_name,
 )
 from tracker.aws.runtime import AWSResources
@@ -54,8 +54,8 @@ class TestAWSClientProviders:
         monkeypatch: pytest.MonkeyPatch,
         session_token: str | None,
     ) -> None:
-        session = MagicMock()
-        session_factory = MagicMock(return_value=session)
+        sessions = [MagicMock() for _ in range(4)]
+        session_factory = MagicMock(side_effect=sessions)
         boto_client_factory = MagicMock()
         monkeypatch.setattr(aws_clients.aioboto3, "Session", session_factory)
         monkeypatch.setattr(aws_clients.boto3, "client", boto_client_factory)
@@ -70,21 +70,30 @@ class TestAWSClientProviders:
 
         provider.s3_client()
         provider.cloudwatch_logs_client()
-        provider.secretsmanager_client()
+        provider.cloudwatch_logs_async_client()
         provider.secretsmanager_async_client()
         provider.lambda_client()
 
-        session_factory.assert_called_once_with(
-            aws_access_key_id=credentials.aws_access_key_id,
-            aws_secret_access_key=credentials.aws_secret_access_key,
-            aws_session_token=session_token,
-            region_name=credentials.aws_default_region,
+        assert (
+            session_factory.call_args_list
+            == [
+                call(
+                    aws_access_key_id=credentials.aws_access_key_id,
+                    aws_secret_access_key=credentials.aws_secret_access_key,
+                    aws_session_token=session_token,
+                    region_name=credentials.aws_default_region,
+                )
+            ]
+            * 4
         )
-        session.client.assert_has_calls([call("s3", config=ANY), call("secretsmanager")])
+        assert [session.client.call_args_list for session in sessions] == [
+            [call("s3", config=ANY)],
+            [call("logs")],
+            [call("secretsmanager")],
+            [call("lambda", config=None)],
+        ]
         assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
             "logs",
-            "secretsmanager",
-            "lambda",
         }
         for constructed in boto_client_factory.call_args_list:
             assert constructed.kwargs["aws_access_key_id"] == credentials.aws_access_key_id
@@ -93,8 +102,8 @@ class TestAWSClientProviders:
             assert constructed.kwargs["region_name"] == credentials.aws_default_region
 
     def test_default_chain_provider_omits_explicit_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        session = MagicMock()
-        session_factory = MagicMock(return_value=session)
+        sessions = [MagicMock() for _ in range(4)]
+        session_factory = MagicMock(side_effect=sessions)
         boto_client_factory = MagicMock()
         monkeypatch.setattr(aws_clients.aioboto3, "Session", session_factory)
         monkeypatch.setattr(aws_clients.boto3, "client", boto_client_factory)
@@ -104,16 +113,19 @@ class TestAWSClientProviders:
 
         provider.s3_client()
         provider.cloudwatch_logs_client()
-        provider.secretsmanager_client()
+        provider.cloudwatch_logs_async_client()
         provider.secretsmanager_async_client()
         provider.lambda_client()
 
-        session_factory.assert_called_once_with(region_name=region)
-        session.client.assert_has_calls([call("s3", config=ANY), call("secretsmanager")])
+        assert session_factory.call_args_list == [call(region_name=region)] * 4
+        assert [session.client.call_args_list for session in sessions] == [
+            [call("s3", config=ANY)],
+            [call("logs")],
+            [call("secretsmanager")],
+            [call("lambda", config=None)],
+        ]
         assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
             "logs",
-            "secretsmanager",
-            "lambda",
         }
         credential_arguments = {"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}
         for constructed in boto_client_factory.call_args_list:
@@ -185,38 +197,6 @@ class TestS3ClientRetry:
             assert client.meta.config.retries["mode"] == "standard"
 
 
-class TestCloudWatchClient:
-    """CloudWatch exception translation at the client boundary."""
-
-    def test_cloudwatch_error_with_client(self) -> None:
-        """Test that ClientError is caught buy the decorator"""
-        client_error = ClientError({"Error": {"Code": "404", "Message": "Not found"}}, "CreateLogStream")
-
-        @handle_cloudwatch_error(message="Failed to create log stream")
-        def failing_function() -> None:
-            raise client_error
-
-        with pytest.raises(CloudWatchError) as exc_info:
-            failing_function()
-
-        assert "Failed to create log stream" in str(exc_info.value)
-        assert exc_info.value.__cause__ == client_error
-
-    def test_cloudwatch_error_with_botocore(self) -> None:
-        """Test that BotoCoreError is caught by the decorator"""
-        botocore_error = BotoCoreError()
-
-        @handle_cloudwatch_error(message="Failed to connect to CloudWatch")
-        def failing_function() -> None:
-            raise botocore_error
-
-        with pytest.raises(CloudWatchError) as exc_info:
-            failing_function()
-
-        assert "Failed to connect to CloudWatch" in str(exc_info.value)
-        assert exc_info.value.__cause__ == botocore_error
-
-
 class TestSanitizeLogStreamName:
     """logStreamName must satisfy AWS constraint [^:*]* (no ':' or '*')."""
 
@@ -271,6 +251,10 @@ class TestWriteBenchmarkLogEvent:
         client = MagicMock()
         client_provider = MagicMock(spec=AWSClientProvider)
         client_provider.cloudwatch_logs_client.return_value = client
+        client_provider.cloudwatch_logs_async_client.return_value = client
+        client.__aenter__.return_value = client
+        client.create_log_group = AsyncMock()
+        client.put_retention_policy = AsyncMock()
         monkeypatch.setattr(cloudwatch_logs, "_created_streams", set[str]())
         return (
             client,
@@ -280,6 +264,21 @@ class TestWriteBenchmarkLogEvent:
                 _AWS_RESOURCES.log_group,
             ),
         )
+
+    @pytest.mark.parametrize(
+        "error",
+        [ClientError({"Error": {"Code": "AccessDeniedException"}}, "CreateLogStream"), BotoCoreError()],
+    )
+    def test_client_creation_error_is_translated(
+        self, monkeypatch: pytest.MonkeyPatch, error: ClientError | BotoCoreError
+    ) -> None:
+        _, client_provider, sink = self._sink_with_mock_client(monkeypatch)
+        client_provider.cloudwatch_logs_client.side_effect = error
+
+        with pytest.raises(CloudWatchError, match="Failed to create cloudwatch stream") as exc_info:
+            sink.write("bench123:task", "message")
+
+        assert exc_info.value.__cause__ is error
 
     def test_creates_stream_and_puts_event_with_sanitized_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, _, sink = self._sink_with_mock_client(monkeypatch)
@@ -306,29 +305,38 @@ class TestWriteBenchmarkLogEvent:
         assert stream_name in str(exc_info.value)
         client.put_log_events.assert_not_called()
 
-    def test_create_benchmark_configures_group_retention(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_create_benchmark_configures_group_retention(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, _, sink = self._sink_with_mock_client(monkeypatch)
 
-        sink.create_benchmark("bench123", retention_days=30)
+        await sink.create_benchmark("bench123", retention_days=30)
 
-        client.create_log_group.assert_called_once_with(logGroupName="/valkyrie/worker/bench123")
-        client.put_retention_policy.assert_called_once_with(
+        client.create_log_group.assert_awaited_once_with(logGroupName="/valkyrie/worker/bench123")
+        client.put_retention_policy.assert_awaited_once_with(
             logGroupName="/valkyrie/worker/bench123",
             retentionInDays=30,
         )
 
-    def test_create_benchmark_ignores_existing_group(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_create_benchmark_retries_cancelled_retention_for_existing_group(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Retry retention when cancellation leaves an already-created log group."""
         client, _, sink = self._sink_with_mock_client(monkeypatch)
-        client.create_log_group.side_effect = ClientError(
-            {"Error": {"Code": "ResourceAlreadyExistsException"}},
-            "CreateLogGroup",
-        )
+        client.create_log_group.side_effect = [
+            None,
+            ClientError({"Error": {"Code": "ResourceAlreadyExistsException"}}, "CreateLogGroup"),
+        ]
+        client.put_retention_policy.side_effect = [asyncio.CancelledError(), None]
 
-        sink.create_benchmark("bench123", retention_days=30)
+        with pytest.raises(asyncio.CancelledError):
+            await sink.create_benchmark("bench123", retention_days=30)
+        await sink.create_benchmark("bench123", retention_days=30)
 
-        client.put_retention_policy.assert_not_called()
+        assert client.put_retention_policy.await_args_list == [
+            call(logGroupName="/valkyrie/worker/bench123", retentionInDays=30),
+            call(logGroupName="/valkyrie/worker/bench123", retentionInDays=30),
+        ]
 
-    def test_create_benchmark_translates_non_existing_group_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_create_benchmark_translates_non_existing_group_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, _, sink = self._sink_with_mock_client(monkeypatch)
         client.create_log_group.side_effect = ClientError(
             {"Error": {"Code": "AccessDeniedException"}},
@@ -336,7 +344,7 @@ class TestWriteBenchmarkLogEvent:
         )
 
         with pytest.raises(CloudWatchError, match="Failed to create log group"):
-            sink.create_benchmark("bench123", retention_days=30)
+            await sink.create_benchmark("bench123", retention_days=30)
 
     def test_blank_message_does_not_create_client_or_stream(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, client_provider, sink = self._sink_with_mock_client(monkeypatch)

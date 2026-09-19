@@ -34,7 +34,7 @@ from tracker.types import (
     SchedulerSummaryResponse,
     SchedulerWaitingEntryResponse,
 )
-from tracker.utils.resources import fetch_sandbox_provider_config_async
+from tracker.utils.resources import fetch_sandbox_provider_config
 
 router = APIRouter(prefix="/scheduler")
 logger = get_logger(__name__)
@@ -337,7 +337,7 @@ async def _read_provider_capacity(
         try:
             async with asyncio.timeout_at(read_deadline):
                 runtime = deployment_aws_runtime(org_id)
-                provider_config = await fetch_sandbox_provider_config_async(
+                provider_config = await fetch_sandbox_provider_config(
                     secret_name,
                     SecretsManagerStore(runtime.clients),
                     provider_type,

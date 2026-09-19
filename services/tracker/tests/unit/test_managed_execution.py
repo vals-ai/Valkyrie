@@ -337,21 +337,21 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     def deployment_runtime(_org_id: UUID, properties: AWSResources | None = None) -> AWSRuntime:
         return aws_runtime
 
-    def create_log_group(_self: object, _benchmark_id: str, *, retention_days: int) -> None:
+    async def create_log_group(_self: object, _benchmark_id: str, *, retention_days: int) -> None:
         assert retention_days == aws_runtime.resources.log_retention_days
         calls.append("logs")
 
-    async def fetch_provider(runtime: RuntimeServices, _name: str) -> SandboxProviderConfig:
-        assert runtime.async_secrets is not aws_runtime.clients
+    async def fetch_provider(runtime: RuntimeServices) -> SandboxProviderConfig:
+        assert runtime.secrets is not aws_runtime.clients
         calls.append("provider-secret")
         return provider_config
 
-    def resolve_agent_secrets(_secrets: object, secret_store: object) -> dict[str, str]:
+    async def resolve_agent_secrets(_secrets: object, secret_store: object) -> dict[str, str]:
         assert secret_store is not aws_runtime.clients
         calls.append("agent-secrets")
         return {"MODEL_API_KEY": "resolved"}
 
-    def dry_run(clients: object, _function_name: str) -> None:
+    async def dry_run(clients: object, _function_name: str) -> None:
         assert clients is aws_runtime.clients
         calls.append("lambda-dry-run")
 
@@ -362,7 +362,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
         assert result["status"] == "FINISHED"
         calls.append("s3-final-upload")
 
-    def invoke_post_run(clients: object, _function_name: str, _payload: object, **_kwargs: Any) -> dict[str, Any]:
+    async def invoke_post_run(clients: object, _function_name: str, _payload: object, **_kwargs: Any) -> dict[str, Any]:
         assert clients is aws_runtime.clients
         assert isinstance(_payload, dict)
         assert _payload["bucket"] == aws_runtime.resources.s3_bucket
@@ -375,9 +375,9 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
 
     monkeypatch.setattr("tracker.aws.services.deployment_aws_runtime", deployment_runtime)
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
-    monkeypatch.setattr("tracker.runtime.services.RuntimeServices._load_sandbox_provider_config", fetch_provider)
+    monkeypatch.setattr("tracker.runtime.services.RuntimeServices.get_sandbox_provider_config", fetch_provider)
     monkeypatch.setattr("tracker.aws.services.resolve_secrets", resolve_agent_secrets)
-    monkeypatch.setattr("tracker.runtime.services.resolve_secrets", resolve_agent_secrets)
+    monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.aws.services.dry_run_lambda", dry_run)
     monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.put_bytes", upload_results)
     monkeypatch.setattr("tracker.aws.services.invoke_lambda", invoke_post_run)
@@ -423,7 +423,7 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     calls: list[str] = []
     provider_config = cast(SandboxProviderConfig, MagicMock(create_provider=MagicMock(return_value=AsyncMock())))
 
-    def create_log_group(*_args: Any, **_kwargs: Any) -> str:
+    async def create_log_group(*_args: Any, **_kwargs: Any) -> str:
         calls.append("logs")
         return "benchmark-log-group"
 
@@ -431,19 +431,19 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         calls.append("sandbox_provider_secret")
         return provider_config
 
-    def resolve_agent_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+    async def resolve_agent_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
         calls.append("agent_secrets")
         return {"AGENT_TOKEN": "resolved"}
 
-    def get_webhook_secret(_store: object, _name: str) -> dict[str, str]:
+    async def get_webhook_secret(_store: object, _name: str) -> dict[str, str]:
         calls.append("webhook_secret")
         return {"url": "https://example.com"}
 
-    def dry_run(*_args: Any, **_kwargs: Any) -> None:
+    async def dry_run(*_args: Any, **_kwargs: Any) -> None:
         calls.append("lambda")
 
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
-    monkeypatch.setattr("tracker.runtime.services.RuntimeServices._load_sandbox_provider_config", fetch_provider)
+    monkeypatch.setattr("tracker.runtime.services.RuntimeServices.get_sandbox_provider_config", fetch_provider)
     monkeypatch.setattr("tracker.aws.services.resolve_secrets", resolve_agent_secrets)
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get_webhook_secret)
     monkeypatch.setattr("tracker.aws.services.dry_run_lambda", dry_run)
@@ -453,7 +453,7 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         sandbox_provider=request.sandbox_provider,
         sandbox_provider_secret_name=request.sandbox_provider_secret_reference,
     )
-    runtime.prepare_execution(request, benchmark_id)
+    await runtime.prepare_execution(request, benchmark_id)
     result = await runtime.get_sandbox_provider_config()
 
     assert result is provider_config
@@ -476,7 +476,7 @@ async def test_managed_preflight_failure_happens_before_sandbox(
     def deployment_runtime(_org_id: UUID, properties: AWSResources | None = None) -> AWSRuntime:
         return aws_runtime
 
-    def fail_log_preflight(*_args: Any, **_kwargs: Any) -> str:
+    async def fail_log_preflight(*_args: Any, **_kwargs: Any) -> str:
         raise RuntimeError("managed log preflight failed")
 
     monkeypatch.setattr("tracker.aws.services.deployment_aws_runtime", deployment_runtime)

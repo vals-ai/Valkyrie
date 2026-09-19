@@ -20,29 +20,18 @@ def sandbox_provider_config_from_secret(secret: SecretValue, provider_type: str)
 
 
 class SecretStore(Protocol):
-    """Synchronous access to named secret values."""
-
-    def get(self, name: str) -> SecretValue:
-        """Return decoded JSON, or the raw string when the value is not JSON."""
-        raise NotImplementedError
-
-
-class AsyncSecretStore(Protocol):
     """Asynchronous access to named secret values."""
 
-    async def get_async(self, name: str) -> SecretValue:
+    async def get(self, name: str) -> SecretValue:
         """Return decoded JSON, or the raw string when the value is not JSON."""
         raise NotImplementedError
 
 
-def resolve_secrets(secrets: dict[str, str], secret_store: SecretStore) -> dict[str, str]:
+async def resolve_secrets(secrets: dict[str, str], secret_store: SecretStore) -> dict[str, str]:
     """Resolve environment-variable secret references to their current values."""
-    if not secrets:
-        return {}
-
     resolved: dict[str, str] = {}
     for env_name, secret_name in secrets.items():
-        secret_value = secret_store.get(secret_name)
+        secret_value = await secret_store.get(secret_name)
         if isinstance(secret_value, dict):
             if env_name not in secret_value:
                 raise SecretsError(f"Key '{env_name}' not found in JSON secret '{secret_name}'")

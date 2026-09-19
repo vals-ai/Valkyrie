@@ -12,7 +12,6 @@ from benchmark_service import (
     Sandbox,
     SandboxNotFoundError,
     SandboxProvider,
-    SandboxProviderConfig,
     SandboxQuery,
 )
 
@@ -150,29 +149,20 @@ async def cleanup_old_sandboxes(
     return outcomes
 
 
-async def run_cleanup(
-    provider_config: SandboxProviderConfig,
-    *,
-    now: datetime | None = None,
-) -> Counter[str]:
-    """Create the configured CBS provider and perform one cleanup sweep."""
-    async with provider_config.create_provider() as provider:
-        return await cleanup_old_sandboxes(provider, now=now or datetime.now(UTC))
-
-
-def _cleanup_secret_store() -> SecretsManagerStore:
-    """Build the cleanup Lambda's sole ambient default-chain secret authority."""
+async def run_cleanup(secret_name: str, provider_type: str, context: LambdaContext) -> Counter[str]:
+    """Load credentials and perform one cleanup sweep on the same event loop."""
     if AWS_DEPLOYMENT_REGION is None:
         raise RuntimeError("Sandbox cleanup requires AWS_DEPLOYMENT_REGION")
-    return SecretsManagerStore(DefaultChainAWSClientProvider(AWS_DEPLOYMENT_REGION))
+    async with asyncio.timeout(_remaining_cleanup_seconds(context)):
+        secret_store = SecretsManagerStore(DefaultChainAWSClientProvider(AWS_DEPLOYMENT_REGION))
+        try:
+            provider_config = await fetch_sandbox_provider_config(secret_name, secret_store, provider_type)
+        except (TypeError, ValueError):
+            # Provider validation may echo credentials, so do not expose or chain it.
+            raise RuntimeError(f"Sandbox cleanup secret is invalid for provider {provider_type!r}") from None
 
-
-def _load_provider_config(secret_name: str, provider_type: str) -> SandboxProviderConfig:
-    try:
-        return fetch_sandbox_provider_config(secret_name, _cleanup_secret_store(), provider_type)
-    except (TypeError, ValueError):
-        # Provider validation may echo credentials, so do not expose or chain it.
-        raise RuntimeError(f"Sandbox cleanup secret is invalid for provider {provider_type!r}") from None
+        async with provider_config.create_provider() as provider:
+            return await cleanup_old_sandboxes(provider, now=datetime.now(UTC))
 
 
 def _remaining_cleanup_seconds(context: LambdaContext) -> float:
@@ -185,7 +175,6 @@ def _remaining_cleanup_seconds(context: LambdaContext) -> float:
 def lambda_handler(_event: object, context: LambdaContext) -> dict[str, object]:
     """Run one bounded cleanup sweep from EventBridge Scheduler."""
     configure_logging()
-    _remaining_cleanup_seconds(context)
 
     provider_type = os.environ.get("SANDBOX_CLEANUP_PROVIDER", "daytona").strip().casefold()
     if not provider_type:
@@ -194,14 +183,7 @@ def lambda_handler(_event: object, context: LambdaContext) -> dict[str, object]:
     if not secret_name:
         raise RuntimeError("SANDBOX_CLEANUP_SECRET_NAME must not be empty")
 
-    provider_config = _load_provider_config(secret_name, provider_type)
-    timeout_seconds = _remaining_cleanup_seconds(context)
-    outcomes = asyncio.run(
-        asyncio.wait_for(
-            run_cleanup(provider_config),
-            timeout=timeout_seconds,
-        )
-    )
+    outcomes = asyncio.run(run_cleanup(secret_name, provider_type, context))
     fields: dict[str, object] = {
         "provider": provider_type,
         "scanned": sum(outcomes.values()),

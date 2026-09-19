@@ -611,7 +611,7 @@ class TestRunRecovery:
         ]
         captured_lambda_payloads: list[dict[str, Any]] = []
 
-        def _capture_lambda_payload(
+        async def _capture_lambda_payload(
             _client: Any,
             _function_name: str,
             payload: dict[str, Any],
@@ -2781,7 +2781,7 @@ class TestRunRecovery:
         monkeypatch.setattr(
             run_control_module,
             "fetch_sandbox_provider_config",
-            Mock(
+            AsyncMock(
                 return_value=DaytonaProviderConfig(
                     DAYTONA_API_KEY="key", DAYTONA_API_URL="url", DAYTONA_TARGET="target"
                 )
@@ -2817,7 +2817,7 @@ class TestRunRecovery:
         monkeypatch.setattr(
             run_control_module,
             "fetch_sandbox_provider_config",
-            Mock(
+            AsyncMock(
                 return_value=DaytonaProviderConfig(
                     DAYTONA_API_KEY="key", DAYTONA_API_URL="url", DAYTONA_TARGET="target"
                 )

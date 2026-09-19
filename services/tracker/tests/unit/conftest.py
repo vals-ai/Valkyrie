@@ -173,7 +173,7 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequ
     if cast(ModuleType, request.module).__name__ == "tests.unit.aws.test_clients":
         return
 
-    def _mock_create_benchmark(*_args: Any, **_kwargs: Any) -> None:
+    async def _mock_create_benchmark(*_args: Any, **_kwargs: Any) -> None:
         return None
 
     def _mock_write(*_args: Any, **_kwargs: Any) -> None:
@@ -187,7 +187,7 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequ
 
 @pytest.fixture(autouse=True)
 def mock_secret_store(monkeypatch: pytest.MonkeyPatch) -> None:
-    def get(_self: object, _name: str) -> dict[str, str]:
+    async def get(_self: object, _name: str) -> dict[str, str]:
         return {
             "DAYTONA_API_KEY": "test-key",
             "DAYTONA_API_URL": "http://localhost:8001",
@@ -196,13 +196,6 @@ def mock_secret_store(monkeypatch: pytest.MonkeyPatch) -> None:
         }
 
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get)
-
-    async def get_async(self: object, name: str) -> object:
-        from tracker.aws.secrets import SecretsManagerStore
-
-        return SecretsManagerStore.get(cast(SecretsManagerStore, self), name)
-
-    monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get_async", get_async)
 
 
 @pytest.fixture(autouse=True)

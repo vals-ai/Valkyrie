@@ -592,7 +592,7 @@ async def start_benchmark(
 
     service_headers = dict(request.service_headers)
     if request.service_auth_header_name and request.service_auth_secret_name:
-        resolved = resolve_secrets(
+        resolved = await resolve_secrets(
             {request.service_auth_header_name: request.service_auth_secret_name},
             SecretsManagerStore(aws_runtime.clients),
         )
@@ -644,8 +644,7 @@ async def start_benchmark(
             else cast(HarnessConfig, request.harness_config).sandbox_provider_secret_name
         )
         assert provider_secret_name is not None
-        provider_config = await asyncio.to_thread(
-            fetch_sandbox_provider_config,
+        provider_config = await fetch_sandbox_provider_config(
             provider_secret_name,
             SecretsManagerStore(aws_runtime.clients),
             request.sandbox_provider,
@@ -1004,8 +1003,7 @@ async def _invoke_preview_lambda(benchmark_row: Benchmark, aws_runtime: AWSRunti
             "preview": True,
         }
     )
-    await asyncio.to_thread(
-        invoke_lambda,
+    await invoke_lambda(
         aws_runtime.clients,
         lambda_function,
         lambda_payload,
