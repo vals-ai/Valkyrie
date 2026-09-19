@@ -748,6 +748,7 @@ async def test_matching_deletion_resume_preserves_legacy_plan_digest(postgres_se
     legacy_plan = operator.plan.model_dump(mode="json")
     for run in legacy_plan["runs"]:
         run.pop("released_relocation", None)
+        run.pop("abandoned_deletion", None)
     legacy_digest = hashlib.sha256(json.dumps(legacy_plan, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     await operator.prepare()
     record = postgres_session.get(RunLifecycle, operator.plan.identity.run_ids[0])

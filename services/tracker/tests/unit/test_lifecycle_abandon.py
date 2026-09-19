@@ -1,5 +1,7 @@
 """A deletion hold that never started purging must be correctable, and no other."""
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -352,3 +354,16 @@ def test_abandonment_requires_exact_planned_run_identifiers() -> None:
     for requested in ((), (uuid4(),), (first, uuid4())):
         with pytest.raises(LifecycleConflict):
             _selected_runs(plan, requested)
+
+
+def test_a_plan_document_without_predecessor_fields_keeps_its_digest() -> None:
+    run_id = uuid4()
+    plan = PurgePlan(
+        identity=make_identity(run_id),
+        runs=(PurgeRun(scope=RunScope(run_id=run_id, original_resources=_RESOURCES), provider=_PROVIDER),),
+    )
+    document = json.loads(plan.model_dump_json(exclude_none=True))
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+
+    assert all("released_relocation" not in run and "abandoned_deletion" not in run for run in document["runs"])
+    assert hashlib.sha256(canonical).hexdigest() == plan.digest() == PurgePlan.model_validate(document).digest()
