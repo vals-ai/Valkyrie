@@ -122,6 +122,10 @@ def main(arguments: list[str] | None = None) -> int:
             write_report(options.report, report)
             print(f"{options.action}: {len(report.runs)} runs checked; child plan SHA256 {plan.digest()}")
             return 0
+    except LifecycleConflict as error:
+        # Every conflict message is a fixed literal, so it carries no provider or customer payload.
+        print(f"Purge remains incomplete: {error}", file=sys.stderr)
+        return 2
     except Exception as error:
         # Provider and SQL exceptions can contain secrets or customer payloads.
         print(

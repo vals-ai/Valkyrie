@@ -10,7 +10,6 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from tracker.aws.runtime import AWSResources
@@ -215,7 +214,7 @@ def release_relocation_hold(
     record = require_owned_hold(session, identity=identity, scope=scope, purpose="relocation")
     verify_completion(session, record)
     if record.released_at is None:
-        record.released_at = session.exec(select(func.current_timestamp())).one()
+        record.released_at = datetime.now(UTC)
         record.phase = "released"
         session.add(record)
         session.flush()

@@ -113,3 +113,25 @@ def test_cli_refuses_abandonment_without_apply(
     )
     create_engine.assert_not_called()
     assert "--apply" in capsys.readouterr().err
+
+
+def test_cli_surfaces_the_sanitized_lifecycle_conflict(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+
+    monkeypatch.setenv("PRIVATE_DB", "postgresql://private")
+    monkeypatch.setattr(cli, "create_engine", MagicMock())
+    assert (
+        main(
+            [
+                "--database-url-env",
+                "PRIVATE_DB",
+                "--expected-database-target",
+                "tracker",
+                "--plan",
+                str(tmp_path / "plan.json"),
+            ]
+        )
+        == 2
+    )
+    assert "Read-only plan requires an identity file" in capsys.readouterr().err
