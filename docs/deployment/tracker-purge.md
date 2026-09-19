@@ -224,9 +224,11 @@ One session-level PostgreSQL advisory lock per run prevents concurrent purge
 callers across provider calls and transaction commits. Those locks live on a
 dedicated autocommit connection, so no transaction stays idle for the length of
 the purge and `idle_in_transaction_session_timeout` cannot end it. Before each
-mutating step the command re-reads the backend process identity and the granted
+mutating step, and again after every provider call and before the checkpoint it
+commits, the command re-reads the backend process identity and the granted
 advisory locks on that connection; a dropped or silently reconnected lock
-connection stops the operation instead of letting a second caller in. The existing run lock
+connection stops the operation instead of recording a phase it no longer owns or
+letting a second caller in. The existing run lock
 then the lifecycle record lock protect each checkpoint update. No second fence
 table is created. The nullable text checkpoint retains only the plan digest,
 provider locator, exact planned relocation predecessor, original dispatch facts,

@@ -199,6 +199,11 @@ class PurgeOperator:
         self.session.add(record)
         self.session.flush()
 
+    def _commit_checkpoint(self, run: PurgeRun, checkpoint: PurgeCheckpoint, lock: OperationLock) -> None:
+        lock.verify()
+        self._save(run, checkpoint)
+        self.session.commit()
+
     def _external(self, run: PurgeRun) -> tuple[ExternalHostDrain | None, bytes | None]:
         matches = [item for item in self.external if item.run_id == run.scope.run_id]
         if not matches:
@@ -267,6 +272,7 @@ class PurgeOperator:
                 )
                 record.checkpoint_json = checkpoint.model_dump_json()
                 self.session.add(record)
+            lock.verify()
             self.session.commit()
             benchmark, _, checkpoint = self._lock(run)
             org = self.session.get(Org, self.plan.identity.org_id)
@@ -281,7 +287,7 @@ class PurgeOperator:
             drains = self._drain(run)
             self.session.rollback()
             await self.boundary.verify_absence(run)
-            self._save(
+            self._commit_checkpoint(
                 run,
                 checkpoint.model_copy(
                     update={
@@ -290,8 +296,8 @@ class PurgeOperator:
                         "external_host_drain": self._external(run)[0],
                     }
                 ),
+                lock,
             )
-            self.session.commit()
         return self.report(outcome="checked")
 
     async def purge(self) -> PurgeReport:
@@ -320,23 +326,22 @@ class PurgeOperator:
             fence_digest = await self.boundary.verify_fence(self.plan.identity, run)
             await self.boundary.verify_absence(run)
             if benchmark is None:
-                await self._complete_run(run)
+                await self._complete_run(run, lock)
                 continue
             _, _, checkpoint = self._lock(run)
             rows = inventory_rows(self.session, run.scope.run_id, self.plan.identity.org_id)
-            self._save(run, checkpoint.model_copy(update={"rows": rows, "fence_policy_sha256": fence_digest}))
-            self.session.commit()
+            self._commit_checkpoint(
+                run, checkpoint.model_copy(update={"rows": rows, "fence_policy_sha256": fence_digest}), lock
+            )
             lock.verify()
             await self.boundary.purge_objects(self.plan.identity, run)
             _, _, checkpoint = self._lock(run)
-            self._save(run, checkpoint.model_copy(update={"phase": "objects_removed"}))
-            self.session.commit()
+            self._commit_checkpoint(run, checkpoint.model_copy(update={"phase": "objects_removed"}), lock)
             await self.boundary.verify_fence(self.plan.identity, run)
             lock.verify()
             await self.boundary.purge_logs(run)
             _, _, checkpoint = self._lock(run)
-            self._save(run, checkpoint.model_copy(update={"phase": "logs_removed"}))
-            self.session.commit()
+            self._commit_checkpoint(run, checkpoint.model_copy(update={"phase": "logs_removed"}), lock)
             await self.boundary.verify_fence(self.plan.identity, run)
             await self.boundary.verify_absence(run)
             await self.boundary.verify_storage_absence(self.plan.identity, run)
@@ -352,7 +357,7 @@ class PurgeOperator:
             record.phase = "rows_removed"
             self.session.add(record)
             self.session.commit()
-            await self._complete_run(run)
+            await self._complete_run(run, lock)
         return self.report(outcome="checked")
 
     def _validate_host_observation(self) -> None:
@@ -361,15 +366,16 @@ class PurgeOperator:
 
         validate_host_contract_observation(self.host_contract)
 
-    async def _complete_run(self, run: PurgeRun) -> None:
+    async def _complete_run(self, run: PurgeRun, lock: OperationLock) -> None:
         fence_digest = await self.boundary.verify_fence(self.plan.identity, run)
         await self.boundary.verify_absence(run)
         await self.boundary.verify_storage_absence(self.plan.identity, run)
         _, _, checkpoint = self._lock(run)
         self._validate_host_observation()
         verify_rows_absent(self.session, checkpoint.rows)
-        self._save(run, checkpoint.model_copy(update={"phase": "complete", "fence_policy_sha256": fence_digest}))
-        self.session.commit()
+        self._commit_checkpoint(
+            run, checkpoint.model_copy(update={"phase": "complete", "fence_policy_sha256": fence_digest}), lock
+        )
 
     def report(self, *, outcome: Literal["checked", "incomplete"] = "incomplete") -> PurgeReport:
         runs: list[RunReport] = []

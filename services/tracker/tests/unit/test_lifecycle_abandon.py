@@ -38,7 +38,13 @@ _ROW_TABLES = (
 
 def seeded_hold(session: Session) -> tuple[OperationIdentity, RunScope, Benchmark, PurgePlan]:
     run = make_benchmark(org_id=TEST_ORG_ID)
-    run.arguments = run.arguments.model_copy(update={"properties": _RESOURCES})
+    run.arguments = run.arguments.model_copy(
+        update={
+            "properties": _RESOURCES,
+            "sandbox_provider": _PROVIDER.kind,
+            "sandbox_provider_secret_name": _PROVIDER.secret_name,
+        }
+    )
     session.add(run)
     session.commit()
     identity = make_identity(run.id)

@@ -1,11 +1,19 @@
 """The purge advisory lock must fail loudly when its backend stops holding it."""
 
 from typing import Any
+from unittest.mock import MagicMock
+from uuid import UUID
 
 import pytest
 from sqlalchemy.exc import OperationalError
+from sqlmodel import Session
 
+import tracker.run_purge as run_purge
+from tests.unit.test_lifecycle_abandon import make_checkpoint, seeded_hold, store_checkpoint
+from tracker.database.models import RunLifecycle
 from tracker.lifecycle import LifecycleConflict
+from tracker.run_purge import PurgeOperator
+from tracker.run_purge.contracts import PurgeCheckpoint, PurgeRun
 from tracker.run_purge.locking import OperationLock, _release_locks
 
 _BACKEND_PID = 4242
@@ -102,3 +110,43 @@ def test_release_invalidates_a_connection_that_cannot_unlock() -> None:
     _release_locks(session, connection, (11,))
 
     assert connection.invalidated
+
+
+def prepared_checkpoint(run_id: UUID, digest: str) -> PurgeCheckpoint:
+    return make_checkpoint("prepared", run_id=run_id, rows=False, digest=digest)
+
+
+def operator_at_held(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> tuple[PurgeOperator, PurgeRun, PurgeCheckpoint]:
+    _, _, run, plan = seeded_hold(session)
+    store_checkpoint(session, run.id, make_checkpoint("held", run_id=run.id, rows=False, digest=plan.digest()))
+    monkeypatch.setattr(run_purge, "verify_database_target", lambda *_arguments: None)
+    operator = PurgeOperator(session, plan, MagicMock(), host_contract=None)
+
+    return operator, plan.runs[0], prepared_checkpoint(run.id, plan.digest())
+
+
+def test_a_checkpoint_commits_while_the_lock_is_held(
+    database_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    operator, purge_run, prepared = operator_at_held(database_session, monkeypatch)
+    lock = OperationLock(FakeLockConnection((_BACKEND_PID, 2)), _BACKEND_PID, (11, 22))
+
+    operator._commit_checkpoint(purge_run, prepared, lock)
+
+    record = database_session.get(RunLifecycle, purge_run.scope.run_id)
+    assert record is not None and record.phase == "prepared"
+
+
+def test_a_checkpoint_does_not_commit_after_the_lock_is_lost(
+    database_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    operator, purge_run, prepared = operator_at_held(database_session, monkeypatch)
+    lock = OperationLock(FakeLockConnection((_BACKEND_PID + 1, 2)), _BACKEND_PID, (11, 22))
+
+    with pytest.raises(LifecycleConflict):
+        operator._commit_checkpoint(purge_run, prepared, lock)
+
+    record = database_session.get(RunLifecycle, purge_run.scope.run_id)
+    assert record is not None and record.phase == "held"
