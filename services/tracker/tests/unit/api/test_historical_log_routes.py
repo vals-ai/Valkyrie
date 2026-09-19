@@ -126,6 +126,26 @@ def test_real_routes_merge_saved_history_and_retry_logs(
     assert "private old" not in follow.text
 
 
+def test_paged_history_does_not_repeat_archive_authority_verification(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    harness_headers: dict[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = install_history(example_benchmark_object, database_session, tmp_path, monkeypatch)
+    client = TestClient(app)
+    first = client.get(f"/benchmarks/{RUN_ID}/logs", params={"limit": 1}, headers=harness_headers)
+    assert first.status_code == 200
+    storage.requests.clear()
+    second = client.get(
+        f"/benchmarks/{RUN_ID}/logs", params={"cursor": first.json()["next_cursor"]}, headers=harness_headers
+    )
+    assert second.status_code == 200
+    assert not [request for kind, request in storage.requests if kind == "bucket"]
+    assert len([request for kind, request in storage.requests if kind == "get"]) == 2
+
+
 def test_real_route_fails_closed_on_missing_history(
     database_session: Session,
     example_benchmark_object: Benchmark,

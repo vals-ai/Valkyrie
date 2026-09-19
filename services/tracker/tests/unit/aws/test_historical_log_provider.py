@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
+from time import monotonic
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -27,7 +28,7 @@ from tests.unit.aws.test_log_history_archive import (
 from tracker.aws import log_history_archive
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchLogProvider, task_log_stream_name
-from tracker.aws.historical_logs import historical_log_reader
+from tracker.aws.historical_logs import archive_authority_cache, historical_log_reader
 from tracker.database.models import Benchmark
 from tracker.runtime.log_history import ArchiveLimits
 from tracker.runtime.logs import (
@@ -376,6 +377,59 @@ async def test_unshifted_live_page_still_resumes_after_the_last_emitted_event(tm
     second = await provider.fetch(reference, cursor=first.next_cursor)
     assert [event.event_id for event in first.events] == ["first", "second", "live-a"]
     assert [event.event_id for event in second.events] == ["live-b", "live-c", "live-e"]
+
+
+class NamedSession(FakeSession):
+    def __init__(self, account: str, client: Any, role: str) -> None:
+        super().__init__(account, client)
+        self.role = role
+
+    def get_caller_identity(self) -> dict[str, str]:
+        return {"Account": self.account, "Arn": f"arn:aws:iam::{self.account}:role/{self.role}"}
+
+
+def saved_runtime(session: Any) -> Any:
+    runtime = Mock()
+    runtime.clients.boto3_session.return_value = session
+    runtime.resources = scoped_input(log_history_archive).destination.original_resources
+    runtime.expected_bucket_owner = DESTINATION_ACCOUNT
+    return runtime
+
+
+def test_reused_authority_is_bound_to_one_verified_principal(tmp_path: Path) -> None:
+    _, storage, report = reader(tmp_path)
+    org_id = scoped_input(log_history_archive).location.org_id
+    arguments = (RUN_ID, org_id, report.reference, LiveLogs())
+    first = historical_log_reader(
+        saved_runtime(NamedSession(DESTINATION_ACCOUNT, storage, "one")), *arguments, terminal=True
+    )
+    storage.versioning = "Suspended"
+    storage.requests.clear()
+    again = historical_log_reader(
+        saved_runtime(NamedSession(DESTINATION_ACCOUNT, storage, "one")), *arguments, terminal=True
+    )
+    assert again.location == first.location
+    assert not storage.requests
+
+    with pytest.raises(LogProviderError, match="authority verification"):
+        historical_log_reader(
+            saved_runtime(NamedSession(DESTINATION_ACCOUNT, storage, "two")), *arguments, terminal=True
+        )
+
+
+def test_expired_authority_is_verified_again(tmp_path: Path) -> None:
+    _, storage, report = reader(tmp_path)
+    org_id = scoped_input(log_history_archive).location.org_id
+    arguments = (RUN_ID, org_id, report.reference, LiveLogs())
+    historical_log_reader(saved_runtime(NamedSession(DESTINATION_ACCOUNT, storage, "one")), *arguments, terminal=True)
+    for key, (_, location, store) in list(archive_authority_cache.entries.items()):
+        archive_authority_cache.entries[key] = (monotonic() - 1, location, store)
+    storage.versioning = "Suspended"
+
+    with pytest.raises(LogProviderError, match="authority verification"):
+        historical_log_reader(
+            saved_runtime(NamedSession(DESTINATION_ACCOUNT, storage, "one")), *arguments, terminal=True
+        )
 
 
 @pytest.mark.parametrize("fault", ["account", "organization"])

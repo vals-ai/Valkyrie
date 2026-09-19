@@ -175,7 +175,10 @@ def _location(value: ArchiveLocation | FrozenLogScope) -> ArchiveLocation:
 
 
 def read_manifest(
-    reference: LogHistoryReference, destination: ArchiveLocation | FrozenLogScope, session: Any
+    reference: LogHistoryReference,
+    destination: ArchiveLocation | FrozenLogScope,
+    session: Any,
+    store: ArchiveVersionStore | None = None,
 ) -> LogHistoryManifest:
     """No listing fallback: missing or corrupt declared history is an error."""
     try:
@@ -183,7 +186,10 @@ def read_manifest(
         if reference.run_id != location.run_id:
             raise ArchiveError("archive run scope mismatch")
 
-        store = ArchiveVersionStore(session, location)
+        if store is not None and store.location != location:
+            raise ArchiveError("archive store scope mismatch")
+
+        store = store or ArchiveVersionStore(session, location)
         manifest = LogHistoryManifest.model_validate_json(store.read(reference.manifest, 16 * 1024 * 1024))
         if (
             manifest.run_id != reference.run_id

@@ -12,6 +12,7 @@ from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
+from tracker.aws.historical_logs import archive_authority_cache
 from tracker.aws.resolver import reset_managed_storage_validation_cache
 from tracker.database.models import (
     AgentContractRequest,
@@ -34,6 +35,14 @@ _ = load_dotenv()
 def clear_managed_storage_validation_cache() -> None:
     """Keep one test's remembered owner-bucket validation out of the next test."""
     reset_managed_storage_validation_cache()
+
+
+@pytest.fixture(autouse=True)
+def isolated_archive_authority() -> Generator[None, None, None]:
+    """Keep the process-wide archive authority cache out of other tests."""
+    archive_authority_cache.clear()
+    yield
+    archive_authority_cache.clear()
 
 
 @pytest.fixture

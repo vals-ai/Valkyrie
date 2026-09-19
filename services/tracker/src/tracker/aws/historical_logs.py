@@ -4,9 +4,11 @@ import asyncio
 import base64
 import hashlib
 import json
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -21,8 +23,49 @@ from tracker.runtime.logs import LogEvent, LogPage, LogProvider, LogProviderErro
 
 _PAGE_SIZE = 1000
 _READ_BUDGET = 16
+_AUTHORITY_SECONDS = 30.0
+_AUTHORITY_SIZE = 64
 Position = Annotated[int, Field(ge=0, strict=True)]
 Identity = Annotated[str, Field(pattern="^[0-9a-f]{64}$")]
+
+
+class ArchiveAuthorityCache:
+    """Reuse one verified principal's archive authority for a bounded, short time.
+
+    A page of an archived run otherwise repeats the same bucket and manifest
+    verification on every request. Caller identity is still proved per request;
+    only the bucket-state checks behind that identity are reused.
+    """
+
+    def __init__(self, seconds: float, size: int) -> None:
+        self.seconds = seconds
+        self.size = size
+        self.entries: OrderedDict[str, tuple[float, ArchiveLocation, ArchiveVersionStore]] = OrderedDict()
+
+    def get(self, key: str) -> tuple[ArchiveLocation, ArchiveVersionStore] | None:
+        entry = self.entries.get(key)
+        if entry is None:
+            return None
+
+        expires_at, location, store = entry
+        if expires_at <= monotonic():
+            del self.entries[key]
+            return None
+
+        self.entries.move_to_end(key)
+        return location, store
+
+    def put(self, key: str, location: ArchiveLocation, store: ArchiveVersionStore) -> None:
+        self.entries[key] = (monotonic() + self.seconds, location, store)
+        self.entries.move_to_end(key)
+        while len(self.entries) > self.size:
+            self.entries.popitem(last=False)
+
+    def clear(self) -> None:
+        self.entries.clear()
+
+
+archive_authority_cache = ArchiveAuthorityCache(_AUTHORITY_SECONDS, _AUTHORITY_SIZE)
 
 
 class _Cursor(BaseModel):
@@ -223,18 +266,19 @@ class HistoricalLogProvider(LogProvider):
         live: LogProvider,
         *,
         terminal: bool,
+        store: ArchiveVersionStore | None = None,
     ) -> None:
         self.history = history
         self.location = location
         self.session = session
         self.live = live
         self.terminal = terminal
+        self.store = store
 
     async def _open(self) -> tuple[LogHistoryManifest, ArchiveVersionStore]:
         def open_archive() -> tuple[LogHistoryManifest, ArchiveVersionStore]:
-            return read_manifest(self.history, self.location, self.session), ArchiveVersionStore(
-                self.session, self.location
-            )
+            store = self.store or ArchiveVersionStore(self.session, self.location)
+            return read_manifest(self.history, self.location, self.session, store), store
 
         try:
             return await asyncio.to_thread(open_archive)
@@ -348,6 +392,20 @@ class HistoricalLogProvider(LogProvider):
             yield event
 
 
+def _authority_key(
+    principal: str, runtime: AWSRuntime, run_id: UUID, org_id: UUID, history: LogHistoryReference
+) -> str:
+    value = [
+        principal,
+        runtime.resources.s3_bucket,
+        runtime.resources.region,
+        str(run_id),
+        str(org_id),
+        history.model_dump(mode="json"),
+    ]
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
 def historical_log_reader(
     runtime: AWSRuntime, run_id: UUID, org_id: UUID, history: LogHistoryReference, live: LogProvider, *, terminal: bool
 ) -> HistoricalLogProvider:
@@ -357,8 +415,17 @@ def historical_log_reader(
         region = runtime.resources.region
         identity = session.client("sts", region_name=region).get_caller_identity()
         account = identity["Account"]
+        principal = identity.get("Arn", "")
         if runtime.expected_bucket_owner is not None and runtime.expected_bucket_owner != account:
             raise ValueError("account mismatch")
+
+        if f":{account}:" not in principal:
+            raise ValueError("principal mismatch")
+
+        key = _authority_key(principal, runtime, run_id, org_id, history)
+        reused = archive_authority_cache.get(key)
+        if reused is not None:
+            return HistoricalLogProvider(history, reused[0], session, live, terminal=terminal, store=reused[1])
 
         storage = session.client("s3", region_name=region)
         tags = {
@@ -379,7 +446,9 @@ def historical_log_reader(
             region=region,
             bucket=runtime.resources.s3_bucket,
         )
-        ArchiveVersionStore(session, location)
-        return HistoricalLogProvider(history, location, session, live, terminal=terminal)
+        store = ArchiveVersionStore(session, location)
+        archive_authority_cache.put(key, location, store)
+
+        return HistoricalLogProvider(history, location, session, live, terminal=terminal, store=store)
     except Exception:
         raise LogProviderError("Historical archive authority verification failed") from None
