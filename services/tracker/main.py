@@ -1089,8 +1089,7 @@ async def analyze_benchmark(
     """
     if benchmark_row.arguments.environment == "local":
         raise HTTPException(status_code=400, detail="This operation requires an AWS run")
-    run_context = await get_run_aws_context(benchmark_row, http_request, org)
-    aws_runtime = run_context.aws_runtime
+    aws_runtime = await get_run_aws_context(benchmark_row, http_request, org)
 
     if benchmark_row.status != BenchmarkStatus.FINISHED:
         raise HTTPException(
