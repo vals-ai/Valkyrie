@@ -266,6 +266,12 @@ def config_for(stage: Stage) -> StageConfig:
         default=False,
     )
 
+    if managed_storage_submissions_enabled and not managed_storage_org_environments:
+        raise ValueError(
+            f"{stage.name} deployments require AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS "
+            "when AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED is true."
+        )
+
     return replace(
         config,
         managed_aws=replace(
