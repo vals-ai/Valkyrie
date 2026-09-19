@@ -1367,6 +1367,7 @@ class RecoveryPreparation:
     benchmark_url: str
     dataset: str | None
     queued_recovery: bool
+    agent_name: str
     properties: AWSResources | LocalResources | None = None
 
 
@@ -1412,6 +1413,7 @@ def _prepare_recovery(
             effective_url or create_benchmark_service_url(benchmark.name),
             benchmark.arguments.dataset,
             queued,
+            benchmark.arguments.contract.name,
             benchmark.arguments.properties,
         )
 
@@ -1462,6 +1464,7 @@ async def retry_or_resume_benchmark(
     http_request: Request,
     retry: bool = Query(default=False),
     retry_mode: RetryMode = Query(default=RetryMode.AUTO),
+    update_agent: bool = Query(default=False),
     concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
@@ -1481,6 +1484,7 @@ async def retry_or_resume_benchmark(
     Args:
         benchmark_id: The benchmark ID to retry/resume
         retry: If true, retry failed tasks. If false, resume from where it left off
+        update_agent: Refresh the saved agent bundle before recovering the run.
         concurrency: Optional new concurrency level (overrides original value)
         task_ids: Optional list of specific task IDs to run. If a task id is not yet
             registered but is valid in the current dataset, a fresh PENDING row is created.
@@ -1516,6 +1520,7 @@ async def retry_or_resume_benchmark(
         if lambda_function:
             raise HTTPException(status_code=400, detail="Local execution does not support AWS callbacks")
         access_key_harness_config = None
+        object_store = LocalRuntimeFactory.create_runtime(preparation.properties.data_root, org_id).objects
     else:
         runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
             http_request,
@@ -1524,6 +1529,7 @@ async def retry_or_resume_benchmark(
             org_id=org_id,
         )
         access_key_harness_config = runtime_resolution.access_key_harness_config
+        object_store = S3ObjectStore(runtime_resolution.runtime)
     api_key = http_request.headers.get("x-api-key")
     effective_headers = forward_tracker_api_key(
         service_headers,
@@ -1540,6 +1546,14 @@ async def retry_or_resume_benchmark(
             verified_task_ids = verified.task_ids
         finally:
             await service.close()
+    if update_agent:
+        source_key = agent_bundle_key(preparation.agent_name)
+        if not await object_store.exists(source_key):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Agent {preparation.agent_name!r} was not found. Push the agent before using --update-agent.",
+            )
+        await object_store.copy(source_key, benchmark_agent_bundle_key(str(benchmark_id), preparation.agent_name))
     result = await asyncio.to_thread(
         _commit_recovery,
         bind,

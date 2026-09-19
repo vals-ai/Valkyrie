@@ -3010,7 +3010,7 @@
         "summary": "Remove Agent Endpoint"
       },
       "put": {
-        "description": "Validate and upload a ZIP, replacing agents/<name>.zip if it exists.",
+        "description": "Validate and publish an agent ZIP, optionally refusing to replace an existing alias.",
         "operationId": "push_agent_endpoint",
         "parameters": [
           {
@@ -3020,6 +3020,16 @@
             "schema": {
               "title": "Name",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overwrite",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Overwrite",
+              "type": "boolean"
             }
           },
           {
@@ -3062,6 +3072,9 @@
           },
           "403": {
             "description": "Storage permission denied"
+          },
+          "409": {
+            "description": "Agent already exists"
           },
           "413": {
             "description": "Configured archive limit exceeded"
@@ -4792,7 +4805,7 @@
     },
     "/retry-or-resume-benchmark/{benchmark_id}": {
       "post": {
-        "description": "Retry or resume a benchmark run by its id.\n\nUsage:\ncurl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true&concurrency=20\n  -d '{\"task_ids\": [\"task_id_1\", \"task_id_2\"]}'\n\nArgs:\n    benchmark_id: The benchmark ID to retry/resume\n    retry: If true, retry failed tasks. If false, resume from where it left off\n    concurrency: Optional new concurrency level (overrides original value)\n    task_ids: Optional list of specific task IDs to run. If a task id is not yet\n        registered but is valid in the current dataset, a fresh PENDING row is created.\n    benchmark_url: Optional replacement benchmark service URL stored on the run.\n\nReturns:\n    RetryOrResumeBenchmarkResponse",
+        "description": "Retry or resume a benchmark run by its id.\n\nUsage:\ncurl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true&concurrency=20\n  -d '{\"task_ids\": [\"task_id_1\", \"task_id_2\"]}'\n\nArgs:\n    benchmark_id: The benchmark ID to retry/resume\n    retry: If true, retry failed tasks. If false, resume from where it left off\n    update_agent: Refresh the saved agent bundle before recovering the run.\n    concurrency: Optional new concurrency level (overrides original value)\n    task_ids: Optional list of specific task IDs to run. If a task id is not yet\n        registered but is valid in the current dataset, a fresh PENDING row is created.\n    benchmark_url: Optional replacement benchmark service URL stored on the run.\n\nReturns:\n    RetryOrResumeBenchmarkResponse",
         "operationId": "retry_or_resume_benchmark",
         "parameters": [
           {
@@ -4822,6 +4835,16 @@
             "schema": {
               "$ref": "#/components/schemas/RetryMode",
               "default": "auto"
+            }
+          },
+          {
+            "in": "query",
+            "name": "update_agent",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Update Agent",
+              "type": "boolean"
             }
           },
           {

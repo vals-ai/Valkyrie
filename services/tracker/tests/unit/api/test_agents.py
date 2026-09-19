@@ -64,6 +64,19 @@ def _agent_archive(
 class TestAgentWrites:
     """Write validation and clean storage permission failures."""
 
+    def test_conditional_upload_returns_conflict(
+        self, monkeypatch: pytest.MonkeyPatch, harness_headers: dict[str, str]
+    ) -> None:
+        upload = AsyncMock(side_effect=FileExistsError("agents/demo.zip"))
+        monkeypatch.setattr(aws_s3, "upload_stream_to_s3", upload)
+        response = _client.put(
+            "/agents/demo?overwrite=false",
+            headers={**harness_headers, "Content-Type": "application/zip"},
+            content=_agent_archive(),
+        )
+        assert response.status_code == 409
+        assert upload.call_args.kwargs["overwrite"] is False
+
     @pytest.mark.parametrize(
         "member", ["../escape", "/escape", "demo/../escape", "other/file", "demo\\file", "demo/C:file"]
     )

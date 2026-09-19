@@ -725,6 +725,7 @@ class TrackerService:
         secrets: dict[str, str] | None = None,
         benchmark_url: str | None = None,
         lambda_function: str | None = None,
+        update_agent: bool = False,
     ) -> RetryOrResumeBenchmarkResponse:
         """
         Run a benchmark that has already been created by its benchmark id.
@@ -744,6 +745,9 @@ class TrackerService:
         """
         try:
             params: dict[str, Any] = {"retry": retry, "retry_mode": retry_mode.value}
+
+            if update_agent:
+                params["update_agent"] = True
 
             if concurrency is not None:
                 params["concurrency"] = concurrency

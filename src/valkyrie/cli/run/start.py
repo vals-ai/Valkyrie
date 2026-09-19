@@ -9,6 +9,8 @@ from tracker.agent.schemas import AgentConfig
 from tracker.database.models import AgentContractRequest
 from tracker.types import StartBenchmarkResponse
 
+from valkyrie.sdk.errors import ValkyrieSDKError
+
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
@@ -452,5 +454,5 @@ def start(
                     stream_benchmark_status(tracker, start_response.benchmark_id)
 
         format_confirmed_start_summary(confirmed_run_ids, count)
-    except (BundlerError, TrackerServiceError, ContractValidationError) as e:
+    except (BundlerError, TrackerServiceError, ContractValidationError, ValkyrieSDKError) as e:
         raise click.ClickException(str(e))
