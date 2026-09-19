@@ -1,6 +1,7 @@
 """Local service composition uses persistent files and transient credentials."""
 
 from pathlib import Path
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
@@ -9,6 +10,34 @@ from tracker.exceptions import SecretsError
 from tracker.runtime.secrets import resolve_secrets
 from tracker.local.runtime import LocalRuntimeFactory
 from tracker.local.secrets import InMemorySecretStore
+
+
+@pytest.mark.parametrize("local", [False, True])
+def test_server_configuration_selects_execution_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local: bool
+) -> None:
+    """Select local execution from the supplied file, or AWS when no file is supplied."""
+    from tracker import serve
+    from tracker.local import config
+
+    monkeypatch.setattr(config, "resources", None)
+    argv = ["tracker.serve"]
+    if local:
+        configuration = tmp_path / "server.yaml"
+        configuration.write_text(f"data_root: {tmp_path}\n")
+        argv.extend(["--config", str(configuration)])
+    monkeypatch.setattr("sys.argv", argv)
+    run = Mock()
+    monkeypatch.setattr(serve.uvicorn, "run", run)
+
+    serve.main()
+
+    assert (config.resources is not None) == local
+    if config.resources is not None:
+        assert config.resources.data_root == tmp_path.resolve()
+        assert config.resources.secrets_file is None
+    assert run.call_args.kwargs["host"] == ("127.0.0.1" if local else "0.0.0.0")
+    assert run.call_args.kwargs["workers"] == (1 if local else 2)
 
 
 async def test_local_runtime_scopes_files_and_keeps_secrets_in_memory(tmp_path: Path) -> None:

@@ -1,17 +1,13 @@
 """Services shared by one API operation or executor execution."""
 
 from abc import ABC, abstractmethod
-from asyncio import create_task
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from benchmark_service import SandboxProvider, SandboxProviderConfig
+from benchmark_service import SandboxProviderConfig
 
 from tracker.exceptions import InvalidSandboxConfigurationError
-from tracker.runtime.lifecycle import finish_cleanup
 from tracker.runtime.logs import BenchmarkLogLocations, BenchmarkLogSink, LogProvider
 from tracker.runtime.secrets import SecretStore, resolve_secrets, sandbox_provider_config_from_secret
 from tracker.runtime.storage import ArtifactLocations, ObjectStore
@@ -54,15 +50,6 @@ class RuntimeServices(ABC):
     async def _load_sandbox_provider_config(self, secret_name: str) -> SandboxProviderConfig:
         secret = await self.secrets.get(secret_name)
         return sandbox_provider_config_from_secret(secret, self.sandbox_provider)
-
-    @asynccontextmanager
-    async def get_sandbox_provider(self, config: SandboxProviderConfig) -> AsyncGenerator[SandboxProvider]:
-        """Keep one provider alive for the enclosing execution context."""
-        provider = config.create_provider()
-        try:
-            yield provider
-        finally:
-            await finish_cleanup(create_task(provider.close()))
 
     async def resolve_secrets(self, references: dict[str, str]) -> dict[str, str]:
         """Resolve agent environment values without blocking execution."""
