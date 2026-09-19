@@ -21,7 +21,3 @@ services/tracker/src/tracker/*
 services/tracker/src/tracker/local/*
 !services/tracker/src/tracker/local/__init__.py
 !services/tracker/src/tracker/local/executor_artifacts.py
-!services/tracker/src/tracker/runtime/
-services/tracker/src/tracker/runtime/*
-!services/tracker/src/tracker/runtime/__init__.py
-!services/tracker/src/tracker/runtime/lifecycle.py

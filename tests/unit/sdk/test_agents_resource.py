@@ -291,6 +291,7 @@ class TestAgentArchive:
     def test_backup_cleanup_failure_keeps_successful_replacement(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
+        caplog.set_level("WARNING", logger="valkyrie.sdk.agent_bundle")
         target = tmp_path / "demo"
         target.mkdir()
         (target / "keep").write_text("original")

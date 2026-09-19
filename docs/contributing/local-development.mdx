@@ -59,8 +59,8 @@ The initializer verifies and activates the supplied build for future runs. Repea
 
 The local adapters compose filesystem artifacts, per-run JSONL logs, transient secrets,
 and the CBS Docker provider. Containerized services mount the data directory at the
-same absolute path as the host. Artifacts are scoped to the organization. Closing the
-runtime discards its execution secrets while preserving artifacts and logs.
+same absolute path as the host. Artifacts are scoped to the organization. Execution
+secrets stay in memory for each dispatch and are not stored in artifacts or the database.
 
 Run the Docker integration check from `services/tracker`:
 
@@ -74,15 +74,14 @@ creates a disposable container, transfers a frozen agent bundle, executes it, ve
 its output, and deletes the container. Local transfers use provider file upload and
 preserve executable files without requiring curl or unzip in the image.
 
-Configure Tracker in `/absolute/path/to/local-server.yaml`:
+Configure local execution in `/absolute/path/to/local-server.yaml`:
 
 ```yaml
-execution_environment: local
-local_data_root: /absolute/path/to/valkyrie-data
-local_secrets_file: /absolute/path/to/existing.env
+data_root: /absolute/path/to/valkyrie-data
+secrets_file: /absolute/path/to/existing.env
 ```
 
-`local_secrets_file` is optional for agents without secrets. The executor reads only
+`secrets_file` is optional for agents without secrets. The executor reads only
 keys declared by the agent contract, directly from that file, for each start or
 resume. Valkyrie stores the file path, not its contents. Keep the file outside the
 artifact directory. Tracker and ExecutorHost must use the same filesystem paths and Docker daemon.
@@ -114,6 +113,8 @@ local benchmark service. Start Tracker from `services/tracker`:
 uv run python -m tracker.serve --config /absolute/path/to/local-server.yaml
 ```
 
+Supplying `--config` selects local execution. Omit it to use AWS execution.
+
 In another terminal at the repository root, start ExecutorHost. Set `DB_HOST`,
 `DB_PORT`, `DB_NAME`, `DB_USERNAME`, and `DB_PASSWORD` to the same database used by
 Tracker. ExecutorHost uses these settings in addition to the executor's `DATABASE_URL`.
@@ -135,7 +136,7 @@ valkyrie run start --agent my-agent --benchmark my-benchmark --concurrency 1
 
 Use the returned run ID with `run fetch`, `run logs`, `run results`, `run outputs`,
 `run stop`, `run retry`, and `run resume`. Tracker serves local agent and artifact
-downloads over HTTP. Clients do not need access to `local_data_root`. Local execution supports
+downloads over HTTP. Clients do not need access to `data_root`. Local execution supports
 image-based Docker tasks; AWS callbacks and cloud secret references are unavailable.
 
 ### Run it with hosted-mode authentication

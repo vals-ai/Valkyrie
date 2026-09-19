@@ -183,7 +183,7 @@ async def run_process_task(
     sandbox_provider_config = await runtime_services.get_sandbox_provider_config()
     async with (
         start_benchmark_request.benchmark_service as benchmark_service,
-        runtime_services.get_sandbox_provider(sandbox_provider_config) as sandbox_provider,
+        sandbox_provider_config.create_provider() as sandbox_provider,
     ):
         return await process_task(
             task_row=task_row,

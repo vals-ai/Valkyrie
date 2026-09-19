@@ -154,6 +154,12 @@ class MockSubsetSandboxProvider:
     async def close(self) -> None:
         return None
 
+    async def __aenter__(self) -> "MockSubsetSandboxProvider":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.close()
+
 
 class MockReleasingSandboxProvider:
     """Expose one benchmark sandbox until the executor's own teardown removes it."""
@@ -179,6 +185,12 @@ class MockReleasingSandboxProvider:
 
     async def close(self) -> None:
         return None
+
+    async def __aenter__(self) -> "MockReleasingSandboxProvider":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.close()
 
 
 class TestRunRecovery:
