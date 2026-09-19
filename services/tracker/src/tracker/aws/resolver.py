@@ -26,7 +26,7 @@ _REQUIRED_HARNESS_HEADER_KEYS = (
 )
 
 _MANAGED_STORAGE_VALIDATION_CACHE_LIMIT = 512
-_ManagedStorageValidationKey = tuple[UUID, str, str, str]
+_ManagedStorageValidationKey = tuple[UUID, str, str, str, str]
 _managed_storage_validations: "OrderedDict[_ManagedStorageValidationKey, float]" = OrderedDict()
 
 
@@ -321,6 +321,7 @@ def _managed_storage_validation_key(runtime: AWSRuntime, org_id: UUID) -> _Manag
         runtime.resources.s3_bucket,
         runtime.resources.region,
         runtime.expected_bucket_owner or "",
+        runtime.clients.credential_source,
     )
 
 
