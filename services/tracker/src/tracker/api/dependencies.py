@@ -1,6 +1,5 @@
 """Shared API dependencies."""
 
-from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
 
@@ -45,30 +44,15 @@ def get_run_benchmark(
 RunBenchmarkDependency = Annotated[Benchmark, Depends(get_run_benchmark)]
 
 
-@dataclass(frozen=True)
-class RunAWSContext:
-    """An organization-scoped run and its persisted AWS authority."""
-
-    benchmark: Benchmark
-    aws_runtime: AWSRuntime
-
-
-def get_run_aws_context(
-    benchmark: RunBenchmarkDependency,
-    request: Request,
-    org: Org = Depends(get_current_org),
-) -> RunAWSContext:
-    """Return an organization-scoped run with its persisted AWS authority."""
+def get_run_aws_context(benchmark: Benchmark, request: Request, org: Org) -> AWSRuntime:
+    """Resolve AWS resources for an already authorized cloud run."""
     assert benchmark.arguments.properties is None or not isinstance(benchmark.arguments.properties, LocalResources)
-    return RunAWSContext(
-        benchmark=benchmark,
-        aws_runtime=resolve_run_aws_runtime_and_access_key_config(
-            request,
-            aws_managed=benchmark.aws_managed,
-            properties=benchmark.arguments.properties,
-            org_id=org.id,
-        ).runtime,
-    )
+    return resolve_run_aws_runtime_and_access_key_config(
+        request,
+        aws_managed=benchmark.aws_managed,
+        properties=benchmark.arguments.properties,
+        org_id=org.id,
+    ).runtime
 
 
 def get_run_runtime(
@@ -82,9 +66,8 @@ def get_run_runtime(
         assert isinstance(arguments.properties, LocalResources)
         return LocalRuntimeFactory.create_runtime(arguments.properties.data_root, org.id)
 
-    run_context = get_run_aws_context(benchmark, request, org)
     return CloudRuntimeFactory.create_runtime(
-        run_context.aws_runtime,
+        get_run_aws_context(benchmark, request, org),
         sandbox_provider=arguments.sandbox_provider,
         sandbox_provider_secret_name=arguments.sandbox_provider_secret_name,
     )
