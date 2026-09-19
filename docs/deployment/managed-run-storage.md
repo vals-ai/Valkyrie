@@ -9,6 +9,7 @@ Set these values explicitly for each Valkyrie deployment:
 - `AWS_DEPLOYMENT_ROLE_ORG_IDS`: comma-separated canonical organization UUIDs that can use managed AWS execution.
 - `AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS`: a JSON object from an organization UUID in `AWS_DEPLOYMENT_ROLE_ORG_IDS` to a non-empty list containing `dev`, `prod`, or both. An absent value is `{}` and authorizes no owner bucket.
 - `AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED`: `true` enables new owner-storage submissions. The default is `false`.
+- `AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS`: how long one Tracker or ExecutorHost process may reuse a successful owner-bucket validation for a read. The default is `300`. `0` revalidates on every read, which multiplies throttle-prone bucket-level S3 calls. Admission still validates on every submission, and a refusal is never remembered.
 
 The submission flag controls only new owner-storage admission. Saved owner runs still use their saved locations for reads, execution, retry, and recovery while their organization/environment authorization remains configured.
 

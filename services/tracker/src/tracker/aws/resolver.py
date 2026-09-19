@@ -1,6 +1,8 @@
 """Select request-provided or deployment-managed AWS authority."""
 
+from collections import OrderedDict
 from dataclasses import dataclass
+from time import monotonic
 from typing import Never
 from uuid import UUID
 
@@ -22,6 +24,10 @@ _REQUIRED_HARNESS_HEADER_KEYS = (
     "aws_default_region",
     "s3_bucket",
 )
+
+_MANAGED_STORAGE_VALIDATION_CACHE_LIMIT = 512
+_ManagedStorageValidationKey = tuple[UUID, str, str, str]
+_managed_storage_validations: "OrderedDict[_ManagedStorageValidationKey, float]" = OrderedDict()
 
 
 class ManagedAWSError(ValueError):
@@ -303,9 +309,52 @@ def resolve_run_metadata_aws_runtime(
     return AWSRuntime.from_harness_config(harness_config).with_resources(properties)
 
 
+def reset_managed_storage_validation_cache() -> None:
+    """Forget every remembered owner-bucket validation in this process."""
+    _managed_storage_validations.clear()
+
+
+def _managed_storage_validation_key(runtime: AWSRuntime, org_id: UUID) -> _ManagedStorageValidationKey:
+    """Identify one owner-bucket validation by everything the validator inspects."""
+    return (
+        org_id,
+        runtime.resources.s3_bucket,
+        runtime.resources.region,
+        runtime.expected_bucket_owner or "",
+    )
+
+
+def _managed_storage_validation_is_fresh(key: _ManagedStorageValidationKey, *, now: float) -> bool:
+    """Return whether a previous validation of this bucket is still within its window."""
+    expires_at = _managed_storage_validations.get(key)
+    if expires_at is None:
+        return False
+
+    if expires_at <= now:
+        del _managed_storage_validations[key]
+        return False
+
+    _managed_storage_validations.move_to_end(key)
+    return True
+
+
+def _remember_managed_storage_validation(key: _ManagedStorageValidationKey, *, now: float, ttl_seconds: int) -> None:
+    """Record one successful validation and evict the least recently used entries."""
+    _managed_storage_validations[key] = now + ttl_seconds
+    _managed_storage_validations.move_to_end(key)
+    while len(_managed_storage_validations) > _MANAGED_STORAGE_VALIDATION_CACHE_LIMIT:
+        _ = _managed_storage_validations.popitem(last=False)
+
+
 async def validate_saved_managed_storage_runtime(runtime: AWSRuntime, *, org_id: UUID) -> None:
     """Revalidate persisted owner storage before a managed read uses it."""
     if not runtime.resources.s3_bucket.startswith(("vs-dev-", "vs-prod-")):
+        return
+
+    ttl_seconds = config.AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS
+    cache_key = _managed_storage_validation_key(runtime, org_id)
+    now = monotonic()
+    if ttl_seconds > 0 and _managed_storage_validation_is_fresh(cache_key, now=now):
         return
 
     policy = load_managed_storage_policy()
@@ -315,6 +364,9 @@ async def validate_saved_managed_storage_runtime(runtime: AWSRuntime, *, org_id:
         bucket_name=runtime.resources.s3_bucket,
         policy=policy,
     )
+
+    if ttl_seconds > 0:
+        _remember_managed_storage_validation(cache_key, now=now, ttl_seconds=ttl_seconds)
 
 
 async def http_validate_saved_managed_storage_runtime(runtime: AWSRuntime, *, org_id: UUID) -> None:

@@ -82,6 +82,14 @@ def _positive_int_setting(name: str, default: int) -> int:
     return value
 
 
+def _non_negative_int_setting(name: str, default: int) -> int:
+    value = int(os.environ.get(name, str(default)))
+    if value < 0:
+        raise ValueError(f"{name} must not be negative")
+
+    return value
+
+
 AGENT_UPLOAD_MAX_BYTES = _positive_int_setting("AGENT_UPLOAD_MAX_BYTES", 1073741824)
 AGENT_ARCHIVE_MAX_EXPANDED_BYTES = _positive_int_setting("AGENT_ARCHIVE_MAX_EXPANDED_BYTES", 5368709120)
 AGENT_ARCHIVE_MAX_ENTRIES = _positive_int_setting("AGENT_ARCHIVE_MAX_ENTRIES", 100000)
@@ -97,6 +105,11 @@ AWS_MANAGED_SUBMISSIONS_ENABLED = os.environ.get("AWS_MANAGED_SUBMISSIONS_ENABLE
 AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS = os.environ.get("AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS", "{}")
 AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED = (
     os.environ.get("AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED", "false").lower() == "true"
+)
+# Bucket-level S3 configuration APIs throttle far harder than object APIs, so reads
+# reuse a recent owner-bucket validation. Zero revalidates on every read.
+AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS = _non_negative_int_setting(
+    "AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS", 300
 )
 BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")

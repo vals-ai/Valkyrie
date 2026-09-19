@@ -12,6 +12,7 @@ from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
+from tracker.aws.resolver import reset_managed_storage_validation_cache
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -27,6 +28,12 @@ from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.types import AWSCredentials
 
 _ = load_dotenv()
+
+
+@pytest.fixture(autouse=True)
+def clear_managed_storage_validation_cache() -> None:
+    """Keep one test's remembered owner-bucket validation out of the next test."""
+    reset_managed_storage_validation_cache()
 
 
 @pytest.fixture

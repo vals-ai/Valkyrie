@@ -2846,6 +2846,7 @@ class TestTrackerAPI:
         monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "new-shared-default")
         monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "new-log-group")
         monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "7")
+        monkeypatch.setattr("tracker.config.AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS", 0)
         validate_bucket = AsyncMock()
         monkeypatch.setattr(
             "tracker.aws.resolver.validate_managed_storage_bucket",
