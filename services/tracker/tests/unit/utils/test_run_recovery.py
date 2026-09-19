@@ -1316,12 +1316,16 @@ class TestRunRecovery:
         database_session.commit()
         monkeypatch.setattr(main_module, "AUTH_REQUIRED", True)
 
+        copy = AsyncMock()
+        monkeypatch.setattr(main_module.S3ObjectStore, "copy", copy)
+
         response = client.post(
-            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?update_agent=true",
             json={"task_ids": [], "service_headers": {}},
             headers=harness_headers,
         )
 
+        copy.assert_not_awaited()
         assert response.status_code == 403
         assert response.json() == {"detail": "Custom benchmark destination is not allowed"}
 
@@ -1502,6 +1506,58 @@ class TestRunRecovery:
         assert stored_task is not None
         assert stored_task.status == TaskStatus.PENDING
         force_stop.assert_not_awaited()
+
+    @pytest.mark.parametrize("agent_exists", [True, False])
+    async def test_retry_or_resume_updates_agent_before_dispatch(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
+        mock_kicker: MockKicker,
+        agent_exists: bool,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.commit()
+        saved_contract = benchmark_row.arguments.contract.model_dump(mode="json")
+        exists = AsyncMock(return_value=agent_exists)
+
+        async def copy_bundle(source_key: str, destination_key: str) -> None:
+            assert not mock_kicker.queued_calls
+            with Session(database_session.get_bind()) as session:
+                stored_benchmark = session.get(Benchmark, benchmark_row.id)
+                assert stored_benchmark is not None
+                assert stored_benchmark.status == BenchmarkStatus.STOPPED
+
+        copy = AsyncMock(side_effect=copy_bundle)
+        monkeypatch.setattr(main_module.S3ObjectStore, "exists", exists)
+        monkeypatch.setattr(main_module.S3ObjectStore, "copy", copy)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?update_agent=true",
+            json={"task_ids": ["task_0"]},
+            headers=harness_headers,
+        )
+
+        exists.assert_awaited_once_with(main_module.agent_bundle_key(saved_contract["name"]))
+        if not agent_exists:
+            assert response.status_code == 404
+            assert "Push the agent" in response.json()["detail"]
+            copy.assert_not_awaited()
+            assert not mock_kicker.queued_calls
+            database_session.refresh(benchmark_row)
+            assert benchmark_row.status == BenchmarkStatus.STOPPED
+            return
+
+        assert response.status_code == 200
+        copy.assert_awaited_once_with(
+            main_module.agent_bundle_key(saved_contract["name"]),
+            main_module.benchmark_agent_bundle_key(str(benchmark_row.id), saved_contract["name"]),
+        )
+        admitted_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        assert admitted_request["contract"] == saved_contract
 
     async def test_retry_or_resume_applies_secrets_to_stored_contract(
         self,

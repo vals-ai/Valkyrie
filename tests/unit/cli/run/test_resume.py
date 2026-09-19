@@ -44,8 +44,11 @@ class MockTrackerService:
         secrets: dict[str, str] | None = None,
         benchmark_url: str | None = None,
         lambda_function: str | None = None,
+        update_agent: bool = False,
     ) -> RetryOrResumeBenchmarkResponse:
-        self.calls.append({"benchmark_id": benchmark_id, "service_headers": service_headers})
+        self.calls.append(
+            {"benchmark_id": benchmark_id, "service_headers": service_headers, "update_agent": update_agent}
+        )
         return RetryOrResumeBenchmarkResponse(status="success")
 
 
@@ -55,7 +58,9 @@ def reset_calls() -> None:
     MockTrackerService.calls = []
 
 
+@pytest.mark.parametrize("update_agent", [False, True])
 def test_resume_forwards_custom_headers(
+    update_agent: bool,
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -74,10 +79,14 @@ def test_resume_forwards_custom_headers(
 
     result = cli_runner.invoke(
         resume_module.resume,
-        [str(run_id), "-H", "x-descope-api-key", "secret-value"],
+        [str(run_id), "-H", "x-descope-api-key", "secret-value"] + (["--update-agent"] if update_agent else []),
     )
 
     assert result.exit_code == 0, result.output
     assert MockTrackerService.calls == [
-        {"benchmark_id": run_id, "service_headers": {"x-descope-api-key": "secret-value"}}
+        {
+            "benchmark_id": run_id,
+            "service_headers": {"x-descope-api-key": "secret-value"},
+            "update_agent": update_agent,
+        }
     ]

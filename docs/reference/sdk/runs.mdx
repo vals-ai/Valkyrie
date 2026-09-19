@@ -504,6 +504,7 @@ async def resume(
     secrets: Mapping[str, str] | None = None,
     service_headers: Mapping[str, str] | None = None,
     from_scratch: bool = False,
+    update_agent: bool = False,
     benchmark_url: str | None = None,
 ) -> RetryOrResumeBenchmarkResponse
 ```
@@ -532,6 +533,10 @@ async def resume(
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"from_scratch"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · bool · default: <code>{"False"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"update_agent"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · bool · default: <code>{"False"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
@@ -557,6 +562,7 @@ async def retry(
     secrets: Mapping[str, str] | None = None,
     service_headers: Mapping[str, str] | None = None,
     from_scratch: bool = False,
+    update_agent: bool = False,
     benchmark_url: str | None = None,
 ) -> RetryOrResumeBenchmarkResponse
 ```
@@ -585,6 +591,10 @@ async def retry(
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"from_scratch"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · bool · default: <code>{"False"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"update_agent"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · bool · default: <code>{"False"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
