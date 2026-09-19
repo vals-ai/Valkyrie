@@ -1,6 +1,7 @@
 """Explicit prepare, parent write fence, then purge/resume."""
 
 import hashlib
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Literal, Protocol
 from uuid import UUID
@@ -73,22 +74,33 @@ def build_plan(session: Session, identity: OperationIdentity) -> PurgePlan:
     return PurgePlan(identity=identity, runs=tuple(runs))
 
 
-def _refuse_started_purge(_session: Session, record: RunLifecycle) -> None:
-    if record.checkpoint_json is None:
-        return
+def _unstarted_purge_guard(plan: PurgePlan) -> Callable[[Session, RunLifecycle], None]:
+    digest = plan.digest()
 
-    try:
-        checkpoint = PurgeCheckpoint.model_validate_json(record.checkpoint_json)
-    except ValidationError as error:
-        raise LifecycleConflict("Missing or invalid purge checkpoint") from error
+    def verify_unstarted(_session: Session, record: RunLifecycle) -> None:
+        if record.checkpoint_json is None:
+            if record.phase != "held":
+                raise LifecycleConflict("A purge that has started cannot be abandoned")
 
-    if (
-        record.phase != checkpoint.phase
-        or checkpoint.phase not in _ABANDONABLE_PHASES
-        or checkpoint.rows
-        or checkpoint.fence_policy_sha256 is not None
-    ):
-        raise LifecycleConflict("A purge that has started cannot be abandoned")
+            return
+
+        try:
+            checkpoint = PurgeCheckpoint.model_validate_json(record.checkpoint_json)
+        except ValidationError as error:
+            raise LifecycleConflict("Missing or invalid purge checkpoint") from error
+
+        if checkpoint.child_plan_sha256 != digest:
+            raise LifecycleConflict("Purge checkpoint identity does not match")
+
+        if (
+            record.phase != checkpoint.phase
+            or checkpoint.phase not in _ABANDONABLE_PHASES
+            or checkpoint.rows
+            or checkpoint.fence_policy_sha256 is not None
+        ):
+            raise LifecycleConflict("A purge that has started cannot be abandoned")
+
+    return verify_unstarted
 
 
 def _selected_runs(plan: PurgePlan, run_ids: tuple[UUID, ...]) -> tuple[PurgeRun, ...]:
@@ -103,12 +115,11 @@ def abandon_runs(session: Session, plan: PurgePlan, run_ids: tuple[UUID, ...]) -
     """Release named deletion holds of this exact operation before any purge step."""
     verify_database_target(session, plan.identity)
     selected = _selected_runs(plan, run_ids)
+    verify_unstarted = _unstarted_purge_guard(plan)
 
     with exclusive_operation(session, plan.identity):
         for run in selected:
-            abandon_deletion_hold(
-                session, identity=plan.identity, scope=run.scope, verify_unstarted=_refuse_started_purge
-            )
+            abandon_deletion_hold(session, identity=plan.identity, scope=run.scope, verify_unstarted=verify_unstarted)
         session.commit()
 
     return tuple(run.scope.run_id for run in selected)

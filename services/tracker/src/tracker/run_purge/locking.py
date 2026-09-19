@@ -1,7 +1,7 @@
 """Keep one purge caller per run across provider calls and phase commits."""
 
 import hashlib
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from typing import Any, Protocol
 from uuid import UUID
@@ -20,6 +20,11 @@ _LOCK_STATE = (
 
 class LockConnection(Protocol):
     def execute(self, statement: Any, parameters: Any = None, /) -> Any: ...
+    def invalidate(self) -> None: ...
+
+
+class LockSession(Protocol):
+    def rollback(self) -> None: ...
 
 
 def advisory_key(run_id: UUID) -> int:
@@ -55,6 +60,17 @@ class OperationLock:
             raise LifecycleConflict("Purge advisory lock is no longer held")
 
 
+def _release_locks(session: LockSession, connection: LockConnection, keys: Sequence[int]) -> None:
+    try:
+        session.rollback()
+    finally:
+        try:
+            for key in reversed(keys):
+                connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+        except SQLAlchemyError:
+            connection.invalidate()
+
+
 @contextmanager
 def exclusive_operation(session: Session, identity: OperationIdentity) -> Generator[OperationLock]:
     verify_database_target(session, identity)
@@ -75,12 +91,7 @@ def exclusive_operation(session: Session, identity: OperationIdentity) -> Genera
 
             yield lock
         finally:
-            session.rollback()
-            try:
-                for key in reversed(keys):
-                    connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
-            except SQLAlchemyError:
-                connection.invalidate()
+            _release_locks(session, connection, keys)
 
 
 def database_target(session: Session) -> str:

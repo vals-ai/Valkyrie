@@ -181,9 +181,21 @@ Repeat `--run` for each hold to release; every value must be a run of that exact
 plan, and at least one is required. The command takes the same advisory lock as
 `purge`, so it cannot run beside a live purge of the operation. It refuses any run
 whose durable checkpoint has left `held` or `prepared`, already carries scoped rows
-or a verified fence digest, or disagrees with the stored phase. It makes no provider
-call and writes no report; the abandoned control record is the evidence, and
-[the shared lifecycle contract](tracker-lifecycle.md) states what it retains.
+or a verified fence digest, belongs to a different child plan digest, or disagrees
+with the stored phase. A record with no checkpoint must still be in the `held`
+phase. It makes no provider call and writes no report; the abandoned control record
+is the evidence, and [the shared lifecycle contract](tracker-lifecycle.md) states
+what it retains.
+
+Abandoning at the `prepared` phase releases the tracker hold only. The parent
+installs the owner-wide S3 deny fence after preparation, and the tracker never
+removes it, so the run can be unfrozen while a live `Deny` on `s3:PutObject` and
+`s3:DeleteObject` still covers every object in that owner bucket. Any execution the
+release allows would then fail on write. Before re-planning or restarting a run
+whose hold you abandoned, read the current bucket policy of that run's owner, and
+have the parent remove the `ValSmithOwnerDeletion<operation UUID without hyphens>`
+statement and the `.valsmith-owner-deletion/<operation UUID>/write-probe` object if
+the deletion is not going ahead for that owner.
 
 Correct the identity file, use a new `operation_id`, and plan again. Runs whose
 holds were abandoned plan and prepare normally; the new operation replaces the

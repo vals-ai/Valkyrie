@@ -19,7 +19,7 @@ from tracker.lifecycle import (
     acquire_hold,
     active_hold,
 )
-from tracker.run_purge import _refuse_started_purge, _selected_runs
+from tracker.run_purge import _selected_runs, _unstarted_purge_guard
 from tracker.run_purge.contracts import ProviderLocator, PurgeCheckpoint, PurgePlan, PurgeRun
 from tracker.run_purge.predecessor import acquire_deletion_hold, capture_predecessor
 
@@ -36,7 +36,7 @@ _ROW_TABLES = (
 )
 
 
-def seeded_hold(session: Session) -> tuple[OperationIdentity, RunScope, Benchmark]:
+def seeded_hold(session: Session) -> tuple[OperationIdentity, RunScope, Benchmark, PurgePlan]:
     run = make_benchmark(org_id=TEST_ORG_ID)
     run.arguments = run.arguments.model_copy(update={"properties": _RESOURCES})
     session.add(run)
@@ -45,8 +45,9 @@ def seeded_hold(session: Session) -> tuple[OperationIdentity, RunScope, Benchmar
     scope = RunScope(run_id=run.id, original_resources=_RESOURCES)
     acquire_hold(session, identity=identity, scope=scope, purpose="deletion")
     session.commit()
+    plan = PurgePlan(identity=identity, runs=(PurgeRun(scope=scope, provider=_PROVIDER),))
 
-    return identity, scope, run
+    return identity, scope, run, plan
 
 
 def make_identity(*run_ids: UUID) -> OperationIdentity:
@@ -64,10 +65,10 @@ def make_identity(*run_ids: UUID) -> OperationIdentity:
     )
 
 
-def make_checkpoint(phase: str, *, run_id: UUID, rows: bool) -> PurgeCheckpoint:
+def make_checkpoint(phase: str, *, run_id: UUID, rows: bool, digest: str) -> PurgeCheckpoint:
     return PurgeCheckpoint.model_validate(
         {
-            "child_plan_sha256": "b" * 64,
+            "child_plan_sha256": digest,
             "provider": _PROVIDER.model_dump(),
             "original_dispatches": [],
             "phase": phase,
@@ -92,11 +93,11 @@ def store_checkpoint(session: Session, run_id: UUID, checkpoint: PurgeCheckpoint
 
 @pytest.mark.parametrize("phase", ["held", "prepared"])
 def test_abandon_releases_a_hold_before_any_purge_step(database_session: Session, phase: str) -> None:
-    identity, scope, run = seeded_hold(database_session)
-    store_checkpoint(database_session, run.id, make_checkpoint(phase, run_id=run.id, rows=False))
+    identity, scope, run, plan = seeded_hold(database_session)
+    store_checkpoint(database_session, run.id, make_checkpoint(phase, run_id=run.id, rows=False, digest=plan.digest()))
 
     record = abandon_deletion_hold(
-        database_session, identity=identity, scope=scope, verify_unstarted=_refuse_started_purge
+        database_session, identity=identity, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
     )
     database_session.commit()
 
@@ -107,9 +108,11 @@ def test_abandon_releases_a_hold_before_any_purge_step(database_session: Session
 
 
 def test_abandon_releases_a_hold_that_has_no_checkpoint(database_session: Session) -> None:
-    identity, scope, run = seeded_hold(database_session)
+    identity, scope, run, plan = seeded_hold(database_session)
 
-    abandon_deletion_hold(database_session, identity=identity, scope=scope, verify_unstarted=_refuse_started_purge)
+    abandon_deletion_hold(
+        database_session, identity=identity, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
+    )
     database_session.commit()
 
     assert active_hold(database_session, run.id) is None
@@ -120,60 +123,107 @@ def test_abandon_releases_a_hold_that_has_no_checkpoint(database_session: Sessio
     [("prepared", True), ("objects_removed", True), ("logs_removed", True), ("rows_removed", True)],
 )
 def test_abandon_refuses_a_purge_that_has_started(database_session: Session, phase: str, rows: bool) -> None:
-    identity, scope, run = seeded_hold(database_session)
-    store_checkpoint(database_session, run.id, make_checkpoint(phase, run_id=run.id, rows=rows))
+    identity, scope, run, plan = seeded_hold(database_session)
+    store_checkpoint(database_session, run.id, make_checkpoint(phase, run_id=run.id, rows=rows, digest=plan.digest()))
 
     with pytest.raises(LifecycleConflict):
-        abandon_deletion_hold(database_session, identity=identity, scope=scope, verify_unstarted=_refuse_started_purge)
+        abandon_deletion_hold(
+            database_session, identity=identity, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
+        )
     database_session.rollback()
 
     assert active_hold(database_session, run.id) is not None
 
 
 def test_abandon_refuses_a_checkpoint_whose_phase_was_edited(database_session: Session) -> None:
-    identity, scope, run = seeded_hold(database_session)
-    record = store_checkpoint(database_session, run.id, make_checkpoint("prepared", run_id=run.id, rows=False))
+    identity, scope, run, plan = seeded_hold(database_session)
+    record = store_checkpoint(
+        database_session, run.id, make_checkpoint("prepared", run_id=run.id, rows=False, digest=plan.digest())
+    )
     record.phase = "held"
     database_session.add(record)
     database_session.commit()
 
     with pytest.raises(LifecycleConflict):
-        abandon_deletion_hold(database_session, identity=identity, scope=scope, verify_unstarted=_refuse_started_purge)
+        abandon_deletion_hold(
+            database_session, identity=identity, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
+        )
+    database_session.rollback()
+
+    assert active_hold(database_session, run.id) is not None
+
+
+def test_abandon_refuses_a_checkpoint_from_another_child_plan(database_session: Session) -> None:
+    identity, scope, run, plan = seeded_hold(database_session)
+    store_checkpoint(database_session, run.id, make_checkpoint("prepared", run_id=run.id, rows=False, digest="b" * 64))
+
+    with pytest.raises(LifecycleConflict):
+        abandon_deletion_hold(
+            database_session, identity=identity, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
+        )
+    database_session.rollback()
+
+    assert active_hold(database_session, run.id) is not None
+
+
+@pytest.mark.parametrize("phase", ["prepared", "objects_removed"])
+def test_abandon_refuses_a_missing_checkpoint_after_the_held_phase(database_session: Session, phase: str) -> None:
+    identity, scope, run, plan = seeded_hold(database_session)
+    record = database_session.get(RunLifecycle, run.id)
+    assert record is not None and record.checkpoint_json is None
+    record.phase = phase
+    database_session.add(record)
+    database_session.commit()
+
+    with pytest.raises(LifecycleConflict):
+        abandon_deletion_hold(
+            database_session, identity=identity, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
+        )
     database_session.rollback()
 
     assert active_hold(database_session, run.id) is not None
 
 
 def test_abandon_refuses_another_operation_and_a_second_attempt(database_session: Session) -> None:
-    identity, scope, run = seeded_hold(database_session)
+    identity, scope, run, plan = seeded_hold(database_session)
     other = identity.model_copy(update={"operation_id": uuid4()})
 
     with pytest.raises(LifecycleConflict):
-        abandon_deletion_hold(database_session, identity=other, scope=scope, verify_unstarted=_refuse_started_purge)
+        abandon_deletion_hold(
+            database_session, identity=other, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
+        )
     database_session.rollback()
 
-    abandon_deletion_hold(database_session, identity=identity, scope=scope, verify_unstarted=_refuse_started_purge)
+    abandon_deletion_hold(
+        database_session, identity=identity, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
+    )
     database_session.commit()
 
     with pytest.raises(LifecycleConflict):
-        abandon_deletion_hold(database_session, identity=identity, scope=scope, verify_unstarted=_refuse_started_purge)
+        abandon_deletion_hold(
+            database_session, identity=identity, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
+        )
     database_session.rollback()
 
     assert active_hold(database_session, run.id) is None
 
 
 def test_abandon_refuses_an_absent_run(database_session: Session) -> None:
-    identity, scope, run = seeded_hold(database_session)
+    identity, scope, run, plan = seeded_hold(database_session)
     database_session.delete(database_session.get(Benchmark, run.id))
     database_session.commit()
 
     with pytest.raises(LifecycleConflict):
-        abandon_deletion_hold(database_session, identity=identity, scope=scope, verify_unstarted=_refuse_started_purge)
+        abandon_deletion_hold(
+            database_session, identity=identity, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
+        )
 
 
 def test_a_corrected_operation_replaces_an_abandoned_deletion_hold(database_session: Session) -> None:
-    identity, scope, run = seeded_hold(database_session)
-    abandon_deletion_hold(database_session, identity=identity, scope=scope, verify_unstarted=_refuse_started_purge)
+    identity, scope, run, plan = seeded_hold(database_session)
+    abandon_deletion_hold(
+        database_session, identity=identity, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
+    )
     database_session.commit()
     corrected = make_identity(run.id)
     purge_run = PurgeRun(scope=scope, provider=_PROVIDER)
@@ -187,8 +237,10 @@ def test_a_corrected_operation_replaces_an_abandoned_deletion_hold(database_sess
 
 
 def test_an_abandoned_hold_does_not_admit_an_unplanned_relocation_predecessor(database_session: Session) -> None:
-    identity, scope, run = seeded_hold(database_session)
-    abandon_deletion_hold(database_session, identity=identity, scope=scope, verify_unstarted=_refuse_started_purge)
+    identity, scope, run, plan = seeded_hold(database_session)
+    abandon_deletion_hold(
+        database_session, identity=identity, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
+    )
     database_session.commit()
     invented = PurgeRun(
         scope=scope,
@@ -207,7 +259,7 @@ def test_an_abandoned_hold_does_not_admit_an_unplanned_relocation_predecessor(da
 
 
 def test_a_deletion_hold_still_cannot_be_released_without_abandonment(database_session: Session) -> None:
-    _, _, run = seeded_hold(database_session)
+    _, _, run, _ = seeded_hold(database_session)
     record = database_session.get(RunLifecycle, run.id)
     assert record is not None
     record.released_at = datetime.now(UTC)
