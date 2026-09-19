@@ -45,10 +45,10 @@ For examples, see the [Python SDK guide](/sdk/resources).
 
 Bundle a directory containing contract.yaml or contract.yml and upload it through Tracker.
 
-name defaults to the contract name and replaces that library alias if it exists.
+name defaults to the contract name and replaces that library alias if it exists. Set overwrite=False to reject an existing alias with a 409 API error.
 
 ```python Signature
-async def push(agent_path: str | Path, *, name: str | None = None) -> AgentEntry
+async def push(agent_path: str | Path, *, name: str | None = None, overwrite: bool = True) -> AgentEntry
 ```
 
 **Parameters**
@@ -59,6 +59,10 @@ async def push(agent_path: str | Path, *, name: str | None = None) -> AgentEntry
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"name"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · default: <code>{"None"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"overwrite"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · bool · default: <code>{"True"}</code></span></div>
 </div>
 
 **Returns**

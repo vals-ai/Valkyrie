@@ -664,6 +664,35 @@ def mock_s3_client(monkeypatch: pytest.MonkeyPatch, aws_runtime: AWSRuntime) -> 
 class TestUploadStreamToS3:
     """Multipart streaming upload behavior."""
 
+    @pytest.mark.parametrize("status", [None, 409, 412])
+    async def test_conditional_publication(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_s3_client: MockS3Client,
+        aws_runtime: AWSRuntime,
+        status: int | None,
+    ) -> None:
+        complete = AsyncMock(
+            side_effect=ClientError(
+                {"Error": {"Code": "PreconditionFailed"}, "ResponseMetadata": {"HTTPStatusCode": status}},
+                "CompleteMultipartUpload",
+            )
+            if status
+            else None
+        )
+        monkeypatch.setattr(mock_s3_client, "complete_multipart_upload", complete)
+
+        async def chunks() -> AsyncIterator[bytes]:
+            yield b"agent"
+
+        if status:
+            with pytest.raises(FileExistsError if status == 412 else S3Error):
+                await S3ObjectStore(aws_runtime).put_stream("agents/demo.zip", chunks(), overwrite=False)
+            assert mock_s3_client.aborted
+        else:
+            assert await S3ObjectStore(aws_runtime).put_stream("agents/demo.zip", chunks(), overwrite=False) == 5
+        assert complete.call_args.kwargs["IfNoneMatch"] == "*"
+
     async def test_splits_stream_into_parts_and_completes(
         self, mock_s3_client: MockS3Client, aws_runtime: AWSRuntime
     ) -> None:
