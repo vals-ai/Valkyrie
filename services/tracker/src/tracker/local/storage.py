@@ -133,7 +133,7 @@ class FilesystemObjectStore:
             local_path(self.root, prefix, prefix=True)
             objects: list[StoredObject] = []
             directory = self.root / prefix.rpartition("/")[0]
-            for path in sorted(directory.rglob("*")):
+            for path in directory.rglob("*"):
                 key = path.relative_to(self.root).as_posix()
                 if key == ".valkyrie" or key.startswith(".valkyrie/") or not key.startswith(prefix):
                     continue
@@ -144,7 +144,7 @@ class FilesystemObjectStore:
                         objects.append(StoredObject(key, datetime.fromtimestamp(stat.st_mtime, UTC), size=stat.st_size))
                 except FileNotFoundError:
                     continue
-            return objects
+            return sorted(objects, key=lambda stored: stored.key)
 
         for stored in await asyncio.to_thread(list_files):
             yield stored
@@ -172,9 +172,6 @@ class FilesystemObjectStore:
                 return entries, entries[-1].key
             entries.append(stored)
         return entries, None
-
-    def maximum_download_ttl(self, requested: int) -> int:
-        return 0
 
     async def temporary_download_url(self, key: str, *, expires_in: int) -> None:
         return None

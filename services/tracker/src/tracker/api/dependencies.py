@@ -46,7 +46,7 @@ RunBenchmarkDependency = Annotated[Benchmark, Depends(get_run_benchmark)]
 
 def get_run_aws_context(benchmark: Benchmark, request: Request, org: Org) -> AWSRuntime:
     """Resolve AWS resources for an already authorized cloud run."""
-    assert benchmark.arguments.properties is None or not isinstance(benchmark.arguments.properties, LocalResources)
+    assert not isinstance(benchmark.arguments.properties, LocalResources)
     return resolve_run_aws_runtime_and_access_key_config(
         request,
         aws_managed=benchmark.aws_managed,
