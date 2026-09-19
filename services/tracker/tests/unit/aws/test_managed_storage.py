@@ -1,6 +1,7 @@
 """Managed owner-bucket policy and validation tests."""
 
 from collections.abc import Mapping
+from dataclasses import replace
 from uuid import UUID
 
 import pytest
@@ -15,6 +16,7 @@ from tracker.aws.managed_storage import (
     validate_managed_storage_bucket,
     validate_managed_storage_bucket_versioning,
 )
+from tracker.aws.resolver import validate_saved_managed_storage_runtime
 from tracker.aws.runtime import AWSResources, AWSRuntime
 
 _ACCOUNT_ID = "123456789012"
@@ -362,3 +364,125 @@ def test_policy_loader_parses_authorized_environments(monkeypatch: pytest.Monkey
         expected_account_id=_ACCOUNT_ID,
         org_environments={_ORG_ID: frozenset({"dev", "prod"})},
     )
+
+
+@pytest.fixture
+def owner_runtime(managed_runtime: AWSRuntime, monkeypatch: pytest.MonkeyPatch) -> AWSRuntime:
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", _ACCOUNT_ID)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(_ORG_ID))
+    monkeypatch.setattr(config, "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS", f'{{"{_ORG_ID}": ["dev"]}}')
+
+    return managed_runtime.with_resources(replace(managed_runtime.resources, s3_bucket="vs-dev-acme-123"))
+
+
+def _freeze_clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Drive the revalidation cache from a list whose first item is the current time."""
+    clock = [1000.0]
+    monkeypatch.setattr("tracker.aws.resolver.monotonic", lambda: clock[0])
+
+    return clock
+
+
+async def test_saved_storage_reads_reuse_a_recent_bucket_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    owner_runtime: AWSRuntime,
+) -> None:
+    monkeypatch.setattr(config, "AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS", 300)
+    clock = _freeze_clock(monkeypatch)
+    client = _client(owner_runtime)
+
+    for _ in range(5):
+        await validate_saved_managed_storage_runtime(owner_runtime, org_id=_ORG_ID)
+
+    assert len(client.head_requests) == 1
+    assert len(client.tag_requests) == 1
+
+    clock[0] += 301
+    await validate_saved_managed_storage_runtime(owner_runtime, org_id=_ORG_ID)
+
+    assert len(client.head_requests) == 2
+    assert len(client.tag_requests) == 2
+
+
+async def test_saved_storage_validation_is_not_shared_across_buckets_or_organizations(
+    monkeypatch: pytest.MonkeyPatch,
+    owner_runtime: AWSRuntime,
+) -> None:
+    monkeypatch.setattr(
+        config, "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS", f'{{"{_ORG_ID}": ["dev"], "{_OTHER_ORG_ID}": ["dev"]}}'
+    )
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", f"{_ORG_ID},{_OTHER_ORG_ID}")
+    monkeypatch.setattr(config, "AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS", 300)
+    _ = _freeze_clock(monkeypatch)
+    client = _client(owner_runtime)
+    other_bucket = owner_runtime.with_resources(replace(owner_runtime.resources, s3_bucket="vs-dev-other-123"))
+
+    await validate_saved_managed_storage_runtime(owner_runtime, org_id=_ORG_ID)
+
+    with pytest.raises(ManagedStorageError) as error:
+        await validate_saved_managed_storage_runtime(owner_runtime, org_id=_OTHER_ORG_ID)
+
+    assert error.value.status_code == 403
+
+    await validate_saved_managed_storage_runtime(other_bucket, org_id=_ORG_ID)
+
+    assert [request["Bucket"] for request in client.head_requests] == [
+        "vs-dev-acme-123",
+        "vs-dev-acme-123",
+        "vs-dev-other-123",
+    ]
+
+
+async def test_saved_storage_validation_never_caches_a_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+    owner_runtime: AWSRuntime,
+) -> None:
+    monkeypatch.setattr(config, "AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS", 300)
+    _ = _freeze_clock(monkeypatch)
+    client = RecordingS3Client(tag_error=_client_error("SlowDown", "GetBucketTagging"))
+    _inject_client(monkeypatch, client)
+
+    for _ in range(2):
+        with pytest.raises(ManagedStorageError) as error:
+            await validate_saved_managed_storage_runtime(owner_runtime, org_id=_ORG_ID)
+
+        assert error.value.status_code == 503
+
+    assert len(client.tag_requests) == 2
+
+
+async def test_zero_ttl_revalidates_every_saved_storage_read(
+    monkeypatch: pytest.MonkeyPatch,
+    owner_runtime: AWSRuntime,
+) -> None:
+    monkeypatch.setattr(config, "AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS", 0)
+    _ = _freeze_clock(monkeypatch)
+    client = _client(owner_runtime)
+
+    for _ in range(3):
+        await validate_saved_managed_storage_runtime(owner_runtime, org_id=_ORG_ID)
+
+    assert len(client.head_requests) == 3
+
+
+async def test_submission_validation_stays_uncached_for_the_read_path(
+    monkeypatch: pytest.MonkeyPatch,
+    owner_runtime: AWSRuntime,
+) -> None:
+    monkeypatch.setattr(config, "AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS", 300)
+    _ = _freeze_clock(monkeypatch)
+    client = _client(owner_runtime)
+
+    for _ in range(2):
+        await validate_managed_storage_bucket(
+            owner_runtime,
+            org_id=_ORG_ID,
+            bucket_name="vs-dev-acme-123",
+            policy=_policy(),
+        )
+
+    assert len(client.head_requests) == 2
+
+    await validate_saved_managed_storage_runtime(owner_runtime, org_id=_ORG_ID)
+
+    assert len(client.head_requests) == 3
