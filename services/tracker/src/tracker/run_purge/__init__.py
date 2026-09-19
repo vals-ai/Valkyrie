@@ -119,9 +119,10 @@ def abandon_runs(session: Session, plan: PurgePlan, run_ids: tuple[UUID, ...]) -
     selected = _selected_runs(plan, run_ids)
     verify_unstarted = _unstarted_purge_guard(plan)
 
-    with exclusive_operation(session, plan.identity):
+    with exclusive_operation(session, plan.identity) as lock:
         for run in selected:
             abandon_deletion_hold(session, identity=plan.identity, scope=run.scope, verify_unstarted=verify_unstarted)
+        lock.verify()
         session.commit()
 
     return tuple(run.scope.run_id for run in selected)
@@ -199,9 +200,23 @@ class PurgeOperator:
         self.session.add(record)
         self.session.flush()
 
-    def _commit_checkpoint(self, run: PurgeRun, checkpoint: PurgeCheckpoint, lock: OperationLock) -> None:
+    def _commit_checkpoint(
+        self,
+        run: PurgeRun,
+        checkpoint: PurgeCheckpoint,
+        lock: OperationLock,
+        *,
+        record: RunLifecycle | None = None,
+    ) -> None:
         lock.verify()
-        self._save(run, checkpoint)
+        if record is None:
+            self._save(run, checkpoint)
+        else:
+            # The run rows are deleted in this same transaction, so _lock can no longer read them back.
+            record.checkpoint_json = checkpoint.model_dump_json()
+            record.phase = checkpoint.phase
+            self.session.add(record)
+
         self.session.commit()
 
     def _external(self, run: PurgeRun) -> tuple[ExternalHostDrain | None, bytes | None]:
@@ -353,10 +368,7 @@ class PurgeOperator:
             lock.verify()
             delete_rows(self.session, checkpoint.rows)
             verify_rows_absent(self.session, checkpoint.rows)
-            record.checkpoint_json = checkpoint.model_copy(update={"phase": "rows_removed"}).model_dump_json()
-            record.phase = "rows_removed"
-            self.session.add(record)
-            self.session.commit()
+            self._commit_checkpoint(run, checkpoint.model_copy(update={"phase": "rows_removed"}), lock, record=record)
             await self._complete_run(run, lock)
         return self.report(outcome="checked")
 

@@ -1,5 +1,7 @@
 """The purge advisory lock must fail loudly when its backend stops holding it."""
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID
@@ -10,7 +12,7 @@ from sqlmodel import Session
 
 import tracker.run_purge as run_purge
 from tests.unit.test_lifecycle_abandon import make_checkpoint, seeded_hold, store_checkpoint
-from tracker.database.models import RunLifecycle
+from tracker.database.models import Benchmark, RunLifecycle
 from tracker.lifecycle import LifecycleConflict
 from tracker.run_purge import PurgeOperator
 from tracker.run_purge.contracts import PurgeCheckpoint, PurgeRun
@@ -18,6 +20,11 @@ from tracker.run_purge.locking import OperationLock, _release_locks
 
 _BACKEND_PID = 4242
 _DROPPED = OperationalError("SELECT pg_backend_pid()", {}, Exception("server closed the connection"))
+
+
+@contextmanager
+def scripted_lock(lock: OperationLock) -> Generator[OperationLock]:
+    yield lock
 
 
 class FakeResult:
@@ -150,3 +157,46 @@ def test_a_checkpoint_does_not_commit_after_the_lock_is_lost(
 
     record = database_session.get(RunLifecycle, purge_run.scope.run_id)
     assert record is not None and record.phase == "held"
+
+
+@pytest.mark.parametrize("held", [True, False], ids=["lock_held", "lock_lost"])
+def test_a_removed_run_checkpoint_commits_only_while_the_lock_is_held(
+    database_session: Session, monkeypatch: pytest.MonkeyPatch, held: bool
+) -> None:
+    operator, purge_run, prepared = operator_at_held(database_session, monkeypatch)
+    record = database_session.get(RunLifecycle, purge_run.scope.run_id)
+    assert record is not None
+    database_session.delete(database_session.get(Benchmark, purge_run.scope.run_id))
+    database_session.flush()
+    lock = OperationLock(FakeLockConnection((_BACKEND_PID if held else _BACKEND_PID + 1, 2)), _BACKEND_PID, (11, 22))
+
+    if held:
+        operator._commit_checkpoint(purge_run, prepared, lock, record=record)
+    else:
+        with pytest.raises(LifecycleConflict):
+            operator._commit_checkpoint(purge_run, prepared, lock, record=record)
+        database_session.rollback()
+
+    stored = database_session.get(RunLifecycle, purge_run.scope.run_id)
+    assert stored is not None and stored.phase == ("prepared" if held else "held")
+
+
+@pytest.mark.parametrize("held", [True, False], ids=["lock_held", "lock_lost"])
+def test_abandonment_commits_only_while_the_lock_is_held(
+    database_session: Session, monkeypatch: pytest.MonkeyPatch, held: bool
+) -> None:
+    _, _, run, plan = seeded_hold(database_session)
+    lock = OperationLock(FakeLockConnection((_BACKEND_PID if held else _BACKEND_PID + 1, 2)), _BACKEND_PID, (11, 22))
+    monkeypatch.setattr(run_purge, "verify_database_target", lambda *_arguments: None)
+    monkeypatch.setattr(run_purge, "exclusive_operation", lambda *_arguments: scripted_lock(lock))
+
+    if held:
+        assert run_purge.abandon_runs(database_session, plan, (run.id,)) == (run.id,)
+    else:
+        with pytest.raises(LifecycleConflict):
+            run_purge.abandon_runs(database_session, plan, (run.id,))
+        database_session.rollback()
+
+    record = database_session.get(RunLifecycle, run.id)
+    assert record is not None
+    assert (record.released_at is not None) is held
