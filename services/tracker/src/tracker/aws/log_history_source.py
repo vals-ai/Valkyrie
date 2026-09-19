@@ -83,6 +83,8 @@ class FrozenLogSource:
 
         event_pages = 0
         event_count = 0
+        newest_event_ms: int | None = None
+        newest_ingestion_ms: int | None = None
         checksum = hashlib.sha256()
         if found:
             for page in self._pages(self.client.filter_log_events, logGroupName=group, unmask=True, limit=10_000):
@@ -113,6 +115,14 @@ class FrozenLogSource:
                     checksum.update(content + b"\n")
                     consume(event)
                     event_count += 1
+                    newest_event_ms = (
+                        event.timestamp if newest_event_ms is None else max(newest_event_ms, event.timestamp)
+                    )
+                    newest_ingestion_ms = (
+                        event.ingestion_time
+                        if newest_ingestion_ms is None
+                        else max(newest_ingestion_ms, event.ingestion_time)
+                    )
 
         inventory = tuple(sorted(names))
         evidence = ScanEvidence(
@@ -124,6 +134,8 @@ class FrozenLogSource:
             event_count=event_count,
             stream_sha256=digest(encode(list(inventory))),
             event_sha256=checksum.hexdigest(),
+            newest_event_ms=newest_event_ms,
+            newest_ingestion_ms=newest_ingestion_ms,
         )
 
         return inventory, evidence

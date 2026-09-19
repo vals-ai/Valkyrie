@@ -41,10 +41,38 @@ class TransferBoundary(Protocol):
         source_removed: bool = False,
         source_partial: bool = False,
         archive: ArchiveReport | None = None,
+        dispatches: tuple[DispatchDrain, ...],
+        acquired_at: datetime,
+        log_completeness_sha256: str | None,
     ) -> None: ...
-    async def archive(self, request: TransferRequest, run: TransferRun) -> ArchiveReport: ...
-    async def verify_archive(self, request: TransferRequest, run: TransferRun, archive: ArchiveReport) -> None: ...
-    async def cleanup_logs(self, request: TransferRequest, run: TransferRun, archive: ArchiveReport) -> None: ...
+    async def archive(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        *,
+        dispatches: tuple[DispatchDrain, ...],
+        acquired_at: datetime,
+    ) -> ArchiveReport: ...
+    async def verify_archive(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        archive: ArchiveReport,
+        *,
+        dispatches: tuple[DispatchDrain, ...],
+        acquired_at: datetime,
+        log_completeness_sha256: str | None,
+    ) -> str: ...
+    async def cleanup_logs(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        archive: ArchiveReport,
+        *,
+        dispatches: tuple[DispatchDrain, ...],
+        acquired_at: datetime,
+        log_completeness_sha256: str | None,
+    ) -> None: ...
     async def portable(self, request: TransferRequest, run: TransferRun, rows: RowClosure) -> None: ...
 
 
@@ -331,13 +359,16 @@ class TransferOperator:
                 },
             )
 
+        acquired_at = source_record.acquired_at
         archive = checkpoint.archive
+        completeness = checkpoint.log_completeness_sha256
         destination_rows = None
         if destination_exists:
             destination_record, destination_checkpoint = self._checkpoint(
                 self.destination, request, run, destination=True
             )
             archive = destination_checkpoint.archive
+            completeness = destination_checkpoint.log_completeness_sha256
             if archive is None:
                 raise LifecycleConflict("Destination archive proof is absent")
             destination_rows = RowClosure.read(self.destination, run.source.run_id, request.plan.source_identity.org_id)
@@ -349,7 +380,14 @@ class TransferOperator:
                 raise LifecycleConflict("Retained process evidence differs from exact dispatch set")
             if destination_rows.sha256 != destination_checkpoint.destination_rows_sha256:
                 raise LifecycleConflict("Destination content or exact child set changed")
-            await self.boundary.verify_archive(request, run, archive)
+            await self.boundary.verify_archive(
+                request,
+                run,
+                archive,
+                dispatches=dispatches,
+                acquired_at=acquired_at,
+                log_completeness_sha256=completeness,
+            )
             if (
                 source is not None
                 and self._destination_rows(request, run, archive, source).sha256 != destination_rows.sha256
@@ -360,9 +398,18 @@ class TransferOperator:
             if source is None or checkpoint.phase == "held":
                 raise LifecycleConflict("Prepared intact source is required")
             if not destination_exists:
-                archive = await self.boundary.archive(request, run)
-                await self.boundary.verify_archive(request, run, archive)
-                await self.boundary.verify_objects(request, run, archive=archive)
+                archive = await self.boundary.archive(request, run, dispatches=dispatches, acquired_at=acquired_at)
+                completeness = await self.boundary.verify_archive(
+                    request, run, archive, dispatches=dispatches, acquired_at=acquired_at, log_completeness_sha256=None
+                )
+                await self.boundary.verify_objects(
+                    request,
+                    run,
+                    archive=archive,
+                    dispatches=dispatches,
+                    acquired_at=acquired_at,
+                    log_completeness_sha256=completeness,
+                )
                 dispatches = self._process_drain(request, run)
                 await self.boundary.drain(request, run, source.rows["benchmark"][0]["arguments"])
                 source = self._source_rows(request, run)
@@ -393,6 +440,7 @@ class TransferOperator:
                         "phase": "transferred",
                         "destination_rows_sha256": destination_rows.sha256,
                         "archive": archive,
+                        "log_completeness_sha256": completeness,
                         "copied_objects_sha256": digest(
                             [item.model_dump(mode="json") for item in request.copied_objects]
                         ),
@@ -407,12 +455,20 @@ class TransferOperator:
                     raise LifecycleConflict("Destination stored readback differs")
                 self.destination.commit()
             assert archive is not None and destination_rows is not None
-            await self.boundary.verify_objects(request, run, archive=archive)
+            await self.boundary.verify_objects(
+                request,
+                run,
+                archive=archive,
+                dispatches=dispatches,
+                acquired_at=acquired_at,
+                log_completeness_sha256=completeness,
+            )
             checkpoint = checkpoint.model_copy(
                 update={
                     "phase": "transferred",
                     "destination_rows_sha256": destination_rows.sha256,
                     "archive": archive,
+                    "log_completeness_sha256": completeness,
                     "copied_objects_sha256": digest([item.model_dump(mode="json") for item in request.copied_objects]),
                     "destination_versions_sha256": digest(
                         [item.model_dump(mode="json") for item in request.destination_versions]
@@ -431,7 +487,15 @@ class TransferOperator:
             )
             if checkpoint.parent_completion_sha256 not in {None, completion_digest}:
                 raise LifecycleConflict("Parent completion authorization changed")
-            await self.boundary.verify_objects(request, run, source_removed=True, archive=archive)
+            await self.boundary.verify_objects(
+                request,
+                run,
+                source_removed=True,
+                archive=archive,
+                dispatches=dispatches,
+                acquired_at=acquired_at,
+                log_completeness_sha256=completeness,
+            )
             if request.action == "cleanup" and not retired:
                 assert source is not None
                 if run.execution_policy == "portable":
@@ -440,7 +504,14 @@ class TransferOperator:
                             "Portable transfer requires process absence independent of the source hold"
                         )
                     await self.boundary.portable(request, run, destination_rows)
-                await self.boundary.cleanup_logs(request, run, archive)
+                await self.boundary.cleanup_logs(
+                    request,
+                    run,
+                    archive,
+                    dispatches=dispatches,
+                    acquired_at=acquired_at,
+                    log_completeness_sha256=completeness,
+                )
                 dispatches = self._process_drain(request, run)
                 await self.boundary.drain(request, run, source.rows["benchmark"][0]["arguments"])
                 source = self._source_rows(request, run)
@@ -484,6 +555,9 @@ class TransferOperator:
                 source_removed=retired,
                 source_partial=request.parent_completion is not None and not retired,
                 archive=archive,
+                dispatches=dispatches,
+                acquired_at=acquired_at,
+                log_completeness_sha256=completeness,
             )
         return self._observation(
             request, run, source, destination_rows, source_record, destination_record, archive, dispatches

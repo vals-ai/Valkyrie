@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -13,9 +14,10 @@ from sqlmodel import Session
 from tests.factories import make_benchmark
 from tests.integration.local.database.test_run_transfer import pair as pair
 from tests.integration.local.database.test_run_transfer import seed_rows
-from tests.transfer_support import FakeTransferBoundary, transfer_request
+from tests.transfer_support import OBSERVED_ACQUIRED_AT, OBSERVED_DECISION, FakeTransferBoundary, transfer_request
 from tracker.database.models import BenchmarkStatus, RunLifecycle
 from tracker.lifecycle import LifecycleConflict
+from tracker.lifecycle_evidence import DispatchDrain
 from tracker.run_transfer import TransferOperator
 from tracker.run_transfer.contracts import TransferRequest, TransferResponse, TransferRun
 from tracker.run_transfer.rows import digest
@@ -26,15 +28,38 @@ class InterruptedCleanup(FakeTransferBoundary):
     stop_run_id: UUID | None = None
     inspection = False
 
-    async def archive(self, request: TransferRequest, run: TransferRun) -> ArchiveReport:
+    async def archive(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        *,
+        dispatches: tuple[DispatchDrain, ...] = (),
+        acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+    ) -> ArchiveReport:
         assert not self.inspection, "inspection must not upload archives"
-        return await super().archive(request, run)
+        return await super().archive(request, run, dispatches=dispatches, acquired_at=acquired_at)
 
-    async def cleanup_logs(self, request: TransferRequest, run: TransferRun, archive: ArchiveReport) -> None:
+    async def cleanup_logs(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        archive: ArchiveReport,
+        *,
+        dispatches: tuple[DispatchDrain, ...] = (),
+        acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+        log_completeness_sha256: str | None = OBSERVED_DECISION,
+    ) -> None:
         assert not self.inspection, "inspection must not remove source logs"
         if run.source.run_id == self.stop_run_id:
             raise RuntimeError("interrupted before second source cleanup")
-        await super().cleanup_logs(request, run, archive)
+        await super().cleanup_logs(
+            request,
+            run,
+            archive,
+            dispatches=dispatches,
+            acquired_at=acquired_at,
+            log_completeness_sha256=log_completeness_sha256,
+        )
 
     async def drain(
         self, request: TransferRequest, run: TransferRun, arguments: dict[str, Any], *, cleanup: bool = False

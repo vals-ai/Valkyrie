@@ -11,8 +11,10 @@ from uuid import UUID
 import pytest
 from botocore.exceptions import ClientError
 
+from tracker.aws.log_history_store import same_inventory
 from tracker.aws.runtime import AWSResources
 from tracker.lifecycle import OperationIdentity, RunScope
+from tracker.runtime.log_history import ScanEvidence
 
 RUN_ID = UUID("00000000-0000-0000-0000-000000000001")
 OPERATION_ID = UUID("00000000-0000-0000-0000-000000000002")
@@ -707,3 +709,45 @@ def test_existing_unbound_journal_is_not_adopted(archive: Any, tmp_path: Path) -
 
     assert storage.objects == {}
     assert logs.scan == 0
+
+
+def test_scan_records_the_newest_event_and_ingestion_times(archive: Any, tmp_path: Path) -> None:
+    logs, storage = FakeLogs(), FakeS3()
+    logs.events = [
+        {"timestamp": 10, "ingestionTime": 40, "message": "first", "eventId": "a", "logStreamName": "old"},
+        {"timestamp": 30, "ingestionTime": 20, "message": "second", "eventId": "b", "logStreamName": "old"},
+    ]
+    result = run_archive(archive, tmp_path, logs, storage)
+    manifest = archive.read_manifest(result.reference, scoped_input(archive), FakeSession(DESTINATION_ACCOUNT, storage))
+
+    assert (manifest.first_scan.newest_event_ms, manifest.first_scan.newest_ingestion_ms) == (30, 40)
+    assert manifest.first_scan == manifest.second_scan
+
+
+def test_scan_of_an_empty_group_records_no_newest_times(archive: Any, tmp_path: Path) -> None:
+    logs, storage = FakeLogs(), FakeS3()
+    logs.events = []
+    result = run_archive(archive, tmp_path, logs, storage)
+    manifest = archive.read_manifest(result.reference, scoped_input(archive), FakeSession(DESTINATION_ACCOUNT, storage))
+
+    assert manifest.first_scan.event_count == 0
+    assert (manifest.first_scan.newest_event_ms, manifest.first_scan.newest_ingestion_ms) == (None, None)
+
+
+def test_a_later_event_time_is_not_the_same_inventory() -> None:
+    first = ScanEvidence(
+        group_absent=False,
+        group_pages=1,
+        stream_pages=1,
+        event_pages=1,
+        stream_count=1,
+        event_count=1,
+        stream_sha256="a" * 64,
+        event_sha256="b" * 64,
+        newest_event_ms=10,
+        newest_ingestion_ms=20,
+    )
+
+    assert same_inventory(first, first.model_copy(update={"event_pages": 9}))
+    assert not same_inventory(first, first.model_copy(update={"newest_event_ms": 11}))
+    assert not same_inventory(first, first.model_copy(update={"newest_ingestion_ms": 21}))

@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 
 from tests.relocation_support import VersionStore
-from tests.transfer_support import ObservedEventsBoundary
+from tests.transfer_support import OBSERVED_ACQUIRED_AT, ObservedEventsBoundary
 from tests.unit.aws.test_historical_log_provider import LiveLogs
 from tests.unit.aws.test_log_history_archive import FakeLogs, FakeS3, FakeSession, scoped_input
 from tests.unit.test_relocation_providers import setup
@@ -171,13 +171,18 @@ def test_paired_version_verifier_uses_separate_accounts_and_accepts_legacy_null_
         }
     )
     boundary = TransferAWSBoundary(source_clients, destination_clients, tmp_path)
-    asyncio.run(boundary.verify_objects(request, request.plan.runs[0]))
+    inspection: dict[str, Any] = {
+        "dispatches": (),
+        "acquired_at": OBSERVED_ACQUIRED_AT,
+        "log_completeness_sha256": None,
+    }
+    asyncio.run(boundary.verify_objects(request, request.plan.runs[0], **inspection))
     destination.versions["destination"] = [("d1", b"wrong")]
     with pytest.raises(LifecycleConflict):
-        asyncio.run(boundary.verify_objects(request, request.plan.runs[0]))
+        asyncio.run(boundary.verify_objects(request, request.plan.runs[0], **inspection))
 
 
-def archive_boundary(tmp_path: Path) -> tuple[TransferRequest, TransferAWSBoundary, FakeLogs, FakeS3]:
+def archive_boundary(tmp_path: Path) -> tuple[TransferRequest, ObservedEventsBoundary, FakeLogs, FakeS3]:
     scope = scoped_input(log_history_archive)
     request = TransferRequest.model_validate(
         {

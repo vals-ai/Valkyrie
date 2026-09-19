@@ -53,8 +53,9 @@ or event read is a failure, not absence evidence.
 Streams are stored as a sorted inventory, including empty and unknown streams.
 Events retain the source scan order and every occurrence, including repeated
 identical IDs/messages. A second complete scan must match stream names, event
-count, and the SHA-256 of the ordered full event records. Scan page counts are
-recorded separately; page layout can change without changing content. The
+count, newest event and ingestion times, and the SHA-256 of the ordered full event
+records. Scan page counts are recorded separately; page layout can change without
+changing content. The
 manifest is written only after this comparison. Stream timestamps are not used
 as completeness watermarks.
 
@@ -98,8 +99,11 @@ input digest, source account/region/exact group/principal ARN, typed destination
 sorted stream inventory, and ordered `ChunkReference` values. Each chunk
 reference contains its exact `ArchiveObject`, first ordinal, and event count.
 `first_scan` and `second_scan` each contain group absence, group/stream/event page
-counts, stream/event counts, and stream/event digests. The stream digest hashes
-the canonical JSON list of sorted stream names.
+counts, stream/event counts, stream/event digests, and the newest event timestamp
+and newest ingestion time in milliseconds across all streams. Both newest times are
+null when the scan returned no event. The stream digest hashes the canonical JSON
+list of sorted stream names. The transfer quiet-interval policy reads the first
+scan's newest times; they are not a completeness watermark on their own.
 
 The helpers are synchronous. Async reader composition must run blocking AWS
 work outside the event loop, for example with `asyncio.to_thread`.

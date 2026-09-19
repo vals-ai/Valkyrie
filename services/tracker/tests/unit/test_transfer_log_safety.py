@@ -1,46 +1,68 @@
-"""Observed-event integrity never authorizes production history completion."""
+"""Quiet-interval completeness policy: every clause must keep the operation pending."""
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 
 from tests.unit.test_transfer_archive import archive_boundary
-from tracker.aws.log_history_archive import archive_logs, read_events, read_manifest
+from tracker.aws.log_history_archive import archive_logs, read_manifest
 from tracker.lifecycle import LifecycleConflict
+from tracker.lifecycle_evidence import DispatchDrain
+from tracker.run_transfer.contracts import TransferRequest, TransferRun
 from tracker.run_transfer.providers import TransferAWSBoundary
 from tracker.run_transfer.rows import digest
-from tracker.runtime.log_history import FrozenLogScope
+from tracker.run_transfer.settings import LOG_QUIET_INTERVAL_FLOOR_HOURS, SETTINGS, load_settings
+from tracker.runtime.log_history import ArchiveReport, FrozenLogScope, LogHistoryManifest
+
+DISPATCH_ID = UUID("00000000-0000-0000-0000-0000000000dd")
+QUIET_EXIT = timedelta(days=2)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("state", ["matching", "empty", "absent"])
-@pytest.mark.parametrize("operation", ["archive", "verify_archive", "verify_objects", "cleanup_logs"])
-async def test_production_refuses_unproved_completeness_even_with_verified_observed_archive(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str, operation: str
-) -> None:
-    request, transport, logs, storage = archive_boundary(tmp_path)
-    if state == "empty":
-        logs.events = []
-    elif state == "absent":
-        logs.absent = True
-    deleted: list[str] = []
+class QuietRun:
+    """A legacy run whose every quiet-interval clause passes, with its archive published."""
 
-    def delete_log_group(**arguments: Any) -> None:
-        deleted.append(arguments["logGroupName"])
-        logs.absent = True
+    def __init__(self, request: TransferRequest, boundary: TransferAWSBoundary, logs: Any, storage: Any) -> None:
+        self.request = request
+        self.boundary = boundary
+        self.logs = logs
+        self.storage = storage
+        self.deleted: list[str] = []
+        self.archive: ArchiveReport
+        self.dispatches = drained(now() - QUIET_EXIT)
+        self.acquired_at = now() - QUIET_EXIT
 
-    monkeypatch.setattr(logs, "delete_log_group", delete_log_group, raising=False)
-    boundary = TransferAWSBoundary(
-        transport.source,
-        transport.destination,
-        tmp_path / "production-journal",
-        source_session=transport.source_session,
-        destination_session=transport.destination_session,
-    )
-    run = request.plan.runs[0]
-    scope = FrozenLogScope(
+    @property
+    def run(self) -> TransferRun:
+        return self.request.plan.runs[0]
+
+
+def now() -> datetime:
+    return datetime.now(UTC)
+
+
+def drained(exit_at: datetime) -> tuple[DispatchDrain, ...]:
+    return (DispatchDrain(dispatch_id=DISPATCH_ID, provenance="host_process_exit", observed_exit_at=exit_at),)
+
+
+def quiet_request(request: TransferRequest, *, observation: datetime) -> TransferRequest:
+    payload = request.model_dump(mode="json")
+    payload["source_host_contract"] = {
+        "contract": "stable-host-lifecycle-v1",
+        "deployment_sha256": "b" * 64,
+        "host_inventory": ["host-1"],
+        "observed_at": observation.isoformat(),
+        "acknowledgement_required_since": (observation - timedelta(days=7)).isoformat(),
+        "verifier": "local-test",
+    }
+    return TransferRequest.model_validate(payload)
+
+
+def quiet_scope(request: TransferRequest, run: TransferRun) -> FrozenLogScope:
+    return FrozenLogScope(
         source_identity=request.plan.source_identity,
         destination_identity=request.plan.destination_identity,
         source=run.source,
@@ -50,29 +72,285 @@ async def test_production_refuses_unproved_completeness_even_with_verified_obser
         ),
         unmasked_read_authorized=True,
     )
-    archive = archive_logs(
-        scope,
+
+
+def quiet_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    events: list[dict[str, Any]] | None = None,
+    publish: bool = True,
+) -> QuietRun:
+    request, transport, logs, storage = archive_boundary(tmp_path)
+    if events is not None:
+        logs.events = events
+    request = quiet_request(request, observation=now())
+    boundary = TransferAWSBoundary(
+        transport.source,
+        transport.destination,
+        tmp_path / "production-journal",
         source_session=transport.source_session,
         destination_session=transport.destination_session,
-        journal_directory=tmp_path / "observed-journal",
     )
-    manifest = read_manifest(archive.reference, scope, transport.destination_session)
-    assert len(list(read_events(manifest, scope, transport.destination_session))) == (2 if state == "matching" else 0)
-    saved = dict(storage.objects)
-    # Object storage is independent of the real archive-acceptance boundary under test.
+    state = QuietRun(request, boundary, logs, storage)
+
+    def delete_log_group(**arguments: Any) -> None:
+        state.deleted.append(arguments["logGroupName"])
+        logs.absent = True
+
+    monkeypatch.setattr(logs, "delete_log_group", delete_log_group, raising=False)
+    if publish:
+        state.archive = archive_logs(
+            quiet_scope(request, state.run),
+            source_session=transport.source_session,
+            destination_session=transport.destination_session,
+            journal_directory=tmp_path / "published-journal",
+        )
+    # The paired object verifier has its own tests; only the completeness policy is under test here.
     monkeypatch.setattr("tracker.run_transfer.providers.RelocationAWSBoundary.verify_objects", AsyncMock())
+    return state
 
-    with pytest.raises(LifecycleConflict, match="completeness"):
-        if operation == "archive":
-            await boundary.archive(request, run)
-        elif operation == "verify_archive":
-            await boundary.verify_archive(request, run, archive)
-        elif operation == "verify_objects":
-            await boundary.verify_objects(request, run, archive=archive)
-        else:
-            await boundary.cleanup_logs(request, run, archive)
 
-    assert not deleted
-    assert storage.objects == saved
-    assert logs.absent == (state == "absent")
-    assert not (tmp_path / "production-journal").exists()
+@pytest.mark.asyncio
+async def test_a_quiet_legacy_run_archives_verifies_and_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = quiet_run(tmp_path, monkeypatch, publish=False)
+    archive = await state.boundary.archive(
+        state.request, state.run, dispatches=state.dispatches, acquired_at=state.acquired_at
+    )
+    decision = await state.boundary.verify_archive(
+        state.request,
+        state.run,
+        archive,
+        dispatches=state.dispatches,
+        acquired_at=state.acquired_at,
+        log_completeness_sha256=None,
+    )
+    await state.boundary.verify_objects(
+        state.request,
+        state.run,
+        archive=archive,
+        dispatches=state.dispatches,
+        acquired_at=state.acquired_at,
+        log_completeness_sha256=decision,
+    )
+    await state.boundary.cleanup_logs(
+        state.request,
+        state.run,
+        archive,
+        dispatches=state.dispatches,
+        acquired_at=state.acquired_at,
+        log_completeness_sha256=decision,
+    )
+
+    assert len(decision) == 64
+    assert state.deleted == [state.run.source.log_group]
+    assert state.logs.absent
+    assert state.storage.objects
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state_name", ["empty", "absent"])
+async def test_a_quiet_group_without_events_satisfies_the_scan_clause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state_name: str
+) -> None:
+    state = quiet_run(tmp_path, monkeypatch, events=[], publish=False)
+    if state_name == "absent":
+        state.logs.absent = True
+    archive = await state.boundary.archive(
+        state.request, state.run, dispatches=state.dispatches, acquired_at=state.acquired_at
+    )
+    decision = await state.boundary.verify_archive(
+        state.request,
+        state.run,
+        archive,
+        dispatches=state.dispatches,
+        acquired_at=state.acquired_at,
+        log_completeness_sha256=None,
+    )
+
+    assert len(decision) == 64
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("clause", "fault"),
+    [
+        ("host_observation", "missing_host"),
+        ("host_observation", "expired_host"),
+        ("dispatch_drain", "pending_drain"),
+        ("dispatch_drain", "recent_exit"),
+        ("dispatch_drain", "no_exit_evidence"),
+        ("hold_quiet_interval", "recent_hold"),
+    ],
+)
+@pytest.mark.parametrize("operation", ["archive", "verify_archive", "verify_objects", "cleanup_logs"])
+async def test_a_failed_quiet_input_clause_keeps_every_operation_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clause: str, fault: str, operation: str
+) -> None:
+    state = quiet_run(tmp_path, monkeypatch)
+    request, dispatches, acquired_at = state.request, state.dispatches, state.acquired_at
+    if fault == "missing_host":
+        request = request.model_copy(update={"source_host_contract": None})
+    elif fault == "expired_host":
+        request = quiet_request(request, observation=now() - timedelta(hours=1))
+    elif fault == "pending_drain":
+        dispatches = (DispatchDrain(dispatch_id=DISPATCH_ID, provenance="pending"),)
+    elif fault == "recent_exit":
+        dispatches = drained(now() - timedelta(hours=1))
+    elif fault == "no_exit_evidence":
+        dispatches = (DispatchDrain(dispatch_id=DISPATCH_ID, provenance="held_unclaimed"),)
+    else:
+        acquired_at = now() - timedelta(hours=1)
+    saved = dict(state.storage.objects)
+
+    with pytest.raises(LifecycleConflict, match=f"clause {clause} failed"):
+        await run_operation(state, operation, request=request, dispatches=dispatches, acquired_at=acquired_at)
+
+    assert not state.deleted
+    assert state.storage.objects == saved
+    assert not state.logs.absent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("clause", "fault"),
+    [
+        ("scan_quiet_interval", "recent_events"),
+        ("matching_scans", "changed_second_scan"),
+        ("persisted_decision", "wrong_decision"),
+    ],
+)
+@pytest.mark.parametrize("operation", ["verify_archive", "verify_objects", "cleanup_logs"])
+async def test_a_failed_manifest_clause_keeps_every_acceptance_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clause: str, fault: str, operation: str
+) -> None:
+    recent = int((now() - timedelta(minutes=5)).timestamp() * 1000)
+    events = (
+        [{"timestamp": recent, "ingestionTime": recent, "message": "late", "eventId": "x", "logStreamName": "old"}]
+        if fault == "recent_events"
+        else None
+    )
+    state = quiet_run(tmp_path, monkeypatch, events=events)
+    if fault == "changed_second_scan":
+        manifest = read_manifest(
+            state.archive.reference, quiet_scope(state.request, state.run), state.boundary.destination_session
+        )
+        changed = manifest.model_copy(
+            update={"second_scan": manifest.second_scan.model_copy(update={"newest_ingestion_ms": 99})}
+        )
+
+        def read_changed_manifest(*_arguments: Any, **_options: Any) -> LogHistoryManifest:
+            return changed
+
+        monkeypatch.setattr("tracker.run_transfer.providers.read_manifest", read_changed_manifest)
+    saved = dict(state.storage.objects)
+
+    with pytest.raises(LifecycleConflict, match=f"clause {clause} failed"):
+        await run_operation(state, operation)
+
+    assert not state.deleted
+    assert state.storage.objects == saved
+    assert not state.logs.absent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["verify_objects", "cleanup_logs"])
+async def test_a_checkpoint_without_the_persisted_decision_keeps_the_operation_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    state = quiet_run(tmp_path, monkeypatch)
+    saved = dict(state.storage.objects)
+
+    with pytest.raises(LifecycleConflict, match="clause persisted_decision failed"):
+        await run_operation(state, operation, log_completeness_sha256=None)
+
+    assert not state.deleted
+    assert state.storage.objects == saved
+    assert not state.logs.absent
+
+
+@pytest.mark.asyncio
+async def test_resume_with_a_fresh_host_observation_reuses_the_persisted_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = quiet_run(tmp_path, monkeypatch)
+    decision = await run_operation(state, "verify_archive", log_completeness_sha256=None)
+    resumed = quiet_request(state.request, observation=now())
+
+    assert await run_operation(state, "verify_archive", request=resumed, log_completeness_sha256=decision) == decision
+
+
+@pytest.mark.asyncio
+async def test_a_lowered_quiet_interval_invalidates_the_persisted_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = quiet_run(tmp_path, monkeypatch)
+    decision = await run_operation(state, "verify_archive", log_completeness_sha256=None)
+    monkeypatch.setattr(SETTINGS, "log_quiet_interval_hours", 1)
+
+    with pytest.raises(LifecycleConflict, match="clause persisted_decision failed"):
+        await run_operation(state, "verify_archive", log_completeness_sha256=decision)
+
+
+def test_the_deployed_quiet_interval_cannot_go_below_the_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TRANSFER_LOG_QUIET_INTERVAL_HOURS", raising=False)
+
+    assert load_settings().log_quiet_interval_hours == LOG_QUIET_INTERVAL_FLOOR_HOURS
+
+    monkeypatch.setenv("TRANSFER_LOG_QUIET_INTERVAL_HOURS", str(LOG_QUIET_INTERVAL_FLOOR_HOURS - 1))
+    with pytest.raises(ValueError, match="at least 24"):
+        load_settings()
+
+    monkeypatch.setenv("TRANSFER_LOG_QUIET_INTERVAL_HOURS", "48")
+
+    assert load_settings().log_quiet_interval == timedelta(hours=48)
+
+
+async def run_operation(
+    state: QuietRun,
+    operation: str,
+    *,
+    request: TransferRequest | None = None,
+    dispatches: tuple[DispatchDrain, ...] | None = None,
+    acquired_at: datetime | None = None,
+    log_completeness_sha256: str | None = "f" * 64,
+) -> str:
+    request = state.request if request is None else request
+    dispatches = state.dispatches if dispatches is None else dispatches
+    acquired_at = state.acquired_at if acquired_at is None else acquired_at
+    if operation == "archive":
+        await state.boundary.archive(request, state.run, dispatches=dispatches, acquired_at=acquired_at)
+        return ""
+
+    if operation == "verify_archive":
+        return await state.boundary.verify_archive(
+            request,
+            state.run,
+            state.archive,
+            dispatches=dispatches,
+            acquired_at=acquired_at,
+            log_completeness_sha256=log_completeness_sha256,
+        )
+
+    if operation == "verify_objects":
+        await state.boundary.verify_objects(
+            request,
+            state.run,
+            archive=state.archive,
+            dispatches=dispatches,
+            acquired_at=acquired_at,
+            log_completeness_sha256=log_completeness_sha256,
+        )
+        return ""
+
+    await state.boundary.cleanup_logs(
+        request,
+        state.run,
+        state.archive,
+        dispatches=dispatches,
+        acquired_at=acquired_at,
+        log_completeness_sha256=log_completeness_sha256,
+    )
+    return ""

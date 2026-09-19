@@ -174,6 +174,7 @@ class TransferCheckpoint(ContractModel):
     execution_policy: Literal["portable", "history_only"]
     phase: Phase
     archive: ArchiveReport | None = None
+    log_completeness_sha256: Digest | None = None
     copied_objects_sha256: Digest | None = None
     destination_versions_sha256: Digest | None = None
     parent_completion_sha256: Digest | None = None
@@ -185,6 +186,7 @@ class TransferCheckpoint(ContractModel):
             for value in (
                 self.destination_rows_sha256,
                 self.archive,
+                self.log_completeness_sha256,
                 self.copied_objects_sha256,
                 self.destination_versions_sha256,
             )

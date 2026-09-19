@@ -5,6 +5,7 @@ import hashlib
 import json
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -17,12 +18,14 @@ from tracker.aws.log_history_archive import archive_logs, read_events, read_mani
 from tracker.aws.log_history_source import FrozenLogSource
 from tracker.aws.log_history_store import encode, same_inventory
 from tracker.lifecycle import LifecycleConflict
+from tracker.lifecycle_evidence import DispatchDrain, validate_host_contract_observation
 from tracker.run_purge.contracts import ProviderLocator, PurgeRun
 from tracker.run_relocation.providers import RelocationAWSBoundary
 from tracker.run_transfer.contracts import TransferRequest, TransferRun
 from tracker.run_transfer.references import verify_portable_references
 from tracker.run_transfer.rows import RowClosure, digest
-from tracker.runtime.log_history import ArchiveReport, FrozenLogScope
+from tracker.run_transfer.settings import SETTINGS
+from tracker.runtime.log_history import ArchiveReport, FrozenLogScope, LogHistoryManifest
 from tracker.runtime.logs import LogPage, RunLogReference, TaskLogReference
 from tracker.storage_migration_exchange import (
     DestinationVersion,
@@ -33,6 +36,14 @@ from tracker.storage_migration_exchange import (
 from tracker.storage_migration_exchange import (
     OperationIdentity as ExchangeIdentity,
 )
+
+
+def _incomplete(clause: str) -> LifecycleConflict:
+    return LifecycleConflict(f"Historical log completeness clause {clause} failed; transfer remains pending")
+
+
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
 class ProfileClients(AWSClientProvider):
@@ -148,9 +159,78 @@ class TransferAWSBoundary:
         self.source_session = source_session
         self.destination_session = destination_session
 
-    def _require_log_completeness(self) -> None:
-        # Process exit and matching queries do not prove complete CloudWatch ingestion.
-        raise LifecycleConflict("Historical log completeness is unproved; transfer remains pending")
+    def _require_quiet_drained_run(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        *,
+        dispatches: tuple[DispatchDrain, ...],
+        acquired_at: datetime,
+    ) -> datetime:
+        """Clauses 2, 3 and 6. Clause 1 is proven by `TransferOperator._source_rows`."""
+        host = request.source_host_contract
+        if host is None:
+            raise _incomplete("host_observation")
+
+        try:
+            validate_host_contract_observation(host)
+        except LifecycleConflict as error:
+            raise _incomplete("host_observation") from error
+
+        bound = host.observed_at - SETTINGS.log_quiet_interval
+        if any(item.provenance == "pending" for item in dispatches):
+            raise _incomplete("dispatch_drain")
+
+        observed = [item.observed_exit_at for item in dispatches if item.observed_exit_at is not None]
+        observed += [item.observed_at for item in request.external_host_drains if item.run_id == run.source.run_id]
+        if dispatches and not observed:
+            raise _incomplete("dispatch_drain")
+
+        if any(_utc(value) >= bound for value in observed):
+            raise _incomplete("dispatch_drain")
+
+        if _utc(acquired_at) >= bound:
+            raise _incomplete("hold_quiet_interval")
+
+        return bound
+
+    def _require_log_completeness(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        manifest: LogHistoryManifest,
+        *,
+        dispatches: tuple[DispatchDrain, ...],
+        acquired_at: datetime,
+        log_completeness_sha256: str | None,
+    ) -> str:
+        """Quiet-interval policy: a documented risk acceptance, not an ingestion proof."""
+        bound = self._require_quiet_drained_run(request, run, dispatches=dispatches, acquired_at=acquired_at)
+        scan = manifest.first_scan
+        if scan.event_count:
+            if scan.newest_event_ms is None or scan.newest_ingestion_ms is None:
+                raise _incomplete("scan_quiet_interval")
+
+            if max(scan.newest_event_ms, scan.newest_ingestion_ms) >= int(bound.timestamp() * 1000):
+                raise _incomplete("scan_quiet_interval")
+
+        if not same_inventory(scan, manifest.second_scan):
+            raise _incomplete("matching_scans")
+
+        decision = digest(
+            {
+                "quiet_interval_hours": SETTINGS.log_quiet_interval_hours,
+                "hold_acquired_at": _utc(acquired_at),
+                "dispatches": sorted(
+                    (item.model_dump(mode="json") for item in dispatches), key=lambda item: item["dispatch_id"]
+                ),
+                "first_scan": scan.model_dump(mode="json"),
+            }
+        )
+        if log_completeness_sha256 is not None and log_completeness_sha256 != decision:
+            raise _incomplete("persisted_decision")
+
+        return decision
 
     def _sessions(self) -> tuple[Any, Any]:
         if self.source_session is None:
@@ -229,8 +309,15 @@ class TransferAWSBoundary:
         await boundary.verify_absence(provider_run)
         await boundary.verify_absence(provider_run)
 
-    async def archive(self, request: TransferRequest, run: TransferRun) -> ArchiveReport:
-        self._require_log_completeness()
+    async def archive(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        *,
+        dispatches: tuple[DispatchDrain, ...],
+        acquired_at: datetime,
+    ) -> ArchiveReport:
+        self._require_quiet_drained_run(request, run, dispatches=dispatches, acquired_at=acquired_at)
         source, destination = self._sessions()
         (self.journal / str(request.plan.source_identity.operation_id)).mkdir(parents=True, exist_ok=True, mode=0o700)
         return await asyncio.to_thread(
@@ -241,11 +328,28 @@ class TransferAWSBoundary:
             journal_directory=self.journal / str(request.plan.source_identity.operation_id) / str(run.source.run_id),
         )
 
-    async def verify_archive(self, request: TransferRequest, run: TransferRun, archive: ArchiveReport) -> None:
-        self._require_log_completeness()
+    async def verify_archive(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        archive: ArchiveReport,
+        *,
+        dispatches: tuple[DispatchDrain, ...],
+        acquired_at: datetime,
+        log_completeness_sha256: str | None,
+    ) -> str:
+        self._require_quiet_drained_run(request, run, dispatches=dispatches, acquired_at=acquired_at)
         _, destination = self._sessions()
         scope = self._scope(request, run)
         manifest = await asyncio.to_thread(read_manifest, archive.reference, scope, destination)
+        decision = self._require_log_completeness(
+            request,
+            run,
+            manifest,
+            dispatches=dispatches,
+            acquired_at=acquired_at,
+            log_completeness_sha256=log_completeness_sha256,
+        )
         if (
             manifest.freeze_evidence_sha256 != scope.freeze_evidence_sha256
             or manifest.source_region != request.plan.source_identity.region
@@ -283,6 +387,8 @@ class TransferAWSBoundary:
         if count != archive.event_count:
             raise LifecycleConflict("Actual historical log reader count differs")
 
+        return decision
+
     async def verify_objects(
         self,
         request: TransferRequest,
@@ -291,14 +397,28 @@ class TransferAWSBoundary:
         source_removed: bool = False,
         source_partial: bool = False,
         archive: ArchiveReport | None = None,
+        dispatches: tuple[DispatchDrain, ...],
+        acquired_at: datetime,
+        log_completeness_sha256: str | None,
     ) -> None:
         assert self.source is not None and self.destination is not None
         identity = request.plan.source_identity
         history = request.destination_versions
         if archive is not None:
-            self._require_log_completeness()
+            if log_completeness_sha256 is None:
+                raise _incomplete("persisted_decision")
+
+            self._require_quiet_drained_run(request, run, dispatches=dispatches, acquired_at=acquired_at)
             _, destination = self._sessions()
             manifest = read_manifest(archive.reference, self._scope(request, run), destination)
+            self._require_log_completeness(
+                request,
+                run,
+                manifest,
+                dispatches=dispatches,
+                acquired_at=acquired_at,
+                log_completeness_sha256=log_completeness_sha256,
+            )
             history += tuple(
                 DestinationVersion(
                     run_id=run.source.run_id,
@@ -349,8 +469,27 @@ class TransferAWSBoundary:
             projected, projection_run, source_removed=source_removed, source_partial=source_partial
         )
 
-    async def cleanup_logs(self, request: TransferRequest, run: TransferRun, archive: ArchiveReport) -> None:
-        await self.verify_archive(request, run, archive)
+    async def cleanup_logs(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        archive: ArchiveReport,
+        *,
+        dispatches: tuple[DispatchDrain, ...],
+        acquired_at: datetime,
+        log_completeness_sha256: str | None,
+    ) -> None:
+        if log_completeness_sha256 is None:
+            raise _incomplete("persisted_decision")
+
+        await self.verify_archive(
+            request,
+            run,
+            archive,
+            dispatches=dispatches,
+            acquired_at=acquired_at,
+            log_completeness_sha256=log_completeness_sha256,
+        )
         source, destination = self._sessions()
         scope = self._scope(request, run)
         manifest = read_manifest(archive.reference, scope, destination)

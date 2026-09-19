@@ -15,6 +15,7 @@ from tracker.lifecycle import AccountId, ContractModel, Digest, OperationIdentit
 Positive = Annotated[int, Field(gt=0, strict=True)]
 Nonnegative = Annotated[int, Field(ge=0, strict=True)]
 Nonempty = Annotated[str, Field(min_length=1, strict=True)]
+Milliseconds = Annotated[int, Field(strict=True)]
 
 
 class ArchiveError(Exception):
@@ -124,6 +125,8 @@ class ScanEvidence(ContractModel):
     event_count: Nonnegative
     stream_sha256: Digest
     event_sha256: Digest
+    newest_event_ms: Milliseconds | None = None
+    newest_ingestion_ms: Milliseconds | None = None
 
 
 class LogHistoryManifest(ContractModel):

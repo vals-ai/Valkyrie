@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -13,9 +14,10 @@ from tests.integration.local.database.test_run_transfer import pair as pair
 from tests.integration.local.database.test_run_transfer import seed_rows
 from tests.integration.local.database.test_transfer_inspection import execute, snapshot
 from tests.relocation_support import VersionStore
-from tests.transfer_support import FakeTransferBoundary, transfer_request
+from tests.transfer_support import OBSERVED_ACQUIRED_AT, OBSERVED_DECISION, FakeTransferBoundary, transfer_request
 from tracker.database.models import RunLifecycle
 from tracker.lifecycle import LifecycleConflict
+from tracker.lifecycle_evidence import DispatchDrain
 from tracker.run_transfer import TransferOperator
 from tracker.run_transfer.contracts import TransferRequest, TransferRun
 from tracker.run_transfer.providers import TransferAWSBoundary
@@ -78,11 +80,22 @@ class ObjectInspectionBoundary(FakeTransferBoundary):
         source_removed: bool = False,
         source_partial: bool = False,
         archive: ArchiveReport | None = None,
+        dispatches: tuple[DispatchDrain, ...] = (),
+        acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+        log_completeness_sha256: str | None = OBSERVED_DECISION,
     ) -> None:
         if request.action == "inspect":
             self.inspection_modes.append((source_removed, source_partial))
         options: dict[str, Any] = {"source_partial": True} if source_partial else {}
-        await self.objects.verify_objects(request, run, source_removed=source_removed, **options)
+        await self.objects.verify_objects(
+            request,
+            run,
+            source_removed=source_removed,
+            dispatches=dispatches,
+            acquired_at=acquired_at,
+            log_completeness_sha256=log_completeness_sha256,
+            **options,
+        )
 
 
 def imported_versions(

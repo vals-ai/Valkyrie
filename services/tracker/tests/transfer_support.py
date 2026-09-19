@@ -11,19 +11,118 @@ from sqlmodel import Session
 from tracker.aws.runtime import AWSResources
 from tracker.database.models import Benchmark, Org
 from tracker.lifecycle import RunScope
+from tracker.lifecycle_evidence import DispatchDrain
 from tracker.run_purge.locking import database_target
 from tracker.run_transfer.contracts import TransferRequest, TransferRun
 from tracker.run_transfer.providers import TransferAWSBoundary
 from tracker.run_transfer.rows import RowClosure
-from tracker.runtime.log_history import ArchiveReport, LogHistoryReference
+from tracker.runtime.log_history import ArchiveReport, LogHistoryManifest, LogHistoryReference
 from tracker.runtime.log_history_reference import ArchiveObject
 
 
-class ObservedEventsBoundary(TransferAWSBoundary):
-    """Test observed-event transport only; this supplies no production completeness proof."""
+OBSERVED_DECISION = "e" * 64
+OBSERVED_ACQUIRED_AT = datetime(2020, 1, 1, tzinfo=UTC)
 
-    def _require_log_completeness(self) -> None:
-        pass
+
+class ObservedEventsBoundary(TransferAWSBoundary):
+    """Test observed-event transport only; this supplies no production completeness proof.
+
+    The quiet-interval clauses are replaced by a fixed decision so that transport
+    tests can use freshly created fake log events.
+    """
+
+    def _require_quiet_drained_run(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        *,
+        dispatches: tuple[DispatchDrain, ...],
+        acquired_at: datetime,
+    ) -> datetime:
+        return datetime.now(UTC)
+
+    def _require_log_completeness(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        manifest: LogHistoryManifest,
+        *,
+        dispatches: tuple[DispatchDrain, ...],
+        acquired_at: datetime,
+        log_completeness_sha256: str | None,
+    ) -> str:
+        return OBSERVED_DECISION
+
+    async def archive(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        *,
+        dispatches: tuple[DispatchDrain, ...] = (),
+        acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+    ) -> ArchiveReport:
+        return await super().archive(request, run, dispatches=dispatches, acquired_at=acquired_at)
+
+    async def verify_archive(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        archive: ArchiveReport,
+        *,
+        dispatches: tuple[DispatchDrain, ...] = (),
+        acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+        log_completeness_sha256: str | None = OBSERVED_DECISION,
+    ) -> str:
+        return await super().verify_archive(
+            request,
+            run,
+            archive,
+            dispatches=dispatches,
+            acquired_at=acquired_at,
+            log_completeness_sha256=log_completeness_sha256,
+        )
+
+    async def verify_objects(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        *,
+        source_removed: bool = False,
+        source_partial: bool = False,
+        archive: ArchiveReport | None = None,
+        dispatches: tuple[DispatchDrain, ...] = (),
+        acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+        log_completeness_sha256: str | None = OBSERVED_DECISION,
+    ) -> None:
+        await super().verify_objects(
+            request,
+            run,
+            source_removed=source_removed,
+            source_partial=source_partial,
+            archive=archive,
+            dispatches=dispatches,
+            acquired_at=acquired_at,
+            log_completeness_sha256=log_completeness_sha256,
+        )
+
+    async def cleanup_logs(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        archive: ArchiveReport,
+        *,
+        dispatches: tuple[DispatchDrain, ...] = (),
+        acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+        log_completeness_sha256: str | None = OBSERVED_DECISION,
+    ) -> None:
+        await super().cleanup_logs(
+            request,
+            run,
+            archive,
+            dispatches=dispatches,
+            acquired_at=acquired_at,
+            log_completeness_sha256=log_completeness_sha256,
+        )
 
 
 class SecretMetadataSession:
@@ -122,10 +221,21 @@ class FakeTransferBoundary:
         source_removed: bool = False,
         source_partial: bool = False,
         archive: ArchiveReport | None = None,
+        dispatches: tuple[DispatchDrain, ...] = (),
+        acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+        log_completeness_sha256: str | None = OBSERVED_DECISION,
     ) -> None:
-        pass
+        if archive is not None and log_completeness_sha256 != OBSERVED_DECISION:
+            raise RuntimeError("archive acceptance without the persisted completeness decision")
 
-    async def archive(self, request: TransferRequest, run: TransferRun) -> ArchiveReport:
+    async def archive(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        *,
+        dispatches: tuple[DispatchDrain, ...] = (),
+        acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+    ) -> ArchiveReport:
         if self.fail_archive:
             raise RuntimeError("archive failed")
         return ArchiveReport(
@@ -148,10 +258,34 @@ class FakeTransferBoundary:
             event_sha256="d" * 64,
         )
 
-    async def verify_archive(self, request: TransferRequest, run: TransferRun, archive: ArchiveReport) -> None:
-        pass
+    async def verify_archive(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        archive: ArchiveReport,
+        *,
+        dispatches: tuple[DispatchDrain, ...] = (),
+        acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+        log_completeness_sha256: str | None = None,
+    ) -> str:
+        if log_completeness_sha256 not in {None, OBSERVED_DECISION}:
+            raise RuntimeError("persisted completeness decision differs")
 
-    async def cleanup_logs(self, request: TransferRequest, run: TransferRun, archive: ArchiveReport) -> None:
+        return OBSERVED_DECISION
+
+    async def cleanup_logs(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        archive: ArchiveReport,
+        *,
+        dispatches: tuple[DispatchDrain, ...] = (),
+        acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+        log_completeness_sha256: str | None = OBSERVED_DECISION,
+    ) -> None:
+        if log_completeness_sha256 != OBSERVED_DECISION:
+            raise RuntimeError("log cleanup without the persisted completeness decision")
+
         if self.fail_cleanup:
             raise RuntimeError("cleanup failed")
 
