@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from tests.unit.test_relocation_providers import setup
 from tracker.lifecycle import LifecycleConflict
@@ -85,6 +86,10 @@ def test_cli_database_target_mismatch_cannot_reach_provider(tmp_path: Path) -> N
     assert "Expected database target differs from request" in result.stderr
     assert "do-not-print" not in result.stderr
     assert not (tmp_path / "report.json").exists()
+    record = json.loads((tmp_path / "report.json.failure").read_text())
+    assert record["outcome"] == "incomplete"
+    assert record["reason"] == "Expected database target differs from request"
+    assert "do-not-print" not in (tmp_path / "report.json.failure").read_text()
 
 
 @pytest.mark.parametrize(
@@ -107,10 +112,13 @@ def test_exchange_boundary_refuses_unsafe_targets_before_connecting(
     elif failure == "failure-overwrite":
         payload["external_evidence_files"] = [str(failure_path(report_path))]
     monkeypatch.setenv("DATABASE_URL", "sqlite://")
-    with pytest.raises(LifecycleConflict):
+    with pytest.raises(LifecycleConflict) as refusal:
         execute(json.dumps(payload).encode(), request_path, report_path, target)
     assert not report_path.exists()
-    assert not failure_path(report_path).exists()
+    if failure in {"target", "backend"}:
+        assert json.loads(failure_path(report_path).read_text())["reason"] == str(refusal.value)
+    else:
+        assert not failure_path(report_path).exists()
 
 
 def test_atomic_report_failure_preserves_old_file_and_removes_temporary(
@@ -158,3 +166,12 @@ def test_an_unwritable_failure_record_annotates_the_refusal_instead_of_replacing
     assert str(refusal) == reason
     assert refusal.__notes__ == ["Failure record was not written (FileNotFoundError)"]
     assert not failure_path(report).exists()
+
+
+def test_a_request_that_does_not_parse_records_nothing_because_it_has_no_identity(tmp_path: Path) -> None:
+    report = tmp_path / "report.json"
+
+    with pytest.raises(ValidationError):
+        execute(b'{"action":"inventory"}', tmp_path / "request.json", report, "postgresql:localhost:5432/tracker")
+
+    assert list(tmp_path.iterdir()) == []

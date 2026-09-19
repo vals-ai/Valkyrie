@@ -70,27 +70,35 @@ def record_failure(report_path: Path, request: TrackerRequest, error: Exception)
         error.add_note(f"Failure record was not written ({type(write_error).__name__})")
 
 
-def execute(payload: bytes, request_path: Path, report_path: Path, expected_database_target: str) -> int:
-    request = TrackerRequest.model_validate_json(payload)
+def run_operation(request: TrackerRequest, report_path: Path, expected_database_target: str) -> int:
     if request.database_target != expected_database_target:
         raise LifecycleConflict("Expected database target differs from request")
-    inputs = [request_path, *(Path(path) for path in request.external_evidence_files)]
-    outputs = [report_path, failure_path(report_path)]
-    if any(output.resolve() == path.resolve() for output in outputs for path in inputs):
-        raise LifecycleConflict("Output cannot overwrite immutable request or evidence")
+
     database_url = os.environ["DATABASE_URL"]
     if make_url(database_url).get_backend_name() != "postgresql":
         raise LifecycleConflict("Relocation requires an explicit PostgreSQL database")
+
     engine = create_engine(database_url)
     try:
         with Session(engine, expire_on_commit=False) as session:
             boundary = RelocationAWSBoundary(DefaultChainAWSClientProvider(request.region))
-            try:
-                response = asyncio.run(RelocationOperator(session, boundary).execute(request))
-            except Exception as error:
-                record_failure(report_path, request, error)
-                raise
-            write_response(report_path, response)
+            write_response(report_path, asyncio.run(RelocationOperator(session, boundary).execute(request)))
     finally:
         engine.dispose()
     return 0
+
+
+def execute(payload: bytes, request_path: Path, report_path: Path, expected_database_target: str) -> int:
+    # A request that does not parse has no identity to record, and an output path that
+    # names an input may not be written at all, so both refuse before recording starts.
+    request = TrackerRequest.model_validate_json(payload)
+    inputs = [request_path, *(Path(path) for path in request.external_evidence_files)]
+    outputs = [report_path, failure_path(report_path)]
+    if any(output.resolve() == path.resolve() for output in outputs for path in inputs):
+        raise LifecycleConflict("Output cannot overwrite immutable request or evidence")
+
+    try:
+        return run_operation(request, report_path, expected_database_target)
+    except Exception as error:
+        record_failure(report_path, request, error)
+        raise

@@ -23,14 +23,18 @@ host/port/database and PostgreSQL `current_database()`. A symbolic target such a
 file/directory fsync. Reports contain hashes and control locators, not execution
 arguments, artifact contents, secret values, or raw provider errors.
 
-A refusal writes no report. It writes `RESPONSE.json.failure` beside the report with
-the nonce, action, run scope, and the authored refusal message, and it prints that
-same message on stderr. A failure record that cannot itself be written never replaces
-the refusal; the refusal is printed first and the write error is reported after it. The failure document is an operator artifact, not part of the
-version 1 exchange; the parent reads only the report and only on exit code 0. Durable
-per-run progress stays in the run lifecycle checkpoints, so a resume repeats the same
-reviewed plan. The report path, and the failure path beside it, may not name the
-request or any evidence file.
+A refusal writes no report. Two refusals reach stderr only, by design: a request that
+does not parse, which carries no identity to record, and a report or failure path that
+names the request or an evidence file, where writing the record would overwrite an
+immutable input. Once the request has parsed and those paths are proved safe, every
+later refusal, including the database-target mismatch, the non-PostgreSQL backend and
+every operator refusal, writes `RESPONSE.json.failure` beside the report with the
+nonce, action, run scope, and the authored refusal message, and prints that same
+message on stderr. A failure record that cannot itself be written never replaces the
+refusal; the refusal is printed first and the write error is reported after it. The
+failure document is an operator artifact, not part of the version 1 exchange; the
+parent reads only the report and only on exit code 0. Durable per-run progress stays
+in the run lifecycle checkpoints, so a resume repeats the same reviewed plan.
 
 `inventory` and `inspect` are read-only. `prepare`, `relocate`, and `release` require
 `--apply`. The operator does not copy objects, remove source objects, change a bucket
