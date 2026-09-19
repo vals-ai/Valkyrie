@@ -55,8 +55,8 @@ def test_paired_archive_uses_verified_exact_versions_and_actual_reader(tmp_path:
         destination_session=FakeSession("222222222222", storage),
     )
     run = request.plan.runs[0]
-    archive = asyncio.run(boundary.archive(request, run))
-    asyncio.run(boundary.verify_archive(request, run, archive))
+    archive, decision = asyncio.run(boundary.archive(request, run))
+    asyncio.run(boundary.verify_archive(request, run, archive, log_completeness_sha256=decision))
     assert archive.event_count == 2
     assert "private old message" not in archive.model_dump_json()
     storage.corrupt = True
@@ -220,7 +220,7 @@ def archive_boundary(tmp_path: Path) -> tuple[TransferRequest, ObservedEventsBou
 async def test_archive_receipt_must_match_verified_manifest(tmp_path: Path, field: str) -> None:
     request, boundary, _, storage = archive_boundary(tmp_path)
     run = request.plan.runs[0]
-    receipt = await boundary.archive(request, run)
+    receipt, _ = await boundary.archive(request, run)
     receipt = receipt.model_copy(update={field: "f" * 64 if field == "event_sha256" else 99})
     objects = dict(storage.objects)
 
@@ -234,7 +234,7 @@ async def test_archive_receipt_must_match_verified_manifest(tmp_path: Path, fiel
 async def test_transfer_rechecks_full_event_proof(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     request, boundary, _, storage = archive_boundary(tmp_path)
     run = request.plan.runs[0]
-    receipt = await boundary.archive(request, run)
+    receipt, _ = await boundary.archive(request, run)
     monkeypatch.setattr("tracker.run_transfer.providers.read_events", Mock(return_value=iter(())))
 
     with pytest.raises(LifecycleConflict, match="full event proof"):
@@ -250,7 +250,7 @@ async def test_transfer_exhausts_actual_reader_and_requires_progress(
 ) -> None:
     request, boundary, _, _ = archive_boundary(tmp_path)
     run = request.plan.runs[0]
-    receipt = await boundary.archive(request, run)
+    receipt, _ = await boundary.archive(request, run)
     provider = Mock()
     if fault == "cycle":
         provider.fetch = AsyncMock(side_effect=[LogPage([], "repeat"), LogPage([], "repeat")])

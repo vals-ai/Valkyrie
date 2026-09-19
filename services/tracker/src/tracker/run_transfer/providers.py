@@ -21,10 +21,10 @@ from tracker.lifecycle import LifecycleConflict
 from tracker.lifecycle_evidence import DispatchDrain, validate_host_contract_observation
 from tracker.run_purge.contracts import ProviderLocator, PurgeRun
 from tracker.run_relocation.providers import RelocationAWSBoundary
+from tracker.run_transfer import settings
 from tracker.run_transfer.contracts import TransferRequest, TransferRun
 from tracker.run_transfer.references import verify_portable_references
 from tracker.run_transfer.rows import RowClosure, digest
-from tracker.run_transfer.settings import SETTINGS
 from tracker.runtime.log_history import (
     ArchiveLimits,
     ArchiveReport,
@@ -187,7 +187,7 @@ class TransferAWSBoundary:
         except LifecycleConflict as error:
             raise _incomplete("host_observation") from error
 
-        bound = host.observed_at - SETTINGS.log_quiet_interval
+        bound = host.observed_at - settings.SETTINGS.log_quiet_interval
         if any(item.provenance == "pending" for item in dispatches):
             raise _incomplete("dispatch_drain")
 
@@ -232,7 +232,7 @@ class TransferAWSBoundary:
 
         decision = digest(
             {
-                "quiet_interval_hours": SETTINGS.log_quiet_interval_hours,
+                "quiet_interval_hours": settings.SETTINGS.log_quiet_interval_hours,
                 "hold_acquired_at": _utc(acquired_at),
                 "dispatches": sorted(
                     (item.model_dump(mode="json") for item in dispatches), key=lambda item: item["dispatch_id"]
@@ -334,7 +334,8 @@ class TransferAWSBoundary:
         *,
         dispatches: tuple[DispatchDrain, ...],
         acquired_at: datetime,
-    ) -> ArchiveReport:
+    ) -> tuple[ArchiveReport, str]:
+        """Publish and verify one archive. This is the only path that may decide completeness."""
         # Refuse on the inputs the caller already holds, before a full source traversal.
         self._require_quiet_drained_run(request, run, dispatches=dispatches, acquired_at=acquired_at)
         source, destination = self._sessions()
@@ -342,15 +343,42 @@ class TransferAWSBoundary:
         evidence = await asyncio.to_thread(self._scan_evidence, source, scope)
         self._require_quiet_drained_run(request, run, dispatches=dispatches, acquired_at=acquired_at, scan=evidence)
         (self.journal / str(request.plan.source_identity.operation_id)).mkdir(parents=True, exist_ok=True, mode=0o700)
-        return await asyncio.to_thread(
+        report = await asyncio.to_thread(
             archive_logs,
             scope,
             source_session=source,
             destination_session=destination,
             journal_directory=self.journal / str(request.plan.source_identity.operation_id) / str(run.source.run_id),
         )
+        decision = await self._verify_archive(
+            request, run, report, dispatches=dispatches, acquired_at=acquired_at, log_completeness_sha256=None
+        )
+        return report, decision
 
     async def verify_archive(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        archive: ArchiveReport,
+        *,
+        dispatches: tuple[DispatchDrain, ...],
+        acquired_at: datetime,
+        log_completeness_sha256: str | None,
+    ) -> None:
+        """Acceptance of a saved archive; the checkpoint must already carry the decision."""
+        if log_completeness_sha256 is None:
+            raise _incomplete("persisted_decision")
+
+        await self._verify_archive(
+            request,
+            run,
+            archive,
+            dispatches=dispatches,
+            acquired_at=acquired_at,
+            log_completeness_sha256=log_completeness_sha256,
+        )
+
+    async def _verify_archive(
         self,
         request: TransferRequest,
         run: TransferRun,

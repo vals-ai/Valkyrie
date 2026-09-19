@@ -61,7 +61,7 @@ class ObservedEventsBoundary(TransferAWSBoundary):
         *,
         dispatches: tuple[DispatchDrain, ...] = (),
         acquired_at: datetime = OBSERVED_ACQUIRED_AT,
-    ) -> ArchiveReport:
+    ) -> tuple[ArchiveReport, str]:
         return await super().archive(request, run, dispatches=dispatches, acquired_at=acquired_at)
 
     async def verify_archive(
@@ -73,8 +73,8 @@ class ObservedEventsBoundary(TransferAWSBoundary):
         dispatches: tuple[DispatchDrain, ...] = (),
         acquired_at: datetime = OBSERVED_ACQUIRED_AT,
         log_completeness_sha256: str | None = OBSERVED_DECISION,
-    ) -> str:
-        return await super().verify_archive(
+    ) -> None:
+        await super().verify_archive(
             request,
             run,
             archive,
@@ -236,9 +236,12 @@ class FakeTransferBoundary:
         *,
         dispatches: tuple[DispatchDrain, ...] = (),
         acquired_at: datetime = OBSERVED_ACQUIRED_AT,
-    ) -> ArchiveReport:
+    ) -> tuple[ArchiveReport, str]:
         if self.fail_archive:
             raise RuntimeError("archive failed")
+        return self._report(request, run), OBSERVED_DECISION
+
+    def _report(self, request: TransferRequest, run: TransferRun) -> ArchiveReport:
         return ArchiveReport(
             reference=LogHistoryReference(
                 run_id=run.source.run_id,
@@ -267,12 +270,10 @@ class FakeTransferBoundary:
         *,
         dispatches: tuple[DispatchDrain, ...] = (),
         acquired_at: datetime = OBSERVED_ACQUIRED_AT,
-        log_completeness_sha256: str | None = None,
-    ) -> str:
-        if log_completeness_sha256 not in {None, OBSERVED_DECISION}:
-            raise RuntimeError("persisted completeness decision differs")
-
-        return OBSERVED_DECISION
+        log_completeness_sha256: str | None = OBSERVED_DECISION,
+    ) -> None:
+        if log_completeness_sha256 != OBSERVED_DECISION:
+            raise RuntimeError("archive acceptance without the persisted completeness decision")
 
     async def cleanup_logs(
         self,

@@ -52,7 +52,7 @@ class TransferBoundary(Protocol):
         *,
         dispatches: tuple[DispatchDrain, ...],
         acquired_at: datetime,
-    ) -> ArchiveReport: ...
+    ) -> tuple[ArchiveReport, str]: ...
     async def verify_archive(
         self,
         request: TransferRequest,
@@ -62,7 +62,7 @@ class TransferBoundary(Protocol):
         dispatches: tuple[DispatchDrain, ...],
         acquired_at: datetime,
         log_completeness_sha256: str | None,
-    ) -> str: ...
+    ) -> None: ...
     async def cleanup_logs(
         self,
         request: TransferRequest,
@@ -398,9 +398,8 @@ class TransferOperator:
             if source is None or checkpoint.phase == "held":
                 raise LifecycleConflict("Prepared intact source is required")
             if not destination_exists:
-                archive = await self.boundary.archive(request, run, dispatches=dispatches, acquired_at=acquired_at)
-                completeness = await self.boundary.verify_archive(
-                    request, run, archive, dispatches=dispatches, acquired_at=acquired_at, log_completeness_sha256=None
+                archive, completeness = await self.boundary.archive(
+                    request, run, dispatches=dispatches, acquired_at=acquired_at
                 )
                 await self.boundary.verify_objects(
                     request,

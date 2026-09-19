@@ -35,7 +35,7 @@ class InterruptedCleanup(FakeTransferBoundary):
         *,
         dispatches: tuple[DispatchDrain, ...] = (),
         acquired_at: datetime = OBSERVED_ACQUIRED_AT,
-    ) -> ArchiveReport:
+    ) -> tuple[ArchiveReport, str]:
         assert not self.inspection, "inspection must not upload archives"
         return await super().archive(request, run, dispatches=dispatches, acquired_at=acquired_at)
 

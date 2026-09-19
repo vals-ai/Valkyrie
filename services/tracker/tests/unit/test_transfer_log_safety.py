@@ -1,5 +1,7 @@
 """Quiet-interval completeness policy: every clause must keep the operation pending."""
 
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -12,10 +14,11 @@ from tests.unit.test_transfer_archive import archive_boundary
 from tracker.aws.log_history_archive import archive_logs, read_manifest
 from tracker.lifecycle import LifecycleConflict
 from tracker.lifecycle_evidence import DispatchDrain
+from tracker.run_transfer import settings
 from tracker.run_transfer.contracts import TransferRequest, TransferRun
 from tracker.run_transfer.providers import TransferAWSBoundary
 from tracker.run_transfer.rows import digest
-from tracker.run_transfer.settings import LOG_QUIET_INTERVAL_FLOOR_HOURS, SETTINGS, load_settings
+from tracker.run_transfer.settings import LOG_QUIET_INTERVAL_FLOOR_HOURS, load_settings
 from tracker.runtime.log_history import ArchiveReport, FrozenLogScope, LogHistoryManifest
 
 DISPATCH_ID = UUID("00000000-0000-0000-0000-0000000000dd")
@@ -42,6 +45,16 @@ class QuietRun:
 
 def now() -> datetime:
     return datetime.now(UTC)
+
+
+@pytest.fixture
+def lower_quiet_interval(monkeypatch: pytest.MonkeyPatch) -> Callable[[int], None]:
+    """Replace the frozen settings object; the deployed one is never mutated."""
+
+    def lower(hours: int) -> None:
+        monkeypatch.setattr(settings, "SETTINGS", replace(settings.SETTINGS, log_quiet_interval_hours=hours))
+
+    return lower
 
 
 def drained(exit_at: datetime) -> tuple[DispatchDrain, ...]:
@@ -118,16 +131,16 @@ async def test_a_quiet_legacy_run_archives_verifies_and_cleans_up(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state = quiet_run(tmp_path, monkeypatch, publish=False)
-    archive = await state.boundary.archive(
+    archive, decision = await state.boundary.archive(
         state.request, state.run, dispatches=state.dispatches, acquired_at=state.acquired_at
     )
-    decision = await state.boundary.verify_archive(
+    await state.boundary.verify_archive(
         state.request,
         state.run,
         archive,
         dispatches=state.dispatches,
         acquired_at=state.acquired_at,
-        log_completeness_sha256=None,
+        log_completeness_sha256=decision,
     )
     await state.boundary.verify_objects(
         state.request,
@@ -160,16 +173,8 @@ async def test_a_quiet_group_without_events_satisfies_the_scan_clause(
     state = quiet_run(tmp_path, monkeypatch, events=[], publish=False)
     if state_name == "absent":
         state.logs.absent = True
-    archive = await state.boundary.archive(
+    _, decision = await state.boundary.archive(
         state.request, state.run, dispatches=state.dispatches, acquired_at=state.acquired_at
-    )
-    decision = await state.boundary.verify_archive(
-        state.request,
-        state.run,
-        archive,
-        dispatches=state.dispatches,
-        acquired_at=state.acquired_at,
-        log_completeness_sha256=None,
     )
 
     assert len(decision) == 64
@@ -243,9 +248,11 @@ async def test_a_refused_archive_writes_no_chunk_and_no_journal(
 async def test_a_contract_drain_older_than_the_interval_satisfies_the_drain_clause(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provenance: str
 ) -> None:
-    state = quiet_run(tmp_path, monkeypatch)
+    state = quiet_run(tmp_path, monkeypatch, publish=False)
     dispatches = (DispatchDrain.model_validate({"dispatch_id": DISPATCH_ID, "provenance": provenance}),)
-    decision = await run_operation(state, "verify_archive", dispatches=dispatches, log_completeness_sha256=None)
+    _, decision = await state.boundary.archive(
+        state.request, state.run, dispatches=dispatches, acquired_at=state.acquired_at
+    )
 
     assert len(decision) == 64
 
@@ -293,7 +300,7 @@ async def test_a_failed_manifest_clause_keeps_every_acceptance_pending(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["verify_objects", "cleanup_logs"])
+@pytest.mark.parametrize("operation", ["verify_archive", "verify_objects", "cleanup_logs"])
 async def test_a_checkpoint_without_the_persisted_decision_keeps_the_operation_pending(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
@@ -312,20 +319,24 @@ async def test_a_checkpoint_without_the_persisted_decision_keeps_the_operation_p
 async def test_resume_with_a_fresh_host_observation_reuses_the_persisted_decision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    state = quiet_run(tmp_path, monkeypatch)
-    decision = await run_operation(state, "verify_archive", log_completeness_sha256=None)
+    state = quiet_run(tmp_path, monkeypatch, publish=False)
+    state.archive, decision = await state.boundary.archive(
+        state.request, state.run, dispatches=state.dispatches, acquired_at=state.acquired_at
+    )
     resumed = quiet_request(state.request, observation=now())
 
-    assert await run_operation(state, "verify_archive", request=resumed, log_completeness_sha256=decision) == decision
+    await run_operation(state, "verify_archive", request=resumed, log_completeness_sha256=decision)
 
 
 @pytest.mark.asyncio
 async def test_a_lowered_quiet_interval_invalidates_the_persisted_decision(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lower_quiet_interval: Callable[[int], None]
 ) -> None:
-    state = quiet_run(tmp_path, monkeypatch)
-    decision = await run_operation(state, "verify_archive", log_completeness_sha256=None)
-    monkeypatch.setattr(SETTINGS, "log_quiet_interval_hours", 1)
+    state = quiet_run(tmp_path, monkeypatch, publish=False)
+    state.archive, decision = await state.boundary.archive(
+        state.request, state.run, dispatches=state.dispatches, acquired_at=state.acquired_at
+    )
+    lower_quiet_interval(1)
 
     with pytest.raises(LifecycleConflict, match="clause persisted_decision failed"):
         await run_operation(state, "verify_archive", log_completeness_sha256=decision)
@@ -358,11 +369,11 @@ async def run_operation(
     dispatches = state.dispatches if dispatches is None else dispatches
     acquired_at = state.acquired_at if acquired_at is None else acquired_at
     if operation == "archive":
-        await state.boundary.archive(request, state.run, dispatches=dispatches, acquired_at=acquired_at)
+        _ = await state.boundary.archive(request, state.run, dispatches=dispatches, acquired_at=acquired_at)
         return ""
 
     if operation == "verify_archive":
-        return await state.boundary.verify_archive(
+        await state.boundary.verify_archive(
             request,
             state.run,
             state.archive,
@@ -370,6 +381,7 @@ async def run_operation(
             acquired_at=acquired_at,
             log_completeness_sha256=log_completeness_sha256,
         )
+        return ""
 
     if operation == "verify_objects":
         await state.boundary.verify_objects(

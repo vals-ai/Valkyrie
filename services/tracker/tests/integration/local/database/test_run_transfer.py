@@ -636,7 +636,7 @@ def test_declared_source_archive_is_refused_before_any_hold(pair: tuple[Session,
     request = transfer_request(source, destination, org, run)
     parsed = TransferRequest.model_validate(request)
     boundary = FakeTransferBoundary(tmp_path)
-    run.log_history = asyncio.run(boundary.archive(parsed, parsed.plan.runs[0])).reference
+    run.log_history = asyncio.run(boundary.archive(parsed, parsed.plan.runs[0]))[0].reference
     source.add(run)
     source.commit()
     with pytest.raises(LifecycleConflict, match="Declared source archive"):

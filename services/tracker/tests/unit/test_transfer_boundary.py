@@ -122,7 +122,7 @@ async def test_observed_log_cleanup_checks_integrity_without_production_complete
     source.boto3_session.return_value = FakeSession("111111111111", logs)
     destination.boto3_session.return_value = FakeSession("222222222222", objects)
     boundary = ObservedEventsBoundary(source, destination, tmp_path)
-    archive = await boundary.archive(request, request.plan.runs[0])
+    archive, _ = await boundary.archive(request, request.plan.runs[0])
     if fault == "changed":
         logs.events[0]["message"] = "late event"
     elif fault == "already_absent":

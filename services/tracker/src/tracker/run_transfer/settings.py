@@ -1,4 +1,8 @@
-"""Transfer policy settings. Deployed values come only from the environment."""
+"""Transfer policy settings. Deployed values come only from the environment.
+
+The settings object is frozen. A test lowers the interval by replacing the module
+attribute with `dataclasses.replace`, never by mutating the deployed one.
+"""
 
 import os
 from dataclasses import dataclass
@@ -7,7 +11,7 @@ from datetime import timedelta
 LOG_QUIET_INTERVAL_FLOOR_HOURS = 24
 
 
-@dataclass
+@dataclass(frozen=True)
 class TransferSettings:
     log_quiet_interval_hours: int = LOG_QUIET_INTERVAL_FLOOR_HOURS
 
