@@ -73,6 +73,22 @@ async def test_revoked_upload_cannot_publish(tmp_path: Path) -> None:
     assert await store.get_bytes("output") == b"previous"
 
 
+async def test_conditional_upload_preserves_existing_agent(tmp_path: Path) -> None:
+    store = FilesystemObjectStore(tmp_path)
+
+    async def chunks(value: bytes) -> AsyncIterator[bytes]:
+        yield value
+
+    results = await asyncio.gather(
+        store.put_stream("agent.zip", chunks(b"first"), overwrite=False),
+        store.put_stream("agent.zip", chunks(b"second"), overwrite=False),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(result, FileExistsError) for result in results) == 1
+    assert await store.get_bytes("agent.zip") in (b"first", b"second")
+    assert not list((tmp_path / ".valkyrie/staging").iterdir())
+
+
 @pytest.mark.parametrize("key", ["../outside", "/absolute", "a/../../outside", ".valkyrie/staging/entry", "", "."])
 async def test_rejects_invalid_keys(tmp_path: Path, key: str) -> None:
     store = FilesystemObjectStore(tmp_path)

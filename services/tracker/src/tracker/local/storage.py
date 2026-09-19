@@ -1,6 +1,7 @@
 """Filesystem artifacts with atomic publication and operation-scoped cleanup."""
 
 import asyncio
+import os
 import tempfile
 from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable
 from contextlib import ExitStack, asynccontextmanager
@@ -59,13 +60,23 @@ class FilesystemObjectStore:
         finally:
             await _io(stack.close)
 
-    def _publish(self, stream: BinaryIO, temporary: Path, key: str, should_continue: Callable[[], bool] | None) -> None:
+    def _publish(
+        self,
+        stream: BinaryIO,
+        temporary: Path,
+        key: str,
+        should_continue: Callable[[], bool] | None,
+        overwrite: bool,
+    ) -> None:
         stream.close()
         if should_continue is not None and not should_continue():
             raise ExecutionAuthorityRevoked("Local stream upload authority was revoked")
         destination = local_path(self.root, key)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary.replace(destination)
+        if overwrite:
+            temporary.replace(destination)
+        else:
+            os.link(temporary, destination)
 
     async def put_bytes(self, key: str, content: bytes) -> None:
         async def chunks() -> AsyncIterator[bytes]:
@@ -79,6 +90,7 @@ class FilesystemObjectStore:
         chunks: AsyncIterable[bytes],
         *,
         should_continue: Callable[[], bool] | None = None,
+        overwrite: bool = True,
     ) -> int:
         await asyncio.to_thread(local_path, self.root, key)
         async with self._staging_file() as (stream, temporary):
@@ -88,7 +100,7 @@ class FilesystemObjectStore:
                     raise ExecutionAuthorityRevoked("Local stream upload authority was revoked")
                 await _io(stream.write, chunk)
                 size += len(chunk)
-            await _io(self._publish, stream, temporary, key, should_continue)
+            await _io(self._publish, stream, temporary, key, should_continue, overwrite)
             return size
 
     async def get_bytes(self, key: str) -> bytes:
