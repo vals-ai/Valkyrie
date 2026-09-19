@@ -76,7 +76,7 @@ def get_run_runtime(
 RunRuntimeDependency = Annotated[RuntimeServices, Depends(get_run_runtime)]
 
 
-async def get_agent_library_runtime(
+def get_agent_library_runtime(
     request: Request,
     org: Org = Depends(get_current_org),
 ) -> RuntimeServices:
@@ -85,8 +85,7 @@ async def get_agent_library_runtime(
         return LocalRuntimeFactory.create_runtime(local_config.resources.data_root, org.id)
     aws_runtime = resolve_agent_library_aws_runtime(request, org.id)
 
-    runtime = CloudRuntimeFactory.create_runtime(aws_runtime)
-    return runtime
+    return CloudRuntimeFactory.create_runtime(aws_runtime)
 
 
 AgentLibraryRuntimeDependency = Annotated[RuntimeServices, Depends(get_agent_library_runtime)]
