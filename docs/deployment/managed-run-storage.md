@@ -13,7 +13,12 @@ Set these values explicitly for each Valkyrie deployment:
 
 The submission flag controls only new owner-storage admission. Saved owner runs still use their saved locations for reads, execution, retry, and recovery while their organization/environment authorization remains configured.
 
-The deploy workflow reads both values from GitHub Actions *variables* of the same names, `AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS` and `AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED`, defined on the GitHub Environment for the target stage: `dev` for dev, `prod` for bench, and `prod-external` for production. Every deployment job that synthesizes CDK passes them, with the defaults `{}` and `false` when a variable is absent. Set the variable in the GitHub Environment, not only in a manual `make deploy`: a later ordinary deploy re-synthesizes from these variables and would otherwise reset the map to `{}` and remove owner-bucket IAM from both task roles. Synthesis fails if `AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED` is `true` while `AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS` is empty.
+The deploy workflow takes both values from the GitHub Environment for the target stage: `dev` for dev, `prod` for bench, and `prod-external` for production. They are defined under the same names as the settings:
+
+- `AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS` is an Environment **secret**, like `AWS_DEPLOYMENT_ROLE_ORG_IDS`, because it carries the same organization UUIDs. An absent secret synthesizes `{}`.
+- `AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED` is an Environment **variable**. An absent variable synthesizes `false`.
+
+Every deployment job that synthesizes CDK passes both. Define them in the GitHub Environment, not only in a manual `make deploy`: a later ordinary deploy re-synthesizes from the Environment and would otherwise reset the map to `{}` and remove owner-bucket IAM from both task roles. Synthesis fails if `AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED` is `true` while `AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS` is empty.
 
 CDK supplies `AWS_DEPLOYMENT_ACCOUNT_ID` from the stack account. It passes the same account, canonical organization/environment JSON, and submission flag to Tracker and ExecutorHost.
 
