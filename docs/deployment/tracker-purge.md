@@ -46,18 +46,22 @@ A plan has `identity` and sorted `runs`. Each run has a `scope` with complete
 original saved resources and exact object/log paths, plus a `provider` containing
 only `kind` and `secret_name`. A run that follows a completed relocation also
 has `released_relocation`: the exact prior operation UUID, SHA-256 hashes of its
-stored identity and scope JSON, and its UTC acquisition/release times. The
-read-only plan captures this from the retained released relocation record. It
-refuses active relocation and permanent deletion records. The current saved
+stored identity and scope JSON, and its UTC acquisition/release times. A run that
+follows an abandoned deletion has `abandoned_deletion` with the same five fields,
+taken from the abandoned control record. A run carries at most one of the two, and
+neither may name this operation. The read-only plan captures whichever record the
+run holds. It refuses active relocation and live deletion records. The current saved
 resources in `scope` describe the destination bucket after relocation; the
 predecessor scope hash binds the previous original-resource record.
 
 Create a new deletion operation and plan only after relocation has completed and
 its hold is released. Prepare locks and refreshes the run and control record,
-compares every planned predecessor fact, then uses the shared explicit
-`replace_released_operation_id` path. An absent, changed, active, permanent, or
-unplanned predecessor is refused before provider deletion. Each run has its own
-predecessor. The tracker does not automatically replace another operation.
+compares both planned predecessor fields against what the locked record actually
+shows, then uses the shared explicit `replace_released_operation_id` path. An
+absent, changed, active, permanent, or unplanned predecessor is refused before
+provider deletion, including a control record that appeared after the plan was
+written. Each run has its own predecessor, and a plan that names none cannot
+replace one. The tracker does not automatically replace another operation.
 A matching deletion resume uses the original plan and its durable checkpoint;
 it does not need the previous relocation record to remain after replacement.
 
@@ -71,8 +75,9 @@ written; failures return 2. Error output omits provider and SQL payloads.
 
 The child digest is SHA-256 of canonical plan JSON with sorted keys, compact
 separators and absent optional values omitted. In particular, an absent
-`released_relocation` is omitted, so existing plans without this field keep
-their original digest and can resume. Plan output uses the same omission rule.
+`released_relocation` or `abandoned_deletion` is omitted, so existing plans without
+those fields keep their original digest and can resume. Plan output uses the same
+omission rule.
 The child digest is distinct from the immutable parent plan fingerprint. Both stay
 bound to the durable hold. Changed scope, operation, owner, org, account,
 resources, provider locator or database target is refused.
@@ -197,10 +202,12 @@ have the parent remove the `ValSmithOwnerDeletion<operation UUID without hyphens
 statement and the `.valsmith-owner-deletion/<operation UUID>/write-probe` object if
 the deletion is not going ahead for that owner.
 
-Correct the identity file, use a new `operation_id`, and plan again. Runs whose
-holds were abandoned plan and prepare normally; the new operation replaces the
-abandoned record explicitly and that replacement removes it. A force-stop and
-sandbox deletion that preparation already applied are not undone.
+Correct the identity file, use a new `operation_id`, and plan again. The new plan
+records the abandoned record in `abandoned_deletion`, prepare compares it with the
+locked control record, and the replacement then removes the abandoned row. Plan
+again after every further abandonment: a plan written before the current record
+appeared names the wrong predecessor and is refused. A force-stop and sandbox
+deletion that preparation already applied are not undone.
 
 Use `resume` with the same arguments and immutable plan to retry an incomplete
 purge. The command always checks current provider absence and fence authority.

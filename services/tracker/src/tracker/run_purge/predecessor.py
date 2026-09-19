@@ -9,7 +9,7 @@ from sqlmodel import Session, col, select
 
 from tracker.database.models import Benchmark, RunLifecycle
 from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, acquire_hold
-from tracker.run_purge.contracts import PurgeRun, ReleasedRelocation
+from tracker.run_purge.contracts import AbandonedDeletion, PurgeRun, ReleasedRelocation
 
 
 def _utc(value: datetime) -> datetime:
@@ -27,15 +27,12 @@ def _previous_identity(record: RunLifecycle) -> OperationIdentity:
         raise LifecycleConflict("Invalid lifecycle predecessor identity") from error
 
 
-def _snapshot(record: RunLifecycle, identity: OperationIdentity, run_id: UUID) -> ReleasedRelocation:
-    if record.purpose != "relocation" or record.released_at is None or record.phase != "released":
-        raise LifecycleConflict("A predecessor must be a released relocation")
-
+def _validated_previous(record: RunLifecycle, identity: OperationIdentity, run_id: UUID) -> OperationIdentity:
     previous_identity = _previous_identity(record)
     try:
         previous_scope = RunScope.model_validate_json(record.scope_json)
     except ValidationError as error:
-        raise LifecycleConflict("Invalid relocation predecessor identity or scope") from error
+        raise LifecycleConflict("Invalid lifecycle predecessor scope") from error
 
     if (
         record.run_id != run_id
@@ -45,7 +42,16 @@ def _snapshot(record: RunLifecycle, identity: OperationIdentity, run_id: UUID) -
         or previous_identity.github_owner_id != identity.github_owner_id
         or previous_identity.database_target != identity.database_target
     ):
-        raise LifecycleConflict("Relocation predecessor is outside the deletion owner or database scope")
+        raise LifecycleConflict("Lifecycle predecessor is outside the deletion owner or database scope")
+
+    return previous_identity
+
+
+def _snapshot(record: RunLifecycle, identity: OperationIdentity, run_id: UUID) -> ReleasedRelocation:
+    if record.purpose != "relocation" or record.released_at is None or record.phase != "released":
+        raise LifecycleConflict("A predecessor must be a released relocation or an abandoned deletion")
+
+    previous_identity = _validated_previous(record, identity, run_id)
 
     return ReleasedRelocation(
         operation_id=previous_identity.operation_id,
@@ -56,14 +62,40 @@ def _snapshot(record: RunLifecycle, identity: OperationIdentity, run_id: UUID) -
     )
 
 
-def capture_predecessor(session: Session, identity: OperationIdentity, run_id: UUID) -> ReleasedRelocation | None:
+def _abandoned_snapshot(record: RunLifecycle, identity: OperationIdentity, run_id: UUID) -> AbandonedDeletion:
+    if not _abandoned_deletion(record) or record.released_at is None:
+        raise LifecycleConflict("A predecessor must be a released relocation or an abandoned deletion")
+
+    previous_identity = _validated_previous(record, identity, run_id)
+
+    return AbandonedDeletion(
+        operation_id=previous_identity.operation_id,
+        identity_sha256=hashlib.sha256(record.identity_json.encode()).hexdigest(),
+        scope_sha256=hashlib.sha256(record.scope_json.encode()).hexdigest(),
+        acquired_at=_utc(record.acquired_at),
+        released_at=_utc(record.released_at),
+    )
+
+
+Predecessor = tuple[ReleasedRelocation | None, AbandonedDeletion | None]
+
+
+def _observed_predecessor(record: RunLifecycle | None, identity: OperationIdentity, run_id: UUID) -> Predecessor:
+    if record is None:
+        return None, None
+
+    if _abandoned_deletion(record):
+        return None, _abandoned_snapshot(record, identity, run_id)
+
+    return _snapshot(record, identity, run_id), None
+
+
+def capture_predecessor(session: Session, identity: OperationIdentity, run_id: UUID) -> Predecessor:
     record = session.exec(
         select(RunLifecycle).where(col(RunLifecycle.run_id) == run_id).execution_options(populate_existing=True)
     ).one_or_none()
-    if record is None or _abandoned_deletion(record):
-        return None
 
-    return _snapshot(record, identity, run_id)
+    return _observed_predecessor(record, identity, run_id)
 
 
 def acquire_deletion_hold(session: Session, identity: OperationIdentity, run: PurgeRun) -> RunLifecycle:
@@ -84,26 +116,16 @@ def acquire_deletion_hold(session: Session, identity: OperationIdentity, run: Pu
     if previous is not None and previous.identity_json == identity.model_dump_json() and previous.purpose == "deletion":
         return acquire_hold(session, identity=identity, scope=run.scope, purpose="deletion")
 
-    if previous is not None and _abandoned_deletion(previous):
-        if run.released_relocation is not None:
-            raise LifecycleConflict("Planned relocation predecessor changed")
+    relocation, abandoned = _observed_predecessor(previous, identity, run.scope.run_id)
+    if relocation != run.released_relocation or abandoned != run.abandoned_deletion:
+        raise LifecycleConflict("Planned lifecycle predecessor changed")
 
-        return acquire_hold(
-            session,
-            identity=identity,
-            scope=run.scope,
-            purpose="deletion",
-            replace_released_operation_id=_previous_identity(previous).operation_id,
-        )
-
-    observed = None if previous is None else _snapshot(previous, identity, run.scope.run_id)
-    if observed != run.released_relocation:
-        raise LifecycleConflict("Planned relocation predecessor changed")
+    planned = relocation or abandoned
 
     return acquire_hold(
         session,
         identity=identity,
         scope=run.scope,
         purpose="deletion",
-        replace_released_operation_id=None if observed is None else observed.operation_id,
+        replace_released_operation_id=None if planned is None else planned.operation_id,
     )

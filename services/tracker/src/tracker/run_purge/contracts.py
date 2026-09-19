@@ -26,10 +26,19 @@ class ReleasedRelocation(ContractModel):
     released_at: AwareDatetime
 
 
+class AbandonedDeletion(ContractModel):
+    operation_id: UUID
+    identity_sha256: Digest
+    scope_sha256: Digest
+    acquired_at: AwareDatetime
+    released_at: AwareDatetime
+
+
 class PurgeRun(ContractModel):
     scope: RunScope
     provider: ProviderLocator
     released_relocation: ReleasedRelocation | None = None
+    abandoned_deletion: AbandonedDeletion | None = None
 
 
 class PurgePlan(ContractModel):
@@ -49,6 +58,14 @@ class PurgePlan(ContractModel):
             for run in self.runs
         ):
             raise ValueError("Deletion requires a new operation after relocation")
+        if any(
+            run.abandoned_deletion is not None
+            and (
+                run.released_relocation is not None or run.abandoned_deletion.operation_id == self.identity.operation_id
+            )
+            for run in self.runs
+        ):
+            raise ValueError("A run has one predecessor and deletion requires a new operation")
         return self
 
     def digest(self) -> str:

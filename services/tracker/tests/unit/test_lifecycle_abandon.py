@@ -21,7 +21,7 @@ from tracker.lifecycle import (
 )
 from tracker.run_purge import _selected_runs, _unstarted_purge_guard
 from tracker.run_purge.contracts import ProviderLocator, PurgeCheckpoint, PurgePlan, PurgeRun
-from tracker.run_purge.predecessor import acquire_deletion_hold, capture_predecessor
+from tracker.run_purge.predecessor import _previous_identity, acquire_deletion_hold, capture_predecessor
 
 _RESOURCES = AWSResources(region="us-west-2", s3_bucket="owner-data", log_group="runs", log_retention_days=7)
 _PROVIDER = ProviderLocator(kind="daytona", secret_name="provider")
@@ -226,14 +226,73 @@ def test_a_corrected_operation_replaces_an_abandoned_deletion_hold(database_sess
     )
     database_session.commit()
     corrected = make_identity(run.id)
-    purge_run = PurgeRun(scope=scope, provider=_PROVIDER)
+    relocation, abandoned = capture_predecessor(database_session, corrected, run.id)
+    purge_run = PurgeRun(scope=scope, provider=_PROVIDER, abandoned_deletion=abandoned)
 
-    assert capture_predecessor(database_session, corrected, run.id) is None
+    assert relocation is None
+    assert abandoned is not None and abandoned.operation_id == identity.operation_id
     record = acquire_deletion_hold(database_session, corrected, purge_run)
     database_session.commit()
 
     assert record.phase == "held" and record.released_at is None
     assert active_hold(database_session, run.id) is not None
+
+
+def test_a_plan_built_before_a_replacement_hold_cannot_replace_it(database_session: Session) -> None:
+    identity, scope, run, plan = seeded_hold(database_session)
+    abandon_deletion_hold(
+        database_session, identity=identity, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
+    )
+    database_session.commit()
+    stale = make_identity(run.id)
+    stale_relocation, stale_abandoned = capture_predecessor(database_session, stale, run.id)
+    replacement = make_identity(run.id)
+    acquire_deletion_hold(
+        database_session,
+        replacement,
+        PurgeRun(scope=scope, provider=_PROVIDER, abandoned_deletion=stale_abandoned),
+    )
+    abandon_deletion_hold(
+        database_session,
+        identity=replacement,
+        scope=scope,
+        verify_unstarted=_unstarted_purge_guard(
+            PurgePlan(identity=replacement, runs=(PurgeRun(scope=scope, provider=_PROVIDER),))
+        ),
+    )
+    database_session.commit()
+
+    with pytest.raises(LifecycleConflict):
+        acquire_deletion_hold(
+            database_session,
+            stale,
+            PurgeRun(
+                scope=scope,
+                provider=_PROVIDER,
+                released_relocation=stale_relocation,
+                abandoned_deletion=stale_abandoned,
+            ),
+        )
+    database_session.rollback()
+
+    record = database_session.get(RunLifecycle, run.id)
+    assert record is not None
+    assert _previous_identity(record).operation_id == replacement.operation_id
+
+
+def test_a_plan_with_no_predecessor_cannot_replace_an_abandoned_hold(database_session: Session) -> None:
+    identity, scope, run, plan = seeded_hold(database_session)
+    abandon_deletion_hold(
+        database_session, identity=identity, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
+    )
+    database_session.commit()
+
+    with pytest.raises(LifecycleConflict):
+        acquire_deletion_hold(database_session, make_identity(run.id), PurgeRun(scope=scope, provider=_PROVIDER))
+    database_session.rollback()
+
+    record = database_session.get(RunLifecycle, run.id)
+    assert record is not None and record.phase == "abandoned"
 
 
 def test_an_abandoned_hold_does_not_admit_an_unplanned_relocation_predecessor(database_session: Session) -> None:

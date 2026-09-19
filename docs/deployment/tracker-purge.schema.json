@@ -33,6 +33,45 @@
         "title": "AWSResources",
         "type": "object"
       },
+      "AbandonedDeletion": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "identity_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Identity Sha256",
+            "type": "string"
+          },
+          "scope_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Scope Sha256",
+            "type": "string"
+          },
+          "acquired_at": {
+            "format": "date-time",
+            "title": "Acquired At",
+            "type": "string"
+          },
+          "released_at": {
+            "format": "date-time",
+            "title": "Released At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "identity_sha256",
+          "scope_sha256",
+          "acquired_at",
+          "released_at"
+        ],
+        "title": "AbandonedDeletion",
+        "type": "object"
+      },
       "OperationIdentity": {
         "additionalProperties": false,
         "properties": {
@@ -148,6 +187,17 @@
             "anyOf": [
               {
                 "$ref": "#/$defs/ReleasedRelocation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "abandoned_deletion": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AbandonedDeletion"
               },
               {
                 "type": "null"

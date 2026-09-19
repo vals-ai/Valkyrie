@@ -64,11 +64,13 @@ def build_plan(session: Session, identity: OperationIdentity) -> PurgePlan:
         locator = benchmark.arguments.sandbox_provider_secret_name
         if resources is None or locator is None:
             raise LifecycleConflict("Saved resources or sandbox provider locator are missing")
+        relocation, abandoned = capture_predecessor(session, identity, run_id)
         runs.append(
             PurgeRun(
                 scope=RunScope(run_id=run_id, original_resources=resources),
                 provider=ProviderLocator(kind=benchmark.arguments.sandbox_provider, secret_name=locator),
-                released_relocation=capture_predecessor(session, identity, run_id),
+                released_relocation=relocation,
+                abandoned_deletion=abandoned,
             )
         )
     return PurgePlan(identity=identity, runs=tuple(runs))
