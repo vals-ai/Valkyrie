@@ -13,9 +13,6 @@ from tracker.aws.s3 import (
     get_contract_s3_key,
     s3_object_exists,
 )
-from tracker.agent.contract import get_contract_from_zip_bytes
-from tracker.agent.schemas import AgentConfig
-from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
 from valkyrie.sdk import ValkyrieClient
 from valkyrie.sdk.errors import ValkyrieAPIError
@@ -110,10 +107,3 @@ async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
                         return cast(dict[str, object], yaml.safe_load(f) or {}).get("ingest_lambda")  # type: ignore[return-value]
 
     return None
-
-
-async def get_contract_from_s3(agent_name: str, agent_config: AgentConfig) -> AgentContractRequest:
-    """Download agent zip from S3 and extract the contract into a temp dir, returning the contract request"""
-    zip_bytes = await _download_agent_zip(agent_name)
-
-    return get_contract_from_zip_bytes(agent_name, zip_bytes, agent_config)  # type: ignore
