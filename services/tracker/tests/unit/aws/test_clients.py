@@ -28,8 +28,9 @@ from tracker.aws.runtime import AWSResources
 from tracker.aws.s3 import handle_s3_error
 from tracker.exceptions import CloudWatchError, S3Error
 from tracker.types import AWSCredentials
+from tracker.runtime import logs as runtime_logs
 
-_sanitize_log_stream_name = getattr(cloudwatch_logs, "_sanitize_log_stream_name")
+_sanitize_log_stream_name = getattr(runtime_logs, "_sanitize_log_stream_name")
 
 _AWS = AWSCredentials(
     aws_access_key_id="test-key",
