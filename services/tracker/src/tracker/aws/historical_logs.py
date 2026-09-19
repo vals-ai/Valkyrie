@@ -18,8 +18,11 @@ from tracker.aws.cloudwatch_logs import epoch_milliseconds, run_stream_task_ids,
 from tracker.aws.log_history_archive import read_chunk, read_manifest
 from tracker.aws.log_history_store import ArchiveVersionStore
 from tracker.aws.runtime import AWSRuntime
+from tracker.logging import get_logger
 from tracker.runtime.log_history import ArchiveLocation, LogHistoryManifest, LogHistoryReference
 from tracker.runtime.logs import LogEvent, LogPage, LogProvider, LogProviderError, RunLogReference, TaskLogReference
+
+logger = get_logger(__name__)
 
 _PAGE_SIZE = 1000
 _READ_BUDGET = 16
@@ -70,7 +73,7 @@ archive_authority_cache = ArchiveAuthorityCache(_AUTHORITY_SECONDS, _AUTHORITY_S
 
 class _Cursor(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     binding: str
     chunk: Position = 0
     offset: Position = 0
@@ -88,6 +91,20 @@ class _Cursor(BaseModel):
 
     def encode(self) -> str:
         return base64.urlsafe_b64encode(self.model_dump_json().encode()).decode()
+
+
+class _PreviousCursor(BaseModel):
+    """Version 1 carried no emitted live identity, so it can only restart from its token."""
+
+    model_config = ConfigDict(extra="ignore")
+    version: Literal[1]
+    binding: str
+    chunk: Position = 0
+    live_token: str | None = None
+    live_done: bool = False
+
+    def current(self) -> _Cursor:
+        return _Cursor(binding=self.binding, chunk=self.chunk, live_token=self.live_token, live_done=self.live_done)
 
 
 def _binding(
@@ -304,13 +321,23 @@ class HistoricalLogProvider(LogProvider):
             if len(cursor) > 32768:
                 raise ValueError
 
-            position = _Cursor.model_validate_json(base64.b64decode(cursor, altchars=b"-_", validate=True))
+            payload = base64.b64decode(cursor, altchars=b"-_", validate=True)
+            position = self._decode(payload)
             if position.binding != binding:
                 raise ValueError
 
             return position
         except (ValueError, ValidationError):
             raise LogProviderError("Invalid historical log cursor") from None
+
+    def _decode(self, payload: bytes) -> _Cursor:
+        try:
+            return _Cursor.model_validate_json(payload)
+        except ValidationError:
+            previous = _PreviousCursor.model_validate_json(payload)
+
+        logger.warning("Restarting a previous-version historical log cursor from its page token")
+        return previous.current()
 
     async def fetch(
         self,

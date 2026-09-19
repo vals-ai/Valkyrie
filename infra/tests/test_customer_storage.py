@@ -273,15 +273,35 @@ class CustomerStorageTest(unittest.TestCase):
             "/benchmarks/valsmith-repositories/*",
             "/benchmarks/????????-????-????-????-????????????/*",
         }
+        prefixes = {scope.lstrip("/") for scope in expected}
         for name in ("ValSmithStorage-prod", "ValSmithDatasetView-prod", "ValSmithLifecycle-prod"):
             _, _, statements = role(template, name)
             legacy = [item for item in statements if LEGACY_BUCKET in json.dumps(item["Resource"])]
-            objects = next(item for item in legacy if "s3:GetObject" in actions(item))
-            self.assertEqual(legacy_scopes(objects["Resource"]), expected)
-            listing = next(item for item in legacy if "s3:ListBucket" in actions(item))
-            self.assertEqual(legacy_scopes(listing["Resource"]), {""})
+            keyed = [item for item in legacy if legacy_scopes(item["Resource"]) - {""}]
+            granted: set[str] = set()
+            for item in legacy:
+                self.assertEqual(item["Effect"], "Allow")
+                self.assertNotIn("*", "".join(actions(item)))
+                self.assertEqual(
+                    item.get("Condition", {}).get("StringEquals"),
+                    {"s3:ResourceAccount": INPUTS["VALSMITH_LEGACY_STORAGE_ACCOUNT_ID"]},
+                )
+                granted |= actions(item)
+                if actions(item) & {"s3:ListBucket", "s3:ListBucketVersions"}:
+                    self.assertEqual(set(item["Condition"]["StringLike"]["s3:prefix"]), prefixes)
             self.assertEqual(
-                set(listing["Condition"]["StringLike"]["s3:prefix"]), {scope.lstrip("/") for scope in expected}
+                granted,
+                {
+                    "s3:GetObject",
+                    "s3:GetObjectVersion",
+                    "s3:ListBucket",
+                    "s3:ListBucketVersions",
+                    "s3:GetBucketLocation",
+                },
+            )
+            self.assertEqual({scope for item in keyed for scope in legacy_scopes(item["Resource"])}, expected)
+            self.assertEqual(
+                {action for item in keyed for action in actions(item)}, {"s3:GetObject", "s3:GetObjectVersion"}
             )
 
     def test_defaults_disable_customer_storage_in_every_stage(self) -> None:

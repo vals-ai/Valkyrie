@@ -446,3 +446,34 @@ def test_saved_runtime_authority_is_verified_before_reading_events(tmp_path: Pat
         historical_log_reader(runtime, RUN_ID, organization, report.reference, LiveLogs(), terminal=True)
 
     assert not any(method == "get" for method, _ in storage.requests)
+
+
+async def test_a_previous_version_cursor_restarts_from_its_token_instead_of_failing(tmp_path: Path) -> None:
+    provider, _, _ = reader(tmp_path)
+    reference = RunLogReference(RUN_ID)
+    page = await provider.fetch(reference, limit=1)
+    assert page.next_cursor is not None
+    position = json.loads(base64.urlsafe_b64decode(page.next_cursor))
+    assert position["version"] == 2
+    legacy = {key: value for key, value in position.items() if key != "live_event"}
+    legacy.update(version=1, offset=1, live_offset=0)
+    resumed = await provider.fetch(
+        reference, cursor=base64.urlsafe_b64encode(json.dumps(legacy).encode()).decode(), limit=10
+    )
+    complete = await provider.fetch(reference, limit=10)
+
+    assert [event.event_id for event in resumed.events] == [event.event_id for event in complete.events]
+
+
+async def test_an_unknown_cursor_version_is_still_refused(tmp_path: Path) -> None:
+    provider, _, _ = reader(tmp_path)
+    reference = RunLogReference(RUN_ID)
+    page = await provider.fetch(reference, limit=1)
+    assert page.next_cursor is not None
+    position = json.loads(base64.urlsafe_b64decode(page.next_cursor))
+    position["version"] = 3
+
+    with pytest.raises(LogProviderError, match="Invalid historical log cursor"):
+        await provider.fetch(
+            reference, cursor=base64.urlsafe_b64encode(json.dumps(position).encode()).decode(), limit=10
+        )

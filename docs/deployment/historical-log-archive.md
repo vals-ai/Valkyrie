@@ -243,9 +243,14 @@ is already terminal at request time, live following ends at the request's
 current time (or an earlier requested end), so an absent destination group does
 not poll forever. Start a new request after a later retry.
 
-Version 1 composite cursors bind the full immutable reference, run/task and
+Version 2 composite cursors bind the full immutable reference, run/task and
 sibling identities, query, normalized time bounds, archive chunk/event position,
-and live page token/offset. They contain no bucket or object key authority.
+and live page token, offset and last emitted event identity. They contain no
+bucket or object key authority. A version 1 cursor, which carried no emitted
+event identity, is still accepted across a rolling deployment: the reader keeps
+its binding, archive chunk and live page token, restarts that chunk and that live
+page from their beginning, and logs a fixed notice. That can repeat events the
+client already received; it never drops one. Any other version is refused.
 Changing page size is supported; changing a bound or task requires a new read.
 Each response scans at most 16 archive chunks and 16 live pages of 1,000 events,
 and returns at most the requested limit (maximum 10,000). It holds one bounded
