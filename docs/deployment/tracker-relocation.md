@@ -23,6 +23,14 @@ host/port/database and PostgreSQL `current_database()`. A symbolic target such a
 file/directory fsync. Reports contain hashes and control locators, not execution
 arguments, artifact contents, secret values, or raw provider errors.
 
+A refusal writes no report. It writes `RESPONSE.json.failure` beside the report with
+the nonce, action, run scope, and the authored refusal message, and it prints that
+same message on stderr. The failure document is an operator artifact, not part of the
+version 1 exchange; the parent reads only the report and only on exit code 0. Durable
+per-run progress stays in the run lifecycle checkpoints, so a resume repeats the same
+reviewed plan. The report path, and the failure path beside it, may not name the
+request or any evidence file.
+
 `inventory` and `inspect` are read-only. `prepare`, `relocate`, and `release` require
 `--apply`. The operator does not copy objects, remove source objects, change a bucket
 policy, or create an HTTP endpoint. Ordinary retry and resume do not accept a bucket
@@ -97,6 +105,18 @@ verifier, and evidence digest. It cannot hide a missing acknowledgement from a c
 host. Portable release requires process absence that remains valid without an active
 hold; held-unclaimed evidence alone does not permit release.
 
+Every action classifies execution references against the same retired set: every
+source bucket named by the operation, not only the bucket of the run being examined.
+`inventory` derives that set from the current saved resources of every run in scope
+and `prepare`/`relocate`/`release` derive it from the child plan, so a locator into a
+bucket the parent will empty cannot be portable at inventory and retired at release.
+
+Saved task results are inspected as well. `EvaluationResult.result` is opaque service
+JSON that this tool never rewrites. Any string in it that names a retired bucket is
+reported as an unresolved reference, so such a run cannot take a portable policy. A
+history-only policy keeps those historical links working only while the source scope
+survives; the operator decides that explicitly.
+
 The raw execution digest hashes canonical full stored argument JSON with only
 `properties.s3_bucket` removed. Typed references expose a JSON pointer and value hash.
 An S3 reference must return an exact version and checksum under the same account;
@@ -148,6 +168,14 @@ Inventory reports S3 execution references with a missing or null version as unkn
 This permits an explicit history-only plan for a saved legacy dataset. Portable
 release still requires exact immutable retained references. A requested immutable
 version that does not match the provider response is rejected.
+
+Object bytes are hashed from a streamed body in bounded chunks, never materialized in
+full, so a large version cannot exhaust the operator process. An exact version id is
+immutable, so the post-commit re-verification of a `relocate` reuses the digests the
+authorizing pass proved in the same process and re-reads only the version listings.
+Every standalone action, including `inspect` and `release`, reads the bytes again. The
+bounded whole-object read that a planned JSON transformation needs refuses an object
+above 64 MiB.
 
 Source and destination histories with equal timestamps for the same key are rejected,
 including object/delete-marker ties. Checksums prove bytes, not relative version order.
