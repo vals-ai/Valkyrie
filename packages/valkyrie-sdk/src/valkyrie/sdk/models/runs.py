@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 from valkyrie.sdk.models.agents import AgentContractRequest
-from valkyrie.sdk.models.config import AWSResources, HarnessConfig
+from valkyrie.sdk.models.config import AWSResources, HarnessConfig, LocalResources
 
 
 class TaskStatus(str, Enum):
@@ -62,8 +62,8 @@ class Order(str, Enum):
 class StartBenchmarkRequest(BaseModel):
     """Wire payload used to start a benchmark run."""
 
-    environment: Literal["aws"] = "aws"
-    properties: AWSResources | None = None
+    environment: Literal["aws", "local"] = "aws"
+    properties: AWSResources | LocalResources | None = None
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
@@ -210,8 +210,8 @@ class BenchmarkArguments(ResponseModel):
 
     contract: AgentContractRequest
     concurrency: int
-    environment: Literal["aws"] = "aws"
-    properties: AWSResources | None = None
+    environment: Literal["aws", "local"] = "aws"
+    properties: AWSResources | LocalResources | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None

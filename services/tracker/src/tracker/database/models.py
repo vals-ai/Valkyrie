@@ -31,6 +31,7 @@ from sqlmodel import (
 )
 
 from tracker.aws.runtime import AWSResources
+from tracker.local.resources import LocalResources
 from tracker.database.utils import has_field_changed
 from executor_protocol import ExecutorDispatchStatus as ExecutorDispatchStatus
 
@@ -195,8 +196,8 @@ class BenchmarkArguments(BaseModel):
 
     contract: AgentContractRequest
     concurrency: int
-    environment: Literal["aws"] = "aws"
-    properties: AWSResources | None = None
+    environment: Literal["aws", "local"] = "aws"
+    properties: AWSResources | LocalResources | None = None
     priority: int | None = PydanticField(default=None, exclude=True, strict=True, ge=0, le=4)
     queue_pool_id: str | None = Field(default=None, exclude=True)
     task_ids: list[str] | None = None
@@ -242,7 +243,7 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
         """Runs when we save the value to the database."""
         if value is None:
             return None
-        serialized = value.model_dump(exclude={"priority", "queue_pool_id"})
+        serialized = value.model_dump(mode="json", exclude={"priority", "queue_pool_id"})
         if value.priority is not None:
             serialized["priority"] = value.priority
         if value.queue_pool_id is not None:
@@ -416,6 +417,17 @@ class Benchmark(SQLModel, table=True):
             webhook_secret_name=self.webhook_secret_name,
             webhook_intervals=self.webhook_intervals,
             service_headers=service_headers or {},
+        )
+
+    def local_start_benchmark_request(self, service_headers: dict[str, str]) -> "StartBenchmarkRequest":
+        from tracker.types import StartBenchmarkRequest
+
+        return StartBenchmarkRequest(
+            **self.arguments.model_dump(),
+            benchmark_name=self.name,
+            label=self.label,
+            custom_benchmark_service=self.custom_benchmark_service,
+            service_headers=service_headers,
         )
 
     def managed_start_benchmark_request(self, service_headers: dict[str, str] | None = None) -> "StartBenchmarkRequest":

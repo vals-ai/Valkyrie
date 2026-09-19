@@ -11,12 +11,16 @@ This page documents all 1 public types in the `Config` family in source order. U
 
 Validated SDK configuration using ``valkyrie.yaml`` field aliases.
 
-Config model · 14 fields
+Config model · 15 fields
 
 **Fields**
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"environment"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · Literal['bench', 'prod', 'dev'] · default: <code>{"'bench'"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"tracker_url_override"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · alias: <code>{"tracker_url"}</code> · default: <code>{"None"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
@@ -32,7 +36,7 @@ Config model · 14 fields
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
-  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"aws_default_region"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · str · alias: <code>{"AWS_DEFAULT_REGION"}</code></span></div>
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"aws_default_region"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · alias: <code>{"AWS_DEFAULT_REGION"}</code> · default: <code>{"None"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
@@ -40,7 +44,7 @@ Config model · 14 fields
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
-  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"s3_bucket"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · str · alias: <code>{"S3_BUCKET"}</code></span></div>
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"s3_bucket"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · alias: <code>{"S3_BUCKET"}</code> · default: <code>{"None"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
@@ -52,7 +56,7 @@ Config model · 14 fields
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
-  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"sandbox_providers"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · dict[str, str] · constraints: {"minimum length 1"}</span></div>
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"sandbox_providers"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · dict[str, str] · default: <code>{"{}"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">

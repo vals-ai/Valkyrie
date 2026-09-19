@@ -30,7 +30,7 @@ from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
-from tracker.api.dependencies import RunAWSDependency
+from tracker.api.dependencies import get_run_aws_context, RunBenchmarkDependency, RunRuntimeDependency
 from tracker.api.filter_options import router as filter_options_router
 from tracker.api.logs import router as logs_router
 from tracker.api.scheduler_overview import router as scheduler_overview_router
@@ -46,18 +46,16 @@ from tracker.auth import (
     get_current_starter,
     resolve_descope_identity,
 )
-from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.aws.resolver import (
     resolve_aws_runtime_metadata,
     resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
 )
-from tracker.aws.secrets import SecretsManagerStore
+from tracker.aws.services import CloudRuntimeFactory
 from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     S3ObjectStore,
-    create_benchmark_url,
     create_console_url,
     copy_s3_object,
     create_presigned_url,
@@ -107,6 +105,9 @@ from tracker.docent_analysis import (
     analyze_event_stream,
 )
 from tracker.exceptions import TrackerServiceError
+from tracker.local import config as local_config
+from tracker.local.resources import LocalResources
+from tracker.local.runtime import LocalRuntimeFactory
 from executor_protocol import EXECUTOR_TASK_NAME, ExecutorTelemetryContext, executor_task_signature
 from tracker.logging import configure_logging, get_logger, request_id_var
 from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
@@ -464,8 +465,11 @@ def init_org(
 
 
 async def _resolve_contract_from_s3(request: StartBenchmarkRequest, object_store: ObjectStore) -> AgentContractRequest:
-    """Resolve install_cmd/run_cmd/etc by parsing the agent's contract file inside its S3 zip."""
-    zip_bytes = await object_store.get_bytes(agent_bundle_key(request.contract.name))
+    """Resolve the published agent contract from the configured object store."""
+    try:
+        zip_bytes = await object_store.get_bytes(agent_bundle_key(request.contract.name))
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=f"Agent '{request.contract.name}' not found") from error
     agent_config = AgentConfig(model=request.contract.model, kwargs=dict(request.contract.kwargs))
     resolved = get_contract_from_zip_bytes(request.contract.name, zip_bytes, agent_config)
     if request.contract.secrets:
@@ -553,13 +557,32 @@ async def start_benchmark(
 
     bind = session.get_bind()
     session.close()
-    runtime_resolution = resolve_start_aws_runtime(
-        http_request, request.harness_config, run_starter.org.id, request.properties
-    )
-    aws_runtime = runtime_resolution.runtime
-    object_store = S3ObjectStore(aws_runtime)
-    effective_harness_config = runtime_resolution.access_key_harness_config
-    aws_managed = runtime_resolution.aws_managed
+    if local_config.resources is not None:
+        if request.properties is not None:
+            raise HTTPException(status_code=400, detail="Local resources are configured by the server")
+        request = request.model_copy(
+            update={"environment": "local", "sandbox_provider": "docker", "properties": local_config.resources}
+        )
+        try:
+            request.validate_execution_environment()
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        runtime = LocalRuntimeFactory.create_runtime(local_config.resources.data_root, run_starter.org.id)
+        aws_managed = False
+        effective_harness_config = None
+    else:
+        if request.environment == "local":
+            raise HTTPException(status_code=400, detail="Server has no local configuration")
+        assert not isinstance(request.properties, LocalResources)
+        runtime_resolution = resolve_start_aws_runtime(
+            http_request, request.harness_config, run_starter.org.id, request.properties
+        )
+        aws_runtime = runtime_resolution.runtime
+        runtime = CloudRuntimeFactory.create_runtime(aws_runtime)
+        request = request.model_copy(update={"properties": aws_runtime.resources})
+        effective_harness_config = runtime_resolution.access_key_harness_config
+        aws_managed = runtime_resolution.aws_managed
+    object_store = runtime.objects
 
     if aws_managed:
         if not request.sandbox_provider or not request.sandbox_provider_secret_name:
@@ -575,7 +598,7 @@ async def start_benchmark(
             await asyncio.to_thread(_validate_start_release, bind)
         except ReleaseControlError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-    else:
+    elif request.environment == "aws":
         effective_harness_config = cast(HarnessConfig, effective_harness_config)
         body_provider_secret_name = (
             request.harness_config.sandbox_provider_secret_name if request.harness_config is not None else None
@@ -594,13 +617,12 @@ async def start_benchmark(
     if request.service_auth_header_name and request.service_auth_secret_name:
         resolved = await resolve_secrets(
             {request.service_auth_header_name: request.service_auth_secret_name},
-            SecretsManagerStore(aws_runtime.clients),
+            runtime.secrets,
         )
         service_headers.update(resolved)
 
     request = request.model_copy(
         update={
-            "properties": aws_runtime.resources,
             "harness_config": effective_harness_config,
             "service_headers": forward_tracker_api_key(
                 service_headers,
@@ -631,7 +653,7 @@ async def start_benchmark(
                 status_code=400,
                 detail="Queue priority requires sandbox queue to be enabled",
             )
-    elif request.sandbox_provider == "modal":
+    elif request.sandbox_provider in {"modal", "docker"}:
         if request.priority is not None:
             raise HTTPException(
                 status_code=400,
@@ -646,7 +668,7 @@ async def start_benchmark(
         assert provider_secret_name is not None
         provider_config = await fetch_sandbox_provider_config(
             provider_secret_name,
-            SecretsManagerStore(aws_runtime.clients),
+            runtime.secrets,
             request.sandbox_provider,
         )
         provider = provider_config.create_provider()
@@ -774,8 +796,16 @@ async def start_benchmark(
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,
         task_count=len(verify_response.task_ids),
-        cloudwatch_url=CloudWatchBenchmarkLogLocations(aws_runtime.resources).benchmark_location(str(benchmark_row.id)),
-        s3_bucket_url=create_benchmark_url(str(benchmark_row.id), aws_runtime.resources),
+        cloudwatch_url=(
+            str(http_request.url_for("get_logs", benchmark_id=benchmark_row.id))
+            if benchmark_row.arguments.environment == "local"
+            else runtime.log_locations.benchmark_location(str(benchmark_row.id))
+        ),
+        s3_bucket_url=(
+            str(http_request.url_for("list_run_artifacts", benchmark_id=benchmark_row.id))
+            if benchmark_row.arguments.environment == "local"
+            else runtime.artifacts.prefix_location(benchmark_artifact_prefix(str(benchmark_row.id)))
+        ),
         executor_release_id=benchmark_row.executor_release_id,
         current_execution_release_id=benchmark_row.current_execution_release_id,
         executor_artifact_digest=benchmark_row.executor_artifact_digest,
@@ -822,8 +852,10 @@ async def fetch_benchmark_tasks(
 
 @app.get("/fetch-benchmark", response_model=None)
 async def fetch_benchmark(
+    http_request: Request,
     benchmark_id: TrackedBenchmarkId,
-    run_context: RunAWSDependency,
+    runtime: RunRuntimeDependency,
+    benchmark_row: RunBenchmarkDependency,
     connect: bool = Query(default=False),
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
@@ -841,14 +873,16 @@ async def fetch_benchmark(
     - 200 OK if benchmark is found
     - 404 Not Found if benchmark is not found
     """
-    benchmark_row = run_context.benchmark
-    aws_runtime = run_context.aws_runtime
-
+    s3_bucket_url = (
+        str(http_request.url_for("list_run_artifacts", benchmark_id=benchmark_row.id))
+        if benchmark_row.arguments.environment == "local"
+        else runtime.artifacts.prefix_location(benchmark_artifact_prefix(str(benchmark_row.id)))
+    )
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
     if connect:
         return StreamingResponse(
-            stream_benchmark_results(benchmark_id, session, aws_runtime, org),
+            stream_benchmark_results(benchmark_id, session, s3_bucket_url, org),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -863,7 +897,7 @@ async def fetch_benchmark(
         benchmark_name=benchmark_row.name,
         benchmark_id=benchmark_row.id,
         details=benchmark_context.benchmark_details,
-        s3_bucket_url=create_benchmark_url(str(benchmark_row.id), aws_runtime.resources),
+        s3_bucket_url=s3_bucket_url,
         label=benchmark_row.label,
         final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
         error_message=benchmark_row.error_message if benchmark_row.status == BenchmarkStatus.ERROR else None,
@@ -877,7 +911,8 @@ async def fetch_benchmark(
 @app.post("/analyze-benchmark/{benchmark_id}", response_model=None)
 async def analyze_benchmark(
     benchmark_id: TrackedBenchmarkId,
-    run_context: RunAWSDependency,
+    benchmark_row: RunBenchmarkDependency,
+    http_request: Request,
     body: AnalyzeBenchmarkRequest,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
@@ -890,8 +925,9 @@ async def analyze_benchmark(
     Cache short-circuit: when the benchmark already has docent_reading_status=DONE and
     no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
     """
-    benchmark_row = run_context.benchmark
-    aws_runtime = run_context.aws_runtime
+    if benchmark_row.arguments.environment == "local":
+        raise HTTPException(status_code=400, detail="This operation requires an AWS run")
+    aws_runtime = get_run_aws_context(benchmark_row, http_request, org)
 
     if benchmark_row.status != BenchmarkStatus.FINISHED:
         raise HTTPException(
@@ -1045,13 +1081,6 @@ async def _retrieve_results(
         org,
     )
 
-    aws_runtime = resolve_run_aws_runtime_and_access_key_config(
-        http_request,
-        aws_managed=benchmark_row.aws_managed,
-        properties=benchmark_row.arguments.properties,
-        org_id=org.id,
-    ).runtime
-
     final_view = create_final_view(benchmark_row, session, org)
     task_ids_set = set(task_ids) if task_ids else None
 
@@ -1081,6 +1110,18 @@ async def _retrieve_results(
 
     if not s3:
         return final_view
+
+    if benchmark_row.arguments.environment == "local":
+        raise HTTPException(
+            status_code=400, detail="Local results are available directly; S3 export requires an AWS run"
+        )
+    assert not isinstance(benchmark_row.arguments.properties, LocalResources)
+    aws_runtime = resolve_run_aws_runtime_and_access_key_config(
+        http_request,
+        aws_managed=benchmark_row.aws_managed,
+        properties=benchmark_row.arguments.properties,
+        org_id=org.id,
+    ).runtime
 
     if preview:
         await _archive_final_view(benchmark_row, aws_runtime)
@@ -1119,9 +1160,8 @@ async def preview_results(
 @app.get("/check-results-exist")
 async def check_results_exist(
     benchmark_id: TrackedBenchmarkId,
-    run_context: RunAWSDependency,
-    session: Session = Depends(get_session),
-    org: Org = Depends(get_current_org),
+    runtime: RunRuntimeDependency,
+    benchmark_row: RunBenchmarkDependency,
 ) -> dict[str, bool]:
     """
     Check if the benchmark's final view already exists in S3.
@@ -1132,11 +1172,8 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
-    benchmark_row = run_context.benchmark
-    aws_runtime = run_context.aws_runtime
-
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_row.name}.json"
-    exists = await s3_object_exists(s3_key, aws_runtime)
+    exists = await runtime.objects.exists(s3_key)
     return {"exists": exists}
 
 
@@ -1220,21 +1257,26 @@ async def stop_benchmark(
         await validate_tasks_exist(benchmark_row, task_ids, session, org) if task_ids is not None else None
     )
 
-    runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
-        http_request,
-        aws_managed=benchmark_row.aws_managed,
-        properties=benchmark_row.arguments.properties,
-        org_id=org.id,
-    )
-
-    provider_secret_name = (
-        _resolve_force_stop_provider_secret_name(
-            benchmark_row,
-            runtime_resolution.access_key_harness_config,
+    if benchmark_row.arguments.environment == "local":
+        provider_secret_name = None
+        runtime_resolution = None
+    else:
+        assert not isinstance(benchmark_row.arguments.properties, LocalResources)
+        runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
+            http_request,
+            aws_managed=benchmark_row.aws_managed,
+            properties=benchmark_row.arguments.properties,
+            org_id=org.id,
         )
-        if force
-        else None
-    )
+
+        provider_secret_name = (
+            _resolve_force_stop_provider_secret_name(
+                benchmark_row,
+                runtime_resolution.access_key_harness_config,
+            )
+            if force
+            else None
+        )
 
     benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
     if benchmark_row.status not in valid_stop_states:
@@ -1245,15 +1287,18 @@ async def stop_benchmark(
 
     await initiate_stop_benchmark(benchmark_row, session, force, org, task_ids=selected_task_ids)
 
-    if provider_secret_name is not None:
-        await force_stop_sandboxes(
-            benchmark_row,
-            provider_secret_name,
+    if force and benchmark_row.arguments.environment == "local":
+        assert isinstance(benchmark_row.arguments.properties, LocalResources)
+        runtime = LocalRuntimeFactory.create_runtime(benchmark_row.arguments.properties.data_root, org.id)
+        await force_stop_sandboxes(benchmark_row, runtime, org, task_ids=selected_task_ids)
+    elif provider_secret_name is not None:
+        assert runtime_resolution is not None
+        runtime = CloudRuntimeFactory.create_runtime(
             runtime_resolution.runtime,
-            org,
             sandbox_provider=benchmark_row.arguments.sandbox_provider,
-            task_ids=selected_task_ids,
+            sandbox_provider_secret_name=provider_secret_name,
         )
+        await force_stop_sandboxes(benchmark_row, runtime, org, task_ids=selected_task_ids)
 
     return StopBenchmarkResponse(
         status="success",
@@ -1323,7 +1368,7 @@ class RecoveryPreparation:
     dataset: str | None
     queued_recovery: bool
     agent_name: str
-    properties: AWSResources | None = None
+    properties: AWSResources | LocalResources | None = None
 
 
 def _prepare_recovery(
@@ -1469,12 +1514,22 @@ async def retry_or_resume_benchmark(
         benchmark_url,
         secrets,
     )
-    runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
-        http_request,
-        properties=preparation.properties,
-        aws_managed=preparation.aws_managed,
-        org_id=org_id,
-    )
+    if isinstance(preparation.properties, LocalResources):
+        if local_config.resources is None:
+            raise HTTPException(status_code=400, detail="Server has no local configuration")
+        if lambda_function:
+            raise HTTPException(status_code=400, detail="Local execution does not support AWS callbacks")
+        access_key_harness_config = None
+        object_store = LocalRuntimeFactory.create_runtime(preparation.properties.data_root, org_id).objects
+    else:
+        runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
+            http_request,
+            properties=preparation.properties,
+            aws_managed=preparation.aws_managed,
+            org_id=org_id,
+        )
+        access_key_harness_config = runtime_resolution.access_key_harness_config
+        object_store = S3ObjectStore(runtime_resolution.runtime)
     api_key = http_request.headers.get("x-api-key")
     effective_headers = forward_tracker_api_key(
         service_headers,
@@ -1492,7 +1547,6 @@ async def retry_or_resume_benchmark(
         finally:
             await service.close()
     if update_agent:
-        object_store = S3ObjectStore(runtime_resolution.runtime)
         source_key = agent_bundle_key(preparation.agent_name)
         if not await object_store.exists(source_key):
             raise HTTPException(
@@ -1514,7 +1568,7 @@ async def retry_or_resume_benchmark(
         secrets=secrets,
         benchmark_url=benchmark_url,
         lambda_function=lambda_function,
-        access_key_harness_config=runtime_resolution.access_key_harness_config,
+        access_key_harness_config=access_key_harness_config,
         preparation=preparation,
         verified_task_ids=verified_task_ids,
     )
@@ -1757,7 +1811,9 @@ def _apply_recovery(
         if lambda_function is not None:
             benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"lambda_function": lambda_function})
 
-        if benchmark_row.aws_managed:
+        if benchmark_row.arguments.environment == "local":
+            resume_request = benchmark_row.local_start_benchmark_request(service_headers=effective_service_headers)
+        elif benchmark_row.aws_managed:
             resume_request = benchmark_row.managed_start_benchmark_request(
                 service_headers=effective_service_headers,
             )
@@ -1941,7 +1997,7 @@ async def _tar_output_stream(
 @app.get("/fetch-run-outputs/{benchmark_id}", response_model=None)
 async def fetch_run_outputs(
     benchmark_id: TrackedBenchmarkId,
-    run_context: RunAWSDependency,
+    runtime: RunRuntimeDependency,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
     task_ids: list[str] | None = Query(default=None),
@@ -1955,7 +2011,7 @@ async def fetch_run_outputs(
     Returns:
         StreamingResponse
     """
-    object_store = S3ObjectStore(run_context.aws_runtime)
+    object_store = runtime.objects
 
     benchmark_prefix = benchmark_artifact_prefix(str(benchmark_id))
 

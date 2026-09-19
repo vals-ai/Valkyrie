@@ -480,8 +480,11 @@
             "title": "Dataset"
           },
           "environment": {
-            "const": "aws",
             "default": "aws",
+            "enum": [
+              "aws",
+              "local"
+            ],
             "title": "Environment",
             "type": "string"
           },
@@ -502,9 +505,13 @@
                 "$ref": "#/components/schemas/AWSResources"
               },
               {
+                "$ref": "#/components/schemas/LocalResources"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Properties"
           },
           "sandbox_provider": {
             "default": "daytona",
@@ -1463,6 +1470,32 @@
         "title": "HarnessConfig",
         "type": "object"
       },
+      "LocalResources": {
+        "properties": {
+          "data_root": {
+            "format": "path",
+            "title": "Data Root",
+            "type": "string"
+          },
+          "secrets_file": {
+            "anyOf": [
+              {
+                "format": "path",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secrets File"
+          }
+        },
+        "required": [
+          "data_root"
+        ],
+        "title": "LocalResources",
+        "type": "object"
+      },
       "LogEventResponse": {
         "description": "One provider-neutral benchmark log event.",
         "properties": {
@@ -2365,8 +2398,11 @@
             "title": "Dataset"
           },
           "environment": {
-            "const": "aws",
             "default": "aws",
+            "enum": [
+              "aws",
+              "local"
+            ],
             "title": "Environment",
             "type": "string"
           },
@@ -2421,9 +2457,13 @@
                 "$ref": "#/components/schemas/AWSResources"
               },
               {
+                "$ref": "#/components/schemas/LocalResources"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Properties"
           },
           "sandbox_provider": {
             "default": "daytona",
@@ -3055,7 +3095,7 @@
     },
     "/agents/{name}/download-url": {
       "get": {
-        "description": "Return a 5-minute presigned URL to download agents/<name>.zip.",
+        "description": "Return a download URL for the authorized agent.",
         "operationId": "get_agent_download_url",
         "parameters": [
           {
@@ -3065,6 +3105,16 @@
             "schema": {
               "title": "Name",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "download",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Download",
+              "type": "boolean"
             }
           },
           {
@@ -3444,6 +3494,16 @@
               "minLength": 1,
               "title": "Path",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "download",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Download",
+              "type": "boolean"
             }
           }
         ],
@@ -3955,7 +4015,7 @@
     },
     "/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts": {
       "get": {
-        "description": "CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page.",
+        "description": "Return log and agent output locations for the task detail page.",
         "operationId": "get_task_artifacts",
         "parameters": [
           {

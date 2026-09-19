@@ -1,7 +1,7 @@
 """Provider-neutral object storage capabilities used by Tracker and the CLI."""
 
 from collections.abc import AsyncIterable, AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
 
@@ -12,6 +12,7 @@ class StoredObject:
 
     key: str
     last_modified: datetime | None = None
+    size: int = field(kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -56,7 +57,18 @@ class ObjectStore(Protocol):
     def list_objects(self, prefix: str) -> AsyncIterator[StoredObject]:
         raise NotImplementedError  # pragma: no cover
 
-    async def temporary_download_url(self, key: str, *, expires_in: int) -> str:
+    async def stat(self, key: str) -> StoredObject:
+        """Return metadata for one existing object."""
+        raise NotImplementedError  # pragma: no cover
+
+    async def list_objects_page(
+        self, prefix: str, *, cursor: str | None, limit: int
+    ) -> tuple[list[StoredObject], str | None]:
+        """List one bounded page, preserving the provider's continuation cursor."""
+        raise NotImplementedError  # pragma: no cover
+
+    async def temporary_download_url(self, key: str, *, expires_in: int) -> str | None:
+        """Return a signed URL, or None when callers must transfer the object bytes."""
         raise NotImplementedError  # pragma: no cover
 
 

@@ -98,6 +98,7 @@ class CloudRuntimeFactory:
         properties: AWSResources | None = None,
     ) -> RuntimeServices:
         """Select AWS access and prepare services for one dispatch."""
+        assert request.properties is None or isinstance(request.properties, AWSResources)
         properties = request.properties or properties
         aws_runtime = (
             deployment_aws_runtime(org_id, properties)

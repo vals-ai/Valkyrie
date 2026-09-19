@@ -117,7 +117,7 @@ ROUTES = (
     ("/benchmarks/filter-options", "get", ""),
     ("/benchmarks/{benchmark_id}/concurrency", "patch", "benchmark_id"),
     ("/benchmarks/{benchmark_id}/artifacts", "get", "benchmark_id prefix cursor limit"),
-    ("/benchmarks/{benchmark_id}/artifacts/download-url", "get", "benchmark_id path"),
+    ("/benchmarks/{benchmark_id}/artifacts/download-url", "get", "benchmark_id path download"),
     ("/start-benchmark", "post", ""),
     ("/fetch-benchmark", "get", "benchmark_id connect"),
     (
@@ -150,7 +150,7 @@ ROUTES = (
         "benchmark_id task_id query start_time end_time",
     ),
     ("/agents", "get", ""),
-    ("/agents/{name}/download-url", "get", "name"),
+    ("/agents/{name}/download-url", "get", "name download"),
     ("/agents/{name}", "put", "name overwrite"),
     ("/agents/{name}", "delete", "name"),
     ("/benchmark-services", "get", ""),

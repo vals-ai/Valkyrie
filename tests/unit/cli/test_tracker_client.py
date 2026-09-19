@@ -847,9 +847,11 @@ def test_start_benchmark_forwards_aws_session_token(
     assert aws_config["aws_session_token"] == "temporary-token"
 
 
+@pytest.mark.parametrize("providers", [{"daytona": "DaytonaSecrets"}, {}])
 def test_start_benchmark_without_static_keys_sends_managed_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    providers: dict[str, str],
 ) -> None:
     """A config without static keys must send an API-key-only managed start."""
     config_path = _write_valkyrie_config(
@@ -857,7 +859,9 @@ def test_start_benchmark_without_static_keys_sends_managed_request(
         AWS_ACCESS_KEY_ID=None,
         AWS_SECRET_ACCESS_KEY=None,
         api_key="vals-key",
-        sandbox_providers={"daytona": "DaytonaSecrets"},
+        sandbox_providers=providers,
+        AWS_DEFAULT_REGION=None,
+        S3_BUCKET=None,
     )
     requests: list[httpx.Request] = []
 
@@ -896,7 +900,7 @@ def test_start_benchmark_without_static_keys_sends_managed_request(
 
     assert body["harness_config"] is None
     assert body["sandbox_provider"] == "daytona"
-    assert body["sandbox_provider_secret_name"] == "DaytonaSecrets"
+    assert body["sandbox_provider_secret_name"] == providers.get("daytona")
 
 
 @pytest.mark.parametrize(

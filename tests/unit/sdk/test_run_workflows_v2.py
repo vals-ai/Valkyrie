@@ -17,7 +17,7 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 
-from valkyrie.sdk import ValkyrieAPIError, ValkyrieStreamError
+from valkyrie.sdk import ValkyrieAPIError, ValkyrieStreamError, ValkyrieTransportError
 
 _STOP_RUN_ID = UUID("11111111-1111-4111-8111-111111111111")
 
@@ -479,3 +479,39 @@ async def test_windows_artifact_download_rejects_colons_before_writing(make_clie
         with pytest.raises(ValueError, match="Windows filenames"):
             await client.artifacts.download(uuid4(), tmp_path / "outputs")
     assert not (tmp_path / "outputs").exists()
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://tracker.test/file", "http://tracker.test/file", "https://tracker.test:8443/file"],
+)
+async def test_artifact_download_authenticates_only_tracker_origin(make_client, monkeypatch, tmp_path, url):
+    """Keep Tracker credentials on its origin and reject authenticated redirects."""
+    redirect = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("download-url"):
+            return httpx.Response(200, json={"path": "result", "download_url": url, "expires_in": 300, "size": 2})
+        return httpx.Response(200, json={"artifacts": [{"path": "result", "size": 2}]})
+
+    async def download(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == url
+        if url == "https://tracker.test/file":
+            assert request.headers["x-api-key"] == "vals-key"
+            assert request.headers["authorization"] == "Bearer overridden"
+        else:
+            assert not any(name.startswith("x-") for name in request.headers)
+            assert "authorization" not in request.headers
+        if redirect:
+            return httpx.Response(302, headers={"location": "https://other.test/file"})
+        return httpx.Response(200, content=b"{}")
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", download)
+    async with make_client(handler) as client:
+        client._client.headers["authorization"] = "Bearer overridden"
+        result = await client.artifacts.download(uuid4(), tmp_path / "outputs")
+        assert (result / "result").read_bytes() == b"{}"
+        if url == "https://tracker.test/file":
+            redirect = True
+            with pytest.raises(ValkyrieTransportError):
+                await client.artifacts.download(uuid4(), tmp_path / "redirect")

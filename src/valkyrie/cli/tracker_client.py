@@ -104,14 +104,14 @@ def _resolve_sandbox_provider_config(
 
     # Fall back to the legacy Daytona secret when named providers are not configured.
     if not providers:
-        if provider is not None:
-            raise TrackerServiceError(
-                f"Unknown sandbox provider '{provider}'. Configure it with `{_PROVIDER_SETUP_COMMAND}`."
-            )
         secret_name = config.get("DAYTONA_SECRET_NAME")
-        if not secret_name:
-            raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
-        return "daytona", secret_name
+        if secret_name:
+            if provider is not None:
+                raise TrackerServiceError(
+                    f"Unknown sandbox provider '{provider}'. Configure it with `{_PROVIDER_SETUP_COMMAND}`."
+                )
+            return "daytona", secret_name
+        return provider or config.get("default_sandbox_provider") or "daytona", ""
 
     # Use the requested provider, configured default, or first configured provider.
     provider_name = str(provider or config.get("default_sandbox_provider") or next(iter(providers)))
@@ -252,9 +252,6 @@ class TrackerService:
         with open(config_path) as f:
             harness_config: dict[str, Any] = yaml.safe_load(f) or {}
 
-        if not (_sandbox_providers(harness_config) or "DAYTONA_SECRET_NAME" in harness_config):
-            raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
-
         access_key_fields = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
         configured_access_key_fields = [field for field in access_key_fields if field in harness_config]
         if configured_access_key_fields and len(configured_access_key_fields) != len(access_key_fields):
@@ -263,6 +260,8 @@ class TrackerService:
             if "AWS_SESSION_TOKEN" in harness_config:
                 raise TrackerServiceError("AWS_SESSION_TOKEN requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.")
             return {}
+        if not (_sandbox_providers(harness_config) or "DAYTONA_SECRET_NAME" in harness_config):
+            raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
         if any(
             not isinstance(harness_config[field], str) or not harness_config[field].strip()
             for field in access_key_fields
@@ -276,7 +275,12 @@ class TrackerService:
                 "Run `valkyrie config init` to initialize the Valkyrie config or `valkyrie config set` to update an existing config"
             )
         # Keys that are managed separately and should not be sent as harness headers
-        _SKIP_HEADER_KEYS = {"webhook", "api_key", "default_sandbox_provider"}
+        _SKIP_HEADER_KEYS = {
+            "webhook",
+            "api_key",
+            "default_sandbox_provider",
+            "tracker_url",
+        }
 
         # Skip custom_benchmark_services to avoid adding them inside of the header
         for key, value in harness_config.items():
@@ -473,13 +477,15 @@ class TrackerService:
                 service_headers=service_headers or {},
                 sandbox_provider=provider_name,
                 sandbox_provider_secret_name=(
-                    sandbox_provider_secret_name if access_key_harness_config is None else None
+                    sandbox_provider_secret_name
+                    if access_key_harness_config is None and sandbox_provider_secret_name
+                    else None
                 ),
                 webhook_secret_name=webhook_secret_name,
                 webhook_intervals=webhook_intervals,
             )
 
-            body = payload.model_dump()
+            body = payload.model_dump(exclude={"environment"})
 
             response = self._client.post(f"{self._base_url}/start-benchmark", json=body)
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from uuid import uuid4
@@ -297,3 +298,31 @@ async def test_task_log_stream_sends_keep_alives_without_closing_pending_provide
     await events.aclose()
 
     assert provider.stream_closed
+
+
+def test_local_logs_use_filesystem_without_aws_resolution(
+    tmp_path: Path, database_session: Session, example_benchmark_object: Benchmark, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tracker.local.logs import FilesystemLogs
+    from tracker.local.resources import LocalResources
+    from tracker.runtime.logs import task_log_stream_name
+
+    benchmark = example_benchmark_object
+    benchmark.arguments = benchmark.arguments.model_copy(
+        update={"environment": "local", "properties": LocalResources(data_root=tmp_path), "sandbox_provider": "docker"}
+    )
+    task = make_task(benchmark, "local-task")
+    database_session.add_all([benchmark, task])
+    database_session.commit()
+    logs = FilesystemLogs(tmp_path / "orgs" / str(benchmark.org_id) / "logs")
+    asyncio.run(logs.create_benchmark(str(benchmark.id), retention_days=0))
+    logs.write(f"{benchmark.id}:{task_log_stream_name(task.task_id, task.started_at)}", "local execution output")
+
+    def unexpected_aws(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Local log access resolved AWS credentials")
+
+    monkeypatch.setattr("tracker.api.dependencies.resolve_run_aws_runtime_and_access_key_config", unexpected_aws)
+    for params in ({}, {"task_id": task.task_id}):
+        response = _client.get(f"/benchmarks/{benchmark.id}/logs", params=params)
+        assert response.status_code == 200, response.text
+        assert response.json()["events"][0]["message"] == "local execution output"

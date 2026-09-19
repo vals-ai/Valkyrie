@@ -10,6 +10,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Coroutine
 from datetime import datetime, timezone
 from importlib import import_module
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -72,7 +73,7 @@ def _invoke(
     run_id: UUID,
     arguments: list[str],
 ):
-    monkeypatch.setattr(logs_module.ValkyrieClient, "from_config", lambda: client)
+    monkeypatch.setattr(logs_module.ValkyrieClient, "from_config", lambda *_args, **_kwargs: client)
     return CliRunner().invoke(logs, [str(run_id), *arguments])
 
 
@@ -162,7 +163,7 @@ def test_logs_follow_rejects_cleanly_truncated_success(monkeypatch: pytest.Monke
         }
     )
     client = ValkyrieClient(config, base_url="https://tracker.test", transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(logs_module.ValkyrieClient, "from_config", lambda: client)
+    monkeypatch.setattr(logs_module.ValkyrieClient, "from_config", lambda *_args, **_kwargs: client)
 
     result = CliRunner().invoke(logs, [str(run_id), "--task-id", "task-1", "--follow"])
 
@@ -252,3 +253,30 @@ def test_logs_handles_ctrl_c_without_traceback(monkeypatch: pytest.MonkeyPatch) 
 
     assert result.exit_code == 0
     assert "Traceback" not in result.output
+
+
+def test_logs_uses_selected_cli_config_and_tracker_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "local.yaml"
+    path.write_text(
+        "tracker_url: http://127.0.0.1:8765\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("VALKYRIE_CONFIG_PATH", str(path))
+    monkeypatch.delenv("TRACKER_SERVICE_URL", raising=False)
+    urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        return httpx.Response(200, json={"events": [{"timestamp": "2026-01-01T00:00:00Z", "message": "local log"}]})
+
+    from_config = ValkyrieClient.from_config
+    monkeypatch.setattr(
+        ValkyrieClient,
+        "from_config",
+        lambda *args, **kwargs: from_config(*args, **kwargs, transport=httpx.MockTransport(handler)),
+    )
+    run_id = uuid4()
+    result = CliRunner().invoke(logs, [str(run_id)])
+    assert result.exit_code == 0, result.output
+    assert "local log" in result.output
+    assert urls == [f"http://127.0.0.1:8765/benchmarks/{run_id}/logs?limit=1000"]

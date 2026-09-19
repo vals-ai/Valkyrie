@@ -574,7 +574,7 @@ def _parse_queued_execution(
         if start_benchmark_request_json is None or benchmark_id_str is None or verified_task_ids is None:
             raise ValueError("Queued benchmark request is incomplete and cannot be processed.")
         request = _parse_start_benchmark_request(start_benchmark_request_json)
-        if request.harness_config is None:
+        if request.environment == "aws" and request.harness_config is None:
             raise ValueError("Queued access-key benchmark request has no AWS configuration.")
         return _QueuedExecution(
             request=request,
