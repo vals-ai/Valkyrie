@@ -308,14 +308,19 @@ async def validate_saved_managed_storage_runtime(runtime: AWSRuntime, *, org_id:
     if not runtime.resources.s3_bucket.startswith(("vs-dev-", "vs-prod-")):
         return
 
+    policy = load_managed_storage_policy()
+    await validate_managed_storage_bucket(
+        runtime,
+        org_id=org_id,
+        bucket_name=runtime.resources.s3_bucket,
+        policy=policy,
+    )
+
+
+async def http_validate_saved_managed_storage_runtime(runtime: AWSRuntime, *, org_id: UUID) -> None:
+    """Translate saved owner-storage failures into HTTP errors for API routes."""
     try:
-        policy = load_managed_storage_policy()
-        await validate_managed_storage_bucket(
-            runtime,
-            org_id=org_id,
-            bucket_name=runtime.resources.s3_bucket,
-            policy=policy,
-        )
+        await validate_saved_managed_storage_runtime(runtime, org_id=org_id)
     except ManagedStorageError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 

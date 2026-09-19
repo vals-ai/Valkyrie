@@ -3046,7 +3046,7 @@ def test_owner_recovery_revalidates_saved_org_and_location_before_task_verificat
     validation = AsyncMock(side_effect=HTTPException(403, "denied"))
     verify = AsyncMock()
     enqueue = AsyncMock()
-    monkeypatch.setattr(main_module, "validate_saved_managed_storage_runtime", validation)
+    monkeypatch.setattr(main_module, "http_validate_saved_managed_storage_runtime", validation)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
     monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
 

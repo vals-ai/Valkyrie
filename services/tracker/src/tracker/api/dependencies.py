@@ -10,9 +10,9 @@ from sqlmodel import Session, select
 
 from tracker.auth import get_current_org
 from tracker.aws.resolver import (
+    http_validate_saved_managed_storage_runtime,
     resolve_agent_library_aws_runtime,
     resolve_run_aws_runtime_and_access_key_config,
-    validate_saved_managed_storage_runtime,
 )
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
@@ -57,7 +57,7 @@ async def get_run_aws_context(
         org_id=org.id,
     ).runtime
     if benchmark.aws_managed:
-        await validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
+        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
 
     return RunAWSContext(
         benchmark=benchmark,

@@ -280,7 +280,7 @@ def test_single_benchmark_returns_saved_bucket_after_default_changes(
     monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "changed-default")
     monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
     validation = AsyncMock()
-    monkeypatch.setattr("tracker.api.single_benchmark.validate_saved_managed_storage_runtime", validation)
+    monkeypatch.setattr("tracker.api.single_benchmark.http_validate_saved_managed_storage_runtime", validation)
 
     response = _client.get(f"/benchmarks/{benchmark.id}")
 
