@@ -90,6 +90,8 @@ async def upload_stream_to_s3(
     s3_key: str,
     runtime: AWSRuntime,
     should_continue: Callable[[], bool] | None = None,
+    *,
+    overwrite: bool = True,
 ) -> int:
     """
     Upload a byte stream to S3 via multipart upload, buffering at most one part in memory.
@@ -137,9 +139,18 @@ async def upload_stream_to_s3(
             if should_continue is not None and not should_continue():
                 raise S3Error("S3 stream upload authority was revoked")
 
-            await client.complete_multipart_upload(
-                Bucket=s3_bucket, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts}
-            )
+            try:
+                await client.complete_multipart_upload(
+                    Bucket=s3_bucket,
+                    Key=s3_key,
+                    UploadId=upload_id,
+                    MultipartUpload={"Parts": parts},
+                    **({} if overwrite else {"IfNoneMatch": "*"}),
+                )
+            except ClientError as error:
+                if not overwrite and error.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 412:
+                    raise FileExistsError(s3_key) from error
+                raise
         except BaseException:
             with suppress(Exception):
                 await client.abort_multipart_upload(Bucket=s3_bucket, Key=s3_key, UploadId=upload_id)
@@ -438,8 +449,11 @@ class S3ObjectStore:
         chunks: AsyncIterable[bytes],
         *,
         should_continue: Callable[[], bool] | None = None,
+        overwrite: bool = True,
     ) -> int:
-        return await upload_stream_to_s3(chunks, key, self._runtime, should_continue=should_continue)
+        return await upload_stream_to_s3(
+            chunks, key, self._runtime, should_continue=should_continue, overwrite=overwrite
+        )
 
     async def get_bytes(self, key: str) -> bytes:
         async with self.read_session() as reader:
