@@ -302,6 +302,18 @@ class MonitoringStackTest(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS"):
                         config_for(Stage(BENCH))
 
+    def test_managed_storage_submissions_require_a_configured_environment_map(self) -> None:
+        for stage_name, stage_environment in (
+            (DEV, TEST_DEV_ENV),
+            (BENCH, TEST_BENCH_ENV),
+            (PROD, TEST_PROD_ENV),
+        ):
+            with self.subTest(stage=stage_name):
+                environment = {**stage_environment, "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED": "true"}
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    with self.assertRaisesRegex(ValueError, "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS"):
+                        config_for(Stage(stage_name))
+
     def test_hosted_managed_runtime_requires_deployment_authority(self) -> None:
         for stage_name, stage_environment in (
             (DEV, TEST_DEV_ENV),

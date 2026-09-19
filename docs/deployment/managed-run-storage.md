@@ -12,6 +12,8 @@ Set these values explicitly for each Valkyrie deployment:
 
 The submission flag controls only new owner-storage admission. Saved owner runs still use their saved locations for reads, execution, retry, and recovery while their organization/environment authorization remains configured.
 
+The deploy workflow reads both values from GitHub Actions *variables* of the same names, `AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS` and `AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED`, defined on the GitHub Environment for the target stage: `dev` for dev, `prod` for bench, and `prod-external` for production. Every deployment job that synthesizes CDK passes them, with the defaults `{}` and `false` when a variable is absent. Set the variable in the GitHub Environment, not only in a manual `make deploy`: a later ordinary deploy re-synthesizes from these variables and would otherwise reset the map to `{}` and remove owner-bucket IAM from both task roles. Synthesis fails if `AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED` is `true` while `AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS` is empty.
+
 CDK supplies `AWS_DEPLOYMENT_ACCOUNT_ID` from the stack account. It passes the same account, canonical organization/environment JSON, and submission flag to Tracker and ExecutorHost.
 
 The bench AWS account is `613431292675`. ValSmith production currently uses the bench Valkyrie deployment. A local AWS profile named `vals-prod` is not evidence of access to the external production account. Obtain and verify the external production account value through its deployment owner before a production deployment.
