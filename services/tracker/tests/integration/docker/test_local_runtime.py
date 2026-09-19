@@ -62,7 +62,7 @@ async def test_local_runtime_transfers_and_executes_frozen_agent(tmp_path: Path,
     await runtime.objects.put_bytes(agent_bundle_key(contract.name), b"replacement bundle")
     await runtime.logs.create_benchmark(benchmark_id, retention_days=0)
     provider_config = await runtime.get_sandbox_provider_config()
-    async with runtime.get_sandbox_provider(provider_config) as provider:
+    async with provider_config.create_provider() as provider:
         async with create_sandbox(
             provider,
             "local-transfer",

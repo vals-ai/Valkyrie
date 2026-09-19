@@ -137,7 +137,7 @@ async def force_stop_sandboxes(
     """Send provider kill signals without coupling provider teardown to DB state."""
     try:
         config = await runtime.get_sandbox_provider_config()
-        async with runtime.get_sandbox_provider(config) as provider:
+        async with config.create_provider() as provider:
             sandboxes = [sandbox async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids)]
             await asyncio.gather(*(stop_sandbox(sandbox, provider, org) for sandbox in sandboxes))
     except Exception:
