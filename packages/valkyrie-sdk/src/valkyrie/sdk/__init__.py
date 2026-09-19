@@ -51,6 +51,7 @@ from valkyrie.sdk.config import ValkyrieConfig
 from valkyrie.sdk.errors import (
     ValkyrieAPIError,
     ValkyrieConfigError,
+    ValkyrieRunAcceptedError,
     ValkyrieRunError,
     ValkyrieSDKError,
     ValkyrieStreamError,
@@ -111,6 +112,7 @@ __all__ = [
     "ValkyrieClient",
     "ValkyrieConfig",
     "ValkyrieConfigError",
+    "ValkyrieRunAcceptedError",
     "ValkyrieRunError",
     "ValkyrieSDKError",
     "ValkyrieStreamError",

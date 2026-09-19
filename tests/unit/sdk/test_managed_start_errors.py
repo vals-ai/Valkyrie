@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from tests.unit.sdk.conftest import ClientFactory, SDKConfigFactory
-from valkyrie.sdk import ValkyrieAPIError, ValkyrieRunError
+from valkyrie.sdk import ValkyrieAPIError, ValkyrieRunAcceptedError, ValkyrieRunError
 
 _ACCEPTED_DETAIL = {
     "message": "Executor dispatch enqueue acknowledgement failed; use Retry to continue",
@@ -26,9 +26,10 @@ async def test_managed_start_preserves_accepted_run_identity_and_api_cause(
 
     config = sdk_config(AWS_ACCESS_KEY_ID=None, AWS_SECRET_ACCESS_KEY=None, AWS_SESSION_TOKEN=None)
     async with make_client(handler, config=config) as client:
-        with pytest.raises(ValkyrieRunError) as raised:
+        with pytest.raises(ValkyrieRunAcceptedError) as raised:
             await client.runs.start("sweagent", "swebench", managed_s3_bucket="vs-dev-acme-123")
 
+    assert isinstance(raised.value, ValkyrieRunError)
     assert raised.value.run_id == UUID("11111111-1111-4111-8111-111111111111")
     assert str(raised.value) == (
         "Run 11111111-1111-4111-8111-111111111111 was accepted but dispatch was not confirmed; "
