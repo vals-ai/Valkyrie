@@ -139,9 +139,10 @@ async def get_task_artifacts(
     ttl_seconds: int | None = None
     key = f"{_task_prefix(benchmark_id, task_id)}agent_output.tar.gz"
     if await runtime.objects.exists(key):
-        ttl_seconds = runtime.objects.maximum_download_ttl(300)
+        ttl_seconds = 300
         agent_output_url = await runtime.objects.temporary_download_url(key, expires_in=ttl_seconds)
         if agent_output_url is None:
+            ttl_seconds = 0
             agent_output_url = str(
                 request.url_for("get_run_artifact_url", benchmark_id=benchmark_id).include_query_params(
                     path=f"{task_id}/agent_output.tar.gz", download="true"

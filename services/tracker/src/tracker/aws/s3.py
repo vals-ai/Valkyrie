@@ -624,9 +624,6 @@ class S3ObjectStore:
             for item in response.get("Contents", [])
         ], response.get("NextContinuationToken")
 
-    def maximum_download_ttl(self, requested: int) -> int:
-        return self._runtime.clients.maximum_presign_ttl(requested)
-
     async def temporary_download_url(self, key: str, *, expires_in: int) -> str:
         return await create_presigned_url(key, self._runtime, expiration=expires_in)
 

@@ -111,13 +111,14 @@ async def get_run_artifact_url(
     """Return a temporary download URL for an exact artifact in the authorized run."""
     path = _path(path)
     key = benchmark_prefix(str(benchmark_id)) + path
-    ttl = run_context.objects.maximum_download_ttl(300)
+    ttl = 300
     with _storage_errors():
         metadata = await run_context.objects.stat(key)
         if download and isinstance(run_context.objects, FilesystemObjectStore):
             return FileResponse(run_context.objects.object_location(key), filename=Path(path).name)
         url = await run_context.objects.temporary_download_url(key, expires_in=ttl)
         if url is None:
+            ttl = 0
             url = str(
                 request.url_for("get_run_artifact_url", benchmark_id=benchmark_id).include_query_params(
                     path=path, download="true"
