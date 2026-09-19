@@ -176,7 +176,7 @@ class DeployWorkflowTest(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         organization_setting = "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}"
         storage_settings = (
-            "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS: ${{ vars.AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS || '{}' }}",
+            "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS: ${{ secrets.AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS || '{}' }}",
             "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED: ${{ vars.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED || 'false' }}",
         )
         synthesizing_jobs = [job_id for job_id in _job_ids(workflow) if organization_setting in _job(workflow, job_id)]
