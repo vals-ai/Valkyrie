@@ -80,7 +80,7 @@ class FilesystemObjectStore:
         *,
         should_continue: Callable[[], bool] | None = None,
     ) -> int:
-        await _io(local_path, self.root, key)
+        await asyncio.to_thread(local_path, self.root, key)
         async with self._staging_file() as (stream, temporary):
             size = 0
             async for chunk in chunks:
