@@ -104,11 +104,11 @@ EXPECTED_SIGNATURES = {
     RunsResource.stop: "self, run_id, *, force=False, task_ids=None",
     RunsResource.resume: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False, "
-        "benchmark_url=None"
+        "update_agent=False, benchmark_url=None"
     ),
     RunsResource.retry: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False, "
-        "benchmark_url=None"
+        "update_agent=False, benchmark_url=None"
     ),
     LogsResource.page_task: (
         "self, run_id, task_id, *, query=None, start_time=None, end_time=None, cursor=None, limit=1000"
