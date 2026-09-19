@@ -6,7 +6,9 @@ Confidence: high for the local contract. Deployed host compatibility is unknown.
 
 ## Deployment gate
 
-1. Apply additive migration `7b8c9d0e1f2a`, after `6a7b8c9d0e1f`.
+1. Apply additive migration `7b8c9d0e1f2a`, after `6a7b8c9d0e1f`. Migration
+   `9d0e1f2a3b4c` then narrows the `deletion_hold_permanent` check so only an
+   explicitly abandoned record may carry `released_at`.
 2. Deploy compatible stable hosts. Every host must obey active `runlifecycle`
    holds on claim, current-authority, heartbeat and finish. Hosts must write
    `executordispatch.process_exited_at` after they await actual child exit.
@@ -25,7 +27,8 @@ and during a hold. A failed acknowledgement leaves drain pending.
 ## Identity and hold interface
 
 `tracker.lifecycle` owns `OperationIdentity`, `RunScope`, `acquire_hold`,
-`require_owned_hold`, `require_unheld`, and `release_relocation_hold`. Transactions
+`require_owned_hold`, `require_unheld`, `release_relocation_hold`, and
+`abandon_deletion_hold`. Transactions
 belong to callers. Callers must acquire executor admission before the run lock
 when they need both. Acquisition locks the run, checks exact saved resources and
 org, and records a minimal durable identity without a Benchmark or Org foreign key.
@@ -67,8 +70,31 @@ It must raise for missing, stale or incomplete facts. It must not accept a saved
 success flag as proof. Exceptions retain the hold. The caller commits successful
 release explicitly; it keeps the released record. A new operation must provide
 `replace_released_operation_id` to replace that exact released relocation record.
-This cannot replace a deletion hold. Acquisition rejects an already released operation;
+This cannot replace a live deletion hold. Acquisition rejects an already released operation;
 use `require_owned_hold` to read its audit record. Ordinary retry cannot invoke this release.
+
+### Abandoning a mis-scoped deletion hold
+
+A deletion hold is a total freeze, and a wrong run UUID in the operator identity
+file freezes an unrelated live run. `abandon_deletion_hold(identity=..., scope=...,
+verify_unstarted=...)` is the only correction. It locks the run, requires the exact
+operation UUID, run scope and saved resources through `require_owned_hold`, refuses
+a record that is already released, and calls the in-process callback under the run
+lock. The purge operator supplies a callback that refuses any record whose durable
+checkpoint has left `held` or `prepared`, records scoped rows, records a verified
+fence digest, or disagrees with the stored phase. Abandonment is therefore possible
+only before the operation removed any object, log group or row.
+
+The abandoned record is kept, not deleted: `released_at` becomes the current UTC
+time and `phase` becomes `abandoned`. That row is the audit trail of the mistake.
+Releasing the record lifts the freeze, so retry, resume, recovery admission, queued
+execution, terminal side effects and every host claim, heartbeat, finish and
+terminalize path work again. A later operation must supply
+`replace_released_operation_id` with the abandoned operation UUID to take the run
+again, and that replacement deletes the abandoned row, so copy it out first if the
+audit record must outlive the replacement. The same operation cannot resurrect its
+own abandoned hold. Abandonment never touches provider state; sandboxes the
+preparation already deleted and a force-stop it already applied stay applied.
 
 ## Drain evidence
 

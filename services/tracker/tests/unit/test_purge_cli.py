@@ -87,3 +87,29 @@ def test_cli_never_overwrites_immutable_plan_with_report(monkeypatch: pytest.Mon
     )
     assert plan.read_text() == "immutable plan"
     engine.assert_not_called()
+
+
+def test_cli_refuses_abandonment_without_apply(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+
+    create_engine = MagicMock()
+    monkeypatch.setattr(cli, "create_engine", create_engine)
+    assert (
+        main(
+            [
+                "abandon",
+                "--database-url-env",
+                "PRIVATE_DB",
+                "--expected-database-target",
+                "tracker",
+                "--plan",
+                "private.json",
+                "--run",
+                "0d1ab1cd-0000-4000-8000-000000000001",
+            ]
+        )
+        == 2
+    )
+    create_engine.assert_not_called()
+    assert "--apply" in capsys.readouterr().err

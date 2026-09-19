@@ -139,11 +139,10 @@ def acquire_hold(
                 if record.released_at is not None:
                     raise LifecycleConflict("A released operation cannot acquire a new hold")
                 return record
-            if (
-                previous.purpose != "relocation"
-                or previous.released_at is None
-                or replace_released_operation_id != previous_identity.operation_id
-            ):
+            replaceable = previous.released_at is not None and (
+                previous.purpose == "relocation" or previous.phase == "abandoned"
+            )
+            if not replaceable or replace_released_operation_id != previous_identity.operation_id:
                 raise LifecycleConflict("Another lifecycle operation owns this run")
 
         if (
@@ -166,6 +165,37 @@ def acquire_hold(
         session.add(record)
         session.flush()
         return record
+
+
+def abandon_deletion_hold(
+    session: Session,
+    *,
+    identity: OperationIdentity,
+    scope: RunScope,
+    verify_unstarted: Callable[[Session, RunLifecycle], None],
+) -> RunLifecycle:
+    """Correct a mis-scoped deletion hold before the operation destroys anything.
+
+    The callback receives `(session, record)` under the run lock and must refuse
+    every record whose durable evidence shows purge progress. The abandoned record
+    is kept, released and phased `abandoned`, so the mistake stays auditable and a
+    later operation must replace it explicitly.
+    """
+    if _lock_run(session, scope.run_id) is None:
+        raise LifecycleConflict("Cannot abandon a deletion hold for an absent run")
+
+    record = require_owned_hold(session, identity=identity, scope=scope, purpose="deletion")
+    if record.released_at is not None:
+        raise LifecycleConflict("A released operation cannot be abandoned")
+
+    verify_unstarted(session, record)
+
+    record.released_at = datetime.now(UTC)
+    record.phase = "abandoned"
+    session.add(record)
+    session.flush()
+
+    return record
 
 
 def release_relocation_hold(

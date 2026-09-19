@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from uuid import UUID
 
 from pydantic import BaseModel, TypeAdapter
 from sqlmodel import Session, create_engine
@@ -13,7 +14,7 @@ from sqlmodel import Session, create_engine
 from tracker.aws.clients import DefaultChainAWSClientProvider
 from tracker.lifecycle import LifecycleConflict, OperationIdentity
 from tracker.lifecycle_evidence import ExternalHostDrain, HostContractObservation, write_report
-from tracker.run_purge import PurgeOperator, build_plan
+from tracker.run_purge import PurgeOperator, abandon_runs, build_plan
 from tracker.run_purge.contracts import PurgePlan
 from tracker.run_purge.providers import AWSProviderBoundary, FenceReceipt
 
@@ -34,12 +35,13 @@ def write_plan(path: Path, plan: BaseModel) -> None:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Prepare, then purge exact tracker run data behind permanent holds")
-    result.add_argument("action", nargs="?", choices=("plan", "prepare", "purge", "resume"), default="plan")
+    result.add_argument("action", nargs="?", choices=("plan", "prepare", "purge", "resume", "abandon"), default="plan")
     result.add_argument("--apply", action="store_true")
     result.add_argument("--database-url-env", required=True)
     result.add_argument("--expected-database-target", required=True)
     result.add_argument("--identity", type=Path)
     result.add_argument("--plan", type=Path, required=True)
+    result.add_argument("--run", type=UUID, action="append", default=[])
     result.add_argument("--report", type=Path)
     result.add_argument("--host-contract", type=Path)
     result.add_argument("--fence-receipts", type=Path)
@@ -85,14 +87,15 @@ def main(arguments: list[str] | None = None) -> int:
                 print(f"Planned {len(plan.runs)} runs; child plan SHA256 {plan.digest()}")
                 return 0
             plan = PurgePlan.model_validate_json(options.plan.read_text())
-            if (
-                plan.identity.database_target != options.expected_database_target
-                or options.report is None
-                or options.host_contract is None
-            ):
-                raise LifecycleConflict(
-                    "Apply requires matching database target, report path and current host contract"
-                )
+            if plan.identity.database_target != options.expected_database_target:
+                raise LifecycleConflict("Expected database target differs from the immutable plan")
+            if options.action == "abandon":
+                abandoned = abandon_runs(session, plan, tuple(options.run))
+                print(f"abandon: {len(abandoned)} deletion holds released; child plan SHA256 {plan.digest()}")
+                return 0
+
+            if options.report is None or options.host_contract is None:
+                raise LifecycleConflict("Apply requires a report path and a current host contract")
             host = HostContractObservation.model_validate_json(options.host_contract.read_text())
             receipts = (
                 TypeAdapter(tuple[FenceReceipt, ...]).validate_json(options.fence_receipts.read_text())

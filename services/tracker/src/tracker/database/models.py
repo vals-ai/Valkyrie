@@ -312,7 +312,10 @@ class RunLifecycle(SQLModel, table=True):
 
     __table_args__ = (
         CheckConstraint("purpose IN ('relocation', 'deletion')", name="lifecycle_purpose"),
-        CheckConstraint("purpose != 'deletion' OR released_at IS NULL", name="deletion_hold_permanent"),
+        CheckConstraint(
+            "purpose != 'deletion' OR released_at IS NULL OR phase = 'abandoned'",
+            name="deletion_hold_permanent",
+        ),
     )
 
     run_id: UUID = Field(primary_key=True)

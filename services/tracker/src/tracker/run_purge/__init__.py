@@ -3,12 +3,19 @@
 import hashlib
 from datetime import UTC, datetime
 from typing import Literal, Protocol
+from uuid import UUID
 
 from pydantic import ValidationError
 from sqlmodel import Session, col, select
 
 from tracker.database.models import Benchmark, ExecutorDispatch, Org, RunLifecycle
-from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, require_owned_hold
+from tracker.lifecycle import (
+    LifecycleConflict,
+    OperationIdentity,
+    RunScope,
+    abandon_deletion_hold,
+    require_owned_hold,
+)
 from tracker.lifecycle_evidence import (
     DispatchDrain,
     ExternalHostDrain,
@@ -29,6 +36,9 @@ from tracker.run_purge.locking import OperationLock, exclusive_operation, verify
 from tracker.run_purge.predecessor import acquire_deletion_hold, capture_predecessor
 from tracker.run_purge.rows import delete_rows, inventory_rows, verify_foreign_keys, verify_rows_absent
 from tracker.utils.run_control import apply_stop_benchmark
+
+
+_ABANDONABLE_PHASES = {"held", "prepared"}
 
 
 class PurgeBoundary(Protocol):
@@ -61,6 +71,47 @@ def build_plan(session: Session, identity: OperationIdentity) -> PurgePlan:
             )
         )
     return PurgePlan(identity=identity, runs=tuple(runs))
+
+
+def _refuse_started_purge(_session: Session, record: RunLifecycle) -> None:
+    if record.checkpoint_json is None:
+        return
+
+    try:
+        checkpoint = PurgeCheckpoint.model_validate_json(record.checkpoint_json)
+    except ValidationError as error:
+        raise LifecycleConflict("Missing or invalid purge checkpoint") from error
+
+    if (
+        record.phase != checkpoint.phase
+        or checkpoint.phase not in _ABANDONABLE_PHASES
+        or checkpoint.rows
+        or checkpoint.fence_policy_sha256 is not None
+    ):
+        raise LifecycleConflict("A purge that has started cannot be abandoned")
+
+
+def _selected_runs(plan: PurgePlan, run_ids: tuple[UUID, ...]) -> tuple[PurgeRun, ...]:
+    selected = tuple(run for run in plan.runs if run.scope.run_id in run_ids)
+    if not run_ids or len(selected) != len(set(run_ids)):
+        raise LifecycleConflict("Abandonment requires exact planned run identifiers")
+
+    return selected
+
+
+def abandon_runs(session: Session, plan: PurgePlan, run_ids: tuple[UUID, ...]) -> tuple[UUID, ...]:
+    """Release named deletion holds of this exact operation before any purge step."""
+    verify_database_target(session, plan.identity)
+    selected = _selected_runs(plan, run_ids)
+
+    with exclusive_operation(session, plan.identity):
+        for run in selected:
+            abandon_deletion_hold(
+                session, identity=plan.identity, scope=run.scope, verify_unstarted=_refuse_started_purge
+            )
+        session.commit()
+
+    return tuple(run.scope.run_id for run in selected)
 
 
 class PurgeOperator:

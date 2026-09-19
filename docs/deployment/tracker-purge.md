@@ -6,11 +6,13 @@ executor releases, admission controls, another run's data, or shared log groups.
 
 Use `services/tracker/scripts/purge_run_data.py` from this repository with `uv`.
 The default action is the read-only `plan`. Each mutation requires `--apply`.
-There is no public API, retry override, bucket override, or hold-release option.
+There is no public API, retry override, or bucket override. The only hold release
+is `abandon`, which corrects a mis-scoped operation before it removes anything.
 
 ## Deployment and evidence gate
 
-Deploy additive migration `8c9d0e1f2a3b` after `7b8c9d0e1f2a`. Deploy hosts that
+Deploy additive migration `8c9d0e1f2a3b` after `7b8c9d0e1f2a`, then `9d0e1f2a3b4c`,
+which lets an explicitly abandoned deletion record release its run. Deploy hosts that
 obey the shared lifecycle hold and write positive exit acknowledgements. Verify
 the complete deployed host inventory before using prepare or purge. Read
 [the shared lifecycle contract](tracker-lifecycle.md) for the host rollout and
@@ -159,6 +161,34 @@ uv run --project services/tracker python services/tracker/scripts/purge_run_data
   --host-contract /private/current-host-contract.json \
   --fence-receipts /private/owner-fence-receipts.json
 ```
+
+### Correcting a mis-scoped operation
+
+`plan` and `prepare` check only that each run exists and belongs to the identity
+org, and the provider checks are properties of the owner bucket that every run of
+that owner shares, so a wrong run UUID in the identity file passes every gate and
+freezes a live run. Before the operation removes anything, abandon it:
+
+```sh
+uv run --project services/tracker python services/tracker/scripts/purge_run_data.py abandon --apply \
+  --database-url-env TRACKER_PURGE_DATABASE_URL \
+  --expected-database-target 'postgresql:tracker.internal:5432/tracker' \
+  --plan /private/purge-plan.json \
+  --run <run UUID> --run <run UUID>
+```
+
+Repeat `--run` for each hold to release; every value must be a run of that exact
+plan, and at least one is required. The command takes the same advisory lock as
+`purge`, so it cannot run beside a live purge of the operation. It refuses any run
+whose durable checkpoint has left `held` or `prepared`, already carries scoped rows
+or a verified fence digest, or disagrees with the stored phase. It makes no provider
+call and writes no report; the abandoned control record is the evidence, and
+[the shared lifecycle contract](tracker-lifecycle.md) states what it retains.
+
+Correct the identity file, use a new `operation_id`, and plan again. Runs whose
+holds were abandoned plan and prepare normally; the new operation replaces the
+abandoned record explicitly and that replacement removes it. A force-stop and
+sandbox deletion that preparation already applied are not undone.
 
 Use `resume` with the same arguments and immutable plan to retry an incomplete
 purge. The command always checks current provider absence and fence authority.
