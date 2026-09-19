@@ -26,6 +26,7 @@ from valkyrie.sdk import (
     ValkyrieClient,
     ValkyrieConfig,
     ValkyrieConfigError,
+    ValkyrieRunAcceptedError,
     ValkyrieRunError,
     ValkyrieSDKError,
     ValkyrieStreamError,
@@ -407,6 +408,7 @@ async def test_start_with_managed_storage_rejects_unconfirmed_bucket(
             )
 
     assert error.value.run_id == run_id
+    assert not isinstance(error.value, ValkyrieRunAcceptedError)
     assert ValkyrieRunError("invalid input").run_id is None
     assert str(ValkyrieRunError("invalid input")) == "invalid input"
 

@@ -29,6 +29,13 @@ class ValkyrieRunError(ValkyrieSDKError):
         super().__init__(message)
 
 
+class ValkyrieRunAcceptedError(ValkyrieRunError):
+    """The run exists with the requested storage, but its dispatch was not acknowledged.
+
+    The run is safe to reconcile or retry by ``run_id``. It is not a storage rejection.
+    """
+
+
 class ValkyrieTransportError(ValkyrieSDKError):
     """A request could not reach the Valkyrie service."""
 
