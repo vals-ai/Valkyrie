@@ -1419,7 +1419,7 @@ async def retry_or_resume_benchmark(
     http_request: Request,
     retry: bool = Query(default=False),
     retry_mode: RetryMode = Query(default=RetryMode.AUTO),
-    update_agent: bool = Query(default=False),
+    update_agent: bool = False,
     concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
