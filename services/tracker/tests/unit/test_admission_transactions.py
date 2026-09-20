@@ -237,13 +237,9 @@ async def test_cancellation_during_commit_observes_outcome_before_propagating(
     monkeypatch.setattr(main_module, "_rollback_failed_start_admission", cleanup_failed_start)
     monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
-    url = (
-        f"/retry-or-resume-benchmark/{benchmark.id}" if operation == "retry" else "/start-benchmark"
-    )
+    url = f"/retry-or-resume-benchmark/{benchmark.id}" if operation == "retry" else "/start-benchmark"
     body = {} if operation == "retry" else _start_body(benchmark, harness_config)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=main_module.app), base_url="http://test"
-    ) as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main_module.app), base_url="http://test") as client:
         request = asyncio.create_task(client.post(url, json=body, headers=harness_headers))
         assert await asyncio.to_thread(commit_entered.wait, 2)
         request.cancel()
@@ -306,12 +302,8 @@ async def test_start_cancellation_enqueues_after_bind_failure_and_chains_cause(
     monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
     body = _start_body(benchmark, harness_config)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=main_module.app), base_url="http://test"
-    ) as client:
-        request = asyncio.create_task(
-            client.post("/start-benchmark", json=body, headers=harness_headers)
-        )
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main_module.app), base_url="http://test") as client:
+        request = asyncio.create_task(client.post("/start-benchmark", json=body, headers=harness_headers))
         assert await asyncio.to_thread(commit_entered.wait, 2)
         request.cancel()
         await asyncio.sleep(0)
@@ -355,13 +347,9 @@ async def test_cancellation_during_enqueue_waits_for_completion(
 
     monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
-    url = (
-        f"/retry-or-resume-benchmark/{benchmark.id}" if operation == "retry" else "/start-benchmark"
-    )
+    url = f"/retry-or-resume-benchmark/{benchmark.id}" if operation == "retry" else "/start-benchmark"
     body = {} if operation == "retry" else _start_body(benchmark, harness_config)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=main_module.app), base_url="http://test"
-    ) as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main_module.app), base_url="http://test") as client:
         request = asyncio.create_task(client.post(url, json=body, headers=harness_headers))
         await asyncio.wait_for(enqueue_entered.wait(), timeout=2)
         request.cancel()
@@ -372,6 +360,7 @@ async def test_cancellation_during_enqueue_waits_for_completion(
 
     assert enqueue_finished.is_set()
     assert all(not session.in_transaction() for session, _ in observed_sessions)
+
 
 @pytest.mark.parametrize(
     "change", ["execution", "status", "attempt", "selection", "dataset", "destination", "stopping", "unrelated"]

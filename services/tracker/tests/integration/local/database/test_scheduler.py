@@ -33,7 +33,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, create_engine, func, select
 
 from tests.factories import make_task
-from tracker.auth import RequestIdentity, get_current_org, get_current_starter
+from tracker.auth import RequestIdentity
 from tracker.aws.resolver import AWSRuntimeResolution
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
@@ -45,13 +45,13 @@ from tracker.database.models import (
     BenchmarkArguments,
     ExecutorAdmission,
     ExecutorDispatch,
+    ExecutorRelease,
     ExecutorDispatchStatus,
     Org,
     RetryMode,
     Task,
     TaskStatus,
 )
-from tracker.database.session import get_session
 from tracker.exceptions import SandboxSetupError
 import tracker.executor.dispatch_control as dispatch_control
 from tracker.executor.execution_authority import ExecutionAuthority
@@ -246,9 +246,9 @@ async def test_http_admission_waits_for_real_postgres_row_lock_without_blocking_
         with Session(postgres_engine) as session:
             yield session
 
-    monkeypatch.setitem(tracker_main.app.dependency_overrides, get_session, request_session)
-    monkeypatch.setitem(tracker_main.app.dependency_overrides, get_current_org, lambda: org)
-    monkeypatch.setitem(tracker_main.app.dependency_overrides, get_current_starter, lambda: identity)
+    monkeypatch.setitem(tracker_main.app.dependency_overrides, tracker_main.get_session, request_session)
+    monkeypatch.setitem(tracker_main.app.dependency_overrides, tracker_main.get_current_org, lambda: org)
+    monkeypatch.setitem(tracker_main.app.dependency_overrides, tracker_main.get_current_starter, lambda: identity)
     monkeypatch.setattr(tracker_main, "check_database_connection", lambda: True)
     monkeypatch.setattr(tracker_main, "SANDBOX_QUEUE_ENABLED", False)
     _use_access_key_runtime(monkeypatch, harness_config)
@@ -288,14 +288,15 @@ async def test_http_admission_waits_for_real_postgres_row_lock_without_blocking_
         url = f"/retry-or-resume-benchmark/{benchmark.id}"
         body: dict[str, Any] = {}
     else:
-        original_lock = dispatch_control.lock_executor_admission
+        original_select_active_release = dispatch_control.select_active_release
 
-        def observed_start_lock(session: Session) -> object:
-            session.exec(text("SET LOCAL lock_timeout = '5s'"))
-            lock_entered.set()
-            return original_lock(session)
+        def observed_start_lock(session: Session, *, for_update: bool = False) -> ExecutorRelease:
+            if for_update:
+                session.exec(text("SET LOCAL lock_timeout = '5s'"))
+                lock_entered.set()
+            return original_select_active_release(session, for_update=for_update)
 
-        monkeypatch.setattr(dispatch_control, "lock_executor_admission", observed_start_lock)
+        monkeypatch.setattr(dispatch_control, "select_active_release", observed_start_lock)
         url = "/start-benchmark"
         body = StartBenchmarkRequest(
             benchmark_name=f"postgres-lock-{uuid4()}",
