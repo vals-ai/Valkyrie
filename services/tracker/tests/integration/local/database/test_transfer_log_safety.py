@@ -153,8 +153,8 @@ def test_command_completes_a_quiet_legacy_run_and_publishes_its_archive(
     logs = RunLogs(f"logs/{run.id}")
     storage = OwnerStorage(org.id)
     boundary = TransferAWSBoundary(
-        None,
-        None,
+        Mock(),
+        Mock(),
         tmp_path / "journal",
         source_session=FakeSession("111111111111", logs),
         destination_session=FakeSession("222222222222", storage),

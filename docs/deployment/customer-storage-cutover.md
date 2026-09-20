@@ -22,7 +22,7 @@ Use destination credentials to run `aws service-quotas list-service-quotas --ser
 
 ## 3. Deploy schema, protection, roles and compatible runtime
 
-Deploy additive Tracker migrations through `9d0e1f2a3b4c` and the corresponding reviewed ValSmith additive schema. Deploy compatible stable hosts that enforce holds and acknowledge actual process exits, then Tracker guards/readers/operator commands and protocol-v3 executor releases. Inventory every old host and dispatch. Keep lifecycle apply disabled until the host contract is verified.
+Deploy additive Tracker migrations through `0e1f2a3b4c5d` and the corresponding reviewed ValSmith additive schema. Deploy compatible stable hosts that enforce holds and acknowledge actual process exits, then Tracker guards/readers/operator commands and protocol-v3 executor releases. Inventory every old host and dispatch. Keep lifecycle apply disabled until the host contract is verified.
 
 Enable the production-only construct with `VALSMITH_CUSTOMER_STORAGE_ENABLED=true`. Supply every validated input from [the infrastructure contract](../../infra/customer-storage.md): `PRODUCTION_ACCOUNT_ID`, `VALSMITH_STORAGE_ORG_ID`, `VALSMITH_STORAGE_OIDC_PROVIDER_ARN`, `VALSMITH_STORAGE_OIDC_AUDIENCE`, `VALSMITH_STORAGE_OIDC_SUBJECT`, `VALSMITH_DATASET_VIEW_LAMBDA_NAME`, `VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN`, `VALSMITH_LEGACY_STORAGE_BUCKET`, and `VALSMITH_LEGACY_STORAGE_ACCOUNT_ID`. Leave nonproduction defaults disabled.
 

@@ -201,7 +201,7 @@ manifest bytes alone leaves old version IDs and destination identity in place.
 
 ## Existing application reader and stored-column transfer
 
-Migration `9d0e1f2a3b4c`, after purge checkpoint `8c9d0e1f2a3b`, adds nullable
+Migration `0e1f2a3b4c5d`, after the abandoned deletion hold `9d0e1f2a3b4c`, adds nullable
 `benchmark.log_history` JSON. Ordinary runs keep SQL NULL. The database adapter
 validates `LogHistoryReference` on write and read. Its schema-only definition is
 in `tracker.runtime.log_history_reference`; the existing writer import remains

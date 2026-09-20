@@ -59,7 +59,7 @@ def test_log_history_additive_migration_and_typed_storage() -> None:
             )
 
         upgrade("head")
-        assert ScriptDirectory.from_config(Config(str(tracker_root / "alembic.ini"))).get_heads() == ["9d0e1f2a3b4c"]
+        assert ScriptDirectory.from_config(Config(str(tracker_root / "alembic.ini"))).get_heads() == ["0e1f2a3b4c5d"]
         columns = {column["name"]: column for column in inspect(engine).get_columns("benchmark")}
         assert columns["log_history"]["nullable"]
         with engine.connect() as connection:
