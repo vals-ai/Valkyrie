@@ -5,13 +5,13 @@ import threading
 from collections.abc import AsyncGenerator
 from datetime import timedelta
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import VerifyTaskIdsResponse
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from sqlmodel import Session, select
 
 import main as main_module
@@ -31,6 +31,7 @@ from tracker.database.models import (
 )
 from tracker.executor import release_control
 from tracker.executor.release_control import promote_release
+from tracker.logging import benchmark_id_var
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 
 
@@ -189,6 +190,188 @@ async def test_blocking_admission_wait_does_not_block_health(
         assert len(mock_kicker.queued_calls) == 1
         assert all(not session.in_transaction() for session, _ in observed_sessions)
 
+
+@pytest.mark.parametrize("operation", ["retry", "start"])
+@pytest.mark.parametrize("commit_error", [False, True])
+async def test_cancellation_during_commit_observes_outcome_before_propagating(
+    operation: str,
+    commit_error: bool,
+    recovery_run: tuple[Benchmark, Task],
+    database_session: Session,
+    observed_sessions: list[tuple[Session, int]],
+    monkeypatch: pytest.MonkeyPatch,
+    harness_headers: dict[str, str],
+    harness_config: HarnessConfig,
+) -> None:
+    benchmark, _ = recovery_run
+    commit_entered = threading.Event()
+    release_commit = threading.Event()
+    commit_completed = threading.Event()
+    enqueued_dispatch_ids: list[object] = []
+    commit_name = "_commit_recovery" if operation == "retry" else "_commit_start"
+    original_commit = getattr(main_module, commit_name)
+    cleanup_failed_start = AsyncMock(wraps=main_module._rollback_failed_start_admission)
+
+    def blocked_commit(*args: Any, **kwargs: Any) -> Any:
+        commit_entered.set()
+        try:
+            assert release_commit.wait(timeout=5), "cancelled admission did not release the commit barrier"
+            if commit_error:
+                raise RuntimeError("admission failed")
+            return original_commit(*args, **kwargs)
+        finally:
+            commit_completed.set()
+
+    async def enqueue(dispatch: ExecutorDispatch, **_kwargs: Any) -> None:
+        with Session(database_session.get_bind()) as checked:
+            assert checked.get(ExecutorDispatch, dispatch.id) is not None
+        if operation == "start":
+            # Enqueue is a child task and must inherit the request's benchmark correlation.
+            assert benchmark_id_var.get() == str(dispatch.benchmark_id)
+        enqueued_dispatch_ids.append(dispatch.id)
+
+    async def verify(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+        return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+    monkeypatch.setattr(main_module, commit_name, blocked_commit)
+    monkeypatch.setattr(main_module, "_rollback_failed_start_admission", cleanup_failed_start)
+    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
+    url = (
+        f"/retry-or-resume-benchmark/{benchmark.id}" if operation == "retry" else "/start-benchmark"
+    )
+    body = {} if operation == "retry" else _start_body(benchmark, harness_config)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main_module.app), base_url="http://test"
+    ) as client:
+        request = asyncio.create_task(client.post(url, json=body, headers=harness_headers))
+        assert await asyncio.to_thread(commit_entered.wait, 2)
+        request.cancel()
+        await asyncio.sleep(0)
+        assert not request.done()
+        assert not commit_completed.is_set()
+        release_commit.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(request, timeout=2)
+        assert commit_completed.is_set()
+
+    assert len(enqueued_dispatch_ids) == (0 if commit_error else 1)
+    if operation == "start" and commit_error:
+        cleanup_failed_start.assert_awaited_once()
+    else:
+        cleanup_failed_start.assert_not_awaited()
+    assert all(not session.in_transaction() for session, _ in observed_sessions)
+
+
+@pytest.mark.parametrize("enqueue_error", [False, True])
+async def test_start_cancellation_enqueues_after_bind_failure_and_chains_cause(
+    enqueue_error: bool,
+    recovery_run: tuple[Benchmark, Task],
+    database_session: Session,
+    observed_sessions: list[tuple[Session, int]],
+    monkeypatch: pytest.MonkeyPatch,
+    harness_headers: dict[str, str],
+    harness_config: HarnessConfig,
+) -> None:
+    benchmark, _ = recovery_run
+    commit_entered = threading.Event()
+    release_commit = threading.Event()
+    original_commit = main_module._commit_start
+    bind_error = RuntimeError("failed to bind benchmark context")
+    enqueue_failure = HTTPException(status_code=503, detail="resolved enqueue failure")
+    enqueued_dispatch_ids: list[object] = []
+    bind_failure_log = Mock()
+
+    def blocked_commit(*args: Any, **kwargs: Any) -> Any:
+        commit_entered.set()
+        assert release_commit.wait(timeout=5), "cancelled admission did not release the commit barrier"
+        return original_commit(*args, **kwargs)
+
+    async def fail_bind(_benchmark_id: object) -> None:
+        raise bind_error
+
+    async def enqueue(dispatch: ExecutorDispatch, **_kwargs: Any) -> None:
+        with Session(database_session.get_bind()) as checked:
+            assert checked.get(ExecutorDispatch, dispatch.id) is not None
+        enqueued_dispatch_ids.append(dispatch.id)
+        if enqueue_error:
+            raise enqueue_failure
+
+    async def verify(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+        return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+    monkeypatch.setattr(main_module, "_commit_start", blocked_commit)
+    monkeypatch.setattr(main_module, "bind_benchmark_id", fail_bind)
+    monkeypatch.setattr(main_module.logger, "exception", bind_failure_log)
+    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
+    body = _start_body(benchmark, harness_config)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main_module.app), base_url="http://test"
+    ) as client:
+        request = asyncio.create_task(
+            client.post("/start-benchmark", json=body, headers=harness_headers)
+        )
+        assert await asyncio.to_thread(commit_entered.wait, 2)
+        request.cancel()
+        await asyncio.sleep(0)
+        assert not request.done()
+        release_commit.set()
+        with pytest.raises(asyncio.CancelledError) as cancellation:
+            await asyncio.wait_for(request, timeout=2)
+
+    assert len(enqueued_dispatch_ids) == 1
+    expected_cause = enqueue_failure if enqueue_error else bind_error
+    assert cancellation.value.__cause__ is expected_cause
+    bind_failure_log.assert_called_once()
+    assert all(not session.in_transaction() for session, _ in observed_sessions)
+
+
+@pytest.mark.parametrize("operation", ["retry", "start"])
+@pytest.mark.parametrize("enqueue_error", [False, True])
+async def test_cancellation_during_enqueue_waits_for_completion(
+    operation: str,
+    enqueue_error: bool,
+    recovery_run: tuple[Benchmark, Task],
+    observed_sessions: list[tuple[Session, int]],
+    monkeypatch: pytest.MonkeyPatch,
+    harness_headers: dict[str, str],
+    harness_config: HarnessConfig,
+) -> None:
+    benchmark, _ = recovery_run
+    enqueue_entered = asyncio.Event()
+    release_enqueue = asyncio.Event()
+    enqueue_finished = asyncio.Event()
+
+    async def enqueue(*_args: Any, **_kwargs: Any) -> None:
+        enqueue_entered.set()
+        await release_enqueue.wait()
+        enqueue_finished.set()
+        if enqueue_error:
+            raise HTTPException(status_code=503, detail="resolved enqueue failure")
+
+    async def verify(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+        return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
+    url = (
+        f"/retry-or-resume-benchmark/{benchmark.id}" if operation == "retry" else "/start-benchmark"
+    )
+    body = {} if operation == "retry" else _start_body(benchmark, harness_config)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main_module.app), base_url="http://test"
+    ) as client:
+        request = asyncio.create_task(client.post(url, json=body, headers=harness_headers))
+        await asyncio.wait_for(enqueue_entered.wait(), timeout=2)
+        request.cancel()
+        assert not request.done()
+        release_enqueue.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(request, timeout=2)
+
+    assert enqueue_finished.is_set()
+    assert all(not session.in_transaction() for session, _ in observed_sessions)
 
 @pytest.mark.parametrize(
     "change", ["execution", "status", "attempt", "selection", "dataset", "destination", "stopping", "unrelated"]

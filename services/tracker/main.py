@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
 from datetime import UTC, datetime
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, TypeVar, cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -168,6 +168,8 @@ logger = get_logger(__name__)
 
 _COMPLETION_CALLBACK_CONFIG = Config(read_timeout=60, retries={"total_max_attempts": 1})
 
+_TaskResult = TypeVar("_TaskResult")
+
 # Tracker publishes the stable wire contract; ExecutorHost resolves the same
 # task name before launching the pinned executor artifact.
 process_benchmark = broker.task(EXECUTOR_TASK_NAME)(executor_task_signature)
@@ -257,6 +259,36 @@ def _resolve_enqueue_failure(
 ) -> EnqueueFailureResolution:
     with Session(bind) as session:
         return resolve_enqueue_failure(session, benchmark_id=benchmark_id, dispatch_id=dispatch_id, task_ids=task_ids)
+
+
+class _TaskFailedAfterCancellation(Exception):
+    def __init__(self, task_error: Exception, cancellation: asyncio.CancelledError) -> None:
+        super().__init__(str(task_error))
+        self.task_error = task_error
+        self.cancellation = cancellation
+
+
+async def _await_before_cancellation(
+    task: asyncio.Task[_TaskResult],
+    cancellation: asyncio.CancelledError | None = None,
+) -> tuple[_TaskResult, asyncio.CancelledError | None]:
+    """Observe task completion before propagating pending cancellation."""
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            if cancellation is None:
+                cancellation = error
+        except Exception:
+            # Read the completed task below so cancellation keeps precedence.
+            pass
+    try:
+        result = task.result()
+    except Exception as error:
+        if cancellation is not None:
+            raise _TaskFailedAfterCancellation(error, cancellation) from error
+        raise
+    return result, cancellation
 
 
 async def _enqueue_executor_dispatch(
@@ -725,19 +757,27 @@ async def start_benchmark(
             str(benchmark_row.id),
             request.contract.name,
         )
-        benchmark_json, result = await asyncio.to_thread(
-            _commit_start,
-            bind,
-            benchmark_row.model_dump_json(),
-            request,
-            dispatch_id,
-            verify_response.task_ids,
-            resolved_queue_pool_id,
+        commit_task = asyncio.create_task(
+            asyncio.to_thread(
+                _commit_start,
+                bind,
+                benchmark_row.model_dump_json(),
+                request,
+                dispatch_id,
+                verify_response.task_ids,
+                resolved_queue_pool_id,
+            )
         )
+        (benchmark_json, result), cancellation = await _await_before_cancellation(commit_task)
         benchmark_row = Benchmark.model_validate(json.loads(benchmark_json))
         executor_dispatch = ExecutorDispatch.model_validate(json.loads(result.dispatch_json))
         executor_payload = json.loads(result.payload_json)
-    except Exception as exc:
+    except Exception as error:
+        cancellation_after_failure: asyncio.CancelledError | None = None
+        exc = error
+        if isinstance(exc, _TaskFailedAfterCancellation):
+            cancellation_after_failure = exc.cancellation
+            exc = exc.task_error
         if isinstance(exc, _StartAdmissionRollbackError):
             assert exc.__cause__ is not None
             exc = exc.__cause__
@@ -750,10 +790,22 @@ async def start_benchmark(
                 request=request,
                 object_store=object_store,
             )
+        if cancellation_after_failure is not None:
+            raise cancellation_after_failure from exc
         if isinstance(exc, ReleaseControlError):
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         raise TrackerServiceError("Failed to admit benchmark execution") from exc
-    await bind_benchmark_id(benchmark_row.id)
+    bind_failure: Exception | None = None
+    try:
+        await bind_benchmark_id(benchmark_row.id)
+    except Exception as error:
+        if cancellation is None:
+            raise
+        logger.exception(
+            "Failed to bind benchmark context after cancelled admission",
+            extra={"benchmark_id": str(benchmark_row.id), "executor_dispatch_id": str(dispatch_id)},
+        )
+        bind_failure = error
 
     if run_starter.access_key_id is not None and run_starter.email is None:
         logger.warning(
@@ -761,12 +813,22 @@ async def start_benchmark(
             run_starter.access_key_id,
         )
 
-    await _enqueue_executor_dispatch(
-        executor_dispatch,
-        session=session,
-        payload=executor_payload,
-        verified_task_ids=verify_response.task_ids,
+    enqueue_task = asyncio.create_task(
+        _enqueue_executor_dispatch(
+            executor_dispatch,
+            session=session,
+            payload=executor_payload,
+            verified_task_ids=verify_response.task_ids,
+        )
     )
+    try:
+        _, cancellation = await _await_before_cancellation(enqueue_task, cancellation)
+    except _TaskFailedAfterCancellation as failure:
+        raise failure.cancellation from failure.task_error
+    if cancellation is not None:
+        if bind_failure is not None:
+            raise cancellation from bind_failure
+        raise cancellation
 
     return StartBenchmarkResponse(
         benchmark_name=benchmark_row.name,
@@ -1489,31 +1551,45 @@ async def retry_or_resume_benchmark(
             verified_task_ids = verified.task_ids
         finally:
             await service.close()
-    result = await asyncio.to_thread(
-        _commit_recovery,
-        bind,
-        org_id,
-        benchmark_id=benchmark_id,
-        api_key=api_key,
-        retry=retry,
-        retry_mode=retry_mode,
-        concurrency=concurrency,
-        task_ids=task_ids,
-        service_headers=service_headers,
-        secrets=secrets,
-        benchmark_url=benchmark_url,
-        lambda_function=lambda_function,
-        access_key_harness_config=runtime_resolution.access_key_harness_config,
-        preparation=preparation,
-        verified_task_ids=verified_task_ids,
-    )
-    if result is not None:
-        await _enqueue_executor_dispatch(
-            ExecutorDispatch.model_validate(json.loads(result.dispatch_json)),
-            session=session,
-            payload=json.loads(result.payload_json),
-            verified_task_ids=list(result.verified_task_ids),
+    commit_task = asyncio.create_task(
+        asyncio.to_thread(
+            _commit_recovery,
+            bind,
+            org_id,
+            benchmark_id=benchmark_id,
+            api_key=api_key,
+            retry=retry,
+            retry_mode=retry_mode,
+            concurrency=concurrency,
+            task_ids=task_ids,
+            service_headers=service_headers,
+            secrets=secrets,
+            benchmark_url=benchmark_url,
+            lambda_function=lambda_function,
+            access_key_harness_config=runtime_resolution.access_key_harness_config,
+            preparation=preparation,
+            verified_task_ids=verified_task_ids,
         )
+    )
+    try:
+        result, cancellation = await _await_before_cancellation(commit_task)
+    except _TaskFailedAfterCancellation as failure:
+        raise failure.cancellation from failure.task_error
+    if result is not None:
+        enqueue_task = asyncio.create_task(
+            _enqueue_executor_dispatch(
+                ExecutorDispatch.model_validate(json.loads(result.dispatch_json)),
+                session=session,
+                payload=json.loads(result.payload_json),
+                verified_task_ids=list(result.verified_task_ids),
+            )
+        )
+        try:
+            _, cancellation = await _await_before_cancellation(enqueue_task, cancellation)
+        except _TaskFailedAfterCancellation as failure:
+            raise failure.cancellation from failure.task_error
+    if cancellation is not None:
+        raise cancellation
     return RetryOrResumeBenchmarkResponse(status="success")
 
 
