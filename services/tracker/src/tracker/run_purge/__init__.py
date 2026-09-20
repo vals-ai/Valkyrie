@@ -264,7 +264,7 @@ class PurgeOperator:
         return drains
 
     async def inspect(self, *, request_nonce: UUID) -> PurgeInspection:
-        with self.session.no_autoflush, exclusive_operation(self.session, self.plan.identity):
+        with self.session.no_autoflush, exclusive_operation(self.session, self.plan.identity) as lock:
             observations = tuple([await self._inspect_run(run) for run in self.plan.runs])
             if any(
                 isinstance(item, RemovedInspection)
@@ -273,6 +273,8 @@ class PurgeOperator:
                 for item in observations
             ):
                 self._validate_host_observation()
+
+            lock.verify()
 
             return PurgeInspection(
                 request_nonce=request_nonce,

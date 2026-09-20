@@ -282,7 +282,7 @@ async def test_transfer_exhausts_actual_reader_and_requires_progress(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cleanup", [False, True])
-async def test_provider_drain_uses_saved_locator_and_two_absence_checks(
+async def test_provider_drain_uses_saved_locator_and_one_absence_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cleanup: bool
 ) -> None:
     request, boundary, _, _ = archive_boundary(tmp_path)
@@ -298,10 +298,7 @@ async def test_provider_drain_uses_saved_locator_and_two_absence_checks(
         cleanup=cleanup,
     )
 
-    assert [call[0] for call in provider.mock_calls] == (["cleanup_sandboxes"] if cleanup else []) + [
-        "verify_absence",
-        "verify_absence",
-    ]
+    assert [call[0] for call in provider.mock_calls] == (["cleanup_sandboxes"] if cleanup else []) + ["verify_absence"]
     saved = provider.verify_absence.await_args.args[0]
     assert saved.provider.secret_name == "exact-source-secret"
     assert saved.scope == request.plan.runs[0].source

@@ -85,11 +85,19 @@ def execution_digest(arguments: dict[str, Any]) -> str:
     return canonical_digest(value)
 
 
-def recorded_source_bucket(record: RunLifecycle | None, arguments: dict[str, Any]) -> str:
-    """The bucket a relocation empties, which after the location commit is no longer the saved one."""
+def recorded_source_bucket(record: RunLifecycle | None, arguments: dict[str, Any]) -> str | None:
+    """The bucket a relocation empties, which after the location commit is no longer the saved one.
+
+    A hold-only run never changes its location, so its recorded source is still the live
+    bucket and nothing is retired.
+    """
+    saved = cast(str, arguments["properties"]["s3_bucket"])
     if record is None:
-        return cast(str, arguments["properties"]["s3_bucket"])
-    return RunScope.model_validate_json(record.scope_json).original_resources.s3_bucket
+        return saved
+
+    recorded = RunScope.model_validate_json(record.scope_json).original_resources.s3_bucket
+
+    return None if recorded == saved else recorded
 
 
 def retired_source_buckets(request: TrackerRequest, source_buckets: Sequence[str] = ()) -> frozenset[str]:
@@ -425,7 +433,7 @@ class RelocationOperator:
             )
 
     async def _inventory(self, request: TrackerRequest) -> TrackerResponse:
-        scoped: list[tuple[Benchmark, dict[str, Any], RelocationPredecessor | None, str]] = []
+        scoped: list[tuple[Benchmark, dict[str, Any], RelocationPredecessor | None, str | None]] = []
         for run_id in request.run_ids:
             benchmark, arguments = self._run(request, run_id)
             predecessor = None
@@ -448,7 +456,7 @@ class RelocationOperator:
                 )
             scoped.append((benchmark, arguments, predecessor, recorded_source_bucket(record, arguments)))
 
-        retired = retired_source_buckets(request, [bucket for _, _, _, bucket in scoped])
+        retired = retired_source_buckets(request, [bucket for _, _, _, bucket in scoped if bucket is not None])
         observations: list[RunObservation] = []
         for benchmark, arguments, predecessor, _ in scoped:
             references = await self.boundary.execution_references(

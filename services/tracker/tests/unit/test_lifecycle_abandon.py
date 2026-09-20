@@ -1,14 +1,17 @@
 """A deletion hold that never started purging must be correctable, and no other."""
 
+import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
+import tracker.run_purge as run_purge
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
 from tracker.aws.runtime import AWSResources
@@ -21,8 +24,14 @@ from tracker.lifecycle import (
     acquire_hold,
     active_hold,
 )
-from tracker.run_purge import _selected_runs, _unstarted_purge_guard
-from tracker.run_purge.contracts import ProviderLocator, PurgeCheckpoint, PurgePlan, PurgeRun
+from tracker.run_purge import PurgeOperator, _selected_runs, _unstarted_purge_guard
+from tracker.run_purge.contracts import (
+    PresentUnheldInspection,
+    ProviderLocator,
+    PurgeCheckpoint,
+    PurgePlan,
+    PurgeRun,
+)
 from tracker.run_purge.predecessor import _previous_identity, acquire_deletion_hold, capture_predecessor
 
 _RESOURCES = AWSResources(region="us-west-2", s3_bucket="owner-data", log_group="runs", log_retention_days=7)
@@ -367,3 +376,37 @@ def test_a_plan_document_without_predecessor_fields_keeps_its_digest() -> None:
 
     assert all("released_relocation" not in run and "abandoned_deletion" not in run for run in document["runs"])
     assert hashlib.sha256(canonical).hexdigest() == plan.digest() == PurgePlan.model_validate(document).digest()
+
+
+def inspect_operator(session: Session, plan: PurgePlan, monkeypatch: pytest.MonkeyPatch) -> PurgeOperator:
+    monkeypatch.setattr(run_purge, "verify_database_target", lambda *_arguments: None)
+
+    return PurgeOperator(session, plan, AsyncMock(), host_contract=None)
+
+
+def test_inspection_reports_an_abandoned_predecessor_and_refuses_a_plan_that_omits_it(
+    database_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity, scope, run, plan = seeded_hold(database_session)
+    abandon_deletion_hold(
+        database_session, identity=identity, scope=scope, verify_unstarted=_unstarted_purge_guard(plan)
+    )
+    database_session.commit()
+    corrected = make_identity(run.id)
+    relocation, abandoned, history = capture_predecessor(database_session, corrected, scope)
+
+    assert relocation is None and history is None
+    assert abandoned is not None and abandoned.operation_id == identity.operation_id
+
+    planned = PurgePlan(
+        identity=corrected, runs=(PurgeRun(scope=scope, provider=_PROVIDER, abandoned_deletion=abandoned),)
+    )
+    observation = asyncio.run(inspect_operator(database_session, planned, monkeypatch)._inspect_run(planned.runs[0]))
+
+    assert isinstance(observation, PresentUnheldInspection)
+    assert observation.current_label == run.label
+    assert observation.released_relocation is None
+
+    blind = PurgePlan(identity=corrected, runs=(PurgeRun(scope=scope, provider=_PROVIDER),))
+    with pytest.raises(LifecycleConflict):
+        asyncio.run(inspect_operator(database_session, blind, monkeypatch)._inspect_run(blind.runs[0]))

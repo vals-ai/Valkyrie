@@ -60,3 +60,27 @@ def test_a_relocated_run_keeps_its_recorded_source_bucket_as_the_retired_one() -
 
     assert recorded_source_bucket(record, relocated) == "legacy-shared-storage"
     assert recorded_source_bucket(None, relocated) == "vs-dev-owner-42"
+
+
+def test_a_hold_only_run_retires_no_bucket_in_the_inventory_fallback() -> None:
+    run_id = uuid4()
+    held = {"properties": {"region": "us-east-1", "s3_bucket": "vs-dev-owner-42", "log_group": "runs"}}
+    scope = RunScope(
+        run_id=run_id,
+        original_resources=AWSResources("us-east-1", "vs-dev-owner-42", "runs", 7),
+    )
+    record = RunLifecycle(
+        run_id=run_id,
+        identity_json="{}",
+        scope_json=scope.model_dump_json(),
+        purpose="relocation",
+        phase="relocated_history_only",
+        acquired_at=datetime.now(UTC),
+    )
+
+    assert recorded_source_bucket(record, held) is None
+
+    result: dict[str, Any] = {"eval_output_path": "s3://vs-dev-owner-42/benchmarks/run/result.json"}
+    retired = frozenset(bucket for bucket in [recorded_source_bucket(record, held)] if bucket is not None)
+
+    assert result_locator_references([(uuid4(), result)], retired) == ()

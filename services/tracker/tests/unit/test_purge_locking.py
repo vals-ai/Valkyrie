@@ -1,10 +1,11 @@
 """The purge advisory lock must fail loudly when its backend stops holding it."""
 
+import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
-from unittest.mock import MagicMock
-from uuid import UUID
+from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.exc import OperationalError
@@ -124,12 +125,12 @@ def prepared_checkpoint(run_id: UUID, digest: str) -> PurgeCheckpoint:
 
 
 def operator_at_held(
-    session: Session, monkeypatch: pytest.MonkeyPatch
+    session: Session, monkeypatch: pytest.MonkeyPatch, boundary: Any = None
 ) -> tuple[PurgeOperator, PurgeRun, PurgeCheckpoint]:
     _, _, run, plan = seeded_hold(session)
     store_checkpoint(session, run.id, make_checkpoint("held", run_id=run.id, rows=False, digest=plan.digest()))
     monkeypatch.setattr(run_purge, "verify_database_target", lambda *_arguments: None)
-    operator = PurgeOperator(session, plan, MagicMock(), host_contract=None)
+    operator = PurgeOperator(session, plan, boundary if boundary is not None else MagicMock(), host_contract=None)
 
     return operator, plan.runs[0], prepared_checkpoint(run.id, plan.digest())
 
@@ -200,3 +201,19 @@ def test_abandonment_commits_only_while_the_lock_is_held(
     record = database_session.get(RunLifecycle, run.id)
     assert record is not None
     assert (record.released_at is not None) is held
+
+
+@pytest.mark.parametrize("held", [True, False], ids=["lock_held", "lock_lost"])
+def test_an_inspection_is_attested_only_while_the_lock_is_held(
+    database_session: Session, monkeypatch: pytest.MonkeyPatch, held: bool
+) -> None:
+    operator, purge_run, _ = operator_at_held(database_session, monkeypatch, AsyncMock())
+    lock = OperationLock(FakeLockConnection((_BACKEND_PID if held else _BACKEND_PID + 1, 2)), _BACKEND_PID, (11, 22))
+    monkeypatch.setattr(run_purge, "exclusive_operation", lambda *_arguments: scripted_lock(lock))
+
+    if held:
+        inspection = asyncio.run(operator.inspect(request_nonce=uuid4()))
+        assert tuple(item.scope for item in inspection.runs) == (purge_run.scope,)
+    else:
+        with pytest.raises(LifecycleConflict):
+            asyncio.run(operator.inspect(request_nonce=uuid4()))

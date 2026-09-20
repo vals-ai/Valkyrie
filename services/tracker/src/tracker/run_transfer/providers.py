@@ -325,7 +325,6 @@ class TransferAWSBoundary:
         if cleanup:
             await boundary.cleanup_sandboxes(provider_run)
         await boundary.verify_absence(provider_run)
-        await boundary.verify_absence(provider_run)
 
     async def archive(
         self,
