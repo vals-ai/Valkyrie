@@ -60,10 +60,17 @@ class CustomerStorage(Construct):
         self.vault_name = "valsmith-customer-storage-prod"
         self.recovery_point_tags = {"valsmith:backup": "true", "valsmith:environment": "prod"}
 
-        self.backup_role = aws_iam.Role(
+        # Separate service roles keep an owner backup job from ever reading the system bucket, and the reverse.
+        self.owner_backup_role = aws_iam.Role(
             self,
             "BackupRole",
             role_name="ValSmithBackup-prod",
+            assumed_by=cast(aws_iam.IPrincipal, aws_iam.ServicePrincipal("backup.amazonaws.com")),
+        )
+        self.system_backup_role = aws_iam.Role(
+            self,
+            "SystemBackupRole",
+            role_name="ValSmithSystemBackup-prod",
             assumed_by=cast(aws_iam.IPrincipal, aws_iam.ServicePrincipal("backup.amazonaws.com")),
         )
         self.application_role = aws_iam.Role(
@@ -97,22 +104,24 @@ class CustomerStorage(Construct):
             assumed_by=cast(aws_iam.IPrincipal, aws_iam.ArnPrincipal(config.operator_role_arn)),
         )
         key = aws_kms.Key(self, "VaultKey", enable_key_rotation=True, removal_policy=cdk.RemovalPolicy.RETAIN)
-        self.backup_role.add_to_policy(
-            aws_iam.PolicyStatement(
-                actions=["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
-                resources=[key.key_arn],
+        for role in (self.owner_backup_role, self.system_backup_role):
+            role.add_to_policy(
+                aws_iam.PolicyStatement(
+                    actions=["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
+                    resources=[key.key_arn],
+                )
             )
-        )
-        self.backup_role.add_to_policy(
-            aws_iam.PolicyStatement(
-                actions=["kms:CreateGrant"],
-                resources=[key.key_arn],
-                conditions={
-                    "Bool": {"kms:GrantIsForAWSResource": "true"},
-                    "StringEquals": {"kms:ViaService": f"backup.{stack.region}.{stack.url_suffix}"},
-                },
+            role.add_to_policy(
+                aws_iam.PolicyStatement(
+                    actions=["kms:CreateGrant"],
+                    resources=[key.key_arn],
+                    conditions={
+                        "Bool": {"kms:GrantIsForAWSResource": "true"},
+                        "StringEquals": {"kms:ViaService": f"backup.{stack.region}.{stack.url_suffix}"},
+                    },
+                )
             )
-        )
+
         self.vault = aws_backup.BackupVault(
             self,
             "Vault",
@@ -141,9 +150,9 @@ class CustomerStorage(Construct):
                 {"ConditionKey": "aws:ResourceTag/valsmith:environment", "ConditionValue": "prod"},
             ]
         }
-        for name, plan, resources, selection_conditions in (
-            ("owners", owner_plan, [self.owner_arn], conditions),
-            ("system", system_plan, [system_bucket.bucket_arn], None),
+        for name, plan, backup_role, resources, selection_conditions in (
+            ("owners", owner_plan, self.owner_backup_role, [self.owner_arn], conditions),
+            ("system", system_plan, self.system_backup_role, [system_bucket.bucket_arn], None),
         ):
             selection = aws_backup.CfnBackupSelection(
                 self,
@@ -151,19 +160,20 @@ class CustomerStorage(Construct):
                 backup_plan_id=plan.ref,
                 backup_selection=aws_backup.CfnBackupSelection.BackupSelectionResourceTypeProperty(
                     selection_name=f"valsmith-{name}-prod",
-                    iam_role_arn=self.backup_role.role_arn,
+                    iam_role_arn=backup_role.role_arn,
                     resources=resources,
                     conditions=selection_conditions,
                 ),
             )
 
-            selection.node.add_dependency(self.backup_role)
+            selection.node.add_dependency(backup_role)
 
-        self._backup_permissions(system_bucket)
+        self._backup_permissions(self.owner_backup_role, [self.owner_arn])
+        self._backup_permissions(self.system_backup_role, [system_bucket.bucket_arn])
         self._application_permissions()
         self._lambda_permissions()
         self._lifecycle_permissions()
-        for role in (self.backup_role, self.application_role, self.lambda_role, self.lifecycle_role):
+        for role in (self.owner_backup_role, self.application_role, self.lambda_role, self.lifecycle_role):
             role.add_to_policy(
                 aws_iam.PolicyStatement(
                     effect=aws_iam.Effect.DENY,
@@ -185,7 +195,8 @@ class CustomerStorage(Construct):
         outputs = {
             "VaultName": self.vault.backup_vault_name,
             "VaultArn": self.vault.backup_vault_arn,
-            "BackupRoleArn": self.backup_role.role_arn,
+            "BackupRoleArn": self.owner_backup_role.role_arn,
+            "SystemBackupRoleArn": self.system_backup_role.role_arn,
             "ApplicationRoleArn": self.application_role.role_arn,
             "LambdaRoleArn": self.lambda_role.role_arn,
             "LifecycleRoleArn": self.lifecycle_role.role_arn,
@@ -307,9 +318,7 @@ class CustomerStorage(Construct):
             )
         )
 
-    def _backup_permissions(self, system_bucket: aws_s3.IBucket) -> None:
-        role = self.backup_role
-        buckets = [self.owner_arn, system_bucket.bucket_arn]
+    def _backup_permissions(self, role: aws_iam.Role, buckets: list[str]) -> None:
         self._owner_grant(
             role,
             [
@@ -466,10 +475,11 @@ class CustomerStorage(Construct):
                 conditions={"StringEquals": {"aws:RequestedRegion": cdk.Stack.of(self).region}},
             )
         )
+        # Only the owner backup role, so a StartBackupJob against the system bucket has no role that can read it.
         role.add_to_policy(
             aws_iam.PolicyStatement(
                 actions=["iam:PassRole"],
-                resources=[self.backup_role.role_arn],
+                resources=[self.owner_backup_role.role_arn],
                 conditions={"StringEquals": {"iam:PassedToService": "backup.amazonaws.com"}},
             )
         )

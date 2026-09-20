@@ -37,6 +37,7 @@ Read these exact `ValkProdSharedStack` CloudFormation outputs after deployment:
 - `CustomerStorageVaultName`
 - `CustomerStorageVaultArn`
 - `CustomerStorageBackupRoleArn`
+- `CustomerStorageSystemBackupRoleArn`
 - `CustomerStorageApplicationRoleArn`
 - `CustomerStorageLambdaRoleArn`
 - `CustomerStorageLifecycleRoleArn`
@@ -73,10 +74,20 @@ recovery-point tags, so the lifecycle role cannot delete system recovery points.
 CDK creates no owner buckets and adds no object expiration rule. Keep bucket versioning, SSE-S3, ownership enforcement, public
 access blocking, and TLS protection enabled in the owner provisioner.
 
-The custom backup role follows the current S3 backup policy, including
-`s3:ListTagsForResource` and `backup:TagResource`. S3 data grants cover only the
-owner pattern and the exact system bucket in the target account. KMS grants
-cover only this vault key. There is no grant to arbitrary source KMS keys;
+Each selection has its own AWS Backup service role. `ValSmithBackup-prod` serves
+the owner selection and its S3 data grants cover only `vs-prod-*`.
+`ValSmithSystemBackup-prod` serves the system selection and its S3 data grants
+cover only the exact system bucket. Neither role can read the other's buckets.
+The separation is what stops the lifecycle role from backing up the system bucket
+into this vault under the owner recovery-point tags and then deleting that point:
+the only role it may pass to AWS Backup is the owner role, which cannot read the
+system bucket, so such a job fails. A recovery-point tag alone is not an
+authorization boundary, because the caller of `StartBackupJob` chooses it.
+
+Both roles follow the current S3 backup policy, including
+`s3:ListTagsForResource` and `backup:TagResource`, both are assumable only by
+`backup.amazonaws.com`, and both are account-bound by `s3:ResourceAccount`. KMS
+grants cover only this vault key. There is no grant to arbitrary source KMS keys;
 selected S3 objects must use SSE-S3. Backup EventBridge grants cover only
 `AwsBackupManagedRule*` in the target account and region.
 
@@ -141,15 +152,30 @@ source-read and destination-write access. The future migration transport must us
 source-authenticated `GetObject` and stream its bytes into destination-authenticated
 `PutObject` or multipart upload. Keep the foreign-owner denies on both roles.
 
-The lifecycle role can start backups only into this vault and pass only the backup
-role to `backup.amazonaws.com`. Recovery-point deletion is granted by this vault's
-resource policy, only to the lifecycle role and only for points with the owner
-backup/environment tags. No identity-wide recovery-point deletion grant exists.
-The owner plan applies those two tags to every recovery point it creates, and
-every on-demand `StartBackupJob` must apply them too. The separate system plan
-applies no recovery-point tags, so its recovery points do not receive that
-deletion grant. Never put owner backup tags on the system bucket or on a system
-recovery point.
+The lifecycle role can start backups only into this vault and pass only
+`ValSmithBackup-prod` to `backup.amazonaws.com`. It cannot pass
+`ValSmithSystemBackup-prod`, and it has no `backup:TagResource`, no
+`backup:StartRestoreJob` and no `backup:StartCopyJob`, so it has no other path to
+system data. Recovery-point deletion is granted by this vault's resource policy,
+only to the lifecycle role and only for points with the owner backup/environment
+tags. No identity-wide recovery-point deletion grant exists. The owner plan
+applies those two tags to every recovery point it creates, and every on-demand
+`StartBackupJob` must apply them too, passing `ValSmithBackup-prod`. The separate
+system plan applies no recovery-point tags, so its recovery points do not receive
+that deletion grant. Never put owner backup tags on the system bucket or on a
+system recovery point.
+
+AWS Backup publishes no condition key for a recovery point's source resource. Its
+whole condition-key set is `aws:RequestTag/${TagKey}`, `aws:ResourceTag/${TagKey}`,
+`aws:TagKeys`, `backup:ChangeableForDays`, `backup:CopyTargetOrgPaths`,
+`backup:CopyTargets`, `backup:FrameworkArns`, `backup:Index`,
+`backup:MaxRetentionDays`, `backup:MinRetentionDays` and
+`backup:MpaApprovalTeamArn`, and the `recoveryPoint` resource type accepts only
+`aws:ResourceTag/${TagKey}`. The vault policy therefore cannot require the source
+to be an owner bucket; the role split has to carry that boundary. The same table
+lists no action-level condition key for `StartBackupJob`, so an IAM condition on
+`aws:RequestTag/valsmith:backup` would never match and would deny every on-demand
+backup. Do not add one.
 
 Backup access points must be deleted through `DeleteBackupAccessPoint`, never
 through direct S3 cleanup. The operator tool must verify the exact recovery-point
@@ -190,6 +216,7 @@ source deletion, release order, and rollback. Keep intake frozen on a failed gat
 - [S3 backup permissions, current managed policy](https://docs.aws.amazon.com/aws-managed-policy/latest/reference/AWSBackupServiceRolePolicyForS3Backup.html)
 - [Backup selection conditions](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-properties-backup-backupselection-backupselectionresourcetype.html)
 - [Backup service authorization and supported resource types](https://docs.aws.amazon.com/service-authorization/latest/reference/list_backup.html)
+- [Backup service reference information, the machine-readable form of that table](https://servicereference.us-east-1.amazonaws.com/v1/backup/backup.json)
 - [Backup access-point dependent permissions](https://docs.aws.amazon.com/aws-backup/latest/devguide/access-control.html)
 - [Vault resource policies](https://docs.aws.amazon.com/aws-backup/latest/devguide/create-a-vault-access-policy.html)
 - [Backup encryption and key permissions](https://docs.aws.amazon.com/aws-backup/latest/devguide/encryption.html)

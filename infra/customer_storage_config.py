@@ -91,6 +91,7 @@ class CustomerStorageConfig:
             "ValSmithStorage-prod",
             "ValSmithDatasetView-prod",
             "ValSmithBackup-prod",
+            "ValSmithSystemBackup-prod",
             "ValSmithLifecycle-prod",
             "ValkyrieTrackerTaskRole-prod",
             "ValkyrieExecutorTaskRole-prod",

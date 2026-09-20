@@ -125,20 +125,25 @@ class CustomerStorageTest(unittest.TestCase):
         template = synth()
         key_identifier, key = next(iter(template.find_resources("AWS::KMS::Key").items()))
         self.assertEqual(key["DeletionPolicy"], "Retain")
-        _, _, statements = role(template, "ValSmithBackup-prod")
-        key_statements = [item for item in statements if any(action.startswith("kms:") for action in actions(item))]
-        key_actions = set[str]().union(*(actions(item) for item in key_statements))
-        self.assertTrue({"kms:GenerateDataKey", "kms:Decrypt", "kms:CreateGrant"} <= key_actions)
-        for statement in key_statements:
-            self.assertEqual(statement["Resource"], {"Fn::GetAtt": [key_identifier, "Arn"]})
-        grant = next(item for item in key_statements if "kms:CreateGrant" in actions(item))
-        self.assertEqual(grant["Condition"]["Bool"], {"kms:GrantIsForAWSResource": "true"})
+        for name in ("ValSmithBackup-prod", "ValSmithSystemBackup-prod"):
+            with self.subTest(role=name):
+                _, _, statements = role(template, name)
+                key_statements = [
+                    item for item in statements if any(action.startswith("kms:") for action in actions(item))
+                ]
+                key_actions = set[str]().union(*(actions(item) for item in key_statements))
+                self.assertTrue({"kms:GenerateDataKey", "kms:Decrypt", "kms:CreateGrant"} <= key_actions)
+                for statement in key_statements:
+                    self.assertEqual(statement["Resource"], {"Fn::GetAtt": [key_identifier, "Arn"]})
+                grant = next(item for item in key_statements if "kms:CreateGrant" in actions(item))
+                self.assertEqual(grant["Condition"]["Bool"], {"kms:GrantIsForAWSResource": "true"})
 
     def test_operator_trust_rejects_application_and_runtime_roles(self) -> None:
         for name in (
             "ValSmithStorage-prod",
             "ValSmithDatasetView-prod",
             "ValSmithBackup-prod",
+            "ValSmithSystemBackup-prod",
             "ValSmithLifecycle-prod",
             "ValkyrieTrackerTaskRole-prod",
             "ValkyrieExecutorTaskRole-prod",
@@ -263,6 +268,41 @@ class CustomerStorageTest(unittest.TestCase):
             deletion["Condition"]["StringEquals"],
             {f"aws:ResourceTag/{key}": value for key, value in expected.items()},
         )
+
+    def test_owner_and_system_backups_use_separate_roles_that_cannot_read_each_other(self) -> None:
+        template = synth()
+        system_bucket = next(iter(template.find_resources("AWS::S3::Bucket")))
+        owner_identifier, _, owner_statements = role(template, "ValSmithBackup-prod")
+        system_identifier, _, system_statements = role(template, "ValSmithSystemBackup-prod")
+        selections = {
+            item["Properties"]["BackupSelection"]["SelectionName"]: item["Properties"]["BackupSelection"]
+            for item in template.find_resources("AWS::Backup::BackupSelection").values()
+        }
+        owner_role_arn = selections["valsmith-owners-prod"]["IamRoleArn"]
+        system_role_arn = selections["valsmith-system-prod"]["IamRoleArn"]
+        self.assertEqual(owner_role_arn, {"Fn::GetAtt": [owner_identifier, "Arn"]})
+        self.assertEqual(system_role_arn, {"Fn::GetAtt": [system_identifier, "Arn"]})
+        self.assertNotEqual(owner_role_arn, system_role_arn)
+
+        owner_reads = [
+            item for item in owner_statements if item["Effect"] == "Allow" and "s3:GetObject" in actions(item)
+        ]
+        self.assertTrue(owner_reads)
+        for statement in owner_statements:
+            self.assertNotIn(system_bucket, json.dumps(statement["Resource"]))
+
+        system_allows = [item for item in system_statements if item["Effect"] == "Allow"]
+        system_reads = [item for item in system_allows if "s3:GetObject" in actions(item)]
+        self.assertTrue(system_reads)
+        for statement in system_reads:
+            self.assertIn(system_bucket, json.dumps(statement["Resource"]))
+        for statement in system_allows:
+            self.assertNotIn("vs-prod-*", json.dumps(statement["Resource"]))
+
+        _, _, lifecycle_statements = role(template, "ValSmithLifecycle-prod")
+        pass_role = next(item for item in lifecycle_statements if "iam:PassRole" in actions(item))
+        passed = pass_role["Resource"]
+        self.assertEqual(passed if isinstance(passed, list) else [passed], [owner_role_arn])
 
     def test_legacy_read_scope_stays_pinned_to_the_reviewed_roots(self) -> None:
         template = synth()
@@ -458,23 +498,28 @@ class CustomerStorageTest(unittest.TestCase):
                 self.assertEqual(statement["Condition"]["StringNotEquals"]["s3:ResourceAccount"], ACCOUNT)
 
     def test_backup_role_keeps_current_required_grants_without_global_s3_data_access(self) -> None:
-        _, _, statements = role(synth(), "ValSmithBackup-prod")
-        granted: set[str] = set[str]().union(*(actions(item) for item in statements if item["Effect"] == "Allow"))
-        self.assertTrue(
-            {
-                "s3:ListTagsForResource",
-                "s3:PutInventoryConfiguration",
-                "s3:PutBucketNotification",
-                "s3:GetObjectVersion",
-                "backup:TagResource",
-                "events:PutRule",
-                "cloudwatch:GetMetricData",
-            }
-            <= granted
-        )
-        for statement in statements:
-            if any(item.startswith("s3:") and item != "s3:ListAllMyBuckets" for item in actions(statement)):
-                self.assertNotEqual(statement["Resource"], "*")
+        template = synth()
+        for name in ("ValSmithBackup-prod", "ValSmithSystemBackup-prod"):
+            with self.subTest(role=name):
+                _, _, statements = role(template, name)
+                granted: set[str] = set[str]().union(
+                    *(actions(item) for item in statements if item["Effect"] == "Allow")
+                )
+                self.assertTrue(
+                    {
+                        "s3:ListTagsForResource",
+                        "s3:PutInventoryConfiguration",
+                        "s3:PutBucketNotification",
+                        "s3:GetObjectVersion",
+                        "backup:TagResource",
+                        "events:PutRule",
+                        "cloudwatch:GetMetricData",
+                    }
+                    <= granted
+                )
+                for statement in statements:
+                    if any(item.startswith("s3:") and item != "s3:ListAllMyBuckets" for item in actions(statement)):
+                        self.assertNotEqual(statement["Resource"], "*")
 
     def test_lifecycle_passrole_vault_and_access_point_boundaries(self) -> None:
         template = synth()
@@ -512,6 +557,7 @@ class CustomerStorageTest(unittest.TestCase):
             "CustomerStorageVaultName",
             "CustomerStorageVaultArn",
             "CustomerStorageBackupRoleArn",
+            "CustomerStorageSystemBackupRoleArn",
             "CustomerStorageApplicationRoleArn",
             "CustomerStorageLambdaRoleArn",
             "CustomerStorageLifecycleRoleArn",
