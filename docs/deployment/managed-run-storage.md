@@ -15,8 +15,10 @@ The submission flag controls only new owner-storage admission. Saved owner runs 
 
 The deploy workflow takes both values from the GitHub Environment for the target stage: `dev` for dev, `prod` for bench, and `prod-external` for production. They are defined under the same names as the settings:
 
-- `AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS` is an Environment **secret**, like `AWS_DEPLOYMENT_ROLE_ORG_IDS`, because it carries the same organization UUIDs. An absent secret synthesizes `{}`.
+- `AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS` is an Environment **secret**, like `AWS_DEPLOYMENT_ROLE_ORG_IDS`, because it carries the same organization UUIDs. An absent secret synthesizes `{}`. Do not move it to an Actions variable: every job reads `secrets.AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS`, so a map stored as a variable resolves to the `{}` default and the next deploy removes every owner-bucket grant without reporting an error.
 - `AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED` is an Environment **variable**. An absent variable synthesizes `false`.
+
+Organization UUIDs are identifiers, not credentials. The secret classification keeps them out of workflow logs. It does not make them confidential at runtime: CDK writes both organization settings into the ECS task definition as plain container environment, so any principal with `ecs:DescribeTaskDefinition` in the deployment account can read them. Neither value is passed by Secrets Manager reference, and neither should be. Access never rests on knowing a UUID. A submission must carry a valid API key for that organization, and the selected bucket must be in the deployment account and carry the matching `valsmith:*` tags.
 
 Every deployment job that synthesizes CDK passes both. Define them in the GitHub Environment, not only in a manual `make deploy`: a later ordinary deploy re-synthesizes from the Environment and would otherwise reset the map to `{}` and remove owner-bucket IAM from both task roles. Synthesis fails if `AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED` is `true` while `AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS` is empty.
 

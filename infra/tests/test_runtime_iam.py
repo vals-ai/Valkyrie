@@ -71,6 +71,19 @@ def _lambda_function_resource(function_name: str) -> JsonObject:
     }
 
 
+def _task_role_container(template: assertions.Template, role_name: str) -> JsonObject:
+    role_logical_id, _ = _named_role(template, role_name)
+    task_definitions = cast(dict[str, JsonObject], template.find_resources("AWS::ECS::TaskDefinition"))
+    role_task_definition = next(
+        task_definition
+        for task_definition in task_definitions.values()
+        if cast(JsonObject, task_definition["Properties"]).get("TaskRoleArn")
+        == {"Fn::GetAtt": [role_logical_id, "Arn"]}
+    )
+    containers = cast(list[JsonObject], role_task_definition["Properties"]["ContainerDefinitions"])
+    return containers[0]
+
+
 def _owner_bucket_resource(environment: str, *, objects: bool = False) -> JsonObject:
     suffix = "/benchmarks/*" if objects else ""
     return {
@@ -153,6 +166,33 @@ class RuntimeIamTest(unittest.TestCase):
                 }
                 for name, value in expected_settings.items():
                     self.assertEqual(actual_environment[name], value)
+
+    def test_organization_identifiers_stay_plaintext_container_settings(self) -> None:
+        environment = {
+            **TEST_BENCH_ENV,
+            "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS": json.dumps({TEST_MANAGED_ORG_ID: ["dev", "prod"]}),
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            tracker_template, executor_template, _ = service_templates(BENCH)
+
+        organization_settings = ("AWS_DEPLOYMENT_ROLE_ORG_IDS", "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS")
+        for template, role_name in (
+            (tracker_template, "ValkyrieTrackerTaskRole"),
+            (executor_template, "ValkyrieExecutorTaskRole"),
+        ):
+            with self.subTest(role=role_name):
+                container = _task_role_container(template, role_name)
+                plaintext = {
+                    cast(str, variable["Name"]) for variable in cast(list[JsonObject], container["Environment"])
+                }
+                referenced = {
+                    cast(str, variable["Name"]) for variable in cast(list[JsonObject], container.get("Secrets", []))
+                }
+
+                self.assertTrue(referenced)
+                for name in organization_settings:
+                    self.assertIn(name, plaintext)
+                    self.assertNotIn(name, referenced)
 
     def test_owner_storage_patterns_follow_only_the_configured_environment_union(self) -> None:
         environment_cases: tuple[tuple[dict[UUID, frozenset[str]], set[str]], ...] = (
