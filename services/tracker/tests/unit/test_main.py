@@ -311,6 +311,39 @@ class TestTrackerAPI:
         assert database_session.exec(select(ExecutorDispatch)).all() == []
         assert mock_kicker.queued_calls == []
 
+    @pytest.mark.parametrize(("bucket", "expected_status"), [(None, 422), ("", 400)])
+    async def test_managed_storage_start_requires_the_bucket_the_contract_declares(
+        self,
+        bucket: str | None,
+        expected_status: int,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: Any,
+    ) -> None:
+        copy_agent = AsyncMock()
+        monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="provider-secret",
+        )
+        payload = request.model_dump(mode="json")
+        if bucket is None:
+            del payload["managed_s3_bucket"]
+        else:
+            payload["managed_s3_bucket"] = bucket
+
+        response = client.post("/start-benchmark-with-storage", json=payload)
+
+        assert response.status_code == expected_status
+        copy_agent.assert_not_awaited()
+        assert database_session.exec(select(Benchmark)).all() == []
+        assert database_session.exec(select(Task)).all() == []
+        assert database_session.exec(select(ExecutorDispatch)).all() == []
+        assert mock_kicker.queued_calls == []
+
     def test_health_check(self, monkeypatch: MonkeyPatch) -> None:
         """Test health check of the fastapi server.
 

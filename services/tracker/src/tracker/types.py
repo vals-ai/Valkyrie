@@ -78,7 +78,13 @@ class HarnessConfig(BaseModel):
 class StartBenchmarkRequest(BaseModel):
     environment: Literal["aws"] = "aws"
     properties: AWSResources | None = None
-    managed_s3_bucket: str | None = None
+    managed_s3_bucket: str | None = Field(
+        default=None,
+        description=(
+            "Owner-provisioned managed storage bucket. "
+            "POST /start-benchmark-with-storage requires it; POST /start-benchmark rejects it."
+        ),
+    )
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
@@ -125,6 +131,15 @@ class StartBenchmarkRequest(BaseModel):
             url=benchmark_service_url,
             service_headers=self.service_headers,
         )
+
+
+class ManagedStorageStartBenchmarkRequest(StartBenchmarkRequest):
+    """Start a run whose artifacts are written to an owner-provisioned managed storage bucket."""
+
+    managed_s3_bucket: str | None = Field(  # pyright: ignore[reportGeneralTypeIssues]
+        ...,
+        description="Owner-provisioned managed storage bucket. POST /start-benchmark-with-storage requires it.",
+    )
 
 
 class FetchBenchmarkTasksRequest(BaseModel):
