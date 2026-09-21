@@ -390,6 +390,7 @@ class TransferOperator:
         dispatches = checkpoint.dispatches
         if source is not None:
             dispatches = self._process_drain(request, run)
+            source_lock.verify()
             await self.boundary.drain(
                 request, run, source.rows["benchmark"][0]["arguments"], cleanup=request.action == "prepare"
             )
@@ -450,6 +451,7 @@ class TransferOperator:
             if source is None or checkpoint.phase == "held":
                 raise LifecycleConflict("Prepared intact source is required")
             if not destination_exists:
+                destination_lock.verify()
                 archive, completeness = await self.boundary.archive(
                     request, run, dispatches=dispatches, acquired_at=acquired_at
                 )
@@ -557,6 +559,7 @@ class TransferOperator:
                             "Portable transfer requires process absence independent of the source hold"
                         )
                     await self.boundary.portable(request, run, destination_rows)
+                source_lock.verify()
                 await self.boundary.cleanup_logs(
                     request,
                     run,

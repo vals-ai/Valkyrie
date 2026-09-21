@@ -21,7 +21,13 @@ from sqlmodel import Session, SQLModel, create_engine
 from tests.factories import make_benchmark
 from tests.integration.local.database.test_run_purge import MemoryBoundary, contract
 from tests.integration.local.database.test_run_relocation import execute, seed
-from tests.transfer_support import FakeTransferBoundary, SecretMetadataSession, transfer_request
+from tests.transfer_support import (
+    OBSERVED_ACQUIRED_AT,
+    OBSERVED_DECISION,
+    FakeTransferBoundary,
+    SecretMetadataSession,
+    transfer_request,
+)
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -41,6 +47,7 @@ from tracker.database.models import (
 )
 from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, require_unheld
 from tracker.lifecycle_completion import RelocationCheckpoint, capture_predecessor
+from tracker.lifecycle_evidence import DispatchDrain
 from tracker.run_purge import PurgeOperator, build_plan
 from tracker.run_purge.locking import OperationLock, database_target
 from tracker import run_transfer
@@ -48,6 +55,7 @@ from tracker.run_transfer import TransferOperator, cli
 from tracker.run_transfer.contracts import TransferCheckpoint, TransferRequest, TransferRun
 from tracker.run_transfer.providers import TransferAWSBoundary
 from tracker.run_transfer.rows import RowClosure, digest
+from tracker.runtime.log_history import ArchiveReport
 
 
 def supplied_transfer_urls() -> list[URL] | None:
@@ -1239,3 +1247,108 @@ def test_no_transfer_phase_commits_without_its_own_advisory_lock(
     assert saved_phase(losing, run.id) == before
     if side == "source":
         assert source.get(Benchmark, run.id) is not None
+
+
+class RecordingTransferBoundary(FakeTransferBoundary):
+    """Records only the provider work that a database rollback cannot undo."""
+
+    def __init__(self, directory: Path) -> None:
+        super().__init__(directory)
+        self.irreversible: list[str] = []
+
+    async def drain(
+        self, request: TransferRequest, run: TransferRun, arguments: dict[str, Any], *, cleanup: bool = False
+    ) -> None:
+        if cleanup:
+            self.irreversible.append("sandboxes_destroyed")
+
+        await super().drain(request, run, arguments, cleanup=cleanup)
+
+    async def archive(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        *,
+        dispatches: tuple[DispatchDrain, ...] = (),
+        acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+    ) -> tuple[ArchiveReport, str]:
+        self.irreversible.append("archive_written")
+
+        return await super().archive(request, run, dispatches=dispatches, acquired_at=acquired_at)
+
+    async def cleanup_logs(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        archive: ArchiveReport,
+        *,
+        dispatches: tuple[DispatchDrain, ...] = (),
+        acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+        log_completeness_sha256: str | None = OBSERVED_DECISION,
+    ) -> None:
+        self.irreversible.append("log_group_deleted")
+
+        await super().cleanup_logs(
+            request,
+            run,
+            archive,
+            dispatches=dispatches,
+            acquired_at=acquired_at,
+            log_completeness_sha256=log_completeness_sha256,
+        )
+
+
+@pytest.mark.parametrize(
+    ("action", "side", "effect"),
+    [
+        ("prepare", "source", "sandboxes_destroyed"),
+        ("import", "destination", "archive_written"),
+        ("cleanup", "source", "log_group_deleted"),
+    ],
+)
+def test_no_irreversible_provider_work_runs_without_its_own_advisory_lock(
+    pair: tuple[Session, Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+    side: str,
+    effect: str,
+) -> None:
+    """Sandbox destruction, archive writes and log-group deletion outlive a rollback."""
+    source, destination = pair
+    org, run, _ = seed_rows(source, destination)
+    request = transfer_request(source, destination, org, run)
+    boundary = RecordingTransferBoundary(tmp_path)
+    operator = TransferOperator(source, destination, boundary)
+    if action == "prepare":
+        drive_transfer(operator, request, ())
+        boundary.absent = False
+        request["action"] = "prepare"
+
+        with pytest.raises(RuntimeError, match="provider still active"):
+            asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+
+        boundary.absent = True
+        assert source.get_one(RunLifecycle, run.id).phase == "held"
+    else:
+        observed = drive_transfer(operator, request, ("prepare",) if action == "import" else ("prepare", "import"))
+        if action == "cleanup":
+            attach_completion(request, observed, run.id)
+
+    request["action"] = action
+    request["nonce"] = str(uuid4())
+    losing = source if side == "source" else destination
+    acquire = run_transfer.exclusive_operation
+
+    @contextmanager
+    def lose_one(session: Session, identity: Any) -> Generator[Any, None, None]:
+        with acquire(session, identity) as lock, session.get_bind().engine.connect() as spare:
+            yield OperationLock(spare, -1, ()) if session is losing else lock
+
+    monkeypatch.setattr(run_transfer, "exclusive_operation", lose_one)
+    boundary.irreversible.clear()
+
+    with pytest.raises(LifecycleConflict, match="advisory lock is no longer held"):
+        asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+
+    assert boundary.irreversible == [], f"{effect} ran after the advisory lock was lost"
