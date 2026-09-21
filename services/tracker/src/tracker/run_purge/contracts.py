@@ -42,7 +42,7 @@ class PurgeRun(ContractModel):
 
 class PurgePlan(ContractModel):
     identity: OperationIdentity
-    runs: tuple[PurgeRun, ...]
+    runs: Annotated[tuple[PurgeRun, ...], Field(min_length=1, json_schema_extra={"uniqueItems": True})]
 
     @model_validator(mode="after")
     def validate_scope(self) -> "PurgePlan":

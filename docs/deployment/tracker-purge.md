@@ -42,6 +42,11 @@ and the private `PurgeCheckpoint`.
 These reuse the shared identity, scope and drain models in
 [tracker-lifecycle.schema.json](tracker-lifecycle.schema.json).
 
+A plan, a report and the fence-receipt array must each be nonempty and free of
+repeated entries, and a report's run identifiers must equal `identity.run_ids`
+exactly. The published schemas carry the nonempty and uniqueness rules; the
+equality is a runtime check.
+
 A plan has `identity` and sorted `runs`. Each run has a `scope` with complete
 original saved resources and exact object/log paths, plus a `provider` containing
 only `kind` and `secret_name`. A run that follows a completed relocation also

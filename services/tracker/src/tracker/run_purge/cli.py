@@ -16,7 +16,7 @@ from tracker.lifecycle import LifecycleConflict, OperationIdentity
 from tracker.lifecycle_evidence import ExternalHostDrain, HostContractObservation, write_report
 from tracker.run_purge import PurgeOperator, abandon_runs, build_plan
 from tracker.run_purge.contracts import PurgePlan
-from tracker.run_purge.providers import AWSProviderBoundary, FenceReceipt
+from tracker.run_purge.providers import AWSProviderBoundary, FenceReceipts
 
 
 def write_plan(path: Path, plan: BaseModel) -> None:
@@ -98,7 +98,7 @@ def main(arguments: list[str] | None = None) -> int:
                 raise LifecycleConflict("Apply requires a report path and a current host contract")
             host = HostContractObservation.model_validate_json(options.host_contract.read_text())
             receipts = (
-                TypeAdapter(tuple[FenceReceipt, ...]).validate_json(options.fence_receipts.read_text())
+                TypeAdapter(FenceReceipts).validate_json(options.fence_receipts.read_text())
                 if options.fence_receipts
                 else ()
             )

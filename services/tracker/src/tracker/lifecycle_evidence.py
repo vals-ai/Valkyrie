@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, Field, field_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 from sqlmodel import Session, col, select
 
 from tracker.aws.runtime import AWSResources
@@ -219,6 +219,12 @@ class LifecycleReport(ContractModel):
     observed_at: AwareDatetime
     host_contract: HostContractObservation | None = None
     runs: Annotated[tuple[RunReport, ...], Field(min_length=1, json_schema_extra={"uniqueItems": True})]
+
+    @model_validator(mode="after")
+    def validate_run_scope(self) -> "LifecycleReport":
+        if tuple(run.scope.run_id for run in self.runs) != self.identity.run_ids:
+            raise ValueError("Report run scope does not match the immutable identity")
+        return self
 
 
 def write_report(path: Path, report: LifecycleReport) -> None:

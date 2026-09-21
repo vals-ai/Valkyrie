@@ -16,14 +16,14 @@ from tracker.aws.runtime import AWSResources
 from tracker.lifecycle import OperationIdentity, RunScope
 from tracker.lifecycle_evidence import ExternalHostDrain, HostContractObservation, LifecycleReport, RunReport
 from tracker.run_purge.contracts import ProviderLocator, PurgeCheckpoint, PurgePlan, PurgeReport, PurgeRun
-from tracker.run_purge.providers import FenceReceipt, OwnerDeletionFence
+from tracker.run_purge.providers import FenceReceipt, FenceReceipts, OwnerDeletionFence, WriteProbe
 
 _DOCUMENTATION = Path(__file__).resolve().parents[4] / "docs" / "deployment"
 
 _PURGE_DEFINITIONS: dict[str, Any] = {
     "PurgePlan": PurgePlan.model_json_schema(),
     "PurgeReport": PurgeReport.model_json_schema(),
-    "FenceReceipts": TypeAdapter(tuple[FenceReceipt, ...]).json_schema(),
+    "FenceReceipts": TypeAdapter(FenceReceipts).json_schema(),
     "PurgeCheckpoint": PurgeCheckpoint.model_json_schema(),
     "OwnerDeletionFence": OwnerDeletionFence.model_json_schema(),
 }
@@ -167,8 +167,91 @@ def test_report_run_inventory_is_nonempty_and_unique(published: bool) -> None:
         validate_schema(empty, schema, cls=Draft202012Validator)
 
     duplicated = {**payload, "runs": [payload["runs"][0], payload["runs"][0]]}
+    with pytest.raises(ValidationError):
+        LifecycleReport.model_validate(duplicated)
     with pytest.raises(SchemaValidationError):
         validate_schema(duplicated, schema, cls=Draft202012Validator)
+
+
+def _purge_evidence() -> tuple[PurgePlan, PurgeReport, tuple[FenceReceipt, ...]]:
+    run_id = uuid4()
+    scope = RunScope(
+        run_id=run_id,
+        original_resources=AWSResources(
+            region="us-west-2", s3_bucket="owner-bucket", log_group="runs", log_retention_days=7
+        ),
+    )
+    identity = OperationIdentity(
+        operation_id=uuid4(),
+        parent_plan_sha256="a" * 64,
+        github_owner_id=42,
+        org_id=uuid4(),
+        source_aws_account_id="123456789012",
+        destination_aws_account_id="123456789012",
+        region="us-west-2",
+        environment="test",
+        database_target="tracker-test",
+        run_ids=(run_id,),
+    )
+    plan = PurgePlan(
+        identity=identity,
+        runs=(PurgeRun(scope=scope, provider=ProviderLocator(kind="daytona", secret_name="provider")),),
+    )
+    report = PurgeReport(
+        identity=identity,
+        purpose="deletion",
+        observed_at=datetime.now(UTC),
+        runs=(RunReport(scope=scope, phase="held"),),
+        child_plan_sha256="b" * 64,
+        outcome="incomplete",
+    )
+    receipt = FenceReceipt(
+        identity=identity,
+        bucket="owner-bucket",
+        policy_sha256="c" * 64,
+        observed_at=datetime.now(UTC),
+        write_probe=WriteProbe(
+            key=f".valsmith-owner-deletion/{identity.operation_id}/write-probe", outcome="AccessDenied"
+        ),
+    )
+
+    return plan, report, (receipt,)
+
+
+@pytest.mark.parametrize("definition", ["PurgePlan", "PurgeReport", "FenceReceipts"])
+@pytest.mark.parametrize("invalid_items", ["empty", "duplicate"])
+def test_published_purge_evidence_arrays_are_nonempty_and_unique(definition: str, invalid_items: str) -> None:
+    plan, report, receipts = _purge_evidence()
+    schema = json.loads((_DOCUMENTATION / "tracker-purge.schema.json").read_text())[definition]
+    payload: Any = {
+        "PurgePlan": plan.model_dump(mode="json"),
+        "PurgeReport": report.model_dump(mode="json"),
+        "FenceReceipts": TypeAdapter(FenceReceipts).dump_python(receipts, mode="json"),
+    }[definition]
+    validate_schema(payload, schema, cls=Draft202012Validator)
+
+    items = payload if definition == "FenceReceipts" else payload["runs"]
+    replacement = [] if invalid_items == "empty" else [items[0], items[0]]
+    invalid = replacement if definition == "FenceReceipts" else {**payload, "runs": replacement}
+    with pytest.raises(SchemaValidationError):
+        validate_schema(invalid, schema, cls=Draft202012Validator)
+
+
+def test_purge_report_runs_must_match_the_immutable_identity() -> None:
+    _, report, _ = _purge_evidence()
+    other_scope = RunScope(
+        run_id=uuid4(),
+        original_resources=AWSResources(
+            region="us-west-2", s3_bucket="owner-bucket", log_group="runs", log_retention_days=7
+        ),
+    )
+    mismatched = {
+        **report.model_dump(mode="json"),
+        "runs": [RunReport(scope=other_scope, phase="held").model_dump(mode="json")],
+    }
+
+    with pytest.raises(ValidationError):
+        PurgeReport.model_validate(mismatched)
 
 
 def test_published_lifecycle_schema_equals_runtime_model() -> None:

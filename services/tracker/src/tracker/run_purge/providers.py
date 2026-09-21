@@ -4,11 +4,11 @@ import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from benchmark_service import SandboxNotFoundError, SandboxQuery
 from botocore.exceptions import ClientError
-from pydantic import AwareDatetime, model_validator
+from pydantic import AwareDatetime, Field, model_validator
 
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.managed_storage import (
@@ -50,6 +50,9 @@ class FenceReceipt(ContractModel):
         if self.observed_at.utcoffset() != timedelta(0):
             raise ValueError("Fence receipt time must use UTC")
         return self
+
+
+FenceReceipts = Annotated[tuple[FenceReceipt, ...], Field(min_length=1, json_schema_extra={"uniqueItems": True})]
 
 
 def policy_digest(policy: Any) -> str:
