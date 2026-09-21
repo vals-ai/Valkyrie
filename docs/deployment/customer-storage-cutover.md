@@ -24,6 +24,31 @@ Use destination credentials to run `aws service-quotas list-service-quotas --ser
 
 Deploy additive Tracker migrations through `0e1f2a3b4c5d` and the corresponding reviewed ValSmith additive schema. Deploy compatible stable hosts that enforce holds and acknowledge actual process exits, then Tracker guards/readers/operator commands and protocol-v3 executor releases. Inventory every old host and dispatch. Keep lifecycle apply disabled until the host contract is verified.
 
+**The protocol-v3 push is a maintenance deploy that stops live work.** `MANAGED_EXECUTION_PROTOCOL_VERSION` moves from `"2"` to `"3"` in `services/tracker/src/executor_protocol.py`. `infra/classify_repository_change.py` lists that file as both an executor-stack file and an executor-release file, and `.dockerignore` copies it into the executor-host image, so the host image and the release always move together. This slice also changes `infra/shared.py` and `infra/stage_config.py`, which are executor-shared files, so `core_maintenance_required` is true, `deploy-prod-core` does not run, and `executor-prod` owns the whole sequence: begin maintenance, deploy the core stacks, deploy the executor stack, publish and activate the release, finish maintenance. The classification is `maintenance-required`, so the merge waits for the `maintenance-prod` Environment approval.
+
+Plan for the window `begin_maintenance` opens. It sets `executoradmission.maintenance_target_sha`, moves every `IN_PROGRESS` or `STOPPING` run and every active task to `STOPPED` and every `QUEUED` or `RUNNING` dispatch to `FAILED`, then sets the executor-host and Tracker services to `desiredCount=0` and force-stops the remaining host tasks (`services/tracker/src/tracker/executor/release_entrypoint.py`). Every run still in flight is lost and the Tracker is unavailable for the whole deploy. Submissions fail at the load balancer while the Tracker is at zero, and with 503 from the admission fence otherwise, because `select_active_release` raises `MaintenanceModeError` while the fence is set. Complete the phase 4 freeze and drain before the push instead of letting the deploy stop live work.
+
+Confirm the hosts caught up before intake reopens. `finish_maintenance` restores both desired counts and waits on the ECS `services_stable` waiter for both services, so a successful `Finish prod maintenance` step is the first evidence. Check it directly too:
+
+```bash
+aws ecs describe-services --cluster AgenticHarnessCluster-prod --services ExecutorHost-prod \
+  --query 'services[0].[taskDefinition,desiredCount,runningCount,deployments[0].rolloutState]'
+aws ecs list-tasks --cluster AgenticHarnessCluster-prod --service-name ExecutorHost-prod \
+  --query taskArns --output text \
+  | xargs aws ecs describe-tasks --cluster AgenticHarnessCluster-prod --query 'tasks[].taskDefinitionArn' --tasks
+```
+
+Require `rolloutState` `COMPLETED`, `runningCount` equal to `desiredCount`, and every running task on the task-definition revision the service now names. Then confirm the active release with read-only Tracker database credentials:
+
+```sql
+SELECT release.id, release.protocol_version, release.status, release.readiness_verified,
+       admission.maintenance_target_sha
+FROM executoradmission AS admission
+JOIN executorrelease AS release ON release.id = admission.release_id;
+```
+
+Require `protocol_version = '3'`, `status = 'ACTIVE'`, `readiness_verified = true` and `maintenance_target_sha IS NULL`. A managed run submitted while the active release is still protocol 2 is refused with 503, naming `Activate an executor release that supports managed runs`; it is not accepted and then left to expire. No dispatch can carry protocol 3 before that release is active, because `create_executor_dispatch` stamps the active release's own `protocol_version` rather than the Tracker's constant, so no stale host is ever handed a payload it cannot read.
+
 Enable the production-only construct with `VALSMITH_CUSTOMER_STORAGE_ENABLED=true`. Supply every validated input from [the infrastructure contract](../../infra/customer-storage.md): `PRODUCTION_ACCOUNT_ID`, `VALSMITH_STORAGE_ORG_ID`, `VALSMITH_STORAGE_OIDC_PROVIDER_ARN`, `VALSMITH_STORAGE_OIDC_AUDIENCE`, `VALSMITH_STORAGE_OIDC_SUBJECT`, `VALSMITH_DATASET_VIEW_LAMBDA_NAME`, `VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN`, `VALSMITH_LEGACY_STORAGE_BUCKET`, and `VALSMITH_LEGACY_STORAGE_ACCOUNT_ID`. Leave nonproduction defaults disabled.
 
 Read these exact outputs from `ValkProdSharedStack`: `CustomerStorageVaultName`, `CustomerStorageVaultArn`, `CustomerStorageBackupRoleArn`, `CustomerStorageSystemBackupRoleArn`, `CustomerStorageApplicationRoleArn`, `CustomerStorageLambdaRoleArn`, `CustomerStorageLifecycleRoleArn`, and `CustomerStorageAllowedOrgEnvironments`. Verify the vault is retained, encrypted, has no Vault Lock, and has the daily 03:00 UTC periodic plan with 30-day expiry. Verify both AND owner tags and the separate system-bucket selection. Do not add noncurrent object expiry or owner tags to the system bucket.
