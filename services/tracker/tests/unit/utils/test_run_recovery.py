@@ -22,6 +22,7 @@ from benchmark_service.sandbox import DaytonaProviderConfig
 from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse, VerifyTaskIdsResponse
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
+from sqlalchemy import event
 from sqlmodel import Session, col, select
 
 import main as main_module
@@ -46,6 +47,7 @@ from tracker.database.models import (
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
+    AgentCausedExitReason,
     ExecutorDispatch,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
@@ -55,6 +57,7 @@ from tracker.database.models import (
     Org,
     RetryMode,
     Task,
+    TaskBreakdown,
     TaskStatus,
 )
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
@@ -797,6 +800,15 @@ class TestRunRecovery:
             benchmark=benchmark_row.id,
             status=TaskStatus.FINISHED,
         )
+        task_breakdown = TaskBreakdown(
+            sandbox_build_duration=1.0,
+            agent_run_duration=2.0,
+            evaluation_run_duration=3.0,
+            sandbox_run_duration=4.0,
+        )
+        database_session.add(task_breakdown)
+        database_session.flush()
+        task_result.task_breakdown = task_breakdown.id
         database_session.add_all([task_error, task_result])
         database_session.flush()
         for result_row in (
@@ -840,27 +852,136 @@ class TestRunRecovery:
             task.status = TaskStatus.FINISHED
             database_session.add(task)
             database_session.add(
-                make_evaluation_result(task, f"current-{task.task_id}", {"score": 1.0}, _created_at(4))
+                make_evaluation_result(
+                    task,
+                    f"current-{task.task_id}",
+                    {"score": 1.0},
+                    _created_at(4),
+                    exit_reason=AgentCausedExitReason.TIMEOUT,
+                )
             )
         database_session.commit()
 
-        response = client.get(
-            "/retrieve-results",
-            params={"benchmark_id": str(benchmark_row.id)},
-            headers=harness_headers,
-        )
+        statements: list[str] = []
+        bind = database_session.get_bind()
+
+        def record_statement(
+            _connection: Any,
+            _cursor: Any,
+            statement: str,
+            _parameters: Any,
+            _context: Any,
+            _executemany: bool,
+        ) -> None:
+            statements.append(statement)
+
+        event.listen(bind, "before_cursor_execute", record_statement)
+        try:
+            response = client.get(
+                "/retrieve-results",
+                params={"benchmark_id": str(benchmark_row.id)},
+                headers=harness_headers,
+            )
+        finally:
+            event.remove(bind, "before_cursor_execute", record_statement)
 
         assert response.status_code == 200
+        evaluation_queries = [
+            statement
+            for statement in statements
+            if statement.lstrip().upper().startswith("SELECT")
+            and "evaluationresult" in statement.lower()
+        ]
+        assert len(evaluation_queries) == 1
         evaluation_results = response.json()["evaluation_results"]
-        error_history = evaluation_results["task_error"]["history"]
-        result_history = evaluation_results["task_result"]["history"]
-        assert evaluation_results["task_error"]["attempts"] == 3
-        assert evaluation_results["task_result"]["attempts"] == 2
-        assert [entry.get("error_message") for entry in error_history] == ["retry failed before", None]
-        assert error_history[0]["created_at"] > error_history[1]["created_at"]
-        assert error_history[1]["result"] == {"score": 0.25}
-        assert len(result_history) == 1
-        assert result_history[0]["result"] == {"score": 0.5}
+        assert evaluation_results == {
+            "task_error": {
+                "score": 1.0,
+                "agent_caused_exit_reason": "TIMEOUT",
+                "attempts": 3,
+                "history": [
+                    {
+                        "created_at": _created_at(2).isoformat(),
+                        "error_message": "retry failed before",
+                    },
+                    {
+                        "created_at": _created_at(1).isoformat(),
+                        "result": {"score": 0.25},
+                    },
+                ],
+            },
+            "task_result": {
+                "score": 1.0,
+                "agent_caused_exit_reason": "TIMEOUT",
+                "task_breakdown": {
+                    "sandbox_build_duration": 1.0,
+                    "agent_run_duration": 2.0,
+                    "evaluation_run_duration": 3.0,
+                    "sandbox_run_duration": 4.0,
+                },
+                "attempts": 2,
+                "history": [
+                    {
+                        "created_at": _created_at(1).isoformat(),
+                        "result": {"score": 0.5},
+                    },
+                ],
+            },
+        }
+
+    async def test_result_history_ties_use_result_id_and_remain_org_scoped(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        other_org = Org(name="other-result-history-org")
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_with_tied_results",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        foreign_task = Task(
+            org_id=other_org.id,
+            task_id="foreign_task",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        database_session.add_all([benchmark_row, other_org, task_row, foreign_task])
+        database_session.flush()
+
+        created_at = _created_at(1)
+        previous_result = make_evaluation_result(
+            task_row, "previous-result", {"score": 0.5}, created_at
+        )
+        previous_result.id = UUID(int=1)
+        current_result = make_evaluation_result(
+            task_row, "current-result", {"score": 1.0}, created_at
+        )
+        current_result.id = UUID(int=2)
+        other_org_result = make_evaluation_result(
+            task_row, "other-org-result", {"score": 2.0}, created_at
+        )
+        other_org_result.id = UUID(int=3)
+        other_org_result.org_id = other_org.id
+        foreign_task_result = make_evaluation_result(
+            foreign_task, "foreign-task-result", {"score": 3.0}, created_at
+        )
+        database_session.add_all(
+            [previous_result, current_result, other_org_result, foreign_task_result]
+        )
+        database_session.commit()
+
+        evaluation_results = benchmark_row.fetch_evaluation_results(database_session)
+
+        assert set(evaluation_results) == {task_row.task_id}
+        assert "foreign_task" not in evaluation_results
+        task_result = evaluation_results[task_row.task_id]
+        assert task_result["score"] == 1.0
+        assert task_result["attempts"] == 2
+        assert [entry["result"] for entry in task_result["history"]] == [{"score": 0.5}]
+
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_reset_lazily_creates_rows_for_unregistered_task_ids(

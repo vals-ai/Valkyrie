@@ -131,33 +131,12 @@ class BenchmarkContext:
 
 
 def _fetch_result_histories(
-    session: Session, task_row_ids: Sequence[UUID], current_evaluation_result_ids: set[UUID], org_id: UUID
+    session: Session,
+    task_row_ids: Sequence[UUID],
+    evaluation_rows: Sequence[tuple[UUID, datetime, dict[str, Any]]],
+    org_id: UUID,
 ) -> dict[UUID, list[dict[str, Any]]]:
-    """
-    Fetch the history of evaluation + error results for the provided task ids, mixing them with the evaluation results we already have.
-    """
-    # Prep query to fetch all evaluation results for the given tasks
-    evaluation_statement = cast(
-        Any,
-        select(EvaluationResult.id, EvaluationResult.task, EvaluationResult.created_at, EvaluationResult.result)
-        .where(col(EvaluationResult.task).in_(task_row_ids))
-        .where(col(EvaluationResult.org_id) == org_id),
-    )
-
-    # Exclude evaluation results we have already collected
-    if current_evaluation_result_ids:
-        evaluation_statement = evaluation_statement.where(
-            col(EvaluationResult.id).notin_(current_evaluation_result_ids)
-        )
-
-    # Fetched evaluation results
-    evaluation_query_result = cast(Any, session.exec(evaluation_statement))
-    evaluation_rows = cast(
-        Sequence[tuple[UUID, UUID, datetime, dict[str, Any]]],
-        evaluation_query_result.all(),
-    )
-
-    # Fetch all of the error results from the provided task_rows (A task can have a error message and a evaluation result depending on if its been reran)
+    """Combine previously loaded evaluation attempts with non-retry errors."""
     error_rows = session.exec(
         select(ErrorResult.task, ErrorResult.created_at, ErrorResult.error_message)
         .where(col(ErrorResult.task).in_(task_row_ids))
@@ -165,10 +144,8 @@ def _fetch_result_histories(
         .where(col(ErrorResult.retry_scheduled).is_(False))
     ).all()
 
-    # Create a mapping of the task row, time stamp of when the result for the row was created, and the resulting row
-    # We do this so that we can easily sort it downstream
     histories: dict[UUID, list[dict[str, Any]]] = {}
-    for _result_id, task_row_id, created_at, result in evaluation_rows:
+    for task_row_id, created_at, result in evaluation_rows:
         histories.setdefault(task_row_id, []).append(_history_result(created_at, result))
     for task_row_id, created_at, error_message in error_rows:
         histories.setdefault(task_row_id, []).append(_history_error(created_at, error_message))
@@ -188,8 +165,13 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID)
         .outerjoin(TaskBreakdown, col(Task.task_breakdown) == col(TaskBreakdown.id))
         .where(Task.benchmark == benchmark_id)
         .where(Task.org_id == org_id)
+        .where(EvaluationResult.org_id == org_id)
         .where(Task.status == TaskStatus.FINISHED)
-        .order_by(desc(EvaluationResult.created_at))
+        .order_by(
+            col(EvaluationResult.task),
+            desc(EvaluationResult.created_at),
+            desc(EvaluationResult.id),
+        )
     )
 
     results = cast(
@@ -198,17 +180,27 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID)
     )
 
     latest_results: list[tuple[EvaluationResult, UUID, str, TaskBreakdown | None]] = []
+    historical_results: list[tuple[UUID, datetime, dict[str, Any]]] = []
     seen_task_row_ids: set[UUID] = set()
     for row in results:
-        task_row_id = row[1]
+        evaluation_result, task_row_id, _task_id, _task_breakdown = row
         if task_row_id not in seen_task_row_ids:
             latest_results.append(row)
             seen_task_row_ids.add(task_row_id)
+        else:
+            historical_results.append(
+                (task_row_id, evaluation_result.created_at, evaluation_result.result)
+            )
+
+    latest_results.sort(
+        key=lambda row: (row[0].created_at, row[0].id),
+        reverse=True,
+    )
 
     histories = _fetch_result_histories(
         session,
         list(seen_task_row_ids),
-        {evaluation_result.id for evaluation_result, _task_row_id, _task_id, _breakdown in latest_results},
+        historical_results,
         org_id,
     )
 
