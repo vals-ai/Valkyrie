@@ -126,7 +126,7 @@ PYTHONPATH=services/tracker/src uv run --project services/tracker python -m task
   --workers 1 --no-configure-logging services.executor_host.supervisor:broker services.executor_host.supervisor
 ```
 
-Start your benchmark service at its configured address. Then publish an agent and run it:
+Start your benchmark service at its configured address with `AUTH_DISABLED=true`. Then publish an agent and run it:
 
 ```bash
 export VALKYRIE_CONFIG_PATH=/absolute/path/to/local-client.yaml
@@ -138,6 +138,12 @@ Use the returned run ID with `run fetch`, `run logs`, `run results`, `run output
 `run stop`, `run retry`, and `run resume`. Tracker serves local agent and artifact
 downloads over HTTP. Clients do not need access to `data_root`. Local execution supports
 image-based Docker tasks; AWS callbacks and cloud secret references are unavailable.
+
+An executor that exits mid-run leaves its task containers running. Remove that run's containers with:
+
+```bash
+docker rm -f $(docker ps -aq --filter label=io.vals.cbs.managed=true --filter label=run-id=<run-id>)
+```
 
 ### Run it with hosted-mode authentication
 
