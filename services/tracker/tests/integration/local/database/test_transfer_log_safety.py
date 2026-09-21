@@ -60,6 +60,31 @@ class OwnerStorage(FakeS3):
         }
 
 
+def command_arguments(payload: dict[str, Any], request_path: Path, report_path: Path, journal: Path) -> list[str]:
+    return [
+        "transfer_run_history.py",
+        "--request",
+        str(request_path),
+        "--report",
+        str(report_path),
+        "--source-database-url-env",
+        "BOUNDARY_SOURCE_DATABASE",
+        "--destination-database-url-env",
+        "BOUNDARY_DESTINATION_DATABASE",
+        "--expected-source-database-target",
+        payload["plan"]["source_identity"]["database_target"],
+        "--expected-destination-database-target",
+        payload["plan"]["destination_identity"]["database_target"],
+        "--source-aws-profile-env",
+        "BOUNDARY_SOURCE_PROFILE",
+        "--destination-aws-profile-env",
+        "BOUNDARY_DESTINATION_PROFILE",
+        "--journal-directory",
+        str(journal),
+        "--apply",
+    ]
+
+
 @pytest.mark.parametrize("action", ["import", "inspect", "cleanup", "finalize", "retired_finalize"])
 def test_command_refuses_a_recent_hold_without_removing_rows_releasing_holds_or_replacing_report(
     pair: tuple[Session, Session],
@@ -222,3 +247,63 @@ def test_command_completes_a_quiet_legacy_run_and_publishes_its_archive(
     record = destination.get(RunLifecycle, run.id)
     assert record is not None and record.checkpoint_json is not None
     assert TransferCheckpoint.model_validate_json(record.checkpoint_json).log_completeness_sha256 is not None
+
+
+@pytest.mark.parametrize("operator_shell_time_zone", ["UTC", "America/Los_Angeles"])
+def test_quiet_interval_boundary_is_the_same_instant_in_any_operator_shell_zone(
+    pair: tuple[Session, Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    operator_shell_time_zone: str,
+) -> None:
+    """The hold is aged in SQL, so the refusal moves only if the stored instant is not UTC."""
+    monkeypatch.setenv("PGTZ", operator_shell_time_zone)
+    source, destination = pair
+    org, run, _ = seed_rows(source, destination)
+    payload = transfer_request(source, destination, org, run)
+    boundary = TransferAWSBoundary(
+        Mock(),
+        Mock(),
+        tmp_path / "journal",
+        source_session=FakeSession("111111111111", RunLogs(f"logs/{run.id}")),
+        destination_session=FakeSession("222222222222", OwnerStorage(org.id)),
+    )
+    monkeypatch.setattr(boundary, "validate", AsyncMock())
+    monkeypatch.setattr(boundary, "drain", AsyncMock())
+    monkeypatch.setattr("tracker.run_transfer.providers.RelocationAWSBoundary.verify_objects", AsyncMock())
+    monkeypatch.setattr("tracker.run_transfer.cli.TransferAWSBoundary", Mock(return_value=boundary))
+    planned = execute(TransferOperator(source, destination, boundary), payload, "plan")
+    payload["plan"]["runs"][0]["source_rows_sha256"] = planned.runs[0].source_rows_sha256
+    for side, session in zip(("SOURCE", "DESTINATION"), pair, strict=True):
+        monkeypatch.setenv(
+            f"BOUNDARY_{side}_DATABASE", session.get_bind().engine.url.render_as_string(hide_password=False)
+        )
+        monkeypatch.setenv(f"BOUNDARY_{side}_PROFILE", f"private-{side}-profile")
+    monkeypatch.setenv("DATABASE_URL", "unchanged-by-test-teardown")
+    request_path, journal = tmp_path / "request.json", tmp_path / "journal"
+
+    payload["action"] = "prepare"
+    request_path.write_text(json.dumps(payload))
+    monkeypatch.setattr(sys, "argv", command_arguments(payload, request_path, tmp_path / "prepared.json", journal))
+    assert main() == 0, capsys.readouterr().err
+
+    for session in pair:
+        session.rollback()
+    source.connection().execute(
+        text("UPDATE runlifecycle SET acquired_at = acquired_at - make_interval(secs => :seconds)"),
+        {"seconds": timedelta(hours=24).total_seconds() - 60},
+    )
+    source.commit()
+    capsys.readouterr()
+
+    payload["action"] = "import"
+    report_path = tmp_path / "imported.json"
+    request_path.write_text(json.dumps(payload))
+    monkeypatch.setattr(sys, "argv", command_arguments(payload, request_path, report_path, journal))
+
+    assert main() == 2
+
+    output = capsys.readouterr()
+    assert output.err == "Transfer remains incomplete (LifecycleConflict; clause hold_quiet_interval)\n"
+    assert not report_path.exists()

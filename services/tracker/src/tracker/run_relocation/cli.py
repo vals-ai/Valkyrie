@@ -7,9 +7,10 @@ import tempfile
 from pathlib import Path
 
 from sqlalchemy.engine import make_url
-from sqlmodel import Session, create_engine
+from sqlmodel import Session
 
 from tracker.aws.clients import DefaultChainAWSClientProvider
+from tracker.database.engine import create_engine
 from tracker.lifecycle import LifecycleConflict
 from tracker.run_relocation import RelocationOperator
 from tracker.run_relocation.providers import RelocationAWSBoundary

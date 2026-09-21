@@ -26,6 +26,12 @@ wall time and every audit record that labels the value UTC is wrong by the
 offset. Pinning it also overrides `PGTZ` in an operator shell, a per-database
 `ALTER DATABASE ... SET TimeZone`, and a non-UTC server default.
 
+The API service, the purge, relocation and transfer operator commands, and the
+Alembic migration runner all build their engines through
+`tracker.database.engine`. That module is the only one in the service allowed to
+name a raw engine constructor, and a unit test refuses any other one, so a new
+connection cannot reach the database without the pin.
+
 Deploy consequence: a row written before this change under a session that was
 not UTC holds local wall time and is now read as UTC. That only matters for a
 database that already ran in another zone, where the stored values were already

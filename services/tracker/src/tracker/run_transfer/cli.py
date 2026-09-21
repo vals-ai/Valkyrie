@@ -6,8 +6,9 @@ import tempfile
 from pathlib import Path
 
 from sqlalchemy.engine import make_url
-from sqlmodel import Session, create_engine
+from sqlmodel import Session
 
+from tracker.database.engine import create_engine
 from tracker.lifecycle import LifecycleConflict
 from tracker.run_transfer import TransferOperator
 from tracker.run_transfer.contracts import TransferRequest

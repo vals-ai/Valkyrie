@@ -1,10 +1,11 @@
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool, text
+from sqlalchemy import pool, text
 from sqlmodel import SQLModel
 
 from tracker.config import DATABASE_URL
+from tracker.database.engine import create_engine_from_config
 from tracker.database.models import *  # noqa: F403
 
 # this is the Alembic Config object, which provides
@@ -65,9 +66,8 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    connectable = engine_from_config(
+    connectable = create_engine_from_config(
         config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
 

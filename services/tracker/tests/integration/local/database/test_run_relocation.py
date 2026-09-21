@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import ValidationError
@@ -38,7 +39,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.executor.release_control import create_executor_dispatch
-from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, require_unheld
+from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, as_utc, require_unheld
 from tracker.lifecycle_completion import RelocationCheckpoint, acquire_successor_hold, capture_predecessor
 import tracker.run_relocation as run_relocation
 from tracker.run_purge.locking import OperationLock
@@ -1435,3 +1436,118 @@ def test_mixed_owner_relocates_source_and_verifies_unchanged_destination(relocat
     for run_id in (source_run.id, destination_run.id):
         with pytest.raises(LifecycleConflict):
             require_unheld(relocation_session, run_id)
+
+
+OPERATOR_SHELL_TIME_ZONE = "America/Los_Angeles"
+
+
+def shell_zone_offset() -> timedelta:
+    offset = ZoneInfo(OPERATOR_SHELL_TIME_ZONE).utcoffset(datetime.now(UTC))
+    assert offset is not None
+    return -offset
+
+
+def run_relocation_cli(
+    session: Session, request: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> int:
+    """Run the installed operator command from a shell whose time zone is not UTC."""
+    request_path = tmp_path / "shell-request.json"
+    request_path.write_text(json.dumps(request))
+    script = Path(__file__).resolve().parents[4] / "scripts/relocate_run_storage.py"
+    monkeypatch.setenv("PGTZ", OPERATOR_SHELL_TIME_ZONE)
+    monkeypatch.setenv(
+        "PRIVATE_RELOCATION_DATABASE", session.get_bind().engine.url.render_as_string(hide_password=False)
+    )
+    monkeypatch.setenv("DATABASE_URL", os.environ.get("DATABASE_URL", ""))
+    monkeypatch.setattr("tracker.run_relocation.cli.RelocationAWSBoundary", Mock(return_value=EmptyBoundary()))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(script),
+            "--request",
+            str(request_path),
+            "--report",
+            str(tmp_path / "shell-report.json"),
+            "--database-url-env",
+            "PRIVATE_RELOCATION_DATABASE",
+            "--expected-database-target",
+            request["database_target"],
+            "--apply",
+        ],
+    )
+    return cast(int, runpy.run_path(str(script))["main"]())
+
+
+def test_cli_hold_records_the_real_instant_from_a_shell_whose_zone_is_not_utc(
+    relocation_session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, _, request = seed(relocation_session)
+    relocation_session.rollback()
+
+    before = datetime.now(UTC)
+    assert run_relocation_cli(relocation_session, request, tmp_path, monkeypatch) == 0
+    after = datetime.now(UTC)
+
+    relocation_session.rollback()
+    hold = relocation_session.get_one(RunLifecycle, run.id)
+    assert before <= as_utc(hold.acquired_at) <= after
+
+
+@pytest.mark.parametrize(
+    "staleness",
+    [
+        None,
+        timedelta(seconds=1),
+        shell_zone_offset() - timedelta(seconds=1),
+        shell_zone_offset() + timedelta(seconds=1),
+    ],
+)
+def test_shell_zone_cannot_widen_the_external_drain_window_before_the_hold(
+    relocation_session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, staleness: timedelta | None
+) -> None:
+    """Evidence observed before the hold proves nothing about the frozen run."""
+    run, _, request = seed(relocation_session)
+    release = ExecutorRelease(
+        id="shell-zone", artifact_uri="s3://releases/test", artifact_digest="a" * 64, protocol_version="1"
+    )
+    relocation_session.add(release)
+    relocation_session.flush()
+    dispatch = create_executor_dispatch(run.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4())
+    dispatch.status = ExecutorDispatchStatus.FAILED
+    dispatch.started_at = datetime.now(UTC) - timedelta(days=2)
+    relocation_session.add(dispatch)
+    relocation_session.commit()
+
+    before = datetime.now(UTC)
+    assert run_relocation_cli(relocation_session, request, tmp_path, monkeypatch) == 2
+
+    relocation_session.rollback()
+    hold = relocation_session.get_one(RunLifecycle, run.id)
+    evidence = tmp_path / "host-drain.txt"
+    evidence.write_bytes(b"fixture: hosts terminated and claims disabled")
+    request["host_contract"]["legacy_dispatch_ids"] = [str(dispatch.id)]
+    request["external_evidence_files"] = [str(evidence)]
+    request["external_host_drains"] = [
+        {
+            "provenance": "externally_confirmed_host_drain",
+            "identity": request["plan"]["identity"],
+            "run_id": str(run.id),
+            "hold_acquired_at": as_utc(hold.acquired_at).isoformat(),
+            "dispatch_ids": [str(dispatch.id)],
+            "host_inventory": ["host-1"],
+            "deployed_host_contract": "stable-host-lifecycle-v1",
+            "observed_at": (datetime.now(UTC) if staleness is None else before - staleness).isoformat(),
+            "verifier": "test-operator",
+            "evidence_sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
+            "confirmation": "all_inventory_hosts_terminated_and_old_claims_disabled",
+        }
+    ]
+
+    if staleness is None:
+        response = execute(relocation_session, request, "prepare")
+        assert response.runs[0].dispatches[0].evidence == "externally_confirmed_host_drain"
+        return
+
+    with pytest.raises(LifecycleConflict):
+        execute(relocation_session, request, "prepare")
