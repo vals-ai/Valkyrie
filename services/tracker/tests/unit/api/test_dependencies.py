@@ -1,6 +1,6 @@
 """Run: uv run pytest services/tracker/tests/unit/api/test_dependencies.py"""
 
-from unittest.mock import AsyncMock
+from unittest.mock import Mock
 
 from tracker.api.dependencies import get_run_runtime
 import pytest
@@ -16,7 +16,10 @@ async def test_get_run_runtime_uses_persisted_sandbox_provider(
 ) -> None:
     context = AWSRuntime.from_harness_config(harness_config)
 
-    monkeypatch.setattr("tracker.api.dependencies.get_run_aws_context", AsyncMock(return_value=context))
+    monkeypatch.setattr(
+        "tracker.api.dependencies.resolve_run_aws_runtime_and_access_key_config",
+        Mock(return_value=Mock(runtime=context)),
+    )
     runtime = await get_run_runtime(example_benchmark_object, Request({"type": "http"}), Org(name="test"))
     arguments = example_benchmark_object.arguments
     assert runtime.sandbox_provider == arguments.sandbox_provider

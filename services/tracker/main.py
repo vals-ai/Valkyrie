@@ -31,7 +31,7 @@ from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
-from tracker.api.dependencies import get_run_aws_context, RunBenchmarkDependency, RunRuntimeDependency
+from tracker.api.dependencies import RunBenchmarkDependency, RunRuntimeDependency
 from tracker.api.filter_options import router as filter_options_router
 from tracker.api.logs import router as logs_router
 from tracker.api.scheduler_overview import router as scheduler_overview_router
@@ -1089,7 +1089,14 @@ async def analyze_benchmark(
     """
     if benchmark_row.arguments.environment == "local":
         raise HTTPException(status_code=400, detail="This operation requires an AWS run")
-    aws_runtime = await get_run_aws_context(benchmark_row, http_request, org)
+    aws_runtime = resolve_run_aws_runtime_and_access_key_config(
+        http_request,
+        org_id=org.id,
+        aws_managed=benchmark_row.aws_managed,
+        properties=benchmark_row.arguments.properties,
+    ).runtime
+    if benchmark_row.aws_managed:
+        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
 
     if benchmark_row.status != BenchmarkStatus.FINISHED:
         raise HTTPException(
