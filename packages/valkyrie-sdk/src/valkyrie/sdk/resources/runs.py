@@ -560,10 +560,9 @@ class RunsResource:
         effective_headers = self._service_headers(run.benchmark_name, service_headers)
         params: dict[str, Any] = {
             "retry": retry,
+            "update_agent": update_agent,
             "retry_mode": RetryMode.FROM_SCRATCH.value if from_scratch else RetryMode.AUTO.value,
         }
-        if update_agent:
-            params["update_agent"] = True
         if concurrency is not None:
             params["concurrency"] = concurrency
 

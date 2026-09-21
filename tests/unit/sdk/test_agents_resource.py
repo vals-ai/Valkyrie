@@ -128,7 +128,7 @@ class TestAgentsResource:
         (tmp_path / "contract.yaml").write_text(_CONTRACT)
 
         def upload(request: httpx.Request) -> httpx.Response:
-            assert dict(request.url.params) == ({"overwrite": "false"} if not overwrite else {})
+            assert dict(request.url.params) == {"overwrite": str(overwrite).lower()}
             return httpx.Response(200, json={"name": "demo"})
 
         async with make_client(upload) as client:
@@ -300,6 +300,7 @@ class TestAgentArchive:
     def test_backup_cleanup_failure_keeps_successful_replacement(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
+        caplog.set_level("WARNING", logger="valkyrie.sdk.agent_bundle")
         target = tmp_path / "demo"
         target.mkdir()
         (target / "keep").write_text("original")

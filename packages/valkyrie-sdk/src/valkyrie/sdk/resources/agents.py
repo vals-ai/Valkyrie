@@ -70,7 +70,7 @@ class AgentsResource:
                 "PUT",
                 f"/agents/{agent_name}",
                 AgentEntry,
-                params={"overwrite": False} if not overwrite else None,
+                params={"overwrite": overwrite},
                 content=_file_chunks(stream),
                 headers={"Content-Type": "application/zip", "Content-Length": str(size)},
             )

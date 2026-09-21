@@ -738,10 +738,7 @@ class TrackerService:
             RetryOrResumeBenchmarkResponse with status and message
         """
         try:
-            params: dict[str, Any] = {"retry": retry, "retry_mode": retry_mode.value}
-
-            if update_agent:
-                params["update_agent"] = True
+            params: dict[str, Any] = {"retry": retry, "retry_mode": retry_mode.value, "update_agent": update_agent}
 
             if concurrency is not None:
                 params["concurrency"] = concurrency

@@ -713,7 +713,7 @@ def test_retry_or_resume_sends_retry_mode(
         task_ids=[],
     )
 
-    assert mock_client.params == {"retry": False, "retry_mode": "auto", "concurrency": 0}
+    assert mock_client.params == {"retry": False, "retry_mode": "auto", "concurrency": 0, "update_agent": False}
 
 
 def test_tracker_client_requires_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -679,7 +679,7 @@ async def test_resume_without_optional_overrides_uses_empty_payload(make_client,
         await client.runs.resume(run_id)
 
     request = requests[1]
-    assert "update_agent" not in request.url.params
+    assert request.url.params["update_agent"] == "false"
     assert "concurrency" not in request.url.params
     assert json.loads(request.content) == {"task_ids": [], "service_headers": {}, "secrets": {}}
 
@@ -708,6 +708,7 @@ async def test_resume_request_matches_canonical_wire_fixture(make_client, sdk_co
     request = requests[1]
     assert dict(request.url.params) == {
         "retry": str(fixture["query"]["retry"]).lower(),
+        "update_agent": str(fixture["query"]["update_agent"]).lower(),
         "retry_mode": fixture["query"]["retry_mode"],
         "concurrency": str(fixture["query"]["concurrency"]),
     }
