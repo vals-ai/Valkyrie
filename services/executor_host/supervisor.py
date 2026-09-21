@@ -23,6 +23,7 @@ from redis.asyncio import Redis
 from taskiq import TaskiqEvents
 from taskiq_redis import RedisStreamBroker
 from executor_protocol import (
+    DATABASE_SESSION_TIME_ZONE,
     DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS,
     DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
     DEFAULT_EXECUTOR_RELEASE_PREFIX,
@@ -280,13 +281,23 @@ class PostgresExecutorDispatchStore:
         )
 
     def _connect(self) -> PostgresConnection:
-        return psycopg2.connect(
+        connection = psycopg2.connect(
             host=self.host,
             port=self.port,
             dbname=self.dbname,
             user=self.user,
             password=self.password,
         )
+        try:
+            connection.autocommit = True
+            with connection.cursor() as cursor:
+                cursor.execute(f"SET TIME ZONE '{DATABASE_SESSION_TIME_ZONE}'")
+            connection.autocommit = False
+        except BaseException:
+            connection.close()
+            raise
+
+        return connection
 
     async def claim(
         self,
@@ -396,6 +407,8 @@ class PostgresExecutorDispatchStore:
 
     def _acknowledge_exit(self, authority: DispatchAuthority) -> None:
         with self._connect() as connection, connection.cursor() as cursor:
+            # The deletion contract publishes this column as a UTC instant, so it does
+            # not rely on the pinned session zone alone.
             cursor.execute(
                 """
                 UPDATE executordispatch

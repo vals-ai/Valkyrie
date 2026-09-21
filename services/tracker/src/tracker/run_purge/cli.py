@@ -9,9 +9,10 @@ from pathlib import Path
 from uuid import UUID
 
 from pydantic import BaseModel, TypeAdapter
-from sqlmodel import Session, create_engine
+from sqlmodel import Session
 
 from tracker.aws.clients import DefaultChainAWSClientProvider
+from tracker.database.engine import create_engine
 from tracker.lifecycle import LifecycleConflict, OperationIdentity
 from tracker.lifecycle_evidence import ExternalHostDrain, HostContractObservation, write_report
 from tracker.run_purge import PurgeOperator, abandon_runs, build_plan

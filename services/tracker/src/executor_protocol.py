@@ -19,6 +19,10 @@ DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS = 120
 DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS = 300
 DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS = 30
 
+# Both services store timestamps in columns without a zone, and PostgreSQL resolves
+# every write and comparison against the session zone, so both must pin the same one.
+DATABASE_SESSION_TIME_ZONE = "UTC"
+
 
 class ExecutorDispatchStatus(str, Enum):
     QUEUED = "QUEUED"

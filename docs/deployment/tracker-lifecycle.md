@@ -17,6 +17,22 @@ Confidence: high for the local contract. Deployed host compatibility is unknown.
    host inventory, its contract and the legacy dispatch inventory. Unknown
    compatibility leaves the operation pending.
 
+## Database session time zone
+
+Every tracker and stable-host connection pins `SET TIME ZONE 'UTC'`. The
+timestamp columns carry no zone, and PostgreSQL resolves both a write and a
+comparison against the session zone, so a session in another zone stores local
+wall time and every audit record that labels the value UTC is wrong by the
+offset. Pinning it also overrides `PGTZ` in an operator shell, a per-database
+`ALTER DATABASE ... SET TimeZone`, and a non-UTC server default.
+
+Deploy consequence: a row written before this change under a session that was
+not UTC holds local wall time and is now read as UTC. That only matters for a
+database that already ran in another zone, where the stored values were already
+wrong. Its effect is bounded to the lease and claim windows, which expire within
+minutes, plus any hold acquired in that window; check `runlifecycle.acquired_at`
+against the operation's own records before trusting it.
+
 The schema is additive and its downgrade is refused. Do not backfill exit receipts
 from status, `finished_at`, heartbeat, lease age, or stop responses. Dispatch UUIDs
 are single-use: only QUEUED dispatches can be claimed, and retries create new IDs.

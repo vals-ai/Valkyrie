@@ -26,6 +26,7 @@ from sqlmodel import Session
 
 from tests.factories import make_benchmark, make_task
 from tracker.aws.runtime import AWSResources
+from tracker.database.engine import create_engine
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -262,6 +263,61 @@ async def test_exit_receipt_is_utc_under_a_local_database_time_zone(
     exit_time = dispatch.process_exited_at
     assert exit_time is not None
     assert abs(exit_time.replace(tzinfo=UTC) - datetime.now(UTC)) < timedelta(minutes=5)
+
+
+@pytest.mark.asyncio
+async def test_pinned_sessions_keep_stored_times_utc_and_expiry_correct(
+    postgres_session: Session, postgres_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+
+    identity, scope, run, dispatch, release = seeded_run(postgres_session)
+    database_url = postgres_engine.url.render_as_string(hide_password=False)
+    url = postgres_engine.url
+    dispatch.status = ExecutorDispatchStatus.QUEUED
+    dispatch.started_at = None
+    postgres_session.add(dispatch)
+    postgres_session.commit()
+    monkeypatch.setenv("PGTZ", "America/Los_Angeles")
+    store = PostgresExecutorDispatchStore(
+        host=str(url.host),
+        port=str(url.port),
+        dbname=str(url.database),
+        user=str(url.username),
+        password=str(url.password),
+    )
+    artifact = ArtifactDispatch.from_payload(
+        {
+            "executor_release_id": release.id,
+            "executor_artifact_uri": release.artifact_uri,
+            "executor_artifact_digest": release.artifact_digest,
+            "executor_protocol_version": release.protocol_version,
+        }
+    )
+    assert await store.claim(str(dispatch.id), str(run.id), artifact) is not None
+
+    engine = create_engine(database_url)
+    try:
+        with Session(engine, expire_on_commit=False) as session:
+            claimed = session.get(ExecutorDispatch, dispatch.id)
+            assert claimed is not None and claimed.started_at is not None
+            assert abs(claimed.started_at.replace(tzinfo=UTC) - datetime.now(UTC)) < timedelta(minutes=5)
+
+            claimed.status = ExecutorDispatchStatus.QUEUED
+            claimed.claim_deadline_at = datetime.now(UTC) + timedelta(minutes=10)
+            session.add(claimed)
+            session.commit()
+            assert reconcile_expired_dispatches(session) == 0
+
+            claimed.claim_deadline_at = datetime.now(UTC) - timedelta(minutes=1)
+            session.add(claimed)
+            session.commit()
+            assert reconcile_expired_dispatches(session) == 1
+
+            record = acquire_hold(session, identity=identity, scope=scope, purpose="relocation")
+            session.commit()
+            assert abs(record.acquired_at.replace(tzinfo=UTC) - datetime.now(UTC)) < timedelta(minutes=5)
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.parametrize("action", ["retry", "claim"])
