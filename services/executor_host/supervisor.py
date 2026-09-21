@@ -35,6 +35,7 @@ from executor_protocol import (
     normalize_executor_telemetry_context,
     validate_executor_artifact_uri,
     validate_executor_digest,
+    validate_local_executor_artifact_uri,
 )
 from services.executor_host.observability import (
     capture_dispatch_error,
@@ -43,7 +44,6 @@ from services.executor_host.observability import (
     record_dispatch_cancellation,
     record_dispatch_completion,
 )
-from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -550,7 +550,7 @@ class ExecutorSupervisor:
         cache_dir: Path,
         *,
         s3_client: S3Client | None = None,
-        artifact_reader: FilesystemExecutorArtifactReader | None = None,
+        release_root: Path | None = None,
         python_executable: str = sys.executable,
         artifact_bucket: str | None = None,
         artifact_prefix: str | None = None,
@@ -565,7 +565,9 @@ class ExecutorSupervisor:
             DEFAULT_EXECUTOR_RELEASE_PREFIX,
         )
         self.s3_client = s3_client
-        self.artifact_reader = artifact_reader
+        if release_root is not None and not release_root.is_absolute():
+            raise ValueError("Local executor release root must be absolute")
+        self.release_root = release_root.resolve() if release_root is not None else None
         self.authority_check_interval = authority_check_interval
         self.sleep = sleep
 
@@ -573,8 +575,8 @@ class ExecutorSupervisor:
         return await asyncio.to_thread(self._prepare_artifact, dispatch)
 
     def _prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
-        if self.artifact_reader is not None:
-            artifact_path = self.artifact_reader.validate(dispatch.artifact_uri)
+        if self.release_root is not None:
+            artifact_path = validate_local_executor_artifact_uri(dispatch.artifact_uri, self.release_root)
             verify_file_digest(artifact_path, dispatch.artifact_digest)
             return artifact_path
 
@@ -745,11 +747,7 @@ async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:
 
 supervisor = ExecutorSupervisor(
     CACHE_DIR,
-    artifact_reader=(
-        FilesystemExecutorArtifactReader(Path(os.environ["EXECUTOR_RELEASE_ROOT"]))
-        if os.environ.get("EXECUTOR_RELEASE_ROOT")
-        else None
-    ),
+    release_root=Path(os.environ["EXECUTOR_RELEASE_ROOT"]) if os.environ.get("EXECUTOR_RELEASE_ROOT") else None,
 )
 dispatch_store = PostgresExecutorDispatchStore.from_environment()
 

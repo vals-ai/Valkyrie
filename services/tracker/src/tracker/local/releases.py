@@ -19,7 +19,6 @@ from tracker.executor.release_control import (
     lock_executor_admission,
     select_active_release,
 )
-from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader
 from tracker.local.storage import local_path
 
 
@@ -51,13 +50,14 @@ def initialize_release(
     release_root: Path,
 ) -> ExecutorRelease:
     """Verify and activate a content-addressed artifact, preserving prior releases."""
-    reader = FilesystemExecutorArtifactReader(release_root)
+    if not release_root.is_absolute():
+        raise ValueError("Local executor release root must be absolute")
     manifest = LocalReleaseManifest.model_validate_json(manifest_path.read_bytes())
     digest = validate_executor_digest(manifest.artifact_digest)
     if manifest.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
         raise ReleaseControlError(f"Unsupported executor protocol version: {manifest.protocol_version}")
     artifact = local_path(manifest_path.parent, manifest.artifact_path)
-    destination = _publish_artifact(artifact, reader.root, digest)
+    destination = _publish_artifact(artifact, release_root.resolve(), digest)
     admission = lock_executor_admission(session)
     if admission.release_id is not None:
         active = select_active_release(session)

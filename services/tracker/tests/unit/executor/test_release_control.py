@@ -20,7 +20,7 @@ from tracker.database.models import (
     ExecutorReleaseStatus,
 )
 from tracker.aws.executor_artifacts import S3ExecutorArtifactReader
-from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader
+from executor_protocol import validate_local_executor_artifact_uri
 from tracker.local.releases import initialize_release
 from tracker.executor.release_control import (
     ReleaseControlError,
@@ -737,8 +737,7 @@ def test_local_release_restart_reuses_matching_build_and_activates_changed_build
     root = tmp_path / "releases"
     first = initialize_release(database_session, manifest, root)
     database_session.commit()
-    reader = FilesystemExecutorArtifactReader(root)
-    with reader.validate(first.artifact_uri).open("rb") as stream:
+    with validate_local_executor_artifact_uri(first.artifact_uri, root).open("rb") as stream:
         assert stream.read() == b"first executor"
 
     restarted = initialize_release(database_session, manifest, root)
@@ -751,9 +750,9 @@ def test_local_release_restart_reuses_matching_build_and_activates_changed_build
     assert second.id != first.id
     assert second.status == ExecutorReleaseStatus.ACTIVE
     assert first.status == ExecutorReleaseStatus.DRAINING
-    with reader.validate(first.artifact_uri).open("rb") as stream:
+    with validate_local_executor_artifact_uri(first.artifact_uri, root).open("rb") as stream:
         assert stream.read() == b"first executor"
-    with reader.validate(second.artifact_uri).open("rb") as stream:
+    with validate_local_executor_artifact_uri(second.artifact_uri, root).open("rb") as stream:
         assert stream.read() == b"second executor"
 
     _local_manifest(manifest.parent, b"first executor")
@@ -763,7 +762,8 @@ def test_local_release_restart_reuses_matching_build_and_activates_changed_build
     assert restored.artifact_uri == first.artifact_uri
     assert restored.status == ExecutorReleaseStatus.ACTIVE
     assert second.status == ExecutorReleaseStatus.DRAINING
-    assert not list(root.rglob("*.tmp"))
+    for directory in root.iterdir():
+        assert list(directory.iterdir()) == [directory / "executor.pex"]
 
 
 def test_local_release_rejects_changed_build_and_preserves_admission(database_session: Session, tmp_path: Path) -> None:
@@ -773,7 +773,7 @@ def test_local_release_rejects_changed_build_and_preserves_admission(database_se
     with pytest.raises(ReleaseControlError, match="manifest digest"):
         initialize_release(database_session, manifest, root)
     assert not list(root.rglob("executor.pex"))
-    assert not list(root.rglob("*.tmp"))
+    assert all(not list(directory.iterdir()) for directory in root.iterdir())
     admission = database_session.get(ExecutorAdmission, 1)
     assert admission is not None
     assert admission.release_id is None
@@ -785,7 +785,6 @@ def test_local_reader_rejects_escape_and_remote_locations(tmp_path: Path) -> Non
     outside = tmp_path / "outside.pex"
     outside.write_bytes(b"outside")
     (root / "linked.pex").symlink_to(outside)
-    reader = FilesystemExecutorArtifactReader(root)
     for uri in (
         outside.as_uri(),
         (root / "linked.pex").as_uri(),
@@ -793,6 +792,6 @@ def test_local_reader_rejects_escape_and_remote_locations(tmp_path: Path) -> Non
         "s3://bucket/executor.pex",
     ):
         with pytest.raises(ValueError):
-            reader.validate(uri)
+            validate_local_executor_artifact_uri(uri, root)
     with pytest.raises(ValueError, match="traversal"):
-        reader.validate(root.as_uri() + "/%2e%2e/outside.pex")
+        validate_local_executor_artifact_uri(root.as_uri() + "/%2e%2e/outside.pex", root)

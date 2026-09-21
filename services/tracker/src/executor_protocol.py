@@ -2,8 +2,9 @@
 
 from collections.abc import Mapping
 from enum import Enum
+from pathlib import Path
 from typing import Any, NotRequired, TypedDict, Unpack, cast
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 EXECUTOR_TASK_NAME = "tracker.utils:process_benchmark"
 SUPPORTED_PROTOCOL_VERSION = "3"
@@ -102,3 +103,17 @@ def validate_executor_artifact_uri(uri: str, expected_bucket: str, expected_pref
     if parsed.netloc != expected_bucket or not prefix or not key.startswith(f"{prefix}/"):
         raise ValueError("Executor artifact URI is outside the configured S3 bucket and prefix")
     return parsed.netloc, key
+
+
+def validate_local_executor_artifact_uri(artifact_uri: str, root: Path) -> Path:
+    """Resolve an executor artifact inside the resolved configured release root."""
+    parsed = urlparse(artifact_uri)
+    if parsed.scheme != "file" or parsed.netloc or parsed.query or parsed.fragment:
+        raise ValueError("Local executor artifact URI must use file:///absolute/path")
+    path = Path(unquote(parsed.path))
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("Local executor artifact URI must be absolute without traversal")
+    path = path.resolve()
+    if not path.is_relative_to(root) or path == root:
+        raise ValueError("Executor artifact URI is outside the configured local release root")
+    return path

@@ -36,7 +36,6 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     verify_file_digest,
 )
 from executor_protocol import ExecutorTelemetryContext, validate_executor_artifact_uri
-from tracker.local.executor_artifacts import FilesystemExecutorArtifactReader
 
 
 class FakeDispatchStore:
@@ -1490,7 +1489,7 @@ async def test_local_release_digest_and_location_validation(tmp_path: Path) -> N
     digest = hashlib.sha256(content).hexdigest()
     cache_dir = tmp_path / "cache"
     cache_dir.write_bytes(b"unavailable cache directory")
-    supervisor = ExecutorSupervisor(cache_dir, artifact_reader=FilesystemExecutorArtifactReader(root))
+    supervisor = ExecutorSupervisor(cache_dir, release_root=root)
     dispatch = replace(_dispatch(digest=digest), artifact_uri=artifact.as_uri())
 
     assert await supervisor.prepare_artifact(dispatch) == artifact
