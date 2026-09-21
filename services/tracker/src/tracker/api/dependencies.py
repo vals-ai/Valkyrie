@@ -13,14 +13,12 @@ from tracker.aws.resolver import (
     resolve_agent_library_aws_runtime,
     resolve_run_aws_runtime_and_access_key_config,
 )
-from tracker.aws.runtime import AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.database.models import Benchmark, Org, Task
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.logging import benchmark_id_var
 from tracker.local import config as local_config
-from tracker.local.resources import LocalResources
 from tracker.local.runtime import LocalRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 
@@ -48,20 +46,6 @@ def get_run_benchmark(
 RunBenchmarkDependency = Annotated[Benchmark, Depends(get_run_benchmark)]
 
 
-async def get_run_aws_context(benchmark: Benchmark, request: Request, org: Org) -> AWSRuntime:
-    """Resolve AWS resources for an already authorized cloud run."""
-    assert benchmark.arguments.properties is None or not isinstance(benchmark.arguments.properties, LocalResources)
-    aws_runtime = resolve_run_aws_runtime_and_access_key_config(
-        request,
-        aws_managed=benchmark.aws_managed,
-        properties=benchmark.arguments.properties,
-        org_id=org.id,
-    ).runtime
-    if benchmark.aws_managed:
-        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
-    return aws_runtime
-
-
 async def get_run_runtime(
     benchmark: RunBenchmarkDependency,
     request: Request,
@@ -72,8 +56,17 @@ async def get_run_runtime(
     if arguments.environment == "local":
         return LocalRuntimeFactory.create_runtime(arguments.properties.data_root, org.id)
 
+    aws_runtime = resolve_run_aws_runtime_and_access_key_config(
+        request,
+        aws_managed=benchmark.aws_managed,
+        properties=arguments.properties,
+        org_id=org.id,
+    ).runtime
+    if benchmark.aws_managed:
+        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
+
     return CloudRuntimeFactory.create_runtime(
-        await get_run_aws_context(benchmark, request, org),
+        aws_runtime,
         sandbox_provider=arguments.sandbox_provider,
         sandbox_provider_secret_name=arguments.sandbox_provider_secret_name,
     )

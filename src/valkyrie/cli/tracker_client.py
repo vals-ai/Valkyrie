@@ -100,17 +100,17 @@ class TrackerService:
             timeout: Request timeout in seconds
             require_config: Whether to require full harness config values
         """
-        self._config = self._load_config()
-        self._api_key = self._config.get("api_key")
         self._base_url = _resolve_tracker_url(base_url)
         self._timeout = timeout
         try:
             self._sdk_config = (
-                ValkyrieConfig.from_yaml(config_location()) if require_config else ValkyrieConfig(api_key=self._api_key)
+                ValkyrieConfig.from_yaml(config_location())
+                if require_config
+                else ValkyrieConfig(api_key=self._load_config().get("api_key"))
             )
         except ValkyrieConfigError as error:
             raise TrackerServiceError(str(error)) from error
-        self._client = httpx.Client(timeout=timeout, headers=self._build_auth_headers())
+        self._client = httpx.Client(timeout=timeout, headers=self._sdk_config.request_headers())
 
     def __enter__(self) -> "TrackerService":
         """Context manager entry."""
@@ -134,10 +134,6 @@ class TrackerService:
 
         with open(config_path) as f:
             return yaml.safe_load(f) or {}
-
-    def _build_auth_headers(self) -> dict[str, str]:
-        """Build request headers. Hosted mode adds X-Api-Key alongside X-Harness-* headers."""
-        return self._sdk_config.request_headers()
 
     @staticmethod
     def get_benchmark_service_url(benchmark_name: str) -> str | None:
@@ -200,20 +196,20 @@ class TrackerService:
         return secret_name if secret_name else None
 
     @classmethod
-    def validate_sandbox_provider(cls, provider: str | None = None) -> tuple[str, str]:
+    def validate_sandbox_provider(cls, provider: str | None = None) -> tuple[str, str | None]:
         """Validate the selected sandbox provider before starting a run."""
         try:
             name, secret = ValkyrieConfig.from_yaml(config_location()).resolve_sandbox_provider(provider)
         except ValkyrieConfigError as error:
             raise TrackerServiceError(str(error)) from error
-        return name or "daytona", secret or ""
+        return name or "daytona", secret
 
-    def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str, str]:
+    def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str, str | None]:
         try:
             name, secret = self._sdk_config.resolve_sandbox_provider(provider)
         except ValkyrieConfigError as error:
             raise TrackerServiceError(str(error)) from error
-        return name or "daytona", secret or ""
+        return name or "daytona", secret
 
     def health_check(self) -> Response:
         """
@@ -363,9 +359,7 @@ class TrackerService:
                 service_headers=service_headers or {},
                 sandbox_provider=provider_name,
                 sandbox_provider_secret_name=(
-                    sandbox_provider_secret_name
-                    if access_key_harness_config is None and sandbox_provider_secret_name
-                    else None
+                    sandbox_provider_secret_name if access_key_harness_config is None else None
                 ),
                 webhook_secret_name=webhook_secret_name,
                 webhook_intervals=webhook_intervals,

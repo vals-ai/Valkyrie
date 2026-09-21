@@ -630,7 +630,7 @@ class TestTrackerAPI:
         database_session.add(example_benchmark_object)
         database_session.commit()
         resolver = Mock(side_effect=AssertionError("Local analysis must not resolve AWS"))
-        monkeypatch.setattr("main.get_run_aws_context", resolver)
+        monkeypatch.setattr("main.resolve_run_aws_runtime_and_access_key_config", resolver)
         local_response = client.post(f"/analyze-benchmark/{example_benchmark_object.id}", json={})
         assert local_response.status_code == 400
         assert local_response.json()["detail"] == "This operation requires an AWS run"
