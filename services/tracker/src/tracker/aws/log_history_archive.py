@@ -24,6 +24,7 @@ from tracker.runtime.log_history import (
     FrozenLogScope,
     LogHistoryManifest,
     LogHistoryReference,
+    ScanEvidence,
 )
 
 
@@ -87,11 +88,14 @@ def archive_logs(
     destination_session: Any,
     journal_directory: Path,
     limits: ArchiveLimits = ArchiveLimits(),
+    staged_scan: ScanEvidence | None = None,
 ) -> ArchiveReport:
     """Verify both authorities, scan twice, and publish a manifest last.
 
     Sessions must use separate, explicitly selected credentials. A durable journal
     directory belongs to exactly this approved scope and must survive restarts.
+    A caller that already gated an evidence-only scan stages it here, so the
+    published inventory is the one the caller cleared and never a later one.
     """
     try:
         if source_session is destination_session:
@@ -106,6 +110,12 @@ def archive_logs(
         with journal.locked():
             writer = _ChunkWriter(scope, limits, journal, store)
             streams, first = source.scan(writer.append)
+            if staged_scan is not None:
+                if not same_inventory(staged_scan, first):
+                    raise ArchiveError("frozen source changed between scans")
+
+                first = staged_scan
+
             journal.remember_inventory(first)
             writer.flush()
             second_streams, second = source.scan(lambda _event: None)

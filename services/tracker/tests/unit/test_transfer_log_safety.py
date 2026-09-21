@@ -10,6 +10,7 @@ from uuid import UUID
 
 import pytest
 
+from tests.unit.aws.test_log_history_archive import SOURCE_ACCOUNT, FakeLogs, FakeSession
 from tests.unit.test_transfer_archive import archive_boundary
 from tracker.aws.log_history_archive import archive_logs, read_manifest
 from tracker.lifecycle import LifecycleConflict
@@ -19,7 +20,7 @@ from tracker.run_transfer.contracts import TransferRequest, TransferRun
 from tracker.run_transfer.providers import TransferAWSBoundary
 from tracker.run_transfer.rows import digest
 from tracker.run_transfer.settings import LOG_QUIET_INTERVAL_FLOOR_HOURS, load_settings
-from tracker.runtime.log_history import ArchiveReport, FrozenLogScope, LogHistoryManifest
+from tracker.runtime.log_history import ArchiveError, ArchiveReport, FrozenLogScope, LogHistoryManifest
 
 DISPATCH_ID = UUID("00000000-0000-0000-0000-0000000000dd")
 QUIET_EXIT = timedelta(days=2)
@@ -241,6 +242,46 @@ async def test_a_refused_archive_writes_no_chunk_and_no_journal(
     assert state.storage.objects == {}
     assert not (tmp_path / "production-journal").exists()
     assert state.logs.scan == (0 if fault == "recent_hold" else 1)
+
+
+class LateEventLogs(FakeLogs):
+    """The group gains a recent event after the gated evidence scan, so every later scan agrees."""
+
+    def __init__(self, timestamp: int) -> None:
+        super().__init__()
+        self.timestamp = timestamp
+
+    def filter_log_events(self, **request: Any) -> dict[str, Any]:
+        page = super().filter_log_events(**request)
+        if self.scan >= 2 and page["events"]:
+            page["events"] = [
+                *page["events"],
+                {
+                    "timestamp": self.timestamp,
+                    "ingestionTime": self.timestamp,
+                    "message": "late",
+                    "eventId": "late",
+                    "logStreamName": "old",
+                },
+            ]
+
+        return page
+
+
+@pytest.mark.asyncio
+async def test_an_archive_publishes_only_the_inventory_its_quiet_gate_cleared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recent = int((now() - timedelta(minutes=5)).timestamp() * 1000)
+    state = quiet_run(tmp_path, monkeypatch, publish=False)
+    monkeypatch.setattr(state.boundary, "source_session", FakeSession(SOURCE_ACCOUNT, LateEventLogs(recent)))
+
+    with pytest.raises(ArchiveError, match="frozen source changed between scans"):
+        await state.boundary.archive(
+            state.request, state.run, dispatches=state.dispatches, acquired_at=state.acquired_at
+        )
+
+    assert not [key for key, _ in state.storage.objects if key.endswith("manifest.json")]
 
 
 @pytest.mark.asyncio

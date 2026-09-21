@@ -366,6 +366,7 @@ class TransferAWSBoundary:
             source_session=source,
             destination_session=destination,
             journal_directory=self.journal / str(request.plan.source_identity.operation_id) / str(run.source.run_id),
+            staged_scan=evidence,
         )
         decision = await self._verify_archive(
             request, run, report, dispatches=dispatches, acquired_at=acquired_at, log_completeness_sha256=None
