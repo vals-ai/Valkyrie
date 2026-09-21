@@ -12,6 +12,8 @@ from pydantic import ValidationError
 
 from tests.unit.test_relocation_providers import setup
 from tracker.lifecycle import LifecycleConflict
+import tracker.run_relocation as run_relocation
+from tracker.run_relocation import bounded_evidence
 from tracker.run_relocation.cli import execute, failure_path, record_failure, write_failure, write_response
 from tracker.storage_migration_exchange import TrackerRequest, TrackerResponse
 
@@ -44,6 +46,48 @@ def test_cli_requires_apply_before_database_or_provider_access(tmp_path: Path, a
     assert "--apply" in result.stderr
     assert "do-not-print" not in result.stderr
     assert not (tmp_path / "report.json").exists()
+
+
+def test_cli_refuses_a_request_document_above_the_bounded_input_size(tmp_path: Path) -> None:
+    request = tmp_path / "request.json"
+    with request.open("wb") as document:
+        document.truncate(64 * 1024 * 1024 + 1)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--request",
+            str(request),
+            "--report",
+            str(tmp_path / "report.json"),
+            "--database-url-env",
+            "RELOCATION_PRIVATE_DATABASE",
+            "--expected-database-target",
+            "postgresql:localhost:1/unused",
+        ],
+        env={**os.environ, "RELOCATION_PRIVATE_DATABASE": "postgresql://user:do-not-print@localhost:1/unused"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "bounded operator input size" in result.stderr
+    assert "do-not-print" not in result.stderr
+    assert list(tmp_path.iterdir()) == [request]
+
+
+def test_a_named_evidence_file_above_the_bounded_input_size_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = tmp_path / "drain.txt"
+    evidence.write_bytes(b"operator attests exact legacy host drain")
+
+    assert bounded_evidence(evidence) == evidence.read_bytes()
+
+    monkeypatch.setattr(run_relocation, "MAXIMUM_EVIDENCE_BYTES", 8)
+    with pytest.raises(LifecycleConflict, match="bounded operator input size"):
+        bounded_evidence(evidence)
 
 
 def test_cli_database_target_mismatch_cannot_reach_provider(tmp_path: Path) -> None:

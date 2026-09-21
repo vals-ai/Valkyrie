@@ -210,6 +210,12 @@ supplied path is hashed once for the whole request, and only the one file whose 
 that run names is loaded, so evidence for another run never enters memory. Evidence
 bytes are never returned in reports. No fixed directory allowlist is imposed.
 
+Both trusted local inputs are still read under a bound. The request document and the
+one named evidence file are each refused above 64 MiB, the same ceiling the planned
+JSON rewrite uses. An oversized request is refused before the database environment is
+selected, so it writes no report and no failure record, exactly like a request that
+does not parse.
+
 Portable S3 execution references must pin exactly one nonempty immutable versionId
 in the saved locator itself. Discovering a current object's version does not make
 an unpinned locator portable. Missing, blank, duplicate, or null versions remain

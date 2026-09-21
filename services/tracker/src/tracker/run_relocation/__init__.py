@@ -121,10 +121,23 @@ def result_locator_references(
     return tuple(references)
 
 
+MAXIMUM_EVIDENCE_BYTES = 64 * 1024 * 1024
+
+
 def evidence_digest(path: Path) -> str:
     """Hash a supplied evidence file without holding it, so unnamed files cost no memory."""
     with path.open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def bounded_evidence(path: Path) -> bytes:
+    """Read the one named attestation, refusing a size no operator attestation can have."""
+    with path.open("rb") as handle:
+        content = handle.read(MAXIMUM_EVIDENCE_BYTES + 1)
+    if len(content) > MAXIMUM_EVIDENCE_BYTES:
+        raise LifecycleConflict("External drain evidence exceeds the bounded operator input size")
+
+    return content
 
 
 class RelocationOperator:
@@ -253,7 +266,7 @@ class RelocationOperator:
                 purpose="relocation",
                 host_contract=host,
                 external=supplied,
-                external_evidence=None if evidence_file is None else evidence_file.read_bytes(),
+                external_evidence=None if evidence_file is None else bounded_evidence(evidence_file),
             )
         else:
             # A released hold can no longer establish that queued work cannot start.

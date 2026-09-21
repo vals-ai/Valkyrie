@@ -8,6 +8,9 @@ import sys
 from pathlib import Path
 
 
+MAXIMUM_REQUEST_BYTES = 64 * 1024 * 1024
+
+
 def report_notes(error: BaseException) -> None:
     for note in getattr(error, "__notes__", []):
         print(note, file=sys.stderr)
@@ -22,7 +25,12 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true")
     options = parser.parse_args()
     try:
-        payload = options.request.read_bytes()
+        with options.request.open("rb") as document:
+            payload = document.read(MAXIMUM_REQUEST_BYTES + 1)
+        if len(payload) > MAXIMUM_REQUEST_BYTES:
+            print("Request document exceeds the bounded operator input size", file=sys.stderr)
+            return 2
+
         action = json.loads(payload).get("action")
         if action in {"prepare", "relocate", "release"} and not options.apply:
             print("Mutation actions require --apply", file=sys.stderr)
