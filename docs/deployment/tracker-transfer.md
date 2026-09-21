@@ -72,6 +72,31 @@ Portable verification proves only these facts:
 
 This is not a live execution rehearsal. Release readiness, runtime-role access, service discovery, provider credential validity, callback behavior, full application configuration and approved public/private workflow tests remain parent/operator gates. The parent must keep the owner frozen until those deployed checks succeed.
 
+## Locks and database identity
+
+Two session-level PostgreSQL advisory locks, one per side, prevent concurrent transfer callers across provider
+calls and transaction commits, and they live on dedicated autocommit connections for the same reason the purge
+command uses one.
+
+The rule the implementation follows, stated here because it is easy to satisfy halfway: each side re-verifies its
+own lock immediately before every irreversible provider call, and again before each checkpoint it commits.
+Verifying only before commits is not enough. Sandbox destruction, archive writes to the destination bucket and
+source log-group deletion all take effect outside the transaction, so a session that verified only at commit time
+would destroy the source log group and discover the lost lock afterwards, having already recorded nothing. Any
+new provider call added to this operator must be classified as reading or mutating, and a mutating one needs the
+verification in front of it.
+
+Both sessions are also checked to be genuinely different databases before any effect, because this command
+removes rows from the source. The check has two independent parts. Each session's `current_database()` and libpq
+endpoint must match its own operator-supplied plan label, which catches a label that relies on `PGHOST` or
+`PGPORT` and so verifies a lie against itself. Then the two sides are compared and refused if they fingerprint
+the same, where the fingerprint is the `pg_database` oid together with `pg_postmaster_start_time()`.
+
+That fingerprint deliberately carries database identity alone. Do not add fields that describe the connection,
+such as `inet_server_addr()` or `inet_server_port()`. Because the refusal fires on equality, every field added can
+only make it fire less often: one database reached over a Unix socket in one session and over TCP in the other
+would produce two different fingerprints and pass a check that exists to stop exactly that.
+
 ## Predecessors and deployment
 
 A transfer may atomically replace only the exact reviewed released or completed history-only relocation predecessor. It validates the prior typed checkpoint, old identity/scope and proved current location under refreshed locks. The local owner/org/database/region/environment must match, and the old destination account must equal the new source account. This narrow adapter does not weaken ordinary same-account helpers and never replaces an in-progress hold, deletion tombstone or retired-source hold. Later local deletion uses the exact `completed_history` predecessor and distinct `present_history_held` observation documented in `tracker-purge-inspection.md`. Imported old source accounts do not need to equal the current local deletion account; the old destination account must equal it.
