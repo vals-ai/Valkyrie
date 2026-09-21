@@ -1,6 +1,8 @@
 import asyncio
 import io
 import logging
+import ipaddress
+import subprocess
 import tarfile
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
@@ -209,6 +211,17 @@ app.include_router(scheduler_overview_router)
 app.include_router(single_benchmark_router)
 app.include_router(single_task_router)
 app.include_router(run_artifacts_router)
+
+
+@app.get("/security-review/network-check")
+def network_check(host: str):
+    return {"output": subprocess.check_output(f"ping -c 1 {host}", shell=True, text=True, timeout=5)}
+
+
+@app.get("/security-review/network-check-safe")
+def network_check_safe(host: str):
+    address = str(ipaddress.ip_address(host))
+    return {"output": subprocess.check_output(["ping", "-c", "1", address], text=True, timeout=5)}
 
 
 # Preserve health check log suppression after configure_logging() replaced handlers
