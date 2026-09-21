@@ -14,7 +14,7 @@ from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, re
 from tracker.lifecycle_completion import acquire_successor_hold
 from tracker.lifecycle_evidence import DispatchDrain, validate_host_contract_observation, verify_drain
 from tracker.run_purge.contracts import ProviderLocator
-from tracker.run_purge.locking import exclusive_operation
+from tracker.run_purge.locking import OperationLock, exclusive_operation
 from tracker.run_transfer.contracts import (
     TransferCheckpoint,
     TransferObservation,
@@ -297,8 +297,8 @@ class TransferOperator:
 
         # Shared advisory locks serialize deletion, relocation and transfer, including absent runs.
         with (
-            exclusive_operation(self.source, request.plan.source_identity),
-            exclusive_operation(self.destination, request.plan.destination_identity),
+            exclusive_operation(self.source, request.plan.source_identity) as source_lock,
+            exclusive_operation(self.destination, request.plan.destination_identity) as destination_lock,
         ):
             self._destination_catalog(request)
             if request.action == "inspect" and request.parent_completion is not None:
@@ -306,7 +306,7 @@ class TransferOperator:
 
             observations: list[TransferObservation] = []
             for run in request.plan.runs:
-                observations.append(await self._execute_run(request, run))
+                observations.append(await self._execute_run(request, run, source_lock, destination_lock))
 
             return TransferResponse(
                 copied_objects_sha256=digest([item.model_dump(mode="json") for item in request.copied_objects])
@@ -328,7 +328,13 @@ class TransferOperator:
                 runs=tuple(observations),
             )
 
-    async def _execute_run(self, request: TransferRequest, run: TransferRun) -> TransferObservation:
+    async def _execute_run(
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        source_lock: OperationLock,
+        destination_lock: OperationLock,
+    ) -> TransferObservation:
         source_record = self.source.get(RunLifecycle, run.source.run_id, populate_existing=True)
         destination_record = self.destination.get(RunLifecycle, run.source.run_id, populate_existing=True)
         destination_exists = self.destination.get(Benchmark, run.source.run_id, populate_existing=True) is not None
@@ -372,6 +378,7 @@ class TransferOperator:
                 phase="held",
             )
             self._save(self.source, source_record, checkpoint)
+            source_lock.verify()
             self.source.commit()
 
         source_record, checkpoint = self._checkpoint(self.source, request, run, destination=False)
@@ -391,6 +398,7 @@ class TransferOperator:
         if request.action == "prepare" and checkpoint.phase == "held":
             checkpoint = checkpoint.model_copy(update={"phase": "prepared", "dispatches": dispatches})
             self._save(self.source, source_record, checkpoint)
+            source_lock.verify()
             self.source.commit()
 
         if retired:
@@ -496,6 +504,7 @@ class TransferOperator:
                 observed = RowClosure.read(self.destination, run.source.run_id, request.plan.source_identity.org_id)
                 if observed.sha256 != destination_rows.sha256:
                     raise LifecycleConflict("Destination stored readback differs")
+                destination_lock.verify()
                 self.destination.commit()
             assert archive is not None and destination_rows is not None
             await self.boundary.verify_objects(
@@ -519,6 +528,7 @@ class TransferOperator:
                 }
             )
             self._save(self.source, source_record, checkpoint)
+            source_lock.verify()
             self.source.commit()
 
         if request.action in {"cleanup", "finalize"}:
@@ -563,6 +573,7 @@ class TransferOperator:
                     update={"phase": "transferred_source_retired", "parent_completion_sha256": completion_digest}
                 )
                 self._save(self.source, source_record, checkpoint)
+                source_lock.verify()
                 self.source.commit()
                 self.source.expunge_all()
                 source = None
@@ -590,6 +601,7 @@ class TransferOperator:
                         .scalar_one()
                     )
                     self.destination.add(destination_record)
+                destination_lock.verify()
                 self.destination.commit()
         if request.action == "inspect" and archive is not None:
             await self.boundary.verify_objects(

@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -41,7 +42,8 @@ from tracker.database.models import (
 from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, require_unheld
 from tracker.lifecycle_completion import RelocationCheckpoint, capture_predecessor
 from tracker.run_purge import PurgeOperator, build_plan
-from tracker.run_purge.locking import database_target
+from tracker.run_purge.locking import OperationLock, database_target
+from tracker import run_transfer
 from tracker.run_transfer import TransferOperator, cli
 from tracker.run_transfer.contracts import TransferCheckpoint, TransferRequest, TransferRun
 from tracker.run_transfer.providers import TransferAWSBoundary
@@ -1152,3 +1154,88 @@ def test_supplied_transfer_databases_must_declare_that_they_are_disposable(
 
     with pytest.raises(ValueError, match="both private transfer database URLs"):
         supplied_transfer_urls()
+
+
+def saved_phase(session: Session, run_id: Any) -> tuple[Any, ...] | None:
+    record = session.get(RunLifecycle, run_id)
+    return None if record is None else (record.phase, record.checkpoint_json, record.released_at)
+
+
+def drive_transfer(operator: TransferOperator, request: dict[str, Any], actions: tuple[str, ...]) -> Any:
+    observed = asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+    request["plan"]["runs"][0]["source_rows_sha256"] = observed.runs[0].source_rows_sha256
+    for action in actions:
+        request["action"] = action
+        observed = asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+
+    return observed
+
+
+def attach_completion(request: dict[str, Any], observed: Any, run_id: Any) -> None:
+    plan = TransferRequest.model_validate(request).plan
+    receipt = observed.runs[0].archive
+    assert receipt is not None
+    request["parent_completion"] = {
+        "operation_id": str(plan.source_identity.operation_id),
+        "parent_plan_sha256": plan.source_identity.parent_plan_sha256,
+        "child_plan_sha256": plan.sha256,
+        "valsmith_commit_sha256": "e" * 64,
+        "object_completion_sha256": "f" * 64,
+        "destination_rows_sha256": digest(
+            [{"run_id": str(run_id), "sha256": observed.runs[0].destination_rows_sha256}]
+        ),
+        "archives_sha256": digest([receipt.model_dump(mode="json")]),
+    }
+
+
+@pytest.mark.parametrize(
+    ("action", "side"),
+    [
+        ("prepare", "source"),
+        ("import", "destination"),
+        ("import", "source"),
+        ("cleanup", "source"),
+        ("finalize", "destination"),
+    ],
+)
+def test_no_transfer_phase_commits_without_its_own_advisory_lock(
+    pair: tuple[Session, Session], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str, side: str
+) -> None:
+    preceding = {
+        "prepare": (),
+        "import": ("prepare",),
+        "cleanup": ("prepare", "import"),
+        "finalize": ("prepare", "import"),
+    }
+    source, destination = pair
+    org, run, _ = seed_rows(source, destination)
+    request = transfer_request(source, destination, org, run)
+    operator = TransferOperator(source, destination, FakeTransferBoundary(tmp_path))
+    observed = drive_transfer(operator, request, preceding[action])
+    if action in {"cleanup", "finalize"}:
+        attach_completion(request, observed, run.id)
+
+    if action == "finalize":
+        request["action"] = "cleanup"
+        asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+
+    request["action"] = action
+    request["nonce"] = str(uuid4())
+    losing = source if side == "source" else destination
+    before = saved_phase(losing, run.id)
+    acquire = run_transfer.exclusive_operation
+
+    @contextmanager
+    def lose_one(session: Session, identity: Any) -> Generator[Any, None, None]:
+        with acquire(session, identity) as lock, session.get_bind().engine.connect() as spare:
+            yield OperationLock(spare, -1, ()) if session is losing else lock
+
+    monkeypatch.setattr(run_transfer, "exclusive_operation", lose_one)
+
+    with pytest.raises(LifecycleConflict, match="advisory lock is no longer held"):
+        asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+
+    losing.rollback()
+    assert saved_phase(losing, run.id) == before
+    if side == "source":
+        assert source.get(Benchmark, run.id) is not None
