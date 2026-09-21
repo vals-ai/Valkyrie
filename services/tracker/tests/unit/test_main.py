@@ -38,10 +38,12 @@ from tests.storage_lifecycle_support import MemoryS3
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.aws.clients import DefaultChainAWSClientProvider
+from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.managed_storage import ManagedStorageError
 from tracker.aws.resolver import AWSRuntimeResolution
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.s3 import S3ObjectCopier, download_from_s3, upload_to_s3
+from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.storage import ObjectStore, StoredObject, StoredObjectCopy
 from tracker.database.models import (
     AgentContractRequest,
@@ -75,6 +77,8 @@ from tracker.types import (
 from tracker.utils import update_benchmark_concurrency
 
 client = TestClient(app)
+_create_cloudwatch_benchmark = CloudWatchBenchmarkLogSink.create_benchmark
+_write_cloudwatch_log = CloudWatchBenchmarkLogSink.write
 
 
 @pytest.fixture(autouse=True)
@@ -122,14 +126,22 @@ class TestTrackerAPI:
     async def _mock_verify_task_ids_error(self, *_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
         raise Exception("Error verifying task ids")
 
-    async def test_managed_storage_start_persists_and_returns_selected_bucket(
+    @pytest.mark.parametrize(
+        ("owner_bucket", "expected_log_prefix"),
+        [
+            ("vs-dev-acme-123", "deployment-log-group/vs-dev-acme-123"),
+            ("vs-dev-example-456", "deployment-log-group/vs-dev-example-456"),
+        ],
+    )
+    async def test_managed_storage_start_persists_owner_bucket_and_log_prefix(
         self,
+        owner_bucket: str,
+        expected_log_prefix: str,
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: MonkeyPatch,
         mock_kicker: Any,
     ) -> None:
-        owner_bucket = "vs-dev-acme-123"
         monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
         monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
         monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_REGION", "us-east-1")
@@ -170,10 +182,14 @@ class TestTrackerAPI:
         assert benchmark is not None
         assert benchmark.arguments.properties is not None
         assert benchmark.arguments.properties.s3_bucket == owner_bucket
+        assert benchmark.arguments.properties.log_group == expected_log_prefix
+        assert benchmark.aws_managed
         validate_bucket.assert_awaited_once()
         validate_versioning.assert_awaited_once()
         queued_request = mock_kicker.queued_calls[0]["execution_context_json"]["start_benchmark_request"]
         assert "managed_s3_bucket" not in queued_request
+        assert queued_request["properties"]["log_group"] == expected_log_prefix
+        assert queued_request["harness_config"] is None
 
     async def test_managed_storage_start_rejects_unversioned_bucket_before_copy_or_commit(
         self,
@@ -3177,7 +3193,7 @@ class TestTrackerAPI:
         }
 
 
-async def test_owner_storage_lifecycle_keeps_saved_bucket(
+async def test_owner_storage_lifecycle_keeps_saved_bucket_and_logs(
     contract: AgentContractRequest,
     database_session: Session,
     monkeypatch: MonkeyPatch,
@@ -3225,6 +3241,11 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket(
     persisted_response = json.loads(started.content)
     assert persisted_response["storage_bucket"] == "vs-dev-acme-123"
     run_id = persisted_response["benchmark_id"]
+    expected_log_url = (
+        "https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1"
+        f"#logsV2:log-groups/log-group/deployment-log-group%2Fvs-dev-acme-123$252F{run_id}"
+    )
+    assert persisted_response["cloudwatch_url"] == expected_log_url
     frozen_key = f"benchmarks/{run_id}/{contract.name}.zip"
     assert storage.objects["vs-dev-acme-123", frozen_key] == b"original bundle"
     copy_arguments = next(arguments for operation, arguments in storage.calls if operation == "copy")
@@ -3233,6 +3254,7 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket(
     assert copy_arguments["CopySourceIfMatch"] == '"frozen-etag"'
     storage.objects["shared-library", f"agents/{contract.name}.zip"] = b"new bundle"
     monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "changed-default")
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "changed-log-default")
     monkeypatch.setattr("tracker.config.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED", False)
 
     benchmark = database_session.get(Benchmark, UUID(run_id))
@@ -3252,6 +3274,28 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket(
         response = client.get(f"/{endpoint}", params={"benchmark_id": run_id})
         assert response.status_code == 200, response.text
         assert response.json()["storage_bucket"] == "vs-dev-acme-123"
+
+    assert response.json()["cloudwatch_url"] == expected_log_url
+
+    logs_client = Mock()
+    logs_client.filter_log_events.return_value = {"events": []}
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "cloudwatch_logs_client", lambda _provider: logs_client)
+    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", _create_cloudwatch_benchmark)
+    monkeypatch.setattr(CloudWatchBenchmarkLogSink, "write", _write_cloudwatch_log)
+    runtime = await CloudRuntimeFactory.create_execution_runtime(
+        benchmark.managed_start_benchmark_request(),
+        TEST_ORG_ID,
+        benchmark.id,
+        properties=benchmark.arguments.properties,
+        context_version=3,
+    )
+    runtime.logs.write(f"{run_id}:task_0", "owner log")
+    expected_log_group = f"deployment-log-group/vs-dev-acme-123/{run_id}"
+    assert logs_client.create_log_group.call_args.kwargs["logGroupName"] == expected_log_group
+    assert logs_client.put_log_events.call_args.kwargs["logGroupName"] == expected_log_group
+    logs_response = client.get(f"/benchmarks/{run_id}/logs")
+    assert logs_response.status_code == 200, logs_response.text
+    assert logs_client.filter_log_events.call_args.kwargs["logGroupName"] == expected_log_group
 
     result = client.get("/retrieve-results", params={"benchmark_id": run_id, "s3": True})
     assert result.status_code == 200, result.text
@@ -3306,6 +3350,9 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket(
     assert retry.status_code == 200, retry.text
     recovery_context = mock_kicker.queued_calls[-1]["execution_context_json"]
     assert recovery_context["start_benchmark_request"]["properties"]["s3_bucket"] == "vs-dev-acme-123"
+    assert recovery_context["start_benchmark_request"]["properties"]["log_group"] == (
+        "deployment-log-group/vs-dev-acme-123"
+    )
     assert storage.objects["vs-dev-acme-123", frozen_key] == b"original bundle"
     for operation, arguments in storage.calls:
         expected_bucket = "shared-library" if arguments.get("Key", "").startswith("agents/") else "vs-dev-acme-123"

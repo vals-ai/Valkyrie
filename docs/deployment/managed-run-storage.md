@@ -2,6 +2,14 @@
 
 Managed run storage lets an authorized ValSmith organization select an application-provisioned S3 bucket for a managed Valkyrie run. Valkyrie validates and saves the selected location. The saved location remains authoritative for execution, results, reads, retry, and recovery.
 
+## New-run scope
+
+This change routes new runs. Existing runs retain their saved bucket and log location. No data migration, historical log export, deletion operator, or database schema migration is required by this PR.
+
+An owner-storage start saves the log prefix `<AWS_DEPLOYMENT_LOG_GROUP>/<managed_s3_bucket>`. CloudWatch groups are created at `<prefix>/<run-id>`. For example, a deployment prefix of `/valkyrie/benchmarks` and bucket `vs-prod-acme-123` produce `/valkyrie/benchmarks/vs-prod-acme-123/<run-id>`. The caller selects the authorized bucket; the server derives the log prefix within the existing deployment IAM boundary. Region and log retention remain deployment settings. Execution, log reads, and recovery use the saved prefix even after deployment defaults change. Ordinary starts without an owner bucket keep the existing log layout.
+
+Tracker and executor processes use their managed AWS roles. ValSmith does not send AWS session credentials, and execution retains the AWS SDK's credential renewal. Agent bundles remain published once in the shared library. Admission copies the selected bundle directly from `shared-bucket/agents/<agent>.zip` to `owner-bucket/benchmarks/<run-id>/<agent>.zip`; it does not require an `agents/` library in each owner bucket. Recovery reuses the frozen run copy unless an explicit agent refresh is requested.
+
 ## Deployment configuration
 
 Set these values explicitly for each Valkyrie deployment:
@@ -40,7 +48,7 @@ The ValSmith provisioner must create and tag owner buckets before use. The bucke
 
 Complete these changes through their own repositories and deployment owners before enabling owner storage:
 
-- The benchmarks service registry owner must add the required ValSmith generation and dataset service-role reads, lists, and established writes. Keep legacy reads during migration.
+- The benchmarks service registry owner must add the required ValSmith generation and dataset service-role reads, lists, and established writes. Keep access to existing runs in their original locations.
 - The owners of output and analyzer Lambda execution roles must add the required owner-bucket access. Valkyrie's Lambda invocation permission does not grant the Lambda role S3 access.
 - The external OIDC role owners must update their policies for the configured owner-bucket patterns.
 - The ValSmith owner must deploy bucket provisioning and tags, per-run source-bucket persistence, and per-run result-publication source selection.

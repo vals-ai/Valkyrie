@@ -59,6 +59,8 @@ The SDK uses `/start-benchmark-with-storage`. An older tracker returns 404 befor
 
 The override cannot be combined with access-key credentials or explicit `properties`. The tracker checks the bucket account, region, organization tag, environment, and enabled versioning. Agent-library reads remain in shared storage; the frozen bundle and run artifacts use the selected bucket. See [Managed run storage deployment](/deployment/managed-run-storage) for policy and rollout requirements.
 
+Owner runs keep managed AWS credentials with automatic renewal. There is no per-owner agent upload: Valkyrie copies the shared agent bundle directly into the run's artifact directory. Logs stay in CloudWatch under `<deployment-log-prefix>/<managed_s3_bucket>/<run-id>`. The server derives and saves this location; clients do not supply a separate log prefix. Existing runs keep their original locations.
+
 Persist the returned `storage_bucket` for each run. `client.runs.fetch`, `client.runs.metadata`, streaming progress, and `client.benchmarks.fetch` also return the actual bucket. Saved resources remain authoritative after deployment defaults change and during retry or recovery. Legacy managed rows without saved resources use the shared deployment bucket until their first new recovery saves that location. Legacy access-key metadata without enough credentials returns `None`.
 
 Artifact download URLs require no new HTTP header. Use the complete returned URL with an ordinary HTTP client.

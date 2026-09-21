@@ -682,6 +682,7 @@ async def _start_benchmark(
             resources = replace(
                 runtime_resolution.runtime.resources,
                 s3_bucket=managed_s3_bucket,
+                log_group=f"{runtime_resolution.runtime.resources.log_group}/{managed_s3_bucket}",
             )
             runtime_resolution = AWSRuntimeResolution(
                 runtime=runtime_resolution.runtime.with_resources(resources),
