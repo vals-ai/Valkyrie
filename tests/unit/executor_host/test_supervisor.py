@@ -1055,6 +1055,111 @@ async def test_cancellation_after_claim_terminalizes_dispatch(
 
 
 @pytest.mark.asyncio
+async def test_periodic_authority_operational_error_allows_child_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProcess:
+        returncode: int | None = None
+
+        def __init__(self) -> None:
+            self.done = asyncio.Event()
+
+        async def wait(self) -> int:
+            await self.done.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+    process = FakeProcess()
+    sleep_count = 0
+    authority_blocker = asyncio.Event()
+
+    async def sleep(_delay: float) -> None:
+        nonlocal sleep_count
+        sleep_count += 1
+        if sleep_count == 3:
+            process.returncode = 0
+            process.done.set()
+            await authority_blocker.wait()
+
+    checks = iter(
+        [
+            supervisor_module.psycopg2.OperationalError("temporary"),
+            True,
+            True,
+        ]
+    )
+
+    async def is_current() -> bool:
+        result = next(checks)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    terminate = Mock()
+    monkeypatch.setattr(supervisor_module, "_terminate_process_group", terminate)
+    supervisor = _supervisor(tmp_path, content=b"unused", sleep=sleep)
+
+    assert await supervisor._wait_with_authority(process, is_current) == 0
+    terminate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_periodic_authority_operational_error_then_loss_terminates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProcess:
+        pid = 123
+        returncode: int | None = None
+
+        def __init__(self) -> None:
+            self.done = asyncio.Event()
+
+        async def wait(self) -> int:
+            await self.done.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+    process = FakeProcess()
+    checks = iter([supervisor_module.psycopg2.OperationalError("temporary"), False])
+
+    async def is_current() -> bool:
+        result = next(checks)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    async def terminate_process(_process: object) -> None:
+        process.returncode = -15
+        process.done.set()
+
+    monkeypatch.setattr(supervisor_module, "_AUTHORITY_LOSS_GRACE_SECONDS", 0)
+    monkeypatch.setattr(supervisor_module, "_terminate_process_group", terminate_process)
+    supervisor = _supervisor(tmp_path, content=b"unused", sleep=lambda _delay: asyncio.sleep(0))
+
+    with pytest.raises(DispatchAuthorityLostError, match="superseded"):
+        await supervisor._wait_with_authority(process, is_current)
+
+    assert process.returncode == -15
+
+
+@pytest.mark.asyncio
+async def test_unexpected_periodic_authority_error_propagates(tmp_path: Path) -> None:
+    async def is_current() -> bool:
+        raise RuntimeError("unexpected")
+
+    supervisor = _supervisor(
+        tmp_path,
+        content=b"unused",
+        sleep=lambda _delay: asyncio.sleep(0),
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected"):
+        await supervisor._wait_for_authority_loss(is_current)
+
+
+@pytest.mark.asyncio
 async def test_authority_revocation_terminates_process_before_terminalization(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

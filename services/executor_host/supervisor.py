@@ -676,9 +676,13 @@ class ExecutorSupervisor:
     async def _wait_for_authority_loss(self, is_current: Callable[[], Awaitable[bool]]) -> None:
         while True:
             await self.sleep(self.authority_check_interval)
-            if not await is_current():
+            try:
+                authority_is_current = await is_current()
+            except psycopg2.OperationalError:
+                logger.exception("Failed to check executor dispatch authority; retrying")
+                continue
+            if not authority_is_current:
                 return
-
 
 async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
     if process.returncode is not None:
