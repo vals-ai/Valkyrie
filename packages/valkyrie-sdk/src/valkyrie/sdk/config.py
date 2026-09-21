@@ -18,15 +18,31 @@ TRACKER_URLS: dict[str, str] = {
 ConfigT = TypeVar("ConfigT", bound="ValkyrieConfig")
 
 
-class AWSConfig(BaseModel):
-    """Complete caller-supplied AWS configuration; omit it for server-managed execution."""
+class AWSAccessKeys(BaseModel):
+    """Static AWS credentials."""
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     aws_access_key_id: SecretStr = Field(alias="AWS_ACCESS_KEY_ID", repr=False)
     aws_secret_access_key: SecretStr = Field(alias="AWS_SECRET_ACCESS_KEY", repr=False)
-    aws_default_region: str = Field(alias="AWS_DEFAULT_REGION")
     aws_session_token: SecretStr | None = Field(default=None, alias="AWS_SESSION_TOKEN", repr=False)
+
+    @field_validator("aws_access_key_id", "aws_secret_access_key")
+    @classmethod
+    def reject_blank_required_secrets(cls, value: SecretStr) -> SecretStr:
+        """Reject blank required secret values."""
+        if not value.get_secret_value().strip():
+            raise ValueError("must not be blank")
+        return value
+
+
+class AWSConfig(BaseModel):
+    """AWS resources with optional static credentials."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    credentials: AWSAccessKeys | None = None
+    aws_default_region: str = Field(alias="AWS_DEFAULT_REGION")
     s3_bucket: str = Field(alias="S3_BUCKET")
     log_group: str = Field(default="benchmarks", alias="LOG_GROUP")
     log_retention_policy: int = Field(default=365, alias="LOG_RETENTION_POLICY", gt=0)
@@ -43,22 +59,22 @@ class AWSConfig(BaseModel):
             raise ValueError("must not be blank")
         return value
 
-    @field_validator("aws_access_key_id", "aws_secret_access_key")
-    @classmethod
-    def reject_blank_required_secrets(cls, value: SecretStr) -> SecretStr:
-        """Reject blank required secret values."""
-        if not value.get_secret_value().strip():
-            raise ValueError("must not be blank")
-        return value
-
-    def harness_config(self, provider_secret_name: str) -> HarnessConfig:
+    def harness_config(self, provider_secret_name: str | None) -> HarnessConfig | None:
         """Build the nested harness config expected by the tracker."""
+        if self.credentials is None:
+            return None
+        if provider_secret_name is None:
+            raise ValkyrieConfigError("AWS execution requires a sandbox provider secret")
         return HarnessConfig(
             aws=AWSCredentials(
-                aws_access_key_id=self.aws_access_key_id.get_secret_value(),
-                aws_secret_access_key=self.aws_secret_access_key.get_secret_value(),
+                aws_access_key_id=self.credentials.aws_access_key_id.get_secret_value(),
+                aws_secret_access_key=self.credentials.aws_secret_access_key.get_secret_value(),
                 aws_default_region=self.aws_default_region,
-                aws_session_token=(self.aws_session_token.get_secret_value() if self.aws_session_token else None),
+                aws_session_token=(
+                    self.credentials.aws_session_token.get_secret_value()
+                    if self.credentials.aws_session_token
+                    else None
+                ),
             ),
             s3_bucket=self.s3_bucket,
             log_group=self.log_group,
@@ -84,7 +100,7 @@ class ValkyrieConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_access_key_configuration(self) -> "ValkyrieConfig":
-        if self.aws is not None and not self.sandbox_providers:
+        if self.aws is not None and self.aws.credentials is not None and not self.sandbox_providers:
             raise ValueError("sandbox_providers are required with AWS configuration")
         return self
 
@@ -120,22 +136,8 @@ class ValkyrieConfig(BaseModel):
         if not isinstance(raw_config, dict):
             raise ValkyrieConfigError(f"Valkyrie config at {config_path} must contain a YAML mapping")
 
-        values = cast(dict[str, object], raw_config)
-        # The CLI still writes flat AWS fields; normalize them only at the file boundary.
-        aws_values = {
-            field.alias: values.pop(field.alias)
-            for field in AWSConfig.model_fields.values()
-            if field.alias is not None and field.alias in values
-        }
-        if any(
-            aws_values.get(key) is not None
-            for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")
-        ):
-            if "aws" in values:
-                raise ValkyrieConfigError("Configure either nested aws or flat AWS fields, not both")
-            values["aws"] = aws_values
         try:
-            return cls.model_validate(values)
+            return cls.model_validate(raw_config)
         except ValidationError as exc:
             raise ValkyrieConfigError(f"Invalid Valkyrie config at {config_path}: {exc}") from exc
 
@@ -153,13 +155,13 @@ class ValkyrieConfig(BaseModel):
     def request_headers(self) -> dict[str, str]:
         """Build API-key and harness headers for tracker requests."""
         headers: dict[str, str] = {}
-        if self.aws is not None:
+        if self.aws is not None and self.aws.credentials is not None:
             values: dict[str, str | None] = {
-                "AWS_ACCESS_KEY_ID": self.aws.aws_access_key_id.get_secret_value(),
-                "AWS_SECRET_ACCESS_KEY": self.aws.aws_secret_access_key.get_secret_value(),
+                "AWS_ACCESS_KEY_ID": self.aws.credentials.aws_access_key_id.get_secret_value(),
+                "AWS_SECRET_ACCESS_KEY": self.aws.credentials.aws_secret_access_key.get_secret_value(),
                 "AWS_DEFAULT_REGION": self.aws.aws_default_region,
-                "AWS_SESSION_TOKEN": self.aws.aws_session_token.get_secret_value()
-                if self.aws.aws_session_token
+                "AWS_SESSION_TOKEN": self.aws.credentials.aws_session_token.get_secret_value()
+                if self.aws.credentials.aws_session_token
                 else None,
                 "S3_BUCKET": self.aws.s3_bucket,
                 "LOG_GROUP": self.aws.log_group,
