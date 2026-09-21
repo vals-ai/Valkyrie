@@ -18,26 +18,18 @@ TRACKER_URLS: dict[str, str] = {
 ConfigT = TypeVar("ConfigT", bound="ValkyrieConfig")
 
 
-class ValkyrieConfig(BaseModel):
-    """Validated SDK configuration using ``valkyrie.yaml`` field aliases."""
+class AWSConfig(BaseModel):
+    """Complete caller-supplied AWS configuration; omit it for server-managed execution."""
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    environment: Literal["bench", "prod", "dev"] = "bench"
-    tracker_url_override: str | None = Field(default=None, alias="tracker_url")
-    api_key: SecretStr | None = Field(default=None, repr=False)
-    aws_access_key_id: SecretStr | None = Field(default=None, alias="AWS_ACCESS_KEY_ID", repr=False)
-    aws_secret_access_key: SecretStr | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY", repr=False)
-    aws_default_region: str | None = Field(default=None, alias="AWS_DEFAULT_REGION")
+    aws_access_key_id: SecretStr = Field(alias="AWS_ACCESS_KEY_ID", repr=False)
+    aws_secret_access_key: SecretStr = Field(alias="AWS_SECRET_ACCESS_KEY", repr=False)
+    aws_default_region: str = Field(alias="AWS_DEFAULT_REGION")
     aws_session_token: SecretStr | None = Field(default=None, alias="AWS_SESSION_TOKEN", repr=False)
-    s3_bucket: str | None = Field(default=None, alias="S3_BUCKET")
+    s3_bucket: str = Field(alias="S3_BUCKET")
     log_group: str = Field(default="benchmarks", alias="LOG_GROUP")
     log_retention_policy: int = Field(default=365, alias="LOG_RETENTION_POLICY", gt=0)
-    sandbox_providers: dict[str, str] = Field(default_factory=dict, repr=False)
-    default_sandbox_provider: str | None = None
-    custom_benchmark_services: dict[str, str] = Field(default_factory=dict)
-    benchmark_auth: dict[str, SecretStr] = Field(default_factory=dict, repr=False)
-    webhook: str | None = Field(default=None, repr=False)
 
     @field_validator(
         "aws_default_region",
@@ -45,31 +37,55 @@ class ValkyrieConfig(BaseModel):
         "log_group",
     )
     @classmethod
-    def reject_blank_required_values(cls, value: str | None) -> str | None:
-        """Reject blank values when configured."""
-        if value is not None and not value.strip():
+    def reject_blank_required_values(cls, value: str) -> str:
+        """Reject blank required values."""
+        if not value.strip():
             raise ValueError("must not be blank")
         return value
 
     @field_validator("aws_access_key_id", "aws_secret_access_key")
     @classmethod
-    def reject_blank_required_secrets(cls, value: SecretStr | None) -> SecretStr | None:
+    def reject_blank_required_secrets(cls, value: SecretStr) -> SecretStr:
         """Reject blank required secret values."""
-        if value is not None and not value.get_secret_value().strip():
+        if not value.get_secret_value().strip():
             raise ValueError("must not be blank")
         return value
 
+    def harness_config(self, provider_secret_name: str) -> HarnessConfig:
+        """Build the nested harness config expected by the tracker."""
+        return HarnessConfig(
+            aws=AWSCredentials(
+                aws_access_key_id=self.aws_access_key_id.get_secret_value(),
+                aws_secret_access_key=self.aws_secret_access_key.get_secret_value(),
+                aws_default_region=self.aws_default_region,
+                aws_session_token=(self.aws_session_token.get_secret_value() if self.aws_session_token else None),
+            ),
+            s3_bucket=self.s3_bucket,
+            log_group=self.log_group,
+            log_retention_policy=self.log_retention_policy,
+            sandbox_provider_secret_name=provider_secret_name,
+        )
+
+
+class ValkyrieConfig(BaseModel):
+    """Validated SDK configuration with optional caller-supplied AWS access."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    environment: Literal["bench", "prod", "dev"] = "bench"
+    tracker_url_override: str | None = Field(default=None, alias="tracker_url")
+    api_key: SecretStr | None = Field(default=None, repr=False)
+    aws: AWSConfig | None = None
+    sandbox_providers: dict[str, str] = Field(default_factory=dict, repr=False)
+    default_sandbox_provider: str | None = None
+    custom_benchmark_services: dict[str, str] = Field(default_factory=dict)
+    benchmark_auth: dict[str, SecretStr] = Field(default_factory=dict, repr=False)
+    webhook: str | None = Field(default=None, repr=False)
+
     @model_validator(mode="after")
     def validate_access_key_configuration(self) -> "ValkyrieConfig":
-        """Require a complete static credential set or none at all."""
-        if (self.aws_access_key_id is None) != (self.aws_secret_access_key is None):
-            raise ValueError("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together")
-        if self.aws_access_key_id is None and self.aws_session_token is not None:
-            raise ValueError("AWS_SESSION_TOKEN requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
-        if self.aws_access_key_id is not None and (
-            not self.aws_default_region or not self.s3_bucket or not self.sandbox_providers
-        ):
-            raise ValueError("AWS_DEFAULT_REGION, S3_BUCKET and sandbox_providers are required with AWS credentials")
+        if self.aws is not None and not self.sandbox_providers:
+            raise ValueError("sandbox_providers are required with AWS configuration")
         return self
 
     @property
@@ -104,8 +120,22 @@ class ValkyrieConfig(BaseModel):
         if not isinstance(raw_config, dict):
             raise ValkyrieConfigError(f"Valkyrie config at {config_path} must contain a YAML mapping")
 
+        values = cast(dict[str, object], raw_config)
+        # The CLI still writes flat AWS fields; normalize them only at the file boundary.
+        aws_values = {
+            field.alias: values.pop(field.alias)
+            for field in AWSConfig.model_fields.values()
+            if field.alias is not None and field.alias in values
+        }
+        if any(
+            aws_values.get(key) is not None
+            for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")
+        ):
+            if "aws" in values:
+                raise ValkyrieConfigError("Configure either nested aws or flat AWS fields, not both")
+            values["aws"] = aws_values
         try:
-            return cls.model_validate(cast(dict[str, object], raw_config))
+            return cls.model_validate(values)
         except ValidationError as exc:
             raise ValkyrieConfigError(f"Invalid Valkyrie config at {config_path}: {exc}") from exc
 
@@ -120,37 +150,20 @@ class ValkyrieConfig(BaseModel):
             raise ValkyrieConfigError(f"Unknown sandbox provider '{provider_name}'. Configured providers: {configured}")
         return provider_name, secret_name
 
-    def harness_config(self, provider_secret_name: str) -> HarnessConfig:
-        """Build the nested harness config expected by the tracker."""
-        if self.aws_access_key_id is None or self.aws_secret_access_key is None:
-            raise ValkyrieConfigError("Static AWS access keys are not configured")
-        if self.aws_default_region is None or self.s3_bucket is None:
-            raise ValkyrieConfigError("AWS region and bucket must be configured")
-        return HarnessConfig(
-            aws=AWSCredentials(
-                aws_access_key_id=self.aws_access_key_id.get_secret_value(),
-                aws_secret_access_key=self.aws_secret_access_key.get_secret_value(),
-                aws_default_region=self.aws_default_region,
-                aws_session_token=(self.aws_session_token.get_secret_value() if self.aws_session_token else None),
-            ),
-            s3_bucket=self.s3_bucket,
-            log_group=self.log_group,
-            log_retention_policy=self.log_retention_policy,
-            sandbox_provider_secret_name=provider_secret_name,
-        )
-
     def request_headers(self) -> dict[str, str]:
         """Build API-key and harness headers for tracker requests."""
         headers: dict[str, str] = {}
-        if self.aws_access_key_id is not None and self.aws_secret_access_key is not None:
+        if self.aws is not None:
             values: dict[str, str | None] = {
-                "AWS_ACCESS_KEY_ID": self.aws_access_key_id.get_secret_value(),
-                "AWS_SECRET_ACCESS_KEY": self.aws_secret_access_key.get_secret_value(),
-                "AWS_DEFAULT_REGION": self.aws_default_region,
-                "AWS_SESSION_TOKEN": self.aws_session_token.get_secret_value() if self.aws_session_token else None,
-                "S3_BUCKET": self.s3_bucket,
-                "LOG_GROUP": self.log_group,
-                "LOG_RETENTION_POLICY": str(self.log_retention_policy),
+                "AWS_ACCESS_KEY_ID": self.aws.aws_access_key_id.get_secret_value(),
+                "AWS_SECRET_ACCESS_KEY": self.aws.aws_secret_access_key.get_secret_value(),
+                "AWS_DEFAULT_REGION": self.aws.aws_default_region,
+                "AWS_SESSION_TOKEN": self.aws.aws_session_token.get_secret_value()
+                if self.aws.aws_session_token
+                else None,
+                "S3_BUCKET": self.aws.s3_bucket,
+                "LOG_GROUP": self.aws.log_group,
+                "LOG_RETENTION_POLICY": str(self.aws.log_retention_policy),
             }
             headers.update(
                 {

@@ -100,20 +100,24 @@ def test_config_redacts_secrets_and_unwraps_them_for_requests(sdk_config) -> Non
     assert headers["X-Harness-Aws-Secret-Access-Key"] == "aws-secret"
     assert headers["X-Harness-Aws-Session-Token"] == "aws-session"
 
-    harness = config.harness_config("ModalSecret")
+    assert config.aws is not None
+    harness = config.aws.harness_config("ModalSecret")
     assert harness.aws.aws_access_key_id == "aws-key"
     assert harness.aws.aws_secret_access_key == "aws-secret"
     assert harness.aws.aws_session_token == "aws-session"
 
 
-def test_config_omits_optional_secret_headers(sdk_config) -> None:
-    config = sdk_config(api_key=None, AWS_SESSION_TOKEN=None)
+def test_config_omits_optional_secret_headers(sdk_config, config_values) -> None:
+    aws = config_values()["aws"]
+    aws["AWS_SESSION_TOKEN"] = None
+    config = sdk_config(api_key=None, aws=aws)
 
     headers = config.request_headers()
 
     assert "X-Api-Key" not in headers
     assert "X-Harness-Aws-Session-Token" not in headers
-    assert config.harness_config("ModalSecret").aws.aws_session_token is None
+    assert config.aws is not None
+    assert config.aws.harness_config("ModalSecret").aws.aws_session_token is None
 
 
 def test_run_error_is_a_public_sdk_error() -> None:
@@ -122,21 +126,21 @@ def test_run_error_is_a_public_sdk_error() -> None:
 
 def test_config_rejects_missing_required_values_and_invalid_provider(config_values, sdk_config) -> None:
     values = config_values()
-    values.pop("S3_BUCKET")
-    with pytest.raises(ValidationError):
+    values["aws"].pop("S3_BUCKET")
+    with pytest.raises(ValidationError, match="S3_BUCKET"):
         ValkyrieConfig.model_validate(values)
     with pytest.raises(ValidationError):
         sdk_config(sandbox_providers={})
-    with pytest.raises(ValidationError):
-        sdk_config(LOG_GROUP=" ")
-    with pytest.raises(ValidationError):
-        sdk_config(AWS_SECRET_ACCESS_KEY=" ")
-    with pytest.raises(ValidationError, match="configured together"):
-        sdk_config(AWS_SECRET_ACCESS_KEY=None)
-    with pytest.raises(ValidationError, match="configured together"):
-        sdk_config(AWS_ACCESS_KEY_ID=None)
-    with pytest.raises(ValidationError, match="AWS_SESSION_TOKEN requires"):
-        sdk_config(AWS_ACCESS_KEY_ID=None, AWS_SECRET_ACCESS_KEY=None)
+    for field, value in (
+        ("LOG_GROUP", " "),
+        ("AWS_SECRET_ACCESS_KEY", " "),
+        ("AWS_SECRET_ACCESS_KEY", None),
+        ("AWS_ACCESS_KEY_ID", None),
+    ):
+        aws = config_values()["aws"]
+        aws[field] = value
+        with pytest.raises(ValidationError, match=field):
+            sdk_config(aws=aws)
 
     config = sdk_config()
     with pytest.raises(ValkyrieConfigError, match="Unknown sandbox provider"):
@@ -254,9 +258,7 @@ async def test_start_without_static_keys_builds_managed_request(make_client, sdk
         )
 
     config = sdk_config(
-        AWS_ACCESS_KEY_ID=None,
-        AWS_SECRET_ACCESS_KEY=None,
-        AWS_SESSION_TOKEN=None,
+        aws=None,
         default_sandbox_provider="daytona",
     )
     client = make_client(handler, config=config)
@@ -890,8 +892,7 @@ async def test_start_validates_inputs_before_request(make_client, sdk_config) ->
 @pytest.mark.parametrize("provider", [None, "modal"])
 async def test_tracker_url_only_start_sends_configuration_without_credentials(provider: str | None) -> None:
     config = ValkyrieConfig(tracker_url="http://127.0.0.1:8765")
-    assert config.aws_default_region is None
-    assert config.s3_bucket is None
+    assert config.aws is None
 
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
