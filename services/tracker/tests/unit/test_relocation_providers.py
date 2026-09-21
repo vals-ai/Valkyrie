@@ -230,7 +230,7 @@ async def test_producer_transformed_fixture_is_verified_by_consumer() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["absent", "put_only", "condition", "other_scope"])
+@pytest.mark.parametrize("change", ["absent", "put_only", "condition", "other_scope", "wider_scope"])
 async def test_copy_verification_requires_current_exact_source_fence(change: str) -> None:
     boundary, store, request = setup()
     assert store.fence_statement is not None
@@ -240,6 +240,8 @@ async def test_copy_verification_requires_current_exact_source_fence(change: str
         store.fence_statement["Action"] = "s3:PutObject"
     elif change == "condition":
         store.fence_statement["Condition"] = {"Bool": {"aws:SecureTransport": "false"}}
+    elif change == "wider_scope":
+        store.fence_statement["Resource"] = [*store.fence_statement["Resource"], "arn:aws:s3:::source/*"]
     else:
         store.fence_statement["Resource"] = ["arn:aws:s3:::source/unrelated/*"]
     parsed = TrackerRequest.model_validate(request)
@@ -436,13 +438,13 @@ async def test_retained_reference_bytes_are_hashed_in_bounded_chunks() -> None:
         await boundary.execution_references(locator, TrackerRequest.model_validate(payload), frozenset())
 
 
-def two_bucket_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def two_bucket_plan(payload: dict[str, Any], second_bucket: str = "other-source") -> list[dict[str, Any]]:
     first: dict[str, Any] = payload["plan"]["runs"][0]
     second_id = str(uuid4())
     second: dict[str, Any] = {
         "scope": {
             "run_id": second_id,
-            "original_resources": {**first["scope"]["original_resources"], "s3_bucket": "other-source"},
+            "original_resources": {**first["scope"]["original_resources"], "s3_bucket": second_bucket},
             "object_prefix": f"benchmarks/{second_id}/",
             "log_group": f"runs/{second_id}",
         },
@@ -457,6 +459,24 @@ def two_bucket_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
     payload["plan"]["identity"]["run_ids"] = run_ids
     payload["run_ids"] = run_ids
     return runs
+
+
+@pytest.mark.asyncio
+async def test_a_shared_source_fence_must_name_every_planned_prefix_in_that_bucket() -> None:
+    boundary, store, payload = setup()
+    proved_run_id = payload["copied_objects"][0]["run_id"]
+    runs = two_bucket_plan(payload, "source")
+    request = TrackerRequest.model_validate(payload)
+    assert request.plan is not None and store.fence_statement is not None
+    run = next(item for item in request.plan.runs if str(item.scope.run_id) == proved_run_id)
+    prefixes = [f"arn:aws:s3:::source/{item['scope']['object_prefix']}*" for item in runs]
+
+    store.fence_statement["Resource"] = prefixes
+    await boundary.verify_objects(request, run)
+
+    store.fence_statement["Resource"] = [f"arn:aws:s3:::source/{run.scope.object_prefix}*"]
+    with pytest.raises(LifecycleConflict, match="exact operation scope"):
+        await boundary.verify_objects(request, run)
 
 
 @pytest.mark.asyncio
