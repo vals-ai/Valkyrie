@@ -105,9 +105,10 @@ def test_failure_category_migration_aborts_on_busy_table_and_retries(
             assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
                 _DISPATCH_LEASE_REVISION
             )
-            assert connection.execute(
-                text("SELECT count(*) FROM pg_type WHERE typname = 'failurecategory'")
-            ).scalar_one() == 0
+            assert (
+                connection.execute(text("SELECT count(*) FROM pg_type WHERE typname = 'failurecategory'")).scalar_one()
+                == 0
+            )
             assert "category" not in {column["name"] for column in inspect(connection).get_columns("errorresult")}
 
         retry = _run_alembic(migration_database_url, "upgrade", "head")
