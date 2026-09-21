@@ -716,13 +716,23 @@ def test_retry_or_resume_sends_retry_mode(
     assert mock_client.params == {"retry": False, "retry_mode": "auto", "concurrency": 0, "update_agent": False}
 
 
-def test_tracker_client_requires_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "config_overrides",
+    [
+        pytest.param({}, id="no-provider"),
+        pytest.param({"DAYTONA_SECRET_NAME": "DaytonaSecrets"}, id="legacy-daytona"),
+    ],
+)
+def test_tracker_client_requires_provider_secret_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_overrides: dict[str, object]
+) -> None:
     """Missing provider config should point users to the provider setup command.
 
     Test cases:
-    - A config without legacy or named provider secrets fails with actionable remediation.
+    - A config without named provider secrets fails with actionable remediation.
+    - A legacy DAYTONA_SECRET_NAME config fails the same way.
     """
-    config_path = _write_valkyrie_config(tmp_path / "valkyrie.yaml")
+    config_path = _write_valkyrie_config(tmp_path / "valkyrie.yaml", **config_overrides)
 
     monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
 
@@ -736,13 +746,6 @@ def test_tracker_client_requires_provider_secret_config(tmp_path: Path, monkeypa
 @pytest.mark.parametrize(
     ("config_overrides", "runtime_provider", "expected_provider", "expected_secret"),
     [
-        pytest.param(
-            {"DAYTONA_SECRET_NAME": "DaytonaSecrets"},
-            None,
-            "daytona",
-            "DaytonaSecrets",
-            id="legacy-daytona",
-        ),
         pytest.param(
             {"sandbox_providers": {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"}},
             None,
@@ -788,7 +791,7 @@ def test_start_benchmark_resolves_provider_configuration(
     """Start requests must resolve every supported provider configuration into the API payload.
 
     Test cases:
-    - Legacy, first-named, configured-default, and runtime-selected providers resolve their secrets.
+    - First-named, configured-default, and runtime-selected providers resolve their secrets.
     - A newly configured provider name is forwarded without a tracker enum change.
     """
     config_path = _write_valkyrie_config(tmp_path / "valkyrie.yaml", **config_overrides)

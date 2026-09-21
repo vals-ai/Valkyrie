@@ -143,7 +143,8 @@ def test_machine_json_subprocess_suppresses_import_time_dotenv_warnings(tmp_path
             "S3_BUCKET: test\n"
             "LOG_GROUP: test\n"
             "LOG_RETENTION_POLICY: 1\n"
-            "DAYTONA_SECRET_NAME: test\n"
+            "sandbox_providers:\n"
+            "  daytona: test\n"
         )
 
         env = os.environ.copy()
