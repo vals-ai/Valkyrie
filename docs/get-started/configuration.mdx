@@ -30,7 +30,7 @@ sandbox_providers:
 
 Omit `credentials` for managed execution with local AWS operations using the AWS SDK credential chain. Omit `aws` when the client needs no AWS resources.
 
-Existing flat files must be migrated before use: move Region, bucket, and logging fields under `aws`; move access keys and any session token under `aws.credentials`. Remove those fields from the top level. If your file already has access-key fields directly under `aws`, move them into `aws.credentials`. Keep API keys, sandbox providers, and benchmark settings at the top level.
+Existing flat files must be migrated before use: move Region, bucket, and logging fields under `aws`; move access keys and any session token under `aws.credentials`. Remove those fields from the top level. `valkyrie config init` performs these moves. If your file already has access-key fields directly under `aws`, move them into `aws.credentials`. Keep API keys, sandbox providers, and benchmark settings at the top level.
 
 Replace a legacy `DAYTONA_SECRET_NAME` entry with `sandbox_providers.daytona`.
 
