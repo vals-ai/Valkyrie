@@ -6,9 +6,20 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.engine import make_url
 from sqlmodel import Session
+from unittest.mock import MagicMock
 
-from tracker.lifecycle import LifecycleConflict, OperationIdentity
-from tracker.run_purge.locking import exclusive_operation
+from tests.factories import make_benchmark
+from tests.unit.test_purge_locking import FakeLockConnection
+from tests.utils import TEST_ORG_ID
+from tracker.aws.runtime import AWSResources
+from tracker.database.models import RunLifecycle
+from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, acquire_hold
+from tracker.lifecycle_completion import RelocationCheckpoint
+from tracker.run_purge.locking import OperationLock, exclusive_operation
+from tracker.run_relocation import RelocationOperator
+
+_BACKEND_PID = 4242
+_RESOURCES = AWSResources(region="us-east-1", s3_bucket="legacy-shared-storage", log_group="runs", log_retention_days=7)
 
 
 class FakeServer:
@@ -143,6 +154,52 @@ def test_a_refused_operator_leaves_no_partially_acquired_run_locked() -> None:
 
         with exclusive_operation(operator(server), operation(server, (first_run,))):
             pass
+
+
+def relocation_hold(session: Session) -> tuple[RunLifecycle, RelocationCheckpoint]:
+    run = make_benchmark(org_id=TEST_ORG_ID)
+    run.arguments = run.arguments.model_copy(update={"properties": _RESOURCES})
+    session.add(run)
+    session.commit()
+    identity = operation(FakeServer(), (run.id,)).model_copy(update={"org_id": TEST_ORG_ID})
+    record = acquire_hold(
+        session,
+        identity=identity,
+        scope=RunScope(run_id=run.id, original_resources=_RESOURCES),
+        purpose="relocation",
+    )
+    checkpoint = RelocationCheckpoint(
+        identity_sha256="a" * 64,
+        scope_sha256="b" * 64,
+        child_plan_sha256="c" * 64,
+        execution_arguments_sha256="d" * 64,
+        execution_policy="history_only",
+        destination_resources=AWSResources("us-east-1", "vs-dev-owner-42", "runs", 7),
+        dispatch_ids=(),
+    )
+    record.checkpoint_json = checkpoint.model_dump_json()
+    session.add(record)
+    session.commit()
+
+    return record, checkpoint
+
+
+@pytest.mark.parametrize("held", [True, False], ids=["lock_held", "lock_lost"])
+def test_a_relocation_checkpoint_commits_only_while_the_lock_is_held(database_session: Session, held: bool) -> None:
+    record, checkpoint = relocation_hold(database_session)
+    connection = FakeLockConnection((_BACKEND_PID if held else _BACKEND_PID + 1, 1))
+    lock = OperationLock(connection, _BACKEND_PID, (11,))
+    operator = RelocationOperator(database_session, MagicMock())
+
+    if held:
+        operator._commit_checkpoint(record, checkpoint.model_copy(update={"phase": "prepared"}), lock)
+    else:
+        with pytest.raises(LifecycleConflict):
+            operator._commit_checkpoint(record, checkpoint.model_copy(update={"phase": "prepared"}), lock)
+        database_session.rollback()
+
+    stored = database_session.get(RunLifecycle, record.run_id)
+    assert stored is not None and stored.phase == ("prepared" if held else "held")
 
 
 def test_an_operation_for_another_database_never_reaches_the_run_locks() -> None:

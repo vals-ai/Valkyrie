@@ -35,7 +35,7 @@ from tracker.lifecycle_evidence import (
     verify_drain,
 )
 from tracker.run_purge.contracts import ProviderLocator, PurgeRun
-from tracker.run_purge.locking import database_target, exclusive_operation
+from tracker.run_purge.locking import OperationLock, database_target, exclusive_operation
 from tracker.storage_migration_exchange import (
     AWSResources,
     CopiedObject,
@@ -334,6 +334,11 @@ class RelocationOperator:
         self.session.add(record)
         self.session.flush()
 
+    def _commit_checkpoint(self, record: RunLifecycle, checkpoint: RelocationCheckpoint, lock: OperationLock) -> None:
+        lock.verify()
+        self._save(record, checkpoint)
+        self.session.commit()
+
     async def execute(self, request: TrackerRequest) -> TrackerResponse:
         if request.action != "inventory" or request.host_contract is not None:
             self._host_contract(request)
@@ -367,12 +372,12 @@ class RelocationOperator:
         ):
             if getattr(request, field) != getattr(identity, field):
                 raise LifecycleConflict("Request differs from immutable operation identity")
-        with exclusive_operation(self.session, identity):
+        with exclusive_operation(self.session, identity) as lock:
             observations: list[RunObservation] = []
             verified_copies: list[CopiedObject] = []
             verified_history: list[DestinationVersion] = []
             for run in request.plan.runs:
-                observation, effective_request = await self._execute_run(request, identity, run)
+                observation, effective_request = await self._execute_run(request, identity, run, lock)
                 observations.append(observation)
                 verified_copies.extend(
                     item for item in effective_request.copied_objects if item.run_id == run.scope.run_id
@@ -431,7 +436,7 @@ class RelocationOperator:
         return TrackerResponse(nonce=request.nonce, action=request.action, runs=tuple(observations))
 
     async def _execute_run(
-        self, request: TrackerRequest, identity: OperationIdentity, run: RelocationRun
+        self, request: TrackerRequest, identity: OperationIdentity, run: RelocationRun, lock: OperationLock
     ) -> tuple[RunObservation, TrackerRequest]:
         assert request.plan is not None
         self._host_contract(request)
@@ -444,6 +449,7 @@ class RelocationOperator:
             if existing is None or existing.identity_json != identity.model_dump_json():
                 self._validate_run(benchmark, arguments, run, None)
                 await self.boundary.validate_source(identity, provider_run)
+                lock.verify()
                 destination = provider_run.model_copy(
                     update={
                         "scope": RunScope.model_validate(
@@ -455,6 +461,7 @@ class RelocationOperator:
                     }
                 )
                 await self.boundary.validate(identity, destination)
+                lock.verify()
                 record = acquire_successor_hold(
                     self.session,
                     identity=identity,
@@ -473,14 +480,14 @@ class RelocationOperator:
                     destination_resources=destination.scope.original_resources,
                     dispatch_ids=tuple(item.id for item in self._dispatches(run.scope.run_id)),
                 )
-                self._save(record, checkpoint)
-                self.session.commit()
+                self._commit_checkpoint(record, checkpoint, lock)
             benchmark, arguments = self._run(request, run.scope.run_id)
             _, checkpoint = self._checkpoint(identity, run)
             if checkpoint.child_plan_sha256 != request.plan.sha256:
                 raise LifecycleConflict("Child plan changed before provider cleanup")
             self._validate_run(benchmark, arguments, run, checkpoint)
             await self.boundary.cleanup_sandboxes(provider_run)
+            lock.verify()
         benchmark, arguments = self._run(request, run.scope.run_id)
         record, checkpoint = self._checkpoint(identity, run)
         if checkpoint.child_plan_sha256 != request.plan.sha256:
@@ -492,15 +499,19 @@ class RelocationOperator:
         if tuple(item.dispatch_id for item in dispatches) != checkpoint.dispatch_ids:
             raise LifecycleConflict("Dispatch scope changed after hold")
         await self.boundary.validate_source(identity, provider_run)
+        lock.verify()
         destination = provider_run.model_copy(
             update={"scope": RunScope(run_id=run.scope.run_id, original_resources=checkpoint.destination_resources)}
         )
         await self.boundary.validate(identity, destination)
+        lock.verify()
         await self.boundary.verify_absence(provider_run)
+        lock.verify()
         retired = retired_source_buckets(request)
         references = await self.boundary.execution_references(arguments, request, retired) + self._result_references(
             run.scope.run_id, retired
         )
+        lock.verify()
         if (
             not request.copied_objects
             and not request.destination_versions
@@ -514,8 +525,7 @@ class RelocationOperator:
             )
         if request.action == "prepare" and checkpoint.phase == "held":
             checkpoint = checkpoint.model_copy(update={"phase": "prepared"})
-            self._save(record, checkpoint)
-            self.session.commit()
+            self._commit_checkpoint(record, checkpoint, lock)
         elif (
             request.action in {"relocate", "release"}
             or request.copied_objects
@@ -537,6 +547,7 @@ class RelocationOperator:
                 source_removed=request.action == "release",
                 source_partial=checkpoint.phase in {"relocated", "released", "relocated_history_only"},
             )
+            lock.verify()
             if request.action == "relocate" and checkpoint.phase == "prepared":
                 # Direct SQL preserves excluded fields and the exact stored JSON value shape.
                 arguments["properties"]["s3_bucket"] = run.destination_resources.s3_bucket
@@ -553,12 +564,12 @@ class RelocationOperator:
                         "destination_versions": request.destination_versions,
                     }
                 )
-                self._save(record, checkpoint)
-                self.session.commit()
+                self._commit_checkpoint(record, checkpoint, lock)
                 benchmark, arguments = self._run(request, run.scope.run_id)
                 record, checkpoint = self._checkpoint(identity, run)
                 self._validate_run(benchmark, arguments, run, checkpoint)
                 await self.boundary.verify_objects(request, run, source_partial=True, reuse_verified=True)
+                lock.verify()
             elif request.action == "release":
                 if (
                     checkpoint.phase not in {"relocated", "released", "relocated_history_only"}
@@ -585,13 +596,13 @@ class RelocationOperator:
                 checkpoint = checkpoint.model_copy(
                     update={"phase": phase, "parent_completion_sha256": request.completion_sha256}
                 )
-                self._save(record, checkpoint)
                 if phase == "released" and record.released_at is None:
                     record.released_at = (
                         self.session.connection().execute(text("SELECT current_timestamp")).scalar_one()
                     )
                     self.session.add(record)
-                self.session.commit()
+
+                self._commit_checkpoint(record, checkpoint, lock)
         benchmark, arguments = self._run(request, run.scope.run_id)
         record, checkpoint = self._checkpoint(identity, run)
         self._validate_run(benchmark, arguments, run, checkpoint)

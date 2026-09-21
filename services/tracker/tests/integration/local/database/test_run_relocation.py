@@ -9,6 +9,7 @@ import subprocess
 import sys
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,8 @@ from tracker.database.models import (
 from tracker.executor.release_control import create_executor_dispatch
 from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, require_unheld
 from tracker.lifecycle_completion import acquire_successor_hold, capture_predecessor
+import tracker.run_relocation as run_relocation
+from tracker.run_purge.locking import OperationLock
 from tracker.run_relocation import RelocationOperator
 from tracker.run_relocation.providers import RelocationAWSBoundary
 from tracker.storage_migration_exchange import ExecutionReference, TrackerRequest, TrackerResponse
@@ -420,6 +423,76 @@ def test_fresh_external_or_exit_failure_retains_hold_and_original_bucket(
     relocation_session.rollback()
     assert relocation_session.get_one(Benchmark, run.id).arguments.properties == AWSResources(**original["properties"])
     assert relocation_session.get_one(RunLifecycle, run.id).released_at is None
+
+
+class LockState:
+    def __init__(self, backend_pid: int, held: int) -> None:
+        self.state = (backend_pid, held)
+
+    def one(self) -> tuple[int, int]:
+        return self.state
+
+
+class ReconnectingLockConnection:
+    """A pooled advisory-lock connection that silently reconnects to another backend."""
+
+    def __init__(self) -> None:
+        self.backend_pid = 4242
+        self.reconnected = False
+
+    def execute(self, _statement: object, _parameters: object = None, /) -> LockState:
+        return LockState(self.backend_pid + 1 if self.reconnected else self.backend_pid, 1)
+
+    def invalidate(self) -> None:
+        pass
+
+
+@contextmanager
+def scripted_lock(lock: OperationLock) -> Generator[OperationLock, None, None]:
+    yield lock
+
+
+@pytest.mark.parametrize(
+    ("action", "provider_call", "phase"),
+    [
+        ("prepare", "cleanup_sandboxes", "held"),
+        ("relocate", "verify_objects", "prepared"),
+        ("release", "verify_objects", "relocated"),
+    ],
+)
+def test_a_lock_lost_during_a_provider_call_stops_the_next_phase_commit(
+    relocation_session: Session, monkeypatch: pytest.MonkeyPatch, action: str, provider_call: str, phase: str
+) -> None:
+    run, _, request = seed(relocation_session)
+    request["completion_sha256"] = "c" * 64
+    for earlier in ("prepare", "relocate")[: ("prepare", "relocate", "release").index(action)]:
+        execute(relocation_session, request, earlier)
+    saved = (
+        relocation_session.connection().execute(text("SELECT arguments FROM benchmark WHERE id=:id"), {"id": run.id})
+    ).scalar_one()
+    connection = ReconnectingLockConnection()
+
+    class ReconnectingBoundary(EmptyBoundary):
+        async def cleanup_sandboxes(self, *_arguments: object) -> None:
+            connection.reconnected = provider_call == "cleanup_sandboxes"
+
+        async def verify_objects(self, *_arguments: object, **_options: object) -> None:
+            connection.reconnected = provider_call == "verify_objects"
+
+    lock = OperationLock(connection, connection.backend_pid, (11,))
+    monkeypatch.setattr(run_relocation, "exclusive_operation", lambda *_arguments: scripted_lock(lock))
+    payload = TrackerRequest.model_validate({**request, "action": action, "nonce": str(uuid4())})
+
+    with pytest.raises(LifecycleConflict):
+        asyncio.run(RelocationOperator(relocation_session, ReconnectingBoundary()).execute(payload))
+    relocation_session.rollback()
+
+    record = relocation_session.get(RunLifecycle, run.id)
+    assert record is not None and record.phase == phase and record.released_at is None
+    persisted = (
+        relocation_session.connection().execute(text("SELECT arguments FROM benchmark WHERE id=:id"), {"id": run.id})
+    ).scalar_one()
+    assert persisted == saved
 
 
 def test_portable_release_is_idempotent_and_conflicting_completion_fails(relocation_session: Session) -> None:
