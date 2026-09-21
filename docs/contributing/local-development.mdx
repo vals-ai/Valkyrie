@@ -52,7 +52,7 @@ secrets stay in memory for each dispatch and are not stored in artifacts or the 
 Run the Docker integration check from `services/tracker`:
 
 ```bash
-CBS_DOCKER_ENABLED=true DOCKER_HOST=unix:///var/run/docker.sock \
+DOCKER_HOST=unix:///var/run/docker.sock \
   uv run pytest tests/integration/docker
 ```
 
@@ -93,8 +93,8 @@ PYTHONPATH=services/tracker/src uv run --project services/tracker python \
   services/executor_artifact/build.py --output-directory /absolute/path/to/build
 ```
 
-Set `CBS_DOCKER_ENABLED=true` and `DOCKER_HOST` for Tracker, ExecutorHost, and your
-local benchmark service. Start Tracker from `services/tracker`:
+Use the same Docker daemon for Tracker, ExecutorHost, and your local benchmark
+service. Set `DOCKER_HOST` when needed to select it. Start Tracker from `services/tracker`:
 
 ```bash
 uv run python -m tracker.serve --config /absolute/path/to/local-server.yaml
