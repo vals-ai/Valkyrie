@@ -20,7 +20,31 @@ _INDEX_NAME = "ix_task_benchmark_org_started_at"
 
 
 def upgrade() -> None:
+    existing_index = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+            SELECT indexrelid::regclass::text, indisvalid
+            FROM pg_index
+            JOIN pg_class ON pg_class.oid = pg_index.indexrelid
+            JOIN pg_namespace ON pg_namespace.oid = pg_class.relnamespace
+            WHERE pg_class.relname = :index_name
+              AND pg_namespace.nspname = current_schema()
+            """
+            ),
+            {"index_name": _INDEX_NAME},
+        )
+        .mappings()
+        .one_or_none()
+    )
+
+    if existing_index is not None and existing_index["indisvalid"]:
+        return
+
     with op.get_context().autocommit_block():
+        if existing_index is not None:
+            op.execute(sa.text(f'DROP INDEX CONCURRENTLY IF EXISTS "{_INDEX_NAME}"'))
         op.create_index(
             _INDEX_NAME,
             "task",
@@ -32,8 +56,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     with op.get_context().autocommit_block():
-        op.drop_index(
-            _INDEX_NAME,
-            table_name="task",
-            postgresql_concurrently=True,
-        )
+        op.execute(sa.text(f'DROP INDEX CONCURRENTLY IF EXISTS "{_INDEX_NAME}"'))

@@ -282,19 +282,14 @@ class TestBenchmarkTaskListing:
             "task-0",
         ]
 
-        task_queries = [
-            " ".join(statement.split())
-            for statement in statements
-            if statement.lstrip().upper().startswith("SELECT")
-            and " FROM task" in statement
-        ]
+        task_queries: list[str] = []
+        for statement in statements:
+            normalized_statement = " ".join(statement.split())
+            if normalized_statement.upper().startswith("SELECT") and " FROM task" in normalized_statement:
+                task_queries.append(normalized_statement)
         assert len(task_queries) == 2
-        page_query = next(
-            statement for statement in task_queries if " ORDER BY " in statement
-        )
-        count_query = next(
-            statement for statement in task_queries if "COUNT(" in statement.upper()
-        )
+        page_query = next(statement for statement in task_queries if " ORDER BY " in statement)
+        count_query = next(statement for statement in task_queries if "COUNT(" in statement.upper())
         assert "CASE WHEN" in page_query.upper()
         assert "COUNT(*)" in count_query.upper()
 
@@ -313,9 +308,7 @@ class TestBenchmarkTaskListing:
         error_task = make_task(benchmark, "err", status=TaskStatus.ERROR)
         foreign_task = make_task(benchmark, "foreign", status=TaskStatus.ERROR)
         foreign_task.org_id = other_org.id
-        database_session.add_all(
-            [other_org, finished_task, error_task, foreign_task]
-        )
+        database_session.add_all([other_org, finished_task, error_task, foreign_task])
         database_session.flush()
         database_session.add_all(
             [

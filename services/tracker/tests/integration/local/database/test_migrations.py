@@ -14,6 +14,7 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import DBAPIError
 from sqlmodel import Session, create_engine
 from testcontainers.postgres import PostgresContainer
 
@@ -36,6 +37,8 @@ _MAINTENANCE_REVISION = "f0a1b2c3d4e5"
 _ERROR_RESULT_PROVENANCE_REVISION = "a3f4b5c6d7e8"
 _DISPATCH_LEASE_REVISION = "6a7b8c9d0e1f"
 _MIGRATION_ADVISORY_LOCK_ID = 0x56414C4B59524945
+_TASK_LISTING_REVISION = "2d3e4f5a6b7c"
+_TASK_LISTING_PREDECESSOR = "1c2d3e4f5a6b"
 
 
 def test_migration_graph_has_single_head() -> None:
@@ -80,6 +83,119 @@ def _run_alembic(database_url: str, *args: str) -> subprocess.CompletedProcess[s
         text=True,
         check=False,
     )
+
+
+def test_task_listing_index_migration_is_retry_safe(migration_database_url: str) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_PREDECESSOR)
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    engine = create_engine(migration_database_url)
+    index_query = text(
+        """
+        SELECT i.indisvalid, i.indisunique, pg_get_indexdef(i.indexrelid)
+        FROM pg_index AS i
+        JOIN pg_class AS c ON c.oid = i.indexrelid
+        JOIN pg_namespace AS n ON n.oid = c.relnamespace
+        WHERE c.relname = :index_name AND n.nspname = current_schema()
+        """
+    )
+    revision_query = text("SELECT version_num FROM alembic_version")
+    index_params = {"index_name": "ix_task_benchmark_org_started_at"}
+
+    upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    with engine.connect() as connection:
+        index = connection.execute(index_query, index_params).one()
+        assert index.indisvalid is True
+        assert index.indisunique is False
+        assert "(benchmark, org_id, started_at DESC)" in index.pg_get_indexdef
+        assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
+
+    downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
+    assert downgrade.returncode == 0, downgrade.stderr
+    with engine.connect() as connection:
+        connection.execution_options(isolation_level="AUTOCOMMIT").execute(
+            text(
+                'CREATE INDEX CONCURRENTLY "ix_task_benchmark_org_started_at" '
+                "ON task (benchmark, org_id, started_at DESC)"
+            )
+        )
+
+    upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    with engine.connect() as connection:
+        index = connection.execute(index_query, index_params).one()
+        assert index.indisvalid is True
+        assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
+
+    downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
+    assert downgrade.returncode == 0, downgrade.stderr
+    org_id = uuid4()
+    benchmark_id = uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO org (id, name) VALUES (:id, :name)"),
+            {"id": org_id, "name": "task-listing-retry-org"},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO benchmark "
+                "(id, org_id, name, started_at, status) "
+                "VALUES (:id, :org_id, :name, :started_at, :status)"
+            ),
+            {
+                "id": benchmark_id,
+                "org_id": org_id,
+                "name": "task-listing-retry-benchmark",
+                "started_at": datetime(2026, 9, 21, tzinfo=UTC),
+                "status": "IN_PROGRESS",
+            },
+        )
+        for task_id in (uuid4(), uuid4()):
+            connection.execute(
+                text(
+                    "INSERT INTO task "
+                    "(id, org_id, task_id, status, started_at, benchmark) "
+                    "VALUES (:id, :org_id, :task_id, :status, :started_at, :benchmark)"
+                ),
+                {
+                    "id": task_id,
+                    "org_id": org_id,
+                    "task_id": str(task_id),
+                    "status": "PENDING",
+                    "started_at": datetime(2026, 9, 21, tzinfo=UTC),
+                    "benchmark": benchmark_id,
+                },
+            )
+
+    with engine.connect() as connection:
+        with pytest.raises(DBAPIError):
+            connection.execution_options(isolation_level="AUTOCOMMIT").execute(
+                text('CREATE UNIQUE INDEX CONCURRENTLY "ix_task_benchmark_org_started_at" ON task (org_id)')
+            )
+        invalid_index = connection.execute(index_query, index_params).one()
+        assert invalid_index.indisvalid is False
+        assert invalid_index.indisunique is True
+
+    upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    with engine.connect() as connection:
+        index = connection.execute(index_query, index_params).one()
+        assert index.indisvalid is True
+        assert index.indisunique is False
+        assert "(benchmark, org_id, started_at DESC)" in index.pg_get_indexdef
+        assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
+
+    with engine.connect() as connection:
+        connection.execution_options(isolation_level="AUTOCOMMIT").execute(
+            text('DROP INDEX CONCURRENTLY IF EXISTS "ix_task_benchmark_org_started_at"')
+        )
+    downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
+    assert downgrade.returncode == 0, downgrade.stderr
+    with engine.connect() as connection:
+        assert connection.execute(index_query, index_params).one_or_none() is None
+        assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_PREDECESSOR
+    engine.dispose()
 
 
 def test_executor_release_ownership_downgrade_restores_predecessor_schema(

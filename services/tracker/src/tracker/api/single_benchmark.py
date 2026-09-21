@@ -153,9 +153,7 @@ def get_benchmark_tasks(
     rows = session.exec(
         select(Task, latest_error_message).where(*base_filters).order_by(*order_by).limit(limit).offset(offset)
     ).all()
-    total = session.exec(
-        select(func.count()).select_from(Task).where(*base_filters)
-    ).one()
+    total = session.exec(select(func.count()).select_from(Task).where(*base_filters)).one()
 
     return TasksResponse(
         tasks=[
