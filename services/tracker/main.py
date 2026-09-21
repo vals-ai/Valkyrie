@@ -660,6 +660,8 @@ async def _start_benchmark(
     else:
         if request.environment == "local":
             raise HTTPException(status_code=400, detail="Server has no local configuration")
+        if request.sandbox_provider == "docker":
+            raise HTTPException(status_code=400, detail="AWS execution does not support the Docker sandbox provider")
         assert not isinstance(request.properties, LocalResources)
         runtime_resolution = resolve_start_aws_runtime(
             http_request, request.harness_config, run_starter.org.id, request.properties

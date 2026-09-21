@@ -840,6 +840,25 @@ class TestTrackerAPI:
         else:
             assert response.json() == {"detail": "Queue priority requires a sandbox provider configured for admission"}
 
+    async def test_start_benchmark_rejects_docker_provider_for_aws_execution(
+        self,
+        contract: AgentContractRequest,
+        harness_config: HarnessConfig,
+        database_session: Session,
+    ) -> None:
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            harness_config=harness_config,
+            sandbox_provider="docker",
+        )
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "AWS execution does not support the Docker sandbox provider"}
+        assert not database_session.exec(select(Benchmark)).all()
+
     async def test_start_benchmark_marks_persisted_queue_error_when_start_setup_fails(
         self,
         contract: AgentContractRequest,
