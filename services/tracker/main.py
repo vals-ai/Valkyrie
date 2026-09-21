@@ -140,6 +140,7 @@ from tracker.types import (
     FinalViewResponse,
     HarnessConfig,
     ManagedExecutionContext,
+    ManagedStorageStartBenchmarkRequest,
     Order,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
@@ -592,7 +593,7 @@ async def start_benchmark(
 @app.post("/start-benchmark-with-storage")
 async def start_benchmark_with_storage(
     http_request: Request,
-    request: StartBenchmarkRequest,
+    request: ManagedStorageStartBenchmarkRequest,
     session: Session = Depends(get_session),
     run_starter: RequestIdentity = Depends(get_current_starter),
 ) -> StartBenchmarkResponse:
