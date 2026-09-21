@@ -43,6 +43,8 @@ class DatabaseConfig:
     allocated_storage_gb: int
     backup_retention_days: int
     connection_alarm_threshold: int
+    pool_size: int
+    max_overflow: int
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,8 @@ BENCH_CONFIG = StageConfig(
         allocated_storage_gb=20,
         backup_retention_days=7,
         connection_alarm_threshold=1400,
+        pool_size=50,
+        max_overflow=10,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_YEAR,
     managed_aws=ManagedAWSRuntimeConfig(
@@ -136,6 +140,8 @@ PROD_CONFIG = StageConfig(
         allocated_storage_gb=20,
         backup_retention_days=7,
         connection_alarm_threshold=1400,
+        pool_size=50,
+        max_overflow=10,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_YEAR,
     managed_aws=ManagedAWSRuntimeConfig(
@@ -158,6 +164,8 @@ DEV_CONFIG = StageConfig(
         allocated_storage_gb=20,
         backup_retention_days=1,
         connection_alarm_threshold=65,
+        pool_size=5,
+        max_overflow=2,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_WEEK,
     managed_aws=ManagedAWSRuntimeConfig(

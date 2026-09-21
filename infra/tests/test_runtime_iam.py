@@ -9,7 +9,7 @@ import aws_cdk as cdk  # pyright: ignore[reportMissingImports]
 from aws_cdk import assertions, aws_s3  # pyright: ignore[reportMissingImports]
 
 from runtime_iam import create_executor_task_role, create_tracker_task_role
-from stage import BENCH, DEV, RELEASE_TEST, Stage
+from stage import BENCH, DEV, PROD, RELEASE_TEST, Stage
 from stage_config import BENCH_CONFIG, DEV_CONFIG, ManagedAWSRuntimeConfig
 from test_monitoring_stack import (
     TEST_AWS_ACCOUNT,
@@ -71,6 +71,38 @@ def _lambda_function_resource(function_name: str) -> JsonObject:
 
 
 class RuntimeIamTest(unittest.TestCase):
+    def test_agent_upload_permissions_are_limited_to_dev_tracker(self) -> None:
+        """Only dev Tracker can upload agents or abort their multipart uploads."""
+        for stage_name in (DEV, BENCH, PROD, RELEASE_TEST):
+            with self.subTest(stage=stage_name):
+                stage = Stage(stage_name)
+                stack = cdk.Stack(cdk.App(), "AgentUploadStack")
+                bucket = aws_s3.Bucket.from_bucket_name(stack, "Bucket", f"agent-library-{stage_name}")
+                create_tracker_task_role(stack, stage, bucket, DEV_CONFIG.managed_aws)
+                create_executor_task_role(stack, stage, bucket, DEV_CONFIG.managed_aws)
+                template = assertions.Template.from_stack(stack)
+
+                for role_name in ("ValkyrieTrackerTaskRole", "ValkyrieExecutorTaskRole"):
+                    role_logical_id, _ = _named_role(template, stage.phys(role_name))
+                    agent_statements = [
+                        statement
+                        for statement in _role_policy_statements(template, role_logical_id)
+                        if "agents/*" in json.dumps(statement["Resource"])
+                    ]
+                    actions = set[str]().union(*(_statement_actions(statement) for statement in agent_statements))
+                    expected_actions = {"s3:GetObject"}
+                    if stage_name == DEV and role_name == "ValkyrieTrackerTaskRole":
+                        expected_actions |= {"s3:PutObject", "s3:AbortMultipartUpload"}
+                        upload_statement = next(
+                            statement
+                            for statement in agent_statements
+                            if "s3:PutObject" in _statement_actions(statement)
+                        )
+                        self.assertEqual(
+                            upload_statement["Resource"], stack.resolve(bucket.arn_for_objects("agents/*"))
+                        )
+                    self.assertEqual(actions, expected_actions)
+
     def test_managed_runtime_rejects_invalid_authority_configuration(self) -> None:
         config = ManagedAWSRuntimeConfig(
             benchmark_log_group_prefix="/valkyrie/benchmarks",
@@ -146,6 +178,7 @@ class RuntimeIamTest(unittest.TestCase):
                 "TrackerTaskRoleArn",
                 expected_actions
                 | {
+                    "s3:AbortMultipartUpload",
                     "s3:DeleteObject",
                     "s3:DeleteObjectVersion",
                     "secretsmanager:GetSecretValue",

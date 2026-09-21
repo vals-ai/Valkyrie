@@ -458,10 +458,12 @@ async def test_run_forwards_dispatch_authority_to_executor(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    script = b"""import json, os, sys\nfrom pathlib import Path\npayload = json.loads(Path(sys.argv[1]).read_text())\nresult = {\"payload\": payload, \"sentry_release\": os.environ.get(\"SENTRY_RELEASE\")}\nPath(os.environ[\"EXECUTOR_TEST_MARKER\"]).write_text(json.dumps(result))\n"""
+    script = b"""import json, os, sys\nfrom pathlib import Path\npayload = json.loads(Path(sys.argv[1]).read_text())\nresult = {\"payload\": payload, \"sentry_release\": os.environ.get(\"SENTRY_RELEASE\"), \"pool_size\": os.environ.get(\"DATABASE_POOL_SIZE\"), \"max_overflow\": os.environ.get(\"DATABASE_MAX_OVERFLOW\")}\nPath(os.environ[\"EXECUTOR_TEST_MARKER\"]).write_text(json.dumps(result))\n"""
     digest = hashlib.sha256(script).hexdigest()
     marker = tmp_path / "marker.json"
     monkeypatch.setenv("EXECUTOR_TEST_MARKER", str(marker))
+    monkeypatch.setenv("DATABASE_POOL_SIZE", "5")
+    monkeypatch.setenv("DATABASE_MAX_OVERFLOW", "2")
     store = FakeDispatchStore()
 
     with caplog.at_level(logging.INFO, logger=supervisor_module.logger.name):
@@ -483,6 +485,8 @@ async def test_run_forwards_dispatch_authority_to_executor(
     assert payload["executor_dispatch_id"] == "dispatch-1"
     assert payload["telemetry_context_json"] == {"request_id": "", "trace_headers": {}}
     assert result["sentry_release"] == "release-v2"
+    assert result["pool_size"] == "5"
+    assert result["max_overflow"] == "2"
     assert store.authority_checks
     assert store.finished == [store.authority]
     assert (

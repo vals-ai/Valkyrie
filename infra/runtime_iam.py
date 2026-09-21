@@ -8,7 +8,7 @@ import aws_cdk as cdk
 from aws_cdk import aws_iam, aws_s3
 from constructs import Construct
 
-from stage import Stage
+from stage import DEV, Stage
 from stage_config import ManagedAWSRuntimeConfig
 
 _S3_PREFIXES = ("agents/*", "benchmarks/*")
@@ -40,6 +40,13 @@ def create_tracker_task_role(
     """Create the tracker application task role."""
     role = _task_role(scope, "TrackerTaskRole", stage.phys("ValkyrieTrackerTaskRole"))
     _add_s3_runtime_access(role, bucket)
+    if stage.name == DEV:
+        role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["s3:PutObject", "s3:AbortMultipartUpload"],
+                resources=[bucket.arn_for_objects("agents/*")],
+            )
+        )
     role.add_to_policy(
         aws_iam.PolicyStatement(
             actions=["s3:DeleteObject", "s3:DeleteObjectVersion"],
