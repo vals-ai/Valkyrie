@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -34,8 +35,13 @@ class AWSClientProvider(ABC):
         """Return SDK arguments for this credential source."""
         raise NotImplementedError
 
-    def _s3_session(self) -> aioboto3.Session:
+    @lru_cache(maxsize=32)
+    def _loop_session(self, loop: asyncio.AbstractEventLoop) -> aioboto3.Session:
+        """Share one session per event loop so loop-bound credential state never crosses loops."""
         return aioboto3.Session(**self._client_kwargs())
+
+    def _s3_session(self) -> aioboto3.Session:
+        return self._loop_session(asyncio.get_running_loop())
 
     def s3_client(self) -> Any:
         return self._s3_session().client(  # pyright: ignore[reportUnknownMemberType]
