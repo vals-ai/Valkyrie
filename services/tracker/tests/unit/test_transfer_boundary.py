@@ -32,6 +32,12 @@ WIDENED_FENCE_ACTIONS = (
     "s3:ReplicateTags",
 )
 
+# Every other fault reaches the fence comparison, so a case that refuses earlier is a wrong pass.
+NAMED_FENCE_REFUSALS = {
+    "account": "AWS caller account does not match source account",
+    "missing_fence": "Exact source transfer fence is missing",
+}
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -123,7 +129,9 @@ async def test_import_requires_separate_accounts_and_exact_source_fence(tmp_path
             == request.plan.destination_identity.destination_aws_account_id
         )
     else:
-        with pytest.raises((LifecycleConflict, ValueError)):
+        refusal = NAMED_FENCE_REFUSALS.get(fault, "Exact source transfer fence differs")
+
+        with pytest.raises(LifecycleConflict, match=refusal):
             await boundary.validate(request, run)
 
 
