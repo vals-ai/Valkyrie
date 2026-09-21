@@ -4,10 +4,12 @@ Exercise single-benchmark routes through the real app and local database.
 """
 
 import json
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlmodel import Session
 
 from tests.factories import make_benchmark, make_task
@@ -17,6 +19,7 @@ from tracker.database.models import (
     ErrorResult,
     ExecutorRelease,
     FinalEvaluation,
+    Org,
     TaskStatus,
 )
 
@@ -239,32 +242,116 @@ class TestBenchmarkTaskListing:
         """
         benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
         for task_index in range(3):
-            database_session.add(make_task(benchmark, f"task-{task_index}"))
+            database_session.add(
+                make_task(
+                    benchmark,
+                    f"task-{task_index}",
+                    started_at=datetime(2026, 1, task_index + 1, tzinfo=UTC),
+                )
+            )
         database_session.commit()
 
-        response = client.get(
-            f"/benchmarks/{benchmark.id}/tasks?limit=2&offset=0",
-            headers={"Authorization": "Bearer fake"},
-        )
+        statements: list[str] = []
+        bind = database_session.get_bind()
+
+        def record_statement(
+            _connection: object,
+            _cursor: object,
+            statement: str,
+            _parameters: object,
+            _context: object,
+            _executemany: bool,
+        ) -> None:
+            statements.append(statement)
+
+        event.listen(bind, "before_cursor_execute", record_statement)
+        try:
+            response = client.get(
+                f"/benchmarks/{benchmark.id}/tasks?limit=2&offset=1",
+                headers={"Authorization": "Bearer fake"},
+            )
+        finally:
+            event.remove(bind, "before_cursor_execute", record_statement)
 
         assert response.status_code == 200
         response_body = response.json()
         assert len(response_body["tasks"]) == 2
         assert response_body["total_count"] == 3
+        assert [task["task_id"] for task in response_body["tasks"]] == [
+            "task-1",
+            "task-0",
+        ]
+
+        task_queries = [
+            " ".join(statement.split())
+            for statement in statements
+            if statement.lstrip().upper().startswith("SELECT")
+            and " FROM task" in statement
+        ]
+        assert len(task_queries) == 2
+        page_query = next(
+            statement for statement in task_queries if " ORDER BY " in statement
+        )
+        count_query = next(
+            statement for statement in task_queries if "COUNT(" in statement.upper()
+        )
+        assert "CASE WHEN" in page_query.upper()
+        assert "COUNT(*)" in count_query.upper()
 
     def test_get_benchmark_tasks_filters_by_status(self, client: TestClient, database_session: Session) -> None:
         """Task listing must apply comma-separated status filters.
 
         Test cases:
         - Only tasks in the requested statuses are returned and counted.
+        - Error tasks return the newest non-retry error from their organization.
+        - Non-error tasks skip error-message output even when error rows exist.
+        - Tasks and error rows from another organization are excluded.
         """
         benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
+        other_org = Org(name="other-task-list-org")
         finished_task = make_task(benchmark, "ok", status=TaskStatus.FINISHED)
         error_task = make_task(benchmark, "err", status=TaskStatus.ERROR)
-        database_session.add_all([finished_task, error_task])
+        foreign_task = make_task(benchmark, "foreign", status=TaskStatus.ERROR)
+        foreign_task.org_id = other_org.id
+        database_session.add_all(
+            [other_org, finished_task, error_task, foreign_task]
+        )
         database_session.flush()
-        database_session.add(ErrorResult(org_id=benchmark.org_id, task=finished_task.id, error_message="old boom"))
-        database_session.add(ErrorResult(org_id=benchmark.org_id, task=error_task.id, error_message="boom"))
+        database_session.add_all(
+            [
+                ErrorResult(
+                    org_id=benchmark.org_id,
+                    task=finished_task.id,
+                    error_message="finished-task error",
+                    created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                ),
+                ErrorResult(
+                    org_id=benchmark.org_id,
+                    task=error_task.id,
+                    error_message="older error",
+                    created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                ),
+                ErrorResult(
+                    org_id=benchmark.org_id,
+                    task=error_task.id,
+                    error_message="newest non-retry error",
+                    created_at=datetime(2026, 1, 2, tzinfo=UTC),
+                ),
+                ErrorResult(
+                    org_id=benchmark.org_id,
+                    task=error_task.id,
+                    error_message="scheduled retry",
+                    created_at=datetime(2026, 1, 3, tzinfo=UTC),
+                    retry_scheduled=True,
+                ),
+                ErrorResult(
+                    org_id=other_org.id,
+                    task=error_task.id,
+                    error_message="foreign organization error",
+                    created_at=datetime(2026, 1, 4, tzinfo=UTC),
+                ),
+            ]
+        )
         database_session.commit()
 
         error_response = client.get(
@@ -279,9 +366,11 @@ class TestBenchmarkTaskListing:
         )
         finished_response_body = finished_response.json()
 
+        assert error_response_body["total_count"] == 1
         assert len(error_response_body["tasks"]) == 1
         assert error_response_body["tasks"][0]["task_id"] == "err"
-        assert error_response_body["tasks"][0]["error_message"] == "boom"
+        assert error_response_body["tasks"][0]["error_message"] == "newest non-retry error"
+        assert finished_response_body["total_count"] == 1
         assert len(finished_response_body["tasks"]) == 1
         assert finished_response_body["tasks"][0]["task_id"] == "ok"
         assert finished_response_body["tasks"][0]["error_message"] is None
