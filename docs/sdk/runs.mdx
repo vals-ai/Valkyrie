@@ -28,7 +28,7 @@ run = await client.runs.start(
 Use `managed_s3_bucket` for a bucket that your application has provisioned and tagged for your Valkyrie organization:
 
 ```python
-from valkyrie.sdk import ValkyrieRunError
+from valkyrie.sdk import ValkyrieRunAcceptedError, ValkyrieRunError
 
 try:
     run = await client.runs.start(
@@ -36,15 +36,26 @@ try:
         benchmark="swebench",
         managed_s3_bucket="vs-dev-acme-123",
     )
+except ValkyrieRunAcceptedError as error:
+    # The run exists in the requested bucket. Reconcile or retry it by this ID.
+    await reconcile_run(error.run_id)
+    raise
 except ValkyrieRunError as error:
-    # A non-null ID identifies a created run whose bucket was not confirmed.
-    created_run_id = error.run_id
+    # The bucket was rejected. Quarantine the run; do not start it again.
+    await record_storage_rejection(error.run_id)
     raise
 
 actual_bucket = run.storage_bucket
 ```
 
-The SDK uses `/start-benchmark-with-storage`. An older tracker returns 404 before it creates a run. Do not retry on `/start-benchmark` or remove the bucket after an error. A missing or different response bucket raises `ValkyrieRunError` with the created UUID in `run_id`; use that value for reconciliation. Existing message-only error construction remains supported and gives `run_id=None`.
+Catch `ValkyrieRunAcceptedError` before `ValkyrieRunError`. Both carry a `run_id`, so the ID alone does not tell the two outcomes apart:
+
+- `ValkyrieRunAcceptedError` means the run was created with the bucket you asked for, and only its executor dispatch went unacknowledged. The storage is correct, so reconcile or retry by `run_id`. The original `ValkyrieAPIError` is the cause.
+- Plain `ValkyrieRunError` means the start response carried a missing or different `storage_bucket`. That is a storage rejection. Do not submit it again without an explicit override.
+
+A caller that catches only `ValkyrieRunError` still sees both, so an older handler keeps working, but it cannot separate them and will quarantine correctly stored runs.
+
+The SDK uses `/start-benchmark-with-storage`. An older tracker returns 404 before it creates a run. Do not retry on `/start-benchmark` or remove the bucket after an error. Existing message-only error construction remains supported and gives `run_id=None`.
 
 The override cannot be combined with access-key credentials or explicit `properties`. The tracker checks the bucket account, region, organization tag, environment, and enabled versioning. Agent-library reads remain in shared storage; the frozen bundle and run artifacts use the selected bucket. See [Managed run storage deployment](/deployment/managed-run-storage) for policy and rollout requirements.
 
