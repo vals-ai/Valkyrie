@@ -642,11 +642,15 @@ async def _start_benchmark(
     if local_config.resources is not None:
         if request.properties is not None:
             raise HTTPException(status_code=400, detail="Local resources are configured by the server")
-        request = request.model_copy(
-            update={"environment": "local", "sandbox_provider": "docker", "properties": local_config.resources}
-        )
         try:
-            request.validate_execution_environment()
+            request = StartBenchmarkRequest.model_validate(
+                {
+                    **request.model_dump(),
+                    "environment": "local",
+                    "sandbox_provider": "docker",
+                    "properties": local_config.resources,
+                }
+            )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         runtime = LocalRuntimeFactory.create_runtime(local_config.resources.data_root, run_starter.org.id)
