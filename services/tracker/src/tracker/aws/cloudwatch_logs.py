@@ -344,9 +344,7 @@ class CloudWatchLogProvider(LogProvider):
             code = error.response.get("Error", {}).get("Code")
             if code == "ResourceNotFoundException":
                 return None
-            raise LogProviderError(f"CloudWatch log request failed: {code or 'unknown error'}") from error
-        except BotoCoreError as error:
-            raise LogProviderError("CloudWatch log request failed") from error
+            raise
         return cast(dict[str, Any], response)
 
     @staticmethod
