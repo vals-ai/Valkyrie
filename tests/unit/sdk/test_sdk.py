@@ -586,6 +586,7 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
                         "status": "FINISHED",
                         "error_message": None,
                         "benchmark_arguments": {
+                            "environment": "aws",
                             "contract": {"name": "sweagent"},
                             "concurrency": 1,
                         },

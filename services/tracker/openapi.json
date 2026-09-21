@@ -1049,6 +1049,13 @@
       "FetchBenchmarkMetadataResponse": {
         "properties": {
           "benchmark_arguments": {
+            "discriminator": {
+              "mapping": {
+                "aws": "#/components/schemas/AWSBenchmarkArguments",
+                "local": "#/components/schemas/LocalBenchmarkArguments"
+              },
+              "propertyName": "environment"
+            },
             "oneOf": [
               {
                 "$ref": "#/components/schemas/AWSBenchmarkArguments"
@@ -1328,6 +1335,13 @@
             ]
           },
           "benchmark_arguments": {
+            "discriminator": {
+              "mapping": {
+                "aws": "#/components/schemas/AWSBenchmarkArguments",
+                "local": "#/components/schemas/LocalBenchmarkArguments"
+              },
+              "propertyName": "environment"
+            },
             "oneOf": [
               {
                 "$ref": "#/components/schemas/AWSBenchmarkArguments"

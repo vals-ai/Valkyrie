@@ -7,10 +7,8 @@ from zoneinfo import ZoneInfo
 
 from pydantic import (
     BaseModel,
-    Discriminator,
     Field as PydanticField,
     SerializerFunctionWrapHandler,
-    Tag,
     TypeAdapter,
     field_serializer,
     field_validator,
@@ -223,14 +221,9 @@ class LocalBenchmarkArguments(_BenchmarkArguments):
     properties: LocalResources
 
 
-def _benchmark_environment(value: dict[str, Any] | _BenchmarkArguments) -> str | None:
-    """Treat stored arguments without an environment as legacy AWS runs."""
-    return value.get("environment", "aws") if isinstance(value, dict) else getattr(value, "environment", None)
-
-
 BenchmarkArguments = Annotated[
-    Annotated[AWSBenchmarkArguments, Tag("aws")] | Annotated[LocalBenchmarkArguments, Tag("local")],
-    Discriminator(_benchmark_environment),
+    AWSBenchmarkArguments | LocalBenchmarkArguments,
+    PydanticField(discriminator="environment"),
 ]
 benchmark_arguments_adapter: TypeAdapter[BenchmarkArguments] = TypeAdapter(BenchmarkArguments)
 
@@ -282,7 +275,7 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
         """Runs when we fetch the value from the database."""
         if value is None:
             return None
-        return benchmark_arguments_adapter.validate_python(value)
+        return benchmark_arguments_adapter.validate_python({"environment": "aws", **value})
 
 
 class ExecutorRelease(SQLModel, table=True):
