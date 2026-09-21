@@ -16,7 +16,7 @@ from tracker.api.parsing import parse_csv
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     Task,
     TaskStatus,
@@ -95,7 +95,7 @@ class TestBenchmarkStatusQueries:
                 id=benchmark_id,
                 name="swebench",
                 status=BenchmarkStatus.IN_PROGRESS,
-                arguments=BenchmarkArguments(contract=contract, concurrency=1),
+                arguments=AWSBenchmarkArguments(contract=contract, concurrency=1),
             )
         )
         database_session.add_all(

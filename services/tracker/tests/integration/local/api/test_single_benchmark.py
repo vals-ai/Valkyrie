@@ -15,6 +15,7 @@ from sqlmodel import Session
 
 from tests.factories import make_benchmark, make_task
 from tracker.database.models import (
+    LocalBenchmarkArguments,
     Benchmark,
     BenchmarkStatus,
     ErrorResult,
@@ -161,8 +162,9 @@ class TestBenchmarkStatusStream:
         """
         benchmark = make_benchmark(name="streamed-benchmark", status=BenchmarkStatus.FINISHED, session=database_session)
         if local:
-            benchmark.arguments = benchmark.arguments.model_copy(
-                update={
+            benchmark.arguments = LocalBenchmarkArguments.model_validate(
+                {
+                    **benchmark.arguments.model_dump(),
                     "environment": "local",
                     "properties": LocalResources(data_root=tmp_path),
                     "sandbox_provider": "docker",

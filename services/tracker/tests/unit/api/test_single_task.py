@@ -22,6 +22,7 @@ from tracker.local.resources import LocalResources
 from main import app
 from tests.factories import make_error_result, make_evaluation_result, make_task
 from tracker.database.models import (
+    LocalBenchmarkArguments,
     AgentCausedExitReason,
     Benchmark,
     Org,
@@ -257,8 +258,13 @@ def test_local_task_artifacts_use_existing_files(
     - Other organizations, unauthenticated requests, and missing files cannot download.
     """
     benchmark = example_benchmark_object
-    benchmark.arguments = benchmark.arguments.model_copy(
-        update={"environment": "local", "properties": LocalResources(data_root=tmp_path), "sandbox_provider": "docker"}
+    benchmark.arguments = LocalBenchmarkArguments.model_validate(
+        {
+            **benchmark.arguments.model_dump(),
+            "environment": "local",
+            "properties": LocalResources(data_root=tmp_path),
+            "sandbox_provider": "docker",
+        }
     )
     task = make_task(benchmark, "local task:one")
     database_session.add_all([benchmark, task])

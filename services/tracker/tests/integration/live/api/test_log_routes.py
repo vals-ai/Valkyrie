@@ -23,7 +23,7 @@ from tracker.aws.cloudwatch_logs import (
     task_log_stream_name,
 )
 from tracker.aws.runtime import AWSRuntime
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, Task
+from tracker.database.models import AgentContractRequest, Benchmark, AWSBenchmarkArguments, Task
 from tracker.types import HarnessConfig
 
 
@@ -68,7 +68,7 @@ def test_log_routes_round_trip_real_cloudwatch(
     benchmark = Benchmark(
         org_id=TEST_ORG_ID,
         name="live-cloudwatch-logs",
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(name="live-cloudwatch-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
         ),

@@ -1277,7 +1277,6 @@ async def _retrieve_results(
         raise HTTPException(
             status_code=400, detail="Local results are available directly; S3 export requires an AWS run"
         )
-    assert not isinstance(benchmark_row.arguments.properties, LocalResources)
     aws_runtime = resolve_run_aws_runtime_and_access_key_config(
         http_request,
         aws_managed=benchmark_row.aws_managed,
@@ -1425,7 +1424,6 @@ async def stop_benchmark(
         provider_secret_name = None
         runtime_resolution = None
     else:
-        assert not isinstance(benchmark_row.arguments.properties, LocalResources)
         runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
             http_request,
             aws_managed=benchmark_row.aws_managed,
@@ -1452,7 +1450,6 @@ async def stop_benchmark(
     await initiate_stop_benchmark(benchmark_row, session, force, org, task_ids=selected_task_ids)
 
     if force and benchmark_row.arguments.environment == "local":
-        assert isinstance(benchmark_row.arguments.properties, LocalResources)
         runtime = LocalRuntimeFactory.create_runtime(benchmark_row.arguments.properties.data_root, org.id)
         await force_stop_sandboxes(benchmark_row, runtime, org, task_ids=selected_task_ids)
     elif provider_secret_name is not None:

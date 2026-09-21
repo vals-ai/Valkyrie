@@ -21,7 +21,7 @@ from testcontainers.postgres import PostgresContainer
 
 from tracker.database.models import (
     AgentContractRequest,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     ExecutorRelease,
     ExecutorReleaseStatus,
@@ -589,7 +589,7 @@ def test_current_execution_ownership_migration_rejects_downgrade(
         session.commit()
         # Insert with explicit columns: the schema is pinned at the ownership
         # revision, which predates columns the current ORM model would include.
-        arguments = BenchmarkArguments(
+        arguments = AWSBenchmarkArguments(
             contract=AgentContractRequest(name="migration-test-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
         )

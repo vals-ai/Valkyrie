@@ -35,6 +35,104 @@
       }
     },
     "schemas": {
+      "AWSBenchmarkArguments": {
+        "additionalProperties": false,
+        "description": "Stored arguments for an AWS run, including legacy rows without resources.",
+        "properties": {
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/AgentContractRequest-Output"
+          },
+          "dataset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset"
+          },
+          "environment": {
+            "const": "aws",
+            "default": "aws",
+            "title": "Environment",
+            "type": "string"
+          },
+          "lambda_function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
+          "properties": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AWSResources"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sandbox_provider": {
+            "default": "daytona",
+            "title": "Sandbox Provider",
+            "type": "string"
+          },
+          "sandbox_provider_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Provider Secret Name"
+          },
+          "slice_str": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slice Str"
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          }
+        },
+        "required": [
+          "contract",
+          "concurrency"
+        ],
+        "title": "AWSBenchmarkArguments",
+        "type": "object"
+      },
       "AWSCredentials": {
         "properties": {
           "aws_access_key_id": {
@@ -456,110 +554,6 @@
           "sandbox_run_duration"
         ],
         "title": "AverageTaskBreakdown",
-        "type": "object"
-      },
-      "BenchmarkArguments": {
-        "additionalProperties": false,
-        "properties": {
-          "concurrency": {
-            "title": "Concurrency",
-            "type": "integer"
-          },
-          "contract": {
-            "$ref": "#/components/schemas/AgentContractRequest-Output"
-          },
-          "dataset": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dataset"
-          },
-          "environment": {
-            "default": "aws",
-            "enum": [
-              "aws",
-              "local"
-            ],
-            "title": "Environment",
-            "type": "string"
-          },
-          "lambda_function": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lambda Function"
-          },
-          "properties": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AWSResources"
-              },
-              {
-                "$ref": "#/components/schemas/LocalResources"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Properties"
-          },
-          "sandbox_provider": {
-            "default": "daytona",
-            "title": "Sandbox Provider",
-            "type": "string"
-          },
-          "sandbox_provider_secret_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sandbox Provider Secret Name"
-          },
-          "slice_str": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Slice Str"
-          },
-          "task_ids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Ids"
-          }
-        },
-        "required": [
-          "contract",
-          "concurrency"
-        ],
-        "title": "BenchmarkArguments",
         "type": "object"
       },
       "BenchmarkServiceCatalogResponse": {
@@ -1055,7 +1049,15 @@
       "FetchBenchmarkMetadataResponse": {
         "properties": {
           "benchmark_arguments": {
-            "$ref": "#/components/schemas/BenchmarkArguments"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AWSBenchmarkArguments"
+              },
+              {
+                "$ref": "#/components/schemas/LocalBenchmarkArguments"
+              }
+            ],
+            "title": "Benchmark Arguments"
           },
           "benchmark_id": {
             "format": "uuid",
@@ -1326,7 +1328,15 @@
             ]
           },
           "benchmark_arguments": {
-            "$ref": "#/components/schemas/BenchmarkArguments"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AWSBenchmarkArguments"
+              },
+              {
+                "$ref": "#/components/schemas/LocalBenchmarkArguments"
+              }
+            ],
+            "title": "Benchmark Arguments"
           },
           "benchmark_id": {
             "format": "uuid",
@@ -1479,6 +1489,98 @@
           "sandbox_provider_secret_name"
         ],
         "title": "HarnessConfig",
+        "type": "object"
+      },
+      "LocalBenchmarkArguments": {
+        "additionalProperties": false,
+        "description": "Stored arguments with the filesystem resources selected at admission.",
+        "properties": {
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/AgentContractRequest-Output"
+          },
+          "dataset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset"
+          },
+          "environment": {
+            "const": "local",
+            "default": "local",
+            "title": "Environment",
+            "type": "string"
+          },
+          "lambda_function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
+          "properties": {
+            "$ref": "#/components/schemas/LocalResources"
+          },
+          "sandbox_provider": {
+            "default": "daytona",
+            "title": "Sandbox Provider",
+            "type": "string"
+          },
+          "sandbox_provider_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Provider Secret Name"
+          },
+          "slice_str": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slice Str"
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          }
+        },
+        "required": [
+          "contract",
+          "concurrency",
+          "properties"
+        ],
+        "title": "LocalBenchmarkArguments",
         "type": "object"
       },
       "LocalResources": {

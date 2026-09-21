@@ -47,9 +47,10 @@ from tracker.aws.s3 import S3ObjectCopier, download_from_s3, upload_to_s3
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.storage import ObjectStore, StoredObject, StoredObjectCopy
 from tracker.database.models import (
+    LocalBenchmarkArguments,
     AgentContractRequest,
     Benchmark,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     ExecutorAdmission,
     ExecutorDispatch,
@@ -566,6 +567,7 @@ class TestTrackerAPI:
 
     def test_analyze_benchmark_enforces_state_and_reuses_cached_result(
         self,
+        tmp_path: Path,
         database_session: Session,
         example_benchmark_object: Benchmark,
         harness_headers: dict[str, str],
@@ -615,8 +617,15 @@ class TestTrackerAPI:
             "reading_plan_url": "https://results.example/reading-plan",
         }
 
-        example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(
-            update={"environment": "local"}
+        from tracker.local.resources import LocalResources
+
+        example_benchmark_object.arguments = LocalBenchmarkArguments.model_validate(
+            {
+                **example_benchmark_object.arguments.model_dump(),
+                "environment": "local",
+                "properties": LocalResources(data_root=tmp_path),
+                "sandbox_provider": "docker",
+            }
         )
         database_session.add(example_benchmark_object)
         database_session.commit()
@@ -980,7 +989,7 @@ class TestTrackerAPI:
         assert benchmark_row
 
         # Secondary test. Arguments is correct serialized into the database
-        assert benchmark_row.arguments == BenchmarkArguments(
+        assert benchmark_row.arguments == AWSBenchmarkArguments(
             properties=AWSRuntime.from_harness_config(harness_config).resources,
             contract=request.contract,
             concurrency=request.concurrency,
@@ -2323,7 +2332,7 @@ class TestTrackerAPI:
         unique_benchmark = Benchmark(
             org_id=TEST_ORG_ID,
             name="terminal_bench",
-            arguments=BenchmarkArguments(
+            arguments=AWSBenchmarkArguments(
                 contract=unique_contract,
                 concurrency=5,
                 task_ids=None,
@@ -2454,17 +2463,17 @@ class TestTrackerAPI:
             Benchmark(
                 org_id=TEST_ORG_ID,
                 name="terminal-bench",
-                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset=None),
+                arguments=AWSBenchmarkArguments(contract=contract, concurrency=1, dataset=None),
             ),
             Benchmark(
                 org_id=TEST_ORG_ID,
                 name="terminal-bench",
-                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset="default"),
+                arguments=AWSBenchmarkArguments(contract=contract, concurrency=1, dataset="default"),
             ),
             Benchmark(
                 org_id=TEST_ORG_ID,
                 name="terminal-bench",
-                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset="terminal-bench-2.1"),
+                arguments=AWSBenchmarkArguments(contract=contract, concurrency=1, dataset="terminal-bench-2.1"),
             ),
         ]
         database_session.add_all(benchmark_rows)
@@ -2668,7 +2677,7 @@ class TestTrackerAPI:
         bench = Benchmark(
             org_id=TEST_ORG_ID,
             name="swebench",
-            arguments=BenchmarkArguments(contract=contract, concurrency=1),
+            arguments=AWSBenchmarkArguments(contract=contract, concurrency=1),
             started_by_email="alice@vals.ai",
             started_by_id="K2abc",
         )
@@ -2694,7 +2703,7 @@ class TestTrackerAPI:
                 Benchmark(
                     org_id=TEST_ORG_ID,
                     name="swebench",
-                    arguments=BenchmarkArguments(contract=contract, concurrency=1),
+                    arguments=AWSBenchmarkArguments(contract=contract, concurrency=1),
                     started_by_email=email,
                     started_by_id=f"K-{email or 'none'}",
                 )
@@ -2773,7 +2782,7 @@ class TestTrackerAPI:
         bench = Benchmark(
             org_id=TEST_ORG_ID,
             name="swebench",
-            arguments=BenchmarkArguments(contract=contract, concurrency=1),
+            arguments=AWSBenchmarkArguments(contract=contract, concurrency=1),
             started_by_email="alice@vals.ai",
             started_by_id="K2abc",
         )
@@ -2801,7 +2810,7 @@ class TestTrackerAPI:
             org_id=TEST_ORG_ID,
             name="swebench",
             aws_managed=True,
-            arguments=BenchmarkArguments(
+            arguments=AWSBenchmarkArguments(
                 contract=contract,
                 concurrency=1,
                 properties=saved_resources,
@@ -2844,7 +2853,7 @@ class TestTrackerAPI:
             org_id=TEST_ORG_ID,
             name="swebench",
             aws_managed=True,
-            arguments=BenchmarkArguments(
+            arguments=AWSBenchmarkArguments(
                 contract=contract,
                 concurrency=1,
                 properties=None,
@@ -2874,7 +2883,7 @@ class TestTrackerAPI:
             org_id=TEST_ORG_ID,
             name="swebench",
             aws_managed=False,
-            arguments=BenchmarkArguments(contract=contract, concurrency=1, properties=None),
+            arguments=AWSBenchmarkArguments(contract=contract, concurrency=1, properties=None),
         )
         database_session.add(benchmark)
         database_session.commit()
@@ -3076,7 +3085,7 @@ class TestTrackerAPI:
             executor_artifact_uri="s3://artifacts/test-release.pex",
             executor_artifact_digest="digest-test-release",
             executor_protocol_version="1",
-            arguments=BenchmarkArguments(contract=contract, concurrency=1),
+            arguments=AWSBenchmarkArguments(contract=contract, concurrency=1),
         )
         database_session.add(benchmark)
         database_session.commit()

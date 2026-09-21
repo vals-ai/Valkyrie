@@ -70,7 +70,6 @@ async def get_run_runtime(
     """Compose services for one authorized run operation."""
     arguments = benchmark.arguments
     if arguments.environment == "local":
-        assert isinstance(arguments.properties, LocalResources)
         return LocalRuntimeFactory.create_runtime(arguments.properties.data_root, org.id)
 
     return CloudRuntimeFactory.create_runtime(

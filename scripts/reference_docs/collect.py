@@ -8,6 +8,7 @@ import typing
 from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
+from types import UnionType
 from typing import Any
 
 import click  # pyright: ignore[reportMissingImports]
@@ -50,6 +51,11 @@ def _format_annotation(annotation: object) -> str:
         return "None"
     if isinstance(annotation, str):
         return annotation
+
+    if typing.get_origin(annotation) is typing.Annotated:
+        return _format_annotation(typing.get_args(annotation)[0])
+    if typing.get_origin(annotation) in (typing.Union, UnionType):
+        return " | ".join(_format_annotation(arg) for arg in typing.get_args(annotation))
 
     formatted = inspect.formatannotation(annotation).replace("typing.", "")
     return re.sub(r"\b(?:[A-Za-z_]\w*\.)+([A-Za-z_]\w*)\b", r"\1", formatted)

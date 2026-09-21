@@ -10,10 +10,10 @@ from sqlmodel import Session, select
 from tracker.auth import RequestIdentity
 from tracker.database.models import (
     Benchmark,
-    BenchmarkArguments,
     BenchmarkStatus,
     Org,
     Task,
+    benchmark_arguments_adapter,
 )
 from tracker.exceptions import TrackerServiceError
 from tracker.outbound_security import validate_service_headers, validate_service_url_syntax
@@ -73,19 +73,21 @@ def start_benchmark_request_to_benchmark(
         aws_managed=aws_managed,
         webhook_secret_name=request.webhook_secret_name,
         webhook_intervals=request.webhook_intervals,
-        arguments=BenchmarkArguments(
-            environment=request.environment,
-            properties=request.properties,
-            contract=request.contract,
-            concurrency=request.concurrency,
-            priority=request.priority,
-            queue_pool_id=queue_pool_id,
-            task_ids=request.task_ids,
-            slice_str=request.slice_str,
-            lambda_function=request.lambda_function,
-            dataset=request.dataset,
-            sandbox_provider=request.sandbox_provider,
-            sandbox_provider_secret_name=provider_secret_name,
+        arguments=benchmark_arguments_adapter.validate_python(
+            {
+                "environment": request.environment,
+                "properties": request.properties,
+                "contract": request.contract,
+                "concurrency": request.concurrency,
+                "priority": request.priority,
+                "queue_pool_id": queue_pool_id,
+                "task_ids": request.task_ids,
+                "slice_str": request.slice_str,
+                "lambda_function": request.lambda_function,
+                "dataset": request.dataset,
+                "sandbox_provider": request.sandbox_provider,
+                "sandbox_provider_secret_name": provider_secret_name,
+            },
         ),
         started_by_id=run_starter.access_key_id,
         started_by_email=run_starter.email,
