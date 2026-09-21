@@ -1,19 +1,14 @@
 """Explicit replacement of one planned, completed relocation."""
 
 import hashlib
-from datetime import UTC, datetime
 from uuid import UUID
 
 from pydantic import ValidationError
 from sqlmodel import Session, col, select
 
 from tracker.database.models import Benchmark, RunLifecycle
-from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, acquire_hold
+from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, acquire_hold, as_utc
 from tracker.run_purge.contracts import AbandonedDeletion, PurgeRun, ReleasedRelocation
-
-
-def _utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _abandoned_deletion(record: RunLifecycle) -> bool:
@@ -57,8 +52,8 @@ def _snapshot(record: RunLifecycle, identity: OperationIdentity, run_id: UUID) -
         operation_id=previous_identity.operation_id,
         identity_sha256=hashlib.sha256(record.identity_json.encode()).hexdigest(),
         scope_sha256=hashlib.sha256(record.scope_json.encode()).hexdigest(),
-        acquired_at=_utc(record.acquired_at),
-        released_at=_utc(record.released_at),
+        acquired_at=as_utc(record.acquired_at),
+        released_at=as_utc(record.released_at),
     )
 
 
@@ -72,8 +67,8 @@ def _abandoned_snapshot(record: RunLifecycle, identity: OperationIdentity, run_i
         operation_id=previous_identity.operation_id,
         identity_sha256=hashlib.sha256(record.identity_json.encode()).hexdigest(),
         scope_sha256=hashlib.sha256(record.scope_json.encode()).hexdigest(),
-        acquired_at=_utc(record.acquired_at),
-        released_at=_utc(record.released_at),
+        acquired_at=as_utc(record.acquired_at),
+        released_at=as_utc(record.released_at),
     )
 
 

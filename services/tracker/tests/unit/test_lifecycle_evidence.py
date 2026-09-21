@@ -1,10 +1,12 @@
 """Positive drain evidence excludes status and elapsed-time guesses."""
 
+import json
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from pydantic import BaseModel
 
 from tracker.aws.runtime import AWSResources
 from tracker.database.models import ExecutorDispatch, ExecutorDispatchKind, ExecutorDispatchStatus
@@ -16,6 +18,7 @@ from tracker.lifecycle_evidence import (
     classify_dispatch,
     write_report,
 )
+from tracker.run_purge.contracts import DispatchSnapshot
 
 
 @pytest.mark.parametrize("status", [ExecutorDispatchStatus.FAILED, ExecutorDispatchStatus.FINISHED])
@@ -36,6 +39,39 @@ def test_status_is_not_exit_evidence_without_host_contract(status: ExecutorDispa
     assert classify_dispatch(dispatch, host_contract=None).provenance == "pending"
     dispatch.process_exited_at = datetime.now(UTC)
     assert classify_dispatch(dispatch, host_contract=None).provenance == "host_process_exit"
+
+
+@pytest.mark.parametrize("carrier", ["dispatch_drain", "dispatch_snapshot"])
+def test_naive_exit_columns_are_published_as_utc(carrier: str) -> None:
+
+    stored = datetime(2026, 9, 19, 5, 0, 0)
+    evidence: BaseModel
+    if carrier == "dispatch_drain":
+        dispatch = ExecutorDispatch(
+            id=uuid4(),
+            benchmark_id=uuid4(),
+            kind=ExecutorDispatchKind.START,
+            executor_release_id="release",
+            executor_artifact_uri="s3://bucket/a",
+            executor_artifact_digest="a" * 64,
+            executor_protocol_version="1",
+            status=ExecutorDispatchStatus.FAILED,
+            started_at=stored,
+            process_exited_at=stored,
+        )
+        evidence = classify_dispatch(dispatch, host_contract=None)
+        field = "observed_exit_at"
+    else:
+        evidence = DispatchSnapshot(
+            dispatch_id=uuid4(),
+            status=ExecutorDispatchStatus.FINISHED,
+            started_at=stored,
+            process_exited_at=stored,
+        )
+        field = "process_exited_at"
+
+    assert getattr(evidence, field) == stored.replace(tzinfo=UTC)
+    assert json.loads(evidence.model_dump_json())[field] == "2026-09-19T05:00:00Z"
 
 
 def test_report_roundtrip_and_private_atomic_write(tmp_path: Path) -> None:

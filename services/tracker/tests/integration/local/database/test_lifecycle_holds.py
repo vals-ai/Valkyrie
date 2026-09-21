@@ -227,6 +227,43 @@ async def test_host_hold_claim_heartbeat_exit_and_single_use(
     assert dispatch.status == ExecutorDispatchStatus.FAILED
 
 
+@pytest.mark.asyncio
+async def test_exit_receipt_is_utc_under_a_local_database_time_zone(
+    postgres_session: Session, postgres_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+
+    _, _, run, dispatch, release = seeded_run(postgres_session)
+    url = postgres_engine.url
+    monkeypatch.setenv("PGTZ", "America/Los_Angeles")
+    store = PostgresExecutorDispatchStore(
+        host=str(url.host),
+        port=str(url.port),
+        dbname=str(url.database),
+        user=str(url.username),
+        password=str(url.password),
+    )
+    artifact = ArtifactDispatch.from_payload(
+        {
+            "executor_release_id": release.id,
+            "executor_artifact_uri": release.artifact_uri,
+            "executor_artifact_digest": release.artifact_digest,
+            "executor_protocol_version": release.protocol_version,
+        }
+    )
+    dispatch.status = ExecutorDispatchStatus.QUEUED
+    dispatch.started_at = None
+    postgres_session.add(dispatch)
+    postgres_session.commit()
+    authority = await store.claim(str(dispatch.id), str(run.id), artifact)
+    assert authority is not None
+
+    await store.acknowledge_exit(authority)
+    postgres_session.refresh(dispatch)
+    exit_time = dispatch.process_exited_at
+    assert exit_time is not None
+    assert abs(exit_time.replace(tzinfo=UTC) - datetime.now(UTC)) < timedelta(minutes=5)
+
+
 @pytest.mark.parametrize("action", ["retry", "claim"])
 def test_hold_serializes_with_execution(postgres_session: Session, postgres_engine: Engine, action: str) -> None:
     identity, scope, run, dispatch, release = seeded_run(postgres_session)

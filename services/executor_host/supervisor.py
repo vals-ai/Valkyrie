@@ -399,7 +399,7 @@ class PostgresExecutorDispatchStore:
             cursor.execute(
                 """
                 UPDATE executordispatch
-                SET process_exited_at = CURRENT_TIMESTAMP
+                SET process_exited_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
                 WHERE id = %s::uuid AND benchmark_id = %s::uuid
                   AND process_exited_at IS NULL
                 """,

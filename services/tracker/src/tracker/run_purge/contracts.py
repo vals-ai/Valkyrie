@@ -2,14 +2,13 @@
 
 import hashlib
 import json
-from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, Field, model_validator
 
 from executor_protocol import ExecutorDispatchStatus
-from tracker.lifecycle import ContractModel, Digest, OperationIdentity, RunScope, SafeIdentity
+from tracker.lifecycle import ContractModel, Digest, OperationIdentity, RunScope, SafeIdentity, UTCDatetime
 from tracker.lifecycle_evidence import DispatchDrain, ExternalHostDrain, LifecycleReport
 
 
@@ -77,8 +76,8 @@ class PurgePlan(ContractModel):
 class DispatchSnapshot(ContractModel):
     dispatch_id: UUID
     status: ExecutorDispatchStatus
-    started_at: datetime | None
-    process_exited_at: datetime | None
+    started_at: UTCDatetime | None
+    process_exited_at: UTCDatetime | None
 
 
 class RowScope(ContractModel):

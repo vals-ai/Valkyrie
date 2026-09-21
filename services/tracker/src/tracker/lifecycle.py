@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlmodel import Session, col, select
 
 from tracker.aws.runtime import AWSResources
@@ -20,6 +20,14 @@ Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 AccountId = Annotated[str, Field(pattern=r"^[0-9]{12}$")]
 SafeIdentity = Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$")]
 Purpose = Literal["relocation", "deletion"]
+
+
+def as_utc(value: datetime) -> datetime:
+    """Every lifecycle writer stores UTC, so a naive column value is a UTC instant."""
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+UTCDatetime = Annotated[datetime, AfterValidator(as_utc)]
 
 
 class LifecycleConflict(TrackerServiceError):

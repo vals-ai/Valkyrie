@@ -21,6 +21,8 @@ from tracker.lifecycle import (
     Purpose,
     RunScope,
     SafeIdentity,
+    UTCDatetime,
+    as_utc,
     require_owned_hold,
 )
 
@@ -69,11 +71,7 @@ class DispatchDrain(ContractModel):
         "externally_confirmed_host_drain",
         "pending",
     ]
-    observed_exit_at: datetime | None = None
-
-
-def _aware(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+    observed_exit_at: UTCDatetime | None = None
 
 
 def validate_host_contract_observation(observation: HostContractObservation, *, now: datetime | None = None) -> None:
@@ -154,8 +152,8 @@ def verify_drain(
         host_contract is None
         or external.identity != identity
         or external.run_id != scope.run_id
-        or external.hold_acquired_at != _aware(record.acquired_at)
-        or external.observed_at < _aware(record.acquired_at)
+        or external.hold_acquired_at != as_utc(record.acquired_at)
+        or external.observed_at < as_utc(record.acquired_at)
         or external.observed_at > current_time
         or external.dispatch_ids != legacy_ids
         or not legacy_ids
@@ -168,7 +166,7 @@ def verify_drain(
         raise LifecycleConflict("External host-drain evidence does not match the exact legacy scope")
     for dispatch in dispatches:
         if dispatch.id in legacy_ids and (
-            dispatch.started_at is None or _aware(dispatch.started_at) >= host_contract.acknowledgement_required_since
+            dispatch.started_at is None or as_utc(dispatch.started_at) >= host_contract.acknowledgement_required_since
         ):
             raise LifecycleConflict("External legacy evidence cannot hide a current host acknowledgement failure")
     return tuple(
