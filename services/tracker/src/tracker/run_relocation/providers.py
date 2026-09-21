@@ -342,13 +342,19 @@ class RelocationAWSBoundary(AWSProviderBoundary):
                 raise LifecycleConflict("Exact source migration fence is missing or ambiguous")
             statement = dict(statements[0])
             resources = statement.pop("Resource", None)
-            planned = sorted(
-                f"arn:aws:s3:::{source_bucket}/{item.scope.object_prefix}*"
+            fence_scope = f"arn:aws:s3:::{source_bucket}/"
+            planned = {
+                f"{fence_scope}{item.scope.object_prefix}*"
                 for item in request.plan.runs
                 if item.scope.original_resources.s3_bucket == source_bucket
-            )
-            fenced = sorted(str(item) for item in cast(list[Any], resources)) if isinstance(resources, list) else None
-            if statement != expected or fenced != planned:
+            }
+            fenced = {str(item) for item in cast(list[Any], resources)} if isinstance(resources, list) else None
+            if (
+                statement != expected
+                or fenced is None
+                or not planned <= fenced
+                or any(not item.startswith(fence_scope) for item in fenced)
+            ):
                 raise LifecycleConflict("Source migration fence differs from exact operation scope")
             source = await self._versions(client, request, source_bucket, run.scope.object_prefix, reuse_verified)
             destination = await self._versions(

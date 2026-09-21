@@ -57,9 +57,12 @@ override. Every response returns the request nonce and action.
    not proof of process exit. No copy may start before preparation succeeds.
 3. The parent freezes owner writes and installs its exact operation source fence.
    The fence denies `s3:PutObject` and `s3:DeleteObject`; exact-version cleanup uses
-   `s3:DeleteObjectVersion`. Its one statement for this operation must name exactly
-   the planned run prefixes in that source bucket and nothing else, so a wider or
-   unrelated resource in the same statement is refused. The parent copies complete version history, restores an
+   `s3:DeleteObjectVersion`. Its one statement for this operation must name every
+   planned run prefix in that source bucket, and every resource it names must lie
+   inside that same bucket. The parent fences its own wider plan in the same
+   statement, including exact keys that carry no wildcard, so extra same-bucket
+   resources are expected; a missing planned prefix or any resource in another
+   bucket is refused. The parent copies complete version history, restores an
    existing destination current version when the reviewed collision policy requires
    it, and supplies complete ordered proof.
 4. `inspect` rechecks current saved arguments, owned hold, dispatches, tasks, provider

@@ -230,7 +230,7 @@ async def test_producer_transformed_fixture_is_verified_by_consumer() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["absent", "put_only", "condition", "other_scope", "wider_scope"])
+@pytest.mark.parametrize("change", ["absent", "put_only", "condition", "other_scope", "other_bucket"])
 async def test_copy_verification_requires_current_exact_source_fence(change: str) -> None:
     boundary, store, request = setup()
     assert store.fence_statement is not None
@@ -240,8 +240,8 @@ async def test_copy_verification_requires_current_exact_source_fence(change: str
         store.fence_statement["Action"] = "s3:PutObject"
     elif change == "condition":
         store.fence_statement["Condition"] = {"Bool": {"aws:SecureTransport": "false"}}
-    elif change == "wider_scope":
-        store.fence_statement["Resource"] = [*store.fence_statement["Resource"], "arn:aws:s3:::source/*"]
+    elif change == "other_bucket":
+        store.fence_statement["Resource"] = [*store.fence_statement["Resource"], "arn:aws:s3:::destination/*"]
     else:
         store.fence_statement["Resource"] = ["arn:aws:s3:::source/unrelated/*"]
     parsed = TrackerRequest.model_validate(request)
@@ -462,7 +462,7 @@ def two_bucket_plan(payload: dict[str, Any], second_bucket: str = "other-source"
 
 
 @pytest.mark.asyncio
-async def test_a_shared_source_fence_must_name_every_planned_prefix_in_that_bucket() -> None:
+async def test_a_shared_source_fence_holds_every_planned_prefix_and_nothing_outside_the_bucket() -> None:
     boundary, store, payload = setup()
     proved_run_id = payload["copied_objects"][0]["run_id"]
     runs = two_bucket_plan(payload, "source")
@@ -474,7 +474,15 @@ async def test_a_shared_source_fence_must_name_every_planned_prefix_in_that_buck
     store.fence_statement["Resource"] = prefixes
     await boundary.verify_objects(request, run)
 
+    # The parent fences its own wider plan too, including exact keys that carry no wildcard.
+    store.fence_statement["Resource"] = [*prefixes, "arn:aws:s3:::source/shared/manifest.json", "arn:aws:s3:::source/*"]
+    await boundary.verify_objects(request, run)
+
     store.fence_statement["Resource"] = [f"arn:aws:s3:::source/{run.scope.object_prefix}*"]
+    with pytest.raises(LifecycleConflict, match="exact operation scope"):
+        await boundary.verify_objects(request, run)
+
+    store.fence_statement["Resource"] = [*prefixes, "arn:aws:s3:::other-source/shared/manifest.json"]
     with pytest.raises(LifecycleConflict, match="exact operation scope"):
         await boundary.verify_objects(request, run)
 
