@@ -22,7 +22,7 @@ class DevFormatter(logging.Formatter):
         color = self.COLORS.get(record.levelname, "")
         level = f"{color}{record.levelname:<8}{self.RESET}"
         context_parts: list[str] = []
-        for field in ("request_id", "benchmark_id", "task_id"):
+        for field in ("request_id", "benchmark_id", "task_id", "failure_category"):
             value = getattr(record, field, "")
             if value:
                 context_parts.append(f"{field}={value}")

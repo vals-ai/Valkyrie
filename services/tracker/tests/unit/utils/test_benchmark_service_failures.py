@@ -4,6 +4,8 @@ Run: uv run pytest tests/unit/utils/test_benchmark_service_failures.py
 """
 
 import asyncio
+import json
+from pathlib import Path
 import socket
 import time
 from typing import Any, Never
@@ -11,6 +13,8 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
+import sentry_sdk
+from pythonjsonlogger.json import JsonFormatter
 from fastapi.testclient import TestClient
 from benchmark_service import ExecResult
 from benchmark_service.client import (
@@ -49,6 +53,7 @@ from tracker.database.models import (
     TaskBreakdown,
     TaskStatus,
 )
+from tracker.logging.config import DevFormatter
 from tracker.types import HarnessConfig
 from tracker.utils import (
     fetch_benchmark_row,
@@ -78,6 +83,9 @@ class TestBenchmarkServiceFailures:
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
+        harness_headers: dict[str, str],
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
@@ -90,7 +98,19 @@ class TestBenchmarkServiceFailures:
         real_monotonic = time.monotonic
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+        events: list[Any] = []
+        with sentry_sdk.init(
+            dsn="https://public@example.com/1",
+            transport=events.append,
+            default_integrations=False,
+        ):
+            utils_module.logger.addHandler(caplog.handler)
+            try:
+                result = await run_process_task(
+                    start_benchmark_request, task_row, benchmark_id, runtime_services, authority
+                )
+            finally:
+                utils_module.logger.removeHandler(caplog.handler)
 
         assert result == {"task_0": None}
 
@@ -111,6 +131,36 @@ class TestBenchmarkServiceFailures:
         api_response = TestClient(app).get(f"/benchmarks/{benchmark_id}/tasks/{task_row.task_id}")
         assert api_response.status_code == 200
         assert api_response.json()["failure_category"] == "benchmark_service"
+        assert api_response.json()["error_message"] == error_result.error_message
+        client = TestClient(app)
+        task_list = client.get(f"/benchmarks/{benchmark_id}/tasks")
+        assert task_list.status_code == 200
+        assert task_list.json()["tasks"][0]["failure_category"] == error_result.category.value
+        results = client.get("/retrieve-results", params={"benchmark_id": str(benchmark_id)}, headers=harness_headers)
+        assert results.status_code == 200
+        assert results.json()["task_errors"] == {task_row.task_id: error_result.error_message}
+        assert results.json()["task_failure_categories"] == {task_row.task_id: error_result.category.value}
+        event = next(event for event in events if "exception" in event)
+        assert event["tags"]["failure_category"] == error_result.category.value
+        record = next(record for record in caplog.records if record.getMessage() == "Task execution failed")
+        formatted = DevFormatter("%(message)s").format(record)
+        assert f"failure_category={error_result.category.value}" in formatted
+        structured = json.loads(JsonFormatter().format(record))
+        assert structured["failure_category"] == error_result.category.value
+        # Export real test output for downstream SDK/CLI/Dashboard contract checks.
+        (tmp_path / "classification-proof.json").write_text(
+            json.dumps(
+                {
+                    "task": api_response.json(),
+                    "tasks": task_list.json(),
+                    "results": results.json(),
+                    "stored_error": error_result.model_dump(mode="json"),
+                    "sentry_category": event["tags"]["failure_category"],
+                    "log": structured,
+                },
+                indent=2,
+            )
+        )
 
     @pytest.mark.parametrize(
         ("code", "reason"),
