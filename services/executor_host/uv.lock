@@ -493,7 +493,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = "==1.43.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "httpx", specifier = "==0.28.1" },
     { name = "psycopg2-binary", specifier = "==2.9.11" },
     { name = "sentry-sdk", specifier = "==2.58.0" },
     { name = "taskiq", specifier = "==0.12.1" },
