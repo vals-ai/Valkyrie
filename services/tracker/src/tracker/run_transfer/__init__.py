@@ -28,9 +28,11 @@ from tracker.run_transfer.references import inventory_references
 from tracker.run_transfer.rows import RowClosure, digest, tables
 from tracker.runtime.log_history import ArchiveReport
 
+# The fingerprint carries the database identity alone. A field that describes the connection
+# instead of the database would let one database reached two ways pass the equality refusal.
 _OPENED_DATABASE = (
     "SELECT current_database(), (SELECT oid FROM pg_database WHERE datname = current_database()), "
-    "inet_server_addr(), inet_server_port(), pg_postmaster_start_time()"
+    "pg_postmaster_start_time()"
 )
 
 

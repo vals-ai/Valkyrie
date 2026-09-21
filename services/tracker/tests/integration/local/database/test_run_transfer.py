@@ -1111,6 +1111,50 @@ def test_two_labels_for_one_actual_database_cannot_transfer(pair: tuple[Session,
     assert source.get(RunLifecycle, run.id) is None
 
 
+# PostgreSQL reports no server address or port on a Unix-domain connection, which the cutover
+# labels allow. This reproduces that reading on a server this suite can reach only over TCP.
+SOCKET_TRANSPORT_READING = (
+    "CREATE SCHEMA socket_transport",
+    "CREATE FUNCTION socket_transport.inet_server_addr() RETURNS inet LANGUAGE sql AS $$ SELECT NULL::inet $$",
+    "CREATE FUNCTION socket_transport.inet_server_port() RETURNS integer LANGUAGE sql AS $$ SELECT NULL::integer $$",
+)
+
+
+def test_one_database_reached_over_two_transports_cannot_transfer(
+    pair: tuple[Session, Session], tmp_path: Path
+) -> None:
+    """A transport-dependent field in the fingerprint makes one database look like two."""
+    source, destination = pair
+    org, run, _ = seed_rows(source, destination)
+    request = transfer_request(source, destination, org, run)
+    url = source.get_bind().engine.url
+    alias = url.set(host=_equivalent_spelling(url.host or ""))
+    assert alias.host != url.host
+    engine = create_engine(alias)
+    try:
+        with Session(engine, expire_on_commit=False) as same_database:
+            for statement in SOCKET_TRANSPORT_READING:
+                same_database.connection().execute(text(statement))
+            same_database.commit()
+            same_database.connection().execute(text("SET search_path = socket_transport, public, pg_catalog"))
+            reading = same_database.connection().execute(text("SELECT inet_server_addr(), inet_server_port()")).one()
+            assert tuple(reading) == (None, None)
+            request["plan"]["destination_identity"]["database_target"] = database_target(same_database)
+            operator = TransferOperator(source, same_database, FakeTransferBoundary(tmp_path))
+
+            with pytest.raises(LifecycleConflict, match="same actual database"):
+                asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+
+    finally:
+        engine.dispose()
+
+    source.rollback()
+    source.connection().execute(text("DROP SCHEMA socket_transport CASCADE"))
+    source.commit()
+    assert source.get(Benchmark, run.id) is not None
+    assert source.get(RunLifecycle, run.id) is None
+
+
 def test_an_environment_default_endpoint_cannot_pass_as_the_planned_target(
     pair: tuple[Session, Session], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
