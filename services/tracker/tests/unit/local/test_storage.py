@@ -62,15 +62,22 @@ async def test_revoked_upload_cannot_publish(tmp_path: Path) -> None:
     store = FilesystemObjectStore(tmp_path)
     await store.put_bytes("output", b"previous")
     permitted = True
+    checks: list[bool] = []
 
     async def chunks() -> AsyncIterator[bytes]:
         nonlocal permitted
         yield b"new"
         permitted = False
 
+    def should_continue() -> bool:
+        checks.append(permitted)
+        return permitted
+
     with pytest.raises(ExecutionAuthorityRevoked):
-        await store.put_stream("output", chunks(), should_continue=lambda: permitted)
+        await store.put_stream("output", chunks(), should_continue=should_continue)
+    assert checks == [False]
     assert await store.get_bytes("output") == b"previous"
+    assert not list((tmp_path / ".valkyrie/staging").iterdir())
 
 
 async def test_conditional_upload_preserves_existing_agent(tmp_path: Path) -> None:

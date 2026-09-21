@@ -96,8 +96,6 @@ class FilesystemObjectStore:
         async with self._staging_file() as (stream, temporary):
             size = 0
             async for chunk in chunks:
-                if should_continue is not None and not should_continue():
-                    raise ExecutionAuthorityRevoked("Local stream upload authority was revoked")
                 await _io(stream.write, chunk)
                 size += len(chunk)
             await _io(self._publish, stream, temporary, key, should_continue, overwrite)
