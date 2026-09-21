@@ -935,6 +935,60 @@ def test_checkpoint_inspection_hashes_nonempty_evidence_for_every_run(relocation
     assert inspected.destination_versions_sha256 == relocated.destination_versions_sha256 != digest([])
 
 
+def test_only_the_named_external_evidence_file_is_loaded_for_a_run(
+    relocation_session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, _, request = seed(relocation_session)
+    release = ExecutorRelease(
+        id="legacy", artifact_uri="s3://releases/test", artifact_digest="a" * 64, protocol_version="1"
+    )
+    relocation_session.add(release)
+    relocation_session.flush()
+    dispatch = create_executor_dispatch(run.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4())
+    dispatch.status = ExecutorDispatchStatus.FAILED
+    dispatch.started_at = datetime.now(UTC) - timedelta(days=2)
+    relocation_session.add(dispatch)
+    relocation_session.commit()
+    with pytest.raises(LifecycleConflict):
+        execute(relocation_session, request, "prepare")
+    relocation_session.rollback()
+    hold = relocation_session.get_one(RunLifecycle, run.id)
+    named = tmp_path / "drain.txt"
+    named.write_bytes(b"operator attests exact legacy host drain")
+    unrelated = tmp_path / "another-run-drain.txt"
+    unrelated.write_bytes(b"attestation for a run outside this request")
+    request["host_contract"]["legacy_dispatch_ids"] = [str(dispatch.id)]
+    request["external_evidence_files"] = [str(unrelated), str(named)]
+    request["external_host_drains"] = [
+        {
+            "provenance": "externally_confirmed_host_drain",
+            "identity": request["plan"]["identity"],
+            "run_id": str(run.id),
+            "hold_acquired_at": hold.acquired_at.replace(tzinfo=UTC).isoformat(),
+            "dispatch_ids": [str(dispatch.id)],
+            "host_inventory": ["host-1"],
+            "deployed_host_contract": "stable-host-lifecycle-v1",
+            "observed_at": datetime.now(UTC).isoformat(),
+            "verifier": "test-operator",
+            "evidence_sha256": hashlib.sha256(named.read_bytes()).hexdigest(),
+            "confirmation": "all_inventory_hosts_terminated_and_old_claims_disabled",
+        }
+    ]
+    read_bytes = Path.read_bytes
+
+    def guarded_read(self: Path) -> bytes:
+        if self == unrelated:
+            raise AssertionError("Evidence for another run was loaded")
+
+        return read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read)
+
+    observed = execute(relocation_session, request, "prepare").runs[0]
+
+    assert observed.dispatches[0].evidence == "externally_confirmed_host_drain"
+
+
 def test_evidence_paths_are_not_read_without_a_supplied_external_drain(
     relocation_session: Session, tmp_path: Path
 ) -> None:

@@ -121,10 +121,17 @@ def result_locator_references(
     return tuple(references)
 
 
+def evidence_digest(path: Path) -> str:
+    """Hash a supplied evidence file without holding it, so unnamed files cost no memory."""
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
 class RelocationOperator:
     def __init__(self, session: Session, boundary: RelocationBoundary) -> None:
         self.session = session
         self.boundary = boundary
+        self.evidence_digests: dict[str, str] = {}
 
     def _run(self, request: TrackerRequest, run_id: UUID) -> tuple[Benchmark, dict[str, Any]]:
         benchmark = self.session.exec(
@@ -205,6 +212,19 @@ class RelocationOperator:
         ).all()
         return result_locator_references([(item.id, item.result) for item in results], retired_buckets)
 
+    def _evidence_file(self, request: TrackerRequest, supplied: ExternalHostDrain) -> Path:
+        for path in request.external_evidence_files:
+            if path not in self.evidence_digests:
+                self.evidence_digests[path] = evidence_digest(Path(path))
+
+        matched = [
+            path for path in request.external_evidence_files if self.evidence_digests[path] == supplied.evidence_sha256
+        ]
+        if len(matched) != 1:
+            raise LifecycleConflict("Exact external drain evidence file is required")
+
+        return Path(matched[0])
+
     def _host_contract(self, request: TrackerRequest) -> HostContractObservation:
         if request.host_contract is None:
             raise LifecycleConflict("Current named host contract observation is required")
@@ -224,14 +244,7 @@ class RelocationOperator:
         if len(external) > 1:
             raise LifecycleConflict("Duplicate host drain evidence")
         supplied = ExternalHostDrain.model_validate(external[0].model_dump(mode="json")) if external else None
-        evidence = [Path(path).read_bytes() for path in request.external_evidence_files] if supplied is not None else []
-        matched = [
-            item
-            for item in evidence
-            if supplied is not None and hashlib.sha256(item).hexdigest() == supplied.evidence_sha256
-        ]
-        if supplied is not None and len(matched) != 1:
-            raise LifecycleConflict("Exact external drain evidence file is required")
+        evidence_file = None if supplied is None else self._evidence_file(request, supplied)
         if record.released_at is None:
             drains = verify_drain(
                 self.session,
@@ -240,7 +253,7 @@ class RelocationOperator:
                 purpose="relocation",
                 host_contract=host,
                 external=supplied,
-                external_evidence=matched[0] if matched else None,
+                external_evidence=None if evidence_file is None else evidence_file.read_bytes(),
             )
         else:
             # A released hold can no longer establish that queued work cannot start.

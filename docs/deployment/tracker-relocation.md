@@ -202,8 +202,10 @@ Explicitly supplied proof keeps its original order for response digest compatibi
 
 The request JSON and external evidence paths are trusted local operator inputs. Keep
 them under operator control. This CLI is not a remote request endpoint. Evidence
-bytes are read only for a supplied external drain record and its exact digest; they
-are never returned in reports. No fixed directory allowlist is imposed.
+bytes are read only for a supplied external drain record and its exact digest. Each
+supplied path is hashed once for the whole request, and only the one file whose digest
+that run names is loaded, so evidence for another run never enters memory. Evidence
+bytes are never returned in reports. No fixed directory allowlist is imposed.
 
 Portable S3 execution references must pin exactly one nonempty immutable versionId
 in the saved locator itself. Discovering a current object's version does not make
