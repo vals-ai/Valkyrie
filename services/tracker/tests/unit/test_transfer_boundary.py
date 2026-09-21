@@ -11,7 +11,7 @@ from tests.transfer_support import ObservedEventsBoundary
 from tests.unit.aws.test_log_history_archive import FakeLogs, FakeS3, FakeSession
 from tracker.lifecycle import LifecycleConflict
 from tracker.run_transfer.contracts import TransferRequest
-from tracker.run_transfer.providers import ProfileClients, TransferAWSBoundary
+from tracker.run_transfer.providers import SOURCE_FENCE_ACTIONS, ProfileClients, TransferAWSBoundary
 
 
 def request_fixture() -> TransferRequest:
@@ -20,8 +20,33 @@ def request_fixture() -> TransferRequest:
     )
 
 
+# Named here, not imported, so narrowing the deployed fence fails this test.
+WIDENED_FENCE_ACTIONS = (
+    "s3:AbortMultipartUpload",
+    "s3:DeleteObjectTagging",
+    "s3:DeleteObjectVersionTagging",
+    "s3:PutObjectTagging",
+    "s3:PutObjectVersionTagging",
+    "s3:ReplicateDelete",
+    "s3:ReplicateObject",
+    "s3:ReplicateTags",
+)
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fault", [None, "account", "missing_fence", "fence_condition", "fence_prefix"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "account",
+        "missing_fence",
+        "fence_condition",
+        "fence_prefix",
+        "legacy_fence",
+        "version_deletion_denied",
+        *WIDENED_FENCE_ACTIONS,
+    ],
+)
 async def test_import_requires_separate_accounts_and_exact_source_fence(tmp_path: Path, fault: str | None) -> None:
     payload = request_fixture().model_dump(mode="json")
     payload["action"] = "import"
@@ -66,10 +91,16 @@ async def test_import_requires_separate_accounts_and_exact_source_fence(tmp_path
         "Sid": "ValSmithOwnerMigration" + request.plan.source_identity.operation_id.hex,
         "Effect": "Deny",
         "Principal": "*",
-        "Action": ["s3:PutObject", "s3:DeleteObject"],
+        "Action": list(SOURCE_FENCE_ACTIONS),
         "Resource": [f"arn:aws:s3:::{run.source.original_resources.s3_bucket}/{run.source.object_prefix}*"],
     }
-    if fault == "account":
+    if fault in WIDENED_FENCE_ACTIONS:
+        fence["Action"] = [action for action in SOURCE_FENCE_ACTIONS if action != fault]
+    elif fault == "legacy_fence":
+        fence["Action"] = ["s3:PutObject", "s3:DeleteObject"]
+    elif fault == "version_deletion_denied":
+        fence["Action"] = [*SOURCE_FENCE_ACTIONS, "s3:DeleteObjectVersion"]
+    elif fault == "account":
         clients[1].sts_client.return_value.get_caller_identity.return_value = {
             "Account": request.plan.source_identity.source_aws_account_id
         }

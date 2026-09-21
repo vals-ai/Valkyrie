@@ -20,7 +20,7 @@ from tracker.lifecycle import LifecycleConflict
 from tracker.lifecycle_evidence import DispatchDrain
 from tracker.run_transfer import TransferOperator
 from tracker.run_transfer.contracts import TransferRequest, TransferRun
-from tracker.run_transfer.providers import TransferAWSBoundary
+from tracker.run_transfer.providers import SOURCE_FENCE_ACTIONS, TransferAWSBoundary
 from tracker.run_transfer.rows import digest
 from tracker.runtime.log_history import ArchiveReport
 
@@ -40,7 +40,7 @@ class PairedVersions(VersionStore):
             "Sid": "ValSmithOwnerMigration" + request.plan.source_identity.operation_id.hex,
             "Effect": "Deny",
             "Principal": "*",
-            "Action": ["s3:PutObject", "s3:DeleteObject"],
+            "Action": list(SOURCE_FENCE_ACTIONS),
             "Resource": [f"arn:aws:s3:::{self.source_bucket}/{run.source.object_prefix}*"],
         }
 

@@ -79,6 +79,10 @@ def rewrite_json(content: bytes, transformation: ObjectTransformation) -> bytes:
     return rewritten
 
 
+# The migration fence leaves s3:DeleteObjectVersion available to the purge principal.
+RELOCATION_FENCE_ACTIONS = ("s3:DeleteObject", "s3:PutObject")
+
+
 @dataclass(frozen=True)
 class Version:
     key: str
@@ -287,6 +291,7 @@ class RelocationAWSBoundary(AWSProviderBoundary):
         source_removed: bool = False,
         source_partial: bool = False,
         reuse_verified: bool = False,
+        source_fence_actions: tuple[str, ...] = RELOCATION_FENCE_ACTIONS,
     ) -> None:
         run_id = run.scope.run_id
         source_bucket, destination_bucket = run.scope.original_resources.s3_bucket, run.destination_resources.s3_bucket
@@ -338,7 +343,6 @@ class RelocationAWSBoundary(AWSProviderBoundary):
                     "Sid": "ValSmithOwnerMigration" + request.plan.identity.operation_id.hex,
                     "Effect": "Deny",
                     "Principal": "*",
-                    "Action": ["s3:PutObject", "s3:DeleteObject"],
                 }
                 statements = [
                     statement for statement in policy.get("Statement", []) if statement.get("Sid") == expected["Sid"]
@@ -347,6 +351,7 @@ class RelocationAWSBoundary(AWSProviderBoundary):
                     raise LifecycleConflict("Exact source migration fence is missing or ambiguous")
                 statement = dict(statements[0])
                 resources = statement.pop("Resource", None)
+                actions = statement.pop("Action", None)
                 fence_scope = f"arn:aws:s3:::{source_bucket}/"
                 planned = {
                     f"{fence_scope}{item.scope.object_prefix}*"
@@ -356,6 +361,8 @@ class RelocationAWSBoundary(AWSProviderBoundary):
                 fenced = {str(item) for item in cast(list[Any], resources)} if isinstance(resources, list) else None
                 if (
                     statement != expected
+                    or not isinstance(actions, list)
+                    or tuple(sorted(actions)) != tuple(sorted(source_fence_actions))
                     or fenced is None
                     or not planned <= fenced
                     or any(not item.startswith(fence_scope) for item in fenced)

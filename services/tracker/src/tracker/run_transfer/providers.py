@@ -46,6 +46,21 @@ from tracker.storage_migration_exchange import (
 
 _CONTRACT_DRAINS = {"held_unclaimed", "verified_finished_contract"}
 
+# Every route that can change the frozen source inventory, except s3:DeleteObjectVersion,
+# which the parent's own later source-object cleanup performs under this same fence.
+SOURCE_FENCE_ACTIONS = (
+    "s3:AbortMultipartUpload",
+    "s3:DeleteObject",
+    "s3:DeleteObjectTagging",
+    "s3:DeleteObjectVersionTagging",
+    "s3:PutObject",
+    "s3:PutObjectTagging",
+    "s3:PutObjectVersionTagging",
+    "s3:ReplicateDelete",
+    "s3:ReplicateObject",
+    "s3:ReplicateTags",
+)
+
 
 def _incomplete(clause: str) -> LifecycleConflict:
     return LifecycleConflict(f"Historical log completeness clause {clause} failed; transfer remains pending")
@@ -301,8 +316,11 @@ class TransferAWSBoundary:
             raise LifecycleConflict("Exact source transfer fence is missing")
         statement = dict(matching[0])
         resources = statement.pop("Resource", None)
+        actions = statement.pop("Action", None)
         if (
-            statement != {"Sid": sid, "Effect": "Deny", "Principal": "*", "Action": ["s3:PutObject", "s3:DeleteObject"]}
+            statement != {"Sid": sid, "Effect": "Deny", "Principal": "*"}
+            or not isinstance(actions, list)
+            or tuple(sorted(actions)) != SOURCE_FENCE_ACTIONS
             or not isinstance(resources, list)
             or f"arn:aws:s3:::{bucket}/{run.source.object_prefix}*" not in resources
         ):
@@ -515,7 +533,11 @@ class TransferAWSBoundary:
         )
         projected = projected.model_copy(update={"plan": plan})
         await RelocationAWSBoundary(_PairedClients(self.source, self.destination, request, run)).verify_objects(
-            projected, projection_run, source_removed=source_removed, source_partial=source_partial
+            projected,
+            projection_run,
+            source_removed=source_removed,
+            source_partial=source_partial,
+            source_fence_actions=SOURCE_FENCE_ACTIONS,
         )
 
     async def cleanup_logs(

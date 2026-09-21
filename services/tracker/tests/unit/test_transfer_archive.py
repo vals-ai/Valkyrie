@@ -17,7 +17,7 @@ from tracker.aws import log_history_archive
 from tracker.aws.historical_logs import HistoricalLogProvider
 from tracker.lifecycle import LifecycleConflict
 from tracker.run_transfer.contracts import TransferRequest
-from tracker.run_transfer.providers import TransferAWSBoundary
+from tracker.run_transfer.providers import SOURCE_FENCE_ACTIONS, TransferAWSBoundary
 from tracker.run_transfer.references import verify_portable_references
 from tracker.run_transfer.rows import RowClosure
 from tracker.runtime.logs import LogPage, RunLogReference
@@ -135,7 +135,7 @@ def test_paired_version_verifier_uses_separate_accounts_and_accepts_legacy_null_
             return await super().list_multipart_uploads(**self.bound(arguments))
 
     source, destination = AccountStore("123456789012", "source"), AccountStore("222222222222", "destination")
-    source.fence_statement = original.fence_statement
+    source.fence_statement = {**(original.fence_statement or {}), "Action": list(SOURCE_FENCE_ACTIONS)}
     source.versioning["source"] = {}
     source.versions["source"] = [("null", b'{"value":1}')]
     source_clients, destination_clients = Mock(), Mock()
