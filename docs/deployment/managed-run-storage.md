@@ -8,7 +8,7 @@ This change routes new runs. Existing runs retain their saved bucket and log loc
 
 An owner-storage start saves the log prefix `<AWS_DEPLOYMENT_LOG_GROUP>/<managed_s3_bucket>`. CloudWatch groups are created at `<prefix>/<run-id>`. For example, a deployment prefix of `/valkyrie/benchmarks` and bucket `vs-prod-acme-123` produce `/valkyrie/benchmarks/vs-prod-acme-123/<run-id>`. The caller selects the authorized bucket; the server derives the log prefix within the existing deployment IAM boundary. Region and log retention remain deployment settings. Execution, log reads, and recovery use the saved prefix even after deployment defaults change. Ordinary starts without an owner bucket keep the existing log layout.
 
-Tracker and executor processes use their managed AWS roles. ValSmith does not send AWS session credentials, and execution retains the AWS SDK's credential renewal. Agent bundles remain published once in the shared library. Admission copies the selected bundle directly from `shared-bucket/agents/<agent>.zip` to `owner-bucket/benchmarks/<run-id>/<agent>.zip`; it does not require an `agents/` library in each owner bucket. Recovery reuses the frozen run copy unless an explicit agent refresh is requested.
+Tracker and executor processes use their managed AWS roles. ValSmith does not send AWS session credentials, and execution retains the AWS SDK's credential renewal. Agent bundles remain published once in the shared library. Admission copies the selected bundle directly from `shared-bucket/agents/<agent>.zip` to `owner-bucket/benchmarks/<run-id>/<agent>.zip`; it does not require an `agents/` library in each owner bucket. Recovery reuses the frozen run copy. The CLI `--update-agent` option supports updates within its configured bucket only. It rejects runs in a different bucket before writing or resuming; omit the option for owner runs.
 
 ## Deployment configuration
 
@@ -26,13 +26,11 @@ The deploy workflow takes both values from the GitHub Environment for the target
 - `AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS` is an Environment **secret**, like `AWS_DEPLOYMENT_ROLE_ORG_IDS`, because it carries the same organization UUIDs. An absent secret synthesizes `{}`. Do not move it to an Actions variable: every job reads `secrets.AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS`, so a map stored as a variable resolves to the `{}` default and the next deploy removes every owner-bucket grant without reporting an error.
 - `AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED` is an Environment **variable**. An absent variable synthesizes `false`.
 
-Organization UUIDs are identifiers, not credentials. The secret classification keeps them out of workflow logs. It does not make them confidential at runtime: CDK writes both organization settings into the ECS task definition as plain container environment, so any principal with `ecs:DescribeTaskDefinition` in the deployment account can read them. Neither value is passed by Secrets Manager reference, and neither should be. Access never rests on knowing a UUID. A submission must carry a valid API key for that organization, and the selected bucket must be in the deployment account and carry the matching `valsmith:*` tags.
+Organization UUIDs are identifiers, not credentials. CDK places these settings in ECS task definitions. Access requires a valid organization API key and a bucket in the deployment account with matching tags.
 
 Every deployment job that synthesizes CDK passes both. Define them in the GitHub Environment, not only in a manual `make deploy`: a later ordinary deploy re-synthesizes from the Environment and would otherwise reset the map to `{}` and remove owner-bucket IAM from both task roles. Synthesis fails if `AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED` is `true` while `AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS` is empty.
 
-CDK supplies `AWS_DEPLOYMENT_ACCOUNT_ID` from the stack account. It passes the same account, canonical organization/environment JSON, and submission flag to Tracker and ExecutorHost.
-
-The bench AWS account is `613431292675`. ValSmith production currently uses the bench Valkyrie deployment. A local AWS profile named `vals-prod` is not evidence of access to the external production account. Obtain and verify the external production account value through its deployment owner before a production deployment.
+CDK supplies `AWS_DEPLOYMENT_ACCOUNT_ID` from the stack account. It passes the same account, canonical organization/environment JSON, and submission flag to Tracker and ExecutorHost. Local CLI AWS profiles use their own SDK credential chain and do not require this deployment setting.
 
 The configuration does not derive storage environments from the Valkyrie stage. In particular, bench does not imply `dev`, `prod`, or a `vs-bench-*` bucket pattern. Each organization/environment pair must be present in `AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS`.
 
@@ -65,7 +63,7 @@ Use this order for each environment:
 4. Pause managed submissions for the short cutover. Drain or replace old Tracker processes, deploy Tracker with protocol 3 admission and the storage API, and activate the protocol 3 release. The old Tracker requires protocol 2, so activating protocol 3 while old producers remain causes failed starts. Re-enable ordinary managed submissions only after every producer and host is compatible.
 5. Keep protocol 2 artifacts for already admitted protocol 2 dispatches. Protocol 3 hosts can run them. An in-progress protocol 2 run stays pinned to its release. New retry or resume admission for it reports a compatibility error. Let it finish or use the existing controlled stop and terminal recovery path to select protocol 3. Do not change an active release or its protocol metadata.
 
-   Before you activate the protocol 3 release, pause the ValSmith reconciler, or confirm that it treats this refusal as transient. Valkyrie refuses `POST /retry-or-resume-benchmark/{id}` for every **managed** run that is still `IN_PROGRESS` on a pinned protocol 2 release. The response is **HTTP 409** with the detail `Activate an executor release that supports managed runs`; the same refusal on a terminal run is HTTP 503, but a terminal run selects the active protocol 3 release and therefore succeeds. The refusal changes no state: no dispatch row, no status change, no queue message. A reconciler that records it as a run failure marks healthy runs failed for the whole cutover window. Restart reconciliation after every in-progress managed run has finished or been stopped and recovered onto protocol 3. Access-key runs and unmanaged runs are unaffected.
+   During cutover, pause the ValSmith reconciler or make it treat HTTP 409 with `Activate an executor release that supports managed runs` as transient. This response leaves the run and queue unchanged. Restart reconciliation after in-progress managed runs finish or recover onto protocol 3.
 6. Install the new SDK in ValSmith. Deploy per-run source-bucket support and the provisioner organization tags. Then enable owner-storage submissions. The new endpoint fails closed against an old Tracker. Test a non-production owner run, frozen bundle, terminal artifacts, result publication, and recovery before enabling production traffic.
 
 ## Rollback order
@@ -74,24 +72,24 @@ Use this order for each environment:
 2. Disable ValSmith owner-write entry points.
 3. Leave protocol 3 readers, hosts, artifacts, IAM, and saved locations in service for admitted owner runs.
 
-Do not roll back to production code that cannot parse `BenchmarkArguments.properties` while owner-storage rows exist. Rollback does not rewrite saved bucket fields or move objects. Promotion to production must include the runtime-persistence changes already required from dev and must preserve the unique production CLI environment selection. Do not apply this branch as an isolated change to old production code.
+Do not roll back to production code that cannot parse `BenchmarkArguments.properties` while owner-storage rows exist. Rollback does not rewrite saved bucket fields or move objects.
 
 ## ValSmith integration contract
 
-`StageRun.storage_bucket` and `ModelRun.storage_bucket` must store the actual bucket returned by Valkyrie for each run. They are run outputs, not values copied from the owner's current bucket. After a lost start response, recover the location with the organization-scoped run detail or metadata endpoint.
+`StageRun.storage_bucket` and `ModelRun.storage_bucket` must store the actual bucket returned by Valkyrie for each run. After a lost start response, recover the location with the organization-scoped run detail or metadata endpoint.
 
-`runs.start` reports the two owner-storage failures as two exception types, and callers must branch on the type rather than on `run_id` or on exception text:
+`runs.start` reports two outcomes after an owner run has been created:
 
 - `ValkyrieRunAcceptedError`, a subclass of `ValkyrieRunError`, means Valkyrie created the run in the requested bucket but did not acknowledge the executor dispatch. The storage is correct. Reconcile or retry by `run_id`; do not record a storage rejection. The original `ValkyrieAPIError` is the cause.
-- Plain `ValkyrieRunError` with a `run_id` means the start response carried a missing or different `storage_bucket`. That is a storage rejection. Do not submit again without an explicit override.
+- Plain `ValkyrieRunError` with a `run_id` means the start response carried a missing or different `storage_bucket`. Treat storage as unconfirmed and do not submit another run automatically.
 
-A caller that catches only `ValkyrieRunError` still sees both, so an old handler keeps working, but it cannot tell them apart and will quarantine correctly stored runs.
+Catch `ValkyrieRunAcceptedError` before its base class, `ValkyrieRunError`. Input errors can also raise `ValkyrieRunError`, with no `run_id`.
 
 `DatasetViewRun.source_bucket` is selected per run. A view may read old runs from shared storage and new runs from different owner buckets. `DatasetViewRequest.destination_bucket` remains the dataset bucket. A null legacy per-run column uses ValSmith's documented legacy location. Publication must not replace a saved source with an owner's current bucket.
 
 The provisioner must set `valsmith:valkyrie-org-id` to the canonical Valkyrie organization UUID before admission. ValSmith owns its two per-run columns, database migrations, provisioning, SDK pin, publication, and Lambda source selection. This repository makes none of those changes.
 
-Use a reviewed immutable SDK commit that includes `ValkyrieRunAcceptedError`, the optional structured `ValkyrieRunError.run_id`, and the `SingleBenchmarkResponse.storage_bucket` field. The earlier SDK pin without those fields is insufficient for reconciliation. Registry IAM and external Lambda/OIDC policy deployments must precede owner writes; ValSmith application rollout must follow the compatible tracker, host, and executor-release cutover.
+Use a reviewed immutable SDK commit that includes `ValkyrieRunAcceptedError`, the optional structured `ValkyrieRunError.run_id`, and the `SingleBenchmarkResponse.storage_bucket` field. Registry IAM and external Lambda/OIDC policy deployments must precede owner writes; ValSmith application rollout must follow the compatible tracker, host, and executor-release cutover.
 
 ## Verification and remaining release gates
 

@@ -41,25 +41,24 @@ except ValkyrieRunAcceptedError as error:
     await reconcile_run(error.run_id)
     raise
 except ValkyrieRunError as error:
-    # The bucket was rejected. Quarantine the run; do not start it again.
-    await record_storage_rejection(error.run_id)
+    if error.run_id is not None:
+        # Storage was not confirmed. Do not submit another run automatically.
+        await record_storage_rejection(error.run_id)
     raise
 
 actual_bucket = run.storage_bucket
 ```
 
-Catch `ValkyrieRunAcceptedError` before `ValkyrieRunError`. Both carry a `run_id`, so the ID alone does not tell the two outcomes apart:
+Catch `ValkyrieRunAcceptedError` before its base class, `ValkyrieRunError`:
 
 - `ValkyrieRunAcceptedError` means the run was created with the bucket you asked for, and only its executor dispatch went unacknowledged. The storage is correct, so reconcile or retry by `run_id`. The original `ValkyrieAPIError` is the cause.
-- Plain `ValkyrieRunError` means the start response carried a missing or different `storage_bucket`. That is a storage rejection. Do not submit it again without an explicit override.
+- Plain `ValkyrieRunError` with a `run_id` means the start response carried a missing or different `storage_bucket`. Treat storage as unconfirmed and do not submit another run automatically. Input errors also use this type, with `run_id=None`.
 
-A caller that catches only `ValkyrieRunError` still sees both, so an older handler keeps working, but it cannot separate them and will quarantine correctly stored runs.
-
-The SDK uses `/start-benchmark-with-storage`. An older tracker returns 404 before it creates a run. Do not retry on `/start-benchmark` or remove the bucket after an error. Existing message-only error construction remains supported and gives `run_id=None`.
+The SDK uses `/start-benchmark-with-storage`. An older tracker returns 404 before it creates a run. Do not retry on `/start-benchmark` or remove the bucket after an error.
 
 The override cannot be combined with access-key credentials or explicit `properties`. The tracker checks the bucket account, region, organization tag, environment, and enabled versioning. Agent-library reads remain in shared storage; the frozen bundle and run artifacts use the selected bucket. See [Managed run storage deployment](/deployment/managed-run-storage) for policy and rollout requirements.
 
-Owner runs keep managed AWS credentials with automatic renewal. There is no per-owner agent upload: Valkyrie copies the shared agent bundle directly into the run's artifact directory. Logs stay in CloudWatch under `<deployment-log-prefix>/<managed_s3_bucket>/<run-id>`. The server derives and saves this location; clients do not supply a separate log prefix. Existing runs keep their original locations.
+Owner runs keep managed AWS credentials with automatic renewal. There is no per-owner agent upload: Valkyrie copies the shared agent bundle directly into the run's artifact directory. Logs stay in CloudWatch under `<deployment-log-prefix>/<managed_s3_bucket>/<run-id>`. The server derives and saves this location; clients do not supply a separate log prefix. Existing runs keep their original locations. Recovery keeps the frozen bundle. The CLI `--update-agent` option only supports runs in its configured bucket; omit it for owner runs.
 
 Persist the returned `storage_bucket` for each run. `client.runs.fetch`, `client.runs.metadata`, streaming progress, and `client.benchmarks.fetch` also return the actual bucket. Saved resources remain authoritative after deployment defaults change and during retry or recovery. Legacy managed rows without saved resources use the shared deployment bucket until their first new recovery saves that location. Legacy access-key metadata without enough credentials returns `None`.
 

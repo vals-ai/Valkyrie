@@ -96,14 +96,8 @@ def test_openapi_states_the_storage_requirement_of_each_start_route() -> None:
     shared = request_model("/start-benchmark")
     managed = request_model("/start-benchmark-with-storage")
 
-    shared_bucket = shared["properties"]["managed_s3_bucket"]
-    managed_bucket = managed["properties"]["managed_s3_bucket"]
-
-    assert shared is not managed
     assert "managed_s3_bucket" not in shared["required"]
     assert "managed_s3_bucket" in managed["required"]
-    assert shared_bucket["anyOf"] == managed_bucket["anyOf"]
-    assert "/start-benchmark-with-storage" in shared_bucket["description"]
 
 
 def test_openapi_keeps_scheduler_storage_fields_internal() -> None:

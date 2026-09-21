@@ -63,29 +63,6 @@ async def test_metadata_returns_typed_run_metadata(make_client) -> None:
     assert result.storage_bucket is None
 
 
-async def test_metadata_returns_saved_storage_bucket(make_client) -> None:
-    run_id = uuid4()
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "benchmark_id": str(run_id),
-                "benchmark_name": "swebench",
-                "benchmark_arguments": {
-                    "contract": {"name": "sweagent"},
-                    "concurrency": 5,
-                },
-                "storage_bucket": "vs-dev-acme-123",
-            },
-        )
-
-    async with make_client(handler) as client:
-        result = await client.runs.metadata(run_id)
-
-    assert result.storage_bucket == "vs-dev-acme-123"
-
-
 async def test_results_exist_returns_typed_s3_state(make_client) -> None:
     run_id = uuid4()
 

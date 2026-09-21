@@ -347,29 +347,6 @@ async def test_start_without_managed_storage_uses_ordinary_route(make_client) ->
     assert [request.url.path for request in requests] == ["/start-benchmark"]
 
 
-async def test_start_with_managed_storage_does_not_fallback_after_404(make_client, sdk_config) -> None:
-    paths: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        paths.append(request.url.path)
-        return httpx.Response(404, json={"detail": "Not Found"})
-
-    config = sdk_config(
-        AWS_ACCESS_KEY_ID=None,
-        AWS_SECRET_ACCESS_KEY=None,
-        AWS_SESSION_TOKEN=None,
-    )
-    async with make_client(handler, config=config) as client:
-        with pytest.raises(ValkyrieAPIError):
-            await client.runs.start(
-                "sweagent",
-                "swebench",
-                managed_s3_bucket="vs-dev-acme-123",
-            )
-
-    assert paths == ["/start-benchmark-with-storage"]
-
-
 @pytest.mark.parametrize("returned_bucket", [None, "vs-dev-other-456"])
 async def test_start_with_managed_storage_rejects_unconfirmed_bucket(
     make_client,

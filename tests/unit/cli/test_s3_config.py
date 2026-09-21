@@ -3,9 +3,13 @@
 Run: uv run pytest tests/unit/cli/test_s3_config.py
 """
 
+from dataclasses import replace
+from unittest.mock import AsyncMock
+
 import click
 import pytest
 from tracker.aws.clients import DefaultChainAWSClientProvider, ExplicitCredentialsAWSClientProvider
+from tracker.aws.s3 import download_from_s3
 
 from valkyrie.cli import s3_config
 
@@ -51,6 +55,24 @@ def test_aws_runtime_uses_sdk_credential_chain_without_configured_keys(
 
     assert isinstance(runtime.clients, DefaultChainAWSClientProvider)
     assert runtime.clients.region == "us-east-1"
+
+
+async def test_profile_credentials_can_read_without_deployment_account_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(s3_config, "load_config", lambda: dict(_BASE_CONFIG))
+    stream = AsyncMock()
+    stream.__aenter__.return_value = stream
+    stream.read.return_value = b"agent bundle"
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.get_object.return_value = {"Body": stream}
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", lambda _provider: client)
+    configured_runtime = s3_config.aws_runtime()
+    runtime = configured_runtime.with_resources(replace(configured_runtime.resources, region="us-west-2"))
+
+    assert await download_from_s3("agents/example.zip", runtime) == b"agent bundle"
+    client.get_object.assert_awaited_once_with(Bucket="bucket", Key="agents/example.zip")
 
 
 def test_aws_runtime_names_missing_region_configuration(monkeypatch: pytest.MonkeyPatch) -> None:

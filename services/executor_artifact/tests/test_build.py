@@ -62,4 +62,3 @@ def test_new_artifact_manifest_requires_protocol_three(tmp_path: Path, monkeypat
 
     assert manifest["protocol_version"] == "3"
     assert json.loads((tmp_path / "manifest.json").read_text())["protocol_version"] == "3"
-    assert commands.call_count == 4

@@ -8,7 +8,12 @@ import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
 from tracker import config
-from tracker.aws.clients import DefaultChainAWSClientProvider, ExplicitCredentialsAWSClientProvider
+from tracker.aws.clients import (
+    AWSClientProvider,
+    DefaultChainAWSClientProvider,
+    ExplicitCredentialsAWSClientProvider,
+    LocalChainAWSClientProvider,
+)
 from tracker.aws.managed_storage import (
     ManagedStorageError,
     ManagedStoragePolicy,
@@ -492,28 +497,36 @@ async def test_submission_validation_stays_uncached_for_the_read_path(
     assert len(client.head_requests) == 3
 
 
-async def test_saved_storage_validation_is_not_shared_across_credential_sources(
-    monkeypatch: pytest.MonkeyPatch,
-    owner_runtime: AWSRuntime,
-) -> None:
-    monkeypatch.setattr(config, "AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS", 300)
-    _ = _freeze_clock(monkeypatch)
-    access_key_runtime = AWSRuntime(
-        resources=owner_runtime.resources,
-        clients=ExplicitCredentialsAWSClientProvider(
+@pytest.mark.parametrize(
+    "clients",
+    [
+        ExplicitCredentialsAWSClientProvider(
             AWSCredentials(
                 aws_access_key_id="caller-key",
                 aws_secret_access_key="caller-secret",
-                aws_default_region=owner_runtime.resources.region,
+                aws_default_region="us-east-1",
             )
         ),
+        LocalChainAWSClientProvider("us-east-1"),
+    ],
+)
+async def test_saved_storage_validation_is_not_shared_across_credential_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    owner_runtime: AWSRuntime,
+    clients: AWSClientProvider,
+) -> None:
+    monkeypatch.setattr(config, "AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS", 300)
+    _ = _freeze_clock(monkeypatch)
+    caller_runtime = AWSRuntime(
+        resources=owner_runtime.resources,
+        clients=clients,
         expected_bucket_owner=_ACCOUNT_ID,
     )
 
     await validate_saved_managed_storage_runtime(owner_runtime, org_id=_ORG_ID)
 
     with pytest.raises(ManagedStorageError) as error:
-        await validate_saved_managed_storage_runtime(access_key_runtime, org_id=_ORG_ID)
+        await validate_saved_managed_storage_runtime(caller_runtime, org_id=_ORG_ID)
 
     assert error.value.status_code == 400
 

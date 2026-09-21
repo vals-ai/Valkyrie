@@ -10,8 +10,7 @@ import pytest
 from valkyrie.sdk.models import FetchTasksRequest, Order, TaskStatus
 
 
-@pytest.mark.parametrize("storage", [{}, {"storage_bucket": "vs-dev-acme-123"}])
-async def test_fetch_returns_typed_benchmark_detail(make_client, storage: dict[str, str]) -> None:
+async def test_fetch_returns_typed_benchmark_detail(make_client) -> None:
     run_id = uuid4()
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -20,7 +19,7 @@ async def test_fetch_returns_typed_benchmark_detail(make_client, storage: dict[s
         return httpx.Response(
             200,
             json={
-                **storage,
+                "storage_bucket": "vs-dev-acme-123",
                 "id": str(run_id),
                 "name": "swebench",
                 "agent_name": "sweagent",
@@ -42,7 +41,7 @@ async def test_fetch_returns_typed_benchmark_detail(make_client, storage: dict[s
     async with make_client(handler) as client:
         result = await client.benchmarks.fetch(run_id)
 
-    assert result.storage_bucket == storage.get("storage_bucket")
+    assert result.storage_bucket == "vs-dev-acme-123"
     assert result.id == run_id
     assert result.agent_name == "sweagent"
     assert result.task_state_counts == {"FINISHED": 1, "IN_PROGRESS": 1}

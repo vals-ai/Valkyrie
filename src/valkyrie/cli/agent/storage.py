@@ -71,9 +71,17 @@ async def push_agent_if_absent(agent_name: str, agent_path: Path) -> bool:
     return True
 
 
-async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> None:
+async def update_benchmark_agent_version(
+    agent_name: str, benchmark_id: str, *, storage_bucket: str | None = None
+) -> None:
     """Overwrite the frozen benchmark agent copy from agents/<name>.zip in S3."""
     runtime = cli_s3.aws_runtime()
+    if storage_bucket is not None and storage_bucket != runtime.resources.s3_bucket:
+        raise S3Error(
+            "The configured CLI bucket does not match the run storage bucket. "
+            "Resume without --update-agent to keep the frozen bundle."
+        )
+
     source_key = get_contract_s3_key(agent_name)
     dest_key = get_benchmark_contract_s3_key(benchmark_id, agent_name)
 
