@@ -679,7 +679,9 @@ class ExecutorSupervisor:
             try:
                 authority_is_current = await is_current()
             except psycopg2.OperationalError:
-                logger.exception("Failed to check executor dispatch authority; retrying")
+                logger.exception(
+                    "Failed to check executor dispatch authority; retrying",
+                )
                 continue
             if not authority_is_current:
                 return

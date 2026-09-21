@@ -1100,7 +1100,9 @@ async def test_periodic_authority_operational_error_allows_child_completion(
     monkeypatch.setattr(supervisor_module, "_terminate_process_group", terminate)
     supervisor = _supervisor(tmp_path, content=b"unused", sleep=sleep)
 
-    assert await supervisor._wait_with_authority(process, is_current) == 0
+    assert await supervisor._wait_with_authority(  # pyright: ignore[reportPrivateUsage]
+        cast(asyncio.subprocess.Process, process), is_current
+    ) == 0
     terminate.assert_not_called()
 
 
@@ -1139,7 +1141,9 @@ async def test_periodic_authority_operational_error_then_loss_terminates(
     supervisor = _supervisor(tmp_path, content=b"unused", sleep=lambda _delay: asyncio.sleep(0))
 
     with pytest.raises(DispatchAuthorityLostError, match="superseded"):
-        await supervisor._wait_with_authority(process, is_current)
+        await supervisor._wait_with_authority(  # pyright: ignore[reportPrivateUsage]
+            cast(asyncio.subprocess.Process, process), is_current
+        )
 
     assert process.returncode == -15
 
@@ -1156,7 +1160,9 @@ async def test_unexpected_periodic_authority_error_propagates(tmp_path: Path) ->
     )
 
     with pytest.raises(RuntimeError, match="unexpected"):
-        await supervisor._wait_for_authority_loss(is_current)
+        await supervisor._wait_for_authority_loss(  # pyright: ignore[reportPrivateUsage]
+            is_current
+        )
 
 
 @pytest.mark.asyncio
