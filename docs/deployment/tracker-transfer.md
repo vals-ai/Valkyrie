@@ -30,7 +30,7 @@ Use a fixed trusted absolute interpreter and script path, with an argument array
   [--apply]
 ```
 
-`database_target` is exactly `postgresql:<configured host or socket>:<port>/<current_database()>`. Supply the actual reviewed values; do not infer them from profile names. Both targets and accounts must differ. URLs, passwords and secret values must not appear in argv or reports. The command returns zero only after the requested checks and private atomic report write complete. Errors return 2 and an exception class, without provider messages or row data. An absent report is incomplete work, not success. Compare response nonce, action, child digest and both identities with the exact request.
+`database_target` is exactly `postgresql:<configured host or socket>:<port>/<current_database()>`. Supply the actual reviewed values; do not infer them from profile names. Both targets and accounts must differ. Before any effect the command reads what each session really opened: the endpoint the client library connected to, `current_database()`, and the server's own address, port, database identifier and start time. A label that does not describe the opened database, and two labels that resolve to one actual database, both refuse. URLs, passwords and secret values must not appear in argv or reports. The command returns zero only after the requested checks and private atomic report write complete. Errors return 2 and an exception class, without provider messages or row data. An absent report is incomplete work, not success. Compare response nonce, action, child digest and both identities with the exact request.
 
 ## Published exchange
 

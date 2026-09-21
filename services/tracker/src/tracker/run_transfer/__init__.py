@@ -18,6 +18,7 @@ from tracker.run_purge.locking import exclusive_operation
 from tracker.run_transfer.contracts import (
     TransferCheckpoint,
     TransferObservation,
+    TransferPlan,
     TransferRequest,
     TransferResponse,
     TransferRun,
@@ -26,6 +27,47 @@ from tracker.run_transfer.predecessor import acquire_source_hold, validate_prede
 from tracker.run_transfer.references import inventory_references
 from tracker.run_transfer.rows import RowClosure, digest, tables
 from tracker.runtime.log_history import ArchiveReport
+
+_OPENED_DATABASE = (
+    "SELECT current_database(), (SELECT oid FROM pg_database WHERE datname = current_database()), "
+    "inet_server_addr(), inet_server_port(), pg_postmaster_start_time()"
+)
+
+
+def _connected_endpoint(session: Session) -> tuple[str, int]:
+    connection = getattr(session.connection().connection, "dbapi_connection", None)
+    information = getattr(connection, "info", None)
+    host, port = getattr(information, "host", None), getattr(information, "port", None)
+    if not isinstance(host, str) or not isinstance(port, int) or isinstance(port, bool):
+        raise LifecycleConflict("Actual PostgreSQL connection endpoint is unavailable")
+
+    return host, port
+
+
+def _opened_database(session: Session, identity: OperationIdentity) -> tuple[Any, ...]:
+    """Read what this session really opened; the plan label is operator-supplied text."""
+    backend, _, remainder = identity.database_target.partition(":")
+    endpoint, _, database = remainder.rpartition("/")
+    host, _, port = endpoint.rpartition(":")
+    if backend != "postgresql" or not host or not port or not database:
+        raise LifecycleConflict("Immutable plan database target is not an exact PostgreSQL label")
+
+    observed = session.connection().execute(text(_OPENED_DATABASE)).one()
+    connected_host, connected_port = _connected_endpoint(session)
+    if (observed[0], connected_host, str(connected_port)) != (database, host, port):
+        raise LifecycleConflict("Actual opened database differs from the immutable plan target")
+
+    return tuple(observed[1:])
+
+
+def verify_paired_databases(source: Session, destination: Session, plan: TransferPlan) -> None:
+    """Both sessions before any effect: this command removes rows from the source."""
+    opened = (
+        _opened_database(source, plan.source_identity),
+        _opened_database(destination, plan.destination_identity),
+    )
+    if opened[0] == opened[1]:
+        raise LifecycleConflict("Paired transfer sessions opened the same actual database")
 
 
 class TransferBoundary(Protocol):
@@ -251,6 +293,8 @@ class TransferOperator:
         return mapped
 
     async def execute(self, request: TransferRequest) -> TransferResponse:
+        verify_paired_databases(self.source, self.destination, request.plan)
+
         # Shared advisory locks serialize deletion, relocation and transfer, including absent runs.
         with (
             exclusive_operation(self.source, request.plan.source_identity),

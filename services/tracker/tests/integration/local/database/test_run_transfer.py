@@ -41,6 +41,7 @@ from tracker.database.models import (
 from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, require_unheld
 from tracker.lifecycle_completion import RelocationCheckpoint, capture_predecessor
 from tracker.run_purge import PurgeOperator, build_plan
+from tracker.run_purge.locking import database_target
 from tracker.run_transfer import TransferOperator, cli
 from tracker.run_transfer.contracts import TransferCheckpoint, TransferRequest, TransferRun
 from tracker.run_transfer.providers import TransferAWSBoundary
@@ -1058,3 +1059,61 @@ def test_changed_transfer_proof_cannot_authorize_cleanup(
     assert RowClosure.read(destination, run.id, org.id).sha256 == before
     assert destination.get_one(RunLifecycle, run.id).released_at is None
     assert source.get_one(RunLifecycle, run.id).phase == "transferred"
+
+
+def _equivalent_spelling(host: str) -> str:
+    """Another spelling of the same endpoint, so the two labels differ but the server does not."""
+    return {"localhost": "127.0.0.1", "127.0.0.1": "localhost"}.get(host, host.upper())
+
+
+def test_two_labels_for_one_actual_database_cannot_transfer(pair: tuple[Session, Session], tmp_path: Path) -> None:
+    source, destination = pair
+    org, run, _ = seed_rows(source, destination)
+    request = transfer_request(source, destination, org, run)
+    url = source.get_bind().engine.url
+    alias = url.set(host=_equivalent_spelling(url.host or ""))
+    assert alias.host != url.host
+    engine = create_engine(alias)
+    try:
+        with Session(engine, expire_on_commit=False) as same_database:
+            request["plan"]["destination_identity"]["database_target"] = database_target(same_database)
+            operator = TransferOperator(source, same_database, FakeTransferBoundary(tmp_path))
+
+            with pytest.raises(LifecycleConflict, match="same actual database"):
+                asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+
+    finally:
+        engine.dispose()
+
+    assert source.get(Benchmark, run.id) is not None
+    assert source.get(RunLifecycle, run.id) is None
+
+
+def test_an_environment_default_endpoint_cannot_pass_as_the_planned_target(
+    pair: tuple[Session, Session], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A label built from a URL that names no endpoint describes libpq defaults, not the server."""
+    source, destination = pair
+    org, run, _ = seed_rows(source, destination)
+    request = transfer_request(source, destination, org, run)
+    url = source.get_bind().engine.url
+    monkeypatch.setenv("PGHOST", url.host or "")
+    monkeypatch.setenv("PGPORT", str(url.port or 5432))
+    engine = create_engine(
+        URL.create("postgresql+psycopg2", username=url.username, password=url.password, database=url.database)
+    )
+    try:
+        with Session(engine, expire_on_commit=False) as defaulted:
+            label = database_target(defaulted)
+            assert label == f"postgresql:localhost:5432/{url.database}"
+            request["plan"]["source_identity"]["database_target"] = label
+            operator = TransferOperator(defaulted, destination, FakeTransferBoundary(tmp_path))
+
+            with pytest.raises(LifecycleConflict, match="differs from the immutable plan target"):
+                asyncio.run(operator.execute(TransferRequest.model_validate(request)))
+
+    finally:
+        engine.dispose()
+
+    assert source.get(Benchmark, run.id) is not None
+    assert source.get(RunLifecycle, run.id) is None
