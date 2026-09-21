@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Discriminator, Field, Tag, field_serializer
+from pydantic import BaseModel, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 from valkyrie.sdk.models.agents import AgentContractRequest
@@ -235,14 +235,9 @@ class LocalBenchmarkArguments(_BenchmarkArguments):
     properties: LocalResources
 
 
-def _benchmark_environment(value: dict[str, Any] | _BenchmarkArguments) -> str | None:
-    """Treat stored arguments without an environment as legacy AWS runs."""
-    return value.get("environment", "aws") if isinstance(value, dict) else getattr(value, "environment", None)
-
-
 BenchmarkArguments = Annotated[
-    Annotated[AWSBenchmarkArguments, Tag("aws")] | Annotated[LocalBenchmarkArguments, Tag("local")],
-    Discriminator(_benchmark_environment),
+    AWSBenchmarkArguments | LocalBenchmarkArguments,
+    Field(discriminator="environment"),
 ]
 
 

@@ -44,6 +44,7 @@ async def test_metadata_returns_typed_run_metadata(make_client) -> None:
                 "benchmark_id": str(run_id),
                 "benchmark_name": "swebench",
                 "benchmark_arguments": {
+                    "environment": "aws",
                     "contract": {"name": "sweagent", "model": "anthropic/claude-sonnet-4-6"},
                     "concurrency": 5,
                     "task_ids": None,
