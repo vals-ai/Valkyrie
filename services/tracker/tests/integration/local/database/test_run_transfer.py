@@ -48,17 +48,29 @@ from tracker.run_transfer.providers import TransferAWSBoundary
 from tracker.run_transfer.rows import RowClosure, digest
 
 
-@pytest.fixture
-def pair(request: pytest.FixtureRequest) -> Generator[tuple[Session, Session], None, None]:
+def supplied_transfer_urls() -> list[URL] | None:
+    """The fixture drops every table it is given, so a supplied database must say it is disposable."""
     supplied = [os.getenv(f"TRANSFER_TEST_{side}_DATABASE_URL") for side in ("SOURCE", "DESTINATION")]
-    if any(value is not None for value in supplied) and not all(supplied):
+    if not any(value is not None for value in supplied):
+        return None
+
+    if not all(supplied):
         raise ValueError("Supply both private transfer database URLs together")
 
+    if os.getenv("TRANSFER_TEST_DATABASES_ARE_DISPOSABLE") != "true":
+        raise ValueError("Supplied transfer databases need TRANSFER_TEST_DATABASES_ARE_DISPOSABLE=true")
+
+    return [make_url(value) for value in supplied if value is not None]
+
+
+@pytest.fixture
+def pair(request: pytest.FixtureRequest) -> Generator[tuple[Session, Session], None, None]:
+    supplied_urls = supplied_transfer_urls()
     administrator = None
     owned_names: list[str] = []
     urls: list[URL]
-    if all(supplied):
-        urls = [make_url(value) for value in supplied if value is not None]
+    if supplied_urls is not None:
+        urls = supplied_urls
     else:
         container = request.getfixturevalue("postgres_container")
         base_url = make_url(container.get_connection_url())
@@ -1117,3 +1129,26 @@ def test_an_environment_default_endpoint_cannot_pass_as_the_planned_target(
 
     assert source.get(Benchmark, run.id) is not None
     assert source.get(RunLifecycle, run.id) is None
+
+
+def test_supplied_transfer_databases_must_declare_that_they_are_disposable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRANSFER_TEST_SOURCE_DATABASE_URL", "postgresql://localhost/tracker_transfer_test_a")
+    monkeypatch.setenv("TRANSFER_TEST_DESTINATION_DATABASE_URL", "postgresql://localhost/tracker_transfer_test_b")
+    monkeypatch.delenv("TRANSFER_TEST_DATABASES_ARE_DISPOSABLE", raising=False)
+
+    with pytest.raises(ValueError, match="TRANSFER_TEST_DATABASES_ARE_DISPOSABLE"):
+        supplied_transfer_urls()
+
+    monkeypatch.setenv("TRANSFER_TEST_DATABASES_ARE_DISPOSABLE", "true")
+    urls = supplied_transfer_urls()
+    assert urls is not None and [url.database for url in urls] == [
+        "tracker_transfer_test_a",
+        "tracker_transfer_test_b",
+    ]
+
+    monkeypatch.delenv("TRANSFER_TEST_DESTINATION_DATABASE_URL")
+
+    with pytest.raises(ValueError, match="both private transfer database URLs"):
+        supplied_transfer_urls()

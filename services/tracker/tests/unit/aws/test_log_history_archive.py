@@ -1,5 +1,7 @@
 """Archive transport must retain history and fail closed across partial uploads."""
 
+import json
+import re
 from copy import deepcopy
 from importlib import import_module
 from io import BytesIO
@@ -86,6 +88,7 @@ class FakeS3:
         self.requests: list[tuple[str, dict[str, Any]]] = []
         self.uncertain = False
         self.corrupt = False
+        self.precondition = False
         self.versioning = "Enabled"
         self.owner_id = "42"
 
@@ -111,6 +114,11 @@ class FakeS3:
 
     def put_object(self, **request: Any) -> dict[str, Any]:
         self.requests.append(("put", request))
+        if self.precondition:
+            raise ClientError(
+                {"Error": {"Code": "PreconditionFailed", "Message": "private provider text"}}, "PutObject"
+            )
+
         version = f"version-{len(self.objects)}"
         self.objects[(request["Key"], version)] = request["Body"]
         if self.uncertain:
@@ -751,3 +759,24 @@ def test_a_later_event_time_is_not_the_same_inventory() -> None:
     assert same_inventory(first, first.model_copy(update={"event_pages": 9}))
     assert not same_inventory(first, first.model_copy(update={"newest_event_ms": 11}))
     assert not same_inventory(first, first.model_copy(update={"newest_ingestion_ms": 21}))
+
+
+def test_a_refused_conditional_write_leaves_an_unresolved_intent(archive: Any, tmp_path: Path) -> None:
+    """A key that already exists fails the IfNoneMatch write; the retry must not adopt it."""
+    logs, storage = FakeLogs(), FakeS3()
+    storage.precondition = True
+
+    with pytest.raises(archive.ArchiveError, match="source must remain intact") as refused:
+        run_archive(archive, tmp_path, logs, storage)
+
+    assert "private provider text" not in str(refused.value)
+    assert not storage.objects
+    intents = [path for path in tmp_path.iterdir() if re.fullmatch(r"[0-9a-f]{64}\.json", path.name)]
+    assert len(intents) == 1
+    assert "version_id" not in json.loads(intents[0].read_text())
+    storage.precondition = False
+
+    with pytest.raises(archive.ArchiveError, match="unresolved upload intent requires operator reconciliation"):
+        run_archive(archive, tmp_path, FakeLogs(), storage)
+
+    assert not storage.objects

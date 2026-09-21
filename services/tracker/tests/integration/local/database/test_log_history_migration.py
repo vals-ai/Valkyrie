@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import make_url
 from sqlmodel import Session, col, create_engine, select
+from testcontainers.postgres import PostgresContainer
 
 from tests.integration.local.database.test_run_purge import contract, prepared_operator
 from tracker.database.models import Benchmark, RunLifecycle
@@ -20,10 +21,11 @@ from tracker.run_purge import PurgeOperator, build_plan
 from tracker.runtime.log_history_reference import LogHistoryReference
 
 
-@pytest.mark.skipif(not os.environ.get("TRACKER_HISTORY_TEST_ADMIN_URL"), reason="disposable local PostgreSQL required")
-def test_log_history_additive_migration_and_typed_storage() -> None:
+def test_log_history_additive_migration_and_typed_storage(postgres_container: PostgresContainer) -> None:
+    """The disposable container always supplies an administrator, so this can never be skipped."""
     tracker_root = Path(__file__).resolve().parents[4]
-    admin_url = make_url(os.environ["TRACKER_HISTORY_TEST_ADMIN_URL"]).set(database="postgres")
+    supplied = os.environ.get("TRACKER_HISTORY_TEST_ADMIN_URL") or postgres_container.get_connection_url()
+    admin_url = make_url(supplied).set(database="postgres")
     database_name = f"tracker_history_{uuid4().hex}"
     admin = create_engine(admin_url, isolation_level="AUTOCOMMIT")
     with admin.connect() as connection:

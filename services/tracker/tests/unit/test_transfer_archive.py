@@ -20,6 +20,7 @@ from tracker.run_transfer.contracts import TransferRequest
 from tracker.run_transfer.providers import SOURCE_FENCE_ACTIONS, TransferAWSBoundary
 from tracker.run_transfer.references import verify_portable_references
 from tracker.run_transfer.rows import RowClosure
+from tracker.runtime.log_history import ArchiveError
 from tracker.runtime.logs import LogPage, RunLogReference
 
 
@@ -61,8 +62,10 @@ def test_paired_archive_uses_verified_exact_versions_and_actual_reader(tmp_path:
     assert "private old message" not in archive.model_dump_json()
     storage.corrupt = True
 
-    with pytest.raises(Exception):
-        asyncio.run(boundary.verify_archive(request, run, archive))
+    with pytest.raises(ArchiveError, match="object content verification failed") as refused:
+        asyncio.run(boundary.verify_archive(request, run, archive, log_completeness_sha256=decision))
+
+    assert "private old message" not in str(refused.value)
 
 
 def test_portable_reference_verification_uses_metadata_and_rejects_unknown_location(tmp_path: Path) -> None:
