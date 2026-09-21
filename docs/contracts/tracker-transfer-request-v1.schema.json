@@ -253,16 +253,20 @@
             "format": "uuid",
             "type": "string"
           },
+          "minItems": 1,
           "title": "Dispatch Ids",
-          "type": "array"
+          "type": "array",
+          "uniqueItems": true
         },
         "host_inventory": {
           "items": {
             "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
             "type": "string"
           },
+          "minItems": 1,
           "title": "Host Inventory",
-          "type": "array"
+          "type": "array",
+          "uniqueItems": true
         },
         "deployed_host_contract": {
           "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",

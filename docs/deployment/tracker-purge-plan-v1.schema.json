@@ -362,8 +362,10 @@
       "items": {
         "$ref": "#/$defs/PurgeRun"
       },
+      "minItems": 1,
       "title": "Runs",
-      "type": "array"
+      "type": "array",
+      "uniqueItems": true
     }
   },
   "required": [
