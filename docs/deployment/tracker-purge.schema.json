@@ -453,16 +453,20 @@
               "format": "uuid",
               "type": "string"
             },
+            "minItems": 1,
             "title": "Dispatch Ids",
-            "type": "array"
+            "type": "array",
+            "uniqueItems": true
           },
           "host_inventory": {
             "items": {
               "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
               "type": "string"
             },
+            "minItems": 1,
             "title": "Host Inventory",
-            "type": "array"
+            "type": "array",
+            "uniqueItems": true
           },
           "deployed_host_contract": {
             "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
@@ -766,8 +770,10 @@
         "items": {
           "$ref": "#/$defs/RunReport"
         },
+        "minItems": 1,
         "title": "Runs",
-        "type": "array"
+        "type": "array",
+        "uniqueItems": true
       },
       "child_plan_sha256": {
         "pattern": "^[0-9a-f]{64}$",
@@ -1059,16 +1065,20 @@
               "format": "uuid",
               "type": "string"
             },
+            "minItems": 1,
             "title": "Dispatch Ids",
-            "type": "array"
+            "type": "array",
+            "uniqueItems": true
           },
           "host_inventory": {
             "items": {
               "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",
               "type": "string"
             },
+            "minItems": 1,
             "title": "Host Inventory",
-            "type": "array"
+            "type": "array",
+            "uniqueItems": true
           },
           "deployed_host_contract": {
             "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$",

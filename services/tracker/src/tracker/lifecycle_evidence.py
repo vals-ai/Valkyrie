@@ -28,13 +28,22 @@ from tracker.lifecycle import (
 
 HOST_CONTRACT = "stable-host-lifecycle-v1"
 
+HostInventory = Annotated[tuple[SafeIdentity, ...], Field(min_length=1, json_schema_extra={"uniqueItems": True})]
+DispatchInventory = Annotated[tuple[UUID, ...], Field(min_length=1, json_schema_extra={"uniqueItems": True})]
+
+
+def _sorted_unique_hosts(value: tuple[str, ...]) -> tuple[str, ...]:
+    if not value or value != tuple(sorted(set(value))):
+        raise ValueError("Host inventory must be complete, sorted and unique")
+    return value
+
 
 class HostContractObservation(ContractModel):
     """Built by the operator after inspecting the complete deployed host inventory."""
 
     contract: Literal["stable-host-lifecycle-v1"]
     deployment_sha256: Digest
-    host_inventory: Annotated[tuple[SafeIdentity, ...], Field(min_length=1, json_schema_extra={"uniqueItems": True})]
+    host_inventory: HostInventory
     observed_at: AwareDatetime
     acknowledgement_required_since: AwareDatetime
     verifier: SafeIdentity
@@ -43,9 +52,7 @@ class HostContractObservation(ContractModel):
     @field_validator("host_inventory")
     @classmethod
     def validate_inventory(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if not value or value != tuple(sorted(set(value))):
-            raise ValueError("Host inventory must be complete, sorted and unique")
-        return value
+        return _sorted_unique_hosts(value)
 
 
 class ExternalHostDrain(ContractModel):
@@ -53,13 +60,25 @@ class ExternalHostDrain(ContractModel):
     identity: OperationIdentity
     run_id: UUID
     hold_acquired_at: AwareDatetime
-    dispatch_ids: tuple[UUID, ...]
-    host_inventory: tuple[SafeIdentity, ...]
+    dispatch_ids: DispatchInventory
+    host_inventory: HostInventory
     deployed_host_contract: SafeIdentity
     observed_at: AwareDatetime
     verifier: SafeIdentity
     evidence_sha256: Digest
     confirmation: Literal["all_inventory_hosts_terminated_and_old_claims_disabled"]
+
+    @field_validator("host_inventory")
+    @classmethod
+    def validate_inventory(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _sorted_unique_hosts(value)
+
+    @field_validator("dispatch_ids")
+    @classmethod
+    def validate_dispatch_ids(cls, value: tuple[UUID, ...]) -> tuple[UUID, ...]:
+        if value != tuple(sorted(set(value), key=str)):
+            raise ValueError("Attested dispatch identities must be sorted and unique")
+        return value
 
 
 class DispatchDrain(ContractModel):
@@ -199,7 +218,7 @@ class LifecycleReport(ContractModel):
     purpose: Purpose
     observed_at: AwareDatetime
     host_contract: HostContractObservation | None = None
-    runs: tuple[RunReport, ...]
+    runs: Annotated[tuple[RunReport, ...], Field(min_length=1, json_schema_extra={"uniqueItems": True})]
 
 
 def write_report(path: Path, report: LifecycleReport) -> None:

@@ -14,7 +14,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from tracker.aws.runtime import AWSResources
 from tracker.lifecycle import OperationIdentity, RunScope
-from tracker.lifecycle_evidence import HostContractObservation, LifecycleReport, RunReport
+from tracker.lifecycle_evidence import ExternalHostDrain, HostContractObservation, LifecycleReport, RunReport
 from tracker.run_purge.contracts import ProviderLocator, PurgeCheckpoint, PurgePlan, PurgeReport, PurgeRun
 from tracker.run_purge.providers import FenceReceipt, OwnerDeletionFence
 
@@ -91,7 +91,25 @@ def test_unknown_resource_fields_fail_runtime_and_json_schema(kind: str, publish
         validate_schema(payload, schema, cls=Draft202012Validator)
 
 
-@pytest.mark.parametrize("kind", ["identity", "host_observation"])
+def _external_host_drain(identity: OperationIdentity) -> ExternalHostDrain:
+    observed_at = datetime.now(UTC)
+
+    return ExternalHostDrain(
+        provenance="externally_confirmed_host_drain",
+        identity=identity,
+        run_id=identity.run_ids[0],
+        hold_acquired_at=observed_at,
+        dispatch_ids=(uuid4(),),
+        host_inventory=("host-1",),
+        deployed_host_contract="stable-host-lifecycle-v1",
+        observed_at=observed_at,
+        verifier="operator",
+        evidence_sha256="c" * 64,
+        confirmation="all_inventory_hosts_terminated_and_old_claims_disabled",
+    )
+
+
+@pytest.mark.parametrize("kind", ["identity", "host_observation", "external_drain_hosts", "external_drain_dispatches"])
 @pytest.mark.parametrize("invalid_items", ["empty", "duplicate"])
 @pytest.mark.parametrize("published", [False, True])
 def test_identity_inventories_enforce_nonempty_unique_schema(
@@ -99,12 +117,12 @@ def test_identity_inventories_enforce_nonempty_unique_schema(
     invalid_items: str,
     published: bool,
 ) -> None:
+    example = LifecycleReport.model_validate_json((_DOCUMENTATION / "tracker-lifecycle-example.json").read_text())
     instance: BaseModel
     field: str
     if kind == "identity":
-        example = LifecycleReport.model_validate_json((_DOCUMENTATION / "tracker-lifecycle-example.json").read_text())
         instance, field = example.identity, "run_ids"
-    else:
+    elif kind == "host_observation":
         observed_at = datetime.now(UTC)
         instance = HostContractObservation(
             contract="stable-host-lifecycle-v1",
@@ -115,6 +133,9 @@ def test_identity_inventories_enforce_nonempty_unique_schema(
             verifier="operator",
         )
         field = "host_inventory"
+    else:
+        instance = _external_host_drain(example.identity)
+        field = "host_inventory" if kind == "external_drain_hosts" else "dispatch_ids"
     schema = type(instance).model_json_schema()
     if published:
         definitions = json.loads((_DOCUMENTATION / "tracker-lifecycle.schema.json").read_text())["$defs"]
@@ -126,6 +147,28 @@ def test_identity_inventories_enforce_nonempty_unique_schema(
         type(instance).model_validate(payload)
     with pytest.raises(SchemaValidationError):
         validate_schema(payload, schema, cls=Draft202012Validator)
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_report_run_inventory_is_nonempty_and_unique(published: bool) -> None:
+    example = LifecycleReport.model_validate_json((_DOCUMENTATION / "tracker-lifecycle-example.json").read_text())
+    schema: dict[str, Any] = (
+        json.loads((_DOCUMENTATION / "tracker-lifecycle.schema.json").read_text())
+        if published
+        else LifecycleReport.model_json_schema()
+    )
+    payload = example.model_dump(mode="json")
+    validate_schema(payload, schema, cls=Draft202012Validator)
+
+    empty = {**payload, "runs": []}
+    with pytest.raises(ValidationError):
+        LifecycleReport.model_validate(empty)
+    with pytest.raises(SchemaValidationError):
+        validate_schema(empty, schema, cls=Draft202012Validator)
+
+    duplicated = {**payload, "runs": [payload["runs"][0], payload["runs"][0]]}
+    with pytest.raises(SchemaValidationError):
+        validate_schema(duplicated, schema, cls=Draft202012Validator)
 
 
 def test_published_lifecycle_schema_equals_runtime_model() -> None:
