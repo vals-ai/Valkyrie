@@ -18,7 +18,7 @@ from tracker.aws.managed_storage import (
 )
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.secrets import SecretsManagerStore
-from tracker.lifecycle import ContractModel, Digest, LifecycleConflict, OperationIdentity
+from tracker.lifecycle import ContractModel, Digest, LifecycleConflict, OperationIdentity, Verification, unverified
 from tracker.run_purge.contracts import PurgeRun
 from tracker.utils.resources import fetch_sandbox_provider_config
 
@@ -112,7 +112,7 @@ class AWSProviderBoundary:
             raise LifecycleConflict("Current owner write fence differs from exact operation receipt")
         return digest
 
-    async def _sandboxes(self, run: PurgeRun, *, delete: bool) -> None:
+    async def _sandboxes(self, run: PurgeRun, *, delete: bool, verify: Verification = unverified) -> None:
         clients = self.clients.with_region(run.scope.original_resources.region)
         configuration = await asyncio.to_thread(
             fetch_sandbox_provider_config, run.provider.secret_name, SecretsManagerStore(clients), run.provider.kind
@@ -124,6 +124,8 @@ class AWSProviderBoundary:
                     raise LifecycleConflict("Provider sandbox inventory is outside exact run scope")
                 if not delete:
                     raise LifecycleConflict("Sandboxes remain for the held run")
+
+                verify()
                 try:
                     await provider.delete_sandbox(sandbox.id)
                 except SandboxNotFoundError:
@@ -131,8 +133,8 @@ class AWSProviderBoundary:
         finally:
             await provider.close()
 
-    async def cleanup_sandboxes(self, run: PurgeRun) -> None:
-        await self._sandboxes(run, delete=True)
+    async def cleanup_sandboxes(self, run: PurgeRun, *, verify: Verification = unverified) -> None:
+        await self._sandboxes(run, delete=True, verify=verify)
 
     async def verify_absence(self, run: PurgeRun) -> None:
         await self._sandboxes(run, delete=False)

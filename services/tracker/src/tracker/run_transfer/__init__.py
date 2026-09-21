@@ -10,7 +10,7 @@ from sqlalchemy import select, text
 from sqlmodel import Session
 
 from tracker.database.models import Benchmark, BenchmarkArguments, RunLifecycle
-from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, require_owned_hold
+from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, Verification, require_owned_hold
 from tracker.lifecycle_completion import acquire_successor_hold
 from tracker.lifecycle_evidence import DispatchDrain, validate_host_contract_observation, verify_drain
 from tracker.run_purge.contracts import ProviderLocator
@@ -75,7 +75,13 @@ def verify_paired_databases(source: Session, destination: Session, plan: Transfe
 class TransferBoundary(Protocol):
     async def validate(self, request: TransferRequest, run: TransferRun) -> None: ...
     async def drain(
-        self, request: TransferRequest, run: TransferRun, arguments: dict[str, Any], *, cleanup: bool = False
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        arguments: dict[str, Any],
+        *,
+        cleanup: bool = False,
+        verify: Verification,
     ) -> None: ...
     async def verify_objects(
         self,
@@ -96,6 +102,7 @@ class TransferBoundary(Protocol):
         *,
         dispatches: tuple[DispatchDrain, ...],
         acquired_at: datetime,
+        verify: Verification,
     ) -> tuple[ArchiveReport, str]: ...
     async def verify_archive(
         self,
@@ -116,6 +123,7 @@ class TransferBoundary(Protocol):
         dispatches: tuple[DispatchDrain, ...],
         acquired_at: datetime,
         log_completeness_sha256: str | None,
+        verify: Verification,
     ) -> None: ...
     async def portable(self, request: TransferRequest, run: TransferRun, rows: RowClosure) -> None: ...
 
@@ -394,7 +402,11 @@ class TransferOperator:
             dispatches = self._process_drain(request, run)
             source_lock.verify()
             await self.boundary.drain(
-                request, run, source.rows["benchmark"][0]["arguments"], cleanup=request.action == "prepare"
+                request,
+                run,
+                source.rows["benchmark"][0]["arguments"],
+                cleanup=request.action == "prepare",
+                verify=source_lock.verify,
             )
             # Read again after provider work while retaining database row locks.
             source = self._source_rows(request, run)
@@ -412,6 +424,7 @@ class TransferOperator:
                     "sandbox_provider": checkpoint.provider.kind,
                     "sandbox_provider_secret_name": checkpoint.provider.secret_name,
                 },
+                verify=source_lock.verify,
             )
 
         acquired_at = source_record.acquired_at
@@ -455,7 +468,7 @@ class TransferOperator:
             if not destination_exists:
                 destination_lock.verify()
                 archive, completeness = await self.boundary.archive(
-                    request, run, dispatches=dispatches, acquired_at=acquired_at
+                    request, run, dispatches=dispatches, acquired_at=acquired_at, verify=destination_lock.verify
                 )
                 await self.boundary.verify_objects(
                     request,
@@ -466,7 +479,9 @@ class TransferOperator:
                     log_completeness_sha256=completeness,
                 )
                 dispatches = self._process_drain(request, run)
-                await self.boundary.drain(request, run, source.rows["benchmark"][0]["arguments"])
+                await self.boundary.drain(
+                    request, run, source.rows["benchmark"][0]["arguments"], verify=source_lock.verify
+                )
                 source = self._source_rows(request, run)
                 destination_rows = self._destination_rows(request, run, archive, source)
                 if run.execution_policy == "portable":
@@ -569,9 +584,12 @@ class TransferOperator:
                     dispatches=dispatches,
                     acquired_at=acquired_at,
                     log_completeness_sha256=completeness,
+                    verify=source_lock.verify,
                 )
                 dispatches = self._process_drain(request, run)
-                await self.boundary.drain(request, run, source.rows["benchmark"][0]["arguments"])
+                await self.boundary.drain(
+                    request, run, source.rows["benchmark"][0]["arguments"], verify=source_lock.verify
+                )
                 source = self._source_rows(request, run)
                 source.delete(self.source)
                 checkpoint = checkpoint.model_copy(

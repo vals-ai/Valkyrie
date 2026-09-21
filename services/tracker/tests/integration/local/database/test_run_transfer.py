@@ -45,7 +45,14 @@ from tracker.database.models import (
     TaskBreakdown,
     TaskStatus,
 )
-from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, require_unheld
+from tracker.lifecycle import (
+    LifecycleConflict,
+    OperationIdentity,
+    RunScope,
+    Verification,
+    require_unheld,
+    unverified,
+)
 from tracker.lifecycle_completion import RelocationCheckpoint, capture_predecessor
 from tracker.lifecycle_evidence import DispatchDrain
 from tracker.run_purge import PurgeOperator, build_plan
@@ -659,7 +666,7 @@ def test_declared_source_archive_is_refused_before_any_hold(pair: tuple[Session,
     request = transfer_request(source, destination, org, run)
     parsed = TransferRequest.model_validate(request)
     boundary = FakeTransferBoundary(tmp_path)
-    run.log_history = asyncio.run(boundary.archive(parsed, parsed.plan.runs[0]))[0].reference
+    run.log_history = asyncio.run(boundary.archive(parsed, parsed.plan.runs[0], verify=unverified))[0].reference
     source.add(run)
     source.commit()
     with pytest.raises(LifecycleConflict, match="Declared source archive"):
@@ -1301,12 +1308,19 @@ class RecordingTransferBoundary(FakeTransferBoundary):
         self.irreversible: list[str] = []
 
     async def drain(
-        self, request: TransferRequest, run: TransferRun, arguments: dict[str, Any], *, cleanup: bool = False
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        arguments: dict[str, Any],
+        *,
+        cleanup: bool = False,
+        verify: Verification,
     ) -> None:
         if cleanup:
+            verify()
             self.irreversible.append("sandboxes_destroyed")
 
-        await super().drain(request, run, arguments, cleanup=cleanup)
+        await super().drain(request, run, arguments, cleanup=cleanup, verify=verify)
 
     async def archive(
         self,
@@ -1315,10 +1329,12 @@ class RecordingTransferBoundary(FakeTransferBoundary):
         *,
         dispatches: tuple[DispatchDrain, ...] = (),
         acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+        verify: Verification,
     ) -> tuple[ArchiveReport, str]:
+        verify()
         self.irreversible.append("archive_written")
 
-        return await super().archive(request, run, dispatches=dispatches, acquired_at=acquired_at)
+        return await super().archive(request, run, dispatches=dispatches, acquired_at=acquired_at, verify=verify)
 
     async def cleanup_logs(
         self,
@@ -1329,7 +1345,9 @@ class RecordingTransferBoundary(FakeTransferBoundary):
         dispatches: tuple[DispatchDrain, ...] = (),
         acquired_at: datetime = OBSERVED_ACQUIRED_AT,
         log_completeness_sha256: str | None = OBSERVED_DECISION,
+        verify: Verification,
     ) -> None:
+        verify()
         self.irreversible.append("log_group_deleted")
 
         await super().cleanup_logs(
@@ -1339,6 +1357,7 @@ class RecordingTransferBoundary(FakeTransferBoundary):
             dispatches=dispatches,
             acquired_at=acquired_at,
             log_completeness_sha256=log_completeness_sha256,
+            verify=verify,
         )
 
 

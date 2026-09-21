@@ -10,7 +10,7 @@ from sqlmodel import Session
 
 from tracker.aws.runtime import AWSResources
 from tracker.database.models import Benchmark, Org
-from tracker.lifecycle import RunScope
+from tracker.lifecycle import RunScope, Verification, unverified
 from tracker.lifecycle_evidence import DispatchDrain
 from tracker.run_purge.locking import database_target
 from tracker.run_transfer.contracts import TransferRequest, TransferRun
@@ -61,8 +61,9 @@ class ObservedEventsBoundary(TransferAWSBoundary):
         *,
         dispatches: tuple[DispatchDrain, ...] = (),
         acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+        verify: Verification = unverified,
     ) -> tuple[ArchiveReport, str]:
-        return await super().archive(request, run, dispatches=dispatches, acquired_at=acquired_at)
+        return await super().archive(request, run, dispatches=dispatches, acquired_at=acquired_at, verify=verify)
 
     async def verify_archive(
         self,
@@ -115,6 +116,7 @@ class ObservedEventsBoundary(TransferAWSBoundary):
         dispatches: tuple[DispatchDrain, ...] = (),
         acquired_at: datetime = OBSERVED_ACQUIRED_AT,
         log_completeness_sha256: str | None = OBSERVED_DECISION,
+        verify: Verification = unverified,
     ) -> None:
         await super().cleanup_logs(
             request,
@@ -123,6 +125,7 @@ class ObservedEventsBoundary(TransferAWSBoundary):
             dispatches=dispatches,
             acquired_at=acquired_at,
             log_completeness_sha256=log_completeness_sha256,
+            verify=verify,
         )
 
 
@@ -209,7 +212,13 @@ class FakeTransferBoundary:
         pass
 
     async def drain(
-        self, request: TransferRequest, run: TransferRun, arguments: dict[str, Any], *, cleanup: bool = False
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        arguments: dict[str, Any],
+        *,
+        cleanup: bool = False,
+        verify: Verification,
     ) -> None:
         if not self.absent:
             raise RuntimeError("provider still active")
@@ -236,6 +245,7 @@ class FakeTransferBoundary:
         *,
         dispatches: tuple[DispatchDrain, ...] = (),
         acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+        verify: Verification,
     ) -> tuple[ArchiveReport, str]:
         if self.fail_archive:
             raise RuntimeError("archive failed")
@@ -284,6 +294,7 @@ class FakeTransferBoundary:
         dispatches: tuple[DispatchDrain, ...] = (),
         acquired_at: datetime = OBSERVED_ACQUIRED_AT,
         log_completeness_sha256: str | None = OBSERVED_DECISION,
+        verify: Verification,
     ) -> None:
         if log_completeness_sha256 != OBSERVED_DECISION:
             raise RuntimeError("log cleanup without the persisted completeness decision")

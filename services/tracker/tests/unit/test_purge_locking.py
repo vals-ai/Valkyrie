@@ -37,15 +37,23 @@ class FakeResult:
 
 
 class FakeLockConnection:
-    """Answers each statement with the next scripted state or failure, and records the call."""
+    """Answers each statement with the next scripted state or failure, and records the call.
 
-    def __init__(self, *states: tuple[int, int] | Exception) -> None:
+    A caller that cannot predict how many verifications a provider makes passes
+    `live` instead, and changes it to model the backend disappearing mid-operation.
+    """
+
+    def __init__(self, *states: tuple[int, int] | Exception, live: tuple[int, int] | None = None) -> None:
         self.states = list(states)
+        self.live = live
         self.calls: list[Any] = []
         self.invalidated = False
 
     def execute(self, statement: Any, parameters: Any = None, /) -> Any:
         self.calls.append(parameters)
+        if not self.states and self.live is not None:
+            return FakeResult(self.live)
+
         state = self.states.pop(0)
         if isinstance(state, Exception):
             raise state

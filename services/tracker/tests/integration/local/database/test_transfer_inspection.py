@@ -16,7 +16,7 @@ from tests.integration.local.database.test_run_transfer import pair as pair
 from tests.integration.local.database.test_run_transfer import seed_rows
 from tests.transfer_support import OBSERVED_ACQUIRED_AT, OBSERVED_DECISION, FakeTransferBoundary, transfer_request
 from tracker.database.models import BenchmarkStatus, RunLifecycle
-from tracker.lifecycle import LifecycleConflict
+from tracker.lifecycle import LifecycleConflict, Verification
 from tracker.lifecycle_evidence import DispatchDrain
 from tracker.run_transfer import TransferOperator
 from tracker.run_transfer.contracts import TransferRequest, TransferResponse, TransferRun
@@ -35,9 +35,10 @@ class InterruptedCleanup(FakeTransferBoundary):
         *,
         dispatches: tuple[DispatchDrain, ...] = (),
         acquired_at: datetime = OBSERVED_ACQUIRED_AT,
+        verify: Verification,
     ) -> tuple[ArchiveReport, str]:
         assert not self.inspection, "inspection must not upload archives"
-        return await super().archive(request, run, dispatches=dispatches, acquired_at=acquired_at)
+        return await super().archive(request, run, dispatches=dispatches, acquired_at=acquired_at, verify=verify)
 
     async def cleanup_logs(
         self,
@@ -48,6 +49,7 @@ class InterruptedCleanup(FakeTransferBoundary):
         dispatches: tuple[DispatchDrain, ...] = (),
         acquired_at: datetime = OBSERVED_ACQUIRED_AT,
         log_completeness_sha256: str | None = OBSERVED_DECISION,
+        verify: Verification,
     ) -> None:
         assert not self.inspection, "inspection must not remove source logs"
         if run.source.run_id == self.stop_run_id:
@@ -59,13 +61,20 @@ class InterruptedCleanup(FakeTransferBoundary):
             dispatches=dispatches,
             acquired_at=acquired_at,
             log_completeness_sha256=log_completeness_sha256,
+            verify=verify,
         )
 
     async def drain(
-        self, request: TransferRequest, run: TransferRun, arguments: dict[str, Any], *, cleanup: bool = False
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        arguments: dict[str, Any],
+        *,
+        cleanup: bool = False,
+        verify: Verification,
     ) -> None:
         assert not (self.inspection and cleanup), "inspection must not clean up providers"
-        await super().drain(request, run, arguments, cleanup=cleanup)
+        await super().drain(request, run, arguments, cleanup=cleanup, verify=verify)
 
 
 def execute(operator: TransferOperator, payload: dict[str, Any], action: str) -> TransferResponse:

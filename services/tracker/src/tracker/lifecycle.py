@@ -34,6 +34,13 @@ class LifecycleConflict(TrackerServiceError):
     """The run scope or durable operation ownership does not match."""
 
 
+Verification = Callable[[], None]
+
+
+def unverified() -> None:
+    """Default for a provider call the caller drives without an operation lock."""
+
+
 class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

@@ -17,7 +17,7 @@ from tracker.aws.historical_logs import HistoricalLogProvider
 from tracker.aws.log_history_archive import archive_logs, read_events, read_manifest
 from tracker.aws.log_history_source import FrozenLogSource
 from tracker.aws.log_history_store import encode, same_inventory
-from tracker.lifecycle import LifecycleConflict
+from tracker.lifecycle import LifecycleConflict, Verification, unverified
 from tracker.lifecycle_evidence import DispatchDrain, validate_host_contract_observation
 from tracker.run_purge.contracts import ProviderLocator, PurgeRun
 from tracker.run_relocation.providers import RelocationAWSBoundary
@@ -327,7 +327,13 @@ class TransferAWSBoundary:
             raise LifecycleConflict("Exact source transfer fence differs")
 
     async def drain(
-        self, request: TransferRequest, run: TransferRun, arguments: dict[str, Any], *, cleanup: bool = False
+        self,
+        request: TransferRequest,
+        run: TransferRun,
+        arguments: dict[str, Any],
+        *,
+        cleanup: bool = False,
+        verify: Verification = unverified,
     ) -> None:
         assert self.source is not None
         locator = arguments.get("sandbox_provider_secret_name")
@@ -341,7 +347,7 @@ class TransferAWSBoundary:
         provider_run = PurgeRun(scope=run.source, provider=ProviderLocator(kind=kind, secret_name=locator))
         boundary = RelocationAWSBoundary(self.source)
         if cleanup:
-            await boundary.cleanup_sandboxes(provider_run)
+            await boundary.cleanup_sandboxes(provider_run, verify=verify)
         await boundary.verify_absence(provider_run)
 
     async def archive(
@@ -351,6 +357,7 @@ class TransferAWSBoundary:
         *,
         dispatches: tuple[DispatchDrain, ...],
         acquired_at: datetime,
+        verify: Verification = unverified,
     ) -> tuple[ArchiveReport, str]:
         """Publish and verify one archive. This is the only path that may decide completeness."""
         # Refuse on the inputs the caller already holds, before a full source traversal.
@@ -367,6 +374,7 @@ class TransferAWSBoundary:
             destination_session=destination,
             journal_directory=self.journal / str(request.plan.source_identity.operation_id) / str(run.source.run_id),
             staged_scan=evidence,
+            verify=verify,
         )
         decision = await self._verify_archive(
             request, run, report, dispatches=dispatches, acquired_at=acquired_at, log_completeness_sha256=None
@@ -550,6 +558,7 @@ class TransferAWSBoundary:
         dispatches: tuple[DispatchDrain, ...],
         acquired_at: datetime,
         log_completeness_sha256: str | None,
+        verify: Verification = unverified,
     ) -> None:
         if log_completeness_sha256 is None:
             raise _incomplete("persisted_decision")
@@ -572,6 +581,7 @@ class TransferAWSBoundary:
         if not same_inventory(inventory, manifest.first_scan):
             raise LifecycleConflict("Source logs changed after archive; cleanup refused")
         client = source.client("logs", region_name=request.plan.source_identity.region)
+        verify()
         await asyncio.to_thread(client.delete_log_group, logGroupName=run.source.log_group)
         _, after = frozen.scan(lambda _event: None)
         if not after.group_absent:

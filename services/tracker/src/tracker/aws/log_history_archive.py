@@ -13,6 +13,8 @@ from pydantic import ValidationError
 
 from tracker.aws.log_history_source import FrozenLogSource
 from tracker.aws.log_history_store import ArchiveVersionStore, UploadJournal, digest, encode, same_inventory
+from tracker.exceptions import TrackerServiceError
+from tracker.lifecycle import Verification, unverified
 from tracker.runtime.log_history import (
     ArchiveChunk,
     ArchivedLogEvent,
@@ -30,12 +32,18 @@ from tracker.runtime.log_history import (
 
 class _ChunkWriter:
     def __init__(
-        self, scope: FrozenLogScope, limits: ArchiveLimits, journal: UploadJournal, store: ArchiveVersionStore
+        self,
+        scope: FrozenLogScope,
+        limits: ArchiveLimits,
+        journal: UploadJournal,
+        store: ArchiveVersionStore,
+        verify: Verification,
     ) -> None:
         self.scope = scope
         self.limits = limits
         self.journal = journal
         self.store = store
+        self.verify = verify
         self.events: list[ArchivedLogEvent] = []
         self.chunks: list[ChunkReference] = []
         self.content_bytes = 0
@@ -74,6 +82,7 @@ class _ChunkWriter:
 
         chunk = self._chunk(tuple(self.events), self.events[0].ordinal)
         key = f"{self.scope.prefix}chunks/{len(self.chunks):08d}.json"
+        self.verify()
         reference = self.journal.put(self.store, key, encode(chunk), self.limits.chunk_bytes)
         self.chunks.append(
             ChunkReference(object=reference, first_ordinal=chunk.first_ordinal, event_count=len(chunk.events))
@@ -89,6 +98,7 @@ def archive_logs(
     journal_directory: Path,
     limits: ArchiveLimits = ArchiveLimits(),
     staged_scan: ScanEvidence | None = None,
+    verify: Verification = unverified,
 ) -> ArchiveReport:
     """Verify both authorities, scan twice, and publish a manifest last.
 
@@ -96,6 +106,8 @@ def archive_logs(
     directory belongs to exactly this approved scope and must survive restarts.
     A caller that already gated an evidence-only scan stages it here, so the
     published inventory is the one the caller cleared and never a later one.
+    A caller holding an operation lock passes its verification, which runs again
+    immediately before every object this writes.
     """
     try:
         if source_session is destination_session:
@@ -108,7 +120,7 @@ def archive_logs(
         )
         journal = UploadJournal(journal_directory, scope_sha256, scope.prefix, limits.max_chunks)
         with journal.locked():
-            writer = _ChunkWriter(scope, limits, journal, store)
+            writer = _ChunkWriter(scope, limits, journal, store, verify)
             streams, first = source.scan(writer.append)
             if staged_scan is not None:
                 if not same_inventory(staged_scan, first):
@@ -142,6 +154,7 @@ def archive_logs(
             )
             manifest_object = journal.manifest
             if manifest_object is None:
+                verify()
                 manifest_object = journal.put(
                     store, f"{scope.prefix}manifest.json", encode(manifest), limits.manifest_bytes
                 )
@@ -174,7 +187,8 @@ def archive_logs(
                 chunk_count=len(writer.chunks),
                 event_sha256=first.event_sha256,
             )
-    except ArchiveError:
+    except (ArchiveError, TrackerServiceError):
+        # The masking below hides provider detail; the tracker's own refusals are not that.
         raise
     except Exception:
         raise ArchiveError("archive operation failed; source must remain intact") from None
