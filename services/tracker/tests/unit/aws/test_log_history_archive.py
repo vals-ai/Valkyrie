@@ -15,7 +15,7 @@ from botocore.exceptions import ClientError
 
 from tracker.aws.log_history_store import same_inventory
 from tracker.aws.runtime import AWSResources
-from tracker.lifecycle import OperationIdentity, RunScope
+from tracker.lifecycle import OperationIdentity, RunScope, unverified
 from tracker.runtime.log_history import ScanEvidence
 
 RUN_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -203,6 +203,7 @@ def run_archive(archive: Any, tmp_path: Path, logs: FakeLogs, storage: FakeS3, *
         source_session=FakeSession(SOURCE_ACCOUNT, logs),
         destination_session=FakeSession(DESTINATION_ACCOUNT, storage),
         journal_directory=tmp_path,
+        verify=updates.pop("verify", unverified),
         **updates,
     )
 
@@ -302,6 +303,7 @@ def test_wrong_authority_or_bucket_fails_before_writes(archive: Any, tmp_path: P
             source_session=source,
             destination_session=FakeSession(DESTINATION_ACCOUNT, storage),
             journal_directory=tmp_path,
+            verify=unverified,
         )
     assert storage.objects == {}
 
@@ -327,7 +329,11 @@ def test_same_session_cannot_supply_both_authorities(archive: Any, tmp_path: Pat
     session = FakeSession(SOURCE_ACCOUNT, logs)
     with pytest.raises(archive.ArchiveError, match="separate"):
         archive.archive_logs(
-            scoped_input(archive), source_session=session, destination_session=session, journal_directory=tmp_path
+            scoped_input(archive),
+            source_session=session,
+            destination_session=session,
+            journal_directory=tmp_path,
+            verify=unverified,
         )
 
 
@@ -397,6 +403,7 @@ def test_changed_parent_plan_cannot_reuse_journal(archive: Any, tmp_path: Path) 
             source_session=FakeSession(SOURCE_ACCOUNT, logs),
             destination_session=FakeSession(DESTINATION_ACCOUNT, storage),
             journal_directory=tmp_path,
+            verify=unverified,
         )
     assert len(storage.objects) == 2
 
@@ -564,6 +571,7 @@ def test_journal_is_bound_before_source_scan_to_one_operation(archive: Any, tmp_
             source_session=FakeSession(SOURCE_ACCOUNT, logs),
             destination_session=FakeSession(DESTINATION_ACCOUNT, storage),
             journal_directory=tmp_path,
+            verify=unverified,
         )
 
     assert logs.scan == prior_scans
@@ -615,10 +623,15 @@ def test_manifest_resume_preserves_original_observations(
                 source_session=source,
                 destination_session=destination,
                 journal_directory=tmp_path,
+                verify=unverified,
             )
     else:
         original_result = archive.archive_logs(
-            scoped_input(archive), source_session=source, destination_session=destination, journal_directory=tmp_path
+            scoped_input(archive),
+            source_session=source,
+            destination_session=destination,
+            journal_directory=tmp_path,
+            verify=unverified,
         )
 
     original_objects = dict(storage.objects)
@@ -627,7 +640,11 @@ def test_manifest_resume_preserves_original_observations(
     logs.single_page = change in {"pages", "both"}
     source.session_name = "session-two" if change in {"session", "both"} else "session-one"
     result = archive.archive_logs(
-        scoped_input(archive), source_session=source, destination_session=destination, journal_directory=tmp_path
+        scoped_input(archive),
+        source_session=source,
+        destination_session=destination,
+        journal_directory=tmp_path,
+        verify=unverified,
     )
     manifest = archive.read_manifest(result.reference, scoped_input(archive).location, destination)
 

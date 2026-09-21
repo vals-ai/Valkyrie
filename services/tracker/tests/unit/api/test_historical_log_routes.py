@@ -25,6 +25,7 @@ from tracker.aws import log_history_archive
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import task_log_stream_name
 from tracker.database.models import Benchmark, BenchmarkStatus, Org
+from tracker.lifecycle import unverified
 
 
 class DestinationLogs:
@@ -69,6 +70,7 @@ def install_history(
         source_session=FakeSession(SOURCE_ACCOUNT, FakeLogs()),
         destination_session=FakeSession(DESTINATION_ACCOUNT, storage),
         journal_directory=tmp_path,
+        verify=unverified,
     )
     benchmark.log_history = report.reference
     benchmark.arguments = benchmark.arguments.model_copy(update={"properties": scope.destination.original_resources})

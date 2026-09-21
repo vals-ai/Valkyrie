@@ -17,7 +17,7 @@ import tracker.run_purge.cli as cli
 from tests.factories import make_benchmark
 from tests.integration.local.database.test_run_purge import prepared_operator, relocated_operator
 from tracker.database.models import Benchmark, ExecutorDispatch, RunLifecycle
-from tracker.lifecycle import LifecycleConflict
+from tracker.lifecycle import LifecycleConflict, Verification
 from tracker.lifecycle_evidence import ExternalHostDrain
 from tracker.run_purge import PurgeOperator, build_plan
 from tracker.run_purge.contracts import (
@@ -136,11 +136,12 @@ async def test_inspection_mixed_present_and_removed_progress(postgres_session: S
     boundary.fenced = True
     original = boundary.purge_objects
 
-    async def stop_second(*arguments: Any) -> None:
+    async def stop_second(*arguments: Any, verify: Verification) -> None:
         identity, run = arguments
         if run.scope.run_id == operator.plan.runs[1].scope.run_id:
             raise RuntimeError("second run interrupted")
-        await original(identity, run)
+
+        await original(identity, run, verify=verify)
 
     boundary.purge_objects = stop_second
     with pytest.raises(RuntimeError):

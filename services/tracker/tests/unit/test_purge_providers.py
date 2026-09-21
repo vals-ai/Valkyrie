@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 import tracker.run_purge.providers as providers
 from tracker.aws.runtime import AWSResources
-from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope
+from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, unverified
 from tracker.run_purge.contracts import ProviderLocator, PurgeRun
 from tracker.run_purge.providers import AWSProviderBoundary, FenceReceipt, WriteProbe, policy_digest
 
@@ -154,7 +154,7 @@ async def test_all_versions_markers_uploads_and_exact_logs(setup: Setup) -> None
         {"IsTruncated": False, "Uploads": [{"Key": prefix + "b", "UploadId": "u1"}]},
         {"IsTruncated": False},
     ]
-    await boundary.purge_objects(identity, run)
+    await boundary.purge_objects(identity, run, verify=unverified)
     deleted = {(call.kwargs["Key"], call.kwargs["VersionId"]) for call in client.delete_object.call_args_list}
     assert deleted == {(prefix + "a", "v1"), (prefix + "a", "v2")}
     assert client.abort_multipart_upload.call_args.kwargs["UploadId"] == "u1"
@@ -162,7 +162,7 @@ async def test_all_versions_markers_uploads_and_exact_logs(setup: Setup) -> None
         {"logGroups": [{"logGroupName": run.scope.log_group}, {"logGroupName": run.scope.log_group + "-other"}]},
         {"logGroups": [{"logGroupName": run.scope.log_group + "-other"}]},
     ]
-    await boundary.purge_logs(run)
+    await boundary.purge_logs(run, verify=unverified)
     logs.delete_log_group.assert_called_once_with(logGroupName=run.scope.log_group)
 
 
@@ -171,7 +171,7 @@ async def test_provider_listing_outside_prefix_refuses_delete(setup: Setup) -> N
     boundary, identity, run, client, _ = setup
     client.list_object_versions.return_value = {"Versions": [{"Key": "benchmarks/another/a", "VersionId": "v1"}]}
     with pytest.raises(LifecycleConflict):
-        await boundary.purge_objects(identity, run)
+        await boundary.purge_objects(identity, run, verify=unverified)
     client.delete_object.assert_not_called()
 
 
@@ -226,8 +226,8 @@ async def test_two_run_storage_keeps_unrelated_versions_and_logs(setup: Setup) -
 
     logs.describe_log_groups.side_effect = list_groups
     logs.delete_log_group.side_effect = delete_group
-    await boundary.purge_objects(identity, run)
-    await boundary.purge_logs(run)
+    await boundary.purge_objects(identity, run, verify=unverified)
+    await boundary.purge_logs(run, verify=unverified)
     await boundary.verify_storage_absence(identity, run)
     assert versions == {(other_prefix + "data", "keep")}
     assert markers == {(other_prefix + "gone", "keep-marker")}
@@ -258,7 +258,7 @@ async def test_strict_sandbox_delete_error_is_not_swallowed(setup: Setup, monkey
 
     monkeypatch.setattr(providers, "fetch_sandbox_provider_config", configuration_lookup)
     with pytest.raises(RuntimeError, match="unexpected provider"):
-        await boundary.cleanup_sandboxes(run)
+        await boundary.cleanup_sandboxes(run, verify=unverified)
     assert provider.close.await_count == 1
 
 
@@ -311,7 +311,7 @@ async def test_fence_blocks_marker_creation_but_permits_version_cleanup(
     boundary.fence_receipts = (boundary.fence_receipts[0].model_copy(update={"policy_sha256": policy_digest(policy)}),)
     if accepted:
         await boundary.verify_fence(identity, run)
-        await boundary.purge_objects(identity, run)
+        await boundary.purge_objects(identity, run, verify=unverified)
     else:
         with pytest.raises(LifecycleConflict):
             await boundary.verify_fence(identity, run)
@@ -361,11 +361,11 @@ async def test_inventory_pages_all_items_or_refuses_repeated_markers(setup: Setu
     listing.side_effect = [first, second, {"IsTruncated": False}]
     if broken:
         with pytest.raises(LifecycleConflict, match="pagination"):
-            await boundary.purge_objects(identity, run)
+            await boundary.purge_objects(identity, run, verify=unverified)
         client.delete_object.assert_not_called()
         client.abort_multipart_upload.assert_not_called()
     else:
-        await boundary.purge_objects(identity, run)
+        await boundary.purge_objects(identity, run, verify=unverified)
         deletions = client.abort_multipart_upload if uploads else client.delete_object
         assert {call.kwargs[identifier] for call in deletions.call_args_list} == {"first", "second"}
         assert listing.call_args_list[1].kwargs["KeyMarker"] == key
@@ -381,11 +381,11 @@ async def test_multipart_race_requires_verified_absence(setup: Setup, error_code
     ]
     client.abort_multipart_upload.side_effect = ClientError({"Error": {"Code": error_code}}, "AbortMultipartUpload")
     if error_code == "NoSuchUpload":
-        await boundary.purge_objects(identity, run)
+        await boundary.purge_objects(identity, run, verify=unverified)
         assert client.list_multipart_uploads.call_count == 2
     else:
         with pytest.raises(ClientError):
-            await boundary.purge_objects(identity, run)
+            await boundary.purge_objects(identity, run, verify=unverified)
 
 
 @pytest.mark.asyncio
@@ -403,11 +403,11 @@ async def test_log_pagination_and_delete_races_are_strict(setup: Setup, failure:
         code = "AccessDeniedException" if failure == "access_denied" else "ResourceNotFoundException"
         logs.delete_log_group.side_effect = ClientError({"Error": {"Code": code}}, "DeleteLogGroup")
     if failure == "disappeared":
-        await boundary.purge_logs(run)
+        await boundary.purge_logs(run, verify=unverified)
         assert logs.describe_log_groups.call_count == 3
     else:
         with pytest.raises((LifecycleConflict, ClientError)):
-            await boundary.purge_logs(run)
+            await boundary.purge_logs(run, verify=unverified)
     if failure == "repeated_token":
         logs.delete_log_group.assert_not_called()
     else:
@@ -439,7 +439,7 @@ async def test_sandbox_inventory_scope_and_not_found_cleanup(
 
     monkeypatch.setattr(providers, "fetch_sandbox_provider_config", lookup)
     if scenario == "delete_not_found":
-        await boundary.cleanup_sandboxes(run)
+        await boundary.cleanup_sandboxes(run, verify=unverified)
     elif scenario == "absent":
         await boundary.verify_absence(run)
     else:

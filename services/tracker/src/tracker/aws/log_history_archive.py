@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from tracker.aws.log_history_source import FrozenLogSource
 from tracker.aws.log_history_store import ArchiveVersionStore, UploadJournal, digest, encode, same_inventory
 from tracker.exceptions import TrackerServiceError
-from tracker.lifecycle import Verification, unverified
+from tracker.lifecycle import Verification
 from tracker.runtime.log_history import (
     ArchiveChunk,
     ArchivedLogEvent,
@@ -96,9 +96,9 @@ def archive_logs(
     source_session: Any,
     destination_session: Any,
     journal_directory: Path,
+    verify: Verification,
     limits: ArchiveLimits = ArchiveLimits(),
     staged_scan: ScanEvidence | None = None,
-    verify: Verification = unverified,
 ) -> ArchiveReport:
     """Verify both authorities, scan twice, and publish a manifest last.
 
@@ -106,8 +106,9 @@ def archive_logs(
     directory belongs to exactly this approved scope and must survive restarts.
     A caller that already gated an evidence-only scan stages it here, so the
     published inventory is the one the caller cleared and never a later one.
-    A caller holding an operation lock passes its verification, which runs again
-    immediately before every object this writes.
+    The caller's verification runs again immediately before every object this
+    writes; a caller that holds no operation lock has to pass `unverified` and
+    say so.
     """
     try:
         if source_session is destination_session:

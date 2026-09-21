@@ -112,7 +112,7 @@ class AWSProviderBoundary:
             raise LifecycleConflict("Current owner write fence differs from exact operation receipt")
         return digest
 
-    async def _sandboxes(self, run: PurgeRun, *, delete: bool, verify: Verification = unverified) -> None:
+    async def _sandboxes(self, run: PurgeRun, *, delete: bool, verify: Verification) -> None:
         clients = self.clients.with_region(run.scope.original_resources.region)
         configuration = await asyncio.to_thread(
             fetch_sandbox_provider_config, run.provider.secret_name, SecretsManagerStore(clients), run.provider.kind
@@ -133,11 +133,11 @@ class AWSProviderBoundary:
         finally:
             await provider.close()
 
-    async def cleanup_sandboxes(self, run: PurgeRun, *, verify: Verification = unverified) -> None:
+    async def cleanup_sandboxes(self, run: PurgeRun, *, verify: Verification) -> None:
         await self._sandboxes(run, delete=True, verify=verify)
 
     async def verify_absence(self, run: PurgeRun) -> None:
-        await self._sandboxes(run, delete=False)
+        await self._sandboxes(run, delete=False, verify=unverified)
 
     async def _inventory(
         self, client: Any, identity: OperationIdentity, run: PurgeRun, *, uploads: bool
@@ -184,7 +184,7 @@ class AWSProviderBoundary:
             seen.add((key_marker, value_marker))
             request.update({"KeyMarker": key_marker, "UploadIdMarker" if uploads else "VersionIdMarker": value_marker})
 
-    async def purge_objects(self, identity: OperationIdentity, run: PurgeRun) -> None:
+    async def purge_objects(self, identity: OperationIdentity, run: PurgeRun, *, verify: Verification) -> None:
         async with self.clients.with_region(identity.region).s3_client() as client:
             versions = await self._inventory(client, identity, run, uploads=False)
             uploads = await self._inventory(client, identity, run, uploads=True)
@@ -193,8 +193,10 @@ class AWSProviderBoundary:
                 "ExpectedBucketOwner": identity.source_aws_account_id,
             }
             for version in versions:
+                verify()
                 await client.delete_object(**arguments, **version)
             for upload in uploads:
+                verify()
                 try:
                     await client.abort_multipart_upload(**arguments, **upload)
                 except ClientError as error:
@@ -221,9 +223,10 @@ class AWSProviderBoundary:
             tokens.add(token)
             arguments["nextToken"] = token
 
-    async def purge_logs(self, run: PurgeRun) -> None:
+    async def purge_logs(self, run: PurgeRun, *, verify: Verification) -> None:
         if await self._log_exists(run):
             client = self.clients.with_region(run.scope.original_resources.region).cloudwatch_logs_client()
+            verify()
             try:
                 await asyncio.to_thread(client.delete_log_group, logGroupName=run.scope.log_group)
             except ClientError as error:

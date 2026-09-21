@@ -15,7 +15,7 @@ from tests.unit.aws.test_log_history_archive import FakeLogs, FakeS3, FakeSessio
 from tests.unit.test_relocation_providers import setup
 from tracker.aws import log_history_archive
 from tracker.aws.historical_logs import HistoricalLogProvider
-from tracker.lifecycle import LifecycleConflict
+from tracker.lifecycle import LifecycleConflict, unverified
 from tracker.run_transfer.contracts import TransferRequest
 from tracker.run_transfer.providers import SOURCE_FENCE_ACTIONS, TransferAWSBoundary
 from tracker.run_transfer.references import verify_portable_references
@@ -299,6 +299,7 @@ async def test_provider_drain_uses_saved_locator_and_one_absence_check(
         request.plan.runs[0],
         {"sandbox_provider": "daytona", "sandbox_provider_secret_name": "exact-source-secret"},
         cleanup=cleanup,
+        verify=unverified,
     )
 
     assert [call[0] for call in provider.mock_calls] == (["cleanup_sandboxes"] if cleanup else []) + ["verify_absence"]
@@ -325,6 +326,6 @@ async def test_missing_provider_locator_fails_before_provider_calls(
     monkeypatch.setattr("tracker.run_transfer.providers.RelocationAWSBoundary", factory)
 
     with pytest.raises(LifecycleConflict, match=message):
-        await boundary.drain(request, request.plan.runs[0], arguments, cleanup=True)
+        await boundary.drain(request, request.plan.runs[0], arguments, cleanup=True, verify=unverified)
 
     factory.assert_not_called()

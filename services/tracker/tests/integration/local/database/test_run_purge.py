@@ -15,10 +15,12 @@ from sqlalchemy import Connection, text
 from sqlalchemy.exc import DBAPIError
 from sqlmodel import Session, select
 
+import tracker.run_purge as run_purge
 import tracker.run_purge.cli as purge_cli
 import tracker.utils.run_orchestration as orchestration
 from tests.factories import make_benchmark, make_task
 from tests.integration.local.database.test_lifecycle_holds import seeded_run
+from tests.unit.test_purge_locking import FakeLockConnection, scripted_lock
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -37,6 +39,7 @@ from tracker.lifecycle import (
     OperationIdentity,
     Purpose,
     RunScope,
+    Verification,
     acquire_hold,
     release_relocation_hold,
 )
@@ -44,7 +47,12 @@ from tracker.lifecycle_evidence import ExternalHostDrain, HostContractObservatio
 from tracker.run_purge import PurgeOperator, build_plan
 from tracker.run_purge.cli import main as purge_cli_main
 from tracker.run_purge.contracts import PurgeCheckpoint, PurgePlan
-from tracker.run_purge.locking import database_target
+from tracker.run_purge.locking import OperationLock, database_target
+
+
+_BACKEND_PID = 4242
+_HELD = (_BACKEND_PID, 1)
+_LOST = (_BACKEND_PID + 1, 1)
 
 
 def test_cli_apply_failure_and_resume_preserve_durable_proof(
@@ -226,10 +234,12 @@ class MemoryBoundary:
             raise LifecycleConflict("Owner write fence missing")
         return "b" * 64
 
-    async def cleanup_sandboxes(self, *_arguments: Any) -> None:
+    async def cleanup_sandboxes(self, *_arguments: Any, verify: Verification) -> None:
         self.calls.append("cleanup")
         if self.fail == "sandbox":
             raise RuntimeError("provider unavailable")
+
+        verify()
         self.sandboxes.clear()
 
     async def verify_absence(self, *_arguments: Any) -> None:
@@ -237,17 +247,20 @@ class MemoryBoundary:
         if self.sandboxes:
             raise LifecycleConflict("Sandboxes remain")
 
-    async def purge_objects(self, *_arguments: Any) -> None:
+    async def purge_objects(self, *_arguments: Any, verify: Verification) -> None:
         self.calls.append("objects")
+        verify()
         self.objects.discard("version")
         if self.fail == "objects":
             raise RuntimeError("partial S3 failure")
         self.objects.clear()
 
-    async def purge_logs(self, *_arguments: Any) -> None:
+    async def purge_logs(self, *_arguments: Any, verify: Verification) -> None:
         self.calls.append("logs")
         if self.fail == "logs":
             raise RuntimeError("logs unavailable")
+
+        verify()
         self.logs = False
 
     async def verify_storage_absence(self, *_arguments: Any) -> None:
@@ -395,10 +408,10 @@ async def test_concurrent_purge_refuses_same_operation(postgres_session: Session
     resume = asyncio.Event()
     original = boundary.purge_objects
 
-    async def paused(*arguments: Any) -> None:
+    async def paused(*arguments: Any, verify: Verification) -> None:
         reached.set()
         await resume.wait()
-        await original(*arguments)
+        await original(*arguments, verify=verify)
 
     boundary.purge_objects = paused
     first = asyncio.create_task(operator.purge())
@@ -887,3 +900,51 @@ async def test_late_delete_marker_after_row_removal_keeps_purge_incomplete(postg
     boundary.verify_storage_absence = original_verify
     boundary.objects.clear()
     assert (await operator.purge()).outcome == "checked"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_call", "surviving"),
+    [("cleanup", "sandboxes"), ("objects", "objects"), ("logs", "logs")],
+)
+async def test_a_lock_lost_inside_a_provider_call_stops_that_provider_mutation(
+    postgres_session: Session, monkeypatch: pytest.MonkeyPatch, provider_call: str, surviving: str
+) -> None:
+    """Each mutation reads first, so the operator must carry its verification into the provider."""
+    connection = FakeLockConnection(live=_HELD)
+    lock = OperationLock(connection, _BACKEND_PID, (11,))
+
+    class LosingBoundary(MemoryBoundary):
+        def _lose(self, name: str) -> None:
+            if name == provider_call:
+                connection.live = _LOST
+
+        async def cleanup_sandboxes(self, *arguments: Any, verify: Verification) -> None:
+            self._lose("cleanup")
+            await super().cleanup_sandboxes(*arguments, verify=verify)
+
+        async def purge_objects(self, *arguments: Any, verify: Verification) -> None:
+            self._lose("objects")
+            await super().purge_objects(*arguments, verify=verify)
+
+        async def purge_logs(self, *arguments: Any, verify: Verification) -> None:
+            self._lose("logs")
+            await super().purge_logs(*arguments, verify=verify)
+
+    operator, _ = prepared_operator(postgres_session)
+    boundary = LosingBoundary()
+    operator.boundary = boundary
+    monkeypatch.setattr(run_purge, "exclusive_operation", lambda *_arguments: scripted_lock(lock))
+
+    if provider_call == "cleanup":
+        with pytest.raises(LifecycleConflict, match="advisory lock is no longer held"):
+            await operator.prepare()
+    else:
+        await operator.prepare()
+        boundary.fenced = True
+
+        with pytest.raises(LifecycleConflict, match="advisory lock is no longer held"):
+            await operator.purge()
+    postgres_session.rollback()
+
+    assert getattr(boundary, surviving)

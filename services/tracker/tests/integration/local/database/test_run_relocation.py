@@ -39,7 +39,14 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.executor.release_control import create_executor_dispatch
-from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, as_utc, require_unheld
+from tracker.lifecycle import (
+    LifecycleConflict,
+    OperationIdentity,
+    RunScope,
+    Verification,
+    as_utc,
+    require_unheld,
+)
 from tracker.lifecycle_completion import RelocationCheckpoint, acquire_successor_hold, capture_predecessor
 import tracker.run_relocation as run_relocation
 from tracker.run_purge.locking import OperationLock
@@ -83,8 +90,8 @@ class EmptyBoundary:
     async def verify_absence(self, *_arguments: object) -> None:
         pass
 
-    async def cleanup_sandboxes(self, *_arguments: object) -> None:
-        pass
+    async def cleanup_sandboxes(self, *_arguments: object, verify: Verification) -> None:
+        verify()
 
     async def verify_objects(
         self,
@@ -475,7 +482,7 @@ def test_a_lock_lost_during_a_provider_call_stops_the_next_phase_commit(
     connection = ReconnectingLockConnection()
 
     class ReconnectingBoundary(EmptyBoundary):
-        async def cleanup_sandboxes(self, *_arguments: object) -> None:
+        async def cleanup_sandboxes(self, *_arguments: object, verify: Verification) -> None:
             connection.reconnected = provider_call == "cleanup_sandboxes"
 
         async def verify_objects(self, *_arguments: object, **_options: object) -> None:
@@ -495,6 +502,34 @@ def test_a_lock_lost_during_a_provider_call_stops_the_next_phase_commit(
         relocation_session.connection().execute(text("SELECT arguments FROM benchmark WHERE id=:id"), {"id": run.id})
     ).scalar_one()
     assert persisted == saved
+
+
+def test_a_resumed_prepare_refuses_the_sandbox_destruction_before_it_happens(
+    relocation_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resume skips the hold branch, so nothing verified the lock ahead of this destruction."""
+    run, _, request = seed(relocation_session)
+    execute(relocation_session, request, "prepare")
+    connection = ReconnectingLockConnection()
+    connection.reconnected = True
+    destroyed: list[str] = []
+
+    class DestroyingBoundary(EmptyBoundary):
+        async def cleanup_sandboxes(self, *_arguments: object, verify: Verification) -> None:
+            verify()
+            destroyed.append("sandboxes")
+
+    lock = OperationLock(connection, connection.backend_pid, (11,))
+    monkeypatch.setattr(run_relocation, "exclusive_operation", lambda *_arguments: scripted_lock(lock))
+    resumed = TrackerRequest.model_validate({**request, "action": "prepare", "nonce": str(uuid4())})
+
+    with pytest.raises(LifecycleConflict, match="advisory lock is no longer held"):
+        asyncio.run(RelocationOperator(relocation_session, DestroyingBoundary()).execute(resumed))
+    relocation_session.rollback()
+
+    assert destroyed == []
+    record = relocation_session.get(RunLifecycle, run.id)
+    assert record is not None and record.phase == "prepared"
 
 
 def test_a_resume_admitted_after_release_cannot_change_the_returned_receipt(relocation_session: Session) -> None:
@@ -669,7 +704,8 @@ def test_prepare_resume_rejects_changed_provider_before_external_cleanup(relocat
     cleaned: list[str] = []
 
     class RecordingBoundary(EmptyBoundary):
-        async def cleanup_sandboxes(self, *_arguments: object) -> None:
+        async def cleanup_sandboxes(self, *_arguments: object, verify: Verification) -> None:
+            verify()
             cleaned.append("provider mutation")
 
     with pytest.raises(LifecycleConflict):

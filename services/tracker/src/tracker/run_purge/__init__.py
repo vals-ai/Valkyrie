@@ -14,6 +14,7 @@ from tracker.lifecycle import (
     LifecycleConflict,
     OperationIdentity,
     RunScope,
+    Verification,
     abandon_deletion_hold,
     require_owned_hold,
 )
@@ -52,10 +53,10 @@ _ABANDONABLE_PHASES = {"held", "prepared"}
 class PurgeBoundary(Protocol):
     async def validate(self, identity: OperationIdentity, run: PurgeRun, /) -> None: ...
     async def verify_fence(self, identity: OperationIdentity, run: PurgeRun, /) -> str: ...
-    async def cleanup_sandboxes(self, run: PurgeRun, /) -> None: ...
+    async def cleanup_sandboxes(self, run: PurgeRun, /, *, verify: Verification) -> None: ...
     async def verify_absence(self, run: PurgeRun, /) -> None: ...
-    async def purge_objects(self, identity: OperationIdentity, run: PurgeRun, /) -> None: ...
-    async def purge_logs(self, run: PurgeRun, /) -> None: ...
+    async def purge_objects(self, identity: OperationIdentity, run: PurgeRun, /, *, verify: Verification) -> None: ...
+    async def purge_logs(self, run: PurgeRun, /, *, verify: Verification) -> None: ...
     async def verify_storage_absence(self, identity: OperationIdentity, run: PurgeRun, /) -> None: ...
 
 
@@ -438,7 +439,7 @@ class PurgeOperator:
             self.session.commit()
             lock.verify()
             self._lock(run)
-            await self.boundary.cleanup_sandboxes(run)
+            await self.boundary.cleanup_sandboxes(run, verify=lock.verify)
             _, _, checkpoint = self._lock(run)
             drains = self._drain(run)
             self.session.rollback()
@@ -491,13 +492,13 @@ class PurgeOperator:
             )
             lock.verify()
             self._lock(run)
-            await self.boundary.purge_objects(self.plan.identity, run)
+            await self.boundary.purge_objects(self.plan.identity, run, verify=lock.verify)
             _, _, checkpoint = self._lock(run)
             self._commit_checkpoint(run, checkpoint.model_copy(update={"phase": "objects_removed"}), lock)
             await self.boundary.verify_fence(self.plan.identity, run)
             lock.verify()
             self._lock(run)
-            await self.boundary.purge_logs(run)
+            await self.boundary.purge_logs(run, verify=lock.verify)
             _, _, checkpoint = self._lock(run)
             self._commit_checkpoint(run, checkpoint.model_copy(update={"phase": "logs_removed"}), lock)
             await self.boundary.verify_fence(self.plan.identity, run)

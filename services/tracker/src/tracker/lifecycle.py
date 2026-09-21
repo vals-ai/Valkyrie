@@ -38,7 +38,7 @@ Verification = Callable[[], None]
 
 
 def unverified() -> None:
-    """Default for a provider call the caller drives without an operation lock."""
+    """The explicit choice a caller states when it drives a provider without an operation lock."""
 
 
 class ContractModel(BaseModel):

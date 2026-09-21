@@ -17,7 +17,7 @@ from tracker.aws.historical_logs import HistoricalLogProvider
 from tracker.aws.log_history_archive import archive_logs, read_events, read_manifest
 from tracker.aws.log_history_source import FrozenLogSource
 from tracker.aws.log_history_store import encode, same_inventory
-from tracker.lifecycle import LifecycleConflict, Verification, unverified
+from tracker.lifecycle import LifecycleConflict, Verification
 from tracker.lifecycle_evidence import DispatchDrain, validate_host_contract_observation
 from tracker.run_purge.contracts import ProviderLocator, PurgeRun
 from tracker.run_relocation.providers import RelocationAWSBoundary
@@ -333,7 +333,7 @@ class TransferAWSBoundary:
         arguments: dict[str, Any],
         *,
         cleanup: bool = False,
-        verify: Verification = unverified,
+        verify: Verification,
     ) -> None:
         assert self.source is not None
         locator = arguments.get("sandbox_provider_secret_name")
@@ -357,7 +357,7 @@ class TransferAWSBoundary:
         *,
         dispatches: tuple[DispatchDrain, ...],
         acquired_at: datetime,
-        verify: Verification = unverified,
+        verify: Verification,
     ) -> tuple[ArchiveReport, str]:
         """Publish and verify one archive. This is the only path that may decide completeness."""
         # Refuse on the inputs the caller already holds, before a full source traversal.
@@ -558,7 +558,7 @@ class TransferAWSBoundary:
         dispatches: tuple[DispatchDrain, ...],
         acquired_at: datetime,
         log_completeness_sha256: str | None,
-        verify: Verification = unverified,
+        verify: Verification,
     ) -> None:
         if log_completeness_sha256 is None:
             raise _incomplete("persisted_decision")

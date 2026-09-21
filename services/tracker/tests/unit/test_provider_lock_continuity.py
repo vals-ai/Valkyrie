@@ -5,11 +5,17 @@ during that read must stop the mutation. The lock is a session-level advisory
 lock on a dedicated connection, so its only loss is the backend disappearing;
 each test models that by changing the state the scripted connection reports
 while the provider is still reading.
+
+The signature case guards the same rule from the other side: a verification with
+a default can be omitted silently, which is how three of these methods came to
+run unprotected.
 """
 
+from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
+from uuid import uuid4
 
 import pytest
 
@@ -17,17 +23,86 @@ import tracker.run_purge.providers as purge_providers
 from tests.unit.test_purge_locking import FakeLockConnection
 from tests.unit.test_transfer_archive import archive_boundary
 from tests.unit.test_transfer_log_safety import quiet_run
-from tracker.lifecycle import LifecycleConflict
+from tracker.aws.log_history_archive import archive_logs
+from tracker.aws.runtime import AWSResources
+from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, unverified
+from tracker.run_purge import PurgeBoundary
+from tracker.run_purge.contracts import ProviderLocator, PurgeRun
 from tracker.run_purge.locking import OperationLock
+from tracker.run_purge.providers import AWSProviderBoundary
+from tracker.run_relocation import RelocationBoundary
+from tracker.run_transfer import TransferBoundary
+from tracker.run_transfer.providers import TransferAWSBoundary
 
 _BACKEND_PID = 4242
 _HELD = (_BACKEND_PID, 1)
 _LOST = (_BACKEND_PID + 1, 1)
 
+_DESTRUCTIVE_ENTRY_POINTS = [
+    AWSProviderBoundary.cleanup_sandboxes,
+    AWSProviderBoundary.purge_objects,
+    AWSProviderBoundary.purge_logs,
+    TransferAWSBoundary.drain,
+    TransferAWSBoundary.archive,
+    TransferAWSBoundary.cleanup_logs,
+    archive_logs,
+    PurgeBoundary.cleanup_sandboxes,
+    PurgeBoundary.purge_objects,
+    PurgeBoundary.purge_logs,
+    RelocationBoundary.cleanup_sandboxes,
+    TransferBoundary.drain,
+    TransferBoundary.archive,
+    TransferBoundary.cleanup_logs,
+]
+
 
 def held_lock() -> tuple[FakeLockConnection, OperationLock]:
     connection = FakeLockConnection(live=_HELD)
     return connection, OperationLock(connection, _BACKEND_PID, (11,))
+
+
+def purge_boundary() -> tuple[AWSProviderBoundary, OperationIdentity, PurgeRun, Any, Any]:
+    """The object and log paths take no fence receipt, so only the clients matter here."""
+    run_id = uuid4()
+    identity = OperationIdentity(
+        operation_id=uuid4(),
+        parent_plan_sha256="a" * 64,
+        github_owner_id=42,
+        org_id=uuid4(),
+        source_aws_account_id="123456789012",
+        destination_aws_account_id="123456789012",
+        region="us-west-2",
+        environment="dev",
+        database_target="test",
+        run_ids=(run_id,),
+    )
+    run = PurgeRun(
+        scope=RunScope(
+            run_id=run_id,
+            original_resources=AWSResources(
+                region="us-west-2", s3_bucket="vs-dev-owner-42", log_group="runs", log_retention_days=7
+            ),
+        ),
+        provider=ProviderLocator(kind="daytona", secret_name="provider"),
+    )
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    logs = MagicMock()
+    clients = MagicMock()
+    clients.with_region.return_value = clients
+    clients.s3_client.return_value = client
+    clients.cloudwatch_logs_client.return_value = logs
+
+    return AWSProviderBoundary(clients), identity, run, client, logs
+
+
+@pytest.mark.parametrize("entry_point", _DESTRUCTIVE_ENTRY_POINTS, ids=lambda item: item.__qualname__)
+def test_every_destructive_provider_entry_point_requires_its_verification(entry_point: Any) -> None:
+    """A default would let the next caller destroy without a lock and never say so."""
+    verify = signature(entry_point).parameters["verify"]
+
+    assert verify.kind is Parameter.KEYWORD_ONLY
+    assert verify.default is Parameter.empty
 
 
 def bulky_events(count: int) -> list[dict[str, Any]]:
@@ -50,7 +125,7 @@ async def test_a_lock_lost_during_the_cleanup_scan_stops_the_log_group_deletion(
 ) -> None:
     state = quiet_run(tmp_path, monkeypatch, publish=False)
     archive, decision = await state.boundary.archive(
-        state.request, state.run, dispatches=state.dispatches, acquired_at=state.acquired_at
+        state.request, state.run, dispatches=state.dispatches, acquired_at=state.acquired_at, verify=unverified
     )
     connection, lock = held_lock()
     describe = state.logs.describe_log_groups
@@ -138,3 +213,39 @@ async def test_a_lock_lost_during_the_sandbox_inventory_stops_the_sandbox_deleti
 
     provider.delete_sandbox.assert_not_awaited()
     provider.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_lock_lost_during_the_object_inventory_stops_the_object_deletion() -> None:
+    boundary, identity, run, client, _ = purge_boundary()
+    connection, lock = held_lock()
+
+    def losing_versions(**_request: Any) -> dict[str, Any]:
+        connection.live = _LOST
+        return {"IsTruncated": False, "Versions": [{"Key": run.scope.object_prefix + "a", "VersionId": "v1"}]}
+
+    client.list_object_versions.side_effect = losing_versions
+    client.list_multipart_uploads.return_value = {"IsTruncated": False}
+
+    with pytest.raises(LifecycleConflict, match="advisory lock is no longer held"):
+        await boundary.purge_objects(identity, run, verify=lock.verify)
+
+    client.delete_object.assert_not_awaited()
+    client.abort_multipart_upload.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_lock_lost_during_the_log_inventory_stops_the_log_group_deletion() -> None:
+    boundary, _, run, _, logs = purge_boundary()
+    connection, lock = held_lock()
+
+    def losing_groups(**_arguments: Any) -> dict[str, Any]:
+        connection.live = _LOST
+        return {"logGroups": [{"logGroupName": run.scope.log_group}]}
+
+    logs.describe_log_groups.side_effect = losing_groups
+
+    with pytest.raises(LifecycleConflict, match="advisory lock is no longer held"):
+        await boundary.purge_logs(run, verify=lock.verify)
+
+    logs.delete_log_group.assert_not_called()

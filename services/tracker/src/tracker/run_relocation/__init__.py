@@ -20,7 +20,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, require_owned_hold
+from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, Verification, require_owned_hold
 from tracker.lifecycle_completion import (
     RelocationCheckpoint,
     RelocationPredecessor,
@@ -54,7 +54,7 @@ class RelocationBoundary(Protocol):
     async def validate_source(self, identity: OperationIdentity, run: PurgeRun, /) -> None: ...
     async def validate(self, identity: OperationIdentity, run: PurgeRun, /) -> None: ...
     async def verify_absence(self, run: PurgeRun, /) -> None: ...
-    async def cleanup_sandboxes(self, run: PurgeRun, /) -> None: ...
+    async def cleanup_sandboxes(self, run: PurgeRun, /, *, verify: Verification) -> None: ...
     async def verify_objects(
         self,
         request: TrackerRequest,
@@ -519,7 +519,8 @@ class RelocationOperator:
             if checkpoint.child_plan_sha256 != request.plan.sha256:
                 raise LifecycleConflict("Child plan changed before provider cleanup")
             self._validate_run(benchmark, arguments, run, checkpoint)
-            await self.boundary.cleanup_sandboxes(provider_run)
+            lock.verify()
+            await self.boundary.cleanup_sandboxes(provider_run, verify=lock.verify)
             lock.verify()
         benchmark, arguments = self._run(request, run.scope.run_id)
         record, checkpoint = self._checkpoint(identity, run)
