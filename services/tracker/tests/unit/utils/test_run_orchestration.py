@@ -1,7 +1,7 @@
 """Tests for PostgreSQL-queued run coordination."""
 
 import asyncio
-from contextlib import nullcontext, suppress
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -163,7 +163,7 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
 
     sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id=provider_pool_id)
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
-    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=nullcontext(sandbox_provider)))
+    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=sandbox_provider))
     monkeypatch.setattr("tracker.utils.run_orchestration.asyncio.sleep", controlled_sleep)
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
     run = asyncio.create_task(process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs))
@@ -261,7 +261,7 @@ async def test_queued_process_benchmark_recovers_existing_work_before_finalizing
     monkeypatch.setattr(
         DaytonaProviderConfig,
         "create_provider",
-        Mock(return_value=nullcontext(sandbox_provider)),
+        Mock(return_value=sandbox_provider),
     )
 
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
@@ -325,7 +325,7 @@ async def test_queued_coordinator_retires_stale_evaluation_runner(
     provider = Mock(spec=SandboxProvider, admission_pool_id="stale-evaluation-pool")
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
     monkeypatch.setattr("tracker.utils.run_orchestration.recover_queued_pool", recover_queued_pool)
-    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=nullcontext(provider)))
+    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=provider))
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
     dispatch = database_session.get(ExecutorDispatch, UUID(str(authority_kwargs["executor_dispatch_id"])))
     assert dispatch is not None
@@ -410,7 +410,7 @@ async def test_queued_cancellation_errors_owned_work_and_preserves_pending_work(
 
     sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id="coordinator-pool")
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
-    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=nullcontext(sandbox_provider)))
+    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=sandbox_provider))
 
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
     run = asyncio.create_task(process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs))
@@ -429,6 +429,45 @@ async def test_queued_cancellation_errors_owned_work_and_preserves_pending_work(
     assert started_task_id is not None
     assert task_statuses[started_task_id] == TaskStatus.ERROR
     assert list(task_statuses.values()).count(TaskStatus.PENDING) == 1
+
+
+@pytest.mark.usefixtures("process_benchmark_env")
+async def test_cancelled_shutdown_drains_provider(
+    contract: AgentContractRequest,
+    database_session: Session,
+    harness_config: HarnessConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    executor_authority_kwargs: Any,
+) -> None:
+    """Repeated caller cancellation does not interrupt provider shutdown."""
+    started, release = asyncio.Event(), asyncio.Event()
+    finished = asyncio.Event()
+
+    async def close() -> None:
+        started.set()
+        await release.wait()
+        finished.set()
+
+    # The pool mismatch fails the run right after provider creation, so shutdown starts immediately.
+    request, benchmark = _queued_run(contract, harness_config, database_session, ["task_0"], pool_id="expected-pool")
+    provider = Mock(spec=SandboxProvider, admission_pool_id="different-pool", close=AsyncMock(side_effect=close))
+    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=provider))
+
+    authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
+    closing = asyncio.create_task(
+        process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"], **authority_kwargs)
+    )
+    await asyncio.wait_for(started.wait(), timeout=2)
+    for _ in range(2):
+        closing.cancel()
+        await asyncio.sleep(0)
+        assert not closing.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert finished.is_set()
+    provider.close.assert_awaited_once()
 
 
 @pytest.mark.usefixtures("process_benchmark_env")
@@ -453,7 +492,7 @@ async def test_queued_process_benchmark_reports_provider_configuration_drift(
         },
     )
     sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id=provider_pool_id)
-    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=nullcontext(sandbox_provider)))
+    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=sandbox_provider))
 
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
     await process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs)
