@@ -188,9 +188,7 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID)
             latest_results.append(row)
             seen_task_row_ids.add(task_row_id)
         else:
-            historical_results.append(
-                (task_row_id, evaluation_result.created_at, evaluation_result.result)
-            )
+            historical_results.append((task_row_id, evaluation_result.created_at, evaluation_result.result))
 
     latest_results.sort(
         key=lambda row: (row[0].created_at, row[0].id),

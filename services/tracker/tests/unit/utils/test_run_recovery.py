@@ -889,8 +889,7 @@ class TestRunRecovery:
         evaluation_queries = [
             statement
             for statement in statements
-            if statement.lstrip().upper().startswith("SELECT")
-            and "evaluationresult" in statement.lower()
+            if statement.lstrip().upper().startswith("SELECT") and "evaluationresult" in statement.lower()
         ]
         assert len(evaluation_queries) == 1
         evaluation_results = response.json()["evaluation_results"]
@@ -901,11 +900,11 @@ class TestRunRecovery:
                 "attempts": 3,
                 "history": [
                     {
-                        "created_at": _created_at(2).isoformat(),
+                        "created_at": _created_at(2).replace(tzinfo=None).isoformat(),
                         "error_message": "retry failed before",
                     },
                     {
-                        "created_at": _created_at(1).isoformat(),
+                        "created_at": _created_at(1).replace(tzinfo=None).isoformat(),
                         "result": {"score": 0.25},
                     },
                 ],
@@ -922,7 +921,7 @@ class TestRunRecovery:
                 "attempts": 2,
                 "history": [
                     {
-                        "created_at": _created_at(1).isoformat(),
+                        "created_at": _created_at(1).replace(tzinfo=None).isoformat(),
                         "result": {"score": 0.5},
                     },
                 ],
@@ -952,25 +951,15 @@ class TestRunRecovery:
         database_session.flush()
 
         created_at = _created_at(1)
-        previous_result = make_evaluation_result(
-            task_row, "previous-result", {"score": 0.5}, created_at
-        )
+        previous_result = make_evaluation_result(task_row, "previous-result", {"score": 0.5}, created_at)
         previous_result.id = UUID(int=1)
-        current_result = make_evaluation_result(
-            task_row, "current-result", {"score": 1.0}, created_at
-        )
+        current_result = make_evaluation_result(task_row, "current-result", {"score": 1.0}, created_at)
         current_result.id = UUID(int=2)
-        other_org_result = make_evaluation_result(
-            task_row, "other-org-result", {"score": 2.0}, created_at
-        )
+        other_org_result = make_evaluation_result(task_row, "other-org-result", {"score": 2.0}, created_at)
         other_org_result.id = UUID(int=3)
         other_org_result.org_id = other_org.id
-        foreign_task_result = make_evaluation_result(
-            foreign_task, "foreign-task-result", {"score": 3.0}, created_at
-        )
-        database_session.add_all(
-            [previous_result, current_result, other_org_result, foreign_task_result]
-        )
+        foreign_task_result = make_evaluation_result(foreign_task, "foreign-task-result", {"score": 3.0}, created_at)
+        database_session.add_all([previous_result, current_result, other_org_result, foreign_task_result])
         database_session.commit()
 
         evaluation_results = benchmark_row.fetch_evaluation_results(database_session)
@@ -981,7 +970,6 @@ class TestRunRecovery:
         assert task_result["score"] == 1.0
         assert task_result["attempts"] == 2
         assert [entry["result"] for entry in task_result["history"]] == [{"score": 0.5}]
-
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_reset_lazily_creates_rows_for_unregistered_task_ids(
