@@ -23,6 +23,7 @@ from tracker.aws.clients import (
 from tracker.aws.cloudwatch_logs import (
     CloudWatchBenchmarkLogLocations,
     CloudWatchBenchmarkLogSink,
+    handle_cloudwatch_error,
     task_log_stream_name,
 )
 from tracker.aws.runtime import AWSResources
@@ -205,6 +206,38 @@ class TestS3ClientRetry:
             assert client.meta.config.retries["mode"] == "standard"
 
 
+class TestCloudWatchClient:
+    """CloudWatch exception translation at the client boundary."""
+
+    def test_cloudwatch_error_with_client(self) -> None:
+        """Test that ClientError is caught buy the decorator"""
+        client_error = ClientError({"Error": {"Code": "404", "Message": "Not found"}}, "CreateLogStream")
+
+        @handle_cloudwatch_error(message="Failed to create log stream")
+        def failing_function() -> None:
+            raise client_error
+
+        with pytest.raises(CloudWatchError) as exc_info:
+            failing_function()
+
+        assert "Failed to create log stream" in str(exc_info.value)
+        assert exc_info.value.__cause__ == client_error
+
+    def test_cloudwatch_error_with_botocore(self) -> None:
+        """Test that BotoCoreError is caught by the decorator"""
+        botocore_error = BotoCoreError()
+
+        @handle_cloudwatch_error(message="Failed to connect to CloudWatch")
+        def failing_function() -> None:
+            raise botocore_error
+
+        with pytest.raises(CloudWatchError) as exc_info:
+            failing_function()
+
+        assert "Failed to connect to CloudWatch" in str(exc_info.value)
+        assert exc_info.value.__cause__ == botocore_error
+
+
 class TestSanitizeLogStreamName:
     """logStreamName must satisfy AWS constraint [^:*]* (no ':' or '*')."""
 
@@ -272,21 +305,6 @@ class TestWriteBenchmarkLogEvent:
                 _AWS_RESOURCES.log_group,
             ),
         )
-
-    @pytest.mark.parametrize(
-        "error",
-        [ClientError({"Error": {"Code": "AccessDeniedException"}}, "CreateLogStream"), BotoCoreError()],
-    )
-    def test_client_creation_error_is_translated(
-        self, monkeypatch: pytest.MonkeyPatch, error: ClientError | BotoCoreError
-    ) -> None:
-        _, client_provider, sink = self._sink_with_mock_client(monkeypatch)
-        client_provider.cloudwatch_logs_client.side_effect = error
-
-        with pytest.raises(CloudWatchError, match="Failed to create cloudwatch stream") as exc_info:
-            sink.write("bench123:task", "message")
-
-        assert exc_info.value.__cause__ is error
 
     def test_creates_stream_and_puts_event_with_sanitized_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, _, sink = self._sink_with_mock_client(monkeypatch)

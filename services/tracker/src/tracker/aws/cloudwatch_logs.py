@@ -5,11 +5,11 @@ import hashlib
 import re
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import datetime, timezone
+from functools import wraps
 from math import floor
-from typing import Any, cast
+from typing import Any, ParamSpec, TypeVar, cast
 from urllib.parse import quote
 
 import logfire
@@ -31,6 +31,8 @@ from tracker.runtime.logs import (
 
 _created_streams: set[str] = set()
 _FOLLOW_DEDUPLICATION_WINDOW = 10_000
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 
 def _sanitize_log_stream_name(task_id: str) -> str:
@@ -88,6 +90,20 @@ def _task_log_stream_names(reference: TaskLogReference) -> list[str]:
     return names
 
 
+def handle_cloudwatch_error(message: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
+    def decorator(func: Callable[_P, _R]) -> Callable[_P, _R]:
+        @wraps(func)
+        def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            try:
+                return func(*args, **kwargs)
+            except (ClientError, BotoCoreError) as error:
+                raise CloudWatchError(f"{message}: {error}") from error
+
+        return wrapper
+
+    return decorator
+
+
 class CloudWatchBenchmarkLogLocations(BenchmarkLogLocations):
     """CloudWatch console locations for resolved AWS resources."""
 
@@ -133,6 +149,7 @@ class CloudWatchBenchmarkLogSink(BenchmarkLogSink):
         except (ClientError, BotoCoreError) as error:
             raise CloudWatchError(f"Failed to create log group: {error}") from error
 
+    @handle_cloudwatch_error(message="Failed to create cloudwatch stream")
     def write(self, stream_key: str, message: str) -> None:
         if not message.strip():
             return
@@ -141,21 +158,18 @@ class CloudWatchBenchmarkLogSink(BenchmarkLogSink):
         if not benchmark_id or not stream_name:
             raise CloudWatchError(f"Invalid stream key '{stream_key}', expected format 'benchmark_id:stream_name'")
 
-        try:
-            client = self._clients.cloudwatch_logs_client()
-            log_group_name = benchmark_log_group_name(self._log_group, benchmark_id)
+        client = self._clients.cloudwatch_logs_client()
+        log_group_name = benchmark_log_group_name(self._log_group, benchmark_id)
 
-            if stream_key not in _created_streams:
-                try:
-                    client.create_log_stream(logGroupName=log_group_name, logStreamName=stream_name)  # pyright: ignore[reportUnknownMemberType]
-                except ClientError as error:
-                    if error.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
-                        raise
-                except BotoCoreError as error:
-                    raise CloudWatchError(f"Failed to create log stream '{stream_name}': {error}") from error
-                _created_streams.add(stream_key)
-        except (ClientError, BotoCoreError) as error:
-            raise CloudWatchError(f"Failed to create cloudwatch stream: {error}") from error
+        if stream_key not in _created_streams:
+            try:
+                client.create_log_stream(logGroupName=log_group_name, logStreamName=stream_name)  # pyright: ignore[reportUnknownMemberType]
+            except ClientError as error:
+                if error.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
+                    raise
+            except BotoCoreError as error:
+                raise CloudWatchError(f"Failed to create log stream '{stream_name}': {error}") from error
+            _created_streams.add(stream_key)
 
         try:
             client.put_log_events(  # pyright: ignore[reportUnknownMemberType]
@@ -220,71 +234,71 @@ class CloudWatchLogProvider(LogProvider):
         poll_interval: float = 1.0,
     ) -> AsyncIterator[LogEvent]:
         """Yield a task stream from its current start position, then poll for new events."""
-        async with self._get_client() as client:
-            log_group_name = benchmark_log_group_name(self._log_group, str(reference.run_id))
-            stream_names = _task_log_stream_names(reference)
-            stream_name = stream_names[0]
-            legacy_stream_name = stream_names[1] if len(stream_names) > 1 else None
-            cursor: str | None = None
-            recent_event_ids: deque[str] = deque()
-            seen_event_ids: set[str] = set()
+        client = await self._get_client()
+        log_group_name = benchmark_log_group_name(self._log_group, str(reference.run_id))
+        stream_names = _task_log_stream_names(reference)
+        stream_name = stream_names[0]
+        legacy_stream_name = stream_names[1] if len(stream_names) > 1 else None
+        cursor: str | None = None
+        recent_event_ids: deque[str] = deque()
+        seen_event_ids: set[str] = set()
 
-            while True:
-                request: dict[str, Any] = {
-                    "logGroupName": log_group_name,
-                    "logStreamName": stream_name,
-                    "startFromHead": True,
-                    "limit": 10_000,
-                }
-                if cursor is not None:
-                    request["nextToken"] = cursor
-                elif start_time is not None:
-                    request["startTime"] = _epoch_milliseconds(start_time)
-                if end_time is not None:
-                    request["endTime"] = _epoch_milliseconds(end_time) + 1
+        while True:
+            request: dict[str, Any] = {
+                "logGroupName": log_group_name,
+                "logStreamName": stream_name,
+                "startFromHead": True,
+                "limit": 10_000,
+            }
+            if cursor is not None:
+                request["nextToken"] = cursor
+            elif start_time is not None:
+                request["startTime"] = _epoch_milliseconds(start_time)
+            if end_time is not None:
+                request["endTime"] = _epoch_milliseconds(end_time) + 1
 
-                response = await self._request(client.get_log_events, request)
-                if response is None:
-                    if legacy_stream_name is not None and stream_name != legacy_stream_name:
-                        stream_name = legacy_stream_name
-                        cursor = None
-                        continue
-                    if end_time is not None and datetime.now(timezone.utc) > end_time:
-                        return
-                    stream_name = stream_names[0]
+            response = await self._request(client.get_log_events, request)
+            if response is None:
+                if legacy_stream_name is not None and stream_name != legacy_stream_name:
+                    stream_name = legacy_stream_name
                     cursor = None
-                    await asyncio.sleep(poll_interval)
                     continue
-
-                next_cursor = response.get("nextForwardToken")
-                event_namespace = next_cursor if isinstance(next_cursor, str) else cursor
-                events = _parse_events(
-                    response.get("events", []),
-                    task_id=reference.task_id,
-                    identity_namespace=event_namespace,
-                )
-                page_has_events = bool(events)
-                if query is not None:
-                    events = [event for event in events if query in event.message]
-                for event in sorted(events, key=_event_sort_key):
-                    event_id = event.event_id
-                    if event_id is not None and event_id in seen_event_ids:
-                        continue
-                    if event_id is not None:
-                        if len(recent_event_ids) == _FOLLOW_DEDUPLICATION_WINDOW:
-                            seen_event_ids.discard(recent_event_ids.popleft())
-                        recent_event_ids.append(event_id)
-                        seen_event_ids.add(event_id)
-                    yield event
-
-                stable_cursor = not isinstance(next_cursor, str) or next_cursor == cursor
-                if isinstance(next_cursor, str):
-                    cursor = next_cursor
-
-                if end_time is not None and stable_cursor and datetime.now(timezone.utc) > end_time:
+                if end_time is not None and datetime.now(timezone.utc) > end_time:
                     return
-                if stable_cursor or not page_has_events:
-                    await asyncio.sleep(poll_interval)
+                stream_name = stream_names[0]
+                cursor = None
+                await asyncio.sleep(poll_interval)
+                continue
+
+            next_cursor = response.get("nextForwardToken")
+            event_namespace = next_cursor if isinstance(next_cursor, str) else cursor
+            events = _parse_events(
+                response.get("events", []),
+                task_id=reference.task_id,
+                identity_namespace=event_namespace,
+            )
+            page_has_events = bool(events)
+            if query is not None:
+                events = [event for event in events if query in event.message]
+            for event in sorted(events, key=_event_sort_key):
+                event_id = event.event_id
+                if event_id is not None and event_id in seen_event_ids:
+                    continue
+                if event_id is not None:
+                    if len(recent_event_ids) == _FOLLOW_DEDUPLICATION_WINDOW:
+                        seen_event_ids.discard(recent_event_ids.popleft())
+                    recent_event_ids.append(event_id)
+                    seen_event_ids.add(event_id)
+                yield event
+
+            stable_cursor = not isinstance(next_cursor, str) or next_cursor == cursor
+            if isinstance(next_cursor, str):
+                cursor = next_cursor
+
+            if end_time is not None and stable_cursor and datetime.now(timezone.utc) > end_time:
+                return
+            if stable_cursor or not page_has_events:
+                await asyncio.sleep(poll_interval)
 
     async def _filter_events(
         self,
@@ -309,24 +323,22 @@ class CloudWatchLogProvider(LogProvider):
         if cursor is not None:
             request["nextToken"] = cursor
 
-        async with self._get_client() as client:
-            response = await self._request(client.filter_log_events, request)
-            if response is not None or not stream_names or len(stream_names) == 1:
+        client = await self._get_client()
+        response = await self._request(client.filter_log_events, request)
+        if response is not None or not stream_names or len(stream_names) == 1:
+            return response
+
+        # CloudWatch rejects the whole request if either stream name is absent.
+        for stream_name in stream_names:
+            response = await self._request(client.filter_log_events, {**request, "logStreamNames": [stream_name]})
+            if response is not None:
                 return response
 
-            # CloudWatch rejects the whole request if either stream name is absent.
-            for stream_name in stream_names:
-                response = await self._request(client.filter_log_events, {**request, "logStreamNames": [stream_name]})
-                if response is not None:
-                    return response
+        return None
 
-            return None
-
-    @asynccontextmanager
-    async def _get_client(self) -> AsyncGenerator[Any]:
+    async def _get_client(self) -> Any:
         try:
-            async with self._clients.cloudwatch_logs_async_client() as client:
-                yield client
+            return await asyncio.to_thread(self._clients.cloudwatch_logs_client)
         except ClientError as error:
             code = error.response.get("Error", {}).get("Code")
             raise LogProviderError(f"CloudWatch log request failed: {code or 'unknown error'}") from error
@@ -335,16 +347,18 @@ class CloudWatchLogProvider(LogProvider):
 
     async def _request(
         self,
-        operation: Callable[..., Awaitable[Any]],
+        operation: Callable[..., Any],
         request: dict[str, Any],
     ) -> dict[str, Any] | None:
         try:
-            response = await operation(**request)
+            response = await asyncio.to_thread(operation, **request)
         except ClientError as error:
             code = error.response.get("Error", {}).get("Code")
             if code == "ResourceNotFoundException":
                 return None
-            raise
+            raise LogProviderError(f"CloudWatch log request failed: {code or 'unknown error'}") from error
+        except BotoCoreError as error:
+            raise LogProviderError("CloudWatch log request failed") from error
         return cast(dict[str, Any], response)
 
     @staticmethod

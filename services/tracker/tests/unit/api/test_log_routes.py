@@ -98,7 +98,7 @@ class MockLogProvider(LogProvider):
 class FailingClients:
     """Fail while constructing the CloudWatch Logs client."""
 
-    def cloudwatch_logs_async_client(self) -> object:
+    def cloudwatch_logs_client(self) -> object:
         raise ClientError(
             {"Error": {"Code": "AccessDeniedException", "Message": "denied"}},
             "FilterLogEvents",
