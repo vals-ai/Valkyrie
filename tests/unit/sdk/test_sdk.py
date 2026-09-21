@@ -192,6 +192,40 @@ def test_from_config_wraps_file_and_yaml_errors(tmp_path: Path) -> None:
         ValkyrieClient.from_config(incomplete_path)
 
 
+def test_from_yaml_errors_name_keys_without_config_values(tmp_path: Path) -> None:
+    """Config errors name misplaced keys without echoing stored credentials."""
+    flat_path = tmp_path / "flat.yaml"
+    flat_path.write_text(
+        """
+AWS_ACCESS_KEY_ID: aws-key
+AWS_SECRET_ACCESS_KEY: secret-canary
+S3_BUCKET: runs-bucket
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValkyrieConfigError, match="AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET") as flat_error:
+        ValkyrieConfig.from_yaml(flat_path)
+    assert "valkyrie config init" in str(flat_error.value)
+    assert "secret-canary" not in str(flat_error.value)
+
+    nested_path = tmp_path / "nested.yaml"
+    nested_path.write_text(
+        """
+aws:
+  AWS_ACCESS_KEY_ID: aws-key
+  AWS_SECRET_ACCESS_KEY: secret-canary
+  AWS_DEFAULT_REGION: us-west-2
+  S3_BUCKET: runs-bucket
+sandbox_providers:
+  daytona: DaytonaSecret
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValkyrieConfigError, match="aws.AWS_SECRET_ACCESS_KEY") as nested_error:
+        ValkyrieConfig.from_yaml(nested_path)
+    assert "secret-canary" not in str(nested_error.value)
+
+
 async def test_start_normalizes_agent_and_builds_configured_payload(make_client) -> None:
     requests: list[httpx.Request] = []
     run_id = uuid4()

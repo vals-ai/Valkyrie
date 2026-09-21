@@ -12,6 +12,8 @@ from click.testing import CliRunner
 
 import pytest
 
+from valkyrie.sdk import ValkyrieConfig
+
 settings = import_module("valkyrie.cli.config.settings")
 
 
@@ -47,6 +49,35 @@ def test_init_self_hosted_strips_whitespace(config_path: Path, monkeypatch: pyte
             "LOG_RETENTION_POLICY": "365",
         },
     }
+
+
+def test_init_self_hosted_migrates_flat_config(config_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Self-hosted setup moves flat config keys to the nested layout without prompting for them again."""
+    for key in settings._REQUIRED_ENVIRONMENT_VARIABLES:
+        monkeypatch.delenv(key, raising=False)
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "AWS_ACCESS_KEY_ID": "aws-key",
+                "AWS_SECRET_ACCESS_KEY": "aws-secret",
+                "AWS_DEFAULT_REGION": "us-east-1",
+                "S3_BUCKET": "bucket",
+                "LOG_GROUP": "benchmarks",
+                "LOG_RETENTION_POLICY": 365,
+                "DAYTONA_SECRET_NAME": "DaytonaSecrets",
+            }
+        )
+    )
+
+    result = CliRunner().invoke(settings.init, input="self-hosted\n")
+
+    assert result.exit_code == 0, result.output
+    config = ValkyrieConfig.from_yaml(config_path)
+    assert config.aws is not None
+    assert config.aws.credentials is not None
+    assert config.aws.credentials.aws_secret_access_key.get_secret_value() == "aws-secret"
+    assert config.aws.s3_bucket == "bucket"
+    assert config.sandbox_providers == {"daytona": "DaytonaSecrets"}
 
 
 @pytest.mark.parametrize(

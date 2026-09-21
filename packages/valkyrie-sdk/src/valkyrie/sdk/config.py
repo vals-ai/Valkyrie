@@ -15,13 +15,24 @@ TRACKER_URLS: dict[str, str] = {
     "prod": "https://benchmark-tracker-prod.vals.ai",
     "dev": "https://benchmark-tracker-dev.vals.ai",
 }
+# Top-level keys from the flat config layout and the nested path that replaced each one.
+LEGACY_CONFIG_KEYS: dict[str, tuple[str, ...]] = {
+    "AWS_ACCESS_KEY_ID": ("aws", "credentials", "AWS_ACCESS_KEY_ID"),
+    "AWS_SECRET_ACCESS_KEY": ("aws", "credentials", "AWS_SECRET_ACCESS_KEY"),
+    "AWS_SESSION_TOKEN": ("aws", "credentials", "AWS_SESSION_TOKEN"),
+    "AWS_DEFAULT_REGION": ("aws", "AWS_DEFAULT_REGION"),
+    "S3_BUCKET": ("aws", "S3_BUCKET"),
+    "LOG_GROUP": ("aws", "LOG_GROUP"),
+    "LOG_RETENTION_POLICY": ("aws", "LOG_RETENTION_POLICY"),
+    "DAYTONA_SECRET_NAME": ("sandbox_providers", "daytona"),
+}
 ConfigT = TypeVar("ConfigT", bound="ValkyrieConfig")
 
 
 class AWSAccessKeys(BaseModel):
     """Static AWS credentials."""
 
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    model_config = ConfigDict(populate_by_name=True, extra="forbid", hide_input_in_errors=True)
 
     aws_access_key_id: SecretStr = Field(alias="AWS_ACCESS_KEY_ID", repr=False)
     aws_secret_access_key: SecretStr = Field(alias="AWS_SECRET_ACCESS_KEY", repr=False)
@@ -39,7 +50,7 @@ class AWSAccessKeys(BaseModel):
 class AWSConfig(BaseModel):
     """AWS resources with optional static credentials."""
 
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    model_config = ConfigDict(populate_by_name=True, extra="forbid", hide_input_in_errors=True)
 
     credentials: AWSAccessKeys | None = None
     aws_default_region: str = Field(alias="AWS_DEFAULT_REGION")
@@ -86,7 +97,7 @@ class AWSConfig(BaseModel):
 class ValkyrieConfig(BaseModel):
     """Validated SDK configuration with optional caller-supplied AWS access."""
 
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    model_config = ConfigDict(populate_by_name=True, extra="forbid", hide_input_in_errors=True)
 
     environment: Literal["bench", "prod", "dev"] = "bench"
     tracker_url_override: str | None = Field(default=None, alias="tracker_url")
@@ -135,6 +146,11 @@ class ValkyrieConfig(BaseModel):
 
         if not isinstance(raw_config, dict):
             raise ValkyrieConfigError(f"Valkyrie config at {config_path} must contain a YAML mapping")
+        if legacy_keys := [key for key in LEGACY_CONFIG_KEYS if key in raw_config]:
+            raise ValkyrieConfigError(
+                f"Invalid Valkyrie config at {config_path}: legacy top-level keys {', '.join(legacy_keys)} "
+                "are no longer supported. Run `valkyrie config init` to migrate them."
+            )
 
         try:
             return cls.model_validate(raw_config)
