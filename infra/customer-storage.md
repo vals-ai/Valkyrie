@@ -29,6 +29,43 @@ gate narrows these roles with a resource policy on that bucket, and a resource
 policy only binds across accounts: inside one account the identity grant alone
 already allows the read, so the reviewed narrowing would have no effect.
 
+## Where the pipeline reads each input
+
+Every input above is carried by the two jobs that synthesize `ValkProdSharedStack`,
+`deploy-prod-core` and `executor-prod`, both of which run in the `prod-external`
+GitHub Environment. Define the values on that Environment. No other job references
+them, so a value defined at repository scope still cannot reach a `bench` or `dev`
+synthesis, where an enabled flag would be refused for the wrong stage.
+
+| Input | GitHub source |
+| --- | --- |
+| `VALSMITH_CUSTOMER_STORAGE_ENABLED` | Variable `VALSMITH_CUSTOMER_STORAGE_ENABLED` |
+| `PRODUCTION_ACCOUNT_ID` | Secret `VALKYRIE_PRODUCTION_ACCOUNT_ID` |
+| `VALSMITH_STORAGE_ORG_ID` | Secret `VALSMITH_STORAGE_ORG_ID` |
+| `VALSMITH_STORAGE_OIDC_PROVIDER_ARN` | Secret `VALSMITH_STORAGE_OIDC_PROVIDER_ARN` |
+| `VALSMITH_STORAGE_OIDC_AUDIENCE` | Variable `VALSMITH_STORAGE_OIDC_AUDIENCE` |
+| `VALSMITH_STORAGE_OIDC_SUBJECT` | Variable `VALSMITH_STORAGE_OIDC_SUBJECT` |
+| `VALSMITH_DATASET_VIEW_LAMBDA_NAME` | Secret `VALSMITH_DATASET_VIEW_LAMBDA_NAME` |
+| `VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN` | Secret `VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN` |
+| `VALSMITH_LEGACY_STORAGE_BUCKET` | Secret `VALSMITH_LEGACY_STORAGE_BUCKET` |
+| `VALSMITH_LEGACY_STORAGE_ACCOUNT_ID` | Secret `VALSMITH_LEGACY_STORAGE_ACCOUNT_ID` |
+
+Account IDs, ARNs, organization UUIDs and resource names follow their siblings in
+this workflow, which are secrets. The two pinned OIDC literals and the boolean
+follow `AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED` and `SANDBOX_QUEUE_ENABLED`,
+which are variables. None of these values is a credential; the classification
+only matches existing practice and keeps them out of build logs.
+
+The enable flag has no workflow default. An undefined variable reaches the
+synthesis as an empty string, which `from_environment` refuses, and the
+`Validate prod deployment inputs` step refuses it earlier with a named error.
+That is deliberate: a defaulted `false` would let one ordinary push to `prod`
+synthesize the shared stack without this construct and delete the deployed roles,
+both backup plans, both selections and the vault access policy, while the vault
+and its key survive as orphans. The same step refuses an enabled flag with any
+one of the other inputs empty, so a partly configured Environment fails before
+any AWS call instead of deploying half the boundary.
+
 
 The existing deployment preflight also requires separate bench/dev/production
 account identities and region inputs. Do not reuse bench's account because a

@@ -144,6 +144,15 @@ jobs:
       BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
       BENCH_ACCOUNT_ID: ${{ secrets.VALKYRIE_BENCH_ACCOUNT_ID }}
       PRODUCTION_ACCOUNT_ID: ${{ secrets.VALKYRIE_PRODUCTION_ACCOUNT_ID }}
+      VALSMITH_CUSTOMER_STORAGE_ENABLED: ${{ vars.VALSMITH_CUSTOMER_STORAGE_ENABLED }}
+      VALSMITH_DATASET_VIEW_LAMBDA_NAME: ${{ secrets.VALSMITH_DATASET_VIEW_LAMBDA_NAME }}
+      VALSMITH_LEGACY_STORAGE_ACCOUNT_ID: ${{ secrets.VALSMITH_LEGACY_STORAGE_ACCOUNT_ID }}
+      VALSMITH_LEGACY_STORAGE_BUCKET: ${{ secrets.VALSMITH_LEGACY_STORAGE_BUCKET }}
+      VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN: ${{ secrets.VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN }}
+      VALSMITH_STORAGE_OIDC_AUDIENCE: ${{ vars.VALSMITH_STORAGE_OIDC_AUDIENCE }}
+      VALSMITH_STORAGE_OIDC_PROVIDER_ARN: ${{ secrets.VALSMITH_STORAGE_OIDC_PROVIDER_ARN }}
+      VALSMITH_STORAGE_OIDC_SUBJECT: ${{ vars.VALSMITH_STORAGE_OIDC_SUBJECT }}
+      VALSMITH_STORAGE_ORG_ID: ${{ secrets.VALSMITH_STORAGE_ORG_ID }}
 
     steps:
       - name: Checkout code
@@ -169,6 +178,21 @@ jobs:
           if [[ "$AWS_DEPLOY_ROLE_ARN" != "arn:aws:iam::${PRODUCTION_ACCOUNT_ID}:role/"* ]]; then
             echo "::error::AWS_DEPLOY_ROLE_ARN must name a role in the approved prod account."
             exit 1
+          fi
+          if [[ "$VALSMITH_CUSTOMER_STORAGE_ENABLED" != "true" && "$VALSMITH_CUSTOMER_STORAGE_ENABLED" != "false" ]]; then
+            echo "::error::The prod-external Environment must set VALSMITH_CUSTOMER_STORAGE_ENABLED to true or false. An unset value would synthesize ValkProdSharedStack without the customer-storage construct and delete the deployed ValSmith roles, backup plans and vault policy."
+            exit 1
+          fi
+          if [[ "$VALSMITH_CUSTOMER_STORAGE_ENABLED" == "true" ]]; then
+            for input in VALSMITH_DATASET_VIEW_LAMBDA_NAME VALSMITH_LEGACY_STORAGE_ACCOUNT_ID \
+              VALSMITH_LEGACY_STORAGE_BUCKET VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN \
+              VALSMITH_STORAGE_OIDC_AUDIENCE VALSMITH_STORAGE_OIDC_PROVIDER_ARN \
+              VALSMITH_STORAGE_OIDC_SUBJECT VALSMITH_STORAGE_ORG_ID; do
+              if [[ -z "${!input}" ]]; then
+                echo "::error::VALSMITH_CUSTOMER_STORAGE_ENABLED is true, so the prod-external Environment must also define ${input}."
+                exit 1
+              fi
+            done
           fi
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
@@ -282,6 +306,15 @@ jobs:
       EXECUTOR_RELEASE_LAUNCH_PARAMETER: /valkyrie/prod/executor-release/launch-config
       BENCH_ACCOUNT_ID: ${{ secrets.VALKYRIE_BENCH_ACCOUNT_ID }}
       PRODUCTION_ACCOUNT_ID: ${{ secrets.VALKYRIE_PRODUCTION_ACCOUNT_ID }}
+      VALSMITH_CUSTOMER_STORAGE_ENABLED: ${{ vars.VALSMITH_CUSTOMER_STORAGE_ENABLED }}
+      VALSMITH_DATASET_VIEW_LAMBDA_NAME: ${{ secrets.VALSMITH_DATASET_VIEW_LAMBDA_NAME }}
+      VALSMITH_LEGACY_STORAGE_ACCOUNT_ID: ${{ secrets.VALSMITH_LEGACY_STORAGE_ACCOUNT_ID }}
+      VALSMITH_LEGACY_STORAGE_BUCKET: ${{ secrets.VALSMITH_LEGACY_STORAGE_BUCKET }}
+      VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN: ${{ secrets.VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN }}
+      VALSMITH_STORAGE_OIDC_AUDIENCE: ${{ vars.VALSMITH_STORAGE_OIDC_AUDIENCE }}
+      VALSMITH_STORAGE_OIDC_PROVIDER_ARN: ${{ secrets.VALSMITH_STORAGE_OIDC_PROVIDER_ARN }}
+      VALSMITH_STORAGE_OIDC_SUBJECT: ${{ vars.VALSMITH_STORAGE_OIDC_SUBJECT }}
+      VALSMITH_STORAGE_ORG_ID: ${{ secrets.VALSMITH_STORAGE_ORG_ID }}
 
     steps:
       - name: Verify current prod executor revision
@@ -324,6 +357,21 @@ jobs:
           if [[ "$AWS_DEPLOY_ROLE_ARN" != "arn:aws:iam::${PRODUCTION_ACCOUNT_ID}:role/"* ]]; then
             echo "::error::AWS_DEPLOY_ROLE_ARN must name a role in the approved prod account."
             exit 1
+          fi
+          if [[ "$VALSMITH_CUSTOMER_STORAGE_ENABLED" != "true" && "$VALSMITH_CUSTOMER_STORAGE_ENABLED" != "false" ]]; then
+            echo "::error::The prod-external Environment must set VALSMITH_CUSTOMER_STORAGE_ENABLED to true or false. An unset value would synthesize ValkProdSharedStack without the customer-storage construct and delete the deployed ValSmith roles, backup plans and vault policy."
+            exit 1
+          fi
+          if [[ "$VALSMITH_CUSTOMER_STORAGE_ENABLED" == "true" ]]; then
+            for input in VALSMITH_DATASET_VIEW_LAMBDA_NAME VALSMITH_LEGACY_STORAGE_ACCOUNT_ID \
+              VALSMITH_LEGACY_STORAGE_BUCKET VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN \
+              VALSMITH_STORAGE_OIDC_AUDIENCE VALSMITH_STORAGE_OIDC_PROVIDER_ARN \
+              VALSMITH_STORAGE_OIDC_SUBJECT VALSMITH_STORAGE_ORG_ID; do
+              if [[ -z "${!input}" ]]; then
+                echo "::error::VALSMITH_CUSTOMER_STORAGE_ENABLED is true, so the prod-external Environment must also define ${input}."
+                exit 1
+              fi
+            done
           fi
       - name: Setup Python
         if: steps.freshness.outputs.current == 'true'

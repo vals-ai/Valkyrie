@@ -3,6 +3,7 @@
 Run: cd infra && PYTHONPATH=. uv run python -m unittest tests/test_deploy_workflow.py
 """
 
+import ast
 import json
 import os
 import re
@@ -56,6 +57,21 @@ def _effective_step(job: str, step_name: str) -> str:
     """Return one step together with the job environment inherited by it."""
     job_config = job.split("\n    steps:", maxsplit=1)[0]
     return f"{job_config}\n{_step(job, step_name)}"
+
+
+def _required_customer_storage_inputs() -> set[str]:
+    """Return every environment input the enabled customer-storage config demands."""
+    source = (ROOT / "infra" / "customer_storage_config.py").read_text(encoding="utf-8")
+    inputs: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or node.func.id != "required":
+            continue
+
+        argument = node.args[0] if node.args else None
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+            inputs.add(argument.value)
+
+    return inputs
 
 
 class DeployWorkflowTest(unittest.TestCase):
@@ -204,6 +220,52 @@ class DeployWorkflowTest(unittest.TestCase):
                 job = _job(workflow, job_id)
                 for setting in storage_settings:
                     self.assertIn(setting, job)
+
+    def test_production_jobs_carry_every_customer_storage_input(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        enable_flag = "VALSMITH_CUSTOMER_STORAGE_ENABLED: ${{ vars.VALSMITH_CUSTOMER_STORAGE_ENABLED }}"
+        sources = {
+            "PRODUCTION_ACCOUNT_ID": "${{ secrets.VALKYRIE_PRODUCTION_ACCOUNT_ID }}",
+            "VALSMITH_DATASET_VIEW_LAMBDA_NAME": "${{ secrets.VALSMITH_DATASET_VIEW_LAMBDA_NAME }}",
+            "VALSMITH_LEGACY_STORAGE_ACCOUNT_ID": "${{ secrets.VALSMITH_LEGACY_STORAGE_ACCOUNT_ID }}",
+            "VALSMITH_LEGACY_STORAGE_BUCKET": "${{ secrets.VALSMITH_LEGACY_STORAGE_BUCKET }}",
+            "VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN": "${{ secrets.VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN }}",
+            "VALSMITH_STORAGE_OIDC_AUDIENCE": "${{ vars.VALSMITH_STORAGE_OIDC_AUDIENCE }}",
+            "VALSMITH_STORAGE_OIDC_PROVIDER_ARN": "${{ secrets.VALSMITH_STORAGE_OIDC_PROVIDER_ARN }}",
+            "VALSMITH_STORAGE_OIDC_SUBJECT": "${{ vars.VALSMITH_STORAGE_OIDC_SUBJECT }}",
+            "VALSMITH_STORAGE_ORG_ID": "${{ secrets.VALSMITH_STORAGE_ORG_ID }}",
+        }
+
+        self.assertEqual(set(sources), _required_customer_storage_inputs())
+
+        for job_id in ("deploy-prod-core", "executor-prod"):
+            with self.subTest(job=job_id):
+                job = _job(workflow, job_id)
+                self.assertIn(enable_flag, job)
+                for name, expression in sources.items():
+                    self.assertIn(f"      {name}: {expression}\n", job)
+
+        for job_id in ("deploy-bench-core", "executor-bench", "run-dev-operation", "executor-development"):
+            with self.subTest(job=job_id):
+                self.assertNotIn("VALSMITH_", _job(workflow, job_id))
+
+    def test_production_validation_refuses_an_unset_or_incomplete_storage_flag(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        gated_inputs = sorted(_required_customer_storage_inputs() - {"PRODUCTION_ACCOUNT_ID"})
+
+        for job_id in ("deploy-prod-core", "executor-prod"):
+            with self.subTest(job=job_id):
+                job = _job(workflow, job_id)
+                validation = _step(job, "Validate prod deployment inputs")
+                self.assertIn('"$VALSMITH_CUSTOMER_STORAGE_ENABLED" != "true"', validation)
+                self.assertIn('"$VALSMITH_CUSTOMER_STORAGE_ENABLED" != "false"', validation)
+                self.assertIn("must set VALSMITH_CUSTOMER_STORAGE_ENABLED to true or false", validation)
+                self.assertIn('if [[ -z "${!input}" ]]; then', validation)
+                for name in gated_inputs:
+                    self.assertIn(name, validation)
+                self.assertLess(
+                    job.index("Validate prod deployment inputs"), job.index("aws-actions/configure-aws-credentials")
+                )
 
     def test_classifier_synthesis_keeps_owner_storage_iam_in_the_template_diff(self) -> None:
         synthesis = WORKER_SYNTHESIS.read_text(encoding="utf-8")
