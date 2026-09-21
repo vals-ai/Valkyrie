@@ -32,7 +32,60 @@ Read these exact outputs from `ValkProdSharedStack`: `CustomerStorageVaultName`,
 
 **Gate: recovery-point tags.** The owner plan `valsmith-customer-storage-prod` must show `RecoveryPointTags` of exactly `valsmith:backup=true` and `valsmith:environment=prod`, and the system plan `valsmith-system-prod` must show none. Every on-demand `backup:StartBackupJob` into this vault, including the ones ValSmith issues before a deletion, must send `RecoveryPointTags={"valsmith:backup": "true", "valsmith:environment": "prod"}` and must pass `IamRoleArn=CustomerStorageBackupRoleArn` (`ValSmithBackup-prod`), never the system backup role. The vault access policy allows `backup:DeleteRecoveryPoint` only for recovery points that carry both tags, so an untagged recovery point cannot be deleted by any role in this stack and would keep a departing owner's object data for up to 30 days. Read the tags back with `aws backup describe-recovery-point` before phase 8, and never add these tags to a system recovery point.
 
-**Gate: compatibility bucket policy.** `ValSmithStorage-prod` and `ValSmithDatasetView-prod` can read and list `benchmarks/<run UUID>/*` in the compatibility bucket named by `VALSMITH_LEGACY_STORAGE_BUCKET`. That bucket holds every Valkyrie tenant's runs under the same key shape, so the destination IAM policy cannot separate ValSmith's legacy runs from another tenant's. Before these roles are used, apply a reviewed resource policy on the compatibility bucket, in its own account, that allows those two role ARNs only the enumerated run prefixes of the migration cohort and the four named `benchmarks/valsmith-*` roots. Check it with source-account credentials: `aws s3api get-bucket-policy --bucket <VALSMITH_LEGACY_STORAGE_BUCKET> --expected-bucket-owner <VALSMITH_LEGACY_STORAGE_ACCOUNT_ID>`, and confirm that every statement naming either role ARN lists only the cohort's run prefixes and the four `benchmarks/valsmith-*` roots. Record the returned policy, its digest and the reviewer in the operations record, under "compatibility bucket policy". If the cohort cannot be enumerated, record an explicit accepted-risk entry in the same place, naming the wider scope and its approver; do not continue without one of the two.
+**Gate: compatibility bucket policy.** `ValSmithStorage-prod` and `ValSmithDatasetView-prod` can read and list `benchmarks/<run UUID>/*` in the compatibility bucket named by `VALSMITH_LEGACY_STORAGE_BUCKET`. That bucket holds every Valkyrie tenant's runs under the same key shape, so the destination IAM policy cannot separate ValSmith's legacy runs from another tenant's. Before these roles are used, add a reviewed statement to the compatibility bucket's own resource policy, in its own account, that allows those two role ARNs only the enumerated run prefixes of the migration cohort and the four named `benchmarks/valsmith-*` roots.
+
+**Add the statement; never replace the document.** `aws s3api put-bucket-policy` replaces the entire policy, and this bucket is shared by every Valkyrie tenant. Writing a freshly authored document there removes whatever is already in place, including TLS denial, cross-account grants and log-delivery grants, for every tenant of the bucket. This repository has no helper that writes a bucket policy: `TransferAWSBoundary.verify_source_fence`, `AWSProviderBoundary.verify_fence` and `RelocationAWSBoundary.verify_objects` only read, check one `Sid` and digest the whole document. So read, merge and verify by hand, with source-account credentials throughout.
+
+Read the current document and keep it:
+
+```bash
+aws s3api get-bucket-policy \
+  --bucket "$VALSMITH_LEGACY_STORAGE_BUCKET" \
+  --expected-bucket-owner "$VALSMITH_LEGACY_STORAGE_ACCOUNT_ID" \
+  --query Policy --output text > current-policy.json
+```
+
+A `NoSuchBucketPolicy` error means the bucket carries no policy at all, which on a shared production bucket also means it has no TLS denial. Stop and confirm that with the owning account before you treat the absence as real; do not invent a document.
+
+Merge the reviewed statements into the current document with the repository interpreter, `uv run --project services/tracker python`. Put only the new statements in `reviewed-statements.json`, each with its own unique `Sid`:
+
+```python
+import hashlib
+import json
+from pathlib import Path
+
+def digest(policy: object) -> str:
+    return hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+current = json.loads(Path("current-policy.json").read_text())
+added = json.loads(Path("reviewed-statements.json").read_text())
+added_sids = [statement["Sid"] for statement in added]
+existing_sids = {statement.get("Sid") for statement in current["Statement"]}
+if len(set(added_sids)) != len(added_sids) or existing_sids & set(added_sids):
+    raise SystemExit("A reviewed Sid already exists on this bucket; resolve it by hand.")
+
+merged = {**current, "Statement": [*current["Statement"], *added]}
+Path("merged-policy.json").write_text(json.dumps(merged, indent=2))
+print(json.dumps({"before": digest(current), "after": digest(merged), "added": added_sids}, indent=2))
+```
+
+That digest is the one `policy_digest` in `services/tracker/src/tracker/run_purge/providers.py` computes, so the value you record is the value the lifecycle tooling recomputes later. Diff `current-policy.json` against `merged-policy.json` and confirm the only difference is the appended statements. A merged document over 20 KB is refused by S3, so a cohort prefix list that does not fit must be reduced before the write, not trimmed from the existing statements.
+
+Write it, then read it back and prove nothing else moved:
+
+```bash
+aws s3api put-bucket-policy \
+  --bucket "$VALSMITH_LEGACY_STORAGE_BUCKET" \
+  --expected-bucket-owner "$VALSMITH_LEGACY_STORAGE_ACCOUNT_ID" \
+  --policy file://merged-policy.json
+
+aws s3api get-bucket-policy \
+  --bucket "$VALSMITH_LEGACY_STORAGE_BUCKET" \
+  --expected-bucket-owner "$VALSMITH_LEGACY_STORAGE_ACCOUNT_ID" \
+  --query Policy --output text > readback-policy.json
+```
+
+The readback must keep every original statement in its original order and content, and its extra statements must be exactly the reviewed ones. Confirm that `json.loads(readback)["Statement"][: len(current["Statement"])] == current["Statement"]` and that the remainder equals `added`, and that every statement naming either role ARN lists only the cohort's run prefixes and the four `benchmarks/valsmith-*` roots. Record the before digest, the after digest, the readback digest, the added `Sid` values, both policy documents and the reviewer in the operations record, under "compatibility bucket policy". If the readback loses any original statement, restore `current-policy.json` with the same `put-bucket-policy` call before doing anything else. If the cohort cannot be enumerated, record an explicit accepted-risk entry in the same place, naming the wider scope and its approver; do not continue without one of the two.
 
 Run `aws backup describe-region-settings` in the destination region. Explicitly opt S3 into Backup with `update-region-settings --resource-type-opt-in-preference S3=true`, then read settings again. Preserve unrelated settings. Check the actual role and backup selection access. Verify Tracker `AWS_DEPLOYMENT_ACCOUNT_ID`, `AWS_DEPLOYMENT_REGION`, `AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS` (from `CustomerStorageAllowedOrgEnvironments`) and controlled `AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED` together.
 
