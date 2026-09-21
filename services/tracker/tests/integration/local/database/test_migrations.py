@@ -82,6 +82,44 @@ def _run_alembic(database_url: str, *args: str) -> subprocess.CompletedProcess[s
     )
 
 
+def test_failure_category_migration_aborts_on_busy_table_and_retries(
+    migration_database_url: str,
+) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", _DISPATCH_LEASE_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.connect() as blocker:
+            blocker.execute(text("SELECT id FROM errorresult"))
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_run_alembic, migration_database_url, "upgrade", "head")
+                try:
+                    blocked = future.result(timeout=10)
+                finally:
+                    # Release even on assertion failure so the subprocess can exit.
+                    blocker.rollback()
+            assert blocked.returncode != 0
+            assert "lock timeout" in blocked.stderr
+
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+                _DISPATCH_LEASE_REVISION
+            )
+            assert connection.execute(
+                text("SELECT count(*) FROM pg_type WHERE typname = 'failurecategory'")
+            ).scalar_one() == 0
+            assert "category" not in {column["name"] for column in inspect(connection).get_columns("errorresult")}
+
+        retry = _run_alembic(migration_database_url, "upgrade", "head")
+        assert retry.returncode == 0, retry.stderr
+        with engine.connect() as connection:
+            columns = {column["name"]: column for column in inspect(connection).get_columns("errorresult")}
+            assert columns["category"]["nullable"] is True
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "b4c5d6e7f8a9"
+    finally:
+        engine.dispose()
+
+
 def test_executor_release_ownership_downgrade_restores_predecessor_schema(
     migration_database_url: str,
 ) -> None:

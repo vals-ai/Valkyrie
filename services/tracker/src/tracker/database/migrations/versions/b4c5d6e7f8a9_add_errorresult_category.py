@@ -20,6 +20,9 @@ _ENUM_VALUES = ("INFRASTRUCTURE", "BENCHMARK_SERVICE", "AGENT", "CANCELLED", "UN
 
 
 def upgrade() -> None:
+    # Fail this transaction promptly if an active query holds the table busy.
+    # The timeout is local to this migration transaction and rolls back with it.
+    op.execute("SET LOCAL lock_timeout = '1s'")
     category_enum = sa.Enum(*_ENUM_VALUES, name=_ENUM_NAME)
     category_enum.create(op.get_bind(), checkfirst=True)
     op.add_column("errorresult", sa.Column("category", category_enum, nullable=True))
