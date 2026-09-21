@@ -157,8 +157,6 @@ def test_logs_follow_rejects_cleanly_truncated_success(monkeypatch: pytest.Monke
 
     config = ValkyrieConfig.model_validate(
         {
-            "AWS_DEFAULT_REGION": "us-west-2",
-            "S3_BUCKET": "runs-bucket",
             "sandbox_providers": {"modal": "ModalSecret"},
         }
     )

@@ -518,5 +518,9 @@
   {
     "source": "/reference/sdk/models/config/valkyrie-config",
     "destination": "/reference/sdk/models/config#valkyrie-config"
+  },
+  {
+    "source": "/reference/sdk/models/config/aws-config",
+    "destination": "/reference/sdk/models/config#aws-config"
   }
 ]

@@ -71,6 +71,7 @@ EXPECTED_ALL = [
     "ValkyrieAPIError",
     "ValkyrieClient",
     "ValkyrieConfig",
+    "AWSConfig",
     "ValkyrieConfigError",
     "ValkyrieRunAcceptedError",
     "ValkyrieRunError",

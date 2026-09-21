@@ -64,7 +64,7 @@ from tracker.types import (
     TasksResponse,
     TaskSummary,
 )
-from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
+from valkyrie.sdk import AWSConfig, ValkyrieClient, ValkyrieConfig
 from valkyrie.sdk.models import (
     AWSCredentials as SDKAWSCredentials,
     AgentContractRequest as SDKAgentContractRequest,
@@ -364,10 +364,12 @@ async def test_sdk_default_start_request_is_accepted_by_legacy_tracker() -> None
         return httpx.Response(200, json=load_fixture("start.json")["response"])
 
     config = ValkyrieConfig(
-        AWS_ACCESS_KEY_ID="test-key",
-        AWS_SECRET_ACCESS_KEY="test-secret",
-        AWS_DEFAULT_REGION="us-west-2",
-        S3_BUCKET="test-bucket",
+        aws=AWSConfig(
+            AWS_ACCESS_KEY_ID="test-key",
+            AWS_SECRET_ACCESS_KEY="test-secret",
+            AWS_DEFAULT_REGION="us-west-2",
+            S3_BUCKET="test-bucket",
+        ),
         sandbox_providers={"daytona": "DaytonaSecret"},
     )
     async with ValkyrieClient(
