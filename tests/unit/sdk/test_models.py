@@ -157,3 +157,15 @@ def test_non_empty_list_and_final_results_parse() -> None:
     assert len(list_response.benchmarks) == 1
     assert result.final_evaluation is not None
     assert result.benchmark_arguments.contract.output_artifacts
+
+
+def test_final_results_without_environment_parse_as_aws() -> None:
+    payload = load_fixture("results.json")["inline"]
+    assert isinstance(payload, dict)
+    arguments = payload["benchmark_arguments"]
+    assert isinstance(arguments, dict)
+    del arguments["environment"]
+
+    result = FinalViewResponse.model_validate(payload)
+
+    assert result.benchmark_arguments.environment == "aws"
