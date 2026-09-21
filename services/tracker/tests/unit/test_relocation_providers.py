@@ -438,6 +438,24 @@ async def test_retained_reference_bytes_are_hashed_in_bounded_chunks() -> None:
         await boundary.execution_references(locator, TrackerRequest.model_validate(payload), frozenset())
 
 
+@pytest.mark.asyncio
+async def test_an_under_declared_rewrite_source_is_refused_before_its_body_is_materialized() -> None:
+    boundary, store, payload = setup()
+    declared = len(b'{"value":1}')
+
+    async def under_declared(**_arguments: Any) -> dict[str, Any]:
+        return {"Body": store.stream(b"x" * CHUNK_BYTES * 2), "ContentLength": declared, "VersionId": "s1"}
+
+    store.get_object = under_declared
+
+    with pytest.raises(LifecycleConflict, match="does not match exact version"):
+        await boundary._bytes(store, TrackerRequest.model_validate(payload), "source", store.key, "s1")
+
+    (stream,) = store.streams
+    assert None not in stream.reads
+    assert stream.position <= declared + 1
+
+
 def two_bucket_plan(payload: dict[str, Any], second_bucket: str = "other-source") -> list[dict[str, Any]]:
     first: dict[str, Any] = payload["plan"]["runs"][0]
     second_id = str(uuid4())

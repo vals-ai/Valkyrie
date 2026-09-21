@@ -164,11 +164,19 @@ class RelocationAWSBoundary(AWSProviderBoundary):
 
         if length > MAXIMUM_REWRITE_BYTES:
             raise LifecycleConflict("Transformation source version exceeds the bounded rewrite size")
+
+        content = bytearray()
         async with response["Body"] as body:
-            content = await body.read()
-        if not isinstance(content, bytes) or len(content) != length:
+            while len(content) <= length:
+                chunk = await body.read(min(CHUNK_BYTES, length + 1 - len(content)))
+                if not chunk:
+                    break
+
+                content += chunk
+        if len(content) != length:
             raise LifecycleConflict("Object body length does not match exact version")
-        return content
+
+        return bytes(content)
 
     async def _streamed_body_digest(self, response: dict[str, Any]) -> str:
         length = response.get("ContentLength")
