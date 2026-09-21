@@ -112,7 +112,10 @@ class ValkyrieConfig(BaseModel):
     @model_validator(mode="after")
     def validate_access_key_configuration(self) -> "ValkyrieConfig":
         if self.aws is not None and self.aws.credentials is not None and not self.sandbox_providers:
-            raise ValueError("sandbox_providers are required with AWS configuration")
+            raise ValueError(
+                "sandbox_providers are required with AWS configuration. "
+                "Run `valkyrie config provider set <provider> <secret-name>`."
+            )
         return self
 
     @property

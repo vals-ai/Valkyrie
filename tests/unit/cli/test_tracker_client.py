@@ -684,7 +684,7 @@ def test_tracker_client_requires_provider_secret_config(tmp_path: Path, monkeypa
     with pytest.raises(TrackerServiceError) as error:
         TrackerService(base_url="http://tracker")
 
-    assert "sandbox_providers are required" in str(error.value)
+    assert "Run `valkyrie config provider set <provider> <secret-name>`." in str(error.value)
 
 
 @pytest.mark.parametrize(
