@@ -20,7 +20,8 @@ from services.tracker.main import app
 from tracker.api.filter_options import FilterOptionsResponse
 from tracker.database.models import (
     AgentContractRequest,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
+    LocalBenchmarkArguments,
     FinalEvaluation,
     OutputArtifact,
 )
@@ -73,7 +74,8 @@ from valkyrie.sdk.models import (
     AgentsResponse as SDKAgentsResponse,
     AnalyzeBenchmarkRequest as SDKAnalyzeBenchmarkRequest,
     AverageTaskBreakdown as SDKAverageTaskBreakdown,
-    BenchmarkArguments as SDKBenchmarkArguments,
+    AWSBenchmarkArguments as SDKAWSBenchmarkArguments,
+    LocalBenchmarkArguments as SDKLocalBenchmarkArguments,
     BenchmarkDetails as SDKBenchmarkDetails,
     BenchmarkServiceCatalogResponse as SDKBenchmarkServiceCatalogResponse,
     BenchmarkServiceEntry as SDKBenchmarkServiceEntry,
@@ -200,7 +202,8 @@ MODEL_PAIRS = (
     (FetchBenchmarksRequest, SDKFetchBenchmarksRequest),
     (BenchmarkTableRow, SDKBenchmarkTableRow),
     (FetchBenchmarksResponse, SDKFetchBenchmarksResponse),
-    (BenchmarkArguments, SDKBenchmarkArguments),
+    (AWSBenchmarkArguments, SDKAWSBenchmarkArguments),
+    (LocalBenchmarkArguments, SDKLocalBenchmarkArguments),
     (FinalEvaluation, SDKFinalEvaluation),
     (AverageTaskBreakdown, SDKAverageTaskBreakdown),
     (FinalViewResponse, SDKFinalViewResponse),

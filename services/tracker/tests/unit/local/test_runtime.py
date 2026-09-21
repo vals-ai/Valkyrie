@@ -58,7 +58,7 @@ async def test_local_runtime_scopes_files_and_keeps_secrets_in_memory(tmp_path: 
 
 
 async def test_executor_reads_only_declared_credentials_fresh_for_each_dispatch(tmp_path: Path) -> None:
-    from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, Org
+    from tracker.database.models import AgentContractRequest, Benchmark, LocalBenchmarkArguments, Org
     from tracker.executor.dependencies import get_execution_runtime
     from tracker.local.resources import LocalResources
     from tracker.types import StartBenchmarkRequest
@@ -75,7 +75,7 @@ async def test_executor_reads_only_declared_credentials_fresh_for_each_dispatch(
         org_id=org.id,
         name="test",
         aws_managed=False,
-        arguments=BenchmarkArguments(
+        arguments=LocalBenchmarkArguments(
             environment="local", properties=properties, contract=contract, concurrency=1, sandbox_provider="docker"
         ),
     )

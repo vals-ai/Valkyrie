@@ -16,8 +16,10 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from valkyrie.sdk import ValkyrieAPIError, ValkyrieStreamError, ValkyrieTransportError
+from valkyrie.sdk.models import AWSBenchmarkArguments, LocalBenchmarkArguments
 
 _STOP_RUN_ID = UUID("11111111-1111-4111-8111-111111111111")
 
@@ -59,8 +61,49 @@ async def test_metadata_returns_typed_run_metadata(make_client) -> None:
         result = await client.runs.metadata(run_id)
 
     assert result.benchmark_id == run_id
-    assert result.benchmark_arguments.contract.name == "sweagent"
     assert result.storage_bucket is None
+    assert isinstance(result.benchmark_arguments, AWSBenchmarkArguments)
+
+
+@pytest.mark.parametrize(
+    ("environment", "properties", "valid"),
+    [
+        ("local", {"data_root": "/tmp/valkyrie"}, True),
+        ("aws", {"data_root": "/tmp/valkyrie"}, False),
+        ("local", None, False),
+        (
+            "local",
+            {"region": "us-east-1", "s3_bucket": "runs", "log_group": "runs", "log_retention_days": 365},
+            False,
+        ),
+    ],
+)
+async def test_metadata_validates_environment_resources(make_client, environment, properties, valid) -> None:
+    run_id = uuid4()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "benchmark_id": str(run_id),
+                "benchmark_name": "swebench",
+                "benchmark_arguments": {
+                    "contract": {"name": "sweagent"},
+                    "concurrency": 1,
+                    "environment": environment,
+                    "properties": properties,
+                },
+            },
+        )
+
+    async with make_client(handler) as client:
+        if valid:
+            result = await client.runs.metadata(run_id)
+            assert isinstance(result.benchmark_arguments, LocalBenchmarkArguments)
+            assert result.benchmark_arguments.properties.data_root == Path("/tmp/valkyrie")
+        else:
+            with pytest.raises(ValidationError):
+                await client.runs.metadata(run_id)
 
 
 async def test_results_exist_returns_typed_s3_state(make_client) -> None:

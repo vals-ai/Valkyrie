@@ -9,7 +9,7 @@ from executor_protocol import ExecutorDispatchStatus
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     ExecutorAdmission,
     ExecutorDispatch,
@@ -41,7 +41,7 @@ def _benchmark(org_id: UUID, name: str) -> Benchmark:
         org_id=org_id,
         name=name,
         status=BenchmarkStatus.IN_PROGRESS,
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(name=f"{name}-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
         ),

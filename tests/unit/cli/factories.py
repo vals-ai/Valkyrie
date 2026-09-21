@@ -5,7 +5,7 @@ from uuid import UUID
 
 from tracker.database.models import (
     AgentContractRequest,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     DocentReadingStatus,
     TaskStatus,
@@ -50,7 +50,7 @@ def make_fetch_metadata(run_id: UUID) -> FetchBenchmarkMetadataResponse:
     return FetchBenchmarkMetadataResponse(
         benchmark_id=run_id,
         benchmark_name="swebench",
-        benchmark_arguments=BenchmarkArguments(
+        benchmark_arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(
                 name="mini_sweagent",
                 model="openai/gpt-5",
@@ -80,7 +80,7 @@ def make_final_view(
         finished_at=datetime(2026, 7, 10, 12, 5, tzinfo=timezone.utc),
         status=status,
         error_message=error_message,
-        benchmark_arguments=BenchmarkArguments(
+        benchmark_arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(
                 name="demo-agent",
                 secrets={"SYNTHETIC_KEY": "excluded-secret-name"},

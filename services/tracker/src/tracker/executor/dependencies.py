@@ -6,7 +6,6 @@ from tracker.aws.runtime import AWSResources
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.database.models import Benchmark, Org
 from tracker.exceptions import SecretsError, TrackerServiceError
-from tracker.local.resources import LocalResources
 from tracker.local.runtime import LocalRuntimeFactory
 from tracker.local.secrets import InMemorySecretStore, load_execution_secrets
 from tracker.runtime.services import RuntimeServices
@@ -20,21 +19,19 @@ async def get_execution_runtime(
     *,
     context_version: int | None = None,
 ) -> RuntimeServices:
-    if request.environment != benchmark.arguments.environment:
+    arguments = benchmark.arguments
+    if request.environment != arguments.environment:
         raise SecretsError("Queued runtime environment does not match the saved run")
-    properties = benchmark.arguments.properties
-    if request.environment == "local":
-        if not isinstance(properties, LocalResources):
-            raise SecretsError("Saved local run has no filesystem resource configuration")
+    if arguments.environment == "local":
+        properties = arguments.properties
         values = await to_thread(load_execution_secrets, properties.secrets_file, request.contract.secrets)
         secrets = InMemorySecretStore(request.contract.secrets, values)
         runtime = LocalRuntimeFactory.create_runtime(properties.data_root, org.id, secrets=secrets)
         await runtime.prepare_execution(request, benchmark.id)
         return runtime
 
-    assert properties is None or isinstance(properties, AWSResources)
     assert request.properties is None or isinstance(request.properties, AWSResources)
-    stored = properties
+    stored = arguments.properties
     queued = request.properties
     if context_version == 3 and stored is None:
         raise TrackerServiceError("Managed execution has no saved AWS resources")

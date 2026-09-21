@@ -1,14 +1,17 @@
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from pydantic import (
     BaseModel,
+    Discriminator,
     Field as PydanticField,
     SerializerFunctionWrapHandler,
+    Tag,
+    TypeAdapter,
     field_serializer,
     field_validator,
     model_serializer,
@@ -191,13 +194,11 @@ class AgentContractRequest(BaseModel):
         return normalized_artifacts
 
 
-class BenchmarkArguments(BaseModel):
+class _BenchmarkArguments(BaseModel):
     model_config = {"extra": "forbid"}
 
     contract: AgentContractRequest
     concurrency: int
-    environment: Literal["aws", "local"] = "aws"
-    properties: AWSResources | LocalResources | None = None
     priority: int | None = PydanticField(default=None, exclude=True, strict=True, ge=0, le=4)
     queue_pool_id: str | None = Field(default=None, exclude=True)
     task_ids: list[str] | None = None
@@ -206,6 +207,32 @@ class BenchmarkArguments(BaseModel):
     dataset: str | None = None
     sandbox_provider: str = "daytona"
     sandbox_provider_secret_name: str | None = None
+
+
+class AWSBenchmarkArguments(_BenchmarkArguments):
+    """Stored arguments for an AWS run, including legacy rows without resources."""
+
+    environment: Literal["aws"] = "aws"
+    properties: AWSResources | None = None
+
+
+class LocalBenchmarkArguments(_BenchmarkArguments):
+    """Stored arguments with the filesystem resources selected at admission."""
+
+    environment: Literal["local"] = "local"
+    properties: LocalResources
+
+
+def _benchmark_environment(value: dict[str, Any] | _BenchmarkArguments) -> str | None:
+    """Treat stored arguments without an environment as legacy AWS runs."""
+    return value.get("environment", "aws") if isinstance(value, dict) else getattr(value, "environment", None)
+
+
+BenchmarkArguments = Annotated[
+    Annotated[AWSBenchmarkArguments, Tag("aws")] | Annotated[LocalBenchmarkArguments, Tag("local")],
+    Discriminator(_benchmark_environment),
+]
+benchmark_arguments_adapter: TypeAdapter[BenchmarkArguments] = TypeAdapter(BenchmarkArguments)
 
 
 class FinalEvaluation(SQLModel, table=True):
@@ -255,7 +282,7 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
         """Runs when we fetch the value from the database."""
         if value is None:
             return None
-        return BenchmarkArguments(**value)
+        return benchmark_arguments_adapter.validate_python(value)
 
 
 class ExecutorRelease(SQLModel, table=True):

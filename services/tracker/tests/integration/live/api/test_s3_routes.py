@@ -14,7 +14,7 @@ from sqlmodel import Session
 from tests.utils import TEST_ORG_ID
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import delete_from_s3, upload_to_s3
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, Task
+from tracker.database.models import AgentContractRequest, Benchmark, AWSBenchmarkArguments, Task
 from tracker.types import HarnessConfig
 
 
@@ -75,7 +75,7 @@ async def test_task_artifact_route_round_trips_real_s3_and_handles_missing_outpu
     benchmark = Benchmark(
         org_id=TEST_ORG_ID,
         name="swebench",
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(name="live-s3-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
         ),

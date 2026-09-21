@@ -24,7 +24,7 @@ from tracker.api import logs as logs_api
 from tracker.api.dependencies import get_run_runtime
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchLogProvider
-from tracker.database.models import Benchmark, Org
+from tracker.database.models import Benchmark, LocalBenchmarkArguments, Org
 from tracker.runtime.logs import LogEvent, LogPage, LogProvider, RunLogReference, RunTaskLogReference, TaskLogReference
 
 _client = TestClient(app)
@@ -308,8 +308,13 @@ def test_local_logs_use_filesystem_without_aws_resolution(
     from tracker.runtime.logs import task_log_stream_name
 
     benchmark = example_benchmark_object
-    benchmark.arguments = benchmark.arguments.model_copy(
-        update={"environment": "local", "properties": LocalResources(data_root=tmp_path), "sandbox_provider": "docker"}
+    benchmark.arguments = LocalBenchmarkArguments.model_validate(
+        {
+            **benchmark.arguments.model_dump(),
+            "environment": "local",
+            "properties": LocalResources(data_root=tmp_path),
+            "sandbox_provider": "docker",
+        }
     )
     task = make_task(benchmark, "local-task")
     database_session.add_all([benchmark, task])
