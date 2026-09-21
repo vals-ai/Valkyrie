@@ -122,10 +122,14 @@ def route_cli_to_local_tracker(
     config_path.write_text(
         yaml.safe_dump(
             {
-                "AWS_ACCESS_KEY_ID": "test-key",
-                "AWS_SECRET_ACCESS_KEY": "test-secret",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "S3_BUCKET": "test-bucket",
+                "aws": {
+                    "credentials": {
+                        "AWS_ACCESS_KEY_ID": "test-key",
+                        "AWS_SECRET_ACCESS_KEY": "test-secret",
+                    },
+                    "AWS_DEFAULT_REGION": "us-east-1",
+                    "S3_BUCKET": "test-bucket",
+                },
                 "sandbox_providers": {"daytona": "test-provider-secret"},
             }
         )

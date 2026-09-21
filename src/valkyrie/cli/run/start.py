@@ -363,7 +363,6 @@ def start(
 
         config_kwargs["kwargs"] = {key: value for key, value in kwargs}
         agent_config = AgentConfig(**config_kwargs)
-        managed_execution = not TrackerService.parse_config_keys()
 
         agent_path = Path(agent)
 

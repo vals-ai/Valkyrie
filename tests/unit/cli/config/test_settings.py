@@ -39,12 +39,13 @@ def test_init_self_hosted_strips_whitespace(config_path: Path, monkeypatch: pyte
     assert result.exit_code == 0, result.output
     config = yaml.safe_load(config_path.read_text())
     assert config == {
-        "AWS_ACCESS_KEY_ID": "aws-key",
-        "AWS_SECRET_ACCESS_KEY": "aws-secret",
-        "AWS_DEFAULT_REGION": "us-east-1",
-        "S3_BUCKET": "bucket",
-        "LOG_GROUP": "benchmarks",
-        "LOG_RETENTION_POLICY": "365",
+        "aws": {
+            "credentials": {"AWS_ACCESS_KEY_ID": "aws-key", "AWS_SECRET_ACCESS_KEY": "aws-secret"},
+            "AWS_DEFAULT_REGION": "us-east-1",
+            "S3_BUCKET": "bucket",
+            "LOG_GROUP": "benchmarks",
+            "LOG_RETENTION_POLICY": "365",
+        },
     }
 
 
@@ -139,9 +140,13 @@ def test_init_hosted_managed_aws_omits_static_keys(config_path: Path, monkeypatc
     config_path.write_text(
         yaml.safe_dump(
             {
-                "AWS_ACCESS_KEY_ID": "old-key",
-                "AWS_SECRET_ACCESS_KEY": "old-secret",
-                "AWS_SESSION_TOKEN": "old-session",
+                "aws": {
+                    "credentials": {
+                        "AWS_ACCESS_KEY_ID": "old-key",
+                        "AWS_SECRET_ACCESS_KEY": "old-secret",
+                        "AWS_SESSION_TOKEN": "old-session",
+                    }
+                },
             }
         )
     )
@@ -161,11 +166,11 @@ def test_init_hosted_managed_aws_omits_static_keys(config_path: Path, monkeypatc
     assert result.exit_code == 0, result.output
     config = yaml.safe_load(config_path.read_text())
     assert config["api_key"] == "vals-key"
-    assert config["AWS_DEFAULT_REGION"] == "us-east-1"
-    assert config["S3_BUCKET"] == "managed-bucket"
-    assert config["LOG_GROUP"] == "benchmarks"
-    assert config["LOG_RETENTION_POLICY"] == "365"
-    assert not settings._STATIC_AWS_CREDENTIAL_KEYS.intersection(config)
+    assert config["aws"]["AWS_DEFAULT_REGION"] == "us-east-1"
+    assert config["aws"]["S3_BUCKET"] == "managed-bucket"
+    assert config["aws"]["LOG_GROUP"] == "benchmarks"
+    assert config["aws"]["LOG_RETENTION_POLICY"] == "365"
+    assert "credentials" not in config["aws"]
     assert "Local AWS operations will use the AWS SDK credential chain" in result.output
     assert "Restore them before retrying or resuming an access-key run" in result.output
 
@@ -263,11 +268,25 @@ def test_set_api_key_without_previous_key_preserves_benchmark_auth(config_path: 
 
 def test_set_aws_session_token_without_printing_value(config_path: Path) -> None:
     """Temporary AWS credentials can be configured without echoing the token."""
-    config_path.write_text(yaml.safe_dump({"AWS_ACCESS_KEY_ID": "ASIAEXAMPLE"}))
+    config_path.write_text(yaml.safe_dump({"aws": {"credentials": {"AWS_ACCESS_KEY_ID": "ASIAEXAMPLE"}}}))
 
     result = CliRunner().invoke(settings.set, ["AWS_SESSION_TOKEN", "temporary-token"])
 
     assert result.exit_code == 0, result.output
     config = yaml.safe_load(config_path.read_text())
-    assert config["AWS_SESSION_TOKEN"] == "temporary-token"
+    assert config["aws"]["credentials"]["AWS_SESSION_TOKEN"] == "temporary-token"
     assert "temporary-token" not in result.output
+
+
+def test_set_and_remove_aws_credentials_preserves_resources(config_path: Path) -> None:
+    config_path.write_text(yaml.safe_dump({"aws": {"AWS_DEFAULT_REGION": "us-east-1", "S3_BUCKET": "bucket"}}))
+    runner = CliRunner()
+    for key, value in (("AWS_ACCESS_KEY_ID", "test-key"), ("AWS_SECRET_ACCESS_KEY", "test-secret")):
+        result = runner.invoke(settings.set, [key, value])
+        assert result.exit_code == 0, result.output
+    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
+        result = runner.invoke(settings.config_remove, [key])
+        assert result.exit_code == 0, result.output
+    assert yaml.safe_load(config_path.read_text()) == {
+        "aws": {"AWS_DEFAULT_REGION": "us-east-1", "S3_BUCKET": "bucket"}
+    }

@@ -22,10 +22,12 @@ def config_values() -> ConfigValuesFactory:
         values: dict[str, object] = {
             "api_key": "vals-key",
             "aws": {
-                "AWS_ACCESS_KEY_ID": "aws-key",
-                "AWS_SECRET_ACCESS_KEY": "aws-secret",
+                "credentials": {
+                    "AWS_ACCESS_KEY_ID": "aws-key",
+                    "AWS_SECRET_ACCESS_KEY": "aws-secret",
+                    "AWS_SESSION_TOKEN": "aws-session",
+                },
                 "AWS_DEFAULT_REGION": "us-west-2",
-                "AWS_SESSION_TOKEN": "aws-session",
                 "S3_BUCKET": "runs-bucket",
                 "LOG_GROUP": "benchmarks",
                 "LOG_RETENTION_POLICY": 30,

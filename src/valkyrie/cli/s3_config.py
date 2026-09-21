@@ -6,23 +6,8 @@ from tracker.aws.clients import ExplicitCredentialsAWSClientProvider, LocalChain
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.types import AWSCredentials
 
-from valkyrie.cli.config.state import load_config
-
-
-def _bucket_name(config: dict[str, Any]) -> str:
-    bucket_name = config.get("S3_BUCKET")
-    if not bucket_name:
-        raise click.ClickException("S3_BUCKET key not found. Add it using 'valkyrie config set' first.")
-
-    return str(bucket_name)
-
-
-def _region(config: dict[str, Any]) -> str:
-    region = config.get("AWS_DEFAULT_REGION")
-    if not region:
-        raise click.ClickException("AWS_DEFAULT_REGION key not found. Add it using 'valkyrie config set' first.")
-
-    return str(region)
+from valkyrie.sdk import ValkyrieConfig, ValkyrieConfigError
+from valkyrie.cli.runtime_config import config_location
 
 
 @lru_cache(maxsize=4)
@@ -62,25 +47,29 @@ def _aws_runtime(
 
 def aws_runtime() -> AWSRuntime:
     """Build the AWS runtime configured for local CLI operations."""
-    config = load_config()
-    access_key_id = str(config.get("AWS_ACCESS_KEY_ID") or "") or None
-    secret_access_key = str(config.get("AWS_SECRET_ACCESS_KEY") or "") or None
-    if (access_key_id is None) != (secret_access_key is None):
-        raise click.ClickException("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together.")
-
+    try:
+        config = ValkyrieConfig.from_yaml(config_location())
+    except ValkyrieConfigError as error:
+        raise click.ClickException(str(error)) from error
+    if config.aws is None:
+        raise click.ClickException("AWS resources are not configured. Run 'valkyrie config init' first.")
+    aws = config.aws
+    credentials = aws.credentials
     return _aws_runtime(
-        access_key_id=access_key_id,
-        secret_access_key=secret_access_key,
-        session_token=str(config.get("AWS_SESSION_TOKEN") or "") or None,
-        region=_region(config),
-        s3_bucket=_bucket_name(config),
-        log_group=str(config.get("LOG_GROUP") or ""),
-        log_retention_days=int(config.get("LOG_RETENTION_POLICY") or 30),
+        access_key_id=credentials.aws_access_key_id.get_secret_value() if credentials else None,
+        secret_access_key=credentials.aws_secret_access_key.get_secret_value() if credentials else None,
+        session_token=credentials.aws_session_token.get_secret_value()
+        if credentials and credentials.aws_session_token
+        else None,
+        region=aws.aws_default_region,
+        s3_bucket=aws.s3_bucket,
+        log_group=aws.log_group,
+        log_retention_days=aws.log_retention_policy,
     )
 
 
 def fetch_bucket_name() -> str:
-    return _bucket_name(load_config())
+    return aws_runtime().resources.s3_bucket
 
 
 def s3_client() -> Any:

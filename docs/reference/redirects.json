@@ -522,5 +522,9 @@
   {
     "source": "/reference/sdk/models/config/aws-config",
     "destination": "/reference/sdk/models/config#aws-config"
+  },
+  {
+    "source": "/reference/sdk/models/config/aws-access-keys",
+    "destination": "/reference/sdk/models/config#aws-access-keys"
   }
 ]

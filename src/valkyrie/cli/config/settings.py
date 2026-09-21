@@ -67,6 +67,7 @@ def init() -> None:
         default="self-hosted",
     )
     environment_variables = _REQUIRED_ENVIRONMENT_VARIABLES
+    aws = current_config.setdefault("aws", {})
 
     if mode == "hosted":
         environment = click.prompt(
@@ -101,11 +102,9 @@ def init() -> None:
         if runtime.mode == "managed":
             if not runtime.region or not runtime.s3_bucket:
                 raise click.ClickException("Managed AWS configuration is missing its Region or S3 bucket.")
-            current_config["AWS_DEFAULT_REGION"] = runtime.region
-            current_config["S3_BUCKET"] = runtime.s3_bucket
-            removed_static_credentials = any(key in current_config for key in _STATIC_AWS_CREDENTIAL_KEYS)
-            for key in _STATIC_AWS_CREDENTIAL_KEYS:
-                current_config.pop(key, None)
+            aws["AWS_DEFAULT_REGION"] = runtime.region
+            aws["S3_BUCKET"] = runtime.s3_bucket
+            removed_static_credentials = aws.pop("credentials", None) is not None
             environment_variables = {
                 "LOG_GROUP": _REQUIRED_ENVIRONMENT_VARIABLES["LOG_GROUP"],
                 "LOG_RETENTION_POLICY": _REQUIRED_ENVIRONMENT_VARIABLES["LOG_RETENTION_POLICY"],
@@ -119,12 +118,12 @@ def init() -> None:
                     "an access-key run.\n"
                 )
 
-    collected_keys: dict[str, str] = {}
     for key, default in environment_variables.items():
-        sourced = current_config.get(key) or os.environ.get(key)
+        target = aws.setdefault("credentials", {}) if key in _STATIC_AWS_CREDENTIAL_KEYS else aws
+        sourced = target.get(key) or os.environ.get(key)
         if sourced:
-            click.echo(f"  {key}: sourced from {'environment' if not current_config.get(key) else 'existing config'}")
-            collected_keys[key] = sourced
+            click.echo(f"  {key}: sourced from {'environment' if not target.get(key) else 'existing config'}")
+            target[key] = sourced
             continue
 
         if not default:
@@ -140,9 +139,7 @@ def init() -> None:
         else:
             value = click.prompt(f"  {key}", default=str(default)).strip()
 
-        collected_keys[key] = value
-
-    current_config.update(collected_keys)
+        target[key] = value
 
     if mode != "hosted":
         current_config.pop("api_key", None)
@@ -176,7 +173,12 @@ def set(key: str, value: str) -> None:
     if config_value is ConfigValue.API_KEY:
         rotated_benchmark_auth = _rotate_matching_benchmark_auth(current, value)
 
-    current[config_value.value] = value
+    if config_value.value in _STATIC_AWS_CREDENTIAL_KEYS:
+        current.setdefault("aws", {}).setdefault("credentials", {})[config_value.value] = value
+    elif config_value.value in _REQUIRED_ENVIRONMENT_VARIABLES:
+        current.setdefault("aws", {})[config_value.value] = value
+    else:
+        current[config_value.value] = value
 
     write_config(current)
 
@@ -209,8 +211,14 @@ def config_remove(key: str) -> None:
             f"Key '{key}' is required and cannot be removed. Consider using `valkyrie config set` to update it."
         )
 
-    if config_value.value in current:
-        del current[config_value.value]
+    if config_value.value in _STATIC_AWS_CREDENTIAL_KEYS:
+        aws = current.get("aws", {})
+        credentials = aws.get("credentials", {})
+        credentials.pop(config_value.value, None)
+        if not credentials:
+            aws.pop("credentials", None)
+    else:
+        current.pop(config_value.value, None)
 
     write_config(current)
 

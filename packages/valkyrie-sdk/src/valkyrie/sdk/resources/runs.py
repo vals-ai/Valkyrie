@@ -121,8 +121,6 @@ class RunsResource:
         effective_service_headers = self._service_headers(benchmark, service_headers)
         access_key_harness_config = None
         if self._sdk.config.aws is not None:
-            # Static AWS configuration requires a configured provider secret.
-            assert provider_secret_name is not None
             access_key_harness_config = self._sdk.config.aws.harness_config(provider_secret_name)
 
         payload = StartBenchmarkRequest(

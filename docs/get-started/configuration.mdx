@@ -13,6 +13,27 @@ valkyrie config init
 
 Initialization selects a [hosting mode](/get-started/hosting) and collects its required AWS and tracker credentials.
 
+The SDK and CLI use the same nested AWS configuration:
+
+```yaml
+aws:
+  AWS_DEFAULT_REGION: us-east-1
+  S3_BUCKET: benchmark-artifacts
+  LOG_GROUP: benchmarks
+  LOG_RETENTION_POLICY: 365
+  credentials:
+    AWS_ACCESS_KEY_ID: <access-key-id>
+    AWS_SECRET_ACCESS_KEY: <secret-access-key>
+sandbox_providers:
+  daytona: DaytonaSecrets
+```
+
+Omit `credentials` for managed execution with local AWS operations using the AWS SDK credential chain. Omit `aws` when the client needs no AWS resources.
+
+Existing flat files must be migrated before use: move Region, bucket, and logging fields under `aws`; move access keys and any session token under `aws.credentials`. Remove those fields from the top level. If your file already has access-key fields directly under `aws`, move them into `aws.credentials`. Keep API keys, sandbox providers, and benchmark settings at the top level.
+
+Replace a legacy `DAYTONA_SECRET_NAME` entry with `sandbox_providers.daytona`.
+
 ## Set or remove a value
 
 ```bash
