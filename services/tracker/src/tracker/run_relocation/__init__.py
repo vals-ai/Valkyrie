@@ -593,16 +593,26 @@ class RelocationOperator:
                         "Portable release requires positive process absence without relying on the hold"
                     )
                 phase = "released" if run.execution_policy == "portable" else "relocated_history_only"
-                checkpoint = checkpoint.model_copy(
-                    update={"phase": phase, "parent_completion_sha256": request.completion_sha256}
-                )
                 if phase == "released" and record.released_at is None:
                     record.released_at = (
                         self.session.connection().execute(text("SELECT current_timestamp")).scalar_one()
                     )
                     self.session.add(record)
 
+                record.phase = phase
+                receipt = checkpoint.receipt or self._observation(
+                    request, benchmark, arguments, record=record, dispatches=dispatches, references=references
+                )
+                checkpoint = checkpoint.model_copy(
+                    update={
+                        "phase": phase,
+                        "parent_completion_sha256": request.completion_sha256,
+                        "receipt": receipt,
+                    }
+                )
                 self._commit_checkpoint(record, checkpoint, lock)
+
+                return receipt, request
         benchmark, arguments = self._run(request, run.scope.run_id)
         record, checkpoint = self._checkpoint(identity, run)
         self._validate_run(benchmark, arguments, run, checkpoint)

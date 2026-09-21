@@ -78,7 +78,12 @@ override. Every response returns the request nonce and action.
    sandbox absence, and dispatch drain. A portable run also needs complete usable
    execution-reference proof. It then releases the hold. An explicit history-only
    run becomes `relocated_history_only` with `released_at` still null. Matching
-   finalization can be retried; another completion digest is refused.
+   finalization can be retried; another completion digest is refused. The receipt
+   is built under the operation lock and stored in the checkpoint by the same
+   commit that records the release, so a run resumed after the release cannot
+   change it and a repeated finalization replays the identical receipt. That
+   stored receipt is excluded from the completed-history checkpoint digest, so it
+   never moves a predecessor proof the parent plan already reviewed.
 
 Holds remain active across the parent location commit and source cleanup. The shared
 PostgreSQL advisory lock namespace prevents purge and relocation operators from

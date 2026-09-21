@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlmodel import Session, SQLModel, create_engine
 
 from tests.factories import make_benchmark
@@ -39,7 +39,7 @@ from tracker.database.models import (
 )
 from tracker.executor.release_control import create_executor_dispatch
 from tracker.lifecycle import LifecycleConflict, OperationIdentity, RunScope, require_unheld
-from tracker.lifecycle_completion import acquire_successor_hold, capture_predecessor
+from tracker.lifecycle_completion import RelocationCheckpoint, acquire_successor_hold, capture_predecessor
 import tracker.run_relocation as run_relocation
 from tracker.run_purge.locking import OperationLock
 from tracker.run_relocation import RelocationOperator
@@ -493,6 +493,50 @@ def test_a_lock_lost_during_a_provider_call_stops_the_next_phase_commit(
         relocation_session.connection().execute(text("SELECT arguments FROM benchmark WHERE id=:id"), {"id": run.id})
     ).scalar_one()
     assert persisted == saved
+
+
+def test_a_resume_admitted_after_release_cannot_change_the_returned_receipt(relocation_session: Session) -> None:
+    run, _, request = seed(relocation_session)
+    execute(relocation_session, request, "prepare")
+    execute(relocation_session, request, "relocate")
+    request["completion_sha256"] = "c" * 64
+    engine = relocation_session.get_bind().engine
+
+    def admit_resume(_session: Session) -> None:
+        with Session(engine, expire_on_commit=False) as resumed:
+            benchmark = resumed.get_one(Benchmark, run.id)
+            benchmark.status = BenchmarkStatus.IN_PROGRESS
+            resumed.add(benchmark)
+            resumed.add(Task(org_id=run.org_id, benchmark=run.id, task_id="resumed", status=TaskStatus.PENDING))
+            resumed.commit()
+
+    event.listen(relocation_session, "after_commit", admit_resume)
+    try:
+        response = execute(relocation_session, request, "release")
+    finally:
+        event.remove(relocation_session, "after_commit", admit_resume)
+
+    assert response.runs[0].status == "FINISHED"
+    assert response.runs[0].pending_task_ids == ()
+    assert response.runs[0].hold_phase == "relocated_history_only"
+    relocation_session.rollback()
+    relocation_session.expire_all()
+    assert relocation_session.get_one(Benchmark, run.id).status == BenchmarkStatus.IN_PROGRESS
+
+
+def test_a_repeated_release_replays_the_receipt_frozen_in_the_checkpoint(relocation_session: Session) -> None:
+    run, _, request = seed(relocation_session)
+    execute(relocation_session, request, "prepare")
+    execute(relocation_session, request, "relocate")
+    request["completion_sha256"] = "c" * 64
+
+    first = execute(relocation_session, request, "release")
+    second = execute(relocation_session, request, "release")
+
+    assert first.runs == second.runs
+    record = relocation_session.get_one(RunLifecycle, run.id)
+    stored = RelocationCheckpoint.model_validate_json(record.checkpoint_json or "null")
+    assert stored.receipt == first.runs[0]
 
 
 def test_portable_release_is_idempotent_and_conflicting_completion_fails(relocation_session: Session) -> None:

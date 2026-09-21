@@ -20,7 +20,7 @@ from tracker.lifecycle import (
     RunScope,
     acquire_hold,
 )
-from tracker.storage_migration_exchange import CopiedObject, DestinationVersion
+from tracker.storage_migration_exchange import CopiedObject, DestinationVersion, RunObservation
 
 
 def canonical_digest(value: object) -> str:
@@ -50,6 +50,7 @@ class RelocationCheckpoint(ContractModel):
     destination_versions: tuple[DestinationVersion, ...] = ()
     parent_completion_sha256: Digest | None = None
     phase: Literal["held", "prepared", "relocated", "released", "relocated_history_only"] = "held"
+    receipt: RunObservation | None = None
 
     @model_validator(mode="after")
     def completed_proof(self) -> "RelocationCheckpoint":
@@ -74,6 +75,11 @@ class RelocationCheckpoint(ContractModel):
         ):
             raise ValueError("Completed relocation requires matching policy and parent completion")
         return self
+
+
+def completion_digest(checkpoint: RelocationCheckpoint) -> str:
+    """The completion proof covers the relocation evidence, never the replayed operator receipt."""
+    return canonical_digest(checkpoint.model_dump(mode="json", exclude={"receipt"}))
 
 
 def capture_predecessor(record: RunLifecycle, identity: OperationIdentity, scope: RunScope) -> RelocationPredecessor:
@@ -112,7 +118,7 @@ def capture_predecessor(record: RunLifecycle, identity: OperationIdentity, scope
         ):
             raise LifecycleConflict("Completed history checkpoint or current resources do not match")
         kind = "completed_history_only"
-        completion = canonical_digest(checkpoint.model_dump(mode="json"))
+        completion = completion_digest(checkpoint)
     else:
         raise LifecycleConflict("Predecessor is not a completed relocation")
 
