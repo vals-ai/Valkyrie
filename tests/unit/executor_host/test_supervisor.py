@@ -1100,9 +1100,12 @@ async def test_periodic_authority_operational_error_allows_child_completion(
     monkeypatch.setattr(supervisor_module, "_terminate_process_group", terminate)
     supervisor = _supervisor(tmp_path, content=b"unused", sleep=sleep)
 
-    assert await supervisor._wait_with_authority(  # pyright: ignore[reportPrivateUsage]
-        cast(asyncio.subprocess.Process, process), is_current
-    ) == 0
+    assert (
+        await supervisor._wait_with_authority(  # pyright: ignore[reportPrivateUsage]
+            cast(asyncio.subprocess.Process, process), is_current
+        )
+        == 0
+    )
     terminate.assert_not_called()
 
 
