@@ -1,5 +1,6 @@
 """Read immutable old logs through the same bounded provider used by routes."""
 
+import asyncio
 import base64
 import json
 from collections.abc import AsyncIterator
@@ -417,13 +418,35 @@ def test_reused_authority_is_bound_to_one_verified_principal(tmp_path: Path) -> 
         )
 
 
+def test_reused_authority_reads_through_the_current_request_client(tmp_path: Path) -> None:
+    """A cache hit must not keep reading with the client of the request that filled it."""
+    _, storage, report = reader(tmp_path)
+    org_id = scoped_input(log_history_archive).location.org_id
+    arguments = (RUN_ID, org_id, report.reference, LiveLogs())
+    first = historical_log_reader(
+        saved_runtime(NamedSession(DESTINATION_ACCOUNT, storage, "one")), *arguments, terminal=True
+    )
+    current = FakeS3()
+    current.objects = dict(storage.objects)
+    again = historical_log_reader(
+        saved_runtime(NamedSession(DESTINATION_ACCOUNT, current, "one")), *arguments, terminal=True
+    )
+    assert again.location == first.location
+    assert first.store is not None and first.store.client is storage
+    assert again.store is not None and again.store.client is current
+
+    storage.corrupt = True
+    page = asyncio.run(again.fetch(RunLogReference(RUN_ID)))
+    assert [event.event_id for event in page.events] == ["first", "second", "live"]
+
+
 def test_expired_authority_is_verified_again(tmp_path: Path) -> None:
     _, storage, report = reader(tmp_path)
     org_id = scoped_input(log_history_archive).location.org_id
     arguments = (RUN_ID, org_id, report.reference, LiveLogs())
     historical_log_reader(saved_runtime(NamedSession(DESTINATION_ACCOUNT, storage, "one")), *arguments, terminal=True)
-    for key, (_, location, store) in list(archive_authority_cache.entries.items()):
-        archive_authority_cache.entries[key] = (monotonic() - 1, location, store)
+    for key, (_, location) in list(archive_authority_cache.entries.items()):
+        archive_authority_cache.entries[key] = (monotonic() - 1, location)
     storage.versioning = "Suspended"
 
     with pytest.raises(LogProviderError, match="authority verification"):

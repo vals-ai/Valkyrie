@@ -40,10 +40,14 @@ def verified_client(session: Any, service: str, account: str, region: str) -> tu
 
 
 class ArchiveVersionStore:
-    def __init__(self, session: Any, location: ArchiveLocation) -> None:
+    def __init__(self, session: Any, location: ArchiveLocation, *, verified_bucket_state: bool = False) -> None:
+        """`verified_bucket_state` reuses a recent check behind this same verified identity."""
         self.client, self.principal = verified_client(session, "s3", location.account_id, location.region)
         self.location = location
         self.request = {"Bucket": location.bucket, "ExpectedBucketOwner": location.account_id}
+        if verified_bucket_state:
+            return
+
         bucket = self.client.head_bucket(**self.request)
         if bucket.get("BucketRegion") != location.region:
             raise ArchiveError("bucket region mismatch")

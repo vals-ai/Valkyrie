@@ -8,6 +8,7 @@ from collections import OrderedDict
 from collections.abc import AsyncIterator
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
+from threading import Lock
 from time import monotonic
 from typing import Annotated, Any, Literal
 from uuid import UUID
@@ -33,39 +34,45 @@ Identity = Annotated[str, Field(pattern="^[0-9a-f]{64}$")]
 
 
 class ArchiveAuthorityCache:
-    """Reuse one verified principal's archive authority for a bounded, short time.
+    """Reuse one verified principal's archive bucket state for a bounded, short time.
 
-    A page of an archived run otherwise repeats the same bucket and manifest
-    verification on every request. Caller identity is still proved per request;
-    only the bucket-state checks behind that identity are reused.
+    A page of an archived run otherwise repeats the same bucket verification on
+    every request. Caller identity is still proved per request, and the reader
+    binds a fresh client to that request, so only the bucket-state checks behind
+    the verified identity are reused. Requests share one process, so the entries
+    are guarded.
     """
 
     def __init__(self, seconds: float, size: int) -> None:
         self.seconds = seconds
         self.size = size
-        self.entries: OrderedDict[str, tuple[float, ArchiveLocation, ArchiveVersionStore]] = OrderedDict()
+        self.guard = Lock()
+        self.entries: OrderedDict[str, tuple[float, ArchiveLocation]] = OrderedDict()
 
-    def get(self, key: str) -> tuple[ArchiveLocation, ArchiveVersionStore] | None:
-        entry = self.entries.get(key)
-        if entry is None:
-            return None
+    def get(self, key: str) -> ArchiveLocation | None:
+        with self.guard:
+            entry = self.entries.get(key)
+            if entry is None:
+                return None
 
-        expires_at, location, store = entry
-        if expires_at <= monotonic():
-            del self.entries[key]
-            return None
+            expires_at, location = entry
+            if expires_at <= monotonic():
+                self.entries.pop(key, None)
+                return None
 
-        self.entries.move_to_end(key)
-        return location, store
+            self.entries.move_to_end(key)
+            return location
 
-    def put(self, key: str, location: ArchiveLocation, store: ArchiveVersionStore) -> None:
-        self.entries[key] = (monotonic() + self.seconds, location, store)
-        self.entries.move_to_end(key)
-        while len(self.entries) > self.size:
-            self.entries.popitem(last=False)
+    def put(self, key: str, location: ArchiveLocation) -> None:
+        with self.guard:
+            self.entries[key] = (monotonic() + self.seconds, location)
+            self.entries.move_to_end(key)
+            while len(self.entries) > self.size:
+                self.entries.popitem(last=False)
 
     def clear(self) -> None:
-        self.entries.clear()
+        with self.guard:
+            self.entries.clear()
 
 
 archive_authority_cache = ArchiveAuthorityCache(_AUTHORITY_SECONDS, _AUTHORITY_SIZE)
@@ -452,7 +459,8 @@ def historical_log_reader(
         key = _authority_key(principal, runtime, run_id, org_id, history)
         reused = archive_authority_cache.get(key)
         if reused is not None:
-            return HistoricalLogProvider(history, reused[0], session, live, terminal=terminal, store=reused[1])
+            store = ArchiveVersionStore(session, reused, verified_bucket_state=True)
+            return HistoricalLogProvider(history, reused, session, live, terminal=terminal, store=store)
 
         storage = session.client("s3", region_name=region)
         tags = {
@@ -474,7 +482,7 @@ def historical_log_reader(
             bucket=runtime.resources.s3_bucket,
         )
         store = ArchiveVersionStore(session, location)
-        archive_authority_cache.put(key, location, store)
+        archive_authority_cache.put(key, location)
 
         return HistoricalLogProvider(history, location, session, live, terminal=terminal, store=store)
     except Exception:
