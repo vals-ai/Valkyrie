@@ -107,6 +107,11 @@ class CustomerStorageConfig:
         if re.fullmatch(r"[0-9]{12}", legacy_account) is None:
             raise ValueError("VALSMITH_LEGACY_STORAGE_ACCOUNT_ID must be an explicit 12-digit account")
 
+        # Same-account reads need no resource policy, so the reviewed compatibility
+        # bucket policy that narrows the roles to the cohort prefixes would not bind.
+        if legacy_account == production_account:
+            raise ValueError("VALSMITH_LEGACY_STORAGE_ACCOUNT_ID must differ from PRODUCTION_ACCOUNT_ID")
+
         return cls(
             production_account,
             organization,

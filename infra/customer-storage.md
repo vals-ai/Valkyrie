@@ -22,7 +22,13 @@ an account from an AWS profile.
 | `VALSMITH_DATASET_VIEW_LAMBDA_NAME` | Exact function name in the target account and region |
 | `VALSMITH_LIFECYCLE_OPERATOR_ROLE_ARN` | One explicit IAM operator role ARN; no wildcard or account-root principal |
 | `VALSMITH_LEGACY_STORAGE_BUCKET` | Exact shared compatibility bucket; never an owner bucket |
-| `VALSMITH_LEGACY_STORAGE_ACCOUNT_ID` | Explicit account that owns that compatibility bucket |
+| `VALSMITH_LEGACY_STORAGE_ACCOUNT_ID` | Explicit account that owns that compatibility bucket; must differ from `PRODUCTION_ACCOUNT_ID` |
+
+The compatibility bucket must stay in a separate account. The cutover phase 3
+gate narrows these roles with a resource policy on that bucket, and a resource
+policy only binds across accounts: inside one account the identity grant alone
+already allows the read, so the reviewed narrowing would have no effect.
+
 
 The existing deployment preflight also requires separate bench/dev/production
 account identities and region inputs. Do not reuse bench's account because a

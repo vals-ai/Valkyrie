@@ -133,7 +133,7 @@ def test_command_refuses_a_recent_hold_without_removing_rows_releasing_holds_or_
 
     output = capsys.readouterr()
     assert output.out == ""
-    assert output.err == "Transfer remains incomplete (LifecycleConflict)\n"
+    assert output.err == "Transfer remains incomplete (LifecycleConflict; clause hold_quiet_interval)\n"
     assert report_path.read_text() == "prior report with an old nonce"
     assert snapshot(pair) == before
     assert not deleted

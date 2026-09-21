@@ -8,6 +8,32 @@ import sys
 from pathlib import Path
 
 
+SAFETY_CLAUSES = frozenset(
+    {
+        "dispatch_drain",
+        "hold_quiet_interval",
+        "host_observation",
+        "matching_scans",
+        "persisted_decision",
+        "scan_quiet_interval",
+    }
+)
+CLAUSE_PATTERN = re.compile(r"clause ([a-z_]{1,32}) failed")
+
+
+def clause_code(error: Exception) -> str:
+    """Only a name from the closed set is printed, so no payload can reach the report."""
+    try:
+        match = CLAUSE_PATTERN.search(str(error))
+    except Exception:
+        return "unnamed"
+
+    if match is None or match[1] not in SAFETY_CLAUSES:
+        return "unnamed"
+
+    return match[1]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Transfer held historical runs between two explicit Tracker databases")
     parser.add_argument("--request", required=True, type=Path)
@@ -55,7 +81,7 @@ def main() -> int:
             options.journal_directory,
         )
     except Exception as error:
-        print(f"Transfer remains incomplete ({type(error).__name__})", file=sys.stderr)
+        print(f"Transfer remains incomplete ({type(error).__name__}; clause {clause_code(error)})", file=sys.stderr)
         return 2
 
 

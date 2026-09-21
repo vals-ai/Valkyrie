@@ -380,6 +380,11 @@ class CustomerStorageTest(unittest.TestCase):
             with self.subTest(invalid=name), self.assertRaisesRegex(ValueError, name):
                 synth(environment={**INPUTS, name: value})
 
+    def test_legacy_storage_in_the_production_account_fails_before_synthesis(self) -> None:
+        """A same-account compatibility bucket needs no resource policy, so no narrowing binds."""
+        with self.assertRaisesRegex(ValueError, "VALSMITH_LEGACY_STORAGE_ACCOUNT_ID"):
+            synth(environment={**INPUTS, "VALSMITH_LEGACY_STORAGE_ACCOUNT_ID": ACCOUNT})
+
     def test_owner_selection_requires_both_tags_and_shared_selection_is_separate(self) -> None:
         selections = [
             item["Properties"]["BackupSelection"]
