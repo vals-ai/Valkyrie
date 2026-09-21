@@ -183,7 +183,9 @@ release still requires exact immutable retained references. A requested immutabl
 version that does not match the provider response is rejected.
 
 Object bytes are hashed from a streamed body in bounded chunks, never materialized in
-full, so a large version cannot exhaust the operator process. An exact version id is
+full, so a large version cannot exhaust the operator process. That covers the retained
+execution object a portable reference names as well as every source and destination
+version, and the streamed length is checked against the declared one as it is read. An exact version id is
 immutable, so the post-commit re-verification of a `relocate` reuses the digests the
 authorizing pass proved in the same process and re-reads only the version listings.
 Every standalone action, including `inspect` and `release`, reads the bytes again. The

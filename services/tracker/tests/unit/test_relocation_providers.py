@@ -416,6 +416,26 @@ async def test_saved_immutable_s3_locator_verifies_exact_version_bytes() -> None
     assert (reference.kind, reference.version_id, reference.sha256) == ("retained_s3_object", "v1", checksum(b"{}"))
 
 
+@pytest.mark.asyncio
+async def test_retained_reference_bytes_are_hashed_in_bounded_chunks() -> None:
+    boundary, store, payload = setup()
+    content = b"retained" * (CHUNK_BYTES // 4)
+    store.execution_objects["retained", "manifest.json"] = ("v1", content)
+    locator = {"dataset": "s3://retained/manifest.json?versionId=v1"}
+
+    (reference,) = await boundary.execution_references(locator, TrackerRequest.model_validate(payload), frozenset())
+
+    assert reference.sha256 == checksum(content)
+    assert store.streams and all(amount == CHUNK_BYTES for stream in store.streams for amount in stream.reads)
+
+    async def truncated_object(**_arguments: Any) -> dict[str, Any]:
+        return {"Body": store.stream(b"{}"), "ContentLength": len(content), "VersionId": "v1"}
+
+    store.get_object = truncated_object
+    with pytest.raises(LifecycleConflict, match="incomplete"):
+        await boundary.execution_references(locator, TrackerRequest.model_validate(payload), frozenset())
+
+
 def two_bucket_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
     first: dict[str, Any] = payload["plan"]["runs"][0]
     second_id = str(uuid4())

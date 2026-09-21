@@ -166,6 +166,25 @@ class RelocationAWSBoundary(AWSProviderBoundary):
             raise LifecycleConflict("Object body length does not match exact version")
         return content
 
+    async def _streamed_body_digest(self, response: dict[str, Any]) -> str:
+        length = response.get("ContentLength")
+        if not isinstance(length, int):
+            raise LifecycleConflict("Retained execution object has no usable content length")
+
+        checksum = hashlib.sha256()
+        streamed = 0
+        async with response["Body"] as body:
+            while chunk := await body.read(CHUNK_BYTES):
+                streamed += len(chunk)
+                if streamed > length:
+                    raise LifecycleConflict("Retained execution object bytes are incomplete")
+
+                checksum.update(chunk)
+        if streamed != length:
+            raise LifecycleConflict("Retained execution object bytes are incomplete")
+
+        return checksum.hexdigest()
+
     async def _streamed_digest(
         self,
         client: Any,
@@ -530,10 +549,7 @@ class RelocationAWSBoundary(AWSProviderBoundary):
                             options["VersionId"] = versions["versionId"][0]
                         response = await client.get_object(**options)
                         identifier = response.get("VersionId")
-                        async with response["Body"] as body:
-                            content = await body.read()
-                        if not isinstance(content, bytes) or len(content) != response.get("ContentLength"):
-                            raise LifecycleConflict("Retained execution object bytes are incomplete")
+                        content_sha256 = await self._streamed_body_digest(response)
                         requested_version = options.get("VersionId")
                         if (
                             requested_version is not None
@@ -552,7 +568,7 @@ class RelocationAWSBoundary(AWSProviderBoundary):
                         bucket=parsed.netloc,
                         key=key,
                         version_id=identifier,
-                        sha256=_digest(content),
+                        sha256=content_sha256,
                     )
             references.append(reference)
         return tuple(references)
