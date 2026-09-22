@@ -27,7 +27,7 @@ def _boto3_client(service_name: str, **kwargs: Any) -> Any:
 class AWSClientProvider(ABC):
     """Construct AWS service clients for one authentication source."""
 
-    credential_source: ClassVar[Literal["access_key", "managed"]]
+    credential_source: ClassVar[Literal["access_key", "local", "managed"]]
 
     @abstractmethod
     def with_region(self, region: str) -> "AWSClientProvider":
@@ -76,7 +76,7 @@ class AWSClientProvider(ABC):
 class ExplicitCredentialsAWSClientProvider(AWSClientProvider):
     """Construct AWS clients from caller-supplied credentials."""
 
-    credential_source: ClassVar[Literal["access_key", "managed"]] = "access_key"
+    credential_source: ClassVar[Literal["access_key", "local", "managed"]] = "access_key"
     credentials: AWSCredentials = field(repr=False)
 
     def with_region(self, region: str) -> AWSClientProvider:
@@ -95,7 +95,7 @@ class ExplicitCredentialsAWSClientProvider(AWSClientProvider):
 class DefaultChainAWSClientProvider(AWSClientProvider):
     """Construct AWS clients through the SDK default credential chain."""
 
-    credential_source: ClassVar[Literal["access_key", "managed"]] = "managed"
+    credential_source: ClassVar[Literal["access_key", "local", "managed"]] = "managed"
     region: str
 
     def with_region(self, region: str) -> AWSClientProvider:
@@ -106,3 +106,13 @@ class DefaultChainAWSClientProvider(AWSClientProvider):
 
     def maximum_presign_ttl(self, requested_seconds: int) -> int:
         return min(requested_seconds, _DEFAULT_CHAIN_MAXIMUM_PRESIGN_TTL_SECONDS)
+
+
+@dataclass(frozen=True)
+class LocalChainAWSClientProvider(DefaultChainAWSClientProvider):
+    """Use local SDK credentials without deployment-managed storage authority."""
+
+    credential_source: ClassVar[Literal["access_key", "local", "managed"]] = "local"
+
+    def with_region(self, region: str) -> AWSClientProvider:
+        return LocalChainAWSClientProvider(region)

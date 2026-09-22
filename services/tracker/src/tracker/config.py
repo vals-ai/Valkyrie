@@ -82,17 +82,35 @@ def _positive_int_setting(name: str, default: int) -> int:
     return value
 
 
+def _non_negative_int_setting(name: str, default: int) -> int:
+    value = int(os.environ.get(name, str(default)))
+    if value < 0:
+        raise ValueError(f"{name} must not be negative")
+
+    return value
+
+
 AGENT_UPLOAD_MAX_BYTES = _positive_int_setting("AGENT_UPLOAD_MAX_BYTES", 1073741824)
 AGENT_ARCHIVE_MAX_EXPANDED_BYTES = _positive_int_setting("AGENT_ARCHIVE_MAX_EXPANDED_BYTES", 5368709120)
 AGENT_ARCHIVE_MAX_ENTRIES = _positive_int_setting("AGENT_ARCHIVE_MAX_ENTRIES", 100000)
 
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
 AWS_DEPLOYMENT_ROLE_ORG_IDS = os.environ.get("AWS_DEPLOYMENT_ROLE_ORG_IDS", "")
+AWS_DEPLOYMENT_ACCOUNT_ID = os.environ.get("AWS_DEPLOYMENT_ACCOUNT_ID")
 AWS_DEPLOYMENT_REGION = os.environ.get("AWS_DEPLOYMENT_REGION") or os.environ.get("AWS_REGION")
 AWS_DEPLOYMENT_S3_BUCKET = os.environ.get("AWS_DEPLOYMENT_S3_BUCKET")
 AWS_DEPLOYMENT_LOG_GROUP = os.environ.get("AWS_DEPLOYMENT_LOG_GROUP")
 AWS_DEPLOYMENT_LOG_RETENTION_DAYS = os.environ.get("AWS_DEPLOYMENT_LOG_RETENTION_DAYS")
 AWS_MANAGED_SUBMISSIONS_ENABLED = os.environ.get("AWS_MANAGED_SUBMISSIONS_ENABLED", "false").lower() == "true"
+AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS = os.environ.get("AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS", "{}")
+AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED = (
+    os.environ.get("AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED", "false").lower() == "true"
+)
+# Bucket-level S3 configuration APIs throttle far harder than object APIs, so reads
+# reuse a recent owner-bucket validation. Zero revalidates on every read.
+AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS = _non_negative_int_setting(
+    "AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS", 300
+)
 BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
@@ -113,6 +131,10 @@ def _build_database_url() -> str:
 
 
 DATABASE_URL = _build_database_url()
+DATABASE_POOL_SIZE = _positive_int_setting("DATABASE_POOL_SIZE", 50)
+DATABASE_MAX_OVERFLOW = int(os.environ.get("DATABASE_MAX_OVERFLOW", "10"))
+if DATABASE_MAX_OVERFLOW < 0:
+    raise ValueError("DATABASE_MAX_OVERFLOW must be a nonnegative integer")
 
 result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
     redis_url=REDIS_URL,

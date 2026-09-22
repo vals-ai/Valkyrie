@@ -9,7 +9,11 @@ from opentelemetry import trace
 from sqlmodel import Session, select
 
 from tracker.auth import get_current_org
-from tracker.aws.resolver import resolve_agent_library_aws_runtime, resolve_run_aws_runtime_and_access_key_config
+from tracker.aws.resolver import (
+    http_validate_saved_managed_storage_runtime,
+    resolve_agent_library_aws_runtime,
+    resolve_run_aws_runtime_and_access_key_config,
+)
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.database.models import Benchmark, Org, Task
@@ -38,7 +42,7 @@ class RunAWSContext:
     aws_runtime: AWSRuntime
 
 
-def get_run_aws_context(
+async def get_run_aws_context(
     benchmark_id: TrackedBenchmarkId,
     request: Request,
     session: Session = Depends(get_session),
@@ -46,14 +50,18 @@ def get_run_aws_context(
 ) -> RunAWSContext:
     """Return an organization-scoped run with its persisted AWS authority."""
     benchmark = get_scoped(Benchmark, benchmark_id, session, org)
+    aws_runtime = resolve_run_aws_runtime_and_access_key_config(
+        request,
+        aws_managed=benchmark.aws_managed,
+        properties=benchmark.arguments.properties,
+        org_id=org.id,
+    ).runtime
+    if benchmark.aws_managed:
+        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
+
     return RunAWSContext(
         benchmark=benchmark,
-        aws_runtime=resolve_run_aws_runtime_and_access_key_config(
-            request,
-            aws_managed=benchmark.aws_managed,
-            properties=benchmark.arguments.properties,
-            org_id=org.id,
-        ).runtime,
+        aws_runtime=aws_runtime,
     )
 
 

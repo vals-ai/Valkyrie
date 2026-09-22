@@ -21,6 +21,7 @@ from tracker.database.models import ExecutorAdmission, ExecutorRelease, Executor
 
 def test_release_entrypoint_loads_database_config_after_sealed_environment() -> None:
     environment = os.environ.copy()
+    environment.update(DATABASE_POOL_SIZE="5", DATABASE_MAX_OVERFLOW="2")
     for name in ("DATABASE_URL", "DB_USERNAME", "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_NAME"):
         environment.pop(name, None)
 
@@ -47,6 +48,8 @@ assert engine.url.password == "sealed-password"
 assert engine.url.host == "database.internal"
 assert engine.url.port == 5433
 assert engine.url.database == "sealed-database"
+assert engine.pool.size() == 5
+assert engine.pool._max_overflow == 2
 """,
         ],
         check=False,
@@ -289,7 +292,7 @@ def test_release_entrypoint_rejects_invalid_release_id_before_reading_secret(mon
     ("argument_index", "invalid_value", "error"),
     [
         (14, "s3://other/releases/git-abc123-def456/executor.pex", "configured S3 bucket"),
-        (16, "3", "Unsupported executor protocol"),
+        (16, "4", "Unsupported executor protocol"),
     ],
 )
 def test_release_entrypoint_rejects_invalid_artifact_identity_before_reading_secret(

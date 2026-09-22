@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Any
 
 from generate_openapi import build_openapi
 
@@ -32,6 +33,7 @@ def test_openapi_declares_authentication() -> None:
     assert schema["paths"]["/health"]["get"]["security"] == []
     assert schema["paths"]["/init"]["post"]["security"] == [{"ApiKeyAuth": []}]
     assert schema["paths"]["/start-benchmark"]["post"]["security"] == [{"ApiKeyAuth": []}]
+    assert schema["paths"]["/start-benchmark-with-storage"]["post"]["security"] == [{"ApiKeyAuth": []}]
 
 
 def test_openapi_declares_required_harness_headers() -> None:
@@ -82,6 +84,20 @@ def test_openapi_declares_required_harness_headers() -> None:
     assert schema["components"]["parameters"] == expected_parameters
     for operation in affected_operations:
         assert operation["parameters"][-4:] == expected_references
+
+
+def test_openapi_states_the_storage_requirement_of_each_start_route() -> None:
+    schema = build_openapi()
+
+    def request_model(path: str) -> dict[str, Any]:
+        body = schema["paths"][path]["post"]["requestBody"]["content"]["application/json"]["schema"]
+        return schema["components"]["schemas"][body["$ref"].rsplit("/", 1)[-1]]
+
+    shared = request_model("/start-benchmark")
+    managed = request_model("/start-benchmark-with-storage")
+
+    assert "managed_s3_bucket" not in shared["required"]
+    assert "managed_s3_bucket" in managed["required"]
 
 
 def test_openapi_keeps_scheduler_storage_fields_internal() -> None:

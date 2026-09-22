@@ -4,8 +4,9 @@ Exercise PostgreSQL-backed sandbox scheduling against disposable PostgreSQL.
 """
 
 import asyncio
+import threading
 from asyncio import Semaphore
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from datetime import datetime, timedelta
 from hashlib import sha256
@@ -13,6 +14,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
+import httpx
 from benchmark_service import (
     ImageSource,
     Resources,
@@ -23,7 +25,7 @@ from benchmark_service import (
     TargetedSnapshotSource,
 )
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import RetrieveTaskResponse
+from benchmark_service.schemas import RetrieveTaskResponse, VerifyTaskIdsResponse
 from fastapi import HTTPException, Request
 import pytest
 from sqlalchemy import text
@@ -31,6 +33,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, create_engine, func, select
 
 from tests.factories import make_task
+from tracker.auth import RequestIdentity
 from tracker.aws.resolver import AWSRuntimeResolution
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
@@ -38,8 +41,11 @@ from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
+    BenchmarkStatus,
     BenchmarkArguments,
+    ExecutorAdmission,
     ExecutorDispatch,
+    ExecutorRelease,
     ExecutorDispatchStatus,
     Org,
     RetryMode,
@@ -47,11 +53,12 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.exceptions import SandboxSetupError
+import tracker.executor.dispatch_control as dispatch_control
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.executor.release_control import promote_release
 import tracker.scheduler.admission as admission
 import tracker.scheduler.store as store
-from tracker.types import HarnessConfig
+from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import task_execution
 import main as tracker_main
 
@@ -211,6 +218,117 @@ def test_queue_context_requires_managed_provider() -> None:
             engine=cast(Engine, Mock()),
             provider=cast(SandboxProvider, provider),
         )
+
+
+@pytest.mark.parametrize("operation", ["retry", "start"])
+async def test_http_admission_waits_for_real_postgres_row_lock_without_blocking_loop(
+    operation: str,
+    postgres_engine: Engine,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_config: HarnessConfig,
+    executor_authority: Any,
+) -> None:
+    org, benchmark, _ = _run(
+        postgres_session,
+        store.queue_pool_id(f"daytona:{uuid4()}"),
+        [("locked-admission", TaskStatus.STOPPED, _ATTEMPT)],
+    )
+    executor_authority(benchmark, session=postgres_session)
+    assert benchmark.current_execution_release_id is not None
+    benchmark.status = BenchmarkStatus.STOPPED
+    postgres_session.add(benchmark)
+    promote_release(postgres_session, benchmark.current_execution_release_id)
+    postgres_session.commit()
+    identity = RequestIdentity(org=org, access_key_id=None, email=None, name=None)
+
+    def request_session() -> Generator[Session, None, None]:
+        with Session(postgres_engine) as session:
+            yield session
+
+    monkeypatch.setitem(tracker_main.app.dependency_overrides, tracker_main.get_session, request_session)
+    monkeypatch.setitem(tracker_main.app.dependency_overrides, tracker_main.get_current_org, lambda: org)
+    monkeypatch.setitem(tracker_main.app.dependency_overrides, tracker_main.get_current_starter, lambda: identity)
+    monkeypatch.setattr(tracker_main, "check_database_connection", lambda: True)
+    monkeypatch.setattr(tracker_main, "SANDBOX_QUEUE_ENABLED", False)
+    _use_access_key_runtime(monkeypatch, harness_config)
+
+    async def health_check(*_args: Any, **_kwargs: Any) -> object:
+        return object()
+
+    async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+        return VerifyTaskIdsResponse(task_ids=["new-task"])
+
+    async def close(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def copy_agent(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    enqueued: list[UUID] = []
+
+    async def enqueue(dispatch: ExecutorDispatch, **_kwargs: Any) -> None:
+        enqueued.append(dispatch.id)
+
+    monkeypatch.setattr(BenchmarkServiceClient, "health_check", health_check)
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
+    monkeypatch.setattr(BenchmarkServiceClient, "close", close)
+    monkeypatch.setattr(tracker_main, "copy_agent_to_benchmark", copy_agent)
+    monkeypatch.setattr(tracker_main, "_enqueue_executor_dispatch", enqueue)
+    lock_entered = threading.Event()
+    if operation == "retry":
+        original_lock = tracker_main.lock_executor_admission
+
+        def observed_recovery_lock(session: Session) -> object:
+            session.exec(text("SET LOCAL lock_timeout = '5s'"))
+            lock_entered.set()
+            return original_lock(session)
+
+        monkeypatch.setattr(tracker_main, "lock_executor_admission", observed_recovery_lock)
+        url = f"/retry-or-resume-benchmark/{benchmark.id}"
+        body: dict[str, Any] = {}
+    else:
+        original_select_active_release = dispatch_control.select_active_release
+
+        def observed_start_lock(session: Session, *, for_update: bool = False) -> ExecutorRelease:
+            if for_update:
+                session.exec(text("SET LOCAL lock_timeout = '5s'"))
+                lock_entered.set()
+            return original_select_active_release(session, for_update=for_update)
+
+        monkeypatch.setattr(dispatch_control, "select_active_release", observed_start_lock)
+        url = "/start-benchmark"
+        body = StartBenchmarkRequest(
+            benchmark_name=f"postgres-lock-{uuid4()}",
+            contract=AgentContractRequest(name="agent", install_cmd="true", run_cmd="true"),
+            task_ids=["new-task"],
+            harness_config=harness_config,
+        ).model_dump(mode="json")
+
+    request: asyncio.Task[httpx.Response] | None = None
+    with Session(postgres_engine) as blocker:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=tracker_main.app), base_url="http://test"
+        ) as client:
+            try:
+                blocker.exec(select(ExecutorAdmission).with_for_update()).one()
+                request = asyncio.create_task(client.post(url, json=body))
+                assert await asyncio.to_thread(lock_entered.wait, 5)
+                assert not request.done()
+                health = await asyncio.wait_for(client.get("/health"), timeout=2)
+                assert health.status_code == 200
+                blocker.rollback()
+                response = await asyncio.wait_for(request, timeout=5)
+            finally:
+                blocker.rollback()
+                if request is not None:
+                    await asyncio.wait_for(
+                        asyncio.gather(request, return_exceptions=True),
+                        timeout=5,
+                    )
+
+    assert response.status_code == 200, response.text
+    assert len(enqueued) == 1
 
 
 async def test_targeted_snapshot_reaches_admission_and_creation_unchanged(

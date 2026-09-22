@@ -22,6 +22,19 @@ TRACKER_LIVE_WORKFLOW = ROOT / ".github" / "workflows" / "tracker-integration-te
 WORKER_SYNTHESIS = ROOT / ".github" / "scripts" / "synthesize-worker-templates.sh"
 
 _NEXT_JOB = re.compile(r"\n  [A-Za-z0-9_-]+:\n")
+_JOB_ID = re.compile(r"^  ([A-Za-z0-9_-]+):$", re.MULTILINE)
+
+
+def _job_ids(workflow: str) -> list[str]:
+    """Return every top-level job id declared by a workflow."""
+    return _JOB_ID.findall(workflow.split("\njobs:\n", maxsplit=1)[1])
+
+
+def _assignment(script: str, name: str) -> str:
+    """Return one shell environment assignment's value, without its optional quotes."""
+    match = re.search(rf"^\s*{re.escape(name)}=('[^']*'|\"[^\"]*\"|\S+)", script, re.MULTILINE)
+    assert match is not None, f"{name} is not assigned in the synthesis helper"
+    return match.group(1).strip("'\"")
 
 
 def _job(workflow: str, job_id: str) -> str:
@@ -165,6 +178,40 @@ class DeployWorkflowTest(unittest.TestCase):
                 self.assertIn("SCOPE=core", step)
                 self.assertNotIn("SCOPE=executor", step)
                 self.assertNotIn("executor stack", step.lower())
+
+    def test_every_synthesizing_job_carries_the_managed_storage_settings(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        organization_setting = "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}"
+        storage_settings = (
+            "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS: ${{ secrets.AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS || '{}' }}",
+            "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED: ${{ vars.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED || 'false' }}",
+        )
+        synthesizing_jobs = [job_id for job_id in _job_ids(workflow) if organization_setting in _job(workflow, job_id)]
+
+        self.assertEqual(
+            synthesizing_jobs,
+            [
+                "deploy-prod-core",
+                "executor-prod",
+                "deploy-bench-core",
+                "run-dev-operation",
+                "executor-development",
+                "executor-bench",
+            ],
+        )
+        for job_id in synthesizing_jobs:
+            with self.subTest(job=job_id):
+                job = _job(workflow, job_id)
+                for setting in storage_settings:
+                    self.assertIn(setting, job)
+
+    def test_classifier_synthesis_keeps_owner_storage_iam_in_the_template_diff(self) -> None:
+        synthesis = WORKER_SYNTHESIS.read_text(encoding="utf-8")
+        organization_id = _assignment(synthesis, "AWS_DEPLOYMENT_ROLE_ORG_IDS")
+        org_environments = json.loads(_assignment(synthesis, "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS"))
+
+        self.assertEqual(_assignment(synthesis, "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED"), "true")
+        self.assertEqual(org_environments, {organization_id: ["dev", "prod"]})
 
     def test_executor_keeps_the_deployed_worker_stack_identity(self) -> None:
         app = (ROOT / "infra" / "app.py").read_text(encoding="utf-8")

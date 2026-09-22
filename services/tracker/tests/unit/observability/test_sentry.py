@@ -5,7 +5,7 @@ Run: uv run pytest tests/unit/observability/test_sentry.py
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import nullcontext
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -51,6 +51,13 @@ def _before_send() -> BeforeSend:
 
 def _before_send_log() -> BeforeSendLog:
     return cast(BeforeSendLog, getattr(sentry_module, "_before_send_log"))
+
+
+@pytest.fixture(autouse=True)
+def isolated_sentry_scopes() -> Iterator[None]:
+    """Direct process-task tests must not supply tags to these scope assertions."""
+    with sentry_scope.use_isolation_scope(sentry_sdk.Scope()), sentry_scope.use_scope(sentry_sdk.Scope()):
+        yield
 
 
 class TestBeforeSend:

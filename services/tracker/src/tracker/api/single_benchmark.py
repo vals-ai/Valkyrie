@@ -12,7 +12,7 @@ from tracker.api.parsing import parse_csv
 from tracker.api.dependencies import TrackedBenchmarkId
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
-from tracker.aws.resolver import resolve_run_metadata_aws_runtime
+from tracker.aws.resolver import http_validate_saved_managed_storage_runtime, resolve_run_metadata_aws_runtime
 from tracker.aws.s3 import create_benchmark_url
 from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
@@ -45,7 +45,7 @@ _STATUS_SORT_PRIORITY = case(
 
 
 @router.get("/{benchmark_id}", response_model=SingleBenchmarkResponse)
-def get_single_benchmark(
+async def get_single_benchmark(
     benchmark_id: TrackedBenchmarkId,
     request: Request,
     org: Org = Depends(get_current_org),
@@ -70,6 +70,9 @@ def get_single_benchmark(
         properties=benchmark.arguments.properties,
         org_id=org.id,
     )
+    if aws_runtime is not None and benchmark.aws_managed:
+        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
+
     if aws_runtime:
         aws_resources = aws_runtime.resources
         s3_bucket_url = create_benchmark_url(str(benchmark.id), aws_resources)
@@ -96,6 +99,7 @@ def get_single_benchmark(
         error_message=benchmark.error_message,
         cloudwatch_url=cloudwatch_url,
         s3_bucket_url=s3_bucket_url,
+        storage_bucket=aws_runtime.resources.s3_bucket if aws_runtime is not None else None,
     )
 
 
@@ -138,6 +142,10 @@ def get_benchmark_tasks(
         .limit(1)
         .scalar_subquery()
     )
+    terminal_error_id = case(
+        (col(Task.status) == TaskStatus.ERROR, latest_error_id),
+        else_=None,
+    )
     sort_expr = {
         "task_id": col(Task.task_id),
         "started_at": col(Task.started_at),
@@ -150,13 +158,13 @@ def get_benchmark_tasks(
 
     rows = session.exec(
         select(Task, col(ErrorResult.error_message), col(ErrorResult.category))
-        .outerjoin(ErrorResult, col(ErrorResult.id) == latest_error_id)
+        .outerjoin(ErrorResult, col(ErrorResult.id) == terminal_error_id)
         .where(*base_filters)
         .order_by(*order_by)
         .limit(limit)
         .offset(offset)
     ).all()
-    total = session.exec(select(func.count(col(Task.id))).where(*base_filters)).one()
+    total = session.exec(select(func.count()).select_from(Task).where(*base_filters)).one()
 
     return TasksResponse(
         tasks=[

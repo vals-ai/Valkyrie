@@ -79,6 +79,13 @@ class HarnessConfig(BaseModel):
 class StartBenchmarkRequest(BaseModel):
     environment: Literal["aws"] = "aws"
     properties: AWSResources | None = None
+    managed_s3_bucket: str | None = Field(
+        default=None,
+        description=(
+            "Owner-provisioned managed storage bucket. "
+            "POST /start-benchmark-with-storage requires it; POST /start-benchmark rejects it."
+        ),
+    )
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
@@ -127,6 +134,15 @@ class StartBenchmarkRequest(BaseModel):
         )
 
 
+class ManagedStorageStartBenchmarkRequest(StartBenchmarkRequest):
+    """Start a run whose artifacts are written to an owner-provisioned managed storage bucket."""
+
+    managed_s3_bucket: str | None = Field(  # pyright: ignore[reportGeneralTypeIssues]
+        ...,
+        description="Owner-provisioned managed storage bucket. POST /start-benchmark-with-storage requires it.",
+    )
+
+
 class FetchBenchmarkTasksRequest(BaseModel):
     benchmark_name: str
     dataset: str | None = None
@@ -158,6 +174,7 @@ class StartBenchmarkResponse(BaseModel):
     task_count: int
     cloudwatch_url: str
     s3_bucket_url: str
+    storage_bucket: str | None = None
     executor_release_id: str | None = None
     current_execution_release_id: str | None = None
     executor_artifact_digest: str | None = None
@@ -169,6 +186,7 @@ class FetchBenchmarkResponse(BaseModel):
     benchmark_id: UUID
     details: BenchmarkDetails
     s3_bucket_url: str
+    storage_bucket: str | None = None
     label: str | None = None
     final_score: float | None = None
     error_message: str | None = None
@@ -261,7 +279,7 @@ def validate_managed_execution_request(request: StartBenchmarkRequest) -> None:
 class ManagedExecutionContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal[2]
+    version: Literal[2, 3]
     benchmark_id: UUID
     verified_task_ids: list[str]
     start_benchmark_request: StartBenchmarkRequest
@@ -269,6 +287,9 @@ class ManagedExecutionContext(BaseModel):
     @model_validator(mode="after")
     def validate_credential_free_request(self) -> "ManagedExecutionContext":
         validate_managed_execution_request(self.start_benchmark_request)
+        if self.start_benchmark_request.managed_s3_bucket is not None:
+            raise ValueError("Queued execution cannot include an admission-only storage override")
+
         return self
 
 
@@ -367,6 +388,7 @@ class FetchBenchmarkMetadataResponse(BaseModel):
     benchmark_id: UUID
     benchmark_name: str
     benchmark_arguments: BenchmarkArguments
+    storage_bucket: str | None = None
     started_by_email: str | None = None
     executor_release_id: str | None = None
     current_execution_release_id: str | None = None
@@ -458,6 +480,7 @@ class SingleBenchmarkResponse(BaseModel):
     error_message: str | None = None
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
+    storage_bucket: str | None = None
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:

@@ -237,6 +237,7 @@ def prepare_retry_state(
             "dataset": benchmark_row.arguments.dataset,
             "queue_pool_id": benchmark_row.arguments.queue_pool_id,
             "aws_managed": benchmark_row.aws_managed,
+            "properties": benchmark_row.arguments.model_dump(mode="json")["properties"],
             "tasks": [(row.id, row.task_id, row.status, row.started_at, row.eval_resume_state) for row in rows],
         },
         default=str,

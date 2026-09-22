@@ -487,6 +487,7 @@ class Benchmark(SQLModel, table=True):
             benchmark_id=self.id,
             benchmark_name=self.name,
             benchmark_arguments=self.arguments,
+            storage_bucket=None,
             started_by_email=self.started_by_email,
             executor_release_id=self.executor_release_id,
             current_execution_release_id=self.current_execution_release_id,
@@ -582,12 +583,18 @@ def set_finished_at_when_benchmark_finished(_mapper: Mapper[Benchmark], _connect
 
 
 class Task(SQLModel, table=True):
-    __table_args__: tuple[CheckConstraint, UniqueConstraint] = (
+    __table_args__: tuple[CheckConstraint, UniqueConstraint, Index] = (
         CheckConstraint(
             "(status != 'FINISHED' AND status != 'ERROR') OR (finished_at IS NOT NULL)",
             name="task_finished_requires_timestamp",
         ),
         UniqueConstraint("benchmark", "task_id", name="unique_task_per_benchmark"),
+        Index(
+            "ix_task_benchmark_org_started_at",
+            "benchmark",
+            "org_id",
+            text("started_at DESC"),
+        ),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -635,6 +642,16 @@ class ResultBase(SQLModel):
 
 
 class EvaluationResult(ResultBase, table=True):
+    __table_args__ = (
+        Index(
+            "ix_evaluationresult_org_task_created_at_id",
+            "org_id",
+            "task",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+    )
+
     instance_id: str | None = Field(default=None, unique=True)
     agent_caused_exit_reason: AgentCausedExitReason | None = Field(default=None)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))

@@ -8,6 +8,7 @@ import os
 import unittest
 from typing import Any, cast
 from unittest import mock
+from uuid import UUID
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -251,6 +252,68 @@ def service_templates(
 
 
 class MonitoringStackTest(unittest.TestCase):
+    def test_managed_storage_environment_map_defaults_closed_and_is_immutable(self) -> None:
+        with mock.patch.dict(os.environ, TEST_BENCH_ENV, clear=True):
+            managed_aws = config_for(Stage(BENCH)).managed_aws
+
+        self.assertEqual(dict(managed_aws.managed_storage_org_environments), {})
+        self.assertFalse(managed_aws.managed_storage_submissions_enabled)
+        with self.assertRaises(TypeError):
+            managed_aws.managed_storage_org_environments[UUID(TEST_MANAGED_ORG_ID)] = frozenset({"dev"})  # type: ignore[index]
+
+    def test_bench_managed_storage_environment_map_is_explicit(self) -> None:
+        environment_cases = (
+            (["dev"], frozenset({"dev"})),
+            (["prod"], frozenset({"prod"})),
+            (["prod", "dev"], frozenset({"dev", "prod"})),
+        )
+        for configured_environments, expected_environments in environment_cases:
+            with self.subTest(environments=configured_environments):
+                environment = {
+                    **TEST_BENCH_ENV,
+                    "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS": json.dumps({TEST_MANAGED_ORG_ID: configured_environments}),
+                    "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED": "true",
+                }
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    managed_aws = config_for(Stage(BENCH)).managed_aws
+
+                self.assertEqual(
+                    managed_aws.managed_storage_org_environments,
+                    {UUID(TEST_MANAGED_ORG_ID): expected_environments},
+                )
+                self.assertTrue(managed_aws.managed_storage_submissions_enabled)
+
+    def test_managed_storage_environment_map_rejects_invalid_or_unmanaged_orgs(self) -> None:
+        invalid_mappings: tuple[dict[str, list[str]], ...] = (
+            {"not-a-uuid": ["dev"]},
+            {"AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA": ["dev"]},
+            {"00000000-0000-0000-0000-000000000002": ["dev"]},
+            {TEST_MANAGED_ORG_ID: []},
+            {TEST_MANAGED_ORG_ID: ["dev", "dev"]},
+            {TEST_MANAGED_ORG_ID: ["bench"]},
+        )
+        for mapping in invalid_mappings:
+            with self.subTest(mapping=mapping):
+                environment = {
+                    **TEST_BENCH_ENV,
+                    "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS": json.dumps(mapping),
+                }
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    with self.assertRaisesRegex(ValueError, "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS"):
+                        config_for(Stage(BENCH))
+
+    def test_managed_storage_submissions_require_a_configured_environment_map(self) -> None:
+        for stage_name, stage_environment in (
+            (DEV, TEST_DEV_ENV),
+            (BENCH, TEST_BENCH_ENV),
+            (PROD, TEST_PROD_ENV),
+        ):
+            with self.subTest(stage=stage_name):
+                environment = {**stage_environment, "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED": "true"}
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    with self.assertRaisesRegex(ValueError, "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS"):
+                        config_for(Stage(stage_name))
+
     def test_hosted_managed_runtime_requires_deployment_authority(self) -> None:
         for stage_name, stage_environment in (
             (DEV, TEST_DEV_ENV),
@@ -912,6 +975,27 @@ class MonitoringStackTest(unittest.TestCase):
             ):
                 get_slack_notification_config(VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV)
 
+    def test_tracker_database_storage_follows_stage_contract(self) -> None:
+        for stage_name, environment, expected_allocated_storage, instance_class in (
+            (BENCH, TEST_BENCH_ENV, "100", "db.r7g.large"),
+            (PROD, TEST_PROD_ENV, "100", "db.r7g.large"),
+            (DEV, TEST_DEV_ENV, "100", "db.t4g.micro"),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV, "100", "db.t4g.micro"),
+        ):
+            with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
+                tracker_template, _, monitoring_template = service_templates(stage_name)
+
+            database = next(iter(tracker_template.find_resources("AWS::RDS::DBInstance").values()))
+            properties = database["Properties"]
+            self.assertEqual(properties["AllocatedStorage"], expected_allocated_storage)
+            self.assertEqual(properties["StorageType"], "gp2")
+            self.assertEqual(properties["DBInstanceClass"], instance_class)
+            self.assertNotIn("MaxAllocatedStorage", properties)
+            monitoring_template.has_resource_properties(
+                "AWS::CloudWatch::Alarm",
+                {"MetricName": "FreeStorageSpace", "Threshold": 2 * 1024 * 1024 * 1024},
+            )
+
     def test_dev_stage_wires_stage_config_to_resources(self) -> None:
         with mock.patch.dict(os.environ, TEST_DEV_ENV, clear=True):
             tracker_template, executor_template, _ = service_templates(DEV)
@@ -961,6 +1045,27 @@ class MonitoringStackTest(unittest.TestCase):
             "AWS::CloudWatch::Alarm",
             {"AlarmName": "Valkyrie-DB-Connections-High-dev", "Threshold": 65},
         )
+
+    def test_tracker_capacity_matches_each_stage_topology(self) -> None:
+        for stage_name, environment, expected_desired, expected_minimum, expected_maximum in (
+            (BENCH, TEST_BENCH_ENV, 2, 2, 2),
+            (PROD, TEST_PROD_ENV, 2, 2, 2),
+            (DEV, TEST_DEV_ENV, 2, 2, 2),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV, 2, 2, 2),
+        ):
+            with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
+                tracker_template, _, _ = service_templates(stage_name)
+
+            services = tracker_template.find_resources("AWS::ECS::Service")
+            self.assertEqual(len(services), 1)
+            service_properties = next(iter(services.values()))["Properties"]
+            self.assertEqual(service_properties["DesiredCount"], expected_desired)
+
+            scalable_targets = tracker_template.find_resources("AWS::ApplicationAutoScaling::ScalableTarget")
+            self.assertEqual(len(scalable_targets), 1)
+            target_properties = next(iter(scalable_targets.values()))["Properties"]
+            self.assertEqual(target_properties["MinCapacity"], expected_minimum)
+            self.assertEqual(target_properties["MaxCapacity"], expected_maximum)
 
     def test_service_environment_labels_follow_stage(self) -> None:
         for stage_name, expected_environment, expected_sentry_environment, expected_namespace in (

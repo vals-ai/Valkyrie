@@ -119,6 +119,7 @@ ROUTES = (
     ("/benchmarks/{benchmark_id}/artifacts", "get", "benchmark_id prefix cursor limit"),
     ("/benchmarks/{benchmark_id}/artifacts/download-url", "get", "benchmark_id path"),
     ("/start-benchmark", "post", ""),
+    ("/start-benchmark-with-storage", "post", ""),
     ("/fetch-benchmark", "get", "benchmark_id connect"),
     (
         "/fetch-benchmarks",
@@ -164,6 +165,7 @@ ROUTES = (
 RESPONSE_MODELS = {
     ("/benchmarks/filter-options", "get"): "FilterOptionsResponse",
     ("/start-benchmark", "post"): "StartBenchmarkResponse",
+    ("/start-benchmark-with-storage", "post"): "StartBenchmarkResponse",
     ("/fetch-benchmarks", "get"): "FetchBenchmarksResponse",
     ("/stop-benchmark/{benchmark_id}", "post"): "StopBenchmarkResponse",
     ("/retry-or-resume-benchmark/{benchmark_id}", "post"): "RetryOrResumeBenchmarkResponse",

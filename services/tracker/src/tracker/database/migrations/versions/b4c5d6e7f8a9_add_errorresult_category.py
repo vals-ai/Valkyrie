@@ -1,7 +1,7 @@
 """Add failure category to error results.
 
 Revision ID: b4c5d6e7f8a9
-Revises: 6a7b8c9d0e1f
+Revises: 2d3e4f5a6b7c
 Create Date: 2026-09-17 00:00:00.000000
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "b4c5d6e7f8a9"
-down_revision: str | Sequence[str] | None = "6a7b8c9d0e1f"
+down_revision: str | Sequence[str] | None = "2d3e4f5a6b7c"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -20,6 +20,9 @@ _ENUM_VALUES = ("INFRASTRUCTURE", "BENCHMARK_SERVICE", "AGENT", "CANCELLED", "UN
 
 
 def upgrade() -> None:
+    # Fail this transaction promptly if an active query holds the table busy.
+    # The timeout is local to this migration transaction and rolls back with it.
+    op.execute("SET LOCAL lock_timeout = '1s'")
     category_enum = sa.Enum(*_ENUM_VALUES, name=_ENUM_NAME)
     category_enum.create(op.get_bind(), checkfirst=True)
     op.add_column("errorresult", sa.Column("category", category_enum, nullable=True))

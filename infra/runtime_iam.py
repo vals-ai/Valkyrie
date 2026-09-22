@@ -8,7 +8,7 @@ import aws_cdk as cdk
 from aws_cdk import aws_iam, aws_s3
 from constructs import Construct
 
-from stage import Stage
+from stage import DEV, Stage
 from stage_config import ManagedAWSRuntimeConfig
 
 _S3_PREFIXES = ("agents/*", "benchmarks/*")
@@ -22,12 +22,15 @@ def managed_runtime_environment(
 ) -> dict[str, str]:
     """Build the deployment-owned runtime configuration for an ECS container."""
     return {
+        "AWS_DEPLOYMENT_ACCOUNT_ID": cdk.Stack.of(scope).account,
         "AWS_DEPLOYMENT_ROLE_ORG_IDS": ",".join(config.deployment_role_org_ids),
         "AWS_DEPLOYMENT_REGION": cdk.Stack.of(scope).region,
         "AWS_DEPLOYMENT_S3_BUCKET": bucket.bucket_name,
         "AWS_DEPLOYMENT_LOG_GROUP": stage.phys(config.benchmark_log_group_prefix),
         "AWS_DEPLOYMENT_LOG_RETENTION_DAYS": str(config.benchmark_log_retention_days),
         "AWS_MANAGED_SUBMISSIONS_ENABLED": str(config.submissions_enabled).lower(),
+        "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS": config.managed_storage_org_environments_json,
+        "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED": str(config.managed_storage_submissions_enabled).lower(),
     }
 
 
@@ -40,11 +43,27 @@ def create_tracker_task_role(
     """Create the tracker application task role."""
     role = _task_role(scope, "TrackerTaskRole", stage.phys("ValkyrieTrackerTaskRole"))
     _add_s3_runtime_access(role, bucket)
+    account_conditions = _same_account_conditions(role)
+    if stage.name == DEV:
+        role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["s3:PutObject", "s3:AbortMultipartUpload"],
+                resources=[bucket.arn_for_objects("agents/*")],
+                conditions=account_conditions,
+            )
+        )
+
     role.add_to_policy(
         aws_iam.PolicyStatement(
             actions=["s3:DeleteObject", "s3:DeleteObjectVersion"],
             resources=[bucket.arn_for_objects("benchmarks/*")],
+            conditions=account_conditions,
         )
+    )
+    _add_owner_storage_access(
+        role,
+        config,
+        role_actions=("s3:DeleteObject", "s3:DeleteObjectVersion"),
     )
     _add_secret_access(role, config.tracker_secret_name_prefixes)
     _add_lambda_access(role, config.tracker_lambda_function_name_patterns)
@@ -62,12 +81,15 @@ def create_executor_task_role(
     """Create the executor host application task role."""
     role = _task_role(scope, "ExecutorTaskRole", stage.phys("ValkyrieExecutorTaskRole"))
     _add_s3_runtime_access(role, bucket)
+    account_conditions = _same_account_conditions(role)
     role.add_to_policy(
         aws_iam.PolicyStatement(
             actions=["s3:AbortMultipartUpload"],
             resources=[bucket.arn_for_objects("benchmarks/*")],
+            conditions=account_conditions,
         )
     )
+    _add_owner_storage_access(role, config, role_actions=("s3:AbortMultipartUpload",))
     _add_benchmark_log_access(role, stage, config.benchmark_log_group_prefix)
     if config.executor_all_secret_access:
         _add_all_secret_access(role)
@@ -88,25 +110,79 @@ def _task_role(scope: Construct, construct_id: str, role_name: str) -> aws_iam.R
 
 
 def _add_s3_runtime_access(role: aws_iam.Role, bucket: aws_s3.IBucket) -> None:
-    # ListBucket must be unconditioned: S3 reports a missing object as 404 instead of
-    # 403 only when the caller holds ListBucket, and HeadObject's request context has
-    # no s3:prefix key for a prefix condition to match.
+    account_conditions = _same_account_conditions(role)
+    # ListBucket must not use an s3:prefix condition: S3 reports a missing object as
+    # 404 instead of 403 only when the caller holds ListBucket, and HeadObject's
+    # request context has no s3:prefix key for a prefix condition to match.
     role.add_to_policy(
         aws_iam.PolicyStatement(
             actions=["s3:ListBucket"],
             resources=[bucket.bucket_arn],
+            conditions=account_conditions,
         )
     )
     role.add_to_policy(
         aws_iam.PolicyStatement(
             actions=["s3:GetObject"],
             resources=[bucket.arn_for_objects(prefix) for prefix in _S3_PREFIXES],
+            conditions=account_conditions,
         )
     )
     role.add_to_policy(
         aws_iam.PolicyStatement(
             actions=["s3:PutObject"],
             resources=[bucket.arn_for_objects("benchmarks/*")],
+            conditions=account_conditions,
+        )
+    )
+
+
+def _same_account_conditions(role: aws_iam.Role) -> dict[str, dict[str, str]]:
+    return {"StringEquals": {"s3:ResourceAccount": cdk.Stack.of(role).account}}
+
+
+def _add_owner_storage_access(
+    role: aws_iam.Role,
+    config: ManagedAWSRuntimeConfig,
+    *,
+    role_actions: tuple[str, ...],
+) -> None:
+    environments = sorted(
+        {
+            environment
+            for configured_environments in config.managed_storage_org_environments.values()
+            for environment in configured_environments
+        }
+    )
+    if not environments:
+        return
+
+    stack = cdk.Stack.of(role)
+    conditions = {"StringEquals": {"s3:ResourceAccount": stack.account}}
+    foreign_conditions = {"StringNotEquals": {"s3:ResourceAccount": stack.account}}
+    owner_bucket_arns = [f"arn:{stack.partition}:s3:::vs-{environment}-*" for environment in environments]
+    owner_objects_arns = [f"{owner_bucket_arn}/benchmarks/*" for owner_bucket_arn in owner_bucket_arns]
+
+    role.add_to_policy(
+        aws_iam.PolicyStatement(
+            actions=["s3:ListBucket", "s3:GetBucketTagging", "s3:GetBucketVersioning"],
+            resources=owner_bucket_arns,
+            conditions=conditions,
+        )
+    )
+    role.add_to_policy(
+        aws_iam.PolicyStatement(
+            actions=["s3:GetObject", "s3:PutObject", *role_actions],
+            resources=owner_objects_arns,
+            conditions=conditions,
+        )
+    )
+    role.add_to_policy(
+        aws_iam.PolicyStatement(
+            effect=aws_iam.Effect.DENY,
+            actions=["s3:*"],
+            resources=[*owner_bucket_arns, *owner_objects_arns],
+            conditions=foreign_conditions,
         )
     )
 
