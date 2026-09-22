@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Generator
+from typing import Protocol
 from datetime import UTC, datetime
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -85,6 +86,46 @@ def _run_alembic(database_url: str, *args: str) -> subprocess.CompletedProcess[s
     )
 
 
+class _TaskListingIndexRow(Protocol):
+    index_oid: int
+    indisvalid: bool
+    indisunique: bool
+    indnkeyatts: int
+    indnatts: int
+    has_no_expressions: bool
+    has_no_predicate: bool
+    amname: str
+    table_schema: str
+    table_name: str
+    key_columns: list[str]
+    key_1_asc: bool
+    key_1_nulls_last: bool
+    key_2_asc: bool
+    key_2_nulls_last: bool
+    key_3_desc: bool
+    key_3_nulls_first: bool
+
+
+def _assert_canonical_task_listing_index(index: _TaskListingIndexRow) -> int:
+    assert index.indisvalid is True
+    assert index.indisunique is False
+    assert index.indnkeyatts == 3
+    assert index.indnatts == 3
+    assert index.has_no_expressions is True
+    assert index.has_no_predicate is True
+    assert index.amname == "btree"
+    assert index.table_schema == "public"
+    assert index.table_name == "task"
+    assert index.key_columns == ["benchmark", "org_id", "started_at"]
+    assert index.key_1_asc is True
+    assert index.key_1_nulls_last is True
+    assert index.key_2_asc is True
+    assert index.key_2_nulls_last is True
+    assert index.key_3_desc is True
+    assert index.key_3_nulls_first is True
+    return index.index_oid
+
+
 def test_task_listing_index_migration_is_retry_safe(migration_database_url: str) -> None:
     upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_PREDECESSOR)
     assert upgrade.returncode == 0, upgrade.stderr
@@ -132,22 +173,7 @@ def test_task_listing_index_migration_is_retry_safe(migration_database_url: str)
     assert upgrade.returncode == 0, upgrade.stderr
     with engine.connect() as connection:
         index = connection.execute(index_query, index_params).one()
-        assert index.indisvalid is True
-        assert index.indisunique is False
-        assert index.indnkeyatts == 3
-        assert index.indnatts == 3
-        assert index.has_no_expressions is True
-        assert index.has_no_predicate is True
-        assert index.amname == "btree"
-        assert index.table_schema == "public"
-        assert index.table_name == "task"
-        assert index.key_columns == ["benchmark", "org_id", "started_at"]
-        assert index.key_1_asc is True
-        assert index.key_1_nulls_last is True
-        assert index.key_2_asc is True
-        assert index.key_2_nulls_last is True
-        assert index.key_3_desc is True
-        assert index.key_3_nulls_first is True
+        _assert_canonical_task_listing_index(index)
         assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
 
     downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
@@ -164,23 +190,7 @@ def test_task_listing_index_migration_is_retry_safe(migration_database_url: str)
     assert upgrade.returncode == 0, upgrade.stderr
     with engine.connect() as connection:
         index = connection.execute(index_query, index_params).one()
-        assert index.index_oid == matching_index_oid
-        assert index.indisvalid is True
-        assert index.indisunique is False
-        assert index.indnkeyatts == 3
-        assert index.indnatts == 3
-        assert index.has_no_expressions is True
-        assert index.has_no_predicate is True
-        assert index.amname == "btree"
-        assert index.table_schema == "public"
-        assert index.table_name == "task"
-        assert index.key_columns == ["benchmark", "org_id", "started_at"]
-        assert index.key_1_asc is True
-        assert index.key_1_nulls_last is True
-        assert index.key_2_asc is True
-        assert index.key_2_nulls_last is True
-        assert index.key_3_desc is True
-        assert index.key_3_nulls_first is True
+        assert _assert_canonical_task_listing_index(index) == matching_index_oid
         assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
     downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
     assert downgrade.returncode == 0, downgrade.stderr
@@ -205,15 +215,7 @@ def test_task_listing_index_migration_is_retry_safe(migration_database_url: str)
     assert upgrade.returncode == 0, upgrade.stderr
     with engine.connect() as connection:
         index = connection.execute(index_query, index_params).one()
-        assert index.indisvalid is True
-        assert index.indisunique is False
-        assert index.key_columns == ["benchmark", "org_id", "started_at"]
-        assert index.key_1_asc is True
-        assert index.key_1_nulls_last is True
-        assert index.key_2_asc is True
-        assert index.key_2_nulls_last is True
-        assert index.key_3_desc is True
-        assert index.key_3_nulls_first is True
+        _assert_canonical_task_listing_index(index)
         assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
 
     downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
