@@ -11,10 +11,10 @@ import json
 from json import JSONDecodeError
 import logging
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -50,6 +50,7 @@ class FakeDispatchStore:
         self.authority_checks: list[DispatchAuthority] = []
         self.terminalized: list[DispatchAuthority] = []
         self.finished: list[DispatchAuthority] = []
+        self.heartbeats: list[DispatchAuthority] = []
         self.authority: DispatchAuthority | None = None
 
     async def claim(
@@ -72,6 +73,10 @@ class FakeDispatchStore:
         if len(self.authority_results) == 1:
             return self.authority_results[0]
         return self.authority_results.pop(0)
+
+    async def heartbeat(self, authority: DispatchAuthority) -> bool:
+        self.heartbeats.append(authority)
+        return True
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
         _ = task_ids
@@ -327,16 +332,17 @@ async def test_postgres_claim_is_status_fenced_and_returns_authority(
     assert "FROM benchmark" in statement
     assert "benchmark.status = 'IN_PROGRESS'" in statement
     assert "dispatch.status = 'QUEUED'" in statement
+    assert "dispatch.claim_deadline_at > CURRENT_TIMESTAMP" in statement
     assert "SET status = 'RUNNING'" in statement
     assert "started_at = CURRENT_TIMESTAMP" in statement
-    assert parameters[:2] == ("dispatch-1", "benchmark-1")
+    assert parameters[1:3] == ("dispatch-1", "benchmark-1")
 
 
 @pytest.mark.asyncio
 async def test_postgres_authority_and_completion_are_fenced(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cursor = RecordingCursor([(True,), ("FINISHED",), ("dispatch-1",)])
+    cursor = RecordingCursor([(True,), ("dispatch-1",), ("FINISHED",), ("dispatch-1",)])
     store = PostgresExecutorDispatchStore(
         host="db",
         port="5432",
@@ -351,17 +357,27 @@ async def test_postgres_authority_and_completion_are_fenced(
     )
 
     assert await store.is_current(authority)
+    assert await store.heartbeat(authority)
     assert await store.finish(authority)
 
     authority_statement, authority_parameters = cursor.statements[0]
-    finish_lock_statement, finish_lock_parameters = cursor.statements[1]
-    finish_statement, finish_parameters = cursor.statements[2]
+    heartbeat_statement, heartbeat_parameters = cursor.statements[1]
+    finish_lock_statement, finish_lock_parameters = cursor.statements[2]
+    finish_statement, finish_parameters = cursor.statements[3]
     assert "dispatch.status = 'RUNNING'" in authority_statement
     assert "benchmark.status != 'STOPPED'" in authority_statement
+    assert "dispatch.lease_expires_at > CURRENT_TIMESTAMP" in authority_statement
     assert authority_parameters == ("dispatch-1",)
+    assert "lease_expires_at > CURRENT_TIMESTAMP" in heartbeat_statement
+    assert heartbeat_parameters == (
+        supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
+        "dispatch-1",
+        "benchmark-1",
+    )
     assert "FOR UPDATE" in finish_lock_statement
     assert finish_lock_parameters == ("benchmark-1",)
     assert "SET status = 'FINISHED'" in finish_statement
+    assert "lease_expires_at > CURRENT_TIMESTAMP" in finish_statement
     assert finish_parameters == ("dispatch-1", "benchmark-1")
 
 
@@ -414,6 +430,7 @@ async def test_postgres_terminalize_marks_current_run_and_runnable_tasks_error(
     benchmark_statement = cursor.statements[4][0]
     assert "FOR UPDATE" in lock_statement
     assert "SET status = 'FAILED'" in dispatch_statement
+    assert "lease_expires_at > CURRENT_TIMESTAMP" in dispatch_statement
     assert "task_id = ANY(%s)" in task_statement
     assert "started_at <= ( SELECT created_at FROM executordispatch" in task_statement
     assert "status IN ('PENDING', 'BUILDING', 'IN_PROGRESS', 'EVALUATING')" in task_statement
@@ -452,10 +469,12 @@ async def test_run_forwards_dispatch_authority_to_executor(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    script = b"""import json, os, sys\nfrom pathlib import Path\npayload = json.loads(Path(sys.argv[1]).read_text())\nresult = {\"payload\": payload, \"sentry_release\": os.environ.get(\"SENTRY_RELEASE\")}\nPath(os.environ[\"EXECUTOR_TEST_MARKER\"]).write_text(json.dumps(result))\n"""
+    script = b"""import json, os, sys\nfrom pathlib import Path\npayload = json.loads(Path(sys.argv[1]).read_text())\nresult = {\"payload\": payload, \"sentry_release\": os.environ.get(\"SENTRY_RELEASE\"), \"pool_size\": os.environ.get(\"DATABASE_POOL_SIZE\"), \"max_overflow\": os.environ.get(\"DATABASE_MAX_OVERFLOW\")}\nPath(os.environ[\"EXECUTOR_TEST_MARKER\"]).write_text(json.dumps(result))\n"""
     digest = hashlib.sha256(script).hexdigest()
     marker = tmp_path / "marker.json"
     monkeypatch.setenv("EXECUTOR_TEST_MARKER", str(marker))
+    monkeypatch.setenv("DATABASE_POOL_SIZE", "5")
+    monkeypatch.setenv("DATABASE_MAX_OVERFLOW", "2")
     store = FakeDispatchStore()
 
     with caplog.at_level(logging.INFO, logger=supervisor_module.logger.name):
@@ -477,11 +496,138 @@ async def test_run_forwards_dispatch_authority_to_executor(
     assert payload["executor_dispatch_id"] == "dispatch-1"
     assert payload["telemetry_context_json"] == {"request_id": "", "trace_headers": {}}
     assert result["sentry_release"] == "release-v2"
+    assert result["pool_size"] == "5"
+    assert result["max_overflow"] == "2"
     assert store.authority_checks
     assert store.finished == [store.authority]
     assert (
         f"Launching benchmark benchmark-1 dispatch_id=dispatch-1 release=release-v2 digest={digest} protocol=1"
     ) in caplog.messages
+
+
+@pytest.mark.asyncio
+async def test_run_renews_heartbeat_and_stops_it_after_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    heartbeat_seen = asyncio.Event()
+
+    class FakeExecutorSupervisor:
+        async def prepare_artifact(self, _dispatch: ArtifactDispatch) -> Path:
+            return tmp_path / "executor.pex"
+
+        async def run(self, *_args: object, **_kwargs: object) -> None:
+            await heartbeat_seen.wait()
+
+    store = FakeDispatchStore()
+    original_heartbeat = store.heartbeat
+
+    async def record_heartbeat(authority: DispatchAuthority) -> bool:
+        result = await original_heartbeat(authority)
+        heartbeat_seen.set()
+        return result
+
+    monkeypatch.setattr(store, "heartbeat", record_heartbeat)
+
+    await run_executor_dispatch(
+        FakeExecutorSupervisor(),  # type: ignore[arg-type]
+        store,
+        executor_dispatch_id="dispatch-1",
+        dispatch=_dispatch(digest="0" * 64),
+        process_payload=_process_payload(),
+        heartbeat_interval_seconds=0,
+    )
+
+    heartbeat_count_after_cleanup = len(store.heartbeats)
+    assert heartbeat_count_after_cleanup >= 1
+    await asyncio.sleep(0)
+    assert len(store.heartbeats) == heartbeat_count_after_cleanup
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_lease_expires_from_last_confirmed_renewal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 0.0
+    sleep_delays: list[float] = []
+    store = FakeDispatchStore()
+    authority = DispatchAuthority(dispatch_id="dispatch-1", benchmark_id="benchmark-1")
+    lease = supervisor_module._DispatchLease(  # pyright: ignore[reportPrivateUsage]
+        last_confirmed_renewal_at=now,
+        lost=asyncio.Event(),
+    )
+
+    async def advance_time(delay: float) -> None:
+        nonlocal now
+        sleep_delays.append(delay)
+        now += delay
+
+    async def heartbeat(current_authority: DispatchAuthority) -> bool:
+        nonlocal now
+        store.heartbeats.append(current_authority)
+        if len(store.heartbeats) == 1:
+            return True
+        now = 1 + supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS
+        raise supervisor_module.psycopg2.OperationalError("temporary")
+
+    monkeypatch.setattr(supervisor_module, "_monotonic_time", lambda: now)
+    monkeypatch.setattr(supervisor_module.asyncio, "sleep", advance_time)
+    monkeypatch.setattr(store, "heartbeat", heartbeat)
+
+    await supervisor_module._heartbeat_loop(  # pyright: ignore[reportPrivateUsage]
+        store,
+        authority,
+        lease,
+        interval_seconds=1,
+    )
+
+    assert lease.lost.is_set()
+    assert store.heartbeats == [authority, authority]
+    assert sleep_delays == [1, 1]
+    assert now == 1 + supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_returning_after_deadline_cannot_renew_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 0.0
+    heartbeat_started_at: float | None = None
+    store = FakeDispatchStore()
+    authority = DispatchAuthority(dispatch_id="dispatch-1", benchmark_id="benchmark-1")
+    lease = supervisor_module._DispatchLease(  # pyright: ignore[reportPrivateUsage]
+        last_confirmed_renewal_at=now,
+        lost=asyncio.Event(),
+    )
+
+    async def advance_time(delay: float) -> None:
+        nonlocal now
+        now += delay
+
+    async def heartbeat(current_authority: DispatchAuthority) -> bool:
+        nonlocal heartbeat_started_at, now
+        heartbeat_started_at = now
+        store.heartbeats.append(current_authority)
+        now = supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS + 0.1
+        return True
+
+    monkeypatch.setattr(supervisor_module, "_monotonic_time", lambda: now)
+    monkeypatch.setattr(supervisor_module.asyncio, "sleep", advance_time)
+    monkeypatch.setattr(store, "heartbeat", heartbeat)
+
+    await supervisor_module._heartbeat_loop(  # pyright: ignore[reportPrivateUsage]
+        store,
+        authority,
+        lease,
+        interval_seconds=1,
+    )
+
+    assert lease.lost.is_set()
+    assert heartbeat_started_at == 1
+    assert heartbeat_started_at < supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS
+    assert now > supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS
+    assert lease.last_confirmed_renewal_at == 0
+    assert store.heartbeats == [authority]
 
 
 @pytest.mark.asyncio
@@ -1006,6 +1152,175 @@ async def test_cancellation_after_claim_terminalizes_dispatch(
 
 
 @pytest.mark.asyncio
+async def test_periodic_authority_operational_error_allows_child_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProcess:
+        returncode: int | None = None
+
+        def __init__(self) -> None:
+            self.done = asyncio.Event()
+
+        async def wait(self) -> int:
+            await self.done.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+    process = FakeProcess()
+    sleep_count = 0
+    authority_blocker = asyncio.Event()
+
+    async def sleep(_delay: float) -> None:
+        nonlocal sleep_count
+        sleep_count += 1
+        if sleep_count == 3:
+            process.returncode = 0
+            process.done.set()
+            await authority_blocker.wait()
+
+    checks = iter(
+        [
+            supervisor_module.psycopg2.OperationalError("temporary"),
+            True,
+            True,
+        ]
+    )
+
+    async def is_current() -> bool:
+        result = next(checks)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    terminate = Mock()
+    monkeypatch.setattr(supervisor_module, "_terminate_process_group", terminate)
+    supervisor = _supervisor(tmp_path, content=b"unused", sleep=sleep)
+
+    assert (
+        await supervisor._wait_with_authority(  # pyright: ignore[reportPrivateUsage]
+            cast(asyncio.subprocess.Process, process),
+            is_current,
+            asyncio.Event(),
+        )
+        == 0
+    )
+    terminate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_lease_loss_terminates_process_and_cleans_up_tasks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProcess:
+        pid = 123
+        returncode: int | None = None
+
+        def __init__(self) -> None:
+            self.done = asyncio.Event()
+
+        async def wait(self) -> int:
+            await self.done.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+    process = FakeProcess()
+    lease_lost = asyncio.Event()
+    lease_lost.set()
+    created_tasks: list[asyncio.Task[object]] = []
+    create_task = asyncio.create_task
+
+    def record_task(coroutine: Coroutine[Any, Any, object]) -> asyncio.Task[object]:
+        task = create_task(coroutine)
+        created_tasks.append(task)
+        return task
+
+    async def is_current() -> bool:
+        return True
+
+    async def terminate_process(_process: object) -> None:
+        process.returncode = -15
+        process.done.set()
+
+    monkeypatch.setattr(supervisor_module.asyncio, "create_task", record_task)
+    monkeypatch.setattr(supervisor_module, "_terminate_process_group", terminate_process)
+    supervisor = _supervisor(tmp_path, content=b"unused", sleep=lambda _delay: asyncio.sleep(0))
+
+    with pytest.raises(DispatchAuthorityLostError, match="lease expired"):
+        await supervisor._wait_with_authority(  # pyright: ignore[reportPrivateUsage]
+            cast(asyncio.subprocess.Process, process),
+            is_current,
+            lease_lost,
+        )
+
+    assert process.returncode == -15
+    assert len(created_tasks) == 3
+    assert all(task.done() for task in created_tasks)
+
+
+@pytest.mark.asyncio
+async def test_periodic_authority_operational_error_then_loss_terminates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProcess:
+        pid = 123
+        returncode: int | None = None
+
+        def __init__(self) -> None:
+            self.done = asyncio.Event()
+
+        async def wait(self) -> int:
+            await self.done.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+    process = FakeProcess()
+    checks = iter([supervisor_module.psycopg2.OperationalError("temporary"), False])
+
+    async def is_current() -> bool:
+        result = next(checks)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    async def terminate_process(_process: object) -> None:
+        process.returncode = -15
+        process.done.set()
+
+    monkeypatch.setattr(supervisor_module, "_AUTHORITY_LOSS_GRACE_SECONDS", 0)
+    monkeypatch.setattr(supervisor_module, "_terminate_process_group", terminate_process)
+    supervisor = _supervisor(tmp_path, content=b"unused", sleep=lambda _delay: asyncio.sleep(0))
+
+    with pytest.raises(DispatchAuthorityLostError, match="superseded"):
+        await supervisor._wait_with_authority(  # pyright: ignore[reportPrivateUsage]
+            cast(asyncio.subprocess.Process, process),
+            is_current,
+            asyncio.Event(),
+        )
+
+    assert process.returncode == -15
+
+
+@pytest.mark.asyncio
+async def test_unexpected_periodic_authority_error_propagates(tmp_path: Path) -> None:
+    async def is_current() -> bool:
+        raise RuntimeError("unexpected")
+
+    supervisor = _supervisor(
+        tmp_path,
+        content=b"unused",
+        sleep=lambda _delay: asyncio.sleep(0),
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected"):
+        await supervisor._wait_for_authority_loss(  # pyright: ignore[reportPrivateUsage]
+            is_current
+        )
+
+
+@pytest.mark.asyncio
 async def test_authority_revocation_terminates_process_before_terminalization(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1103,3 +1418,17 @@ async def test_prepare_artifact_rejects_download_digest_mismatch(tmp_path: Path)
         await supervisor.prepare_artifact(_dispatch(digest="0" * 64))
 
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("protocol_version", ["1", "2", "3"])
+def test_host_accepts_current_and_pinned_legacy_protocols(protocol_version: str) -> None:
+    dispatch = ArtifactDispatch.from_payload(
+        {
+            "executor_release_id": "immutable-release",
+            "executor_artifact_uri": "s3://artifacts/releases/immutable.pex",
+            "executor_artifact_digest": "a" * 64,
+            "executor_protocol_version": protocol_version,
+        }
+    )
+    assert dispatch.protocol_version == protocol_version
+    assert dispatch.release_id == "immutable-release"

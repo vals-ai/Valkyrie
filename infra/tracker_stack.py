@@ -104,6 +104,8 @@ class TrackerStack(Stack):
         # Shared environment variables
         benchmark_service_url = benchmark_service_base_url(stage)
         shared_env = {
+            "DATABASE_POOL_SIZE": str(stage_config.database.pool_size),
+            "DATABASE_MAX_OVERFLOW": str(stage_config.database.max_overflow),
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,

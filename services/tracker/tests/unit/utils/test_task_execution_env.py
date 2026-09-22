@@ -3,15 +3,21 @@
 Run: uv run pytest tests/unit/utils/test_task_execution_env.py
 """
 
+import asyncio
 import json
+import threading
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
+from benchmark_service import SandboxSource, TargetedSnapshotSource
 from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.schemas import RetrieveTaskResponse
+from sqlalchemy.engine import Engine
 from sqlmodel import Session
 
 import tracker.utils.task_execution as utils_module
@@ -22,7 +28,7 @@ from tests.unit.utils.task_execution_support import (
     run_process_task,
 )
 from tracker.auth import RequestIdentity
-from tracker.aws.runtime import AWSRuntime
+from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
     ExecutorDispatch,
@@ -30,6 +36,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.scheduler.admission import SandboxQueueContext
 from tracker.types import HarnessConfig
 
 
@@ -44,6 +51,80 @@ async def _capture_sandbox_environment(
     yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
 
 
+class TestQueuedTaskSource:
+    """Source propagation through queued task execution."""
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_targeted_source_is_shared_by_admission_and_creation(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        source = TargetedSnapshotSource(snapshot="snapshot", target="us-west-3")
+        task_response = make_retrieve_task_response().model_copy(update={"source": source})
+        admission_sources: list[SandboxSource] = []
+        creation_sources: list[SandboxSource] = []
+
+        async def retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return task_response
+
+        @asynccontextmanager
+        async def capture_sandbox(
+            *_args: Any,
+            source: SandboxSource,
+            **_kwargs: Any,
+        ) -> AsyncGenerator[SimpleNamespace, None]:
+            creation_sources.append(source)
+            yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
+
+        async def enter_queue(
+            *,
+            stack: Any,
+            task_row_id: Any,
+            source: SandboxSource,
+            create: Callable[[], Any],
+            **_kwargs: Any,
+        ) -> Any:
+            admission_sources.append(source)
+            sandbox = await stack.enter_async_context(create())
+            with Session(task_engine) as task_session:
+                queued_task = task_session.get(Task, task_row_id)
+                assert queued_task is not None
+                queued_task.status = TaskStatus.IN_PROGRESS
+                task_session.add(queued_task)
+                task_session.commit()
+            return sandbox
+
+        task_engine = database_session.get_bind()
+        assert isinstance(task_engine, Engine)
+        queue_context = SandboxQueueContext(provider=Mock(), pool_id="pool_test", engine=task_engine)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve_task)
+        monkeypatch.setattr(utils_module, "create_sandbox", capture_sandbox)
+        monkeypatch.setattr(utils_module, "enter_queued_sandbox", enter_queue)
+
+        result = await run_process_task(
+            start_benchmark_request,
+            task_row,
+            benchmark_id,
+            runtime_services,
+            authority,
+            queue_context=queue_context,
+        )
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        assert admission_sources == [source]
+        assert creation_sources == [source]
+        assert admission_sources[0] is creation_sources[0] is source
+
+
 class TestProcessTaskEnvironment:
     """Tracker-owned environment variables passed to agent tasks."""
 
@@ -54,7 +135,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         contract = contract.model_copy(
             update={
@@ -96,14 +177,14 @@ class TestProcessTaskEnvironment:
                 "MODEL_GATEWAY_API_KEY": "gateway-key",
             }
 
-        monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert len(captured_env_vars) == 1
@@ -129,7 +210,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         """A caller-supplied contract must not reach setup as trusted settings."""
         contract = contract.model_copy(
@@ -148,14 +229,14 @@ class TestProcessTaskEnvironment:
         )
         captured_env_vars: list[dict[str, str]] = []
 
-        monkeypatch.setattr(utils_module, "resolve_secrets", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", lambda *_args, **_kwargs: {})
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
         assert len(captured_env_vars) == 1
         env_vars = captured_env_vars[0]
@@ -169,7 +250,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         contract = contract.model_copy(update={"inference_settings_attested": True})
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
@@ -182,14 +263,14 @@ class TestProcessTaskEnvironment:
         def _mock_resolve_no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {}
 
-        monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_no_secrets)
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_no_secrets)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert len(captured_env_vars) == 1
@@ -210,7 +291,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         contract = contract.model_copy(update={"secrets": {"LEGACY_API_KEY": "aws-secret"}})
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
@@ -236,11 +317,11 @@ class TestProcessTaskEnvironment:
             response.sandbox_secrets = {"TAVILY_API_KEY": "daytona-tavily"}
             return response
 
-        monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
         monkeypatch.setattr(utils_module, "create_sandbox", _capture_sandbox)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime, authority)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert resolved_inputs == [{"LEGACY_API_KEY": "aws-secret"}]
@@ -255,7 +336,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AWSRuntime,
+        runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
@@ -299,9 +380,46 @@ class TestProcessTaskEnvironment:
             start_benchmark_request,
             task_row,
             benchmark_id,
-            aws_runtime,
+            runtime_services,
             authority,
         )
 
         assert output_authority_checks == [False]
         assert result == {task_row.task_id: None}
+
+
+@pytest.mark.usefixtures("process_benchmark_env")
+async def test_task_waits_for_final_log_write(
+    contract: AgentContractRequest,
+    database_session: Session,
+    harness_config: HarnessConfig,
+    runtime_services: RuntimeServices,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task completion must not race a buffered write still running in a thread."""
+    request, task, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
+    loop = asyncio.get_running_loop()
+    writing = asyncio.Event()
+    release_write = threading.Event()
+    written: list[str] = []
+
+    async def run_agent(*args: Any, **_kwargs: Any) -> tuple[None, float]:
+        cast(Callable[[str], None], args[4])("final agent message")
+        return None, 0.0
+
+    def write(_self: object, _stream: str, message: str) -> None:
+        loop.call_soon_threadsafe(writing.set)
+        if not release_write.wait(timeout=5):
+            raise TimeoutError("test did not release the log write")
+        written.append(message)
+
+    monkeypatch.setattr(utils_module, "run_agent", run_agent)
+    monkeypatch.setattr("tracker.aws.cloudwatch_logs.CloudWatchBenchmarkLogSink.write", write)
+    execution = asyncio.create_task(run_process_task(request, task, benchmark_id, runtime_services, authority))
+    try:
+        await asyncio.wait_for(writing.wait(), timeout=2)
+        assert not execution.done()
+    finally:
+        release_write.set()
+        await asyncio.wait_for(execution, timeout=2)
+    assert any("final agent message" in message for message in written)

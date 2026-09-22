@@ -12,6 +12,13 @@ class AWSCredentials(BaseModel, frozen=True):
     aws_session_token: str | None = Field(default=None, repr=False)
 
 
+class AWSResources(BaseModel, frozen=True):
+    region: str = Field(min_length=1)
+    s3_bucket: str = Field(min_length=1)
+    log_group: str = Field(min_length=1)
+    log_retention_days: int = Field(gt=0)
+
+
 class HarnessConfig(BaseModel):
     """Harness configuration required to start a run."""
 

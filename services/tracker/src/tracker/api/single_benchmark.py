@@ -11,7 +11,7 @@ from tracker.api.parsing import parse_csv
 from tracker.api.dependencies import TrackedBenchmarkId
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
-from tracker.aws.resolver import resolve_run_metadata_aws_runtime
+from tracker.aws.resolver import http_validate_saved_managed_storage_runtime, resolve_run_metadata_aws_runtime
 from tracker.aws.s3 import create_benchmark_url
 from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
@@ -44,7 +44,7 @@ _STATUS_SORT_PRIORITY = case(
 
 
 @router.get("/{benchmark_id}", response_model=SingleBenchmarkResponse)
-def get_single_benchmark(
+async def get_single_benchmark(
     benchmark_id: TrackedBenchmarkId,
     request: Request,
     org: Org = Depends(get_current_org),
@@ -66,8 +66,12 @@ def get_single_benchmark(
     aws_runtime = resolve_run_metadata_aws_runtime(
         request,
         aws_managed=benchmark.aws_managed,
+        properties=benchmark.arguments.properties,
         org_id=org.id,
     )
+    if aws_runtime is not None and benchmark.aws_managed:
+        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
+
     if aws_runtime:
         aws_resources = aws_runtime.resources
         s3_bucket_url = create_benchmark_url(str(benchmark.id), aws_resources)
@@ -94,6 +98,7 @@ def get_single_benchmark(
         error_message=benchmark.error_message,
         cloudwatch_url=cloudwatch_url,
         s3_bucket_url=s3_bucket_url,
+        storage_bucket=aws_runtime.resources.s3_bucket if aws_runtime is not None else None,
     )
 
 
@@ -126,7 +131,7 @@ def get_benchmark_tasks(
         escaped_search = _escape_sql_like_pattern(task_id_search)
         base_filters.append(col(Task.task_id).ilike(f"%{escaped_search}%", escape="\\"))
 
-    latest_error_message = (
+    latest_error_subquery = (
         select(ErrorResult.error_message)
         .where(ErrorResult.task == Task.id)
         .where(ErrorResult.org_id == org.id)
@@ -134,6 +139,10 @@ def get_benchmark_tasks(
         .order_by(desc(ErrorResult.created_at))
         .limit(1)
         .scalar_subquery()
+    )
+    latest_error_message = case(
+        (col(Task.status) == TaskStatus.ERROR, latest_error_subquery),
+        else_=None,
     )
     sort_expr = {
         "task_id": col(Task.task_id),
@@ -148,7 +157,7 @@ def get_benchmark_tasks(
     rows = session.exec(
         select(Task, latest_error_message).where(*base_filters).order_by(*order_by).limit(limit).offset(offset)
     ).all()
-    total = session.exec(select(func.count(col(Task.id))).where(*base_filters)).one()
+    total = session.exec(select(func.count()).select_from(Task).where(*base_filters)).one()
 
     return TasksResponse(
         tasks=[

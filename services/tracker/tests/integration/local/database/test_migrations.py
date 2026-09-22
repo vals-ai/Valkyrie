@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Generator
+from typing import Protocol
 from datetime import UTC, datetime
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -14,6 +15,7 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import DBAPIError
 from sqlmodel import Session, create_engine
 from testcontainers.postgres import PostgresContainer
 
@@ -34,13 +36,37 @@ _CURRENT_OWNERSHIP_REVISION = "e9f0a1b2c3d4"
 _PREVIOUS_REVISION = "d8e9f0a1b2c3"
 _MAINTENANCE_REVISION = "f0a1b2c3d4e5"
 _ERROR_RESULT_PROVENANCE_REVISION = "a3f4b5c6d7e8"
+_DISPATCH_LEASE_REVISION = "6a7b8c9d0e1f"
 _MIGRATION_ADVISORY_LOCK_ID = 0x56414C4B59524945
+_TASK_LISTING_REVISION = "2d3e4f5a6b7c"
+_TASK_LISTING_PREDECESSOR = "1c2d3e4f5a6b"
 
 
 def test_migration_graph_has_single_head() -> None:
     heads = ScriptDirectory.from_config(Config(str(_ALEMBIC_INI))).get_heads()
 
     assert len(heads) == 1, f"Expected one Alembic head, found {heads}"
+
+
+def test_dispatch_lease_migration_adds_recovery_state(migration_database_url: str) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", _DISPATCH_LEASE_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    engine = create_engine(migration_database_url)
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("executordispatch")}
+    assert {
+        "assigned_task_ids",
+        "claim_deadline_at",
+        "heartbeat_at",
+        "lease_expires_at",
+        "failure_reason",
+    } <= columns
+    assert any(
+        index["name"] == "ix_executordispatch_status_lease_expires"
+        for index in inspector.get_indexes("executordispatch")
+    )
+    engine.dispose()
 
 
 @pytest.fixture
@@ -58,6 +84,208 @@ def _run_alembic(database_url: str, *args: str) -> subprocess.CompletedProcess[s
         text=True,
         check=False,
     )
+
+
+class _TaskListingIndexRow(Protocol):
+    index_oid: int
+    indisvalid: bool
+    indisunique: bool
+    indnkeyatts: int
+    indnatts: int
+    has_no_expressions: bool
+    has_no_predicate: bool
+    amname: str
+    table_schema: str
+    table_name: str
+    key_columns: list[str]
+    key_1_asc: bool
+    key_1_nulls_last: bool
+    key_2_asc: bool
+    key_2_nulls_last: bool
+    key_3_desc: bool
+    key_3_nulls_first: bool
+
+
+def _assert_canonical_task_listing_index(index: _TaskListingIndexRow) -> int:
+    assert index.indisvalid is True
+    assert index.indisunique is False
+    assert index.indnkeyatts == 3
+    assert index.indnatts == 3
+    assert index.has_no_expressions is True
+    assert index.has_no_predicate is True
+    assert index.amname == "btree"
+    assert index.table_schema == "public"
+    assert index.table_name == "task"
+    assert index.key_columns == ["benchmark", "org_id", "started_at"]
+    assert index.key_1_asc is True
+    assert index.key_1_nulls_last is True
+    assert index.key_2_asc is True
+    assert index.key_2_nulls_last is True
+    assert index.key_3_desc is True
+    assert index.key_3_nulls_first is True
+    return index.index_oid
+
+
+def test_task_listing_index_migration_is_retry_safe(migration_database_url: str) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_PREDECESSOR)
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    engine = create_engine(migration_database_url)
+    index_query = text(
+        """
+        SELECT
+            i.indexrelid AS index_oid,
+            i.indisvalid,
+            i.indisunique,
+            i.indnkeyatts,
+            i.indnatts,
+            i.indexprs IS NULL AS has_no_expressions,
+            i.indpred IS NULL AS has_no_predicate,
+            am.amname,
+            tn.nspname AS table_schema,
+            t.relname AS table_name,
+            (
+                SELECT array_agg(a.attname ORDER BY key.ordinality)
+                FROM unnest(i.indkey) WITH ORDINALITY AS key(attnum, ordinality)
+                JOIN pg_attribute AS a
+                  ON a.attrelid = i.indrelid
+                 AND a.attnum = key.attnum
+            ) AS key_columns,
+            pg_index_column_has_property(i.indexrelid, 1, 'asc') AS key_1_asc,
+            pg_index_column_has_property(i.indexrelid, 1, 'nulls_last') AS key_1_nulls_last,
+            pg_index_column_has_property(i.indexrelid, 2, 'asc') AS key_2_asc,
+            pg_index_column_has_property(i.indexrelid, 2, 'nulls_last') AS key_2_nulls_last,
+            pg_index_column_has_property(i.indexrelid, 3, 'desc') AS key_3_desc,
+            pg_index_column_has_property(i.indexrelid, 3, 'nulls_first') AS key_3_nulls_first
+        FROM pg_index AS i
+        JOIN pg_class AS c ON c.oid = i.indexrelid
+        JOIN pg_namespace AS n ON n.oid = c.relnamespace
+        JOIN pg_class AS t ON t.oid = i.indrelid
+        JOIN pg_namespace AS tn ON tn.oid = t.relnamespace
+        JOIN pg_am AS am ON am.oid = c.relam
+        WHERE c.relname = :index_name AND n.nspname = current_schema()
+        """
+    )
+    revision_query = text("SELECT version_num FROM alembic_version")
+    index_params = {"index_name": "ix_task_benchmark_org_started_at"}
+
+    upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    with engine.connect() as connection:
+        index = connection.execute(index_query, index_params).one()
+        _assert_canonical_task_listing_index(index)
+        assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
+
+    downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
+    assert downgrade.returncode == 0, downgrade.stderr
+    with engine.connect() as connection:
+        connection.execution_options(isolation_level="AUTOCOMMIT").execute(
+            text(
+                'CREATE INDEX CONCURRENTLY "ix_task_benchmark_org_started_at" '
+                "ON task (benchmark, org_id, started_at DESC)"
+            )
+        )
+        matching_index_oid = connection.execute(index_query, index_params).one().index_oid
+    upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    with engine.connect() as connection:
+        index = connection.execute(index_query, index_params).one()
+        assert _assert_canonical_task_listing_index(index) == matching_index_oid
+        assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
+    downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
+    assert downgrade.returncode == 0, downgrade.stderr
+    with engine.connect() as connection:
+        assert connection.execute(index_query, index_params).one_or_none() is None
+    with engine.connect() as connection:
+        connection.execution_options(isolation_level="AUTOCOMMIT").execute(
+            text(
+                'CREATE INDEX CONCURRENTLY "ix_task_benchmark_org_started_at" '
+                "ON task (org_id, benchmark, started_at ASC)"
+            )
+        )
+        wrong_index = connection.execute(index_query, index_params).one()
+        assert wrong_index.indisvalid is True
+        assert wrong_index.indisunique is False
+        assert wrong_index.key_columns == ["org_id", "benchmark", "started_at"]
+        assert wrong_index.key_1_asc is True
+        assert wrong_index.key_2_asc is True
+        assert wrong_index.key_3_desc is False
+
+    upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    with engine.connect() as connection:
+        index = connection.execute(index_query, index_params).one()
+        _assert_canonical_task_listing_index(index)
+        assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
+
+    downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
+    assert downgrade.returncode == 0, downgrade.stderr
+    org_id = uuid4()
+    benchmark_id = uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO org (id, name) VALUES (:id, :name)"),
+            {"id": org_id, "name": "task-listing-retry-org"},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO benchmark "
+                "(id, org_id, name, started_at, status) "
+                "VALUES (:id, :org_id, :name, :started_at, :status)"
+            ),
+            {
+                "id": benchmark_id,
+                "org_id": org_id,
+                "name": "task-listing-retry-benchmark",
+                "started_at": datetime(2026, 9, 21, tzinfo=UTC),
+                "status": "IN_PROGRESS",
+            },
+        )
+        for task_id in (uuid4(), uuid4()):
+            connection.execute(
+                text(
+                    "INSERT INTO task "
+                    "(id, org_id, task_id, status, started_at, benchmark) "
+                    "VALUES (:id, :org_id, :task_id, :status, :started_at, :benchmark)"
+                ),
+                {
+                    "id": task_id,
+                    "org_id": org_id,
+                    "task_id": str(task_id),
+                    "status": "PENDING",
+                    "started_at": datetime(2026, 9, 21, tzinfo=UTC),
+                    "benchmark": benchmark_id,
+                },
+            )
+
+    with engine.connect() as connection:
+        with pytest.raises(DBAPIError):
+            connection.execution_options(isolation_level="AUTOCOMMIT").execute(
+                text('CREATE UNIQUE INDEX CONCURRENTLY "ix_task_benchmark_org_started_at" ON task (org_id)')
+            )
+        invalid_index = connection.execute(index_query, index_params).one()
+        assert invalid_index.indisvalid is False
+        assert invalid_index.indisunique is True
+
+    upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    with engine.connect() as connection:
+        index = connection.execute(index_query, index_params).one()
+        assert index.indisvalid is True
+        assert index.indisunique is False
+        assert index.key_columns == ["benchmark", "org_id", "started_at"]
+        assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
+
+    with engine.connect() as connection:
+        connection.execution_options(isolation_level="AUTOCOMMIT").execute(
+            text('DROP INDEX CONCURRENTLY IF EXISTS "ix_task_benchmark_org_started_at"')
+        )
+    downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
+    assert downgrade.returncode == 0, downgrade.stderr
+    with engine.connect() as connection:
+        assert connection.execute(index_query, index_params).one_or_none() is None
+        assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_PREDECESSOR
+    engine.dispose()
 
 
 def test_executor_release_ownership_downgrade_restores_predecessor_schema(

@@ -469,5 +469,5 @@ class TestSandboxOperations:
         ) as sandbox:
             # Use `false` (returns 1) instead of `exit 1` — exit kills the writer
             # shell itself, preventing the status file from being written.
-            with pytest.raises(SandboxError, match="exit code: 1"):
+            with pytest.raises(SandboxError, match="exit code 1"):
                 await stream_command_output(sandbox, "false", on_output=lambda _: None)

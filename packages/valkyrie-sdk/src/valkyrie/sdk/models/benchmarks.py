@@ -71,6 +71,7 @@ class SingleBenchmarkResponse(ResponseModel):
     error_message: str | None = None
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
+    storage_bucket: str | None = None
 
     @field_serializer("started_at")
     def serialize_started_at(self, value: datetime) -> str:

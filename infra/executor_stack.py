@@ -125,6 +125,8 @@ class ExecutorStack(Stack):
         benchmark_service_url = benchmark_service_base_url(stage)
         bucket = aws_s3.Bucket.from_bucket_name(self, "ManagedRuntimeBucket", bucket_name)
         shared_env = {
+            "DATABASE_POOL_SIZE": str(stage_config.database.pool_size),
+            "DATABASE_MAX_OVERFLOW": str(stage_config.database.max_overflow),
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
@@ -444,6 +446,10 @@ class ExecutorStack(Stack):
         task_definition.add_container(
             container_name,
             image=tracker_image,
+            environment={
+                "DATABASE_POOL_SIZE": str(stage_config.database.pool_size),
+                "DATABASE_MAX_OVERFLOW": str(stage_config.database.max_overflow),
+            },
             entry_point=[
                 "/app/.venv/bin/python",
                 "-m",

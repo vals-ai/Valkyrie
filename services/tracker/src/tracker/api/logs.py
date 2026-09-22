@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import Session, col, select
 
 from tracker.api.dependencies import (
-    LogProviderDependency,
+    RunRuntimeDependency,
     RunAWSDependency,
     load_task_for_benchmark_or_404,
 )
@@ -180,7 +180,7 @@ async def _stream_events(
 @router.get("/{benchmark_id}/logs", response_model=LogPageResponse)
 async def get_logs(
     reference: LogReferenceDependency,
-    log_provider: LogProviderDependency,
+    runtime: RunRuntimeDependency,
     query: str | None = Query(default=None, min_length=1),
     start_time: datetime | None = None,
     end_time: datetime | None = None,
@@ -189,7 +189,7 @@ async def get_logs(
 ) -> LogPageResponse:
     """Return one page of logs for a run or one of its tasks."""
     try:
-        page = await log_provider.fetch(
+        page = await runtime.log_reader.fetch(
             reference,
             query=query,
             start_time=start_time,
@@ -205,7 +205,7 @@ async def get_logs(
 @router.get("/{benchmark_id}/logs/stream")
 def stream_task_logs(
     reference: TaskLogReferenceDependency,
-    log_provider: LogProviderDependency,
+    runtime: RunRuntimeDependency,
     query: str | None = Query(default=None, min_length=1),
     start_time: datetime | None = None,
     end_time: datetime | None = None,
@@ -215,7 +215,7 @@ def stream_task_logs(
     # References are materialized; release the connection before long-lived polling.
     session.close()
     events = _stream_events(
-        log_provider,
+        runtime.log_reader,
         reference,
         query=query,
         start_time=start_time,

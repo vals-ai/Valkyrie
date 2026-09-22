@@ -3,9 +3,17 @@
 Run: cd infra && PYTHONPATH=. uv run python -m unittest tests/test_deploy_workflow.py
 """
 
+import json
+import os
 import re
 import unittest
+from email.message import Message
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from textwrap import dedent
+from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
+from urllib.request import Request
 
 ROOT = Path(__file__).parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "deploy.yaml"
@@ -14,6 +22,19 @@ TRACKER_LIVE_WORKFLOW = ROOT / ".github" / "workflows" / "tracker-integration-te
 WORKER_SYNTHESIS = ROOT / ".github" / "scripts" / "synthesize-worker-templates.sh"
 
 _NEXT_JOB = re.compile(r"\n  [A-Za-z0-9_-]+:\n")
+_JOB_ID = re.compile(r"^  ([A-Za-z0-9_-]+):$", re.MULTILINE)
+
+
+def _job_ids(workflow: str) -> list[str]:
+    """Return every top-level job id declared by a workflow."""
+    return _JOB_ID.findall(workflow.split("\njobs:\n", maxsplit=1)[1])
+
+
+def _assignment(script: str, name: str) -> str:
+    """Return one shell environment assignment's value, without its optional quotes."""
+    match = re.search(rf"^\s*{re.escape(name)}=('[^']*'|\"[^\"]*\"|\S+)", script, re.MULTILINE)
+    assert match is not None, f"{name} is not assigned in the synthesis helper"
+    return match.group(1).strip("'\"")
 
 
 def _job(workflow: str, job_id: str) -> str:
@@ -157,6 +178,40 @@ class DeployWorkflowTest(unittest.TestCase):
                 self.assertIn("SCOPE=core", step)
                 self.assertNotIn("SCOPE=executor", step)
                 self.assertNotIn("executor stack", step.lower())
+
+    def test_every_synthesizing_job_carries_the_managed_storage_settings(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        organization_setting = "AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}"
+        storage_settings = (
+            "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS: ${{ secrets.AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS || '{}' }}",
+            "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED: ${{ vars.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED || 'false' }}",
+        )
+        synthesizing_jobs = [job_id for job_id in _job_ids(workflow) if organization_setting in _job(workflow, job_id)]
+
+        self.assertEqual(
+            synthesizing_jobs,
+            [
+                "deploy-prod-core",
+                "executor-prod",
+                "deploy-bench-core",
+                "run-dev-operation",
+                "executor-development",
+                "executor-bench",
+            ],
+        )
+        for job_id in synthesizing_jobs:
+            with self.subTest(job=job_id):
+                job = _job(workflow, job_id)
+                for setting in storage_settings:
+                    self.assertIn(setting, job)
+
+    def test_classifier_synthesis_keeps_owner_storage_iam_in_the_template_diff(self) -> None:
+        synthesis = WORKER_SYNTHESIS.read_text(encoding="utf-8")
+        organization_id = _assignment(synthesis, "AWS_DEPLOYMENT_ROLE_ORG_IDS")
+        org_environments = json.loads(_assignment(synthesis, "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS"))
+
+        self.assertEqual(_assignment(synthesis, "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED"), "true")
+        self.assertEqual(org_environments, {organization_id: ["dev", "prod"]})
 
     def test_executor_keeps_the_deployed_worker_stack_identity(self) -> None:
         app = (ROOT / "infra" / "app.py").read_text(encoding="utf-8")
@@ -586,6 +641,126 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertEqual(workflow.count("services/executor_artifact/build.py"), 1)
         self.assertIn("services/executor_artifact/uv.lock", workflow)
         self.assertIn("uv lock --project services/executor_artifact --check", workflow)
+
+    def test_sentry_publication_requires_successful_component_deployment(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        for stage, core_job, executor_job, github_environment in (
+            ("dev", "run-dev-operation", "executor-development", "dev"),
+            ("prod", "deploy-prod-core", "executor-prod", "prod-external"),
+        ):
+            with self.subTest(stage=stage):
+                core = _job(workflow, core_job)
+                executor = _job(workflow, executor_job)
+                core_publication = _step(core, f"Publish {stage} core Sentry release")
+                executor_publication = _step(executor, f"Publish {stage} executor Sentry release")
+
+                self.assertIn(f"    environment: {github_environment}\n", core)
+                self.assertIn(f"    environment: {github_environment}\n", executor)
+                if stage == "dev":
+                    self.assertIn("if: env.OPERATION == 'deploy'", core_publication)
+                else:
+                    self.assertNotIn("        if:", core_publication)
+                self.assertLess(
+                    core.index(f"Deploy {stage} core stacks"), core.index(f"Publish {stage} core Sentry release")
+                )
+                activation = _step(executor, f"Publish and activate {stage} executor release")
+                activation_condition = activation.split("        if: >-\n", maxsplit=1)[1].split(
+                    "        working-directory:", maxsplit=1
+                )[0]
+                self.assertIn(activation_condition, executor_publication)
+                self.assertLess(
+                    executor.index(f"Publish and activate {stage} executor release"),
+                    executor.index(f"Finish {stage} maintenance"),
+                )
+                self.assertLess(
+                    executor.index(f"Finish {stage} maintenance"),
+                    executor.index(f"Publish {stage} executor Sentry release"),
+                )
+                for publication in (core_publication, executor_publication):
+                    self.assertIn("SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}", publication)
+                    self.assertNotIn("always()", publication)
+                    self.assertNotIn("continue-on-error:", publication)
+
+    def test_sentry_publication_sends_deployed_identity_and_propagates_http_errors(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        core_revision = "4c2e9bc458e6ab0e458b95bc40bb38375802eabc"
+        executor_revision = "81ecdaa948195d5d407287d09ff980951bc6d514"
+        executor_release = f"git-{executor_revision[:12]}-{'a' * 16}"
+        cases = (
+            ("run-dev-operation", "Publish dev core Sentry release", core_revision, core_revision, "dev"),
+            (
+                "executor-development",
+                "Publish dev executor Sentry release",
+                executor_release,
+                executor_revision,
+                "dev",
+            ),
+            ("deploy-prod-core", "Publish prod core Sentry release", core_revision, core_revision, "production"),
+            (
+                "executor-prod",
+                "Publish prod executor Sentry release",
+                executor_release,
+                executor_revision,
+                "production",
+            ),
+        )
+        with TemporaryDirectory() as workspace:
+            manifest = Path(workspace) / "executor-release" / "manifest.json"
+            manifest.parent.mkdir()
+            manifest.write_text(
+                json.dumps({"release_id": executor_release, "source_revision": executor_revision}),
+                encoding="utf-8",
+            )
+            environment = {
+                "GITHUB_SHA": core_revision,
+                "GITHUB_REPOSITORY": "vals-ai/Valkyrie",
+                "GITHUB_WORKSPACE": workspace,
+                "SENTRY_AUTH_TOKEN": "test-release-token",
+            }
+            for job_id, step_name, release, revision, sentry_environment in cases:
+                step = _step(_job(workflow, job_id), step_name)
+                source = dedent(step.split("python - <<'PY'\n", maxsplit=1)[1].rsplit("\n          PY", maxsplit=1)[0])
+                expected_urls = [
+                    "https://sentry.io/api/0/organizations/vals-ai/releases/",
+                    f"https://sentry.io/api/0/organizations/vals-ai/releases/{release}/deploys/",
+                ]
+                expected_payloads = [
+                    {
+                        "version": release,
+                        "projects": ["valkyrie"],
+                        "commits": [{"id": revision, "repository": "vals-ai/Valkyrie"}],
+                    },
+                    {"environment": sentry_environment, "projects": ["valkyrie"]},
+                ]
+                for failing_request in (None, 0, 1):
+                    with self.subTest(component=job_id, failing_request=failing_request):
+                        response = MagicMock()
+                        outcomes: list[object] = [response, response]
+                        error = HTTPError(expected_urls[failing_request or 0], 403, "Forbidden", Message(), None)
+                        if failing_request is not None:
+                            outcomes[failing_request] = error
+                        with (
+                            patch.dict(os.environ, environment, clear=True),
+                            patch("urllib.request.urlopen", side_effect=outcomes) as transport,
+                        ):
+                            if failing_request is None:
+                                exec(compile(source, str(WORKFLOW), "exec"), {})
+                            else:
+                                with self.assertRaises(HTTPError) as raised:
+                                    exec(compile(source, str(WORKFLOW), "exec"), {})
+                                self.assertIs(raised.exception, error)
+
+                        expected_count = 2 if failing_request is None else failing_request + 1
+                        self.assertEqual(transport.call_count, expected_count)
+                        for index, call in enumerate(transport.call_args_list):
+                            request = call.args[0]
+                            assert isinstance(request, Request)
+                            self.assertEqual(request.full_url, expected_urls[index])
+                            self.assertEqual(request.get_method(), "POST")
+                            self.assertEqual(request.get_header("Authorization"), "Bearer test-release-token")
+                            self.assertEqual(request.get_header("Content-type"), "application/json")
+                            assert isinstance(request.data, bytes)
+                            self.assertEqual(json.loads(request.data), expected_payloads[index])
 
     def test_deployment_tools_are_pinned_and_release_dependencies_are_isolated(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

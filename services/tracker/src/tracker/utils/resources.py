@@ -3,13 +3,11 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from benchmark_service import SandboxProviderConfig, sandbox_provider_config_from_mapping
+from benchmark_service import SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient
 from sqlmodel import Session, select
 
 from tracker.auth import RequestIdentity
-from tracker.runtime.secrets import SecretStore
-from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
@@ -19,6 +17,7 @@ from tracker.database.models import (
 )
 from tracker.exceptions import TrackerServiceError
 from tracker.outbound_security import validate_service_headers, validate_service_url_syntax
+from tracker.runtime.secrets import AsyncSecretStore, SecretStore, sandbox_provider_config_from_secret
 from tracker.types import (
     StartBenchmarkRequest,
 )
@@ -37,11 +36,16 @@ def fetch_sandbox_provider_config(
     provider_type: str,
 ) -> SandboxProviderConfig:
     """Resolve sandbox provider config from the selected provider type and secret."""
-    secret = secret_store.get(secret_name)
-    if not isinstance(secret, dict):
-        raise TrackerServiceError("Expected sandbox provider secret to be a JSON object")
+    return sandbox_provider_config_from_secret(secret_store.get(secret_name), provider_type)
 
-    return sandbox_provider_config_from_mapping({**secret, "type": provider_type})
+
+async def fetch_sandbox_provider_config_async(
+    secret_name: str,
+    secret_store: AsyncSecretStore,
+    provider_type: str,
+) -> SandboxProviderConfig:
+    """Resolve sandbox provider config without blocking the caller's event loop."""
+    return sandbox_provider_config_from_secret(await secret_store.get_async(secret_name), provider_type)
 
 
 def create_benchmark_service_client(
@@ -56,18 +60,6 @@ def create_benchmark_service_client(
     return BenchmarkServiceClient(url=url, headers=headers)
 
 
-def create_benchmark_service_client_from_request(request: StartBenchmarkRequest) -> BenchmarkServiceClient:
-    """Create a BenchmarkServiceClient for a start request."""
-    url = request.custom_benchmark_service or create_benchmark_service_url(request.benchmark_name)
-    return create_benchmark_service_client(url, service_headers=request.service_headers)
-
-
-def _sandbox_provider_secret_name(request: StartBenchmarkRequest) -> str | None:
-    if request.harness_config is not None and request.harness_config.sandbox_provider_secret_name:
-        return request.harness_config.sandbox_provider_secret_name
-    return request.sandbox_provider_secret_name
-
-
 def start_benchmark_request_to_benchmark(
     request: StartBenchmarkRequest,
     run_starter: RequestIdentity,
@@ -78,7 +70,7 @@ def start_benchmark_request_to_benchmark(
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
     if aws_managed != (request.harness_config is None):
         raise ValueError("Benchmark AWS mode does not match the start request")
-    provider_secret_name = _sandbox_provider_secret_name(request)
+    provider_secret_name = request.sandbox_provider_secret_reference
     if aws_managed and (not request.sandbox_provider or not provider_secret_name):
         raise ValueError("Managed runs require a sandbox provider and provider secret name")
 
@@ -91,6 +83,8 @@ def start_benchmark_request_to_benchmark(
         webhook_secret_name=request.webhook_secret_name,
         webhook_intervals=request.webhook_intervals,
         arguments=BenchmarkArguments(
+            environment=request.environment,
+            properties=request.properties,
             contract=request.contract,
             concurrency=request.concurrency,
             priority=request.priority,

@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Any
 
 from generate_openapi import build_openapi
 
@@ -32,6 +33,7 @@ def test_openapi_declares_authentication() -> None:
     assert schema["paths"]["/health"]["get"]["security"] == []
     assert schema["paths"]["/init"]["post"]["security"] == [{"ApiKeyAuth": []}]
     assert schema["paths"]["/start-benchmark"]["post"]["security"] == [{"ApiKeyAuth": []}]
+    assert schema["paths"]["/start-benchmark-with-storage"]["post"]["security"] == [{"ApiKeyAuth": []}]
 
 
 def test_openapi_declares_required_harness_headers() -> None:
@@ -84,6 +86,20 @@ def test_openapi_declares_required_harness_headers() -> None:
         assert operation["parameters"][-4:] == expected_references
 
 
+def test_openapi_states_the_storage_requirement_of_each_start_route() -> None:
+    schema = build_openapi()
+
+    def request_model(path: str) -> dict[str, Any]:
+        body = schema["paths"][path]["post"]["requestBody"]["content"]["application/json"]["schema"]
+        return schema["components"]["schemas"][body["$ref"].rsplit("/", 1)[-1]]
+
+    shared = request_model("/start-benchmark")
+    managed = request_model("/start-benchmark-with-storage")
+
+    assert "managed_s3_bucket" not in shared["required"]
+    assert "managed_s3_bucket" in managed["required"]
+
+
 def test_openapi_keeps_scheduler_storage_fields_internal() -> None:
     schemas = build_openapi()["components"]["schemas"]
 
@@ -112,7 +128,46 @@ def test_openapi_includes_scheduler_overview_contract() -> None:
             "default": 100,
             "title": "Active Limit",
         },
+        "waiting_offset": {"type": "integer", "minimum": 0, "default": 0, "title": "Waiting Offset"},
+        "active_offset": {"type": "integer", "minimum": 0, "default": 0, "title": "Active Offset"},
+        "include_capacity": {
+            "type": "boolean",
+            "default": False,
+            "title": "Include Capacity",
+        },
     }
     assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/SchedulerOverviewResponse"
+    }
+
+    schemas = build_openapi()["components"]["schemas"]
+    pool_schema = schemas["SchedulerPoolResponse"]
+    assert pool_schema["required"] == ["pool_id", "waiting"]
+    assert set(pool_schema["properties"]) == {"pool_id", "waiting", "provider", "capacity_domains"}
+    assert schemas["SchedulerCapacityDomainResponse"]["required"] == ["target_id", "sandbox_class", "capacity"]
+    capacity_schema = schemas["SchedulerCapacityResponse"]
+    assert capacity_schema["required"] == ["cpu", "memory", "disk"]
+    assert set(capacity_schema["properties"]) == {
+        "cpu",
+        "memory",
+        "disk",
+        "gpu",
+        "allowed_gpu_types",
+    }
+    assert capacity_schema["properties"]["gpu"] == {
+        "anyOf": [
+            {"$ref": "#/components/schemas/SchedulerResourceCapacityResponse"},
+            {"type": "null"},
+        ]
+    }
+    assert capacity_schema["properties"]["allowed_gpu_types"] == {
+        "anyOf": [
+            {"type": "array", "items": {"type": "string"}},
+            {"type": "null"},
+        ],
+        "title": "Allowed Gpu Types",
+    }
+    assert schemas["SchedulerResourceCapacityResponse"]["properties"] == {
+        "available": {"type": "number", "minimum": 0.0, "title": "Available"},
+        "total": {"type": "number", "minimum": 0.0, "title": "Total"},
     }

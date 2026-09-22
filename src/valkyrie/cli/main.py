@@ -7,6 +7,7 @@ from valkyrie.cli.agent import agent
 from valkyrie.cli.benchmark import benchmark
 from valkyrie.cli.config import config
 from valkyrie.cli.logging import configure_cli_logging
+from valkyrie.cli.queue import queue
 from valkyrie.cli.run import run
 
 
@@ -22,6 +23,7 @@ cli.add_command(run)
 cli.add_command(agent)
 cli.add_command(benchmark)
 cli.add_command(config)
+cli.add_command(queue)
 
 __all__ = ["cli"]
 

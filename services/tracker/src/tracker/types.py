@@ -12,12 +12,14 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    FiniteFloat,
     PlainSerializer,
     field_serializer,
     field_validator,
     model_validator,
 )
 
+from tracker.aws.runtime import AWSResources
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     AgentContractRequest,
@@ -74,6 +76,15 @@ class HarnessConfig(BaseModel):
 
 
 class StartBenchmarkRequest(BaseModel):
+    environment: Literal["aws"] = "aws"
+    properties: AWSResources | None = None
+    managed_s3_bucket: str | None = Field(
+        default=None,
+        description=(
+            "Owner-provisioned managed storage bucket. "
+            "POST /start-benchmark-with-storage requires it; POST /start-benchmark rejects it."
+        ),
+    )
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
@@ -104,6 +115,13 @@ class StartBenchmarkRequest(BaseModel):
         return validate_service_url_syntax(value) if value is not None else None
 
     @property
+    def sandbox_provider_secret_reference(self) -> str | None:
+        """Resolve the provider reference from legacy or managed configuration."""
+        if self.harness_config is not None and self.harness_config.sandbox_provider_secret_name:
+            return self.harness_config.sandbox_provider_secret_name
+        return self.sandbox_provider_secret_name
+
+    @property
     def benchmark_service(self) -> BenchmarkServiceClient:
         from tracker.utils import create_benchmark_service_client
 
@@ -113,6 +131,15 @@ class StartBenchmarkRequest(BaseModel):
             url=benchmark_service_url,
             service_headers=self.service_headers,
         )
+
+
+class ManagedStorageStartBenchmarkRequest(StartBenchmarkRequest):
+    """Start a run whose artifacts are written to an owner-provisioned managed storage bucket."""
+
+    managed_s3_bucket: str | None = Field(  # pyright: ignore[reportGeneralTypeIssues]
+        ...,
+        description="Owner-provisioned managed storage bucket. POST /start-benchmark-with-storage requires it.",
+    )
 
 
 class FetchBenchmarkTasksRequest(BaseModel):
@@ -146,6 +173,7 @@ class StartBenchmarkResponse(BaseModel):
     task_count: int
     cloudwatch_url: str
     s3_bucket_url: str
+    storage_bucket: str | None = None
     executor_release_id: str | None = None
     current_execution_release_id: str | None = None
     executor_artifact_digest: str | None = None
@@ -157,6 +185,7 @@ class FetchBenchmarkResponse(BaseModel):
     benchmark_id: UUID
     details: BenchmarkDetails
     s3_bucket_url: str
+    storage_bucket: str | None = None
     label: str | None = None
     final_score: float | None = None
     error_message: str | None = None
@@ -248,7 +277,7 @@ def validate_managed_execution_request(request: StartBenchmarkRequest) -> None:
 class ManagedExecutionContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal[2]
+    version: Literal[2, 3]
     benchmark_id: UUID
     verified_task_ids: list[str]
     start_benchmark_request: StartBenchmarkRequest
@@ -256,6 +285,9 @@ class ManagedExecutionContext(BaseModel):
     @model_validator(mode="after")
     def validate_credential_free_request(self) -> "ManagedExecutionContext":
         validate_managed_execution_request(self.start_benchmark_request)
+        if self.start_benchmark_request.managed_s3_bucket is not None:
+            raise ValueError("Queued execution cannot include an admission-only storage override")
+
         return self
 
 
@@ -354,6 +386,7 @@ class FetchBenchmarkMetadataResponse(BaseModel):
     benchmark_id: UUID
     benchmark_name: str
     benchmark_arguments: BenchmarkArguments
+    storage_bucket: str | None = None
     started_by_email: str | None = None
     executor_release_id: str | None = None
     current_execution_release_id: str | None = None
@@ -445,6 +478,7 @@ class SingleBenchmarkResponse(BaseModel):
     error_message: str | None = None
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
+    storage_bucket: str | None = None
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:
@@ -536,9 +570,30 @@ class SchedulerActiveStatus(str, Enum):
     EVALUATING = "EVALUATING"
 
 
+class SchedulerResourceCapacityResponse(BaseModel):
+    available: FiniteFloat = Field(ge=0)
+    total: FiniteFloat = Field(ge=0)
+
+
+class SchedulerCapacityResponse(BaseModel):
+    cpu: SchedulerResourceCapacityResponse
+    memory: SchedulerResourceCapacityResponse
+    disk: SchedulerResourceCapacityResponse
+    gpu: SchedulerResourceCapacityResponse | None = None
+    allowed_gpu_types: list[str] | None = None
+
+
+class SchedulerCapacityDomainResponse(BaseModel):
+    target_id: str = Field(min_length=1)
+    sandbox_class: str = Field(min_length=1)
+    capacity: SchedulerCapacityResponse
+
+
 class SchedulerPoolResponse(BaseModel):
     pool_id: str
     waiting: int
+    provider: str | None = None
+    capacity_domains: list[SchedulerCapacityDomainResponse] | None = None
 
 
 class SchedulerWaitingEntryResponse(BaseModel):
@@ -571,3 +626,5 @@ class SchedulerOverviewResponse(BaseModel):
     active_entries: list[SchedulerActiveEntryResponse]
     waiting_capped: bool
     active_capped: bool
+    waiting_next_offset: int | None = Field(description="Next waiting offset, or null when this list is exhausted.")
+    active_next_offset: int | None = Field(description="Next active offset, or null when this list is exhausted.")

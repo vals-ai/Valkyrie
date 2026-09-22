@@ -19,6 +19,8 @@ HARNESS_HEADERS = (
 HARNESS_OPERATIONS = (
     ("/agents", "get"),
     ("/agents/{name}/download-url", "get"),
+    ("/agents/{name}", "put"),
+    ("/agents/{name}", "delete"),
     ("/analyze-benchmark/{benchmark_id}", "post"),
     ("/benchmarks/{benchmark_id}/logs", "get"),
     ("/benchmarks/{benchmark_id}/logs/stream", "get"),
@@ -67,6 +69,7 @@ def build_openapi() -> dict[str, Any]:
     schema["paths"]["/health"]["get"]["security"] = []
     schema["paths"]["/init"]["post"]["security"] = API_KEY_ONLY
     schema["paths"]["/start-benchmark"]["post"]["security"] = API_KEY_ONLY
+    schema["paths"]["/start-benchmark-with-storage"]["post"]["security"] = API_KEY_ONLY
     return schema
 
 

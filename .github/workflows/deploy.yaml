@@ -136,6 +136,8 @@ jobs:
       id-token: write
     env:
       AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}
+      AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS: ${{ secrets.AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS || '{}' }}
+      AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED: ${{ vars.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED || 'false' }}
       AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}
       AWS_REGION: us-east-1
       AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
@@ -214,6 +216,42 @@ jobs:
           SCOPE=core
           AWS_REGION="$AWS_REGION"
 
+      - name: Publish prod core Sentry release
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          release = os.environ["GITHUB_SHA"]
+          base = "https://sentry.io/api/0/organizations/vals-ai"
+          for url, payload in (
+              (f"{base}/releases/", {
+                  "version": release,
+                  "projects": ["valkyrie"],
+                  "commits": [{"id": release, "repository": os.environ["GITHUB_REPOSITORY"]}],
+              }),
+              (f"{base}/releases/{quote(release, safe='')}/deploys/", {
+                  "environment": "production",
+                  "projects": ["valkyrie"],
+              }),
+          ):
+              request = Request(
+                  url,
+                  data=json.dumps(payload).encode(),
+                  headers={
+                      "Authorization": f"Bearer {os.environ['SENTRY_AUTH_TOKEN']}",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              with urlopen(request):
+                  pass
+          PY
+
   executor-prod:
     if: >-
       always() && github.event_name == 'push' && github.ref == 'refs/heads/prod' &&
@@ -235,6 +273,8 @@ jobs:
       id-token: write
     env:
       AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}
+      AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS: ${{ secrets.AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS || '{}' }}
+      AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED: ${{ vars.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED || 'false' }}
       AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}
       AWS_REGION: us-east-1
       AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
@@ -457,6 +497,47 @@ jobs:
           --stage prod
           --target-sha "$GITHUB_SHA"
 
+      - name: Publish prod executor Sentry release
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_release_required == 'true'
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          manifest = json.loads((Path(os.environ["GITHUB_WORKSPACE"]) / "executor-release/manifest.json").read_text())
+          release = manifest["release_id"]
+          base = "https://sentry.io/api/0/organizations/vals-ai"
+          for url, payload in (
+              (f"{base}/releases/", {
+                  "version": release,
+                  "projects": ["valkyrie"],
+                  "commits": [{"id": manifest["source_revision"], "repository": os.environ["GITHUB_REPOSITORY"]}],
+              }),
+              (f"{base}/releases/{quote(release, safe='')}/deploys/", {
+                  "environment": "production",
+                  "projects": ["valkyrie"],
+              }),
+          ):
+              request = Request(
+                  url,
+                  data=json.dumps(payload).encode(),
+                  headers={
+                      "Authorization": f"Bearer {os.environ['SENTRY_AUTH_TOKEN']}",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              with urlopen(request):
+                  pass
+          PY
+
   deploy-bench-core:
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/prod' &&
@@ -473,6 +554,8 @@ jobs:
       id-token: write
     env:
       AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}
+      AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS: ${{ secrets.AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS || '{}' }}
+      AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED: ${{ vars.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED || 'false' }}
       AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}
       AWS_REGION: us-east-1
       BENCH_ACCOUNT_ID: ${{ secrets.VALKYRIE_BENCH_ACCOUNT_ID }}
@@ -563,6 +646,8 @@ jobs:
     env:
       AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
       AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}
+      AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS: ${{ secrets.AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS || '{}' }}
+      AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED: ${{ vars.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED || 'false' }}
       AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
@@ -675,6 +760,43 @@ jobs:
         working-directory: infra
         run: make deploy STAGE=dev SCOPE=core DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION="$AWS_REGION"
 
+      - name: Publish dev core Sentry release
+        if: env.OPERATION == 'deploy'
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          release = os.environ["GITHUB_SHA"]
+          base = "https://sentry.io/api/0/organizations/vals-ai"
+          for url, payload in (
+              (f"{base}/releases/", {
+                  "version": release,
+                  "projects": ["valkyrie"],
+                  "commits": [{"id": release, "repository": os.environ["GITHUB_REPOSITORY"]}],
+              }),
+              (f"{base}/releases/{quote(release, safe='')}/deploys/", {
+                  "environment": "dev",
+                  "projects": ["valkyrie"],
+              }),
+          ):
+              request = Request(
+                  url,
+                  data=json.dumps(payload).encode(),
+                  headers={
+                      "Authorization": f"Bearer {os.environ['SENTRY_AUTH_TOKEN']}",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              with urlopen(request):
+                  pass
+          PY
+
   executor-development:
     if: >-
       always() && github.event_name == 'push' && github.ref == 'refs/heads/dev' &&
@@ -697,6 +819,8 @@ jobs:
     env:
       AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
       AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}
+      AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS: ${{ secrets.AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS || '{}' }}
+      AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED: ${{ vars.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED || 'false' }}
       AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
@@ -897,6 +1021,47 @@ jobs:
           --stage dev
           --target-sha "$GITHUB_SHA"
 
+      - name: Publish dev executor Sentry release
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_release_required == 'true'
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          manifest = json.loads((Path(os.environ["GITHUB_WORKSPACE"]) / "executor-release/manifest.json").read_text())
+          release = manifest["release_id"]
+          base = "https://sentry.io/api/0/organizations/vals-ai"
+          for url, payload in (
+              (f"{base}/releases/", {
+                  "version": release,
+                  "projects": ["valkyrie"],
+                  "commits": [{"id": manifest["source_revision"], "repository": os.environ["GITHUB_REPOSITORY"]}],
+              }),
+              (f"{base}/releases/{quote(release, safe='')}/deploys/", {
+                  "environment": "dev",
+                  "projects": ["valkyrie"],
+              }),
+          ):
+              request = Request(
+                  url,
+                  data=json.dumps(payload).encode(),
+                  headers={
+                      "Authorization": f"Bearer {os.environ['SENTRY_AUTH_TOKEN']}",
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              with urlopen(request):
+                  pass
+          PY
+
   executor-bench:
     if: >-
       always() && github.event_name == 'push' && github.ref == 'refs/heads/prod' &&
@@ -918,6 +1083,8 @@ jobs:
       id-token: write
     env:
       AWS_DEPLOYMENT_ROLE_ORG_IDS: ${{ secrets.AWS_DEPLOYMENT_ROLE_ORG_IDS }}
+      AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS: ${{ secrets.AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS || '{}' }}
+      AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED: ${{ vars.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED || 'false' }}
       AWS_TRACKER_SECRET_NAME_PREFIXES: ${{ secrets.AWS_TRACKER_SECRET_NAME_PREFIXES }}
       AWS_REGION: us-east-1
       EXECUTOR_RELEASE_LAUNCH_PARAMETER: /valkyrie/prod/executor-release/launch-config

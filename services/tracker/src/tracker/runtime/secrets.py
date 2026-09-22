@@ -2,7 +2,9 @@
 
 from typing import Protocol, TypeAlias
 
-from tracker.exceptions import SecretsError
+from benchmark_service import SandboxProviderConfig, sandbox_provider_config_from_mapping
+
+from tracker.exceptions import InvalidSandboxConfigurationError, SecretsError
 
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -10,10 +12,25 @@ JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 SecretValue: TypeAlias = JsonValue
 
 
+def sandbox_provider_config_from_secret(secret: SecretValue, provider_type: str) -> SandboxProviderConfig:
+    """Validate a provider secret and apply the selected provider type."""
+    if not isinstance(secret, dict):
+        raise InvalidSandboxConfigurationError("Expected sandbox provider secret to be a JSON object")
+    return sandbox_provider_config_from_mapping({**secret, "type": provider_type})
+
+
 class SecretStore(Protocol):
     """Synchronous access to named secret values."""
 
     def get(self, name: str) -> SecretValue:
+        """Return decoded JSON, or the raw string when the value is not JSON."""
+        raise NotImplementedError
+
+
+class AsyncSecretStore(Protocol):
+    """Asynchronous access to named secret values."""
+
+    async def get_async(self, name: str) -> SecretValue:
         """Return decoded JSON, or the raw string when the value is not JSON."""
         raise NotImplementedError
 

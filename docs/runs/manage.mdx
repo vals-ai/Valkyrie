@@ -74,3 +74,6 @@ valkyrie benchmark tasks swebench --dataset default --output tasks.txt
 ```
 
 The output path is optional. Pass the file to `--task-ids-file` on start, stop, resume, or retry.
+
+
+Python callers can change an active run's limit with `await client.runs.update_concurrency(run_id, concurrency=10)`. Lowering the limit lets existing tasks finish and limits new admissions; see the [SDK method](/reference/sdk/runs#update-concurrency).

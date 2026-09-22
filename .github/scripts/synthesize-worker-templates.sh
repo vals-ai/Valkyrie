@@ -3,6 +3,9 @@ set -euo pipefail
 
 # PR classification runs this helper from a trusted branch revision while
 # synthesizing source revisions with synthetic account IDs and no AWS access.
+# The synthetic managed-storage map must stay non-empty: an empty map makes
+# owner-bucket IAM disappear from both templates, so a change confined to it
+# would produce no diff and the executor stack deploy would be skipped.
 revision="${1:?revision is required}"
 target_branch="${2:?target branch is required}"
 label="${3:?label is required}"
@@ -71,6 +74,8 @@ for target in "${targets[@]}"; do
     AWS_REGION=us-east-1 \
     STAGE="$stage" \
     AWS_DEPLOYMENT_ROLE_ORG_IDS=00000000-0000-0000-0000-000000000001 \
+    AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS='{"00000000-0000-0000-0000-000000000001":["dev","prod"]}' \
+    AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED=true \
     AWS_TRACKER_SECRET_NAME_PREFIXES=offline-synth \
     AWS_EXECUTOR_SECRET_NAME_PREFIXES=offline-synth \
     BENCHMARK_CATALOG_URL=https://offline.invalid \

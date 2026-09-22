@@ -2,7 +2,7 @@ from functools import lru_cache
 from typing import Any
 
 import click
-from tracker.aws.clients import DefaultChainAWSClientProvider, ExplicitCredentialsAWSClientProvider
+from tracker.aws.clients import ExplicitCredentialsAWSClientProvider, LocalChainAWSClientProvider
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.types import AWSCredentials
 
@@ -36,7 +36,7 @@ def _aws_runtime(
     log_retention_days: int,
 ) -> AWSRuntime:
     if access_key_id is None:
-        clients = DefaultChainAWSClientProvider(region)
+        clients = LocalChainAWSClientProvider(region)
     else:
         if secret_access_key is None:
             raise click.ClickException("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together.")
