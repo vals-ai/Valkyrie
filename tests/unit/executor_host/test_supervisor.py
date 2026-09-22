@@ -11,10 +11,10 @@ import json
 from json import JSONDecodeError
 import logging
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -1208,7 +1208,6 @@ async def test_periodic_authority_operational_error_allows_child_completion(
     terminate.assert_not_called()
 
 
-
 @pytest.mark.asyncio
 async def test_heartbeat_lease_loss_terminates_process_and_cleans_up_tasks(
     tmp_path: Path,
@@ -1232,7 +1231,7 @@ async def test_heartbeat_lease_loss_terminates_process_and_cleans_up_tasks(
     created_tasks: list[asyncio.Task[object]] = []
     create_task = asyncio.create_task
 
-    def record_task(coroutine: Awaitable[object]) -> asyncio.Task[object]:
+    def record_task(coroutine: Coroutine[Any, Any, object]) -> asyncio.Task[object]:
         task = create_task(coroutine)
         created_tasks.append(task)
         return task
@@ -1258,6 +1257,7 @@ async def test_heartbeat_lease_loss_terminates_process_and_cleans_up_tasks(
     assert process.returncode == -15
     assert len(created_tasks) == 3
     assert all(task.done() for task in created_tasks)
+
 
 @pytest.mark.asyncio
 async def test_periodic_authority_operational_error_then_loss_terminates(

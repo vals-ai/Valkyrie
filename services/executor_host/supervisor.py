@@ -709,6 +709,7 @@ class ExecutorSupervisor:
             if not authority_is_current:
                 return
 
+
 async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
     if process.returncode is not None:
         return
