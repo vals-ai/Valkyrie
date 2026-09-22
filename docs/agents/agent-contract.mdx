@@ -122,6 +122,12 @@ Shell command to run the agent on a task. Must contain the `{problem_statement_p
 run_cmd: "my_agent --task {problem_statement_path} --id {task_id}"
 ```
 
+For ordinary nonzero `run_cmd` exits, the task error records the exit code. Reserved timeout (124) and killed-process (137) exits keep their existing outcomes. To surface the original error, write a short `Type: message` (first 2048 bytes are read) to the file at `$VALKYRIE_ERROR_PATH` before exiting; Tracker does not automatically copy agent stdout/stderr into the error. The file is agent-controlled persisted data, not a redaction boundary; write an exception summary rather than raw prompts or model/tool output.
+
+```bash
+my_agent --task "{problem_statement_path}" || { echo "AgentError: model returned no patch" > "$VALKYRIE_ERROR_PATH"; exit 1; }
+```
+
 ## Optional fields
 
 ### `final_output: path`

@@ -1,0 +1,82 @@
+{
+  "task": {
+    "id": "d5c059db-0a0b-41b2-b553-19b0dc278be7",
+    "task_id": "task_0",
+    "status": "ERROR",
+    "started_at": "2026-09-22T23:05:47.088750+00:00",
+    "finished_at": "2026-09-22T23:05:47.317405+00:00",
+    "error_message": "AgentRunFailedError: Sandbox error: Agent command failed with exit code 1: TimeoutError: VALKYRIE_282_ACCEPTANCE controlled upstream timeout",
+    "failure_category": "agent",
+    "evaluation_result": null,
+    "agent_caused_exit_reason": null
+  },
+  "tasks": {
+    "tasks": [
+      {
+        "id": "d5c059db-0a0b-41b2-b553-19b0dc278be7",
+        "task_id": "task_0",
+        "status": "ERROR",
+        "started_at": "2026-09-22T23:05:47.088750+00:00",
+        "finished_at": "2026-09-22T23:05:47.317405+00:00",
+        "error_message": "AgentRunFailedError: Sandbox error: Agent command failed with exit code 1: TimeoutError: VALKYRIE_282_ACCEPTANCE controlled upstream timeout",
+        "failure_category": "agent"
+      }
+    ],
+    "total_count": 1
+  },
+  "results": {
+    "benchmark_id": "fe79119c-3b8b-465c-a78c-95e5668268da",
+    "benchmark_name": "swebench",
+    "started_at": "2026-09-22T23:05:47.087505",
+    "finished_at": null,
+    "status": "IN_PROGRESS",
+    "error_message": null,
+    "benchmark_arguments": {
+      "contract": {
+        "name": "openhands-original-error-proof",
+        "model": null,
+        "install_cmd": "echo installing dependencies...",
+        "run_cmd": "/Users/derrickliang/work-plans/reliability-2026-09-21/282-research/820-execution/services/tracker/.venv/bin/python /Users/derrickliang/work-plans/reliability-2026-09-21/282-research/isolated-acceptance/agent/local_probe.py --child",
+        "final_output": "",
+        "output_artifacts": [],
+        "egress_allowlist": [],
+        "secrets": {},
+        "kwargs": {},
+        "inference_settings_attested": false
+      },
+      "concurrency": 1,
+      "environment": "aws",
+      "properties": null,
+      "task_ids": [
+        "task_0"
+      ],
+      "slice_str": null,
+      "lambda_function": null,
+      "dataset": null,
+      "sandbox_provider": "daytona",
+      "sandbox_provider_secret_name": "test-daytona-secret"
+    },
+    "tasks_stopped": null,
+    "final_evaluation": null,
+    "average_task_breakdown": null,
+    "evaluation_results": {},
+    "task_errors": {
+      "task_0": "AgentRunFailedError: Sandbox error: Agent command failed with exit code 1: TimeoutError: VALKYRIE_282_ACCEPTANCE controlled upstream timeout"
+    },
+    "task_failure_categories": {
+      "task_0": "agent"
+    }
+  },
+  "_provenance": {
+    "tracker_revision": "f570bcbe18fab4f0bec21b5fd3134fc2f9c6f610",
+    "source_dirty": true,
+    "source_hashes": {
+      "services/tracker/src/tracker/sandbox.py": "31da866391f2646496315cf714e8fbbb2a94601a9c00a342140a8af9cf6e6230",
+      "services/tracker/src/tracker/utils/task_execution.py": "25de6e3fce95cfa1c7edd785466bc7c0e3afeda01980281c1b093a5dcc422292"
+    },
+    "producer_revision": "0c1c7b7997d43f18edbe79be6b42f23978eee07c",
+    "producer_sha256": "1c4cac61a17e3332fb5f39ccd93e09c02ab3e73ea0ff24ec8e9d5cf6d06ef860",
+    "limits": "Real maintained producer with valid mapped manifest and controlled timeout; local subprocess transport, mocked runtime/services/provider/setup, SQLite and in-process HTTP API. No full Linux contract, deployed sandbox, real model inference, or remote diagnostic delivery.",
+    "projection": "Captured task, task-list and results payloads from the local controlled run. Source hashes identify the tested uncommitted code."
+  }
+}
