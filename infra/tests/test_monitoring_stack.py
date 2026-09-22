@@ -1025,6 +1025,27 @@ class MonitoringStackTest(unittest.TestCase):
             {"AlarmName": "Valkyrie-DB-Connections-High-dev", "Threshold": 65},
         )
 
+    def test_tracker_capacity_matches_each_stage_topology(self) -> None:
+        for stage_name, environment, expected_desired, expected_minimum, expected_maximum in (
+            (BENCH, TEST_BENCH_ENV, 2, 2, 2),
+            (PROD, TEST_PROD_ENV, 2, 2, 2),
+            (DEV, TEST_DEV_ENV, 2, 2, 2),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV, 2, 2, 2),
+        ):
+            with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
+                tracker_template, _, _ = service_templates(stage_name)
+
+            services = tracker_template.find_resources("AWS::ECS::Service")
+            self.assertEqual(len(services), 1)
+            service_properties = next(iter(services.values()))["Properties"]
+            self.assertEqual(service_properties["DesiredCount"], expected_desired)
+
+            scalable_targets = tracker_template.find_resources("AWS::ApplicationAutoScaling::ScalableTarget")
+            self.assertEqual(len(scalable_targets), 1)
+            target_properties = next(iter(scalable_targets.values()))["Properties"]
+            self.assertEqual(target_properties["MinCapacity"], expected_minimum)
+            self.assertEqual(target_properties["MaxCapacity"], expected_maximum)
+
     def test_service_environment_labels_follow_stage(self) -> None:
         for stage_name, expected_environment, expected_sentry_environment, expected_namespace in (
             (BENCH, "production", "bench", "local"),

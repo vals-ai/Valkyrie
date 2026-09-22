@@ -144,7 +144,7 @@ class StageConfig:
 BENCH_CONFIG = StageConfig(
     runtime_environment="production",
     sentry_environment=BENCH,
-    tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=1, max_tasks=2),
+    tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=2, max_tasks=2),
     worker=ServiceConfig(cpu=8192, memory_mib=32768, min_tasks=4, max_tasks=8),
     database=DatabaseConfig(
         instance_class="r7g.large",
@@ -168,7 +168,7 @@ BENCH_CONFIG = StageConfig(
 PROD_CONFIG = StageConfig(
     runtime_environment="production",
     sentry_environment="production",
-    tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=1, max_tasks=2),
+    tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=2, max_tasks=2),
     worker=ServiceConfig(cpu=8192, memory_mib=32768, min_tasks=4, max_tasks=8),
     database=DatabaseConfig(
         instance_class="r7g.large",
@@ -192,7 +192,7 @@ PROD_CONFIG = StageConfig(
 DEV_CONFIG = StageConfig(
     runtime_environment="dev",
     sentry_environment=DEV,
-    tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=1, max_tasks=2),
+    tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=2, max_tasks=2),
     worker=ServiceConfig(cpu=8192, memory_mib=32768, min_tasks=4, max_tasks=8),
     database=DatabaseConfig(
         instance_class="t4g.micro",
