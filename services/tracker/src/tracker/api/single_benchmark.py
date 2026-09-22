@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from asyncio import CancelledError
 from collections.abc import AsyncGenerator
 from threading import BoundedSemaphore
 from time import perf_counter
@@ -92,6 +93,12 @@ async def _admit_task_list() -> AsyncGenerator[None, None]:
         yield
     except SQLAlchemyTimeoutError:
         terminal_outcome = "pool_timeout"
+        raise
+    except CancelledError:
+        terminal_outcome = "cancelled"
+        raise
+    except GeneratorExit:
+        terminal_outcome = "generator_closed"
         raise
     except Exception:
         terminal_outcome = "handler_error"
