@@ -172,14 +172,7 @@ def _add_owner_storage_access(
     )
     role.add_to_policy(
         aws_iam.PolicyStatement(
-            actions=["s3:GetObject", "s3:PutObject"],
-            resources=owner_objects_arns,
-            conditions=conditions,
-        )
-    )
-    role.add_to_policy(
-        aws_iam.PolicyStatement(
-            actions=list(role_actions),
+            actions=["s3:GetObject", "s3:PutObject", *role_actions],
             resources=owner_objects_arns,
             conditions=conditions,
         )

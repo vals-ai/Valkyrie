@@ -55,8 +55,6 @@ from tracker.aws.managed_storage import (
     validate_managed_storage_bucket_versioning,
 )
 from tracker.aws.resolver import (
-    AWSRuntimeResolution,
-    deployment_aws_runtime,
     http_validate_saved_managed_storage_runtime,
     inspect_harness_headers,
     resolve_aws_runtime_metadata,
@@ -639,6 +637,8 @@ async def _start_benchmark(
     runtime_resolution = resolve_start_aws_runtime(
         http_request, request.harness_config, run_starter.org.id, request.properties
     )
+    library_runtime = runtime_resolution.runtime
+    aws_runtime = library_runtime
     effective_harness_config = runtime_resolution.access_key_harness_config
     aws_managed = runtime_resolution.aws_managed
     managed_s3_bucket = request.managed_s3_bucket
@@ -661,13 +661,13 @@ async def _start_benchmark(
             try:
                 policy = load_managed_storage_policy()
                 await validate_managed_storage_bucket(
-                    runtime_resolution.runtime,
+                    aws_runtime,
                     org_id=run_starter.org.id,
                     bucket_name=managed_s3_bucket,
                     policy=policy,
                 )
                 await validate_managed_storage_bucket_versioning(
-                    runtime_resolution.runtime,
+                    aws_runtime,
                     bucket_name=managed_s3_bucket,
                 )
             except ManagedStorageError as exc:
@@ -680,14 +680,11 @@ async def _start_benchmark(
 
         if managed_s3_bucket is not None:
             resources = replace(
-                runtime_resolution.runtime.resources,
+                aws_runtime.resources,
                 s3_bucket=managed_s3_bucket,
-                log_group=f"{runtime_resolution.runtime.resources.log_group}/{managed_s3_bucket}",
+                log_group=f"{aws_runtime.resources.log_group}/{managed_s3_bucket}",
             )
-            runtime_resolution = AWSRuntimeResolution(
-                runtime=runtime_resolution.runtime.with_resources(resources),
-                access_key_harness_config=None,
-            )
+            aws_runtime = aws_runtime.with_resources(resources)
     else:
         effective_harness_config = cast(HarnessConfig, effective_harness_config)
         body_provider_secret_name = (
@@ -703,9 +700,7 @@ async def _start_benchmark(
                 update={"sandbox_provider_secret_name": provider_secret_name}
             )
 
-    aws_runtime = runtime_resolution.runtime
     object_store = S3ObjectStore(aws_runtime)
-    library_runtime = deployment_aws_runtime(run_starter.org.id) if aws_managed else aws_runtime
     library_store = S3ObjectStore(library_runtime)
     agent_copier = (
         S3ObjectCopier(library_runtime, aws_runtime)

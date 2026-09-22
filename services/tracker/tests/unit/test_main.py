@@ -1290,97 +1290,6 @@ class TestTrackerAPI:
             deletion_token="copy-version",
         )
 
-    async def test_managed_start_reads_shared_library_and_copies_to_run_storage(
-        self,
-        contract: AgentContractRequest,
-        database_session: Session,
-        monkeypatch: MonkeyPatch,
-    ) -> None:
-        shared_runtime = _managed_test_runtime("shared-library")
-        run_runtime = _managed_test_runtime("owner-runs")
-        reads: list[tuple[str, str]] = []
-        existence_checks: list[tuple[str, str]] = []
-        cross_bucket_copies: list[tuple[str, str, str, str]] = []
-
-        async def record_read(store: object, key: str) -> bytes:
-            runtime = cast(Any, store)._runtime
-            reads.append((runtime.resources.s3_bucket, key))
-
-            return b"agent bundle"
-
-        async def record_exists(store: object, key: str) -> bool:
-            runtime = cast(Any, store)._runtime
-            existence_checks.append((runtime.resources.s3_bucket, key))
-
-            return False
-
-        async def record_cross_bucket_copy(
-            copier: S3ObjectCopier,
-            source_key: str,
-            destination_key: str,
-        ) -> StoredObjectCopy:
-            source_runtime = cast(Any, copier)._source
-            destination_runtime = cast(Any, copier)._destination
-            cross_bucket_copies.append(
-                (
-                    source_runtime.resources.s3_bucket,
-                    destination_runtime.resources.s3_bucket,
-                    source_key,
-                    destination_key,
-                )
-            )
-
-            return StoredObjectCopy(deletion_token="destination-version")
-
-        monkeypatch.setattr(
-            main_module,
-            "resolve_start_aws_runtime",
-            Mock(return_value=AWSRuntimeResolution(run_runtime, None)),
-        )
-        monkeypatch.setattr(
-            main_module,
-            "deployment_aws_runtime",
-            Mock(return_value=shared_runtime),
-            raising=False,
-        )
-        monkeypatch.setattr(main_module.S3ObjectStore, "get_bytes", record_read)
-        monkeypatch.setattr(main_module.S3ObjectStore, "exists", record_exists)
-        monkeypatch.setattr(
-            main_module.S3ObjectStore,
-            "copy",
-            AsyncMock(side_effect=AssertionError("cross-bucket copy must use S3ObjectCopier")),
-        )
-        monkeypatch.setattr(S3ObjectCopier, "copy", record_cross_bucket_copy)
-        monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent_artifact_to_benchmark)
-        monkeypatch.setattr(main_module, "get_contract_from_zip_bytes", Mock(return_value=contract))
-        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
-        unresolved_contract = contract.model_copy(update={"install_cmd": "", "run_cmd": ""})
-        request = StartBenchmarkRequest(
-            contract=unresolved_contract,
-            benchmark_name="swebench",
-            task_ids=["task_0"],
-            sandbox_provider="daytona",
-            sandbox_provider_secret_name="provider-secret",
-        )
-
-        response = client.post("/start-benchmark", json=request.model_dump())
-
-        assert response.status_code == 200, response.text
-        benchmark_id = response.json()["benchmark_id"]
-        assert reads == [("shared-library", f"agents/{contract.name}.zip")]
-        assert existence_checks == [("owner-runs", f"benchmarks/{benchmark_id}/{contract.name}.zip")]
-        assert cross_bucket_copies == [
-            (
-                "shared-library",
-                "owner-runs",
-                f"agents/{contract.name}.zip",
-                f"benchmarks/{benchmark_id}/{contract.name}.zip",
-            )
-        ]
-        benchmark = database_session.get(Benchmark, UUID(benchmark_id))
-        assert benchmark is not None
-        assert benchmark.arguments.properties == run_runtime.resources
-
     async def test_managed_start_failure_rolls_back_only_destination_copy_version(
         self,
         contract: AgentContractRequest,
@@ -1388,7 +1297,6 @@ class TestTrackerAPI:
         monkeypatch: MonkeyPatch,
     ) -> None:
         shared_runtime = _managed_test_runtime("shared-library")
-        run_runtime = _managed_test_runtime("owner-runs")
         existence_checks: list[tuple[str, str]] = []
         deletions: list[tuple[str, str, str | None]] = []
 
@@ -1420,14 +1328,12 @@ class TestTrackerAPI:
         monkeypatch.setattr(
             main_module,
             "resolve_start_aws_runtime",
-            Mock(return_value=AWSRuntimeResolution(run_runtime, None)),
+            Mock(return_value=AWSRuntimeResolution(shared_runtime, None)),
         )
-        monkeypatch.setattr(
-            main_module,
-            "deployment_aws_runtime",
-            Mock(return_value=shared_runtime),
-            raising=False,
-        )
+        monkeypatch.setattr("tracker.config.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED", True)
+        monkeypatch.setattr(main_module, "load_managed_storage_policy", Mock())
+        monkeypatch.setattr(main_module, "validate_managed_storage_bucket", AsyncMock())
+        monkeypatch.setattr(main_module, "validate_managed_storage_bucket_versioning", AsyncMock())
         monkeypatch.setattr(main_module.S3ObjectStore, "exists", record_exists)
         monkeypatch.setattr(main_module.S3ObjectStore, "delete", record_delete)
         monkeypatch.setattr(S3ObjectCopier, "copy", create_destination_copy)
@@ -1438,12 +1344,13 @@ class TestTrackerAPI:
             contract=contract,
             benchmark_name="swebench",
             task_ids=["task_0"],
+            managed_s3_bucket="vs-dev-owner-42",
             sandbox_provider="daytona",
             sandbox_provider_secret_name="provider-secret",
         )
 
         response = TestClient(app, raise_server_exceptions=False).post(
-            "/start-benchmark",
+            "/start-benchmark-with-storage",
             json=request.model_dump(),
         )
 
@@ -1451,8 +1358,8 @@ class TestTrackerAPI:
         assert database_session.exec(select(Benchmark)).all() == []
         assert existence_checks[0] == ("shared-library", f"agents/{contract.name}.zip")
         destination_bucket, destination_key = existence_checks[1]
-        assert destination_bucket == "owner-runs"
-        assert deletions == [("owner-runs", destination_key, "destination-version")]
+        assert destination_bucket == "vs-dev-owner-42"
+        assert deletions == [("vs-dev-owner-42", destination_key, "destination-version")]
 
     async def test_start_commit_acknowledgement_failure_retains_durable_copy(
         self,

@@ -260,7 +260,7 @@ class RuntimeIamTest(unittest.TestCase):
                 owner_allows = [statement for statement in owner_statements if statement.get("Effect") != "Deny"]
                 owner_denies = [statement for statement in owner_statements if statement.get("Effect") == "Deny"]
 
-                self.assertEqual(len(owner_allows), 3)
+                self.assertEqual(len(owner_allows), 2)
                 self.assertEqual(len(owner_denies), 1)
                 for statement in owner_allows:
                     self.assertEqual(statement["Condition"], same_account_condition)
@@ -277,14 +277,9 @@ class RuntimeIamTest(unittest.TestCase):
                 object_allow = next(
                     statement
                     for statement in owner_allows
-                    if _statement_actions(statement) == {"s3:GetObject", "s3:PutObject"}
+                    if _statement_actions(statement) == {"s3:GetObject", "s3:PutObject"} | role_actions
                 )
                 self.assertEqual(object_allow["Resource"], object_resources)
-
-                role_allow = next(
-                    statement for statement in owner_allows if _statement_actions(statement) == role_actions
-                )
-                self.assertEqual(role_allow["Resource"], object_resources)
 
                 deny = owner_denies[0]
                 self.assertEqual(_statement_actions(deny), {"s3:*"})

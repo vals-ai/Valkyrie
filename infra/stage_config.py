@@ -34,10 +34,6 @@ _EXECUTOR_OUTPUT_LAMBDA_PATTERNS = (
 _TRACKER_LAMBDA_PATTERNS = _TRACKER_ANALYZER_LAMBDA_PATTERNS + _EXECUTOR_OUTPUT_LAMBDA_PATTERNS
 
 
-def _empty_managed_storage_environment_mapping() -> Mapping[UUID, frozenset[str]]:
-    return MappingProxyType({})
-
-
 @dataclass(frozen=True)
 class ServiceConfig:
     cpu: int
@@ -62,9 +58,7 @@ class ManagedAWSRuntimeConfig:
     benchmark_log_retention_days: int
     deployment_role_org_ids: tuple[str, ...] = ()
     submissions_enabled: bool = False
-    managed_storage_org_environments: Mapping[UUID, frozenset[str]] = field(
-        default_factory=_empty_managed_storage_environment_mapping
-    )
+    managed_storage_org_environments: Mapping[UUID, frozenset[str]] = field(default_factory=dict[UUID, frozenset[str]])
     managed_storage_submissions_enabled: bool = False
     tracker_secret_name_prefixes: tuple[str, ...] = ()
     executor_secret_name_prefixes: tuple[str, ...] = ()
@@ -330,7 +324,7 @@ def _managed_storage_environment_mapping(
             f"{name} must be a JSON object from managed organization UUIDs to non-empty dev/prod lists"
         ) from None
 
-    return MappingProxyType(mapping)
+    return mapping
 
 
 def _boolean_environment(name: str, *, default: bool) -> bool:
