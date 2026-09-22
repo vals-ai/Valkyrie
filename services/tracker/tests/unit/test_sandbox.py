@@ -2092,6 +2092,30 @@ class TestStreamCommandOutputAgentFailure:
 
         assert str(exc_info.value) == "Sandbox error: Agent command failed with exit code 5"
 
+    async def test_hanging_cleanup_preserves_reported_original_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def stream_command(_command: str) -> AsyncIterator[str]:
+            yield "raw model output must not enter the task error"
+            raise ProviderSandboxCommandError(1)
+
+        async def exec_command(command: str) -> ExecResult:
+            if command.startswith("head -c "):
+                return ExecResult(exit_code=0, output="TimeoutError: controlled timeout")
+            if command.startswith("rm -f "):
+                await asyncio.Event().wait()
+            return ExecResult(exit_code=0)
+
+        sandbox = Mock(id="cleanup-timeout", name="cleanup-timeout", command=stream_command, exec=exec_command)
+        monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", _ignore_tag)
+        monkeypatch.setattr("tracker.sandbox._POST_EXIT_READ_TIMEOUT_SECONDS", 0.01)
+        with pytest.raises(AgentRunFailedError) as error:
+            await asyncio.wait_for(
+                sandbox_module.stream_command_output(sandbox, "run-agent.sh", on_output=lambda _: None), timeout=1
+            )
+        assert (
+            str(error.value) == "Sandbox error: Agent command failed with exit code 1: TimeoutError: controlled timeout"
+        )
+        assert "raw model output" not in str(error.value)
+
     async def test_install_failure_names_the_install_phase(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def stream_command(_command: str) -> AsyncIterator[str]:
             yield ""

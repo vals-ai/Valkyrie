@@ -25,6 +25,12 @@ _exception_message = getattr(task_execution, "_exception_message")
 class TestExceptionMessage:
     """Persisted task error text keeps the original error behind tracker wrappers."""
 
+    def test_direct_error_keeps_type_and_message(self) -> None:
+        assert _exception_message(ValueError("bad task input")) == "ValueError: bad task input"
+
+    def test_empty_message_keeps_type(self) -> None:
+        assert _exception_message(TimeoutError()) == "TimeoutError"
+
     def test_wrapper_with_new_text_appends_original_type_and_message(self) -> None:
         try:
             try:
@@ -33,28 +39,60 @@ class TestExceptionMessage:
                 raise SandboxSetupError("Failed to clear egress rules") from e
         except SandboxSetupError as wrapped:
             message = _exception_message(wrapped)
-
         assert message == (
-            "Sandbox error: Failed to clear egress rules (caused by TimeoutError: egress rule update exceeded 30s)"
+            "SandboxSetupError: Sandbox error: Failed to clear egress rules "
+            "(caused by TimeoutError: egress rule update exceeded 30s)"
         )
 
-    def test_wrapper_that_already_carries_cause_text_is_not_duplicated(self) -> None:
+    def test_cause_type_survives_when_wrapper_contains_its_message(self) -> None:
         try:
             try:
-                raise RuntimeError("provider unavailable")
-            except RuntimeError as e:
+                raise TimeoutError("provider unavailable")
+            except TimeoutError as e:
                 raise SandboxError(str(e)) from e
         except SandboxError as wrapped:
             message = _exception_message(wrapped)
+        assert message == (
+            "SandboxError: Sandbox error: provider unavailable (caused by TimeoutError: provider unavailable)"
+        )
 
-        assert message == "Sandbox error: provider unavailable"
+    def test_implicit_context_survives(self) -> None:
+        try:
+            try:
+                raise ValueError("bad task input")
+            except ValueError:
+                raise RuntimeError("setup failed")
+        except RuntimeError as wrapped:
+            message = _exception_message(wrapped)
+        assert message == "RuntimeError: setup failed (during handling of ValueError: bad task input)"
+
+    def test_suppressed_context_stays_suppressed(self) -> None:
+        try:
+            try:
+                raise ValueError("hidden detail")
+            except ValueError:
+                raise RuntimeError("public detail") from None
+        except RuntimeError as wrapped:
+            message = _exception_message(wrapped)
+        assert message == "RuntimeError: public detail"
+
+    def test_explicit_cause_takes_precedence_over_context(self) -> None:
+        exc = RuntimeError("setup failed")
+        exc.__context__ = ValueError("unrelated context")
+        exc.__cause__ = TimeoutError("provider unavailable")
+        assert _exception_message(exc) == "RuntimeError: setup failed (caused by TimeoutError: provider unavailable)"
 
     def test_self_referential_cause_chain_terminates(self) -> None:
-        """`raise e from e` (the evaluation re-raise in `_process_task_attempt`) must not loop forever."""
         exc = RuntimeError("stream closed")
         exc.__cause__ = exc
+        assert _exception_message(exc) == "RuntimeError: stream closed"
 
-        assert _exception_message(exc) == "stream closed"
+    def test_context_cycle_terminates(self) -> None:
+        exc = RuntimeError("outer")
+        cause = ValueError("inner")
+        exc.__context__ = cause
+        cause.__context__ = exc
+        assert _exception_message(exc) == "RuntimeError: outer (during handling of ValueError: inner)"
 
 
 class TestTaskExecution:

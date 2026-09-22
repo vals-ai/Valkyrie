@@ -488,7 +488,7 @@ _OS_KILL_EXIT_CODE: int = 137
 _SUCCESS_EXIT_CODE: int = 0
 _STATUS_DIR = "/tmp/.valkyrie"
 AGENT_ERROR_PATH_ENV = "VALKYRIE_ERROR_PATH"
-_AGENT_ERROR_MAX_CHARS = 2048
+_AGENT_ERROR_MAX_BYTES = 2048
 _POST_EXIT_READ_TIMEOUT_SECONDS = 5
 _EGRESS_RETRY = retry(
     retry=retry_if_exception_type(ProviderSandboxError) & retry_if_not_exception_type(SandboxNotFoundError),
@@ -613,9 +613,12 @@ async def stream_command_output(
         raise AgentRunFailedError(message)
     finally:
         try:
-            await _exec(
-                sandbox,
-                f"rm -f {shlex.quote(start_ns_path)} {shlex.quote(end_ns_path)} {shlex.quote(error_path)}",
+            await asyncio.wait_for(
+                _exec(
+                    sandbox,
+                    f"rm -f {shlex.quote(start_ns_path)} {shlex.quote(end_ns_path)} {shlex.quote(error_path)}",
+                ),
+                timeout=_POST_EXIT_READ_TIMEOUT_SECONDS,
             )
         except Exception:
             pass
@@ -639,7 +642,7 @@ async def _read_post_exit_file(sandbox: Sandbox, command: str) -> str | None:
 
 async def _read_agent_error(sandbox: Sandbox, error_path: str) -> str:
     """Return the error the agent wrote to ``$VALKYRIE_ERROR_PATH``, or "" when absent or unreadable."""
-    content = await _read_post_exit_file(sandbox, f"head -c {_AGENT_ERROR_MAX_CHARS} {shlex.quote(error_path)}")
+    content = await _read_post_exit_file(sandbox, f"head -c {_AGENT_ERROR_MAX_BYTES} {shlex.quote(error_path)}")
     return "" if content is None else " ".join(content.split())
 
 

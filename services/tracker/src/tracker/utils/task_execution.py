@@ -116,15 +116,30 @@ def _normalized_attempt_time(value: datetime) -> datetime:
 
 
 def _exception_message(exc: BaseException) -> str:
-    message = str(exc).strip() or type(exc).__name__
+    """Keep exception types and Python's visible cause/context chain in task views."""
+
+    def describe(error: BaseException) -> str:
+        detail = str(error).strip()
+        name = type(error).__name__
+        return f"{name}: {detail}" if detail else name
+
+    message = describe(exc)
     seen = {id(exc)}
-    cause = exc.__cause__
-    while cause is not None and id(cause) not in seen:
-        seen.add(id(cause))
-        cause_text = str(cause).strip() or type(cause).__name__
-        if cause_text not in message:
-            message = f"{message} (caused by {type(cause).__name__}: {cause_text})"
-        cause = cause.__cause__
+    current = exc
+    while True:
+        if current.__cause__ is not None:
+            next_error = current.__cause__
+            relation = "caused by"
+        elif not current.__suppress_context__:
+            next_error = current.__context__
+            relation = "during handling of"
+        else:
+            break
+        if next_error is None or id(next_error) in seen:
+            break
+        seen.add(id(next_error))
+        message = f"{message} ({relation} {describe(next_error)})"
+        current = next_error
     return message
 
 
@@ -1311,7 +1326,8 @@ async def _process_task_attempt(
             return {task_id: None}
         seconds = int(time.monotonic() - task_logs.last_log_time)
         error_message = (
-            f"Benchmark service WebSocket disconnected: {e}; last application message received {seconds}s ago"
+            f"Benchmark service WebSocket disconnected: {_exception_message(e)}; "
+            f"last application message received {seconds}s ago"
         )
         recovered = await recover_evaluation_stream_failure(error_message)
         if recovered is not None:
@@ -1350,7 +1366,8 @@ async def _process_task_attempt(
             return {task_id: None}
         field_names = ", ".join(".".join(str(loc) for loc in err["loc"]) for err in e.errors())
         error_message = (
-            f"Benchmark service returned an incompatible task response. Missing or invalid fields: {field_names}"
+            f"Benchmark service returned an incompatible task response. Missing or invalid fields: {field_names}. "
+            f"{_exception_message(e)}"
         )
         log_output(f"\n[ERROR] {error_message}")
 
@@ -1365,7 +1382,10 @@ async def _process_task_attempt(
     except InvalidStatus as e:
         if task_is_stopped():
             return {task_id: None}
-        error_message = f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code})"
+        error_message = (
+            f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code}): "
+            f"{_exception_message(e)}"
+        )
         log_output(f"\n[ERROR] {error_message}")
 
         return commit_terminal_error(
@@ -1386,7 +1406,7 @@ async def _process_task_attempt(
             if not return_queued_task_to_pending():
                 return {task_id: None}
             log_output(f"\n[ERROR] {error_message}")
-            raise SandboxSetupError(error_message) from e
+            raise SandboxSetupError(str(e)) from e
         log_output(f"\n[ERROR] {error_message}")
 
         return commit_terminal_error(
