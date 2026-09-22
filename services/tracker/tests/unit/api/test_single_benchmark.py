@@ -5,16 +5,20 @@ Cover single-benchmark details and task listing behavior.
 
 from __future__ import annotations
 
+from asyncio import CancelledError
 from datetime import datetime, timedelta
+from threading import BoundedSemaphore
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from main import app
 from tests.factories import make_error_result, make_task
 from tests.utils import TEST_ORG_ID
+from tracker.api import single_benchmark as single_benchmark_api
 from tracker.database.models import (
     Benchmark,
     FinalEvaluation,
@@ -166,3 +170,37 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
     assert literal_search_response.status_code == 200
     assert literal_search_response.json()["total_count"] == 1
     assert literal_search_response.json()["tasks"][0]["task_id"] == "literal_%_match"
+
+
+@pytest.mark.asyncio
+async def test_task_list_admission_records_interruptions_and_releases_capacity(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation and dependency closure must not look successful or leak admission capacity."""
+    monkeypatch.setattr(single_benchmark_api, "_task_list_slots", BoundedSemaphore(1))
+    single_benchmark_api.logger.addHandler(caplog.handler)
+    admitted_after_close = None
+
+    try:
+        cancelled = single_benchmark_api._admit_task_list()  # pyright: ignore[reportPrivateUsage]
+        await anext(cancelled)
+        with pytest.raises(CancelledError):
+            await cancelled.athrow(CancelledError())
+
+        admitted_after_cancel = single_benchmark_api._admit_task_list()  # pyright: ignore[reportPrivateUsage]
+        await anext(admitted_after_cancel)
+        await admitted_after_cancel.aclose()
+
+        admitted_after_close = single_benchmark_api._admit_task_list()  # pyright: ignore[reportPrivateUsage]
+        await anext(admitted_after_close)
+        completion_outcomes = [
+            getattr(record, "outcome", None)
+            for record in caplog.records
+            if record.getMessage() == "task_list.completion"
+        ]
+        assert completion_outcomes == ["cancelled", "generator_closed"]
+    finally:
+        single_benchmark_api.logger.removeHandler(caplog.handler)
+        if admitted_after_close is not None:
+            await admitted_after_close.aclose()
