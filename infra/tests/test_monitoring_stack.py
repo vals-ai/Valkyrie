@@ -976,17 +976,18 @@ class MonitoringStackTest(unittest.TestCase):
                 get_slack_notification_config(VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV)
 
     def test_tracker_database_storage_follows_stage_contract(self) -> None:
-        for stage_name, environment, allocated_storage, instance_class in (
+        for stage_name, environment, expected_allocated_storage, instance_class in (
             (BENCH, TEST_BENCH_ENV, "100", "db.r7g.large"),
             (PROD, TEST_PROD_ENV, "20", "db.r7g.large"),
             (DEV, TEST_DEV_ENV, "20", "db.t4g.micro"),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV, "20", "db.t4g.micro"),
         ):
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
                 tracker_template, _, monitoring_template = service_templates(stage_name)
 
             database = next(iter(tracker_template.find_resources("AWS::RDS::DBInstance").values()))
             properties = database["Properties"]
-            self.assertEqual(properties["AllocatedStorage"], allocated_storage)
+            self.assertEqual(properties["AllocatedStorage"], expected_allocated_storage)
             self.assertEqual(properties["StorageType"], "gp2")
             self.assertEqual(properties["DBInstanceClass"], instance_class)
             self.assertNotIn("MaxAllocatedStorage", properties)
