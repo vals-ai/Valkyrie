@@ -127,7 +127,7 @@ def get_benchmark_tasks(
         escaped_search = _escape_sql_like_pattern(task_id_search)
         base_filters.append(col(Task.task_id).ilike(f"%{escaped_search}%", escape="\\"))
 
-    latest_error_message = (
+    latest_error_subquery = (
         select(ErrorResult.error_message)
         .where(ErrorResult.task == Task.id)
         .where(ErrorResult.org_id == org.id)
@@ -135,6 +135,10 @@ def get_benchmark_tasks(
         .order_by(desc(ErrorResult.created_at))
         .limit(1)
         .scalar_subquery()
+    )
+    latest_error_message = case(
+        (col(Task.status) == TaskStatus.ERROR, latest_error_subquery),
+        else_=None,
     )
     sort_expr = {
         "task_id": col(Task.task_id),
@@ -149,7 +153,7 @@ def get_benchmark_tasks(
     rows = session.exec(
         select(Task, latest_error_message).where(*base_filters).order_by(*order_by).limit(limit).offset(offset)
     ).all()
-    total = session.exec(select(func.count(col(Task.id))).where(*base_filters)).one()
+    total = session.exec(select(func.count()).select_from(Task).where(*base_filters)).one()
 
     return TasksResponse(
         tasks=[

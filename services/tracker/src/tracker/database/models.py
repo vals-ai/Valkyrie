@@ -565,12 +565,18 @@ def set_finished_at_when_benchmark_finished(_mapper: Mapper[Benchmark], _connect
 
 
 class Task(SQLModel, table=True):
-    __table_args__: tuple[CheckConstraint, UniqueConstraint] = (
+    __table_args__: tuple[CheckConstraint, UniqueConstraint, Index] = (
         CheckConstraint(
             "(status != 'FINISHED' AND status != 'ERROR') OR (finished_at IS NOT NULL)",
             name="task_finished_requires_timestamp",
         ),
         UniqueConstraint("benchmark", "task_id", name="unique_task_per_benchmark"),
+        Index(
+            "ix_task_benchmark_org_started_at",
+            "benchmark",
+            "org_id",
+            text("started_at DESC"),
+        ),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
