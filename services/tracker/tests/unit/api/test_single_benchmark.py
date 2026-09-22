@@ -5,8 +5,10 @@ Cover single-benchmark details and task listing behavior.
 
 from __future__ import annotations
 
+import logging
 from asyncio import CancelledError
 from datetime import datetime, timedelta
+from io import StringIO
 from threading import BoundedSemaphore
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -174,12 +176,14 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
 
 @pytest.mark.asyncio
 async def test_task_list_admission_records_interruptions_and_releases_capacity(
-    caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cancellation and dependency closure must not look successful or leak admission capacity."""
     monkeypatch.setattr(single_benchmark_api, "_task_list_slots", BoundedSemaphore(1))
-    single_benchmark_api.logger.addHandler(caplog.handler)
+    log_output = StringIO()
+    handler = logging.StreamHandler(log_output)
+    handler.setFormatter(logging.Formatter("%(message)s %(outcome)s"))
+    single_benchmark_api.logger.addHandler(handler)
     admitted_after_close = None
 
     try:
@@ -195,12 +199,12 @@ async def test_task_list_admission_records_interruptions_and_releases_capacity(
         admitted_after_close = single_benchmark_api._admit_task_list()  # pyright: ignore[reportPrivateUsage]
         await anext(admitted_after_close)
         completion_outcomes = [
-            getattr(record, "outcome", None)
-            for record in caplog.records
-            if record.getMessage() == "task_list.completion"
+            line.removeprefix("task_list.completion ")
+            for line in log_output.getvalue().splitlines()
+            if line.startswith("task_list.completion ")
         ]
         assert completion_outcomes == ["cancelled", "generator_closed"]
     finally:
-        single_benchmark_api.logger.removeHandler(caplog.handler)
+        single_benchmark_api.logger.removeHandler(handler)
         if admitted_after_close is not None:
             await admitted_after_close.aclose()
