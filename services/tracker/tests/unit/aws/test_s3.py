@@ -4,23 +4,33 @@ Run: uv run pytest tests/unit/aws/test_s3.py
 """
 
 from collections.abc import AsyncIterator
-from typing import Any
-from unittest.mock import AsyncMock
+from typing import Any, Literal, cast
+from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
 
 import pytest
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from tracker.aws import s3 as s3_module
 from tracker.aws.clients import DefaultChainAWSClientProvider
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.s3 import (
+    S3ObjectCopier,
     S3ObjectStore,
     copy_s3_object,
     create_presigned_url,
     delete_from_s3,
+    download_from_s3,
     download_many_from_s3,
+    list_agents,
+    list_s3_objects,
+    s3_object_exists,
+    upload_to_s3,
     upload_stream_to_s3,
 )
+from tracker.api.run_artifacts import get_run_artifact_url, list_run_artifacts
 from tracker.exceptions import S3Error
 
 
@@ -32,6 +42,12 @@ class MockS3Client:
         self.parts: list[tuple[int, bytes]] = []
         self.completed_parts: list[dict[str, Any]] | None = None
         self.aborted = False
+        self.requests: dict[str, list[dict[str, Any]]] = {
+            "create": [],
+            "upload": [],
+            "complete": [],
+            "abort": [],
+        }
 
     async def __aenter__(self) -> "MockS3Client":
         return self
@@ -39,21 +55,24 @@ class MockS3Client:
     async def __aexit__(self, *_exc: object) -> None:
         pass
 
-    async def create_multipart_upload(self, Bucket: str, Key: str) -> dict[str, str]:
+    async def create_multipart_upload(self, **request: Any) -> dict[str, str]:
+        self.requests["create"].append(request)
         return {"UploadId": "upload-1"}
 
-    async def upload_part(self, Bucket: str, Key: str, PartNumber: int, UploadId: str, Body: bytes) -> dict[str, str]:
-        if self.fail_on_part == PartNumber:
+    async def upload_part(self, **request: Any) -> dict[str, str]:
+        self.requests["upload"].append(request)
+        part_number = request["PartNumber"]
+        if self.fail_on_part == part_number:
             raise ClientError({"Error": {"Code": "500", "Message": "Error"}}, "UploadPart")
-        self.parts.append((PartNumber, bytes(Body)))
-        return {"ETag": f"etag-{PartNumber}"}
+        self.parts.append((part_number, bytes(request["Body"])))
+        return {"ETag": f"etag-{part_number}"}
 
-    async def complete_multipart_upload(
-        self, Bucket: str, Key: str, UploadId: str, MultipartUpload: dict[str, Any]
-    ) -> None:
-        self.completed_parts = MultipartUpload["Parts"]
+    async def complete_multipart_upload(self, **request: Any) -> None:
+        self.requests["complete"].append(request)
+        self.completed_parts = request["MultipartUpload"]["Parts"]
 
-    async def abort_multipart_upload(self, Bucket: str, Key: str, UploadId: str) -> None:
+    async def abort_multipart_upload(self, **request: Any) -> None:
+        self.requests["abort"].append(request)
         self.aborted = True
 
 
@@ -75,6 +94,7 @@ class DownloadClient:
     def __init__(self, responses: dict[str, bytes | ClientError]) -> None:
         self._responses = responses
         self.keys: list[str] = []
+        self.requests: list[dict[str, str]] = []
         self.entries = 0
 
     async def __aenter__(self) -> "DownloadClient":
@@ -84,12 +104,44 @@ class DownloadClient:
     async def __aexit__(self, *_exc: object) -> None:
         pass
 
-    async def get_object(self, *, Bucket: str, Key: str) -> dict[str, DownloadBody]:
-        self.keys.append(Key)
-        response = self._responses[Key]
+    async def get_object(self, **request: str) -> dict[str, DownloadBody]:
+        self.requests.append(request)
+        key = request["Key"]
+        self.keys.append(key)
+        response = self._responses[key]
         if isinstance(response, ClientError):
             raise response
         return {"Body": DownloadBody(response)}
+
+
+class StaticS3ClientProvider:
+    """Return one recording client for a runtime used by an S3 unit test."""
+
+    def __init__(self, client: AsyncMock, *, credential_source: Literal["access_key", "managed"]) -> None:
+        self._client = client
+        self.credential_source = credential_source
+
+    def s3_client(self) -> AsyncMock:
+        return self._client
+
+
+def _copy_runtime(
+    *,
+    bucket: str,
+    client: AsyncMock,
+    credential_source: Literal["access_key", "managed"],
+    expected_bucket_owner: str | None,
+) -> AWSRuntime:
+    return AWSRuntime(
+        resources=AWSResources(
+            region="us-east-1",
+            s3_bucket=bucket,
+            log_group="test-log-group",
+            log_retention_days=30,
+        ),
+        clients=cast(Any, StaticS3ClientProvider(client, credential_source=credential_source)),
+        expected_bucket_owner=expected_bucket_owner,
+    )
 
 
 async def test_download_many_reuses_one_client_and_skips_provider_failures(
@@ -164,6 +216,42 @@ async def test_object_store_read_session_and_listing_preserve_object_metadata(
     assert client.entries == 1
 
 
+async def test_managed_read_session_and_get_many_apply_owner_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+) -> None:
+    paginator = ObjectListPaginator([{"Contents": [{"Key": "agents/alpha.zip"}]}])
+    client = ReadClient({"agents/alpha.zip": b"alpha"}, paginator)
+    runtime = AWSRuntime(
+        resources=aws_runtime.resources,
+        clients=DefaultChainAWSClientProvider(region=aws_runtime.resources.region),
+        expected_bucket_owner="123456789012",
+    )
+
+    def s3_client(_provider: DefaultChainAWSClientProvider) -> ReadClient:
+        return client
+
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", s3_client)
+
+    async with S3ObjectStore(runtime).read_session() as reader:
+        assert await reader.get_bytes("agents/alpha.zip") == b"alpha"
+        assert [item.key async for item in reader.list_objects("agents/")] == ["agents/alpha.zip"]
+
+    async def keys() -> AsyncIterator[str]:
+        yield "agents/alpha.zip"
+
+    assert [item async for item in S3ObjectStore(runtime).get_many(keys())] == [("agents/alpha.zip", b"alpha")]
+    assert [item async for item in download_many_from_s3(["agents/alpha.zip"], runtime)] == [
+        ("agents/alpha.zip", b"alpha")
+    ]
+    assert client.requests == [
+        {"Bucket": "test-bucket", "Key": "agents/alpha.zip", "ExpectedBucketOwner": "123456789012"},
+        {"Bucket": "test-bucket", "Key": "agents/alpha.zip", "ExpectedBucketOwner": "123456789012"},
+        {"Bucket": "test-bucket", "Key": "agents/alpha.zip", "ExpectedBucketOwner": "123456789012"},
+    ]
+    assert paginator.calls == [{"Bucket": "test-bucket", "Prefix": "agents/", "ExpectedBucketOwner": "123456789012"}]
+
+
 class TestCreatePresignedUrl:
     """Presigned URL lifetime behavior."""
 
@@ -184,6 +272,7 @@ class TestCreatePresignedUrl:
         runtime = AWSRuntime(
             resources=aws_runtime.resources,
             clients=DefaultChainAWSClientProvider(region=aws_runtime.resources.region),
+            expected_bucket_owner="123456789012",
         )
 
         result = await create_presigned_url("agents/demo.zip", runtime, expiration=86_400)
@@ -194,6 +283,140 @@ class TestCreatePresignedUrl:
             Params={"Bucket": "test-bucket", "Key": "agents/demo.zip"},
             ExpiresIn=3_600,
         )
+
+
+async def test_managed_direct_operations_apply_owner_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+) -> None:
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.get_object.return_value = {"Body": DownloadBody(b"content")}
+    client.copy_object.return_value = {"VersionId": "version-1"}
+    paginator = ObjectListPaginator([{"Contents": [{"Key": "benchmarks/run/result.json"}, {"Key": "agents/demo.zip"}]}])
+    client.get_paginator = MagicMock(return_value=paginator)
+    runtime = AWSRuntime(
+        resources=aws_runtime.resources,
+        clients=DefaultChainAWSClientProvider(region=aws_runtime.resources.region),
+        expected_bucket_owner="123456789012",
+    )
+
+    def s3_client(_provider: DefaultChainAWSClientProvider) -> AsyncMock:
+        return client
+
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", s3_client)
+
+    await upload_to_s3(b"content", "key", runtime)
+    assert await download_from_s3("key", runtime) == b"content"
+    await delete_from_s3("key", runtime, version_id="version-1")
+    assert await copy_s3_object("source", "destination", runtime) == "version-1"
+    assert await s3_object_exists("key", runtime)
+    assert [key async for key in list_s3_objects("benchmarks/", runtime)] == [
+        "benchmarks/run/result.json",
+        "agents/demo.zip",
+    ]
+    assert await list_agents(runtime) == [("demo", None)]
+
+    owner = {"ExpectedBucketOwner": "123456789012"}
+    client.put_object.assert_awaited_once_with(Bucket="test-bucket", Key="key", Body=b"content", **owner)
+    client.get_object.assert_awaited_once_with(Bucket="test-bucket", Key="key", **owner)
+    client.delete_object.assert_awaited_once_with(Bucket="test-bucket", Key="key", VersionId="version-1", **owner)
+    client.copy_object.assert_awaited_once_with(
+        Bucket="test-bucket",
+        CopySource={"Bucket": "test-bucket", "Key": "source"},
+        Key="destination",
+        **owner,
+    )
+    client.head_object.assert_awaited_once_with(Bucket="test-bucket", Key="key", **owner)
+    assert paginator.calls == [
+        {"Bucket": "test-bucket", "Prefix": "benchmarks/", **owner},
+        {"Bucket": "test-bucket", "Prefix": "agents/", **owner},
+    ]
+
+
+async def test_explicit_credential_upload_does_not_add_owner_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+) -> None:
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+
+    def s3_client(_provider: object) -> AsyncMock:
+        return client
+
+    monkeypatch.setattr(type(aws_runtime.clients), "s3_client", s3_client)
+
+    await upload_to_s3(b"content", "key", aws_runtime)
+
+    client.put_object.assert_awaited_once_with(Bucket="test-bucket", Key="key", Body=b"content")
+
+
+async def test_managed_upload_rejects_missing_expected_bucket_owner(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+) -> None:
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    runtime = AWSRuntime(
+        resources=aws_runtime.resources,
+        clients=DefaultChainAWSClientProvider(region=aws_runtime.resources.region),
+    )
+
+    def s3_client(_provider: DefaultChainAWSClientProvider) -> AsyncMock:
+        return client
+
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", s3_client)
+
+    with pytest.raises(ValueError, match="Managed AWS runtime is missing the expected bucket owner"):
+        await upload_to_s3(b"content", "key", runtime)
+
+    client.put_object.assert_not_awaited()
+
+
+async def test_managed_run_artifact_calls_guard_aws_without_changing_presigned_url_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+) -> None:
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.list_objects_v2.return_value = {"Contents": []}
+    client.head_object.return_value = {"ContentLength": 7}
+    client.generate_presigned_url.return_value = "https://download.test/file"
+    runtime = AWSRuntime(
+        resources=aws_runtime.resources,
+        clients=DefaultChainAWSClientProvider(region=aws_runtime.resources.region),
+        expected_bucket_owner="123456789012",
+    )
+    run_context = MagicMock(aws_runtime=runtime)
+
+    def s3_client(_provider: DefaultChainAWSClientProvider) -> AsyncMock:
+        return client
+
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", s3_client)
+    benchmark_id = uuid4()
+    root = f"benchmarks/{benchmark_id}/"
+
+    await list_run_artifacts(benchmark_id, cast(Any, run_context), prefix="", cursor=None, limit=100)
+    response = await get_run_artifact_url(benchmark_id, cast(Any, run_context), path="result.json")
+
+    owner = {"ExpectedBucketOwner": "123456789012"}
+    client.list_objects_v2.assert_awaited_once_with(
+        Bucket="test-bucket",
+        Prefix=root,
+        MaxKeys=100,
+        **owner,
+    )
+    client.head_object.assert_awaited_once_with(
+        Bucket="test-bucket",
+        Key=root + "result.json",
+        **owner,
+    )
+    client.generate_presigned_url.assert_awaited_once_with(
+        "get_object",
+        Params={"Bucket": "test-bucket", "Key": root + "result.json"},
+        ExpiresIn=300,
+    )
+    assert response.download_url == "https://download.test/file"
 
 
 async def test_versioned_copy_can_be_deleted_exactly(
@@ -218,6 +441,190 @@ async def test_versioned_copy_can_be_deleted_exactly(
         Bucket="test-bucket",
         Key="benchmarks/run/demo.zip",
         VersionId="version-1",
+    )
+
+
+async def test_s3_object_copier_guards_both_buckets_and_returns_destination_version() -> None:
+    source_client = AsyncMock()
+    source_client.__aenter__.return_value = source_client
+    source_client.head_object.return_value = {"ContentLength": 1024, "ETag": '"source-etag"'}
+    destination_client = AsyncMock()
+    destination_client.__aenter__.return_value = destination_client
+    destination_client.copy_object.return_value = {"VersionId": "destination-version"}
+    source = _copy_runtime(
+        bucket="shared-library",
+        client=source_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+    destination = _copy_runtime(
+        bucket="owner-runs",
+        client=destination_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+
+    copied = await S3ObjectCopier(source, destination).copy(
+        "agents/demo.zip",
+        "benchmarks/run/demo.zip",
+    )
+    await S3ObjectStore(destination).delete(
+        "benchmarks/run/demo.zip",
+        deletion_token=copied.deletion_token,
+    )
+
+    assert copied.deletion_token == "destination-version"
+    source_client.head_object.assert_awaited_once_with(
+        Bucket="shared-library",
+        Key="agents/demo.zip",
+        ExpectedBucketOwner="123456789012",
+    )
+    destination_client.copy_object.assert_awaited_once_with(
+        Bucket="owner-runs",
+        Key="benchmarks/run/demo.zip",
+        CopySource={"Bucket": "shared-library", "Key": "agents/demo.zip"},
+        CopySourceIfMatch='"source-etag"',
+        ExpectedSourceBucketOwner="123456789012",
+        ExpectedBucketOwner="123456789012",
+    )
+    destination_client.delete_object.assert_awaited_once_with(
+        Bucket="owner-runs",
+        Key="benchmarks/run/demo.zip",
+        VersionId="destination-version",
+        ExpectedBucketOwner="123456789012",
+    )
+    source_client.delete_object.assert_not_awaited()
+
+
+async def test_s3_object_copier_rejects_bundle_over_single_copy_limit() -> None:
+    source_client = AsyncMock()
+    source_client.__aenter__.return_value = source_client
+    source_client.head_object.return_value = {
+        "ContentLength": 5 * 1024**3 + 1,
+        "ETag": '"source-etag"',
+    }
+    destination_client = AsyncMock()
+    destination_client.__aenter__.return_value = destination_client
+    source = _copy_runtime(
+        bucket="shared-library",
+        client=source_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+    destination = _copy_runtime(
+        bucket="owner-runs",
+        client=destination_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+
+    with pytest.raises(S3Error, match="exceeds the 5 GiB single-copy limit"):
+        await S3ObjectCopier(source, destination).copy(
+            "agents/demo.zip",
+            "benchmarks/run/demo.zip",
+        )
+
+    destination_client.copy_object.assert_not_awaited()
+
+
+async def test_s3_object_copier_wraps_source_replacement_failure() -> None:
+    source_client = AsyncMock()
+    source_client.__aenter__.return_value = source_client
+    source_client.head_object.return_value = {"ContentLength": 1024, "ETag": '"old-etag"'}
+    destination_client = AsyncMock()
+    destination_client.__aenter__.return_value = destination_client
+    destination_client.copy_object.side_effect = ClientError(
+        {"Error": {"Code": "PreconditionFailed", "Message": "source changed"}},
+        "CopyObject",
+    )
+    source = _copy_runtime(
+        bucket="shared-library",
+        client=source_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+    destination = _copy_runtime(
+        bucket="owner-runs",
+        client=destination_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+
+    with pytest.raises(S3Error, match="Failed to copy S3 object"):
+        await S3ObjectCopier(source, destination).copy(
+            "agents/demo.zip",
+            "benchmarks/run/demo.zip",
+        )
+
+    destination_client.copy_object.assert_awaited_once_with(
+        Bucket="owner-runs",
+        Key="benchmarks/run/demo.zip",
+        CopySource={"Bucket": "shared-library", "Key": "agents/demo.zip"},
+        CopySourceIfMatch='"old-etag"',
+        ExpectedSourceBucketOwner="123456789012",
+        ExpectedBucketOwner="123456789012",
+    )
+
+
+@pytest.mark.parametrize("version_id", [None, "", "null"])
+async def test_managed_s3_object_copier_rejects_missing_destination_version(version_id: str | None) -> None:
+    source_client = AsyncMock()
+    source_client.__aenter__.return_value = source_client
+    source_client.head_object.return_value = {"ContentLength": 1024, "ETag": '"source-etag"'}
+    destination_client = AsyncMock()
+    destination_client.__aenter__.return_value = destination_client
+    destination_client.copy_object.return_value = {} if version_id is None else {"VersionId": version_id}
+    source = _copy_runtime(
+        bucket="shared-library",
+        client=source_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+    destination = _copy_runtime(
+        bucket="owner-runs",
+        client=destination_client,
+        credential_source="managed",
+        expected_bucket_owner="123456789012",
+    )
+
+    with pytest.raises(S3Error, match="destination version"):
+        await S3ObjectCopier(source, destination).copy(
+            "agents/demo.zip",
+            "benchmarks/run/demo.zip",
+        )
+
+    destination_client.delete_object.assert_not_awaited()
+
+
+async def test_s3_object_copier_omits_unset_owner_guards_for_explicit_credentials() -> None:
+    source_client = AsyncMock()
+    source_client.__aenter__.return_value = source_client
+    source_client.head_object.return_value = {"ContentLength": 1024, "ETag": '"source-etag"'}
+    destination_client = AsyncMock()
+    destination_client.__aenter__.return_value = destination_client
+    destination_client.copy_object.return_value = {}
+    source = _copy_runtime(
+        bucket="source",
+        client=source_client,
+        credential_source="access_key",
+        expected_bucket_owner=None,
+    )
+    destination = _copy_runtime(
+        bucket="destination",
+        client=destination_client,
+        credential_source="access_key",
+        expected_bucket_owner=None,
+    )
+
+    copied = await S3ObjectCopier(source, destination).copy("source-key", "destination-key")
+
+    assert copied.deletion_token is None
+    source_client.head_object.assert_awaited_once_with(Bucket="source", Key="source-key")
+    destination_client.copy_object.assert_awaited_once_with(
+        Bucket="destination",
+        Key="destination-key",
+        CopySource={"Bucket": "source", "Key": "source-key"},
+        CopySourceIfMatch='"source-etag"',
     )
 
 
@@ -298,6 +705,50 @@ class TestUploadStreamToS3:
             {"ETag": "etag-2", "PartNumber": 2},
         ]
 
+    async def test_managed_upload_guards_every_multipart_operation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        client = MockS3Client()
+        runtime = AWSRuntime(
+            resources=aws_runtime.resources,
+            clients=DefaultChainAWSClientProvider(region=aws_runtime.resources.region),
+            expected_bucket_owner="123456789012",
+        )
+
+        def s3_client(_provider: DefaultChainAWSClientProvider) -> MockS3Client:
+            return client
+
+        monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", s3_client)
+
+        async def chunks() -> AsyncIterator[bytes]:
+            yield b"content"
+
+        await upload_stream_to_s3(chunks(), "key", runtime)
+
+        owner = {"ExpectedBucketOwner": "123456789012"}
+        assert client.requests["create"] == [{"Bucket": "test-bucket", "Key": "key", **owner}]
+        assert client.requests["upload"] == [
+            {
+                "Bucket": "test-bucket",
+                "Key": "key",
+                "PartNumber": 1,
+                "UploadId": "upload-1",
+                "Body": b"content",
+                **owner,
+            }
+        ]
+        assert client.requests["complete"] == [
+            {
+                "Bucket": "test-bucket",
+                "Key": "key",
+                "UploadId": "upload-1",
+                "MultipartUpload": {"Parts": [{"ETag": "etag-1", "PartNumber": 1}]},
+                **owner,
+            }
+        ]
+
     async def test_object_store_translates_and_aborts_multipart_upload_on_failure(
         self, monkeypatch: pytest.MonkeyPatch, aws_runtime: AWSRuntime
     ) -> None:
@@ -321,6 +772,38 @@ class TestUploadStreamToS3:
 
         assert client.aborted
         assert client.completed_parts is None
+
+    async def test_managed_multipart_abort_applies_owner_guard(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        client = MockS3Client(fail_on_part=1)
+        runtime = AWSRuntime(
+            resources=aws_runtime.resources,
+            clients=DefaultChainAWSClientProvider(region=aws_runtime.resources.region),
+            expected_bucket_owner="123456789012",
+        )
+
+        def s3_client(_provider: DefaultChainAWSClientProvider) -> MockS3Client:
+            return client
+
+        monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", s3_client)
+
+        async def chunks() -> AsyncIterator[bytes]:
+            yield b"content"
+
+        with pytest.raises(S3Error):
+            await upload_stream_to_s3(chunks(), "key", runtime)
+
+        assert client.requests["abort"] == [
+            {
+                "Bucket": "test-bucket",
+                "Key": "key",
+                "UploadId": "upload-1",
+                "ExpectedBucketOwner": "123456789012",
+            }
+        ]
 
     async def test_aborts_before_completion_when_authority_is_revoked(
         self,
@@ -347,3 +830,23 @@ class TestUploadStreamToS3:
         assert mock_s3_client.parts == [(1, b"final")]
         assert mock_s3_client.completed_parts is None
         assert mock_s3_client.aborted
+
+
+async def test_managed_presigned_get_requires_only_the_host_header(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+) -> None:
+    """Sign locally with real botocore; URL-only clients must need no owner header."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    monkeypatch.setattr("tracker.aws.clients._S3_CLIENT_CONFIG", Config(signature_version="s3v4"))
+    runtime = AWSRuntime(
+        resources=aws_runtime.resources,
+        clients=DefaultChainAWSClientProvider(region="us-east-1"),
+        expected_bucket_owner="123456789012",
+    )
+    url = await create_presigned_url("benchmarks/run/output.txt", runtime)
+    query = parse_qs(urlparse(url).query)
+
+    assert query["X-Amz-SignedHeaders"] == ["host"]
+    assert "x-amz-expected-bucket-owner" not in query

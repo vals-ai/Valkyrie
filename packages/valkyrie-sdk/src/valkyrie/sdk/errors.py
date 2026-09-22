@@ -4,6 +4,7 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar
+from uuid import UUID
 
 import httpx
 
@@ -21,7 +22,18 @@ class ValkyrieConfigError(ValkyrieSDKError):
 
 
 class ValkyrieRunError(ValkyrieSDKError):
-    """A run operation received invalid client-side input."""
+    """A run operation received invalid input or an unconfirmed start response."""
+
+    def __init__(self, message: str, *, run_id: UUID | None = None) -> None:
+        self.run_id = run_id
+        super().__init__(message)
+
+
+class ValkyrieRunAcceptedError(ValkyrieRunError):
+    """The run exists with the requested storage, but its dispatch was not acknowledged.
+
+    The run is safe to reconcile or retry by ``run_id``. It is not a storage rejection.
+    """
 
 
 class ValkyrieTransportError(ValkyrieSDKError):

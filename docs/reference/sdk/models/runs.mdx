@@ -89,7 +89,7 @@ Runs enum · 5 members
 
 Current state of one benchmark run.
 
-Runs model · 11 fields
+Runs model · 12 fields
 
 **Fields**
 
@@ -107,6 +107,10 @@ Runs model · 11 fields
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"s3_bucket_url"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · str</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"storage_bucket"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · default: <code>{"None"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
@@ -143,7 +147,7 @@ Runs model · 11 fields
 
 Stored launch metadata for one run.
 
-Runs model · 9 fields
+Runs model · 10 fields
 
 **Fields**
 
@@ -157,6 +161,10 @@ Runs model · 9 fields
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"benchmark_arguments"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · BenchmarkArguments</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"storage_bucket"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · default: <code>{"None"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
@@ -455,7 +463,7 @@ Runs model · 4 fields
 
 Response returned after starting a run.
 
-Runs model · 12 fields
+Runs model · 13 fields
 
 **Fields**
 
@@ -489,6 +497,10 @@ Runs model · 12 fields
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"s3_bucket_url"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · str</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"storage_bucket"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · default: <code>{"None"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">

@@ -4,7 +4,7 @@ import logging
 import tarfile
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from datetime import UTC, datetime
 from typing import Annotated, Any, TypeVar, cast
@@ -25,6 +25,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, select, update
 
+from tracker import config
 from tracker._lambda import invoke_lambda
 from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
@@ -47,8 +48,17 @@ from tracker.auth import (
     resolve_descope_identity,
 )
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
+from tracker.aws.managed_storage import (
+    ManagedStorageError,
+    load_managed_storage_policy,
+    validate_managed_storage_bucket,
+    validate_managed_storage_bucket_versioning,
+)
 from tracker.aws.resolver import (
+    http_validate_saved_managed_storage_runtime,
+    inspect_harness_headers,
     resolve_aws_runtime_metadata,
+    resolve_run_metadata_aws_runtime,
     resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
 )
@@ -56,6 +66,7 @@ from tracker.aws.secrets import SecretsManagerStore
 from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
+    S3ObjectCopier,
     S3ObjectStore,
     create_benchmark_url,
     create_console_url,
@@ -127,6 +138,7 @@ from tracker.types import (
     FinalViewResponse,
     HarnessConfig,
     ManagedExecutionContext,
+    ManagedStorageStartBenchmarkRequest,
     Order,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
@@ -238,14 +250,17 @@ def _process_benchmark_kwargs(
     if benchmark_row.aws_managed:
         return {
             "execution_context_json": ManagedExecutionContext(
-                version=2,
+                version=3,
                 benchmark_id=benchmark_row.id,
                 verified_task_ids=verified_task_ids,
                 start_benchmark_request=request,
-            ).model_dump(mode="json")
+            ).model_dump(
+                mode="json",
+                exclude={"start_benchmark_request": {"managed_s3_bucket"}},
+            )
         }
     return {
-        "start_benchmark_request_json": request.model_dump(mode="json"),
+        "start_benchmark_request_json": request.model_dump(mode="json", exclude={"managed_s3_bucket"}),
         "benchmark_id_str": str(benchmark_row.id),
         "verified_task_ids": verified_task_ids,
     }
@@ -564,6 +579,40 @@ async def start_benchmark(
     session: Session = Depends(get_session),
     run_starter: RequestIdentity = Depends(get_current_starter),
 ) -> StartBenchmarkResponse:
+    if request.managed_s3_bucket is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="managed_s3_bucket requires POST /start-benchmark-with-storage",
+        )
+
+    return await _start_benchmark(http_request, request, session, run_starter)
+
+
+@app.post("/start-benchmark-with-storage")
+async def start_benchmark_with_storage(
+    http_request: Request,
+    request: ManagedStorageStartBenchmarkRequest,
+    session: Session = Depends(get_session),
+    run_starter: RequestIdentity = Depends(get_current_starter),
+) -> StartBenchmarkResponse:
+    if not request.managed_s3_bucket:
+        raise HTTPException(status_code=400, detail="managed_s3_bucket is required")
+
+    if inspect_harness_headers(http_request).present or request.harness_config is not None:
+        raise HTTPException(status_code=400, detail="Managed storage cannot include AWS credentials")
+
+    if request.properties is not None:
+        raise HTTPException(status_code=400, detail="Managed storage cannot include AWS properties")
+
+    return await _start_benchmark(http_request, request, session, run_starter)
+
+
+async def _start_benchmark(
+    http_request: Request,
+    request: StartBenchmarkRequest,
+    session: Session,
+    run_starter: RequestIdentity,
+) -> StartBenchmarkResponse:
     """
     Start a benchmark run with the uploaded contract.
 
@@ -588,10 +637,11 @@ async def start_benchmark(
     runtime_resolution = resolve_start_aws_runtime(
         http_request, request.harness_config, run_starter.org.id, request.properties
     )
-    aws_runtime = runtime_resolution.runtime
-    object_store = S3ObjectStore(aws_runtime)
+    library_runtime = runtime_resolution.runtime
+    aws_runtime = library_runtime
     effective_harness_config = runtime_resolution.access_key_harness_config
     aws_managed = runtime_resolution.aws_managed
+    managed_s3_bucket = request.managed_s3_bucket
 
     if aws_managed:
         if not request.sandbox_provider or not request.sandbox_provider_secret_name:
@@ -603,10 +653,38 @@ async def start_benchmark(
             validate_managed_execution_request(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        if managed_s3_bucket is not None:
+            if not config.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED:
+                raise HTTPException(status_code=503, detail="Managed storage submissions are temporarily unavailable")
+
+            try:
+                policy = load_managed_storage_policy()
+                await validate_managed_storage_bucket(
+                    aws_runtime,
+                    org_id=run_starter.org.id,
+                    bucket_name=managed_s3_bucket,
+                    policy=policy,
+                )
+                await validate_managed_storage_bucket_versioning(
+                    aws_runtime,
+                    bucket_name=managed_s3_bucket,
+                )
+            except ManagedStorageError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
         try:
             await asyncio.to_thread(_validate_start_release, bind)
         except ReleaseControlError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        if managed_s3_bucket is not None:
+            resources = replace(
+                aws_runtime.resources,
+                s3_bucket=managed_s3_bucket,
+                log_group=f"{aws_runtime.resources.log_group}/{managed_s3_bucket}",
+            )
+            aws_runtime = aws_runtime.with_resources(resources)
     else:
         effective_harness_config = cast(HarnessConfig, effective_harness_config)
         body_provider_secret_name = (
@@ -622,6 +700,14 @@ async def start_benchmark(
                 update={"sandbox_provider_secret_name": provider_secret_name}
             )
 
+    object_store = S3ObjectStore(aws_runtime)
+    library_store = S3ObjectStore(library_runtime)
+    agent_copier = (
+        S3ObjectCopier(library_runtime, aws_runtime)
+        if library_runtime.resources.s3_bucket != aws_runtime.resources.s3_bucket
+        else None
+    )
+
     service_headers = dict(request.service_headers)
     if request.service_auth_header_name and request.service_auth_secret_name:
         resolved = resolve_secrets(
@@ -633,6 +719,7 @@ async def start_benchmark(
     request = request.model_copy(
         update={
             "properties": aws_runtime.resources,
+            "managed_s3_bucket": None,
             "harness_config": effective_harness_config,
             "service_headers": forward_tracker_api_key(
                 service_headers,
@@ -700,13 +787,13 @@ async def start_benchmark(
             )
 
     if not request.contract.install_cmd and not request.contract.run_cmd:
-        request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request, object_store)})
+        request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request, library_store)})
         if aws_managed:
             try:
                 validate_managed_execution_request(request)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-    elif aws_managed and not await object_store.exists(agent_bundle_key(request.contract.name)):
+    elif aws_managed and not await library_store.exists(agent_bundle_key(request.contract.name)):
         raise HTTPException(
             status_code=404,
             detail=f"Agent '{request.contract.name}' is not available in the deployment bucket.",
@@ -756,6 +843,7 @@ async def start_benchmark(
             object_store,
             str(benchmark_row.id),
             request.contract.name,
+            copier=agent_copier,
         )
         commit_task = asyncio.create_task(
             asyncio.to_thread(
@@ -839,6 +927,7 @@ async def start_benchmark(
         task_count=len(verify_response.task_ids),
         cloudwatch_url=CloudWatchBenchmarkLogLocations(aws_runtime.resources).benchmark_location(str(benchmark_row.id)),
         s3_bucket_url=create_benchmark_url(str(benchmark_row.id), aws_runtime.resources),
+        storage_bucket=aws_runtime.resources.s3_bucket,
         executor_release_id=benchmark_row.executor_release_id,
         current_execution_release_id=benchmark_row.current_execution_release_id,
         executor_artifact_digest=benchmark_row.executor_artifact_digest,
@@ -927,6 +1016,7 @@ async def fetch_benchmark(
         benchmark_id=benchmark_row.id,
         details=benchmark_context.benchmark_details,
         s3_bucket_url=create_benchmark_url(str(benchmark_row.id), aws_runtime.resources),
+        storage_bucket=aws_runtime.resources.s3_bucket,
         label=benchmark_row.label,
         final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
         error_message=benchmark_row.error_message if benchmark_row.status == BenchmarkStatus.ERROR else None,
@@ -1116,6 +1206,8 @@ async def _retrieve_results(
         properties=benchmark_row.arguments.properties,
         org_id=org.id,
     ).runtime
+    if benchmark_row.aws_managed:
+        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
 
     final_view = create_final_view(benchmark_row, session, org)
     task_ids_set = set(task_ids) if task_ids else None
@@ -1388,6 +1480,7 @@ class RecoveryPreparation:
     dataset: str | None
     queued_recovery: bool
     properties: AWSResources | None = None
+    resolved_properties: AWSResources | None = None
 
 
 def _prepare_recovery(
@@ -1536,6 +1629,10 @@ async def retry_or_resume_benchmark(
         aws_managed=preparation.aws_managed,
         org_id=org_id,
     )
+    if preparation.aws_managed:
+        await http_validate_saved_managed_storage_runtime(runtime_resolution.runtime, org_id=org_id)
+        preparation = replace(preparation, resolved_properties=runtime_resolution.runtime.resources)
+
     api_key = http_request.headers.get("x-api-key")
     effective_headers = forward_tracker_api_key(
         service_headers,
@@ -1824,6 +1921,13 @@ def _apply_recovery(
             benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"lambda_function": lambda_function})
 
         if benchmark_row.aws_managed:
+            if benchmark_row.arguments.properties is None:
+                if preparation.resolved_properties is None:
+                    raise TrackerServiceError("Managed recovery has no resolved AWS resources")
+                benchmark_row.arguments = benchmark_row.arguments.model_copy(
+                    update={"properties": preparation.resolved_properties}
+                )
+
             resume_request = benchmark_row.managed_start_benchmark_request(
                 service_headers=effective_service_headers,
             )
@@ -1922,6 +2026,7 @@ async def fetch_benchmarks(
 @app.get("/fetch-benchmark-metadata/{benchmark_id}")
 async def fetch_benchmark_metadata(
     benchmark_id: TrackedBenchmarkId,
+    request: Request,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> FetchBenchmarkMetadataResponse:
@@ -1936,7 +2041,18 @@ async def fetch_benchmark_metadata(
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
-    return benchmark_row.benchmark_metadata
+    aws_runtime = resolve_run_metadata_aws_runtime(
+        request,
+        aws_managed=benchmark_row.aws_managed,
+        properties=benchmark_row.arguments.properties,
+        org_id=org.id,
+    )
+    if aws_runtime is not None and benchmark_row.aws_managed:
+        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
+
+    return benchmark_row.benchmark_metadata.model_copy(
+        update={"storage_bucket": aws_runtime.resources.s3_bucket if aws_runtime is not None else None}
+    )
 
 
 def _safe_output_tar_member(s3_key: str, benchmark_prefix: str) -> str | None:

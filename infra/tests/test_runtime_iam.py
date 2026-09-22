@@ -4,6 +4,7 @@ import unittest
 from dataclasses import replace
 from typing import cast
 from unittest import mock
+from uuid import UUID
 
 import aws_cdk as cdk  # pyright: ignore[reportMissingImports]
 from aws_cdk import assertions, aws_s3  # pyright: ignore[reportMissingImports]
@@ -70,6 +71,29 @@ def _lambda_function_resource(function_name: str) -> JsonObject:
     }
 
 
+def _task_role_container(template: assertions.Template, role_name: str) -> JsonObject:
+    role_logical_id, _ = _named_role(template, role_name)
+    task_definitions = cast(dict[str, JsonObject], template.find_resources("AWS::ECS::TaskDefinition"))
+    role_task_definition = next(
+        task_definition
+        for task_definition in task_definitions.values()
+        if cast(JsonObject, task_definition["Properties"]).get("TaskRoleArn")
+        == {"Fn::GetAtt": [role_logical_id, "Arn"]}
+    )
+    containers = cast(list[JsonObject], role_task_definition["Properties"]["ContainerDefinitions"])
+    return containers[0]
+
+
+def _owner_bucket_resource(environment: str, *, objects: bool = False) -> JsonObject:
+    suffix = "/benchmarks/*" if objects else ""
+    return {
+        "Fn::Join": [
+            "",
+            ["arn:", {"Ref": "AWS::Partition"}, f":s3:::vs-{environment}-*{suffix}"],
+        ]
+    }
+
+
 class RuntimeIamTest(unittest.TestCase):
     def test_agent_upload_permissions_are_limited_to_dev_tracker(self) -> None:
         """Only dev Tracker can upload agents or abort their multipart uploads."""
@@ -101,7 +125,194 @@ class RuntimeIamTest(unittest.TestCase):
                         self.assertEqual(
                             upload_statement["Resource"], stack.resolve(bucket.arn_for_objects("agents/*"))
                         )
+                        self.assertEqual(
+                            upload_statement["Condition"],
+                            {"StringEquals": {"s3:ResourceAccount": stack.resolve(stack.account)}},
+                        )
                     self.assertEqual(actions, expected_actions)
+
+    def test_bench_passes_canonical_owner_storage_settings_to_both_services(self) -> None:
+        configured_mapping = json.dumps({TEST_MANAGED_ORG_ID: ["prod", "dev"]})
+        environment = {
+            **TEST_BENCH_ENV,
+            "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS": configured_mapping,
+            "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED": "true",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            tracker_template, executor_template, _ = service_templates(BENCH)
+
+        expected_settings = {
+            "AWS_DEPLOYMENT_ACCOUNT_ID": TEST_AWS_ACCOUNT,
+            "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS": f'{{"{TEST_MANAGED_ORG_ID}":["dev","prod"]}}',
+            "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED": "true",
+        }
+        for template, role_name in (
+            (tracker_template, "ValkyrieTrackerTaskRole"),
+            (executor_template, "ValkyrieExecutorTaskRole"),
+        ):
+            with self.subTest(role=role_name):
+                role_logical_id, _ = _named_role(template, role_name)
+                task_definitions = cast(dict[str, JsonObject], template.find_resources("AWS::ECS::TaskDefinition"))
+                role_task_definition = next(
+                    task_definition
+                    for task_definition in task_definitions.values()
+                    if cast(JsonObject, task_definition["Properties"]).get("TaskRoleArn")
+                    == {"Fn::GetAtt": [role_logical_id, "Arn"]}
+                )
+                containers = cast(list[JsonObject], role_task_definition["Properties"]["ContainerDefinitions"])
+                actual_environment = {
+                    cast(str, variable["Name"]): cast(str, variable["Value"])
+                    for variable in cast(list[JsonObject], containers[0]["Environment"])
+                }
+                for name, value in expected_settings.items():
+                    self.assertEqual(actual_environment[name], value)
+
+    def test_organization_identifiers_stay_plaintext_container_settings(self) -> None:
+        environment = {
+            **TEST_BENCH_ENV,
+            "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS": json.dumps({TEST_MANAGED_ORG_ID: ["dev", "prod"]}),
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            tracker_template, executor_template, _ = service_templates(BENCH)
+
+        organization_settings = ("AWS_DEPLOYMENT_ROLE_ORG_IDS", "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS")
+        for template, role_name in (
+            (tracker_template, "ValkyrieTrackerTaskRole"),
+            (executor_template, "ValkyrieExecutorTaskRole"),
+        ):
+            with self.subTest(role=role_name):
+                container = _task_role_container(template, role_name)
+                plaintext = {
+                    cast(str, variable["Name"]) for variable in cast(list[JsonObject], container["Environment"])
+                }
+                referenced = {
+                    cast(str, variable["Name"]) for variable in cast(list[JsonObject], container.get("Secrets", []))
+                }
+
+                self.assertTrue(referenced)
+                for name in organization_settings:
+                    self.assertIn(name, plaintext)
+                    self.assertNotIn(name, referenced)
+
+    def test_owner_storage_patterns_follow_only_the_configured_environment_union(self) -> None:
+        environment_cases: tuple[tuple[dict[UUID, frozenset[str]], set[str]], ...] = (
+            ({}, set[str]()),
+            ({UUID(TEST_MANAGED_ORG_ID): frozenset({"dev"})}, {"dev"}),
+            ({UUID(TEST_MANAGED_ORG_ID): frozenset({"prod"})}, {"prod"}),
+            ({UUID(TEST_MANAGED_ORG_ID): frozenset({"dev", "prod"})}, {"dev", "prod"}),
+        )
+        for configured_mapping, expected_environments in environment_cases:
+            with self.subTest(environments=expected_environments):
+                app = cdk.App()
+                stack = cdk.Stack(
+                    app,
+                    "RuntimeIamStack",
+                    env=cdk.Environment(account=TEST_AWS_ACCOUNT, region=TEST_AWS_REGION),
+                )
+                bucket = aws_s3.Bucket.from_bucket_name(stack, "ManagedRuntimeBucket", "managed-runtime-bucket")
+                config = ManagedAWSRuntimeConfig(
+                    benchmark_log_group_prefix="/valkyrie/benchmarks",
+                    benchmark_log_retention_days=7,
+                    deployment_role_org_ids=(TEST_MANAGED_ORG_ID,),
+                    managed_storage_org_environments=configured_mapping,
+                )
+                create_tracker_task_role(stack, Stage(BENCH), bucket, config)
+                create_executor_task_role(stack, Stage(BENCH), bucket, config)
+                template = assertions.Template.from_stack(stack)
+
+                for role_name in ("ValkyrieTrackerTaskRole", "ValkyrieExecutorTaskRole"):
+                    role_logical_id, _ = _named_role(template, role_name)
+                    statements_json = json.dumps(_role_policy_statements(template, role_logical_id))
+                    for owner_environment in {"dev", "prod"}:
+                        self.assertEqual(
+                            f"vs-{owner_environment}-*" in statements_json,
+                            owner_environment in expected_environments,
+                        )
+                    self.assertNotIn("vs-bench-*", statements_json)
+
+    def test_owner_storage_policy_is_account_guarded_and_prefix_bounded(self) -> None:
+        environment = {
+            **TEST_BENCH_ENV,
+            "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS": json.dumps({TEST_MANAGED_ORG_ID: ["dev", "prod"]}),
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            tracker_template, executor_template, _ = service_templates(BENCH)
+
+        bucket_resources = [_owner_bucket_resource("dev"), _owner_bucket_resource("prod")]
+        object_resources = [
+            _owner_bucket_resource("dev", objects=True),
+            _owner_bucket_resource("prod", objects=True),
+        ]
+        same_account_condition = {"StringEquals": {"s3:ResourceAccount": TEST_AWS_ACCOUNT}}
+        foreign_account_condition = {"StringNotEquals": {"s3:ResourceAccount": TEST_AWS_ACCOUNT}}
+        for template, role_name, role_actions in (
+            (
+                tracker_template,
+                "ValkyrieTrackerTaskRole",
+                {"s3:DeleteObject", "s3:DeleteObjectVersion"},
+            ),
+            (executor_template, "ValkyrieExecutorTaskRole", {"s3:AbortMultipartUpload"}),
+        ):
+            with self.subTest(role=role_name):
+                role_logical_id, _ = _named_role(template, role_name)
+                statements = _role_policy_statements(template, role_logical_id)
+                owner_statements = [statement for statement in statements if "vs-" in json.dumps(statement["Resource"])]
+                owner_allows = [statement for statement in owner_statements if statement.get("Effect") != "Deny"]
+                owner_denies = [statement for statement in owner_statements if statement.get("Effect") == "Deny"]
+
+                self.assertEqual(len(owner_allows), 2)
+                self.assertEqual(len(owner_denies), 1)
+                for statement in owner_allows:
+                    self.assertEqual(statement["Condition"], same_account_condition)
+
+                bucket_allow = next(
+                    statement
+                    for statement in owner_allows
+                    if _statement_actions(statement)
+                    == {"s3:ListBucket", "s3:GetBucketTagging", "s3:GetBucketVersioning"}
+                )
+                self.assertEqual(bucket_allow["Resource"], bucket_resources)
+                self.assertNotIn("s3:prefix", json.dumps(bucket_allow.get("Condition", {})))
+
+                object_allow = next(
+                    statement
+                    for statement in owner_allows
+                    if _statement_actions(statement) == {"s3:GetObject", "s3:PutObject"} | role_actions
+                )
+                self.assertEqual(object_allow["Resource"], object_resources)
+
+                deny = owner_denies[0]
+                self.assertEqual(_statement_actions(deny), {"s3:*"})
+                self.assertEqual(deny["Resource"], bucket_resources + object_resources)
+                self.assertEqual(deny["Condition"], foreign_account_condition)
+
+                owner_policy_json = json.dumps(owner_statements)
+                self.assertNotIn("agents/*", owner_policy_json)
+                self.assertNotIn("vs-bench-*", owner_policy_json)
+                allow_actions = set[str]().union(
+                    *(_statement_actions(statement) for statement in statements if statement.get("Effect") != "Deny")
+                )
+                self.assertTrue(
+                    {"s3:CreateBucket", "s3:PutBucketTagging", "s3:PutBucketPolicy"}.isdisjoint(allow_actions)
+                )
+
+                if role_name.startswith("ValkyrieExecutor"):
+                    release_statement = next(
+                        statement
+                        for statement in statements
+                        if _statement_actions(statement) == {"s3:GetObject"}
+                        and "/releases/*" in json.dumps(statement["Resource"])
+                    )
+                    release_resource = cast(JsonObject, release_statement["Resource"])
+                    release_join = cast(list[object], release_resource["Fn::Join"])
+                    release_parts = cast(list[object], release_join[1])
+                    release_bucket_reference = cast(JsonObject, release_parts[0])
+                    release_bucket_attribute = cast(list[str], release_bucket_reference["Fn::GetAtt"])
+                    self.assertTrue(release_bucket_attribute[0].startswith("ExecutorReleaseBucket"))
+                    self.assertEqual(release_bucket_attribute[1], "Arn")
+                    self.assertEqual(release_parts[1], "/releases/*")
+                    self.assertNotIn("Condition", release_statement)
+                    self.assertNotIn("vs-", json.dumps(release_statement["Resource"]))
 
     def test_managed_runtime_rejects_invalid_authority_configuration(self) -> None:
         config = ManagedAWSRuntimeConfig(
@@ -241,14 +452,26 @@ class RuntimeIamTest(unittest.TestCase):
                 list_statement = next(
                     statement for statement in statements if _statement_actions(statement) == {"s3:ListBucket"}
                 )
-                self.assertNotIn("Condition", list_statement)
+                self.assertEqual(
+                    list_statement["Condition"],
+                    {"StringEquals": {"s3:ResourceAccount": TEST_AWS_ACCOUNT}},
+                )
+                self.assertNotIn("s3:prefix", json.dumps(list_statement["Condition"]))
                 get_statement = next(
                     statement for statement in statements if _statement_actions(statement) == {"s3:GetObject"}
+                )
+                self.assertEqual(
+                    get_statement["Condition"],
+                    {"StringEquals": {"s3:ResourceAccount": TEST_AWS_ACCOUNT}},
                 )
                 self.assertIn("agents/*", json.dumps(get_statement["Resource"]))
                 self.assertIn("benchmarks/*", json.dumps(get_statement["Resource"]))
                 put_statement = next(
                     statement for statement in statements if _statement_actions(statement) == {"s3:PutObject"}
+                )
+                self.assertEqual(
+                    put_statement["Condition"],
+                    {"StringEquals": {"s3:ResourceAccount": TEST_AWS_ACCOUNT}},
                 )
                 self.assertIn("benchmarks/*", json.dumps(put_statement["Resource"]))
                 self.assertNotIn("agents/*", json.dumps(put_statement["Resource"]))
@@ -260,6 +483,10 @@ class RuntimeIamTest(unittest.TestCase):
                 ]
                 if role_name.startswith("ValkyrieTracker"):
                     self.assertEqual(len(delete_statements), 1)
+                    self.assertEqual(
+                        delete_statements[0]["Condition"],
+                        {"StringEquals": {"s3:ResourceAccount": TEST_AWS_ACCOUNT}},
+                    )
                     self.assertIn("benchmarks/*", json.dumps(delete_statements[0]["Resource"]))
                     self.assertNotIn("agents/*", json.dumps(delete_statements[0]["Resource"]))
                 else:
@@ -272,6 +499,10 @@ class RuntimeIamTest(unittest.TestCase):
                 ]
                 if role_name.startswith("ValkyrieExecutor"):
                     self.assertEqual(len(abort_statements), 1)
+                    self.assertEqual(
+                        abort_statements[0]["Condition"],
+                        {"StringEquals": {"s3:ResourceAccount": TEST_AWS_ACCOUNT}},
+                    )
                     self.assertIn("benchmarks/*", json.dumps(abort_statements[0]["Resource"]))
                     self.assertNotIn("agents/*", json.dumps(abort_statements[0]["Resource"]))
                 else:

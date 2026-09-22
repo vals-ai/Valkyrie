@@ -65,6 +65,24 @@ async def test_read_only_runtime_needs_no_provider_credentials() -> None:
     assert clients.mock_calls == []
 
 
+def test_runtime_resource_replacement_preserves_expected_bucket_owner() -> None:
+    clients = MagicMock(spec=AWSClientProvider, credential_source="managed")
+    regional_clients = MagicMock(spec=AWSClientProvider, credential_source="managed")
+    clients.with_region.return_value = regional_clients
+    runtime = AWSRuntime(
+        AWSResources("us-east-1", "original-bucket", "logs", 30),
+        cast(AWSClientProvider, clients),
+        expected_bucket_owner="123456789012",
+    )
+    resources = AWSResources("us-west-2", "saved-bucket", "saved-logs", 14)
+
+    replaced = runtime.with_resources(resources)
+
+    assert replaced.resources == resources
+    assert replaced.clients is regional_clients
+    assert replaced.expected_bucket_owner == "123456789012"
+
+
 async def test_cancelled_shutdown_drains_provider(monkeypatch: pytest.MonkeyPatch, aws_runtime: AWSRuntime) -> None:
     """Repeated caller cancellation does not interrupt provider shutdown."""
     started, release = asyncio.Event(), asyncio.Event()

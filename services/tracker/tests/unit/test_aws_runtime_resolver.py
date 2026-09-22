@@ -57,6 +57,7 @@ def _configure_managed_runtime(
     resources_configured: bool = True,
 ) -> None:
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(_ORG_ID if eligible else _OTHER_ORG_ID))
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
     monkeypatch.setattr(config, "AWS_MANAGED_SUBMISSIONS_ENABLED", submissions_enabled)
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "deployment-region" if resources_configured else None)
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket" if resources_configured else None)
@@ -145,9 +146,11 @@ def test_start_runtime_selection(
     if expected_mode == "managed":
         assert resolution.access_key_harness_config is None
         assert isinstance(resolution.runtime.clients, DefaultChainAWSClientProvider)
+        assert resolution.runtime.expected_bucket_owner == "123456789012"
     else:
         assert resolution.access_key_harness_config is not None
         assert isinstance(resolution.runtime.clients, ExplicitCredentialsAWSClientProvider)
+        assert resolution.runtime.expected_bucket_owner is None
 
 
 @pytest.mark.parametrize(
@@ -198,6 +201,18 @@ def test_managed_run_ignores_partial_access_key_headers(monkeypatch: pytest.Monk
 
     assert runtime.resources.s3_bucket == "deployment-bucket"
     assert isinstance(runtime.clients, DefaultChainAWSClientProvider)
+    assert runtime.expected_bucket_owner == "123456789012"
+
+
+def test_managed_runtime_rejects_missing_deployment_account(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_managed_runtime(monkeypatch)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", None)
+
+    with pytest.raises(HTTPException) as error:
+        resolve_start_aws_runtime(_request(), None, _ORG_ID)
+
+    assert error.value.status_code == 500
+    assert error.value.detail == "AWS_DEPLOYMENT_ACCOUNT_ID must be a 12-digit AWS account ID"
 
 
 @pytest.mark.parametrize(

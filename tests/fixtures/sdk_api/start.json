@@ -2,6 +2,7 @@
   "request": {
     "environment": "aws",
     "properties": null,
+    "managed_s3_bucket": null,
     "contract": {
       "name": "sweagent",
       "model": "claude-sonnet",
@@ -63,6 +64,7 @@
     "task_count": 1,
     "cloudwatch_url": "https://logs.test/run",
     "s3_bucket_url": "s3://runs-bucket/run",
+    "storage_bucket": "runs-bucket",
     "executor_release_id": null,
     "current_execution_release_id": null,
     "executor_artifact_digest": null,
