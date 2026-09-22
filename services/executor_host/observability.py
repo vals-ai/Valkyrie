@@ -102,38 +102,44 @@ def configure_observability() -> None:
 
 
 def record_task_protection_confirmation(*, expiration: datetime | None, admission_open: bool) -> None:
-    """Record a confirmed ECS task-protection state."""
-    expiration_text = expiration.isoformat() if expiration is not None else None
-    logger.info(
-        "ECS task protection state confirmed",
-        extra={
-            "task_protection_admission_open": admission_open,
-            "task_protection_confirmed_expiration": expiration_text,
-        },
-    )
-    _gauge("valkyrie.executor_host.task_protection.admission_open", float(admission_open))
-    confirmed_expiration = expiration.timestamp() if expiration is not None else 0
-    _gauge("valkyrie.executor_host.task_protection.confirmed_expiration", confirmed_expiration)
+    """Record a confirmed ECS task-protection state without affecting admission."""
+    try:
+        expiration_text = expiration.isoformat() if expiration is not None else None
+        logger.info(
+            "ECS task protection state confirmed",
+            extra={
+                "task_protection_admission_open": admission_open,
+                "task_protection_confirmed_expiration": expiration_text,
+            },
+        )
+        _gauge("valkyrie.executor_host.task_protection.admission_open", float(admission_open))
+        confirmed_expiration = expiration.timestamp() if expiration is not None else 0
+        _gauge("valkyrie.executor_host.task_protection.confirmed_expiration", confirmed_expiration)
+    except Exception:
+        pass
 
 
 def record_task_protection_rejection(*, reason: str, confirmed_expiration: datetime | None) -> None:
-    """Record an admission-closing protection rejection with bounded reason cardinality."""
-    expiration_text = confirmed_expiration.isoformat() if confirmed_expiration is not None else None
-    logger.warning(
-        "ECS task protection update rejected",
-        extra={
-            "task_protection_admission_open": False,
-            "task_protection_confirmed_expiration": expiration_text,
-            "task_protection_rejection_reason": reason,
-        },
-    )
-    _count("valkyrie.executor_host.task_protection.rejected", attributes={"reason": reason})
-    _gauge("valkyrie.executor_host.task_protection.admission_open", 0)
-    if confirmed_expiration is not None:
-        _gauge(
-            "valkyrie.executor_host.task_protection.confirmed_expiration",
-            confirmed_expiration.timestamp(),
+    """Record an admission-closing rejection without affecting admission."""
+    try:
+        expiration_text = confirmed_expiration.isoformat() if confirmed_expiration is not None else None
+        logger.warning(
+            "ECS task protection update rejected",
+            extra={
+                "task_protection_admission_open": False,
+                "task_protection_confirmed_expiration": expiration_text,
+                "task_protection_rejection_reason": reason,
+            },
         )
+        _count("valkyrie.executor_host.task_protection.rejected", attributes={"reason": reason})
+        _gauge("valkyrie.executor_host.task_protection.admission_open", 0)
+        if confirmed_expiration is not None:
+            _gauge(
+                "valkyrie.executor_host.task_protection.confirmed_expiration",
+                confirmed_expiration.timestamp(),
+            )
+    except Exception:
+        pass
 
 
 def _count(name: str, *, attributes: dict[str, str]) -> None:

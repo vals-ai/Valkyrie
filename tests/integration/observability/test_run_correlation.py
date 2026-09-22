@@ -160,7 +160,7 @@ def _run_executor_host(dsn: str, input_path: str, output_path: str) -> None:
         Path(output_path).write_text(json.dumps(process_payload.arguments["telemetry_context_json"]))
         _capture_test_error("valkyrie-executor-host")
 
-    host_supervisor.run_executor_dispatch = capture_dispatch
+    host_supervisor._run_admitted_executor_dispatch = capture_dispatch  # pyright: ignore[reportPrivateUsage]
     asyncio.run(host_supervisor.launch_executor.original_func(**payload))
     _flush_telemetry()
 
@@ -303,9 +303,9 @@ def test_run_id_correlates_logs_errors_and_traces_across_processes(tmp_path: Pat
     event_trace_ids = [cast(str, event["contexts"]["trace"]["trace_id"]) for event in events]
     transaction_trace_ids = [cast(str, transaction["contexts"]["trace"]["trace_id"]) for transaction in transactions]
     log_trace_ids = [cast(str, entry["trace_id"]) for entry in correlated_logs]
-    assert len(metrics) == 1
-    assert metrics[0]["name"] == "valkyrie.observability.smoke"
-    assert _attribute_value(metrics[0], "operation") == "run"
-    assert _attribute_value(metrics[0], "benchmark_id") is None
-    metric_trace_ids = [cast(str, metric["trace_id"]) for metric in metrics]
+    smoke_metrics = [metric for metric in metrics if metric["name"] == "valkyrie.observability.smoke"]
+    assert len(smoke_metrics) == 1
+    assert _attribute_value(smoke_metrics[0], "operation") == "run"
+    assert _attribute_value(smoke_metrics[0], "benchmark_id") is None
+    metric_trace_ids = [cast(str, metric["trace_id"]) for metric in smoke_metrics]
     assert len(set([*event_trace_ids, *transaction_trace_ids, *log_trace_ids, *metric_trace_ids])) == 1

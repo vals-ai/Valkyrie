@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import re
+from contextlib import asynccontextmanager
 import tarfile
 from collections.abc import AsyncIterator
 from datetime import timezone
@@ -1128,7 +1129,12 @@ class TestTrackerAPI:
                 process_payload=process_payload,
             )
 
-        monkeypatch.setattr(executor_host, "run_executor_dispatch", capture_dispatch)
+        @asynccontextmanager
+        async def admit_executor() -> AsyncIterator[None]:
+            yield
+
+        monkeypatch.setattr(executor_host, "_task_protection", admit_executor)
+        monkeypatch.setattr(executor_host, "_run_admitted_executor_dispatch", capture_dispatch)
         await executor_host.launch_executor.original_func(**taskiq_message.kwargs)
 
         assert taskiq_message.task_name == executor_host.launch_executor.task_name

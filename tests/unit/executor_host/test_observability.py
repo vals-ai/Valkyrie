@@ -245,3 +245,19 @@ def test_confirmed_protection_disable_clears_expiration_gauge(monkeypatch: pytes
         ("valkyrie.executor_host.task_protection.admission_open", 0.0),
         ("valkyrie.executor_host.task_protection.confirmed_expiration", 0),
     ]
+
+
+def test_task_protection_logging_failure_does_not_escape(monkeypatch: pytest.MonkeyPatch) -> None:
+    info = Mock(side_effect=RuntimeError("logging unavailable"))
+    warning = Mock(side_effect=RuntimeError("logging unavailable"))
+    monkeypatch.setattr(observability.logger, "info", info)
+    monkeypatch.setattr(observability.logger, "warning", warning)
+
+    observability.record_task_protection_confirmation(expiration=None, admission_open=False)
+    observability.record_task_protection_rejection(
+        reason="deployment_blocked",
+        confirmed_expiration=None,
+    )
+
+    info.assert_called_once()
+    warning.assert_called_once()

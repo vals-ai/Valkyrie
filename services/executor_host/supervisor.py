@@ -13,6 +13,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -92,6 +93,7 @@ _protection_refresh_task: asyncio.Task[None] | None = None
 _protection_admission_open = asyncio.Event()
 _protection_intake_open = asyncio.Event()
 _protection_intake_open.set()
+_closed_admission_handoff_pending = False
 _confirmed_protection_expiration: datetime | None = None
 _execution_lock = asyncio.Lock()
 
@@ -198,7 +200,7 @@ async def _set_task_protection(*, enabled: bool) -> _TaskProtectionUpdate:
 
 
 def _apply_task_protection_update(update: _TaskProtectionUpdate) -> None:
-    global _confirmed_protection_expiration
+    global _closed_admission_handoff_pending, _confirmed_protection_expiration
     if not update.confirmed:
         _protection_admission_open.clear()
         _protection_intake_open.clear()
@@ -211,11 +213,28 @@ def _apply_task_protection_update(update: _TaskProtectionUpdate) -> None:
     admission_open = update.protection_enabled is True
     _confirmed_protection_expiration = update.expiration
     if admission_open:
+        _closed_admission_handoff_pending = False
         _protection_admission_open.set()
         _protection_intake_open.set()
     else:
         _protection_admission_open.clear()
     record_task_protection_confirmation(expiration=update.expiration, admission_open=admission_open)
+
+
+def _task_protection_admission_is_current() -> bool:
+    if not _protection_admission_open.is_set():
+        return False
+    expiration = _confirmed_protection_expiration
+    if expiration is None or expiration > datetime.now(tz=UTC):
+        return True
+
+    _protection_admission_open.clear()
+    _protection_intake_open.clear()
+    record_task_protection_rejection(
+        reason="confirmation_expired",
+        confirmed_expiration=expiration,
+    )
+    return False
 
 
 async def _renew_task_protection(delay_seconds: float) -> None:
@@ -226,35 +245,44 @@ async def _renew_task_protection(delay_seconds: float) -> None:
         delay_seconds = _PROTECTION_REFRESH_SECONDS if update.confirmed else _PROTECTION_RETRY_SECONDS
 
 
-async def _await_task_cancellation(task: asyncio.Task[None]) -> None:
+async def _await_task_cancellation(task: asyncio.Task[None]) -> bool:
+    caller = asyncio.current_task()
+    initial_cancellation_count = caller.cancelling() if caller is not None else 0
+    caller_cancelled = False
     while not task.done():
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
-            pass
+            if caller is not None and caller.cancelling() > initial_cancellation_count:
+                caller_cancelled = True
     try:
         await task
     except asyncio.CancelledError:
         pass
+    return caller_cancelled
 
 
 async def _stop_task_protection_if_idle() -> None:
     global _protection_refresh_task
     if _active_execution_count or _protection_waiter_count:
         return
+    _protection_admission_open.clear()
+    _protection_intake_open.clear()
     refresh_task = _protection_refresh_task
     _protection_refresh_task = None
     if refresh_task is not None:
         refresh_task.cancel()
         await _await_task_cancellation(refresh_task)
-    _protection_admission_open.clear()
     _apply_task_protection_update(await _set_task_protection(enabled=False))
-    _protection_intake_open.set()
+    if not _closed_admission_handoff_pending:
+        _protection_intake_open.set()
 
 
 async def _acquire_task_protection() -> None:
-    global _active_execution_count, _protection_refresh_task, _protection_waiter_count
+    global _active_execution_count, _closed_admission_handoff_pending
+    global _protection_refresh_task, _protection_waiter_count
     async with _execution_lock:
+        _closed_admission_handoff_pending = False
         _protection_waiter_count += 1
         if _protection_refresh_task is None:
             _protection_admission_open.clear()
@@ -264,12 +292,7 @@ async def _acquire_task_protection() -> None:
         while True:
             await _protection_admission_open.wait()
             async with _execution_lock:
-                if _protection_admission_open.is_set():
-                    expiration = _confirmed_protection_expiration
-                    if expiration is not None and expiration <= datetime.now(tz=UTC):
-                        _protection_admission_open.clear()
-                        _protection_intake_open.clear()
-                        continue
+                if _task_protection_admission_is_current():
                     _protection_waiter_count -= 1
                     _active_execution_count += 1
                     return
@@ -289,13 +312,17 @@ async def _release_task_protection() -> None:
         await _stop_task_protection_if_idle()
 
 
-async def _await_task_completion(task: asyncio.Task[_T]) -> _T:
+async def _await_task_completion(task: asyncio.Task[_T]) -> tuple[_T, bool]:
+    caller = asyncio.current_task()
+    initial_cancellation_count = caller.cancelling() if caller is not None else 0
+    caller_cancelled = False
     while not task.done():
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
-            pass
-    return await task
+            if caller is not None and caller.cancelling() > initial_cancellation_count:
+                caller_cancelled = True
+    return await task, caller_cancelled
 
 
 class S3Client(Protocol):
@@ -884,7 +911,16 @@ async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
 class DeleteAfterAckRedisStreamBroker(RedisStreamBroker):
     """Delete stream entries after Taskiq acknowledges their processing."""
 
+    def _is_executor_message(self, message: AckableMessage) -> bool:
+        try:
+            taskiq_message = self.formatter.loads(message=message.data)
+            taskiq_message.parse_labels()
+        except Exception:
+            return False
+        return taskiq_message.task_name == EXECUTOR_TASK_NAME
+
     async def listen(self) -> AsyncGenerator[AckableMessage, None]:
+        global _closed_admission_handoff_pending
         messages = super().listen()
         while True:
             await _protection_intake_open.wait()
@@ -892,8 +928,9 @@ class DeleteAfterAckRedisStreamBroker(RedisStreamBroker):
                 message = await anext(messages)
             except StopAsyncIteration:
                 return
-            if not _protection_admission_open.is_set():
+            if self._is_executor_message(message) and not _task_protection_admission_is_current():
                 _protection_intake_open.clear()
+                _closed_admission_handoff_pending = True
             yield message
 
     def _ack_generator(self, id: str, queue_name: str) -> Callable[[], Awaitable[None]]:
@@ -950,6 +987,37 @@ async def _terminalize_after_failure(
         )
 
 
+async def _await_terminalization(
+    store: ExecutorDispatchStore,
+    authority: DispatchAuthority,
+    task_ids: list[str],
+) -> None:
+    terminalize_task = asyncio.create_task(_terminalize_after_failure(store, authority, task_ids))
+    await _await_task_completion(terminalize_task)
+
+
+@asynccontextmanager
+async def _task_protection() -> AsyncGenerator[None, None]:
+    protection_task = asyncio.create_task(_acquire_task_protection())
+    try:
+        await asyncio.shield(protection_task)
+    except asyncio.CancelledError:
+        protection_task.cancel()
+        await _await_task_cancellation(protection_task)
+        if not protection_task.cancelled() and protection_task.exception() is None:
+            release_task = asyncio.create_task(_release_task_protection())
+            await _await_task_completion(release_task)
+        raise
+
+    try:
+        yield
+    finally:
+        release_task = asyncio.create_task(_release_task_protection())
+        _, caller_cancelled = await _await_task_completion(release_task)
+        if caller_cancelled:
+            raise asyncio.CancelledError
+
+
 async def _heartbeat_loop(
     store: ExecutorDispatchStore,
     authority: DispatchAuthority,
@@ -991,6 +1059,81 @@ async def _heartbeat_loop(
         lease.last_confirmed_renewal_at = renewal_started_at
 
 
+async def _run_admitted_executor_dispatch(
+    executor_supervisor: ExecutorSupervisor,
+    store: ExecutorDispatchStore,
+    *,
+    executor_dispatch_id: str,
+    dispatch: ArtifactDispatch,
+    process_payload: ExecutorProcessPayload,
+    heartbeat_interval_seconds: float = DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS,
+) -> None:
+    claim_started_at = _monotonic_time()
+    claim_task = asyncio.create_task(
+        store.claim(
+            executor_dispatch_id,
+            process_payload.benchmark_id,
+            dispatch,
+        )
+    )
+    try:
+        authority = await asyncio.shield(claim_task)
+    except asyncio.CancelledError:
+        authority = None
+        try:
+            authority, _ = await _await_task_completion(claim_task)
+        except Exception:
+            logger.exception(
+                "Executor dispatch %s claim failed after caller cancellation",
+                executor_dispatch_id,
+            )
+        if authority is not None:
+            await _await_terminalization(store, authority, process_payload.verified_task_ids)
+        raise
+
+    if authority is None:
+        logger.warning(
+            "Skipping duplicate, superseded, or non-queued executor dispatch %s",
+            executor_dispatch_id,
+        )
+        return
+
+    lease = _DispatchLease(
+        last_confirmed_renewal_at=claim_started_at,
+        lost=asyncio.Event(),
+    )
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_loop(
+            store,
+            authority,
+            lease,
+            interval_seconds=heartbeat_interval_seconds,
+        )
+    )
+    try:
+        artifact_path = await executor_supervisor.prepare_artifact(dispatch)
+        await executor_supervisor.run(
+            artifact_path,
+            dispatch,
+            process_payload=process_payload,
+            authority=authority,
+            is_current=lambda: store.is_current(authority),
+            lease_lost=lease.lost,
+        )
+        if not await store.finish(authority):
+            logger.warning(
+                "Executor dispatch %s lost authority before successful finish",
+                authority.dispatch_id,
+            )
+    except BaseException:
+        await _await_terminalization(store, authority, process_payload.verified_task_ids)
+        raise
+    finally:
+        heartbeat_task.cancel()
+        if await _await_task_cancellation(heartbeat_task):
+            raise asyncio.CancelledError
+
+
 async def run_executor_dispatch(
     executor_supervisor: ExecutorSupervisor,
     store: ExecutorDispatchStore,
@@ -1000,90 +1143,15 @@ async def run_executor_dispatch(
     process_payload: ExecutorProcessPayload,
     heartbeat_interval_seconds: float = DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS,
 ) -> None:
-    protection_task = asyncio.create_task(_acquire_task_protection())
-    try:
-        await asyncio.shield(protection_task)
-    except asyncio.CancelledError:
-        protection_task.cancel()
-        await _await_task_cancellation(protection_task)
-        if not protection_task.cancelled() and protection_task.exception() is None:
-            release_task = asyncio.create_task(_release_task_protection())
-            await _await_task_completion(release_task)
-        raise
-
-    try:
-        claim_started_at = _monotonic_time()
-        claim_task = asyncio.create_task(
-            store.claim(
-                executor_dispatch_id,
-                process_payload.benchmark_id,
-                dispatch,
-            )
+    async with _task_protection():
+        await _run_admitted_executor_dispatch(
+            executor_supervisor,
+            store,
+            executor_dispatch_id=executor_dispatch_id,
+            dispatch=dispatch,
+            process_payload=process_payload,
+            heartbeat_interval_seconds=heartbeat_interval_seconds,
         )
-        try:
-            authority = await asyncio.shield(claim_task)
-        except asyncio.CancelledError:
-            authority = None
-            try:
-                authority = await _await_task_completion(claim_task)
-            except Exception:
-                logger.exception(
-                    "Executor dispatch %s claim failed after caller cancellation",
-                    executor_dispatch_id,
-                )
-            if authority is not None:
-                terminalize_task = asyncio.create_task(
-                    _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
-                )
-                await _await_task_completion(terminalize_task)
-            raise
-
-        if authority is None:
-            logger.warning(
-                "Skipping duplicate, superseded, or non-queued executor dispatch %s",
-                executor_dispatch_id,
-            )
-            return
-
-        lease = _DispatchLease(
-            last_confirmed_renewal_at=claim_started_at,
-            lost=asyncio.Event(),
-        )
-        heartbeat_task = asyncio.create_task(
-            _heartbeat_loop(
-                store,
-                authority,
-                lease,
-                interval_seconds=heartbeat_interval_seconds,
-            )
-        )
-        try:
-            artifact_path = await executor_supervisor.prepare_artifact(dispatch)
-            await executor_supervisor.run(
-                artifact_path,
-                dispatch,
-                process_payload=process_payload,
-                authority=authority,
-                is_current=lambda: store.is_current(authority),
-                lease_lost=lease.lost,
-            )
-            if not await store.finish(authority):
-                logger.warning(
-                    "Executor dispatch %s lost authority before successful finish",
-                    authority.dispatch_id,
-                )
-        except asyncio.CancelledError:
-            await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
-            raise
-        except BaseException:
-            await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
-            raise
-        finally:
-            heartbeat_task.cancel()
-            await _await_task_cancellation(heartbeat_task)
-    finally:
-        release_task = asyncio.create_task(_release_task_protection())
-        await _await_task_completion(release_task)
 
 
 @broker.task(EXECUTOR_TASK_NAME)
@@ -1096,19 +1164,20 @@ async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
         normalize_executor_telemetry_context(raw_payload.get("telemetry_context_json")),
     ) as child_telemetry_context:
         try:
-            dispatch_id = _required_string(raw_payload, "executor_dispatch_id")
-            dispatch = ArtifactDispatch.from_payload(raw_payload)
-            process_payload = ExecutorProcessPayload.from_payload(
-                raw_payload,
-                telemetry_context=child_telemetry_context,
-            )
-            await run_executor_dispatch(
-                supervisor,
-                dispatch_store,
-                executor_dispatch_id=dispatch_id,
-                dispatch=dispatch,
-                process_payload=process_payload,
-            )
+            async with _task_protection():
+                dispatch_id = _required_string(raw_payload, "executor_dispatch_id")
+                dispatch = ArtifactDispatch.from_payload(raw_payload)
+                process_payload = ExecutorProcessPayload.from_payload(
+                    raw_payload,
+                    telemetry_context=child_telemetry_context,
+                )
+                await _run_admitted_executor_dispatch(
+                    supervisor,
+                    dispatch_store,
+                    executor_dispatch_id=dispatch_id,
+                    dispatch=dispatch,
+                    process_payload=process_payload,
+                )
             record_dispatch_completion(child_telemetry_context)
         except asyncio.CancelledError:
             record_dispatch_cancellation(child_telemetry_context)

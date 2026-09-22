@@ -36,6 +36,10 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
 from executor_protocol import ExecutorTelemetryContext, validate_executor_artifact_uri
 
 
+def _accept_executor_message(_broker: object, _message: object) -> bool:
+    return True
+
+
 @pytest.fixture(autouse=True)
 def reset_task_protection_state() -> None:
     supervisor_module._active_execution_count = 0  # pyright: ignore[reportPrivateUsage]
@@ -44,6 +48,7 @@ def reset_task_protection_state() -> None:
     supervisor_module._protection_admission_open = asyncio.Event()  # pyright: ignore[reportPrivateUsage]
     supervisor_module._protection_intake_open = asyncio.Event()  # pyright: ignore[reportPrivateUsage]
     supervisor_module._protection_intake_open.set()  # pyright: ignore[reportPrivateUsage]
+    supervisor_module._closed_admission_handoff_pending = False  # pyright: ignore[reportPrivateUsage]
     supervisor_module._confirmed_protection_expiration = None  # pyright: ignore[reportPrivateUsage]
     supervisor_module._execution_lock = asyncio.Lock()  # pyright: ignore[reportPrivateUsage]
 
@@ -786,7 +791,7 @@ async def test_broker_payload_dispatch_id_reaches_dispatch_owner(
     async def capture_dispatch(*args: object, **kwargs: object) -> None:
         captured.update(kwargs)
 
-    monkeypatch.setattr(supervisor_module, "run_executor_dispatch", capture_dispatch)
+    monkeypatch.setattr(supervisor_module, "_run_admitted_executor_dispatch", capture_dispatch)
 
     await supervisor_module.launch_executor.original_func(
         start_benchmark_request_json={},
@@ -820,7 +825,7 @@ async def test_launch_executor_records_cancellation_before_context_cleanup(
             }
         )
 
-    monkeypatch.setattr(supervisor_module, "run_executor_dispatch", cancel_dispatch)
+    monkeypatch.setattr(supervisor_module, "_run_admitted_executor_dispatch", cancel_dispatch)
     monkeypatch.setattr(supervisor_module, "record_dispatch_cancellation", record_cancellation)
 
     with pytest.raises(asyncio.CancelledError):
@@ -1210,14 +1215,20 @@ async def test_task_protection_has_one_loop_for_concurrent_work(monkeypatch: pyt
 @pytest.mark.asyncio
 async def test_expired_task_protection_confirmation_cannot_admit_execution(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", None)
     monkeypatch.delenv("AWS_EXECUTION_ENV", raising=False)
+    expired_confirmation = datetime.now(tz=UTC) - timedelta(seconds=1)
+    count_metric = Mock(side_effect=RuntimeError("metrics unavailable"))
+    gauge_metric = Mock(side_effect=RuntimeError("metrics unavailable"))
+    monkeypatch.setattr(host_observability.sentry_metrics, "count", count_metric)
+    monkeypatch.setattr(host_observability.sentry_metrics, "gauge", gauge_metric)
     refresh_blocker = asyncio.Event()
     refresh_task = asyncio.create_task(refresh_blocker.wait())
     supervisor_module._protection_refresh_task = refresh_task  # pyright: ignore[reportPrivateUsage]
     supervisor_module._confirmed_protection_expiration = (  # pyright: ignore[reportPrivateUsage]
-        datetime.now(tz=UTC) - timedelta(seconds=1)
+        expired_confirmation
     )
     supervisor_module._protection_admission_open.set()  # pyright: ignore[reportPrivateUsage]
 
@@ -1230,6 +1241,15 @@ async def test_expired_task_protection_confirmation_cannot_admit_execution(
     assert supervisor_module._active_execution_count == 0  # pyright: ignore[reportPrivateUsage]
     assert not supervisor_module._protection_admission_open.is_set()  # pyright: ignore[reportPrivateUsage]
     assert not supervisor_module._protection_intake_open.is_set()  # pyright: ignore[reportPrivateUsage]
+    rejection_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "task_protection_rejection_reason", None) == "confirmation_expired"
+    ]
+    assert len(rejection_records) == 1
+    assert getattr(rejection_records[0], "task_protection_confirmed_expiration") == expired_confirmation.isoformat()
+    assert count_metric.called
+    assert gauge_metric.called
 
     supervisor_module._apply_task_protection_update(  # pyright: ignore[reportPrivateUsage]
         _confirmed_protection_update()
@@ -1245,6 +1265,11 @@ async def test_expired_task_protection_confirmation_cannot_admit_execution(
 async def test_broker_intake_keeps_all_but_one_closed_admission_message_out_of_pel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        DeleteAfterAckRedisStreamBroker,
+        "_is_executor_message",
+        _accept_executor_message,
+    )
     source_requests: list[bytes] = []
     second_request_started = asyncio.Event()
     finish_second_request = asyncio.Event()
@@ -1294,6 +1319,88 @@ async def test_broker_intake_keeps_all_but_one_closed_admission_message_out_of_p
         _confirmed_protection_update()
     )
     assert await third_message == b"message-3"
+    await messages.aclose()
+    await intake_broker.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_idle_transition_preserves_one_closed_admission_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        DeleteAfterAckRedisStreamBroker,
+        "_is_executor_message",
+        _accept_executor_message,
+    )
+    source_requests: list[bytes] = []
+    first_read_started = asyncio.Event()
+    finish_first_read = asyncio.Event()
+    disable_started = asyncio.Event()
+    finish_disable = asyncio.Event()
+    enable_started = asyncio.Event()
+    finish_enable = asyncio.Event()
+    disable_calls = 0
+
+    async def source_listen(_broker: object) -> Any:
+        source_requests.append(b"message-1")
+        first_read_started.set()
+        await finish_first_read.wait()
+        yield cast(Any, b"message-1")
+        source_requests.append(b"message-2")
+        yield cast(Any, b"message-2")
+
+    async def block_protection_update(*, enabled: bool) -> Any:
+        nonlocal disable_calls
+        if enabled:
+            enable_started.set()
+            await finish_enable.wait()
+            return _confirmed_protection_update()
+        disable_calls += 1
+        if disable_calls == 1:
+            disable_started.set()
+            await finish_disable.wait()
+        return _confirmed_protection_update(enabled=False)
+
+    async def stop_protection_while_locked() -> None:
+        async with supervisor_module._execution_lock:  # pyright: ignore[reportPrivateUsage]
+            await supervisor_module._stop_task_protection_if_idle()  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setattr(supervisor_module.RedisStreamBroker, "listen", source_listen)
+    monkeypatch.setattr(supervisor_module, "_set_task_protection", block_protection_update)
+    intake_broker = DeleteAfterAckRedisStreamBroker(
+        url="redis://localhost:6379",
+        queue_name="executor",
+        consumer_group_name="executor",
+        xread_count=1,
+    )
+    messages = intake_broker.listen()
+    supervisor_module._apply_task_protection_update(  # pyright: ignore[reportPrivateUsage]
+        _confirmed_protection_update()
+    )
+
+    first_message = asyncio.create_task(anext(messages))
+    await first_read_started.wait()
+    idle_transition = asyncio.create_task(stop_protection_while_locked())
+    await disable_started.wait()
+    finish_first_read.set()
+    assert await first_message == b"message-1"
+
+    second_message = asyncio.create_task(anext(messages))
+    finish_disable.set()
+    await idle_transition
+    acquire_task = asyncio.create_task(
+        supervisor_module._acquire_task_protection()  # pyright: ignore[reportPrivateUsage]
+    )
+    await enable_started.wait()
+    await asyncio.sleep(0)
+
+    assert source_requests == [b"message-1"]
+    assert not second_message.done()
+    finish_enable.set()
+    await acquire_task
+    assert await second_message == b"message-2"
+
+    await supervisor_module._release_task_protection()  # pyright: ignore[reportPrivateUsage]
     await messages.aclose()
     await intake_broker.shutdown()
 
@@ -1702,6 +1809,59 @@ async def test_cancellation_after_claim_terminalizes_dispatch(
 
 
 @pytest.mark.asyncio
+async def test_repeated_cancellation_after_claim_waits_for_terminalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = b"unused"
+    store = FakeDispatchStore()
+    executor_supervisor = _supervisor(tmp_path, content=artifact)
+    entered_run = asyncio.Event()
+    terminalization_started = asyncio.Event()
+    finish_terminalization = asyncio.Event()
+    terminalization_completed = asyncio.Event()
+    original_terminalize = store.terminalize
+
+    async def block_run(*_args: object, **_kwargs: object) -> None:
+        entered_run.set()
+        await asyncio.Event().wait()
+
+    async def block_terminalization(authority: DispatchAuthority, task_ids: list[str]) -> bool:
+        terminalization_started.set()
+        await finish_terminalization.wait()
+        result = await original_terminalize(authority, task_ids)
+        terminalization_completed.set()
+        return result
+
+    monkeypatch.setattr(executor_supervisor, "run", block_run)
+    monkeypatch.setattr(store, "terminalize", block_terminalization)
+    task = asyncio.create_task(
+        run_executor_dispatch(
+            executor_supervisor,
+            store,
+            executor_dispatch_id="dispatch-1",
+            dispatch=_dispatch(digest=hashlib.sha256(artifact).hexdigest()),
+            process_payload=_process_payload(),
+        )
+    )
+    await entered_run.wait()
+
+    task.cancel()
+    await terminalization_started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    finish_terminalization.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert terminalization_completed.is_set()
+    assert store.terminalized == [store.authority]
+    assert store.finished == []
+    assert supervisor_module._active_execution_count == 0  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
 async def test_periodic_authority_operational_error_allows_child_completion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1982,3 +2142,234 @@ def test_host_accepts_current_and_pinned_legacy_protocols(protocol_version: str)
     )
     assert dispatch.protocol_version == protocol_version
     assert dispatch.release_id == "immutable-release"
+
+
+@pytest.mark.asyncio
+async def test_malformed_taskiq_envelope_does_not_consume_closed_admission_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = supervisor_module.AckableMessage(data=b"{", ack=lambda: None)
+    second = supervisor_module.AckableMessage(data=b"still-not-json", ack=lambda: None)
+
+    async def source_listen(_broker: object) -> Any:
+        yield first
+        yield second
+
+    monkeypatch.setattr(supervisor_module.RedisStreamBroker, "listen", source_listen)
+    intake_broker = DeleteAfterAckRedisStreamBroker(
+        url="redis://localhost:6379",
+        queue_name="executor",
+        consumer_group_name="executor",
+        xread_count=1,
+    )
+    messages = intake_broker.listen()
+
+    assert await anext(messages) is first
+    assert supervisor_module._protection_intake_open.is_set()  # pyright: ignore[reportPrivateUsage]
+    assert not supervisor_module._closed_admission_handoff_pending  # pyright: ignore[reportPrivateUsage]
+    assert await anext(messages) is second
+
+    await messages.aclose()
+    await intake_broker.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_invalid_executor_payload_releases_closed_admission_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", None)
+    monkeypatch.delenv("AWS_EXECUTION_ENV", raising=False)
+    supervisor_module._protection_intake_open.clear()  # pyright: ignore[reportPrivateUsage]
+    supervisor_module._closed_admission_handoff_pending = True  # pyright: ignore[reportPrivateUsage]
+
+    with pytest.raises(ValueError, match="executor_dispatch_id"):
+        await cast(Any, supervisor_module.launch_executor.original_func)()
+
+    assert not supervisor_module._closed_admission_handoff_pending  # pyright: ignore[reportPrivateUsage]
+    assert supervisor_module._protection_intake_open.is_set()  # pyright: ignore[reportPrivateUsage]
+    assert supervisor_module._active_execution_count == 0  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_idle_transition_closes_admission_before_refresh_join(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refresh_cancelled = asyncio.Event()
+    finish_refresh = asyncio.Event()
+
+    async def blocked_refresh() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            refresh_cancelled.set()
+            await finish_refresh.wait()
+            raise
+
+    async def set_protection(*, enabled: bool) -> Any:
+        return _confirmed_protection_update(enabled=enabled)
+
+    async def stop_while_locked() -> None:
+        async with supervisor_module._execution_lock:  # pyright: ignore[reportPrivateUsage]
+            await supervisor_module._stop_task_protection_if_idle()  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setattr(supervisor_module, "_set_task_protection", set_protection)
+    supervisor_module._protection_admission_open.set()  # pyright: ignore[reportPrivateUsage]
+    supervisor_module._protection_intake_open.set()  # pyright: ignore[reportPrivateUsage]
+    refresh_task = asyncio.create_task(blocked_refresh())
+    supervisor_module._protection_refresh_task = refresh_task  # pyright: ignore[reportPrivateUsage]
+    await asyncio.sleep(0)
+
+    stop_task = asyncio.create_task(stop_while_locked())
+    await refresh_cancelled.wait()
+
+    assert not supervisor_module._protection_admission_open.is_set()  # pyright: ignore[reportPrivateUsage]
+    assert not supervisor_module._protection_intake_open.is_set()  # pyright: ignore[reportPrivateUsage]
+    finish_refresh.set()
+    await stop_task
+    assert supervisor_module._protection_intake_open.is_set()  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_expired_confirmation_limits_broker_to_one_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_requests: list[bytes] = []
+
+    async def source_listen(_broker: object) -> Any:
+        source_requests.append(b"message-1")
+        yield cast(Any, b"message-1")
+        source_requests.append(b"message-2")
+        yield cast(Any, b"message-2")
+
+    monkeypatch.setattr(supervisor_module.RedisStreamBroker, "listen", source_listen)
+    monkeypatch.setattr(
+        DeleteAfterAckRedisStreamBroker,
+        "_is_executor_message",
+        _accept_executor_message,
+    )
+    supervisor_module._confirmed_protection_expiration = (  # pyright: ignore[reportPrivateUsage]
+        datetime.now(tz=UTC) - timedelta(seconds=1)
+    )
+    supervisor_module._protection_admission_open.set()  # pyright: ignore[reportPrivateUsage]
+    intake_broker = DeleteAfterAckRedisStreamBroker(
+        url="redis://localhost:6379",
+        queue_name="executor",
+        consumer_group_name="executor",
+        xread_count=1,
+    )
+    messages = intake_broker.listen()
+
+    assert await anext(messages) == b"message-1"
+    second_message = asyncio.create_task(anext(messages))
+    await asyncio.sleep(0)
+    assert source_requests == [b"message-1"]
+    assert not second_message.done()
+    assert not supervisor_module._protection_admission_open.is_set()  # pyright: ignore[reportPrivateUsage]
+    assert not supervisor_module._protection_intake_open.is_set()  # pyright: ignore[reportPrivateUsage]
+
+    supervisor_module._apply_task_protection_update(  # pyright: ignore[reportPrivateUsage]
+        _confirmed_protection_update()
+    )
+    assert await second_message == b"message-2"
+    await messages.aclose()
+    await intake_broker.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_fresh_cancellation_during_release_is_propagated_after_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_started = asyncio.Event()
+    finish_release = asyncio.Event()
+    release_completed = asyncio.Event()
+    original_release = supervisor_module._release_task_protection  # pyright: ignore[reportPrivateUsage]
+
+    async def set_protection(*, enabled: bool) -> Any:
+        return _confirmed_protection_update(enabled=enabled)
+
+    async def blocked_release() -> None:
+        release_started.set()
+        await finish_release.wait()
+        await original_release()
+        release_completed.set()
+
+    monkeypatch.setattr(supervisor_module, "_set_task_protection", set_protection)
+    monkeypatch.setattr(supervisor_module, "_release_task_protection", blocked_release)
+    artifact = b"unused"
+    task = asyncio.create_task(
+        run_executor_dispatch(
+            _supervisor(tmp_path, content=artifact),
+            FakeDispatchStore(claim_result=False),
+            executor_dispatch_id="dispatch-1",
+            dispatch=_dispatch(digest=hashlib.sha256(artifact).hexdigest()),
+            process_payload=_process_payload(),
+        )
+    )
+    await release_started.wait()
+
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    finish_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert release_completed.is_set()
+    assert supervisor_module._active_execution_count == 0  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_fresh_cancellation_during_heartbeat_cleanup_is_propagated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    heartbeat_started = asyncio.Event()
+    heartbeat_cleanup_started = asyncio.Event()
+    finish_heartbeat_cleanup = asyncio.Event()
+    heartbeat_cleanup_completed = asyncio.Event()
+    store = FakeDispatchStore()
+    executor_supervisor = _supervisor(tmp_path, content=b"unused")
+
+    async def set_protection(*, enabled: bool) -> Any:
+        return _confirmed_protection_update(enabled=enabled)
+
+    async def blocked_heartbeat(*_args: object, **_kwargs: object) -> None:
+        heartbeat_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            heartbeat_cleanup_started.set()
+            await finish_heartbeat_cleanup.wait()
+            heartbeat_cleanup_completed.set()
+            raise
+
+    async def successful_run(*_args: object, **_kwargs: object) -> None:
+        await heartbeat_started.wait()
+
+    monkeypatch.setattr(supervisor_module, "_set_task_protection", set_protection)
+    monkeypatch.setattr(supervisor_module, "_heartbeat_loop", blocked_heartbeat)
+    monkeypatch.setattr(executor_supervisor, "run", successful_run)
+    artifact = b"unused"
+    task = asyncio.create_task(
+        run_executor_dispatch(
+            executor_supervisor,
+            store,
+            executor_dispatch_id="dispatch-1",
+            dispatch=_dispatch(digest=hashlib.sha256(artifact).hexdigest()),
+            process_payload=_process_payload(),
+        )
+    )
+    await heartbeat_cleanup_started.wait()
+
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    finish_heartbeat_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert heartbeat_cleanup_completed.is_set()
+    assert store.finished == [store.authority]
+    assert store.terminalized == []
+    assert supervisor_module._active_execution_count == 0  # pyright: ignore[reportPrivateUsage]
