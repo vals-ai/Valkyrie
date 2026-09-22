@@ -2,23 +2,111 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import AsyncGenerator
+from threading import BoundedSemaphore
+from time import perf_counter
 from typing import Literal
-from fastapi import APIRouter, Depends, Query, Request
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from opentelemetry import metrics
 from sqlalchemy import case
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlmodel import Session, col, desc, func, select
 
-from tracker.api.parsing import parse_csv
 from tracker.api.dependencies import TrackedBenchmarkId
+from tracker.api.parsing import parse_csv
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.aws.resolver import resolve_run_metadata_aws_runtime
 from tracker.aws.s3 import create_benchmark_url
+from tracker.config import DATABASE_POOL_SIZE
 from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.types import SingleBenchmarkResponse, TasksResponse, TaskSummary
 
 router = APIRouter(prefix="/benchmarks")
+logger = logging.getLogger(__name__)
+
+# DATABASE_POOL_SIZE is a steady-state per-process connection budget: each of the
+# two Uvicorn workers in a Tracker task owns a separate SQLAlchemy pool. Reserve
+# three quarters of each worker's pool for other routes and background work, and
+# deliberately do not treat overflow connections as routine capacity. With the
+# intended two Tracker tasks, the four independent process-local gates admit at
+# most 4 * (DATABASE_POOL_SIZE // 4) task lists at once. This is a topology
+# estimate, not a distributed semaphore or a fleet-wide guarantee.
+_TASK_LIST_CAPACITY = max(1, DATABASE_POOL_SIZE // 4)
+_TASK_LIST_RETRY_AFTER_SECONDS = 1
+_task_list_slots = BoundedSemaphore(_TASK_LIST_CAPACITY)
+
+_meter = metrics.get_meter(__name__)
+_task_list_admissions = _meter.create_counter(
+    "tracker.task_list.admissions",
+    description="Task-list admission decisions",
+)
+_task_list_completions = _meter.create_counter(
+    "tracker.task_list.completions",
+    description="Terminal outcomes for admitted task-list requests",
+)
+_task_list_admission_wait = _meter.create_histogram(
+    "tracker.task_list.admission_wait",
+    unit="s",
+    description="Time spent making a task-list admission decision",
+)
+_task_list_latency = _meter.create_histogram(
+    "tracker.task_list.duration",
+    unit="s",
+    description="End-to-end latency for admitted task-list requests",
+)
+
+
+async def _admit_task_list() -> AsyncGenerator[None, None]:
+    """Reject excess task-list work before auth or a database session begins."""
+    admission_started = perf_counter()
+    admitted = _task_list_slots.acquire(blocking=False)
+    admission_wait = perf_counter() - admission_started
+    admission_outcome = "admitted" if admitted else "overload_rejected"
+    admission_attributes = {"outcome": admission_outcome}
+    _task_list_admissions.add(1, admission_attributes)
+    _task_list_admission_wait.record(admission_wait, admission_attributes)
+
+    if not admitted:
+        logger.warning(
+            "task_list.admission",
+            extra={"outcome": admission_outcome, "admission_wait_seconds": admission_wait},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Task list capacity is busy; retry shortly",
+            headers={"Retry-After": str(_TASK_LIST_RETRY_AFTER_SECONDS)},
+        )
+
+    logger.info(
+        "task_list.admission",
+        extra={"outcome": admission_outcome, "admission_wait_seconds": admission_wait},
+    )
+    handler_started = perf_counter()
+    terminal_outcome = "completed"
+    try:
+        yield
+    except SQLAlchemyTimeoutError:
+        terminal_outcome = "pool_timeout"
+        raise
+    except Exception:
+        terminal_outcome = "handler_error"
+        raise
+    finally:
+        duration = perf_counter() - handler_started
+        _task_list_slots.release()
+        terminal_attributes = {"outcome": terminal_outcome}
+        _task_list_completions.add(1, terminal_attributes)
+        _task_list_latency.record(duration, terminal_attributes)
+        log = logger.info if terminal_outcome == "completed" else logger.warning
+        log(
+            "task_list.completion",
+            extra={"outcome": terminal_outcome, "duration_seconds": duration},
+        )
 
 
 def _escape_sql_like_pattern(value: str) -> str:
@@ -98,7 +186,22 @@ def get_single_benchmark(
     )
 
 
-@router.get("/{benchmark_id}/tasks", response_model=TasksResponse)
+@router.get(
+    "/{benchmark_id}/tasks",
+    response_model=TasksResponse,
+    dependencies=[Depends(_admit_task_list)],
+    responses={
+        status.HTTP_503_SERVICE_UNAVAILABLE: {
+            "description": "Task-list capacity is busy. Retry after the number of seconds in Retry-After.",
+            "headers": {
+                "Retry-After": {
+                    "description": "Seconds to wait before retrying the task-list request.",
+                    "schema": {"type": "integer"},
+                }
+            },
+        }
+    },
+)
 def get_benchmark_tasks(
     benchmark_id: TrackedBenchmarkId,
     status: str = Query(default=""),

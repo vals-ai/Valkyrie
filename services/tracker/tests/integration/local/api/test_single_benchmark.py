@@ -4,14 +4,19 @@ Exercise single-benchmark routes through the real app and local database.
 """
 
 import json
+from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from threading import BoundedSemaphore, Event, Lock
 from uuid import uuid4
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlmodel import Session
 
+from tracker.api import single_benchmark as single_benchmark_api
 from tests.factories import make_benchmark, make_task
 from tracker.database.models import (
     Benchmark,
@@ -22,6 +27,7 @@ from tracker.database.models import (
     Org,
     TaskStatus,
 )
+from tracker.database.session import get_session
 
 
 class TestSingleBenchmark:
@@ -622,3 +628,83 @@ class TestBenchmarkTaskSearch:
         response_body = response.json()
         assert response_body["total_count"] == 1
         assert response_body["tasks"][0]["task_id"] == "astropy__13033"
+
+
+def test_task_list_overload_rejects_before_session_and_preserves_availability(
+    client: TestClient,
+    local_app: FastAPI,
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Excess task-list work must fail fast without consuming database capacity."""
+    benchmark = make_benchmark(name="overload-proof", status=BenchmarkStatus.FINISHED, session=database_session)
+    error_task = make_task(
+        benchmark,
+        "error-task",
+        status=TaskStatus.ERROR,
+        started_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    database_session.add(error_task)
+    database_session.flush()
+    database_session.add(
+        ErrorResult(
+            org_id=benchmark.org_id,
+            task=error_task.id,
+            error_message="latest visible error",
+            created_at=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+    )
+    database_session.commit()
+
+    monkeypatch.setattr(single_benchmark_api, "_task_list_slots", BoundedSemaphore(1))
+    admitted_at_session = Event()
+    release_admitted = Event()
+    acquisition_lock = Lock()
+    session_acquisitions = 0
+
+    def blocking_session() -> Generator[Session, None, None]:
+        nonlocal session_acquisitions
+        with acquisition_lock:
+            session_acquisitions += 1
+        admitted_at_session.set()
+        assert release_admitted.wait(timeout=5), "admitted request was not released"
+        yield database_session
+
+    monkeypatch.setitem(local_app.dependency_overrides, get_session, blocking_session)
+    task_list_url = f"/benchmarks/{benchmark.id}/tasks"
+    headers = {"Authorization": "Bearer fake"}
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        admitted_future = executor.submit(client.get, task_list_url, headers=headers)
+        assert admitted_at_session.wait(timeout=2), "first request did not reach the session dependency"
+        try:
+            rejected_future = executor.submit(client.get, task_list_url, headers=headers)
+            rejected = rejected_future.result(timeout=1)
+            health_future = executor.submit(client.get, "/health")
+            health = health_future.result(timeout=1)
+        finally:
+            release_admitted.set()
+        admitted = admitted_future.result(timeout=5)
+
+    assert rejected.status_code == 503, rejected.text
+    assert rejected.headers["Retry-After"] == "1"
+    assert rejected.json() == {"detail": "Task list capacity is busy; retry shortly"}
+    assert session_acquisitions == 1
+    assert health.status_code == 200, health.text
+    assert health.json() == {"status": "ok"}
+
+    assert admitted.status_code == 200, admitted.text
+    assert error_task.finished_at is not None
+    assert admitted.json() == {
+        "tasks": [
+            {
+                "id": str(error_task.id),
+                "task_id": "error-task",
+                "status": "ERROR",
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "finished_at": error_task.finished_at.isoformat(),
+                "error_message": "latest visible error",
+            }
+        ],
+        "total_count": 1,
+    }

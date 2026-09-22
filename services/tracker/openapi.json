@@ -3885,6 +3885,17 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Task-list capacity is busy. Retry after the number of seconds in Retry-After.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying the task-list request.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Get Benchmark Tasks"
