@@ -92,10 +92,36 @@ def test_task_listing_index_migration_is_retry_safe(migration_database_url: str)
     engine = create_engine(migration_database_url)
     index_query = text(
         """
-        SELECT i.indisvalid, i.indisunique, pg_get_indexdef(i.indexrelid)
+        SELECT
+            i.indexrelid AS index_oid,
+            i.indisvalid,
+            i.indisunique,
+            i.indnkeyatts,
+            i.indnatts,
+            i.indexprs IS NULL AS has_no_expressions,
+            i.indpred IS NULL AS has_no_predicate,
+            am.amname,
+            tn.nspname AS table_schema,
+            t.relname AS table_name,
+            (
+                SELECT array_agg(a.attname ORDER BY key.ordinality)
+                FROM unnest(i.indkey) WITH ORDINALITY AS key(attnum, ordinality)
+                JOIN pg_attribute AS a
+                  ON a.attrelid = i.indrelid
+                 AND a.attnum = key.attnum
+            ) AS key_columns,
+            pg_index_column_has_property(i.indexrelid, 1, 'asc') AS key_1_asc,
+            pg_index_column_has_property(i.indexrelid, 1, 'nulls_last') AS key_1_nulls_last,
+            pg_index_column_has_property(i.indexrelid, 2, 'asc') AS key_2_asc,
+            pg_index_column_has_property(i.indexrelid, 2, 'nulls_last') AS key_2_nulls_last,
+            pg_index_column_has_property(i.indexrelid, 3, 'desc') AS key_3_desc,
+            pg_index_column_has_property(i.indexrelid, 3, 'nulls_first') AS key_3_nulls_first
         FROM pg_index AS i
         JOIN pg_class AS c ON c.oid = i.indexrelid
         JOIN pg_namespace AS n ON n.oid = c.relnamespace
+        JOIN pg_class AS t ON t.oid = i.indrelid
+        JOIN pg_namespace AS tn ON tn.oid = t.relnamespace
+        JOIN pg_am AS am ON am.oid = c.relam
         WHERE c.relname = :index_name AND n.nspname = current_schema()
         """
     )
@@ -108,7 +134,20 @@ def test_task_listing_index_migration_is_retry_safe(migration_database_url: str)
         index = connection.execute(index_query, index_params).one()
         assert index.indisvalid is True
         assert index.indisunique is False
-        assert "(benchmark, org_id, started_at DESC)" in index.pg_get_indexdef
+        assert index.indnkeyatts == 3
+        assert index.indnatts == 3
+        assert index.has_no_expressions is True
+        assert index.has_no_predicate is True
+        assert index.amname == "btree"
+        assert index.table_schema == "public"
+        assert index.table_name == "task"
+        assert index.key_columns == ["benchmark", "org_id", "started_at"]
+        assert index.key_1_asc is True
+        assert index.key_1_nulls_last is True
+        assert index.key_2_asc is True
+        assert index.key_2_nulls_last is True
+        assert index.key_3_desc is True
+        assert index.key_3_nulls_first is True
         assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
 
     downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
@@ -120,12 +159,61 @@ def test_task_listing_index_migration_is_retry_safe(migration_database_url: str)
                 "ON task (benchmark, org_id, started_at DESC)"
             )
         )
+        matching_index_oid = connection.execute(index_query, index_params).one().index_oid
+    upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    with engine.connect() as connection:
+        index = connection.execute(index_query, index_params).one()
+        assert index.index_oid == matching_index_oid
+        assert index.indisvalid is True
+        assert index.indisunique is False
+        assert index.indnkeyatts == 3
+        assert index.indnatts == 3
+        assert index.has_no_expressions is True
+        assert index.has_no_predicate is True
+        assert index.amname == "btree"
+        assert index.table_schema == "public"
+        assert index.table_name == "task"
+        assert index.key_columns == ["benchmark", "org_id", "started_at"]
+        assert index.key_1_asc is True
+        assert index.key_1_nulls_last is True
+        assert index.key_2_asc is True
+        assert index.key_2_nulls_last is True
+        assert index.key_3_desc is True
+        assert index.key_3_nulls_first is True
+        assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
+    downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
+    assert downgrade.returncode == 0, downgrade.stderr
+    with engine.connect() as connection:
+        assert connection.execute(index_query, index_params).one_or_none() is None
+    with engine.connect() as connection:
+        connection.execution_options(isolation_level="AUTOCOMMIT").execute(
+            text(
+                'CREATE INDEX CONCURRENTLY "ix_task_benchmark_org_started_at" '
+                "ON task (org_id, benchmark, started_at ASC)"
+            )
+        )
+        wrong_index = connection.execute(index_query, index_params).one()
+        assert wrong_index.indisvalid is True
+        assert wrong_index.indisunique is False
+        assert wrong_index.key_columns == ["org_id", "benchmark", "started_at"]
+        assert wrong_index.key_1_asc is True
+        assert wrong_index.key_2_asc is True
+        assert wrong_index.key_3_desc is False
 
     upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_REVISION)
     assert upgrade.returncode == 0, upgrade.stderr
     with engine.connect() as connection:
         index = connection.execute(index_query, index_params).one()
         assert index.indisvalid is True
+        assert index.indisunique is False
+        assert index.key_columns == ["benchmark", "org_id", "started_at"]
+        assert index.key_1_asc is True
+        assert index.key_1_nulls_last is True
+        assert index.key_2_asc is True
+        assert index.key_2_nulls_last is True
+        assert index.key_3_desc is True
+        assert index.key_3_nulls_first is True
         assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
 
     downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
@@ -183,7 +271,7 @@ def test_task_listing_index_migration_is_retry_safe(migration_database_url: str)
         index = connection.execute(index_query, index_params).one()
         assert index.indisvalid is True
         assert index.indisunique is False
-        assert "(benchmark, org_id, started_at DESC)" in index.pg_get_indexdef
+        assert index.key_columns == ["benchmark", "org_id", "started_at"]
         assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
 
     with engine.connect() as connection:

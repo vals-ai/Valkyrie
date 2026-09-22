@@ -25,12 +25,38 @@ def upgrade() -> None:
         .execute(
             sa.text(
                 """
-            SELECT indexrelid::regclass::text, indisvalid
-            FROM pg_index
-            JOIN pg_class ON pg_class.oid = pg_index.indexrelid
-            JOIN pg_namespace ON pg_namespace.oid = pg_class.relnamespace
-            WHERE pg_class.relname = :index_name
-              AND pg_namespace.nspname = current_schema()
+            SELECT
+                i.indisvalid,
+                i.indisunique,
+                i.indnkeyatts = 3
+                    AND i.indnatts = 3
+                    AND i.indexprs IS NULL
+                    AND i.indpred IS NULL
+                    AND am.amname = 'btree'
+                    AND (
+                        SELECT array_agg(a.attname ORDER BY key.ordinality)
+                        FROM unnest(i.indkey) WITH ORDINALITY AS key(attnum, ordinality)
+                        JOIN pg_attribute AS a
+                          ON a.attrelid = i.indrelid
+                         AND a.attnum = key.attnum
+                    ) = ARRAY['benchmark', 'org_id', 'started_at']::name[]
+                    AND pg_index_column_has_property(i.indexrelid, 1, 'asc')
+                    AND pg_index_column_has_property(i.indexrelid, 1, 'nulls_last')
+                    AND pg_index_column_has_property(i.indexrelid, 2, 'asc')
+                    AND pg_index_column_has_property(i.indexrelid, 2, 'nulls_last')
+                    AND pg_index_column_has_property(i.indexrelid, 3, 'desc')
+                    AND pg_index_column_has_property(i.indexrelid, 3, 'nulls_first')
+                    AND t.relname = 'task'
+                    AND tn.nspname = current_schema()
+                    AS is_structurally_equivalent
+            FROM pg_index AS i
+            JOIN pg_class AS c ON c.oid = i.indexrelid
+            JOIN pg_namespace AS n ON n.oid = c.relnamespace
+            JOIN pg_class AS t ON t.oid = i.indrelid
+            JOIN pg_namespace AS tn ON tn.oid = t.relnamespace
+            JOIN pg_am AS am ON am.oid = c.relam
+            WHERE c.relname = :index_name
+              AND n.nspname = current_schema()
             """
             ),
             {"index_name": _INDEX_NAME},
@@ -39,7 +65,12 @@ def upgrade() -> None:
         .one_or_none()
     )
 
-    if existing_index is not None and existing_index["indisvalid"]:
+    if (
+        existing_index is not None
+        and existing_index["indisvalid"]
+        and not existing_index["indisunique"]
+        and existing_index["is_structurally_equivalent"]
+    ):
         return
 
     with op.get_context().autocommit_block():
