@@ -33,6 +33,7 @@ from tracker.database.models import (
     ExecutorRelease,
     Org,
     Task,
+    TaskBreakdown,
     TaskStatus,
 )
 from tracker.exceptions import TrackerServiceError
@@ -605,6 +606,64 @@ class TestRunState:
             "task_stopped": None,
             "task_pending": None,
         }
+
+    def test_final_score_inputs_carry_each_task_own_execution_timings(
+        self, example_benchmark_object: Benchmark, database_session: Session
+    ) -> None:
+        """A benchmark service scores with the wall clock the executor measured for each task.
+
+        `create_final_view` already publishes the same block on the run's result file, so a
+        service that reports a run-level duration reads it from the same numbers the file shows.
+        """
+        benchmark_row = example_benchmark_object
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        breakdown = TaskBreakdown(
+            sandbox_build_duration=1.5,
+            agent_run_duration=700.0,
+            evaluation_run_duration=4.0,
+            sandbox_run_duration=800.0,
+        )
+        database_session.add(breakdown)
+        database_session.commit()
+
+        timed_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_timed",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+            task_breakdown=breakdown.id,
+        )
+        untimed_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_untimed",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        database_session.add_all([timed_task, untimed_task])
+        database_session.commit()
+
+        database_session.add_all(
+            [
+                EvaluationResult(org_id=TEST_ORG_ID, task=timed_task.id, result={"score": 1.0}),
+                EvaluationResult(org_id=TEST_ORG_ID, task=untimed_task.id, result={"score": 0.0}),
+            ]
+        )
+        database_session.commit()
+
+        inputs = fetch_final_score_inputs(database_session, benchmark_row, self._test_org)
+
+        assert inputs["task_timed"] == {
+            "score": 1.0,
+            "task_breakdown": {
+                "sandbox_build_duration": 1.5,
+                "agent_run_duration": 700.0,
+                "evaluation_run_duration": 4.0,
+                "sandbox_run_duration": 800.0,
+            },
+        }
+        assert inputs["task_untimed"] == {"score": 0.0}
 
     def test_commit_task_error_spans_status_transition(
         self,
