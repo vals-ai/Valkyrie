@@ -12,7 +12,7 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,7 +22,7 @@ import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
 from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
 from redis.asyncio import Redis
-from taskiq import TaskiqEvents
+from taskiq import AckableMessage, TaskiqEvents
 from taskiq_redis import RedisStreamBroker
 from executor_protocol import (
     DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS,
@@ -90,6 +90,8 @@ _active_execution_count = 0
 _protection_waiter_count = 0
 _protection_refresh_task: asyncio.Task[None] | None = None
 _protection_admission_open = asyncio.Event()
+_protection_intake_open = asyncio.Event()
+_protection_intake_open.set()
 _confirmed_protection_expiration: datetime | None = None
 _execution_lock = asyncio.Lock()
 
@@ -160,6 +162,8 @@ def _parse_task_protection_response(response_body: bytes, *, expected_enabled: b
 
 async def _set_task_protection(*, enabled: bool) -> _TaskProtectionUpdate:
     if not ECS_AGENT_URI:
+        if os.environ.get("AWS_EXECUTION_ENV", "").startswith("AWS_ECS_"):
+            return _rejected_task_protection_update("ecs_agent_uri_missing")
         return _TaskProtectionUpdate(confirmed=True, protection_enabled=enabled)
     body: dict[str, object] = {"ProtectionEnabled": enabled}
     if enabled:
@@ -179,7 +183,10 @@ async def _set_task_protection(*, enabled: bool) -> _TaskProtectionUpdate:
     try:
         response_body = await asyncio.shield(update_task)
     except asyncio.CancelledError:
-        await _await_task_completion(update_task)
+        try:
+            await _await_task_completion(update_task)
+        except Exception:
+            logger.exception("ECS task protection request failed after caller cancellation")
         raise
     except urllib.error.HTTPError:
         logger.exception("ECS task protection request returned an HTTP error")
@@ -194,6 +201,7 @@ def _apply_task_protection_update(update: _TaskProtectionUpdate) -> None:
     global _confirmed_protection_expiration
     if not update.confirmed:
         _protection_admission_open.clear()
+        _protection_intake_open.clear()
         record_task_protection_rejection(
             reason=update.rejection_reason or "unknown",
             confirmed_expiration=_confirmed_protection_expiration,
@@ -204,6 +212,7 @@ def _apply_task_protection_update(update: _TaskProtectionUpdate) -> None:
     _confirmed_protection_expiration = update.expiration
     if admission_open:
         _protection_admission_open.set()
+        _protection_intake_open.set()
     else:
         _protection_admission_open.clear()
     record_task_protection_confirmation(expiration=update.expiration, admission_open=admission_open)
@@ -240,6 +249,7 @@ async def _stop_task_protection_if_idle() -> None:
         await _await_task_cancellation(refresh_task)
     _protection_admission_open.clear()
     _apply_task_protection_update(await _set_task_protection(enabled=False))
+    _protection_intake_open.set()
 
 
 async def _acquire_task_protection() -> None:
@@ -255,6 +265,11 @@ async def _acquire_task_protection() -> None:
             await _protection_admission_open.wait()
             async with _execution_lock:
                 if _protection_admission_open.is_set():
+                    expiration = _confirmed_protection_expiration
+                    if expiration is not None and expiration <= datetime.now(tz=UTC):
+                        _protection_admission_open.clear()
+                        _protection_intake_open.clear()
+                        continue
                     _protection_waiter_count -= 1
                     _active_execution_count += 1
                     return
@@ -869,6 +884,18 @@ async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
 class DeleteAfterAckRedisStreamBroker(RedisStreamBroker):
     """Delete stream entries after Taskiq acknowledges their processing."""
 
+    async def listen(self) -> AsyncGenerator[AckableMessage, None]:
+        messages = super().listen()
+        while True:
+            await _protection_intake_open.wait()
+            try:
+                message = await anext(messages)
+            except StopAsyncIteration:
+                return
+            if not _protection_admission_open.is_set():
+                _protection_intake_open.clear()
+            yield message
+
     def _ack_generator(self, id: str, queue_name: str) -> Callable[[], Awaitable[None]]:
         async def _ack() -> None:
             async with Redis(connection_pool=self.connection_pool) as redis_conn:
@@ -892,6 +919,7 @@ broker = DeleteAfterAckRedisStreamBroker(
     queue_name=QUEUE_NAME,
     consumer_group_name=QUEUE_NAME,
     idle_timeout=86400000,
+    xread_count=1,
 )
 
 
@@ -995,9 +1023,19 @@ async def run_executor_dispatch(
         try:
             authority = await asyncio.shield(claim_task)
         except asyncio.CancelledError:
-            authority = await claim_task
+            authority = None
+            try:
+                authority = await _await_task_completion(claim_task)
+            except Exception:
+                logger.exception(
+                    "Executor dispatch %s claim failed after caller cancellation",
+                    executor_dispatch_id,
+                )
             if authority is not None:
-                await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
+                terminalize_task = asyncio.create_task(
+                    _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
+                )
+                await _await_task_completion(terminalize_task)
             raise
 
         if authority is None:
