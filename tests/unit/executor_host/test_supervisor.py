@@ -12,6 +12,7 @@ from json import JSONDecodeError
 import logging
 import sys
 from collections.abc import Awaitable, Callable, Coroutine
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
@@ -33,6 +34,16 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     verify_file_digest,
 )
 from executor_protocol import ExecutorTelemetryContext, validate_executor_artifact_uri
+
+
+@pytest.fixture(autouse=True)
+def reset_task_protection_state() -> None:
+    supervisor_module._active_execution_count = 0  # pyright: ignore[reportPrivateUsage]
+    supervisor_module._protection_waiter_count = 0  # pyright: ignore[reportPrivateUsage]
+    supervisor_module._protection_refresh_task = None  # pyright: ignore[reportPrivateUsage]
+    supervisor_module._protection_admission_open = asyncio.Event()  # pyright: ignore[reportPrivateUsage]
+    supervisor_module._confirmed_protection_expiration = None  # pyright: ignore[reportPrivateUsage]
+    supervisor_module._execution_lock = asyncio.Lock()  # pyright: ignore[reportPrivateUsage]
 
 
 class FakeDispatchStore:
@@ -900,39 +911,148 @@ def test_executor_host_uses_one_taskiq_process() -> None:
     assert '"--workers", "1"' in dockerfile
 
 
+def _confirmed_protection_update(*, enabled: bool = True, expiration: datetime | None = None) -> Any:
+    if enabled and expiration is None:
+        expiration = datetime.now(tz=UTC) + timedelta(hours=2)
+    return supervisor_module._TaskProtectionUpdate(  # pyright: ignore[reportPrivateUsage]
+        confirmed=True,
+        protection_enabled=enabled,
+        expiration=expiration,
+    )
+
+
+def _rejected_protection_update(reason: str) -> Any:
+    return supervisor_module._TaskProtectionUpdate(  # pyright: ignore[reportPrivateUsage]
+        confirmed=False,
+        rejection_reason=reason,
+    )
+
+
+class _ProtectionResponse:
+    def __init__(self, body: dict[str, object]) -> None:
+        self.body = body
+
+    def __enter__(self) -> _ProtectionResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self.body).encode()
+
+
 @pytest.mark.asyncio
-async def test_task_protection_uses_a_renewable_two_hour_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_task_protection_requires_confirmed_renewable_two_hour_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     request_bodies: list[dict[str, object]] = []
+    expiration = datetime.now(tz=UTC) + timedelta(hours=2)
 
-    class Response:
-        def __enter__(self) -> Response:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return b""
-
-    def fake_urlopen(request: object, *, timeout: int) -> Response:
+    def fake_urlopen(request: object, *, timeout: int) -> _ProtectionResponse:
         assert timeout == 5
         request_bodies.append(json.loads(cast(bytes, getattr(request, "data"))))
-        return Response()
+        return _ProtectionResponse(
+            {
+                "protection": {
+                    "ExpirationDate": expiration.isoformat(),
+                    "ProtectionEnabled": True,
+                    "TaskArn": "arn:aws:ecs:us-east-1:123456789012:task/cluster/task-1",
+                }
+            }
+        )
 
     monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", "http://ecs-agent")
     monkeypatch.setattr(supervisor_module.urllib.request, "urlopen", fake_urlopen)
 
-    set_task_protection = getattr(supervisor_module, "_set_task_protection")
-    assert await set_task_protection(enabled=True)
+    update = await supervisor_module._set_task_protection(enabled=True)  # pyright: ignore[reportPrivateUsage]
+
+    assert update.confirmed
+    assert update.protection_enabled is True
+    assert update.expiration == expiration
     assert request_bodies == [{"ProtectionEnabled": True, "ExpiresInMinutes": 120}]
 
 
 @pytest.mark.asyncio
+async def test_http_200_task_protection_failure_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_urlopen(_request: object, *, timeout: int) -> _ProtectionResponse:
+        assert timeout == 5
+        return _ProtectionResponse(
+            {
+                "failure": {
+                    "Arn": "arn:aws:ecs:us-east-1:123456789012:task/cluster/task-1",
+                    "Detail": "protected tasks are blocking deployment",
+                    "Reason": "DEPLOYMENT_BLOCKED",
+                }
+            }
+        )
+
+    monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", "http://ecs-agent")
+    monkeypatch.setattr(supervisor_module.urllib.request, "urlopen", fake_urlopen)
+
+    update = await supervisor_module._set_task_protection(enabled=True)  # pyright: ignore[reportPrivateUsage]
+
+    assert not update.confirmed
+    assert update.rejection_reason == "deployment_blocked"
+
+
+@pytest.mark.parametrize(
+    ("response", "reason"),
+    [
+        (b"not-json", "malformed_response"),
+        (
+            json.dumps(
+                {
+                    "protection": {
+                        "ExpirationDate": "2099-01-01T00:00:00Z",
+                        "ProtectionEnabled": True,
+                        "TaskArn": "arn:task",
+                    },
+                    "failure": {"Reason": "DEPLOYMENT_BLOCKED"},
+                }
+            ).encode(),
+            "ambiguous_response",
+        ),
+        (
+            json.dumps(
+                {
+                    "protection": {
+                        "ExpirationDate": None,
+                        "ProtectionEnabled": False,
+                        "TaskArn": "arn:task",
+                    }
+                }
+            ).encode(),
+            "state_not_confirmed",
+        ),
+    ],
+    ids=["malformed", "ambiguous", "unconfirmed-state"],
+)
+def test_task_protection_rejects_malformed_ambiguous_or_unconfirmed_responses(
+    response: bytes,
+    reason: str,
+) -> None:
+    update = supervisor_module._parse_task_protection_response(  # pyright: ignore[reportPrivateUsage]
+        response,
+        expected_enabled=True,
+    )
+
+    assert not update.confirmed
+    assert update.rejection_reason == reason
+
+
+@pytest.mark.asyncio
 async def test_task_protection_retries_failed_refreshes(monkeypatch: pytest.MonkeyPatch) -> None:
-    protection_results = iter([False, True])
+    expiration = datetime.now(tz=UTC) + timedelta(hours=2)
+    protection_results = iter(
+        [
+            _rejected_protection_update("deployment_blocked"),
+            _confirmed_protection_update(expiration=expiration),
+        ]
+    )
     delays: list[float] = []
 
-    async def record_protection(*, enabled: bool) -> bool:
+    async def record_protection(*, enabled: bool) -> Any:
         assert enabled
         return next(protection_results)
 
@@ -944,11 +1064,11 @@ async def test_task_protection_retries_failed_refreshes(monkeypatch: pytest.Monk
     monkeypatch.setattr(supervisor_module, "_set_task_protection", record_protection)
     monkeypatch.setattr(supervisor_module.asyncio, "sleep", record_sleep)
 
-    renew_task_protection = getattr(supervisor_module, "_renew_task_protection")
     with pytest.raises(RuntimeError, match="stop renewal test"):
-        await renew_task_protection(30 * 60)
+        await supervisor_module._renew_task_protection(30 * 60)  # pyright: ignore[reportPrivateUsage]
 
     assert delays == [30 * 60, 30, 30 * 60]
+    assert supervisor_module._confirmed_protection_expiration == expiration  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.asyncio
@@ -959,16 +1079,18 @@ async def test_task_protection_waits_for_in_flight_refresh_before_cancelling(
     finish_refresh = asyncio.Event()
     refresh_completed = asyncio.Event()
 
-    async def block_to_thread(*_args: object, **_kwargs: object) -> None:
+    async def block_to_thread(*_args: object, **_kwargs: object) -> bytes:
         refresh_started.set()
         await finish_refresh.wait()
         refresh_completed.set()
+        return b"{}"
 
     monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", "http://ecs-agent")
     monkeypatch.setattr(supervisor_module.asyncio, "to_thread", block_to_thread)
 
-    set_task_protection = getattr(supervisor_module, "_set_task_protection")
-    refresh_task = asyncio.create_task(set_task_protection(enabled=True))
+    refresh_task = asyncio.create_task(
+        supervisor_module._set_task_protection(enabled=True)  # pyright: ignore[reportPrivateUsage]
+    )
     await refresh_started.wait()
     refresh_task.cancel()
     await asyncio.sleep(0)
@@ -984,26 +1106,185 @@ async def test_task_protection_waits_for_in_flight_refresh_before_cancelling(
 async def test_task_protection_has_one_loop_for_concurrent_work(monkeypatch: pytest.MonkeyPatch) -> None:
     protection_calls: list[bool] = []
 
-    async def record_protection(*, enabled: bool) -> bool:
+    async def record_protection(*, enabled: bool) -> Any:
         protection_calls.append(enabled)
-        return True
+        return _confirmed_protection_update(enabled=enabled)
 
     monkeypatch.setattr(supervisor_module, "_set_task_protection", record_protection)
 
-    acquire_task_protection = getattr(supervisor_module, "_acquire_task_protection")
-    release_task_protection = getattr(supervisor_module, "_release_task_protection")
-    await acquire_task_protection()
-    refresh_task = getattr(supervisor_module, "_protection_refresh_task")
-    await acquire_task_protection()
-    assert getattr(supervisor_module, "_protection_refresh_task") is refresh_task
+    await supervisor_module._acquire_task_protection()  # pyright: ignore[reportPrivateUsage]
+    refresh_task = supervisor_module._protection_refresh_task  # pyright: ignore[reportPrivateUsage]
+    await supervisor_module._acquire_task_protection()  # pyright: ignore[reportPrivateUsage]
+    assert supervisor_module._protection_refresh_task is refresh_task  # pyright: ignore[reportPrivateUsage]
 
-    await release_task_protection()
+    await supervisor_module._release_task_protection()  # pyright: ignore[reportPrivateUsage]
     assert protection_calls == [True]
-    await release_task_protection()
+    await supervisor_module._release_task_protection()  # pyright: ignore[reportPrivateUsage]
 
     assert protection_calls == [True, False]
-    assert refresh_task.done()
-    assert getattr(supervisor_module, "_protection_refresh_task") is None
+    assert refresh_task is not None and refresh_task.done()
+    assert supervisor_module._protection_refresh_task is None  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
+async def test_initial_protection_rejection_keeps_one_dispatch_unowned_until_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protection_calls: list[bool] = []
+    retry_started = asyncio.Event()
+    allow_recovery = asyncio.Event()
+    process_started = asyncio.Event()
+
+    async def set_protection(*, enabled: bool) -> Any:
+        protection_calls.append(enabled)
+        if not enabled:
+            return _confirmed_protection_update(enabled=False)
+        if protection_calls == [True]:
+            return _rejected_protection_update("deployment_blocked")
+        retry_started.set()
+        await allow_recovery.wait()
+        return _confirmed_protection_update()
+
+    monkeypatch.setattr(supervisor_module, "_set_task_protection", set_protection)
+    monkeypatch.setattr(supervisor_module, "_PROTECTION_RETRY_SECONDS", 0)
+    script = b"print('ok')"
+    digest = hashlib.sha256(script).hexdigest()
+    store = FakeDispatchStore()
+    executor_supervisor = _supervisor(tmp_path, content=script)
+
+    async def run_executor(*_args: object, **_kwargs: object) -> None:
+        process_started.set()
+
+    monkeypatch.setattr(executor_supervisor, "run", run_executor)
+    dispatch_task = asyncio.create_task(
+        run_executor_dispatch(
+            executor_supervisor,
+            store,
+            executor_dispatch_id="dispatch-1",
+            dispatch=_dispatch(digest=digest),
+            process_payload=_process_payload(),
+        )
+    )
+
+    await retry_started.wait()
+    assert not dispatch_task.done()
+    assert store.claimed == []
+    assert cast(FakeS3Client, executor_supervisor.s3_client).calls == []
+    assert not process_started.is_set()
+
+    allow_recovery.set()
+    await dispatch_task
+
+    assert protection_calls == [True, True, False]
+    assert len(store.claimed) == 1
+    assert len(store.finished) == 1
+    assert len(cast(FakeS3Client, executor_supervisor.s3_client).calls) == 1
+    assert process_started.is_set()
+
+
+@pytest.mark.asyncio
+async def test_renewal_rejection_blocks_new_admission_without_stopping_existing_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_expiration = datetime.now(tz=UTC) + timedelta(hours=2)
+    recovered_expiration = first_expiration + timedelta(minutes=30)
+    renewal_rejected = asyncio.Event()
+    allow_recovery = asyncio.Event()
+    existing_started = asyncio.Event()
+    finish_existing = asyncio.Event()
+    second_claimed = asyncio.Event()
+    protection_attempt = 0
+    rejection_telemetry: list[tuple[str, datetime | None]] = []
+
+    async def set_protection(*, enabled: bool) -> Any:
+        nonlocal protection_attempt
+        if not enabled:
+            return _confirmed_protection_update(enabled=False)
+        protection_attempt += 1
+        if protection_attempt == 1:
+            return _confirmed_protection_update(expiration=first_expiration)
+        if protection_attempt == 2:
+            renewal_rejected.set()
+            return _rejected_protection_update("deployment_blocked")
+        await allow_recovery.wait()
+        return _confirmed_protection_update(expiration=recovered_expiration)
+
+    def record_rejection(*, reason: str, confirmed_expiration: datetime | None) -> None:
+        rejection_telemetry.append((reason, confirmed_expiration))
+
+    async def prepare_artifact(_dispatch: ArtifactDispatch) -> Path:
+        return tmp_path / "executor.pex"
+
+    first_supervisor = _supervisor(tmp_path / "first", content=b"unused")
+    second_supervisor = _supervisor(tmp_path / "second", content=b"unused")
+
+    async def run_existing(*_args: object, **_kwargs: object) -> None:
+        existing_started.set()
+        await finish_existing.wait()
+
+    async def run_second(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    first_store = FakeDispatchStore()
+    second_store = FakeDispatchStore()
+    original_second_claim = second_store.claim
+
+    async def record_second_claim(
+        dispatch_id: str,
+        benchmark_id: str,
+        dispatch: ArtifactDispatch,
+    ) -> DispatchAuthority | None:
+        second_claimed.set()
+        return await original_second_claim(dispatch_id, benchmark_id, dispatch)
+
+    monkeypatch.setattr(supervisor_module, "_set_task_protection", set_protection)
+    monkeypatch.setattr(supervisor_module, "record_task_protection_rejection", record_rejection)
+    monkeypatch.setattr(supervisor_module, "_PROTECTION_REFRESH_SECONDS", 0.01)
+    monkeypatch.setattr(supervisor_module, "_PROTECTION_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(first_supervisor, "prepare_artifact", prepare_artifact)
+    monkeypatch.setattr(first_supervisor, "run", run_existing)
+    monkeypatch.setattr(second_supervisor, "prepare_artifact", prepare_artifact)
+    monkeypatch.setattr(second_supervisor, "run", run_second)
+    monkeypatch.setattr(second_store, "claim", record_second_claim)
+    dispatch = _dispatch(digest="0" * 64)
+
+    existing_task = asyncio.create_task(
+        run_executor_dispatch(
+            first_supervisor,
+            first_store,
+            executor_dispatch_id="dispatch-1",
+            dispatch=dispatch,
+            process_payload=_process_payload(),
+        )
+    )
+    await existing_started.wait()
+    await renewal_rejected.wait()
+
+    new_task = asyncio.create_task(
+        run_executor_dispatch(
+            second_supervisor,
+            second_store,
+            executor_dispatch_id="dispatch-2",
+            dispatch=dispatch,
+            process_payload=_process_payload(),
+        )
+    )
+    await asyncio.sleep(0)
+    assert not existing_task.done()
+    assert second_store.claimed == []
+    assert rejection_telemetry == [("deployment_blocked", first_expiration)]
+    assert supervisor_module._confirmed_protection_expiration == first_expiration  # pyright: ignore[reportPrivateUsage]
+
+    allow_recovery.set()
+    await asyncio.wait_for(second_claimed.wait(), timeout=1)
+    await new_task
+    assert supervisor_module._confirmed_protection_expiration == recovered_expiration  # pyright: ignore[reportPrivateUsage]
+    assert not existing_task.done()
+
+    finish_existing.set()
+    await existing_task
 
 
 @pytest.mark.asyncio
@@ -1015,8 +1296,9 @@ async def test_task_protection_is_acquired_before_claim(
     store = FakeDispatchStore(claim_result=False)
     original_claim = store.claim
 
-    async def record_protection(*, enabled: bool) -> None:
+    async def record_protection(*, enabled: bool) -> Any:
         events.append(f"protection-{enabled}")
+        return _confirmed_protection_update(enabled=enabled)
 
     async def record_claim(
         dispatch_id: str,
@@ -1062,7 +1344,7 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
     release_completed = asyncio.Event()
     store = FakeDispatchStore(claim_result=False)
 
-    async def block_task_protection(*, enabled: bool) -> None:
+    async def block_task_protection(*, enabled: bool) -> Any:
         protection_calls.append(enabled)
         if enabled and protection_calls == [True]:
             enable_started.set()
@@ -1071,6 +1353,7 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
             release_started.set()
             await finish_release.wait()
             release_completed.set()
+        return _confirmed_protection_update(enabled=enabled)
 
     monkeypatch.setattr(supervisor_module, "_set_task_protection", block_task_protection)
     artifact = b"unused"
@@ -1099,7 +1382,7 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
 
     assert protection_calls == [True, False]
     assert release_completed.is_set() is repeat_release_cancellation
-    assert getattr(supervisor_module, "_active_execution_count") == 0
+    assert supervisor_module._active_execution_count == 0  # pyright: ignore[reportPrivateUsage]
     assert store.claimed == []
     assert store.finished == []
     assert store.terminalized == []
@@ -1113,7 +1396,7 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
     )
 
     assert protection_calls == [True, False, True, False]
-    assert getattr(supervisor_module, "_active_execution_count") == 0
+    assert supervisor_module._active_execution_count == 0  # pyright: ignore[reportPrivateUsage]
     assert len(store.claimed) == 1
 
 

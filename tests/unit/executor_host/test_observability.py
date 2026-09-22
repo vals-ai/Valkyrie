@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 import io
 import json
 import logging
@@ -194,3 +195,53 @@ def test_dispatch_error_logs_before_capture(monkeypatch: pytest.MonkeyPatch) -> 
 
     span.set_status.assert_called_once_with(observability.SPANSTATUS.INTERNAL_ERROR)
     assert events == ["logged", "captured"]
+
+
+def test_task_protection_rejection_exposes_reason_and_confirmed_expiration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = io.StringIO()
+    handler = logging.StreamHandler(output)
+    handler.addFilter(observability._ContextFilter())  # pyright: ignore[reportPrivateUsage]
+    handler.setFormatter(observability._JsonFormatter())  # pyright: ignore[reportPrivateUsage]
+    count = Mock()
+    gauge = Mock()
+    expiration = datetime(2026, 7, 17, 16, 47, 8, tzinfo=UTC)
+    monkeypatch.setattr(observability.sentry_metrics, "count", count)
+    monkeypatch.setattr(observability.sentry_metrics, "gauge", gauge)
+    monkeypatch.setattr(observability.logger, "propagate", False)
+    monkeypatch.setattr(observability.logger, "level", logging.INFO)
+    observability.logger.addHandler(handler)
+    try:
+        observability.record_task_protection_rejection(
+            reason="deployment_blocked",
+            confirmed_expiration=expiration,
+        )
+    finally:
+        observability.logger.removeHandler(handler)
+
+    record = json.loads(output.getvalue())
+    assert record["task_protection_rejection_reason"] == "deployment_blocked"
+    assert record["task_protection_confirmed_expiration"] == expiration.isoformat()
+    assert record["task_protection_admission_open"] is False
+    count.assert_called_once_with(
+        "valkyrie.executor_host.task_protection.rejected",
+        1,
+        attributes={"reason": "deployment_blocked"},
+    )
+    assert gauge.call_args_list[-1].args == (
+        "valkyrie.executor_host.task_protection.confirmed_expiration",
+        expiration.timestamp(),
+    )
+
+
+def test_confirmed_protection_disable_clears_expiration_gauge(monkeypatch: pytest.MonkeyPatch) -> None:
+    gauge = Mock()
+    monkeypatch.setattr(observability.sentry_metrics, "gauge", gauge)
+
+    observability.record_task_protection_confirmation(expiration=None, admission_open=False)
+
+    assert [entry.args for entry in gauge.call_args_list] == [
+        ("valkyrie.executor_host.task_protection.admission_open", 0.0),
+        ("valkyrie.executor_host.task_protection.confirmed_expiration", 0),
+    ]

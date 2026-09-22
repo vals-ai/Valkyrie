@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Generator
 
 import sentry_sdk
+from sentry_sdk import metrics as sentry_metrics
 from sentry_sdk.consts import SPANSTATUS
 from sentry_sdk.integrations.logging import LoggingIntegration
 
@@ -22,6 +23,11 @@ benchmark_id_var = contextvars.ContextVar("benchmark_id", default="")
 dispatch_id_var = contextvars.ContextVar("executor_dispatch_id", default="")
 release_id_var = contextvars.ContextVar("executor_release_id", default="")
 logger = logging.getLogger(__name__)
+_TASK_PROTECTION_FIELDS = (
+    "task_protection_admission_open",
+    "task_protection_confirmed_expiration",
+    "task_protection_rejection_reason",
+)
 
 
 def _context_fields() -> dict[str, str]:
@@ -50,6 +56,9 @@ class _JsonFormatter(logging.Formatter):
             "message": record.getMessage(),
             **{key: getattr(record, key, "") for key in _context_fields()},
         }
+        payload.update(
+            (key, value) for key in _TASK_PROTECTION_FIELDS if (value := getattr(record, key, None)) is not None
+        )
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload, default=str)
@@ -90,6 +99,55 @@ def configure_observability() -> None:
             type(error).__name__,
             error,
         )
+
+
+def record_task_protection_confirmation(*, expiration: datetime | None, admission_open: bool) -> None:
+    """Record a confirmed ECS task-protection state."""
+    expiration_text = expiration.isoformat() if expiration is not None else None
+    logger.info(
+        "ECS task protection state confirmed",
+        extra={
+            "task_protection_admission_open": admission_open,
+            "task_protection_confirmed_expiration": expiration_text,
+        },
+    )
+    _gauge("valkyrie.executor_host.task_protection.admission_open", float(admission_open))
+    confirmed_expiration = expiration.timestamp() if expiration is not None else 0
+    _gauge("valkyrie.executor_host.task_protection.confirmed_expiration", confirmed_expiration)
+
+
+def record_task_protection_rejection(*, reason: str, confirmed_expiration: datetime | None) -> None:
+    """Record an admission-closing protection rejection with bounded reason cardinality."""
+    expiration_text = confirmed_expiration.isoformat() if confirmed_expiration is not None else None
+    logger.warning(
+        "ECS task protection update rejected",
+        extra={
+            "task_protection_admission_open": False,
+            "task_protection_confirmed_expiration": expiration_text,
+            "task_protection_rejection_reason": reason,
+        },
+    )
+    _count("valkyrie.executor_host.task_protection.rejected", attributes={"reason": reason})
+    _gauge("valkyrie.executor_host.task_protection.admission_open", 0)
+    if confirmed_expiration is not None:
+        _gauge(
+            "valkyrie.executor_host.task_protection.confirmed_expiration",
+            confirmed_expiration.timestamp(),
+        )
+
+
+def _count(name: str, *, attributes: dict[str, str]) -> None:
+    try:
+        sentry_metrics.count(name, 1, attributes=attributes)
+    except Exception as error:
+        logger.warning("Metric count %s failed: %s: %s", name, type(error).__name__, error)
+
+
+def _gauge(name: str, value: float) -> None:
+    try:
+        sentry_metrics.gauge(name, value)
+    except Exception as error:
+        logger.warning("Metric gauge %s failed: %s: %s", name, type(error).__name__, error)
 
 
 @contextmanager

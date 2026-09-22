@@ -261,9 +261,14 @@ Start, Retry, Resume, and concurrency changes return `503` while the fence is
 held. Nothing is replayed automatically. Alembic startup upgrades use one
 PostgreSQL advisory lock so rolling Tracker tasks cannot race migrations.
 ExecutorHost runs one Taskiq worker process with up to 100 concurrent async tasks,
-so its in-memory active count owns the whole ECS task. It renews a 120-minute ECS
-protection lease every 30 minutes while work remains and cancels any in-flight
-renewal before disabling protection.
+so its in-memory active count owns the whole ECS task. It admits and claims a
+dispatch only after the ECS agent confirms protection is enabled with a future
+expiration. It renews the 120-minute lease every 30 minutes while work remains.
+An HTTP success containing an ECS failure (including `DEPLOYMENT_BLOCKED`) or an
+unconfirmed state closes admission and retries every 30 seconds without claiming
+queued work or stopping existing dispatches. Rejection telemetry retains the last
+confirmed expiration until a later confirmation, and a confirmed disable clears
+it. The host cancels any in-flight renewal before disabling protection.
 
 Tracker retires blocker-free draining releases automatically; artifact deletion
 remains separate.

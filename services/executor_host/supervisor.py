@@ -10,11 +10,13 @@ import os
 import signal
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Mapping, Protocol, Unpack, cast
+from typing import Mapping, Protocol, TypeVar, Unpack, cast
 
 import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
@@ -42,6 +44,8 @@ from services.executor_host.observability import (
     dispatch_observability_context,
     record_dispatch_cancellation,
     record_dispatch_completion,
+    record_task_protection_confirmation,
+    record_task_protection_rejection,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,14 +63,104 @@ if acknowledged == 1 then
 end
 return acknowledged
 """
+_FAILURE_REASONS = {
+    "DEPLOYMENT_BLOCKED": "deployment_blocked",
+    "MISSING": "missing",
+    "TASK_NOT_VALID": "task_not_valid",
+}
+_ERROR_CODES = {
+    "AccessDeniedException": "access_denied",
+    "RequestCanceled": "request_canceled",
+    "RequestError": "request_error",
+    "RequestTimeout": "request_timeout",
+    "ThrottlingException": "throttled",
+}
+_T = TypeVar("_T")
+
+
+@dataclass(frozen=True)
+class _TaskProtectionUpdate:
+    confirmed: bool
+    protection_enabled: bool | None = None
+    expiration: datetime | None = None
+    rejection_reason: str | None = None
+
+
 _active_execution_count = 0
+_protection_waiter_count = 0
 _protection_refresh_task: asyncio.Task[None] | None = None
+_protection_admission_open = asyncio.Event()
+_confirmed_protection_expiration: datetime | None = None
 _execution_lock = asyncio.Lock()
 
 
-async def _set_task_protection(*, enabled: bool) -> bool:
+def _rejected_task_protection_update(reason: str) -> _TaskProtectionUpdate:
+    return _TaskProtectionUpdate(confirmed=False, rejection_reason=reason)
+
+
+def _parse_task_protection_response(response_body: bytes, *, expected_enabled: bool) -> _TaskProtectionUpdate:
+    try:
+        decoded = cast(object, json.loads(response_body))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return _rejected_task_protection_update("malformed_response")
+    if not isinstance(decoded, dict):
+        return _rejected_task_protection_update("malformed_response")
+    response = cast(dict[str, object], decoded)
+
+    outcomes = [key for key in ("protection", "failure", "error") if key in response]
+    if len(outcomes) != 1:
+        reason = "ambiguous_response" if outcomes else "malformed_response"
+        return _rejected_task_protection_update(reason)
+
+    outcome = outcomes[0]
+    value = response[outcome]
+    if not isinstance(value, dict):
+        return _rejected_task_protection_update("malformed_response")
+    outcome_value = cast(dict[str, object], value)
+
+    if outcome == "failure":
+        failure_reason = outcome_value.get("Reason")
+        if not isinstance(failure_reason, str) or not failure_reason:
+            return _rejected_task_protection_update("malformed_response")
+        return _rejected_task_protection_update(_FAILURE_REASONS.get(failure_reason, "ecs_failure"))
+    if outcome == "error":
+        error_code = outcome_value.get("Code")
+        if not isinstance(error_code, str) or not error_code:
+            return _rejected_task_protection_update("malformed_response")
+        return _rejected_task_protection_update(_ERROR_CODES.get(error_code, "ecs_error"))
+
+    protection_enabled = outcome_value.get("ProtectionEnabled")
+    task_arn = outcome_value.get("TaskArn")
+    if not isinstance(protection_enabled, bool) or not isinstance(task_arn, str) or not task_arn:
+        return _rejected_task_protection_update("malformed_response")
+    if protection_enabled is not expected_enabled:
+        return _rejected_task_protection_update("state_not_confirmed")
+    if "ExpirationDate" not in outcome_value:
+        return _rejected_task_protection_update("malformed_response")
+
+    expiration_value = outcome_value["ExpirationDate"]
+    if not expected_enabled:
+        if expiration_value is not None:
+            return _rejected_task_protection_update("state_not_confirmed")
+        return _TaskProtectionUpdate(confirmed=True, protection_enabled=False)
+    if not isinstance(expiration_value, str):
+        return _rejected_task_protection_update("malformed_response")
+    try:
+        expiration = datetime.fromisoformat(expiration_value.replace("Z", "+00:00"))
+    except ValueError:
+        return _rejected_task_protection_update("malformed_response")
+    if expiration.tzinfo is None or expiration <= datetime.now(tz=UTC):
+        return _rejected_task_protection_update("state_not_confirmed")
+    return _TaskProtectionUpdate(
+        confirmed=True,
+        protection_enabled=True,
+        expiration=expiration.astimezone(UTC),
+    )
+
+
+async def _set_task_protection(*, enabled: bool) -> _TaskProtectionUpdate:
     if not ECS_AGENT_URI:
-        return True
+        return _TaskProtectionUpdate(confirmed=True, protection_enabled=enabled)
     body: dict[str, object] = {"ProtectionEnabled": enabled}
     if enabled:
         body["ExpiresInMinutes"] = _PROTECTION_EXPIRY_MINUTES
@@ -77,27 +171,50 @@ async def _set_task_protection(*, enabled: bool) -> bool:
         method="PUT",
     )
 
-    def update() -> None:
+    def update() -> bytes:
         with urllib.request.urlopen(request, timeout=5) as response:
-            response.read()
+            return response.read()
 
     update_task = asyncio.create_task(asyncio.to_thread(update))
     try:
-        await asyncio.shield(update_task)
+        response_body = await asyncio.shield(update_task)
     except asyncio.CancelledError:
         await _await_task_completion(update_task)
         raise
+    except urllib.error.HTTPError:
+        logger.exception("ECS task protection request returned an HTTP error")
+        return _rejected_task_protection_update("http_error")
     except Exception:
         logger.exception("Failed to set ECS task protection to %s", enabled)
-        return False
-    return True
+        return _rejected_task_protection_update("request_error")
+    return _parse_task_protection_response(response_body, expected_enabled=enabled)
+
+
+def _apply_task_protection_update(update: _TaskProtectionUpdate) -> None:
+    global _confirmed_protection_expiration
+    if not update.confirmed:
+        _protection_admission_open.clear()
+        record_task_protection_rejection(
+            reason=update.rejection_reason or "unknown",
+            confirmed_expiration=_confirmed_protection_expiration,
+        )
+        return
+
+    admission_open = update.protection_enabled is True
+    _confirmed_protection_expiration = update.expiration
+    if admission_open:
+        _protection_admission_open.set()
+    else:
+        _protection_admission_open.clear()
+    record_task_protection_confirmation(expiration=update.expiration, admission_open=admission_open)
 
 
 async def _renew_task_protection(delay_seconds: float) -> None:
     while True:
         await asyncio.sleep(delay_seconds)
-        updated = await _set_task_protection(enabled=True)
-        delay_seconds = _PROTECTION_REFRESH_SECONDS if updated is not False else _PROTECTION_RETRY_SECONDS
+        update = await _set_task_protection(enabled=True)
+        _apply_task_protection_update(update)
+        delay_seconds = _PROTECTION_REFRESH_SECONDS if update.confirmed else _PROTECTION_RETRY_SECONDS
 
 
 async def _await_task_cancellation(task: asyncio.Task[None]) -> None:
@@ -112,36 +229,58 @@ async def _await_task_cancellation(task: asyncio.Task[None]) -> None:
         pass
 
 
+async def _stop_task_protection_if_idle() -> None:
+    global _protection_refresh_task
+    if _active_execution_count or _protection_waiter_count:
+        return
+    refresh_task = _protection_refresh_task
+    _protection_refresh_task = None
+    if refresh_task is not None:
+        refresh_task.cancel()
+        await _await_task_cancellation(refresh_task)
+    _protection_admission_open.clear()
+    _apply_task_protection_update(await _set_task_protection(enabled=False))
+
+
 async def _acquire_task_protection() -> None:
-    global _active_execution_count, _protection_refresh_task
+    global _active_execution_count, _protection_refresh_task, _protection_waiter_count
     async with _execution_lock:
-        if _active_execution_count == 0:
-            updated = await _set_task_protection(enabled=True)
-            initial_delay = _PROTECTION_REFRESH_SECONDS if updated is not False else _PROTECTION_RETRY_SECONDS
-            _protection_refresh_task = asyncio.create_task(_renew_task_protection(initial_delay))
-        _active_execution_count += 1
+        _protection_waiter_count += 1
+        if _protection_refresh_task is None:
+            _protection_admission_open.clear()
+            _protection_refresh_task = asyncio.create_task(_renew_task_protection(0))
+
+    try:
+        while True:
+            await _protection_admission_open.wait()
+            async with _execution_lock:
+                if _protection_admission_open.is_set():
+                    _protection_waiter_count -= 1
+                    _active_execution_count += 1
+                    return
+    except BaseException:
+        async with _execution_lock:
+            _protection_waiter_count -= 1
+            await _stop_task_protection_if_idle()
+        raise
 
 
 async def _release_task_protection() -> None:
-    global _active_execution_count, _protection_refresh_task
+    global _active_execution_count
     async with _execution_lock:
+        if _active_execution_count <= 0:
+            raise RuntimeError("ECS task protection released without an active execution")
         _active_execution_count -= 1
-        if _active_execution_count == 0:
-            refresh_task = _protection_refresh_task
-            _protection_refresh_task = None
-            if refresh_task is not None:
-                refresh_task.cancel()
-                await _await_task_cancellation(refresh_task)
-            await _set_task_protection(enabled=False)
+        await _stop_task_protection_if_idle()
 
 
-async def _await_task_completion(task: asyncio.Task[None]) -> None:
+async def _await_task_completion(task: asyncio.Task[_T]) -> _T:
     while not task.done():
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
             pass
-    await task
+    return await task
 
 
 class S3Client(Protocol):
@@ -837,9 +976,11 @@ async def run_executor_dispatch(
     try:
         await asyncio.shield(protection_task)
     except asyncio.CancelledError:
-        await _await_task_completion(protection_task)
-        release_task = asyncio.create_task(_release_task_protection())
-        await _await_task_completion(release_task)
+        protection_task.cancel()
+        await _await_task_cancellation(protection_task)
+        if not protection_task.cancelled() and protection_task.exception() is None:
+            release_task = asyncio.create_task(_release_task_protection())
+            await _await_task_completion(release_task)
         raise
 
     try:
