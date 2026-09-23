@@ -15,16 +15,19 @@ from tracker.database.models import (
     ExecutorDispatch,
     ExecutorTaskAttempt,
     ExecutorTaskReceipt,
+    ExecutorPoolReservation,
+    Benchmark,
     Task,
     TaskBreakdown,
     TaskStatus,
 )
 from tracker.executor.dispatch_api import DispatchConflict, as_utc, lock_claimed_dispatch
+from tracker.scheduler.store import claim_eligible_task
 
 _RUNNABLE = (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
 
 
-def _receipt(
+def read_task_receipt(
     session: Session, dispatch_id: UUID, command_id: UUID, task_id: UUID, digest: str
 ) -> ExecutorTaskReceipt | None:
     receipt = session.get(ExecutorTaskReceipt, (dispatch_id, command_id))
@@ -73,7 +76,7 @@ def claim_task(
     request_digest: str,
 ) -> ExecutorTaskReceipt:
     benchmark, dispatch, current = lock_claimed_dispatch(session, dispatch_id, claimant_id)
-    previous = _receipt(session, dispatch_id, command_id, task_id, request_digest)
+    previous = read_task_receipt(session, dispatch_id, command_id, task_id, request_digest)
     if previous is not None:
         return previous
     if not current or benchmark.status != BenchmarkStatus.IN_PROGRESS:
@@ -115,7 +118,7 @@ def write_task(
     allow_stopping: bool = False,
 ) -> ExecutorTaskReceipt:
     benchmark, dispatch, current = lock_claimed_dispatch(session, dispatch_id, claimant_id)
-    previous = _receipt(session, dispatch_id, command_id, task_id, request_digest)
+    previous = read_task_receipt(session, dispatch_id, command_id, task_id, request_digest)
     if previous is not None:
         return previous
     permitted_statuses = (
@@ -141,8 +144,32 @@ def write_task(
 def set_task_status(session: Session, task: Task, *, status: TaskStatus, expected: tuple[TaskStatus, ...]) -> None:
     if task.status not in expected:
         raise DispatchConflict("Task status does not permit this operation")
+    if status in (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS):
+        _require_queue_reservation(session, task, status)
     task.status = status
     session.add(task)
+
+
+def _require_queue_reservation(session: Session, task: Task, status: TaskStatus) -> None:
+    benchmark = session.get(Benchmark, task.benchmark)
+    assert benchmark is not None
+    pool_id = benchmark.arguments.queue_pool_id
+    if pool_id is None:
+        return
+    reservation = session.exec(
+        select(ExecutorPoolReservation).where(ExecutorPoolReservation.pool_id == pool_id).with_for_update()
+    ).one_or_none()
+    owner = session.get(ExecutorTaskAttempt, task.id)
+    if (
+        reservation is None
+        or owner is None
+        or reservation.dispatch_id != owner.dispatch_id
+        or reservation.task_id != task.id
+        or as_utc(reservation.started_at) != as_utc(task.started_at)
+    ):
+        raise DispatchConflict("Queued sandbox creation requires this task's pool reservation")
+    if status == TaskStatus.BUILDING and not claim_eligible_task(session, pool_id, task.id, task.started_at):
+        raise DispatchConflict("Queued task is no longer eligible for sandbox creation")
 
 
 def begin_evaluation(

@@ -16,6 +16,7 @@ from tracker.executor.run_api import RunState, initialize_run_tasks, read_run_st
 from tracker.executor_api.v1.dependencies import DispatchSession
 from tracker.executor_api.v1.task_router import router as task_router
 from tracker.executor_api.v1.finalization_router import router as finalization_router
+from tracker.executor_api.v1.queue_router import router as queue_router
 from tracker.executor_api.v1.schemas import (
     AuthorityResponse,
     ClaimRequest,
@@ -35,6 +36,7 @@ from tracker.executor_api.v1.schemas import (
 router = APIRouter(prefix="/internal/executor/v1/dispatches", tags=["executor-v1"])
 router.include_router(task_router)
 router.include_router(finalization_router)
+router.include_router(queue_router)
 
 
 @router.post("/{dispatch_id}/claim")

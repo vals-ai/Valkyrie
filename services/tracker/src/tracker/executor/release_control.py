@@ -60,6 +60,10 @@ class MaintenanceModeError(ReleaseControlError):
     """Raised when executor admission is closed for deployment maintenance."""
 
 
+class QueuePoolBusyError(ReleaseControlError):
+    """A persistent provider operation temporarily fences legacy queue admission."""
+
+
 def register_release(session: Session, release: ExecutorRelease) -> ExecutorRelease:
     """Register a new immutable candidate release."""
     if session.get(ExecutorRelease, release.id) is not None:

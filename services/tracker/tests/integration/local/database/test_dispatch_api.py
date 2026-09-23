@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
 import json
+import asyncio
 from uuid import UUID, uuid4
 
 import pytest
@@ -34,6 +35,7 @@ from tracker.database.models import (
     ExecutorDispatchStatus,
     ExecutorRelease,
     ExecutorRunReceipt,
+    ExecutorPoolReservation,
     FinalEvaluation,
     ExecutorTaskAttempt,
     ExecutorTaskReceipt,
@@ -44,7 +46,15 @@ from tracker.database.models import (
 )
 from tracker.database.session import get_session
 from tracker.executor.dispatch_api import create_dispatch_access
-from tracker.executor.release_control import create_executor_dispatch, pin_benchmark_to_release, register_release
+from tracker.executor.release_control import (
+    create_executor_dispatch,
+    pin_benchmark_to_release,
+    register_release,
+    promote_release,
+    QueuePoolBusyError,
+)
+from tracker.executor.dispatch_control import admit_start_dispatch, admit_recovery_dispatch
+from tracker.scheduler.store import queue_pool_lock
 from tracker.executor_api.v1.router import router
 from tracker.executor_api.transport import ExecutorTransport
 from tracker.executor_api.v1.client import ExecutorClient
@@ -714,8 +724,15 @@ class TaskFixture:
 
 
 @pytest.fixture
-def task_attempt(client: TestClient, dispatch: DispatchFixture, assigned_run: list[str]) -> TaskFixture:
+def task_attempt(
+    client: TestClient, dispatch: DispatchFixture, assigned_run: list[str], postgres_session: Session
+) -> TaskFixture:
     assert "new-task" in assigned_run
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    assert benchmark is not None
+    benchmark.arguments = benchmark.arguments.model_copy(update={"queue_pool_id": None, "priority": None})
+    postgres_session.add(benchmark)
+    postgres_session.commit()
     assert client.post(f"{dispatch.path}/claim", json=dispatch.claim, headers=dispatch.headers).status_code == 200
     initialized = client.post(
         f"{dispatch.path}/run/initialize", json={**dispatch.request, "task_ids": ["new-task"]}, headers=dispatch.headers
@@ -1153,7 +1170,7 @@ def test_sibling_can_claim_only_after_the_attempt_changes(
     )
 
 
-@pytest.mark.parametrize("operation", ["claim", "write"])
+@pytest.mark.parametrize("operation", ["claim", "write", "queue/reserve", "queue/release"])
 def test_task_commands_require_dispatch_credentials(
     client: TestClient, task_attempt: TaskFixture, operation: str
 ) -> None:
@@ -1169,6 +1186,273 @@ def test_task_commands_require_dispatch_credentials(
     )
     for headers in ({}, {"Authorization": "Bearer unrelated"}):
         assert client.post(f"{task_attempt.path}/{operation}", json=request, headers=headers).status_code == 401
+
+
+@pytest.fixture
+def queued_task(owned_task: TaskFixture, dispatch: DispatchFixture, postgres_session: Session) -> TaskFixture:
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    original = postgres_session.get(Task, dispatch.task_id)
+    assert benchmark is not None and original is not None
+    original.status = TaskStatus.FINISHED
+    benchmark.aws_managed = False
+    benchmark.arguments = benchmark.arguments.model_copy(update={"queue_pool_id": "pool_test", "priority": 2})
+    postgres_session.add_all([original, benchmark])
+    postgres_session.commit()
+
+    return owned_task
+
+
+def _reserve_request(task: TaskFixture, revision: int = 0) -> dict[str, object]:
+    return {**task.request, "command_id": str(uuid4()), "expected_revision": revision}
+
+
+def _release_request(task: TaskFixture, reservation_id: object) -> dict[str, object]:
+    return {**task.request, "command_id": str(uuid4()), "reservation_id": reservation_id}
+
+
+def test_queue_creation_requires_a_persistent_reservation(
+    app: FastAPI, client: TestClient, dispatch: DispatchFixture, queued_task: TaskFixture, postgres_session: Session
+) -> None:
+    """Keep creation serialized across API instances and release-response retries.
+
+    Test cases:
+    - A queued task cannot build without a reservation.
+    - A fresh API instance reads the same reservation and revision.
+    - Build and run use the reserved attempt; releasing does not mutate task state.
+    - Old reserve and release commands cannot acquire or delete a newer reservation.
+    """
+    path = queued_task.path
+    rejected = client.post(
+        f"{path}/write", json=_write_request(queued_task, 0, {"operation": "build"}), headers=dispatch.headers
+    )
+    assert rejected.status_code == 409
+    request = _reserve_request(queued_task)
+    reserved = client.post(f"{path}/queue/reserve", json=request, headers=dispatch.headers)
+    assert reserved.status_code == 200 and reserved.json()["reserved"], reserved.text
+    assert reserved.json()["revision"] == 1
+
+    restarted_app = FastAPI()
+    restarted_app.include_router(router)
+    restarted_app.dependency_overrides[get_session] = app.dependency_overrides[get_session]
+    with TestClient(restarted_app) as restarted_client:
+        response = restarted_client.post(f"{path}/queue/reserve", json=request, headers=dispatch.headers)
+        assert response.json() == reserved.json()
+        waiting = restarted_client.post(
+            f"{path}/queue/reserve", json=_reserve_request(queued_task, 1), headers=dispatch.headers
+        )
+        assert waiting.status_code == 200 and not waiting.json()["reserved"]
+
+    for revision, operation in ((1, "build"), (2, "run")):
+        response = client.post(
+            f"{path}/write",
+            json=_write_request(queued_task, revision, {"operation": operation}),
+            headers=dispatch.headers,
+        )
+        assert response.status_code == 200, response.text
+    release = _release_request(queued_task, request["command_id"])
+    response = client.post(f"{path}/queue/release", json=release, headers=dispatch.headers)
+    assert response.status_code == 200 and response.json()["released"]
+    assert postgres_session.get(ExecutorPoolReservation, "pool_test") is None
+
+    pending = _write_request(queued_task, 3, {"operation": "pending"})
+    assert client.post(f"{path}/write", json=pending, headers=dispatch.headers).status_code == 200
+    next_request = _reserve_request(queued_task, 4)
+    assert client.post(f"{path}/queue/reserve", json=next_request, headers=dispatch.headers).json()["reserved"]
+    assert client.post(f"{path}/queue/release", json=release, headers=dispatch.headers).json() == response.json()
+    assert client.post(f"{path}/queue/reserve", json=request, headers=dispatch.headers).status_code == 409
+    reservation = postgres_session.get(ExecutorPoolReservation, "pool_test")
+    assert reservation is not None and str(reservation.reservation_id) == next_request["command_id"]
+
+
+def test_expired_queue_reservation_waits_for_owner_cleanup(
+    client: TestClient, dispatch: DispatchFixture, queued_task: TaskFixture, postgres_session: Session
+) -> None:
+    """Do not infer a settled provider operation from an expired dispatch lease.
+
+    Test cases:
+    - Expiry revokes creation authority but leaves the persistent reservation intact.
+    - The original claimant can confirm cleanup without restoring task write authority.
+    """
+    request = _reserve_request(queued_task)
+    assert client.post(f"{queued_task.path}/queue/reserve", json=request, headers=dispatch.headers).json()["reserved"]
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    assert invocation is not None
+    invocation.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    postgres_session.add(invocation)
+    postgres_session.commit()
+
+    assert client.post(f"{queued_task.path}/queue/reserve", json=request, headers=dispatch.headers).status_code == 409
+    build = _write_request(queued_task, 1, {"operation": "build"})
+    assert client.post(f"{queued_task.path}/write", json=build, headers=dispatch.headers).status_code == 409
+    reservation = postgres_session.get(ExecutorPoolReservation, "pool_test")
+    assert reservation is not None
+    release = _release_request(queued_task, request["command_id"])
+    assert client.post(f"{queued_task.path}/queue/release", json=release, headers=dispatch.headers).status_code == 200
+    postgres_session.expire_all()
+    assert postgres_session.exec(select(ExecutorPoolReservation)).first() is None
+    task = postgres_session.get(Task, queued_task.id)
+    owner = postgres_session.get(ExecutorTaskAttempt, queued_task.id)
+    assert task is not None and task.status == TaskStatus.PENDING
+    assert owner is not None and owner.revision == 1
+
+
+def test_queue_reservation_waits_for_legacy_pool_work(
+    client: TestClient, dispatch: DispatchFixture, queued_task: TaskFixture, postgres_session: Session
+) -> None:
+    """Do not mix API reservations with a legacy executor that ignores them.
+
+    Test cases:
+    - An active legacy dispatch in the provider pool prevents new reservations.
+    - The legacy run is left untouched; reservations become available after it finishes.
+    """
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    release = postgres_session.get(ExecutorRelease, dispatch.claim["executor_release_id"])
+    assert benchmark is not None and release is not None
+    legacy = make_benchmark(org_id=benchmark.org_id)
+    legacy.arguments = legacy.arguments.model_copy(update={"queue_pool_id": "pool_test", "priority": 3})
+    postgres_session.add(legacy)
+    postgres_session.flush()
+    invocation = create_executor_dispatch(
+        legacy.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4(), task_ids=[]
+    )
+    postgres_session.add(invocation)
+    postgres_session.commit()
+    request = _reserve_request(queued_task)
+
+    response = client.post(f"{queued_task.path}/queue/reserve", json=request, headers=dispatch.headers)
+
+    assert response.status_code == 200 and not response.json()["reserved"]
+    postgres_session.refresh(legacy)
+    assert legacy.status == BenchmarkStatus.IN_PROGRESS
+    legacy.status = BenchmarkStatus.FINISHED
+    invocation.status = ExecutorDispatchStatus.FINISHED
+    postgres_session.add_all([legacy, invocation])
+    postgres_session.commit()
+    assert client.post(f"{queued_task.path}/queue/reserve", json=request, headers=dispatch.headers).json()["reserved"]
+
+
+async def test_queue_reservation_waits_for_legacy_creation_lock(
+    client: TestClient, dispatch: DispatchFixture, queued_task: TaskFixture, postgres_engine: Engine
+) -> None:
+    """Respect a legacy provider call even after its database run becomes terminal.
+
+    Test cases:
+    - A legacy session advisory lock blocks the API's reservation transaction.
+    - Releasing that lock permits reservation without retaining an API database connection.
+    """
+    request = _reserve_request(queued_task)
+    async with queue_pool_lock(postgres_engine, "pool_test") as acquired:
+        assert acquired
+        response = await asyncio.to_thread(
+            client.post, f"{queued_task.path}/queue/reserve", json=request, headers=dispatch.headers
+        )
+        assert response.status_code == 200 and not response.json()["reserved"]
+
+    response = await asyncio.to_thread(
+        client.post, f"{queued_task.path}/queue/reserve", json=request, headers=dispatch.headers
+    )
+    assert response.status_code == 200 and response.json()["reserved"]
+
+
+@pytest.mark.parametrize("operation", ["start", "resume"])
+def test_queue_reservation_fences_new_legacy_admission(
+    client: TestClient, dispatch: DispatchFixture, queued_task: TaskFixture, postgres_session: Session, operation: str
+) -> None:
+    """Prevent a legacy admission from racing into an already reserved provider pool.
+
+    Test cases:
+    - New starts and additive resumes reject before changing existing execution state.
+    - Releasing the reservation permits admission to continue.
+    """
+    promote_release(postgres_session, dispatch.claim["executor_release_id"])
+    postgres_session.commit()
+    request = _reserve_request(queued_task)
+    assert client.post(f"{queued_task.path}/queue/reserve", json=request, headers=dispatch.headers).json()["reserved"]
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    assert benchmark is not None
+    target = make_benchmark(org_id=benchmark.org_id) if operation == "start" else benchmark
+    target.arguments = target.arguments.model_copy(update={"queue_pool_id": "pool_test", "priority": 2})
+
+    def admit() -> ExecutorDispatch:
+        if operation == "start":
+            return admit_start_dispatch(postgres_session, benchmark=target, dispatch_id=uuid4(), task_ids=[])
+        return admit_recovery_dispatch(
+            postgres_session,
+            benchmark=target,
+            pre_action_status=BenchmarkStatus.IN_PROGRESS,
+            dispatch_id=uuid4(),
+            kind=ExecutorDispatchKind.RESUME,
+            task_ids=[],
+        )
+
+    with pytest.raises(QueuePoolBusyError):
+        admit()
+    postgres_session.rollback()
+    postgres_session.refresh(benchmark)
+    assert benchmark.status == BenchmarkStatus.IN_PROGRESS
+    assert (
+        client.post(
+            f"{queued_task.path}/queue/release",
+            json=_release_request(queued_task, request["command_id"]),
+            headers=dispatch.headers,
+        ).status_code
+        == 200
+    )
+    admitted = admit()
+    postgres_session.commit()
+    assert admitted.status == ExecutorDispatchStatus.QUEUED
+
+
+def test_queue_reservation_racing_admission_has_one_winner(
+    app: FastAPI,
+    dispatch: DispatchFixture,
+    queued_task: TaskFixture,
+    postgres_session: Session,
+    postgres_engine: Engine,
+) -> None:
+    """Close the race between checking for legacy work and admitting a new legacy run.
+
+    Test cases:
+    - A reservation and same-pool legacy admission cannot both commit.
+    - The losing operation leaves the existing run and task intact.
+    """
+    promote_release(postgres_session, dispatch.claim["executor_release_id"])
+    postgres_session.commit()
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    assert benchmark is not None
+    org_id = benchmark.org_id
+    barrier = Barrier(2)
+
+    def reserve() -> bool:
+        with TestClient(app) as concurrent_client:
+            barrier.wait(timeout=5)
+            response = concurrent_client.post(
+                f"{queued_task.path}/queue/reserve", json=_reserve_request(queued_task), headers=dispatch.headers
+            )
+            assert response.status_code == 200, response.text
+            return bool(response.json()["reserved"])
+
+    def admit() -> bool:
+        with Session(postgres_engine) as session:
+            target = make_benchmark(org_id=org_id)
+            target.arguments = target.arguments.model_copy(update={"queue_pool_id": "pool_test", "priority": 2})
+            barrier.wait(timeout=5)
+            try:
+                admit_start_dispatch(session, benchmark=target, dispatch_id=uuid4(), task_ids=[])
+            except QueuePoolBusyError:
+                session.rollback()
+                return False
+            session.commit()
+            return True
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reservation = pool.submit(reserve)
+        admission = pool.submit(admit)
+        assert sorted((reservation.result(timeout=10), admission.result(timeout=10))) == [False, True]
+    postgres_session.refresh(benchmark)
+    task = postgres_session.get(Task, queued_task.id)
+    assert benchmark.status == BenchmarkStatus.IN_PROGRESS
+    assert task is not None and task.status == TaskStatus.PENDING
 
 
 @pytest.fixture
@@ -1580,3 +1864,36 @@ async def test_finalization_client_recovers_lost_response(
     assert transport.dropped
     assert len(postgres_session.exec(select(FinalEvaluation)).all()) == 1
     assert len(postgres_session.exec(select(ExecutorRunReceipt)).all()) == 1
+
+
+@pytest.mark.parametrize("operation", ["reserve", "release"])
+async def test_queue_client_recovers_lost_response(
+    app: FastAPI, dispatch: DispatchFixture, queued_task: TaskFixture, postgres_session: Session, operation: str
+) -> None:
+    """Retry pool reservations and settled releases after the committed response is lost.
+
+    Test cases:
+    - Retrying reservation does not increment the task revision twice.
+    - Retrying release does not restore the reservation or change the running task.
+    """
+    transport = MockLostResponseTransport(app, f"queue/{operation}")
+    async with httpx.AsyncClient(transport=transport, base_url="http://tracker.test") as http_client:
+        api = ExecutorClient(
+            ExecutorTransport(http_client, SecretStr(dispatch.token)),
+            dispatch.dispatch_id,
+            UUID(dispatch.claim["claimant_id"]),
+        )
+        started_at = datetime.fromisoformat(queued_task.request["expected_started_at"])
+        reservation = await api.reserve_pool(queued_task.id, started_at, command_id=uuid4(), expected_revision=0)
+        assert reservation.reserved and reservation.revision == 1 and reservation.reservation_id is not None
+        await api.write_task(queued_task.id, started_at, BuildTask(), command_id=uuid4(), expected_revision=1)
+        await api.write_task(queued_task.id, started_at, RunTask(), command_id=uuid4(), expected_revision=2)
+        released = await api.release_pool(queued_task.id, started_at, reservation.reservation_id, command_id=uuid4())
+        assert released.released
+
+    assert transport.dropped
+    assert postgres_session.exec(select(ExecutorPoolReservation)).first() is None
+    owner = postgres_session.get(ExecutorTaskAttempt, queued_task.id)
+    task = postgres_session.get(Task, queued_task.id)
+    assert owner is not None and owner.revision == 3
+    assert task is not None and task.status == TaskStatus.IN_PROGRESS

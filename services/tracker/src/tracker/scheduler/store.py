@@ -122,11 +122,20 @@ def task_evaluation_lock(engine: Engine, task_row_id: UUID) -> PostgresAdvisoryL
 
 def try_task_evaluation_transaction_lock(session: Session, task_row_id: UUID) -> bool:
     """Fence a task evaluation until the caller's current transaction ends."""
+    return _try_transaction_lock(session, _task_evaluation_lock_resource_id(task_row_id))
+
+
+def try_queue_pool_transaction_lock(session: Session, pool_id: str) -> bool:
+    """Check that no legacy executor is still creating in this provider pool."""
+    return _try_transaction_lock(session, pool_id)
+
+
+def _try_transaction_lock(session: Session, resource_id: str) -> bool:
     return bool(
         session.connection()
         .execute(
             text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
-            {"lock_key": _advisory_lock_key(_task_evaluation_lock_resource_id(task_row_id))},
+            {"lock_key": _advisory_lock_key(resource_id)},
         )
         .scalar_one()
     )

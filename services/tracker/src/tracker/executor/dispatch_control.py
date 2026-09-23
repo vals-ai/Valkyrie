@@ -17,11 +17,13 @@ from tracker.database.models import (
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
+    ExecutorPoolReservation,
     Task,
     TaskStatus,
 )
 from tracker.executor.release_control import (
     ReleaseControlError,
+    QueuePoolBusyError,
     create_executor_dispatch,
     lock_executor_admission,
     pin_benchmark_to_release,
@@ -51,6 +53,16 @@ def _require_compatible_release(benchmark: Benchmark, release: ExecutorRelease) 
         _require_managed_execution_release(release)
 
 
+def _require_unreserved_pool(session: Session, benchmark: Benchmark) -> None:
+    pool_id = benchmark.arguments.queue_pool_id
+    if (
+        pool_id is not None
+        and session.exec(select(ExecutorPoolReservation).where(ExecutorPoolReservation.pool_id == pool_id)).first()
+        is not None
+    ):
+        raise QueuePoolBusyError("Sandbox creation is in progress; retry queue admission shortly")
+
+
 def validate_managed_execution_release(session: Session) -> None:
     """Reject managed work unless the active executor can consume its queue payload."""
     _require_managed_execution_release(select_active_release(session))
@@ -67,6 +79,7 @@ def admit_start_dispatch(
     with session.no_autoflush:
         release = select_active_release(session, for_update=True)
     _require_compatible_release(benchmark, release)
+    _require_unreserved_pool(session, benchmark)
     session.add(benchmark)
     pin_benchmark_to_release(benchmark, release)
     dispatch = create_executor_dispatch(
@@ -98,6 +111,7 @@ def admit_recovery_dispatch(
         else:
             release = select_active_release(session, for_update=True)
     _require_compatible_release(benchmark, release)
+    _require_unreserved_pool(session, benchmark)
     if pre_action_status != BenchmarkStatus.IN_PROGRESS:
         benchmark.current_execution_release_id = release.id
         benchmark.finished_at = None

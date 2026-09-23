@@ -335,6 +335,19 @@ class ExecutorTaskReceipt(SQLModel, table=True):
     revision: int
 
 
+class ExecutorPoolReservation(SQLModel, table=True):
+    """Keep creation exclusive until its executor confirms the external operation settled.
+
+    No timeout or cascading delete may silently release an in-flight provider operation.
+    """
+
+    pool_id: str = Field(primary_key=True)
+    reservation_id: UUID
+    dispatch_id: UUID = Field(foreign_key="executordispatch.id")
+    task_id: UUID = Field(foreign_key="task.id")
+    started_at: datetime
+
+
 class ExecutorRunReceipt(SQLModel, table=True):
     """Retain a finalization response across retries and later run attempts."""
 

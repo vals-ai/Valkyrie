@@ -41,7 +41,7 @@ from tracker.executor_api.v1.task_schemas import (
 router = APIRouter()
 
 
-def _digest(task_id: UUID, operation: str, request: TaskAttemptRequest) -> str:
+def task_command_digest(task_id: UUID, operation: str, request: TaskAttemptRequest) -> str:
     normalized = request.model_copy(update={"expected_started_at": as_utc(request.expected_started_at)})
     payload = {
         "api": "v1",
@@ -116,7 +116,7 @@ def task_claim(
         task_id,
         request.expected_started_at,
         request.command_id,
-        _digest(task_id, "claim", request),
+        task_command_digest(task_id, "claim", request),
     )
     response = TaskWriteResponse(command_id=receipt.command_id, task_id=receipt.task_id, revision=receipt.revision)
     session.commit()
@@ -135,7 +135,7 @@ def task_write(
         task_id,
         request.expected_started_at,
         request.command_id,
-        _digest(task_id, "write", request),
+        task_command_digest(task_id, "write", request),
         request.expected_revision,
         _mutation(request.mutation),
         allow_stopping=isinstance(request.mutation, (SaveCheckpoint, CompleteTask, FailTask, StopTask)),

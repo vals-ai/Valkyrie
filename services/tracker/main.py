@@ -121,7 +121,12 @@ from tracker.docent_analysis import (
 from tracker.exceptions import TrackerServiceError
 from executor_protocol import EXECUTOR_TASK_NAME, ExecutorTelemetryContext, executor_task_signature
 from tracker.logging import configure_logging, get_logger, request_id_var
-from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
+from tracker.executor.release_control import (
+    MaintenanceModeError,
+    QueuePoolBusyError,
+    ReleaseControlError,
+    lock_executor_admission,
+)
 from tracker.executor.dispatch_recovery import AutomaticDispatchRecovery
 from tracker.executor.release_retirement import AutomaticReleaseRetirement
 from tracker.middleware import RequestContextMiddleware
@@ -1962,7 +1967,7 @@ def _apply_recovery(
         session.rollback()
         status_code = (
             503
-            if isinstance(exc, MaintenanceModeError)
+            if isinstance(exc, (MaintenanceModeError, QueuePoolBusyError))
             else (409 if pre_action_status == BenchmarkStatus.IN_PROGRESS else 503)
         )
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc

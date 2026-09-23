@@ -36,6 +36,7 @@ from tracker.database.models import (
     ExecutorTaskAttempt,
     ExecutorTaskReceipt,
     ExecutorRunReceipt,
+    ExecutorPoolReservation,
     Org,
 )
 
@@ -80,7 +81,7 @@ def test_dispatch_lease_migration_adds_recovery_state(migration_database_url: st
     engine.dispose()
 
 
-@pytest.mark.parametrize("revision", ["3e4f5a6b7c8d", "4f5a6b7c8d9e", "5a6b7c8d9e0f"])
+@pytest.mark.parametrize("revision", ["3e4f5a6b7c8d", "4f5a6b7c8d9e", "5a6b7c8d9e0f", "6b7c8d9e0f1a"])
 def test_dispatch_api_migration_preserves_a_live_legacy_claim(migration_database_url: str, revision: str) -> None:
     """Keep a legacy host claim valid across the additive executor API migration.
 
@@ -154,7 +155,7 @@ def test_dispatch_api_migration_preserves_a_live_legacy_claim(migration_database
             assert completed.executor_release_id == "legacy-api-migration"
             assert session.connection().execute(text("SELECT COUNT(*) FROM executordispatchaccess")).scalar_one() == 0
 
-            if revision in ("4f5a6b7c8d9e", "5a6b7c8d9e0f"):
+            if revision in ("4f5a6b7c8d9e", "5a6b7c8d9e0f", "6b7c8d9e0f1a"):
                 task = make_task(benchmark, "migrated-task")
                 session.add(task)
                 session.flush()
@@ -175,7 +176,24 @@ def test_dispatch_api_migration_preserves_a_live_legacy_claim(migration_database
                 session.commit()
                 assert not session.exec(select(ExecutorTaskAttempt)).all()
                 assert not session.exec(select(ExecutorTaskReceipt)).all()
-            if revision == "5a6b7c8d9e0f":
+            if revision == "6b7c8d9e0f1a":
+                task = make_task(benchmark, "reserved-task")
+                session.add(task)
+                session.flush()
+                reservation = ExecutorPoolReservation(
+                    pool_id="pool_migration",
+                    reservation_id=uuid4(),
+                    dispatch_id=dispatch_id,
+                    task_id=task.id,
+                    started_at=task.started_at,
+                )
+                session.add(reservation)
+                session.commit()
+                session.delete(reservation)
+                session.commit()
+                session.delete(task)
+                session.commit()
+            if revision in ("5a6b7c8d9e0f", "6b7c8d9e0f1a"):
                 receipt = ExecutorRunReceipt(
                     dispatch_id=dispatch_id, command_id=uuid4(), request_digest="b" * 64, status="FINISHED"
                 )
