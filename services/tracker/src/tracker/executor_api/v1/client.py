@@ -24,6 +24,12 @@ from tracker.executor_api.v1.finalization_schemas import (
     FinalizeRequest,
     FinalizeResponse,
 )
+from tracker.executor_api.v1.queue_schemas import (
+    ReleasePoolRequest,
+    ReleasePoolResponse,
+    ReservePoolRequest,
+    ReservePoolResponse,
+)
 
 Response = TypeVar("Response", bound=BaseModel)
 
@@ -114,4 +120,33 @@ class ExecutorClient:
                 mutation=mutation,
             ),
             TaskWriteResponse,
+        )
+
+    async def reserve_pool(
+        self, task_id: UUID, started_at: datetime, *, command_id: UUID, expected_revision: int
+    ) -> ReservePoolResponse:
+        return await self._post(
+            f"tasks/{task_id}/queue/reserve",
+            ReservePoolRequest(
+                claimant_id=self._claimant_id,
+                command_id=command_id,
+                expected_started_at=started_at,
+                expected_revision=expected_revision,
+            ),
+            ReservePoolResponse,
+        )
+
+    async def release_pool(
+        self, task_id: UUID, started_at: datetime, reservation_id: UUID, *, command_id: UUID
+    ) -> ReleasePoolResponse:
+        """Release only after the provider operation and any required cleanup have settled."""
+        return await self._post(
+            f"tasks/{task_id}/queue/release",
+            ReleasePoolRequest(
+                claimant_id=self._claimant_id,
+                command_id=command_id,
+                expected_started_at=started_at,
+                reservation_id=reservation_id,
+            ),
+            ReleasePoolResponse,
         )

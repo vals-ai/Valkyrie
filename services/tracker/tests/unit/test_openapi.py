@@ -51,7 +51,7 @@ def test_openapi_declares_authentication() -> None:
     ):
         path = f"/internal/executor/v1/dispatches/{{dispatch_id}}/{operation}"
         assert schema["paths"][path]["post"]["security"] == [{"ExecutorDispatchAuth": []}]
-    for operation in ("claim", "write"):
+    for operation in ("claim", "write", "queue/reserve", "queue/release"):
         path = f"/internal/executor/v1/dispatches/{{dispatch_id}}/tasks/{{task_id}}/{operation}"
         assert schema["paths"][path]["post"]["security"] == [{"ExecutorDispatchAuth": []}]
 

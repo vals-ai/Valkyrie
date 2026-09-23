@@ -2340,6 +2340,143 @@
         "title": "PendingTask",
         "type": "object"
       },
+      "ReleasePoolRequest": {
+        "additionalProperties": false,
+        "description": "Confirm creation and any required cleanup have settled before releasing.",
+        "properties": {
+          "claimant_id": {
+            "format": "uuid",
+            "title": "Claimant Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "expected_started_at": {
+            "format": "date-time",
+            "title": "Expected Started At",
+            "type": "string"
+          },
+          "reservation_id": {
+            "format": "uuid",
+            "title": "Reservation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claimant_id",
+          "command_id",
+          "expected_started_at",
+          "reservation_id"
+        ],
+        "title": "ReleasePoolRequest",
+        "type": "object"
+      },
+      "ReleasePoolResponse": {
+        "properties": {
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "released": {
+            "const": true,
+            "default": true,
+            "title": "Released",
+            "type": "boolean"
+          },
+          "reservation_id": {
+            "format": "uuid",
+            "title": "Reservation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_id",
+          "reservation_id"
+        ],
+        "title": "ReleasePoolResponse",
+        "type": "object"
+      },
+      "ReservePoolRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "claimant_id": {
+            "format": "uuid",
+            "title": "Claimant Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_started_at": {
+            "format": "date-time",
+            "title": "Expected Started At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claimant_id",
+          "command_id",
+          "expected_started_at",
+          "expected_revision"
+        ],
+        "title": "ReservePoolRequest",
+        "type": "object"
+      },
+      "ReservePoolResponse": {
+        "properties": {
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "reservation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Id"
+          },
+          "reserved": {
+            "title": "Reserved",
+            "type": "boolean"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          }
+        },
+        "required": [
+          "command_id",
+          "reserved",
+          "reservation_id",
+          "revision"
+        ],
+        "title": "ReservePoolResponse",
+        "type": "object"
+      },
       "RetryMode": {
         "enum": [
           "auto",
@@ -6486,6 +6623,142 @@
           }
         ],
         "summary": "Task Claim",
+        "tags": [
+          "executor-v1"
+        ]
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/tasks/{task_id}/queue/release": {
+      "post": {
+        "operationId": "queue_release",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReleasePoolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleasePoolResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Queue Release",
+        "tags": [
+          "executor-v1"
+        ]
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/tasks/{task_id}/queue/reserve": {
+      "post": {
+        "operationId": "queue_reserve",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReservePoolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReservePoolResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Queue Reserve",
         "tags": [
           "executor-v1"
         ]
