@@ -86,6 +86,7 @@ class RunInfo(BaseModel):
     concurrency: int
     queue_pool_id: str | None
     resources: RunResources | None
+    started_by_email: str | None = None
 
 
 class TaskState(BaseModel):

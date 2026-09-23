@@ -447,6 +447,7 @@ def assigned_run(postgres_session: Session, dispatch: DispatchFixture) -> list[s
     invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
     assert benchmark is not None and invocation is not None
     benchmark.started_at = datetime(2026, 1, 1, tzinfo=UTC)
+    benchmark.started_by_email = "executor-test@example.com"
     benchmark.aws_managed = True
     benchmark.arguments = benchmark.arguments.model_copy(
         update={
@@ -504,6 +505,7 @@ def test_run_initialization_preserves_existing_attempts(
         "org_name": "dispatch-api-test",
         "benchmark_name": "swebench",
         "agent_name": "a",
+        "started_by_email": "executor-test@example.com",
         "model": None,
         "started_at": "2026-01-01T00:00:00Z",
         "status": "IN_PROGRESS",
@@ -1794,6 +1796,10 @@ async def test_client_recovers_a_response_lost_after_commit(
         polled = await client.run_state(assigned_run)
         assert [task.id for task in polled.tasks] == [task.id for task in initialized.tasks]
         assert [task.started_at for task in polled.tasks] == [task.started_at for task in initialized.tasks]
+        assert all(task.eval_resume_state is None for task in polled.tasks)
+        resumed = await client.run_state(assigned_run, include_eval_resume_state=True)
+        assert resumed.tasks[1].eval_resume_state == initialized.tasks[1].eval_resume_state
+        assert resumed.run.started_by_email == "executor-test@example.com"
         await client.heartbeat()
         terminal = await client.fail("test failure") if operation == "fail" else await client.finish()
         assert terminal.status == ("FAILED" if operation == "fail" else "FINISHED")

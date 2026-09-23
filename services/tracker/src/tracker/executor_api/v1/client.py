@@ -81,10 +81,14 @@ class ExecutorClient:
             RunStateResponse,
         )
 
-    async def run_state(self, task_ids: list[str]) -> RunStateResponse:
+    async def run_state(self, task_ids: list[str], *, include_eval_resume_state: bool = False) -> RunStateResponse:
         """Read status and attempt timestamps for one assigned batch."""
         return await self._post(
-            "run/state", RunTasksRequest(claimant_id=self._claimant_id, task_ids=task_ids), RunStateResponse
+            "run/state",
+            RunTasksRequest(
+                claimant_id=self._claimant_id, task_ids=task_ids, include_eval_resume_state=include_eval_resume_state
+            ),
+            RunStateResponse,
         )
 
     async def claim_task(self, task_id: UUID, started_at: datetime, *, command_id: UUID) -> TaskWriteResponse:

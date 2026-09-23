@@ -118,6 +118,7 @@ def _run_state_response(state: RunState, *, include_eval_resume_state: bool) -> 
             org_name=state.org.name,
             benchmark_name=benchmark.name,
             agent_name=benchmark.arguments.contract.name,
+            started_by_email=benchmark.started_by_email,
             model=benchmark.arguments.contract.model,
             started_at=as_utc(benchmark.started_at),
             status=RunStatus(benchmark.status.value),
