@@ -2718,6 +2718,17 @@
             "title": "Started At",
             "type": "string"
           },
+          "started_by_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started By Email"
+          },
           "status": {
             "$ref": "#/components/schemas/RunStatus"
           }
