@@ -164,6 +164,17 @@ def dispatch_authority(session: Session, dispatch_id: UUID, claimant_id: UUID) -
     return _is_current(benchmark, dispatch, access, claimant_id, _database_now(session))
 
 
+def lock_claimed_dispatch(
+    session: Session, dispatch_id: UUID, claimant_id: UUID
+) -> tuple[Benchmark, ExecutorDispatch, bool]:
+    """Read run state for the exact claimant, including a revoked claim's final state."""
+    benchmark, dispatch, access = _lock_dispatch(session, dispatch_id)
+    if access.claimant_id != claimant_id:
+        raise DispatchConflict("Executor dispatch belongs to another claimant")
+
+    return benchmark, dispatch, _is_current(benchmark, dispatch, access, claimant_id, _database_now(session))
+
+
 def heartbeat_dispatch(session: Session, dispatch_id: UUID, claimant_id: UUID) -> ExecutorDispatch:
     benchmark, dispatch, access = _lock_dispatch(session, dispatch_id)
     now = _database_now(session)

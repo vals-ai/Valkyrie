@@ -20,12 +20,20 @@ from tracker.executor.dispatch_api import (
     dispatch_authority,
     heartbeat_dispatch,
 )
+from tracker.executor.run_api import RunState, initialize_run_tasks, read_run_state
 from tracker.executor_api.v1.schemas import (
     AuthorityResponse,
     ClaimRequest,
     DispatchRequest,
     FailRequest,
     LeaseResponse,
+    RunInfo,
+    RunResources,
+    RunStateResponse,
+    RunStatus,
+    RunTasksRequest,
+    TaskState,
+    TaskStatus,
     TerminalResponse,
 )
 
@@ -118,3 +126,61 @@ def fail(dispatch_id: UUID, request: FailRequest, session: DispatchSession) -> T
     session.commit()
 
     return response
+
+
+def _run_state_response(state: RunState, *, include_eval_resume_state: bool) -> RunStateResponse:
+    benchmark = state.benchmark
+    resources = benchmark.arguments.properties
+
+    return RunStateResponse(
+        current=state.current,
+        run=RunInfo(
+            benchmark_id=benchmark.id,
+            org_id=state.org.id,
+            org_name=state.org.name,
+            benchmark_name=benchmark.name,
+            agent_name=benchmark.arguments.contract.name,
+            model=benchmark.arguments.contract.model,
+            started_at=as_utc(benchmark.started_at),
+            status=RunStatus(benchmark.status.value),
+            aws_managed=benchmark.aws_managed,
+            concurrency=benchmark.arguments.concurrency,
+            queue_pool_id=benchmark.arguments.queue_pool_id,
+            resources=RunResources(
+                region=resources.region,
+                s3_bucket=resources.s3_bucket,
+                log_group=resources.log_group,
+                log_retention_days=resources.log_retention_days,
+            )
+            if resources is not None
+            else None,
+        ),
+        tasks=[
+            TaskState(
+                id=task.id,
+                task_id=task_id,
+                status=TaskStatus(task.status.value),
+                started_at=as_utc(task.started_at),
+                finished_at=as_utc(task.finished_at) if task.finished_at is not None else None,
+                eval_resume_state=task.eval_resume_state if include_eval_resume_state else None,
+            )
+            for task_id, task in state.tasks
+        ],
+        task_counts={status: state.task_counts.get(status.value, 0) for status in TaskStatus},
+    )
+
+
+@router.post("/{dispatch_id}/run/initialize")
+def initialize_run(dispatch_id: UUID, request: RunTasksRequest, session: DispatchSession) -> RunStateResponse:
+    state = initialize_run_tasks(session, dispatch_id, request.claimant_id, request.task_ids)
+    response = _run_state_response(state, include_eval_resume_state=request.include_eval_resume_state)
+    session.commit()
+
+    return response
+
+
+@router.post("/{dispatch_id}/run/state")
+def run_state(dispatch_id: UUID, request: RunTasksRequest, session: DispatchSession) -> RunStateResponse:
+    state = read_run_state(session, dispatch_id, request.claimant_id, request.task_ids)
+
+    return _run_state_response(state, include_eval_resume_state=request.include_eval_resume_state)

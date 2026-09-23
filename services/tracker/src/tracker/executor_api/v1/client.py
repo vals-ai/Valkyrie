@@ -12,6 +12,8 @@ from tracker.executor_api.v1.schemas import (
     DispatchRequest,
     FailRequest,
     LeaseResponse,
+    RunStateResponse,
+    RunTasksRequest,
     TerminalResponse,
 )
 
@@ -49,4 +51,18 @@ class ExecutorClient:
     async def fail(self, error_message: str) -> TerminalResponse:
         return await self._post(
             "fail", FailRequest(claimant_id=self._claimant_id, error_message=error_message), TerminalResponse
+        )
+
+    async def initialize_run_tasks(self, task_ids: list[str]) -> RunStateResponse:
+        """Ensure one assigned batch exists without resetting existing task attempts."""
+        return await self._post(
+            "run/initialize",
+            RunTasksRequest(claimant_id=self._claimant_id, task_ids=task_ids, include_eval_resume_state=True),
+            RunStateResponse,
+        )
+
+    async def run_state(self, task_ids: list[str]) -> RunStateResponse:
+        """Read status and attempt timestamps for one assigned batch."""
+        return await self._post(
+            "run/state", RunTasksRequest(claimant_id=self._claimant_id, task_ids=task_ids), RunStateResponse
         )

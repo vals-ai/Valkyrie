@@ -241,6 +241,8 @@ INTERNAL_ROUTES = {
     ("/internal/executor/v1/dispatches/{dispatch_id}/heartbeat", "post"),
     ("/internal/executor/v1/dispatches/{dispatch_id}/finish", "post"),
     ("/internal/executor/v1/dispatches/{dispatch_id}/fail", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/run/initialize", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/run/state", "post"),
 }
 
 

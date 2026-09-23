@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
 from tracker.executor.dependencies import get_execution_runtime
+from tracker.executor.task_state import ensure_task_rows, load_task_rows
 from tracker.runtime.services import RuntimeServices
 from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
@@ -336,18 +337,7 @@ def create_task_rows(
     """
     lock_execution_authority(session, authority)
 
-    # Find task ids that already exist so that we can filter them out
-    existing_task_ids: Sequence[str] = session.exec(
-        select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(col(Task.task_id).in_(verified_task_ids))
-    ).all()
-
-    # NOTE: Must maintain same order that was passed in
-    task_ids_to_create = [task_id for task_id in verified_task_ids if task_id not in existing_task_ids]
-
-    for task_id in task_ids_to_create:
-        task_row = Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id)
-        session.add(task_row)
-
+    ensure_task_rows(session, benchmark_row, org, verified_task_ids)
     session.commit()
     session.expire_all()
 
@@ -368,18 +358,7 @@ def _load_verified_task_rows(
     *,
     statuses: Sequence[TaskStatus] | None = None,
 ) -> Sequence[tuple[str, Task]]:
-    task_rows_query = (
-        select(Task.task_id, Task)
-        .where(Task.benchmark == benchmark_row.id)
-        .where(Task.org_id == org.id)
-        .where(col(Task.task_id).in_(verified_task_ids))
-    )
-    if statuses is not None:
-        task_rows_query = task_rows_query.where(col(Task.status).in_(statuses))
-    task_rows = session.exec(task_rows_query).all()
-
-    task_rows_by_id: dict[str, Task] = {task_id: task_row for task_id, task_row in task_rows}
-    return [(task_id, task_rows_by_id[task_id]) for task_id in verified_task_ids if task_id in task_rows_by_id]
+    return load_task_rows(session, benchmark_row, org, verified_task_ids, statuses=statuses)
 
 
 def has_runnable_tasks(session: Session, benchmark_row: Benchmark, org: Org) -> bool:
