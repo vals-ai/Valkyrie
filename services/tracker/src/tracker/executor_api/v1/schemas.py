@@ -30,6 +30,7 @@ class LeaseResponse(BaseModel):
     dispatch_id: UUID
     claimant_id: UUID
     lease_expires_at: datetime
+    server_time: datetime
 
 
 class AuthorityResponse(BaseModel):

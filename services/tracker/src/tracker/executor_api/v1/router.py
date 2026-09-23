@@ -11,6 +11,7 @@ from tracker.executor.dispatch_api import (
     complete_dispatch,
     dispatch_authority,
     heartbeat_dispatch,
+    database_now,
 )
 from tracker.executor.run_api import RunState, initialize_run_tasks, read_run_state
 from tracker.executor_api.v1.dependencies import DispatchSession
@@ -58,6 +59,7 @@ def claim(dispatch_id: UUID, request: ClaimRequest, session: DispatchSession) ->
         dispatch_id=dispatch.id,
         claimant_id=request.claimant_id,
         lease_expires_at=as_utc(dispatch.lease_expires_at),
+        server_time=as_utc(database_now(session)),
     )
     session.commit()
 
@@ -77,6 +79,7 @@ def heartbeat(dispatch_id: UUID, request: DispatchRequest, session: DispatchSess
         dispatch_id=dispatch.id,
         claimant_id=request.claimant_id,
         lease_expires_at=as_utc(dispatch.lease_expires_at),
+        server_time=as_utc(database_now(session)),
     )
     session.commit()
 
