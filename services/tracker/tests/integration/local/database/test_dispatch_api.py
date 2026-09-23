@@ -11,6 +11,11 @@ from datetime import UTC, datetime, timedelta
 from threading import Barrier
 import json
 import asyncio
+import os
+import socket
+import sys
+from contextlib import AsyncExitStack
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -1902,3 +1907,117 @@ async def test_queue_client_recovers_lost_response(
     task = postgres_session.get(Task, queued_task.id)
     assert owner is not None and owner.revision == 3
     assert task is not None and task.status == TaskStatus.IN_PROGRESS
+
+
+async def _stop_api_process(process: asyncio.subprocess.Process) -> None:
+    if process.stdin is not None:
+        process.stdin.close()
+    if process.returncode is None:
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=10)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+
+
+async def _process_event(process: asyncio.subprocess.Process) -> dict[str, object]:
+    assert process.stdout is not None
+    async with asyncio.timeout(15):
+        line = await process.stdout.readline()
+        if not line:
+            assert process.stderr is not None
+            pytest.fail(f"API test process exited: {(await process.stderr.read()).decode()}")
+
+    return json.loads(line)
+
+
+async def _start_api_server(
+    stack: AsyncExitStack, database_url: str, port: int = 0
+) -> tuple[asyncio.subprocess.Process, int]:
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", port))
+        port = listener.getsockname()[1]
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(Path(__file__).with_name("api_server.py")),
+            str(listener.fileno()),
+            pass_fds=(listener.fileno(),),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "TEST_EXECUTOR_DATABASE_URL": database_url},
+        )
+    stack.push_async_callback(_stop_api_process, process)
+    assert (await _process_event(process))["event"] == "ready"
+
+    return process, port
+
+
+async def test_api_server_restart_preserves_executor_process(
+    dispatch: DispatchFixture, postgres_engine: Engine, postgres_session: Session
+) -> None:
+    """Restart an actual API process while a database-free client process retains its claim.
+
+    Test cases:
+    - A new server process accepts the original client's claim and task attempt.
+    - The same client PID completes the task and run through real HTTP after restart.
+    - No executor-side database/config modules or connections are required.
+    """
+    task = postgres_session.get(Task, dispatch.task_id)
+    assert task is not None
+    task.status = TaskStatus.PENDING
+    postgres_session.add(task)
+    postgres_session.commit()
+    database_url = postgres_engine.url.render_as_string(hide_password=False)
+    async with AsyncExitStack() as stack:
+        server, port = await _start_api_server(stack, database_url)
+        worker = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(Path(__file__).with_name("api_worker.py")),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stack.push_async_callback(_stop_api_process, worker)
+        assert worker.stdin is not None
+        worker.stdin.write(
+            json.dumps(
+                {
+                    "endpoint": f"http://127.0.0.1:{port}",
+                    "token": dispatch.token,
+                    "dispatch_id": str(dispatch.dispatch_id),
+                    "claim": dispatch.claim,
+                    "task_ids": ["task-0"],
+                }
+            ).encode()
+            + b"\n"
+        )
+        await worker.stdin.drain()
+        started = await _process_event(worker)
+        assert started["event"] == "started"
+        postgres_session.refresh(task)
+        assert task.status == TaskStatus.IN_PROGRESS
+
+        await _stop_api_process(server)
+        assert server.returncode is not None and worker.returncode is None
+        worker.stdin.write(b"read\n")
+        await worker.stdin.drain()
+        assert (await _process_event(worker))["event"] == "reading"
+        replacement, _ = await _start_api_server(stack, database_url, port)
+        assert replacement.pid != server.pid
+        resumed = await _process_event(worker)
+        finished = await _process_event(worker)
+        assert resumed == {"event": "resumed", "pid": started["pid"]}
+        assert finished == {"event": "finished", "pid": started["pid"]}
+        assert await asyncio.wait_for(worker.wait(), timeout=10) == 0
+
+    postgres_session.expire_all()
+    task = postgres_session.get(Task, dispatch.task_id)
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    assert task is not None and task.status == TaskStatus.FINISHED
+    assert task.started_at == datetime.fromisoformat(str(started["started_at"])).replace(tzinfo=None)
+    assert benchmark is not None and benchmark.status == BenchmarkStatus.FINISHED
+    assert invocation is not None and invocation.status == ExecutorDispatchStatus.FINISHED
+    assert benchmark.final_evaluation is not None and benchmark.final_evaluation.final_score == 1
