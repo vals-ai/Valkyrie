@@ -64,6 +64,10 @@ _protection_refresh_task: asyncio.Task[None] | None = None
 _execution_lock = asyncio.Lock()
 
 
+class TaskProtectionError(Exception):
+    """The ECS agent did not confirm the requested protection state."""
+
+
 async def _set_task_protection(*, enabled: bool) -> bool:
     if not ECS_AGENT_URI:
         return True
@@ -79,7 +83,18 @@ async def _set_task_protection(*, enabled: bool) -> bool:
 
     def update() -> None:
         with urllib.request.urlopen(request, timeout=5) as response:
-            response.read()
+            result: object = json.load(response)
+        if not isinstance(result, dict):
+            raise TaskProtectionError("ECS agent returned an invalid task-protection response")
+        payload = cast(dict[str, object], result)
+        if "failure" in payload or "error" in payload:
+            raise TaskProtectionError("ECS agent returned a task-protection failure")
+        protection = payload.get("protection")
+        if (
+            not isinstance(protection, dict)
+            or cast(dict[str, object], protection).get("ProtectionEnabled") is not enabled
+        ):
+            raise TaskProtectionError("ECS agent did not confirm the requested task-protection state")
 
     update_task = asyncio.create_task(asyncio.to_thread(update))
     try:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 from json import JSONDecodeError
 import logging
@@ -901,7 +902,8 @@ def test_executor_host_uses_one_taskiq_process() -> None:
 
 
 @pytest.mark.asyncio
-async def test_task_protection_uses_a_renewable_two_hour_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_task_protection_uses_a_renewable_two_hour_lease(monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
     request_bodies: list[dict[str, object]] = []
 
     class Response:
@@ -912,7 +914,7 @@ async def test_task_protection_uses_a_renewable_two_hour_lease(monkeypatch: pyte
             return None
 
         def read(self) -> bytes:
-            return b""
+            return json.dumps({"protection": {"ProtectionEnabled": enabled}}).encode()
 
     def fake_urlopen(request: object, *, timeout: int) -> Response:
         assert timeout == 5
@@ -923,8 +925,45 @@ async def test_task_protection_uses_a_renewable_two_hour_lease(monkeypatch: pyte
     monkeypatch.setattr(supervisor_module.urllib.request, "urlopen", fake_urlopen)
 
     set_task_protection = getattr(supervisor_module, "_set_task_protection")
-    assert await set_task_protection(enabled=True)
-    assert request_bodies == [{"ProtectionEnabled": True, "ExpiresInMinutes": 120}]
+    assert await set_task_protection(enabled=enabled)
+    expected = {"ProtectionEnabled": enabled, "ExpiresInMinutes": 120} if enabled else {"ProtectionEnabled": False}
+    assert request_bodies == [expected]
+
+
+@pytest.mark.parametrize(
+    "response_body",
+    [
+        b'{"failure":{"Reason":"DEPLOYMENT_BLOCKED"}}',
+        b'{"error":{"Code":"AccessDeniedException"}}',
+        b'{"protection":{"ProtectionEnabled":false}}',
+        b'{"protection":{"ProtectionEnabled":"true"}}',
+        b'{"protection":{"ProtectionEnabled":true},"failure":{"Reason":"TASK_NOT_VALID"}}',
+        b"{}",
+        b"null",
+        b"[]",
+        b"not-json",
+        b"",
+    ],
+)
+async def test_task_protection_rejects_unconfirmed_agent_responses(
+    monkeypatch: pytest.MonkeyPatch, response_body: bytes
+) -> None:
+    """Treat agent failure payloads as failures even when HTTP transport succeeds.
+
+    Test cases:
+    - Failure and error responses cannot confirm protection.
+    - Missing, malformed, or mismatched protection state is rejected.
+    """
+
+    def respond(_request: object, *, timeout: int) -> io.BytesIO:
+        assert timeout == 5
+
+        return io.BytesIO(response_body)
+
+    monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", "http://ecs-agent")
+    monkeypatch.setattr(supervisor_module.urllib.request, "urlopen", respond)
+
+    assert not await getattr(supervisor_module, "_set_task_protection")(enabled=True)
 
 
 @pytest.mark.asyncio
