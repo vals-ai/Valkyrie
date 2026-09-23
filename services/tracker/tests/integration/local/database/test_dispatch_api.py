@@ -1499,8 +1499,11 @@ def test_run_finalization_replays_receipt_after_expiry_and_retry(
     - Final score, metadata, status, and receipt commit together.
     - Lease expiry and a later attempt do not duplicate or restore the old score.
     - A changed request cannot reuse the committed command identifier.
+    - Only the current finalizer can retrieve the version-one report.
     """
     request = _finalize_request(dispatch, finalizable_run)
+    report_request = {**dispatch.request, "command_id": request["command_id"]}
+    assert client.post(f"{dispatch.path}/run/report", json=report_request, headers=dispatch.headers).status_code == 409
     response = client.post(f"{dispatch.path}/run/finalize", json=request, headers=dispatch.headers)
 
     assert response.status_code == 200, response.text
@@ -1510,7 +1513,20 @@ def test_run_finalization_replays_receipt_after_expiry_and_retry(
     evaluation = postgres_session.get(FinalEvaluation, UUID(body["final_evaluation_id"]))
     assert benchmark is not None and benchmark.status == BenchmarkStatus.FINISHED and benchmark.finished_at is not None
     assert evaluation is not None and evaluation.final_score == 0.75 and evaluation.properties == {"weight": 1}
+    report_response = client.post(f"{dispatch.path}/run/report", json=report_request, headers=dispatch.headers)
+    assert report_response.status_code == 200
+    report = report_response.json()["report"]
+    assert report["benchmark_id"] == str(dispatch.benchmark_id) and report["status"] == "FINISHED"
+    assert report["final_evaluation"] == {
+        "id": str(evaluation.id),
+        "org_id": str(evaluation.org_id),
+        "benchmark": str(dispatch.benchmark_id),
+        "final_score": 0.75,
+        "properties": {"weight": 1},
+    }
+    assert report["evaluation_results"]["task-0"]["score"] == 0.75
     assert client.post(f"{dispatch.path}/finish", json=dispatch.request, headers=dispatch.headers).status_code == 200
+    assert client.post(f"{dispatch.path}/run/report", json=report_request, headers=dispatch.headers).status_code == 409
 
     invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
     task = postgres_session.get(Task, dispatch.task_id)

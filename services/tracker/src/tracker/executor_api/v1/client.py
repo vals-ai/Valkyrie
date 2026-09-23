@@ -25,6 +25,8 @@ from tracker.executor_api.v1.finalization_schemas import (
     FinalizationResponse,
     FinalizeRequest,
     FinalizeResponse,
+    ReportRequest,
+    ReportResponse,
 )
 from tracker.executor_api.v1.queue_schemas import (
     ReleasePoolRequest,
@@ -130,6 +132,11 @@ class ExecutorClient:
                 mutation=mutation,
             ),
             TaskWriteResponse,
+        )
+
+    async def run_report(self, command_id: UUID) -> ReportResponse:
+        return await self._post(
+            "run/report", ReportRequest(claimant_id=self._claimant_id, command_id=command_id), ReportResponse
         )
 
     async def reserve_pool(

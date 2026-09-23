@@ -5,7 +5,10 @@ import json
 from uuid import UUID
 
 from fastapi import APIRouter
+from sqlmodel import select
 
+from tracker.database.models import ExecutorRunReceipt, Org
+from tracker.executor.dispatch_api import DispatchConflict, lock_claimed_dispatch
 from tracker.executor.finalization_api import finalize_run, read_finalization
 from tracker.executor_api.v1.dependencies import DispatchSession
 from tracker.executor_api.v1.schemas import DispatchRequest, RunStatus
@@ -15,7 +18,11 @@ from tracker.executor_api.v1.finalization_schemas import (
     FinalizationResponse,
     FinalizeRequest,
     FinalizeResponse,
+    ReportRequest,
+    ReportResponse,
+    RunReport,
 )
+from tracker.utils.reporting import create_final_view
 
 router = APIRouter()
 
@@ -66,3 +73,15 @@ def run_finalize(dispatch_id: UUID, request: FinalizeRequest, session: DispatchS
     session.commit()
 
     return response
+
+
+@router.post("/{dispatch_id}/run/report")
+def run_report(dispatch_id: UUID, request: ReportRequest, session: DispatchSession) -> ReportResponse:
+    benchmark, _dispatch, current = lock_claimed_dispatch(session, dispatch_id, request.claimant_id)
+    receipt = session.get(ExecutorRunReceipt, (dispatch_id, request.command_id))
+    if not current or receipt is None:
+        raise DispatchConflict("Only the current run finalizer may publish its report")
+    org = session.exec(select(Org).where(Org.id == benchmark.org_id)).one()
+    report = create_final_view(benchmark, session, org)
+
+    return ReportResponse(report=RunReport.model_validate(report.model_dump(mode="json")))
