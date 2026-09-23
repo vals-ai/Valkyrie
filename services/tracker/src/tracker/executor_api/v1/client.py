@@ -3,6 +3,8 @@
 from uuid import UUID
 from typing import TypeVar
 from datetime import datetime
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 
 from pydantic import BaseModel
 
@@ -41,6 +43,10 @@ class ExecutorClient:
         self._transport = transport
         self._path = f"/internal/executor/v1/dispatches/{dispatch_id}"
         self._claimant_id = claimant_id
+
+    def retry_until(self, deadline: Callable[[], float]) -> AbstractContextManager[None]:
+        """Keep replay-safe writes pending through outages while this process retains a lease."""
+        return self._transport.retry_until(deadline)
 
     async def _post(self, operation: str, request: BaseModel, response_type: type[Response]) -> Response:
         response = await self._transport.post(f"{self._path}/{operation}", request.model_dump(mode="json"))
