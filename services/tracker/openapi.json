@@ -1116,6 +1116,33 @@
         "title": "ClaimRequest",
         "type": "object"
       },
+      "CompleteRun": {
+        "additionalProperties": false,
+        "properties": {
+          "final_score": {
+            "title": "Final Score",
+            "type": "number"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Metadata",
+            "type": "object"
+          },
+          "operation": {
+            "const": "complete",
+            "default": "complete",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "final_score"
+        ],
+        "title": "CompleteRun",
+        "type": "object"
+      },
       "CompleteTask": {
         "additionalProperties": false,
         "properties": {
@@ -1261,6 +1288,28 @@
           "error_message"
         ],
         "title": "FailRequest",
+        "type": "object"
+      },
+      "FailRun": {
+        "additionalProperties": false,
+        "properties": {
+          "error_message": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "title": "Error Message",
+            "type": "string"
+          },
+          "operation": {
+            "const": "fail",
+            "default": "fail",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error_message"
+        ],
+        "title": "FailRun",
         "type": "object"
       },
       "FailTask": {
@@ -1696,6 +1745,177 @@
           "task_errors"
         ],
         "title": "FinalViewResponse",
+        "type": "object"
+      },
+      "FinalizationResponse": {
+        "properties": {
+          "benchmark_id": {
+            "format": "uuid",
+            "title": "Benchmark Id",
+            "type": "string"
+          },
+          "current": {
+            "title": "Current",
+            "type": "boolean"
+          },
+          "evaluation_results": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/JsonValue"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Evaluation Results",
+            "type": "object"
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "enum": [
+                  "complete",
+                  "fail",
+                  "stop"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation"
+          },
+          "snapshot_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Digest"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "task_errors": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Task Errors",
+            "type": "object"
+          }
+        },
+        "required": [
+          "benchmark_id",
+          "current",
+          "status",
+          "snapshot_digest",
+          "operation",
+          "evaluation_results",
+          "task_errors"
+        ],
+        "title": "FinalizationResponse",
+        "type": "object"
+      },
+      "FinalizeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "claimant_id": {
+            "format": "uuid",
+            "title": "Claimant Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "finalization": {
+            "discriminator": {
+              "mapping": {
+                "complete": "#/components/schemas/CompleteRun",
+                "fail": "#/components/schemas/FailRun",
+                "stop": "#/components/schemas/StopRun"
+              },
+              "propertyName": "operation"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CompleteRun"
+              },
+              {
+                "$ref": "#/components/schemas/FailRun"
+              },
+              {
+                "$ref": "#/components/schemas/StopRun"
+              }
+            ],
+            "title": "Finalization"
+          },
+          "snapshot_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Snapshot Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claimant_id",
+          "command_id",
+          "snapshot_digest",
+          "finalization"
+        ],
+        "title": "FinalizeRequest",
+        "type": "object"
+      },
+      "FinalizeResponse": {
+        "properties": {
+          "benchmark_id": {
+            "format": "uuid",
+            "title": "Benchmark Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "final_evaluation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Evaluation Id"
+          },
+          "status": {
+            "enum": [
+              "FINISHED",
+              "ERROR",
+              "STOPPED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_id",
+          "benchmark_id",
+          "status",
+          "final_evaluation_id"
+        ],
+        "title": "FinalizeResponse",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -3487,6 +3707,19 @@
           "status"
         ],
         "title": "StopBenchmarkResponse",
+        "type": "object"
+      },
+      "StopRun": {
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "const": "stop",
+            "default": "stop",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "title": "StopRun",
         "type": "object"
       },
       "StopTask": {
@@ -5953,6 +6186,122 @@
           }
         ],
         "summary": "Heartbeat",
+        "tags": [
+          "executor-v1"
+        ]
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/run/finalization": {
+      "post": {
+        "operationId": "run_finalization",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FinalizationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Run Finalization",
+        "tags": [
+          "executor-v1"
+        ]
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/run/finalize": {
+      "post": {
+        "operationId": "run_finalize",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinalizeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FinalizeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Run Finalize",
         "tags": [
           "executor-v1"
         ]

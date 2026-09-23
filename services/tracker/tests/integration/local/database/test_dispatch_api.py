@@ -25,6 +25,7 @@ from tracker.aws.runtime import AWSResources
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
+    DocentReadingStatus,
     ErrorResult,
     EvaluationResult,
     ExecutorDispatch,
@@ -32,6 +33,8 @@ from tracker.database.models import (
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
+    ExecutorRunReceipt,
+    FinalEvaluation,
     ExecutorTaskAttempt,
     ExecutorTaskReceipt,
     Org,
@@ -47,6 +50,7 @@ from tracker.executor_api.transport import ExecutorTransport
 from tracker.executor_api.v1.client import ExecutorClient
 from tracker.executor_api.v1.schemas import ClaimRequest
 from tracker.executor_api.v1.task_schemas import BuildTask, RunTask, EvaluateTask, CompleteTask
+from tracker.executor_api.v1.finalization_schemas import CompleteRun
 
 
 @dataclass(frozen=True)
@@ -134,7 +138,18 @@ def client(app: FastAPI) -> Generator[TestClient, None, None]:
 
 
 @pytest.mark.parametrize(
-    "operation", ["claim", "authority", "heartbeat", "finish", "fail", "run/initialize", "run/state"]
+    "operation",
+    [
+        "claim",
+        "authority",
+        "heartbeat",
+        "finish",
+        "fail",
+        "run/initialize",
+        "run/state",
+        "run/finalization",
+        "run/finalize",
+    ],
 )
 def test_dispatch_credentials_are_required(client: TestClient, dispatch: DispatchFixture, operation: str) -> None:
     """Reject missing and unrelated credentials independently of user API auth settings.
@@ -1156,6 +1171,285 @@ def test_task_commands_require_dispatch_credentials(
         assert client.post(f"{task_attempt.path}/{operation}", json=request, headers=headers).status_code == 401
 
 
+@pytest.fixture
+def finalizable_run(client: TestClient, dispatch: DispatchFixture, postgres_session: Session) -> str:
+    assert client.post(f"{dispatch.path}/claim", json=dispatch.claim, headers=dispatch.headers).status_code == 200
+    task = postgres_session.get(Task, dispatch.task_id)
+    assert task is not None
+    task.status = TaskStatus.FINISHED
+    postgres_session.add(task)
+    postgres_session.add(EvaluationResult(org_id=task.org_id, task=task.id, result={"score": 0.75}))
+    postgres_session.commit()
+    response = client.post(f"{dispatch.path}/run/finalization", json=dispatch.request, headers=dispatch.headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["operation"] == "complete"
+    assert response.json()["evaluation_results"] == {"task-0": {"score": 0.75}}
+    digest = response.json()["snapshot_digest"]
+    assert isinstance(digest, str)
+
+    return digest
+
+
+def _finalize_request(dispatch: DispatchFixture, snapshot_digest: str) -> dict[str, object]:
+    return {
+        **dispatch.request,
+        "command_id": str(uuid4()),
+        "snapshot_digest": snapshot_digest,
+        "finalization": {"operation": "complete", "final_score": 0.75, "metadata": {"weight": 1}},
+    }
+
+
+def test_run_finalization_replays_receipt_after_expiry_and_retry(
+    client: TestClient, dispatch: DispatchFixture, finalizable_run: str, postgres_session: Session
+) -> None:
+    """Persist one score and replay its response without changing a later run attempt.
+
+    Test cases:
+    - Final score, metadata, status, and receipt commit together.
+    - Lease expiry and a later attempt do not duplicate or restore the old score.
+    - A changed request cannot reuse the committed command identifier.
+    """
+    request = _finalize_request(dispatch, finalizable_run)
+    response = client.post(f"{dispatch.path}/run/finalize", json=request, headers=dispatch.headers)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "FINISHED" and body["benchmark_id"] == str(dispatch.benchmark_id)
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    evaluation = postgres_session.get(FinalEvaluation, UUID(body["final_evaluation_id"]))
+    assert benchmark is not None and benchmark.status == BenchmarkStatus.FINISHED and benchmark.finished_at is not None
+    assert evaluation is not None and evaluation.final_score == 0.75 and evaluation.properties == {"weight": 1}
+    assert client.post(f"{dispatch.path}/finish", json=dispatch.request, headers=dispatch.headers).status_code == 200
+
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    task = postgres_session.get(Task, dispatch.task_id)
+    assert invocation is not None and task is not None
+    invocation.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    task.started_at += timedelta(seconds=1)
+    task.status = TaskStatus.PENDING
+    benchmark.status = BenchmarkStatus.IN_PROGRESS
+    benchmark.finished_at = None
+    postgres_session.add_all([invocation, task, benchmark])
+    postgres_session.delete(evaluation)
+    postgres_session.commit()
+
+    replay = client.post(f"{dispatch.path}/run/finalize", json=request, headers=dispatch.headers)
+    assert replay.status_code == 200 and replay.json() == body
+    changed = {**request, "finalization": {"operation": "complete", "final_score": 0.5}}
+    assert client.post(f"{dispatch.path}/run/finalize", json=changed, headers=dispatch.headers).status_code == 409
+    postgres_session.refresh(benchmark)
+    postgres_session.refresh(task)
+    assert benchmark.status == BenchmarkStatus.IN_PROGRESS and task.status == TaskStatus.PENDING
+    assert not postgres_session.exec(select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark.id)).all()
+    assert len(postgres_session.exec(select(ExecutorRunReceipt)).all()) == 1
+
+
+@pytest.mark.parametrize("change", ["retry", "new-result", "stop", "expired", "claimant", "new-task", "missing-task"])
+def test_run_finalization_rejects_changed_snapshot(
+    client: TestClient, dispatch: DispatchFixture, finalizable_run: str, postgres_session: Session, change: str
+) -> None:
+    """Discard an aggregate calculated against stale task results or lost authority.
+
+    Test cases:
+    - Retry, replacement results, stop, and task admission invalidate the snapshot.
+    - Expired leases and another claimant cannot commit a final score.
+    - Rejection leaves no score or successful finalization receipt.
+    """
+    request = _finalize_request(dispatch, finalizable_run)
+    task = postgres_session.get(Task, dispatch.task_id)
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    assert task is not None and invocation is not None and benchmark is not None
+    if change == "retry":
+        task.status = TaskStatus.PENDING
+        task.started_at += timedelta(seconds=1)
+        postgres_session.add(task)
+    elif change == "new-result":
+        postgres_session.add(EvaluationResult(org_id=task.org_id, task=task.id, result={"score": 1}))
+    elif change == "stop":
+        benchmark.status = BenchmarkStatus.STOPPING
+        postgres_session.add(benchmark)
+    elif change == "expired":
+        invocation.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        postgres_session.add(invocation)
+    elif change == "claimant":
+        request["claimant_id"] = str(uuid4())
+    elif change == "new-task":
+        postgres_session.add(make_task(benchmark, "new-task", status=TaskStatus.ERROR))
+    else:
+        invocation.assigned_task_ids = ["task-0", "not-initialized"]
+        postgres_session.add(invocation)
+    postgres_session.commit()
+
+    response = client.post(f"{dispatch.path}/run/finalize", json=request, headers=dispatch.headers)
+
+    assert response.status_code == 409, response.text
+    postgres_session.refresh(benchmark)
+    assert benchmark.status in (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING)
+    assert not postgres_session.exec(select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark.id)).all()
+    assert not postgres_session.exec(select(ExecutorRunReceipt)).all()
+
+
+@pytest.mark.parametrize("task_status", [TaskStatus.ERROR, TaskStatus.STOPPED])
+def test_run_finalization_without_results(
+    client: TestClient,
+    dispatch: DispatchFixture,
+    finalizable_run: str,
+    postgres_session: Session,
+    task_status: TaskStatus,
+) -> None:
+    """Finalize failed or stopped tasks without accepting an invented score.
+
+    Test cases:
+    - All-error runs expose task errors, commit the summary, and fail unfinished Docent processing.
+    - Stopped runs retain STOPPED without adding a final evaluation.
+    """
+    task = postgres_session.get(Task, dispatch.task_id)
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    assert task is not None and benchmark is not None
+    benchmark.docent_reading_status = DocentReadingStatus.RUNNING
+    postgres_session.add(benchmark)
+    task.status = task_status
+    postgres_session.add(task)
+    if task_status == TaskStatus.ERROR:
+        postgres_session.add(ErrorResult(org_id=task.org_id, task=task.id, error_message="Agent failed"))
+    postgres_session.commit()
+    response = client.post(f"{dispatch.path}/run/finalization", json=dispatch.request, headers=dispatch.headers)
+    assert response.status_code == 200, response.text
+    state = response.json()
+    assert state["evaluation_results"] == {"task-0": None}
+    assert state["snapshot_digest"] != finalizable_run
+    assert state["operation"] == ("fail" if task_status == TaskStatus.ERROR else "stop")
+    if task_status == TaskStatus.ERROR:
+        assert state["task_errors"] == {"task-0": "Agent failed"}
+
+    request = _finalize_request(dispatch, state["snapshot_digest"])
+    assert client.post(f"{dispatch.path}/run/finalize", json=request, headers=dispatch.headers).status_code == 409
+    request["finalization"] = (
+        {"operation": "fail", "error_message": "Every task failed"}
+        if task_status == TaskStatus.ERROR
+        else {"operation": "stop"}
+    )
+    for _ in range(2):
+        response = client.post(f"{dispatch.path}/run/finalize", json=request, headers=dispatch.headers)
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == task_status.value
+        assert response.json()["final_evaluation_id"] is None
+
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    assert benchmark is not None
+    postgres_session.refresh(benchmark)
+    assert benchmark.error_message == ("Every task failed" if task_status == TaskStatus.ERROR else None)
+    assert benchmark.docent_reading_status == (
+        DocentReadingStatus.ERROR if task_status == TaskStatus.ERROR else DocentReadingStatus.RUNNING
+    )
+    assert not postgres_session.exec(select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark.id)).all()
+
+
+def test_concurrent_finalization_commits_one_score(
+    app: FastAPI, dispatch: DispatchFixture, finalizable_run: str, postgres_session: Session
+) -> None:
+    """Serialize competing coordinators at run completion.
+
+    Test cases:
+    - Two commands using the same result snapshot cannot both persist scores.
+    - Exactly one final evaluation and receipt survive the race.
+    """
+    barrier = Barrier(2)
+    requests = [_finalize_request(dispatch, finalizable_run) for _ in range(2)]
+
+    def finalize(request: dict[str, object]) -> httpx.Response:
+        with TestClient(app) as concurrent_client:
+            barrier.wait(timeout=5)
+            return concurrent_client.post(f"{dispatch.path}/run/finalize", json=request, headers=dispatch.headers)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(finalize, requests))
+
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    assert len(postgres_session.exec(select(FinalEvaluation)).all()) == 1
+    assert len(postgres_session.exec(select(ExecutorRunReceipt)).all()) == 1
+
+
+def test_finalization_waits_for_uninitialized_sibling_work(
+    client: TestClient, dispatch: DispatchFixture, finalizable_run: str, postgres_session: Session
+) -> None:
+    """Do not finish a run before another admitted dispatch initializes its tasks.
+
+    Test cases:
+    - A queued sibling with a missing task prevents finalization.
+    - Once that task finishes, a fresh snapshot includes its result.
+    - Committing the fresh aggregate invalidates the sibling dispatch.
+    """
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    release = postgres_session.get(ExecutorRelease, dispatch.claim["executor_release_id"])
+    assert benchmark is not None and release is not None
+    sibling = create_executor_dispatch(
+        benchmark.id, release, ExecutorDispatchKind.RESUME, dispatch_id=uuid4(), task_ids=["later-task"]
+    )
+    postgres_session.add(sibling)
+    postgres_session.commit()
+
+    state = client.post(f"{dispatch.path}/run/finalization", json=dispatch.request, headers=dispatch.headers).json()
+    assert state["current"] and state["snapshot_digest"] is None and state["operation"] is None
+    assert (
+        client.post(
+            f"{dispatch.path}/run/finalize", json=_finalize_request(dispatch, finalizable_run), headers=dispatch.headers
+        ).status_code
+        == 409
+    )
+
+    task = make_task(benchmark, "later-task", status=TaskStatus.FINISHED)
+    postgres_session.add(task)
+    postgres_session.flush()
+    postgres_session.add(EvaluationResult(org_id=benchmark.org_id, task=task.id, result={"score": 0.25}))
+    postgres_session.commit()
+    state = client.post(f"{dispatch.path}/run/finalization", json=dispatch.request, headers=dispatch.headers).json()
+    assert state["evaluation_results"] == {"task-0": {"score": 0.75}, "later-task": {"score": 0.25}}
+    request = _finalize_request(dispatch, state["snapshot_digest"])
+    request["finalization"] = {"operation": "complete", "final_score": 0.5}
+
+    response = client.post(f"{dispatch.path}/run/finalize", json=request, headers=dispatch.headers)
+
+    assert response.status_code == 200, response.text
+    postgres_session.refresh(sibling)
+    assert sibling.status == ExecutorDispatchStatus.FAILED
+    evaluation = postgres_session.exec(select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark.id)).one()
+    assert evaluation.final_score == 0.5
+
+
+def test_stopped_run_replaces_previous_score_atomically(
+    client: TestClient, dispatch: DispatchFixture, finalizable_run: str, postgres_session: Session
+) -> None:
+    """Preserve a partial aggregate when completed tasks coexist with stopped tasks.
+
+    Test cases:
+    - A new aggregate replaces the earlier run attempt's final evaluation.
+    - The run remains STOPPED and receipt replay does not duplicate the score.
+    """
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    assert benchmark is not None
+    previous_score = FinalEvaluation(org_id=benchmark.org_id, benchmark=benchmark.id, final_score=0.1)
+    postgres_session.add(previous_score)
+    postgres_session.add(make_task(benchmark, "stopped-task", status=TaskStatus.STOPPED))
+    postgres_session.commit()
+    state = client.post(f"{dispatch.path}/run/finalization", json=dispatch.request, headers=dispatch.headers).json()
+    assert state["operation"] == "complete" and state["snapshot_digest"] != finalizable_run
+    request = _finalize_request(dispatch, state["snapshot_digest"])
+
+    response = client.post(f"{dispatch.path}/run/finalize", json=request, headers=dispatch.headers)
+
+    assert response.status_code == 200 and response.json()["status"] == "STOPPED", response.text
+    assert (
+        client.post(f"{dispatch.path}/run/finalize", json=request, headers=dispatch.headers).json() == response.json()
+    )
+    evaluations = postgres_session.exec(select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark.id)).all()
+    assert len(evaluations) == 1 and evaluations[0].id != previous_score.id
+    assert evaluations[0].final_score == 0.75
+    postgres_session.refresh(benchmark)
+    assert benchmark.status == BenchmarkStatus.STOPPED
+
+
 class MockLostResponseTransport(httpx.AsyncBaseTransport):
     """Drop a successful response only after the real API has committed it."""
 
@@ -1258,3 +1552,31 @@ async def test_task_client_retries_after_committed_response_loss(
     assert len(results) == 1
     owner = postgres_session.get(ExecutorTaskAttempt, task_attempt.id)
     assert owner is not None and owner.revision == 4
+
+
+@pytest.mark.parametrize("operation", ["run/finalization", "run/finalize"])
+async def test_finalization_client_recovers_lost_response(
+    app: FastAPI, dispatch: DispatchFixture, finalizable_run: str, postgres_session: Session, operation: str
+) -> None:
+    """Retry finalization through the real client after a committed response is lost.
+
+    Test cases:
+    - Snapshot reads retain the same digest across transport retries.
+    - A lost completion response does not duplicate the final score.
+    """
+    transport = MockLostResponseTransport(app, operation)
+    async with httpx.AsyncClient(transport=transport, base_url="http://tracker.test") as http_client:
+        api = ExecutorClient(
+            ExecutorTransport(http_client, SecretStr(dispatch.token)),
+            dispatch.dispatch_id,
+            UUID(dispatch.claim["claimant_id"]),
+        )
+        state = await api.finalization_state()
+        assert state.snapshot_digest == finalizable_run
+        receipt = await api.finalize_run(finalizable_run, CompleteRun(final_score=0.75), command_id=uuid4())
+        assert receipt.status == "FINISHED" and receipt.benchmark_id == dispatch.benchmark_id
+        assert (await api.finish()).status == "FINISHED"
+
+    assert transport.dropped
+    assert len(postgres_session.exec(select(FinalEvaluation)).all()) == 1
+    assert len(postgres_session.exec(select(ExecutorRunReceipt)).all()) == 1

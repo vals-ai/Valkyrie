@@ -7,17 +7,18 @@ from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 import sentry_sdk
 from benchmark_service import SandboxProvider, SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from pydantic import ValidationError
-from sqlmodel import Session, col, desc, func, select
+from sqlmodel import Session, col, func, select
 
 from tracker.executor.dependencies import get_execution_runtime
 from tracker.executor.task_state import ensure_task_rows, load_task_rows
+from tracker.executor.score_state import TaskFingerprint, fetch_final_score_state
 from tracker.runtime.services import RuntimeServices
 from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
@@ -25,7 +26,6 @@ from tracker.database.models import (
     BenchmarkStatus,
     DocentReadingStatus,
     ErrorResult,
-    EvaluationResult,
     FinalEvaluation,
     Org,
     Task,
@@ -61,7 +61,6 @@ logger = get_logger(__name__)
 _SANDBOX_CREATION_CAP: int = 10
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 _TERMINAL_BENCHMARK_STATUSES = (BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED)
-_TaskFingerprint = tuple[tuple[UUID, datetime, TaskStatus, UUID | None], ...]
 
 
 async def _run_queued_tasks(
@@ -391,53 +390,8 @@ def _fetch_final_score_state(
     org: Org,
     *,
     for_update: bool = False,
-) -> tuple[dict[str, dict[str, Any] | None], _TaskFingerprint]:
-    # Fetch task rows which belong to the benchmark we are running
-    task_rows_query = (
-        select(Task.id, Task.task_id, Task.started_at, Task.status)
-        .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.org_id) == org.id)
-        .order_by(col(Task.id))
-    )
-    if for_update:
-        task_rows_query = task_rows_query.with_for_update()
-    task_rows = cast(
-        Sequence[tuple[UUID, str, datetime, TaskStatus]],
-        session.exec(task_rows_query).all(),
-    )
-
-    # Fetch all results from tasks that are finished
-    task_row_ids = [task_row_id for task_row_id, _task_id, _started_at, _status in task_rows]
-    result_rows = cast(
-        Sequence[tuple[UUID, UUID, dict[str, Any]]],
-        session.exec(
-            select(EvaluationResult.task, EvaluationResult.id, EvaluationResult.result)  # pyright: ignore[reportUnknownArgumentType]
-            .where(col(EvaluationResult.task).in_(task_row_ids))
-            .where(col(EvaluationResult.org_id) == org.id)
-            .order_by(desc(EvaluationResult.created_at), desc(EvaluationResult.id))
-        ).all(),
-    )
-    # Group results by task row ID
-    latest_results: dict[UUID, tuple[UUID, dict[str, Any]]] = {}
-    for task_row_id, result_id, result in result_rows:
-        latest_results.setdefault(task_row_id, (result_id, result))
-
-    inputs = {
-        task_id: latest_results[task_row_id][1]
-        if status == TaskStatus.FINISHED and task_row_id in latest_results
-        else None
-        for task_row_id, task_id, _started_at, status in task_rows
-    }
-    fingerprint = tuple(
-        (
-            task_row_id,
-            started_at,
-            status,
-            latest_results[task_row_id][0] if task_row_id in latest_results else None,
-        )
-        for task_row_id, _task_id, started_at, status in task_rows
-    )
-    return inputs, fingerprint
+) -> tuple[dict[str, dict[str, Any] | None], TaskFingerprint]:
+    return fetch_final_score_state(session, benchmark_row, org, for_update=for_update)
 
 
 def fetch_final_score_inputs(session: Session, benchmark_row: Benchmark, org: Org) -> dict[str, dict[str, Any] | None]:
