@@ -9,8 +9,10 @@ import asyncio
 import httpx
 import pytest
 from pydantic import SecretStr
+from tenacity import wait_none
 
 from tracker.executor_api.transport import ExecutorTransport
+from tracker.executor_api import transport
 
 
 @pytest.mark.parametrize("status", [502, 503, 504])
@@ -74,3 +76,92 @@ async def test_cancellation_interrupts_the_request() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle), base_url="https://tracker.test") as client:
         with pytest.raises(asyncio.CancelledError):
             await ExecutorTransport(client, SecretStr("dispatch-test-token")).post("/claim", {})
+
+
+@pytest.fixture
+def no_retry_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    def immediate_retry(**_kwargs: float) -> wait_none:
+        return wait_none()
+
+    monkeypatch.setattr(transport, "wait_random_exponential", immediate_retry)
+
+
+@pytest.mark.usefixtures("no_retry_delay")
+async def test_live_lease_retries_beyond_the_bootstrap_limit() -> None:
+    """Keep a task write pending through an outage without changing its command payload.
+
+    Test cases:
+    - A lease-scoped write recovers after more than five failed attempts.
+    - Leaving the lease scope restores the bounded bootstrap behavior.
+    """
+    responses = iter([503] * 7 + [200] + [503] * 5)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.content == b'{"command_id":"original-command"}'
+        return httpx.Response(next(responses), json={"revision": 1})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle), base_url="http://tracker.test") as http:
+        client = ExecutorTransport(http, SecretStr("test"))
+        deadline = asyncio.get_running_loop().time() + 10
+        with client.retry_until(lambda: deadline):
+            result = await client.post("/write", {"command_id": "original-command"})
+        assert result.json()["revision"] == 1
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.post("/write", {"command_id": "original-command"})
+
+
+@pytest.mark.usefixtures("no_retry_delay")
+@pytest.mark.parametrize("expire", ["before", "retry", "response"])
+async def test_expired_lease_cannot_send_or_accept_another_write(expire: str) -> None:
+    """Enforce a changing lease deadline before retries and after delayed responses.
+
+    Test cases:
+    - An already expired lease sends nothing.
+    - Expiry during failure handling prevents another request.
+    - A late successful response does not grant further execution authority.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() - 1 if expire == "before" else loop.time() + 10
+
+    def handle(_request: httpx.Request) -> httpx.Response:
+        nonlocal deadline
+        assert expire != "before"
+        assert loop.time() < deadline
+        deadline = loop.time() - 1
+        return httpx.Response(503 if expire == "retry" else 200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle), base_url="http://tracker.test") as http:
+        client = ExecutorTransport(http, SecretStr("test"))
+        with client.retry_until(lambda: deadline):
+            with pytest.raises(TimeoutError):
+                await client.post("/write", {})
+
+
+@pytest.mark.usefixtures("no_retry_delay")
+async def test_renewed_lease_extends_a_pending_command() -> None:
+    """Retry a pending command when another heartbeat extended its original deadline.
+
+    Test cases:
+    - The command does not fail just because its original lease timer elapsed.
+    - Retrying preserves the same command identity after renewal.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 0.1
+    renewed = False
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal deadline, renewed
+        assert request.content == b'{"command_id":"pending-command"}'
+        if not renewed:
+            renewed = True
+            deadline = loop.time() + 10
+            await asyncio.Event().wait()
+        return httpx.Response(200, json={"revision": 1})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle), base_url="http://tracker.test") as http:
+        client = ExecutorTransport(http, SecretStr("test"))
+        with client.retry_until(lambda: deadline):
+            async with asyncio.timeout(5):
+                result = await client.post("/write", {"command_id": "pending-command"})
+
+    assert result.json()["revision"] == 1
