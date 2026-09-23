@@ -48,7 +48,7 @@ from constants import (
 )
 from constructs import Construct
 from runtime_iam import create_tracker_task_role, managed_runtime_environment
-from stage import PROD, Stage
+from stage import DEV, PROD, Stage
 from stage_config import benchmark_service_base_url, config_for
 from tracker_access_logs import create_tracker_access_logs
 
@@ -180,6 +180,12 @@ class TrackerStack(Stack):
 
         auth_required = os.environ.get("AUTH_REQUIRED", "false")
         benchmark_catalog_url = os.environ.get("BENCHMARK_CATALOG_URL", "")
+        if stage.name == DEV and not benchmark_catalog_url.strip():
+            # Resolve the existing registry-owned endpoint at deployment time.
+            # No runtime SSM permissions or duplicate GitHub secret are needed.
+            benchmark_catalog_url = aws_ssm.StringParameter.value_for_string_parameter(
+                self, "/benchmark-services/dev/catalog-api-url"
+            )
         descope_project_id = os.environ.get("DESCOPE_PROJECT_ID", "")
         if not stage.is_bench:
             auth_required = "true"

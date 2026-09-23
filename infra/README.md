@@ -217,7 +217,17 @@ required inputs and stay outside the repository.
 
 ## Benchmark Catalog
 
-`BENCHMARK_CATALOG_URL` optionally points tracker-service at a benchmark catalog API. When it is unset, `valkyrie config service list` returns an empty catalog.
+`BENCHMARK_CATALOG_URL` points tracker-service at a benchmark catalog API. In
+`dev`, an unset or blank value resolves the registry-owned SSM parameter
+`/benchmark-services/dev/catalog-api-url` at CloudFormation deployment time.
+The dev catalog must already be deployed and the deployment role must be able
+to read that parameter; a missing parameter fails deployment instead of silently
+disabling discovery. This adds no runtime Tracker IAM permissions.
+
+An explicit nonblank URL still overrides the dev default. Bench, production,
+and release-test keep their existing behavior: an unset value returns an empty
+catalog. Changing this setting requires a reviewed Tracker rollout; it does not
+reconfigure or restart an existing deployment just by editing the repository.
 
 ```bash
 export BENCHMARK_CATALOG_URL=https://<api-id>.execute-api.us-east-1.amazonaws.com
