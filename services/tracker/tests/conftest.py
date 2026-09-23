@@ -1,5 +1,6 @@
 from collections.abc import Callable, Generator
 from datetime import UTC, datetime
+from pathlib import Path
 from sqlite3 import Connection, Cursor
 from typing import cast
 from uuid import UUID, uuid4
@@ -8,7 +9,7 @@ import pytest
 from dotenv import load_dotenv
 from sqlalchemy import event
 from sqlalchemy.pool import ConnectionPoolEntry
-from sqlmodel import Session, SQLModel, StaticPool, create_engine
+from sqlmodel import Session, SQLModel, create_engine
 
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
@@ -47,9 +48,9 @@ def aws_credentials() -> AWSCredentials:
 
 
 @pytest.fixture(scope="function")
-def database_session() -> Generator[Session, None, None]:
-    """Create an in-memory database and mock the session engine."""
-    test_engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+def database_session(tmp_path: Path) -> Generator[Session, None, None]:
+    """Give concurrent task sessions separate connections to one isolated database."""
+    test_engine = create_engine(f"sqlite:///{tmp_path / 'tracker.db'}", connect_args={"check_same_thread": False})
 
     @event.listens_for(test_engine, "connect")
     def set_sqlite_pragma(dbapi_connection: Connection, _connection_record: ConnectionPoolEntry) -> None:  # type: ignore

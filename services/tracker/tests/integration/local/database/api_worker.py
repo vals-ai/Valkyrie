@@ -12,6 +12,7 @@ from pydantic import BaseModel, SecretStr
 
 from tracker.executor.api_execution import run_with_dispatch_lease
 from tracker.executor.checkpoints import CheckpointCallback, run_with_checkpoints
+from tracker.executor.task_persistence import ApiTaskPersistence
 from tracker.executor_api.transport import ExecutorTransport
 from tracker.executor_api.v1.client import ExecutorClient
 from tracker.executor_api.v1.finalization_schemas import CompleteRun
@@ -37,13 +38,10 @@ async def main() -> None:
         async def execute() -> None:
             state = await api.run_state(configuration.task_ids)
             task = state.tasks[0]
-            owned = await api.claim_task(task.id, task.started_at, command_id=uuid4())
-            built = await api.write_task(
-                task.id, task.started_at, BuildTask(), command_id=uuid4(), expected_revision=owned.revision
-            )
-            running = await api.write_task(
-                task.id, task.started_at, RunTask(), command_id=uuid4(), expected_revision=built.revision
-            )
+            persistence = ApiTaskPersistence(api, task)
+            assert await persistence.load() is not None
+            assert await persistence.write(BuildTask())
+            assert await persistence.write(RunTask())
             forbidden = [
                 module
                 for module in sys.modules
@@ -57,15 +55,10 @@ async def main() -> None:
             command = (await asyncio.to_thread(sys.stdin.readline)).strip()
             assert command == "read"
             print(json.dumps({"event": "reading"}), flush=True)
-            state = await api.run_state(configuration.task_ids)
-            assert state.current
-            assert state.tasks[0].started_at == task.started_at
+            assert await persistence.current()
             print(json.dumps({"event": "resumed", "pid": os.getpid()}), flush=True)
 
-            evaluated = await api.write_task(
-                task.id, task.started_at, EvaluateTask(), command_id=uuid4(), expected_revision=running.revision
-            )
-            revision = evaluated.revision
+            assert await persistence.write(EvaluateTask())
 
             async def evaluate(checkpoint: CheckpointCallback) -> dict[str, Any]:
                 checkpoint({"cursor": 1})
@@ -73,24 +66,10 @@ async def main() -> None:
                 return {"score": 1}
 
             async def persist(checkpoint: dict[str, Any]) -> None:
-                nonlocal revision
-                written = await api.write_task(
-                    task.id,
-                    task.started_at,
-                    SaveCheckpoint(checkpoint=checkpoint),
-                    command_id=uuid4(),
-                    expected_revision=revision,
-                )
-                revision = written.revision
+                assert await persistence.write(SaveCheckpoint(checkpoint=checkpoint))
 
             result = await run_with_checkpoints(evaluate, persist)
-            await api.write_task(
-                task.id,
-                task.started_at,
-                CompleteTask(result=result),
-                command_id=uuid4(),
-                expected_revision=revision,
-            )
+            assert await persistence.write(CompleteTask(result=result))
             finalization = await api.finalization_state()
             assert finalization.snapshot_digest is not None
             await api.finalize_run(finalization.snapshot_digest, CompleteRun(final_score=1), command_id=uuid4())

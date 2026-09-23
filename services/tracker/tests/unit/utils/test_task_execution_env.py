@@ -6,7 +6,7 @@ Run: uv run pytest tests/unit/utils/test_task_execution_env.py
 import asyncio
 import json
 import threading
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
@@ -355,7 +355,7 @@ class TestProcessTaskEnvironment:
 
         async def stop_before_output(
             *_args: Any,
-            execution_is_current: Callable[[], bool],
+            execution_is_current: Callable[[], Awaitable[bool]],
             **_kwargs: Any,
         ) -> tuple[None, float]:
             selected = database_session.get(Task, task_row.id)
@@ -371,7 +371,7 @@ class TestProcessTaskEnvironment:
             assert persisted_sibling is not None
             assert persisted_sibling.status == TaskStatus.IN_PROGRESS
 
-            output_authority_checks.append(execution_is_current())
+            output_authority_checks.append(await execution_is_current())
             return None, 0.0
 
         monkeypatch.setattr(utils_module, "run_agent", stop_before_output)

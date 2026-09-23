@@ -57,10 +57,29 @@ from tracker.exceptions import (
     ExecutionAuthorityRevoked,
     OutputArtifactError,
     SandboxSetupError,
-    TrackerServiceError,
 )
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.executor.checkpoints import run_with_checkpoints
+from tracker.executor.task_persistence import (
+    TaskPersistence,
+    TaskSnapshot,
+    attempt_time,
+    settle_task_io,
+)
+from tracker.executor_api.v1.schemas import RunStatus, TaskState
+from tracker.executor_api.v1.schemas import TaskStatus as ApiTaskStatus
+from tracker.executor_api.v1.task_schemas import (
+    BuildTask,
+    RunTask,
+    EvaluateTask,
+    SaveCheckpoint,
+    CompleteTask,
+    FailTask,
+    RetryTask,
+    PendingTask,
+    StopTask,
+    Mutation,
+)
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, error_span, incr
@@ -116,50 +135,6 @@ def _normalized_attempt_time(value: datetime) -> datetime:
 
 def _exception_message(exc: BaseException) -> str:
     return str(exc).strip() or type(exc).__name__
-
-
-def _record_failure_before_retry(
-    task_row: Task,
-    authority: ExecutionAuthority,
-    exc: SandboxSetupError,
-    failed_attempt_number: int,
-) -> None:
-    """Persist the failure that scheduled the next attempt while this execution owns the task."""
-    with Session(bind=engine) as session:
-        try:
-            lock_execution_authority(session, authority)
-        except ExecutionAuthorityRevoked:
-            session.rollback()
-            return
-        task = session.exec(
-            select(Task)
-            .where(col(Task.id) == task_row.id)
-            .where(col(Task.org_id) == task_row.org_id)
-            .where(col(Task.benchmark) == authority.benchmark_id)
-            .where(col(Task.started_at) == task_row.started_at)
-            .where(
-                col(Task.status).in_(
-                    (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
-                )
-            )
-            .with_for_update()
-        ).one_or_none()
-        if task is None:
-            session.rollback()
-            return
-        session.add(
-            ErrorResult(
-                org_id=task.org_id,
-                task=task.id,
-                error_message=_exception_message(exc),
-                producer="sandbox_provider",
-                operation="setup",
-                error_type=type(exc).__name__,
-                retry_scheduled=True,
-                failed_attempt_number=failed_attempt_number,
-            )
-        )
-        session.commit()
 
 
 _TASK_RETRY_METRIC = "valkyrie.task"
@@ -539,6 +514,225 @@ def commit_task_status_transition(
     )
 
 
+class PostgresTaskPersistence:
+    """Keep legacy task transactions and evaluation locks behind the async execution boundary."""
+
+    def __init__(self, task: Task, org: Org, authority: ExecutionAuthority) -> None:
+        self._task = task
+        self._org = org
+        self._authority = authority
+        self._evaluation_lock: PostgresAdvisoryLock | None = None
+        self._evaluation_lock_acquired = False
+        self._expected_failure_status: TaskStatus | None = None
+        self._lock = asyncio.Lock()
+
+    def _session(self) -> Session:
+        bind = self._evaluation_lock.connection if self._evaluation_lock_acquired and self._evaluation_lock else engine
+        return Session(bind=bind)
+
+    def _load(self) -> TaskSnapshot | None:
+        with self._session() as session:
+            try:
+                benchmark = lock_execution_authority(session, self._authority)
+            except ExecutionAuthorityRevoked:
+                session.rollback()
+                return None
+            task = fetch_task_row(self._task.id, session, self._org)
+            if attempt_time(task.started_at) != attempt_time(self._task.started_at):
+                return None
+            identity = {"benchmark_name": benchmark.name, "agent_name": benchmark.arguments.contract.name}
+            if benchmark.started_by_email:
+                identity["email"] = benchmark.started_by_email
+
+            return TaskSnapshot(
+                task=TaskState(
+                    id=task.id,
+                    task_id=task.task_id,
+                    status=ApiTaskStatus(task.status.value),
+                    started_at=task.started_at,
+                    finished_at=task.finished_at,
+                    eval_resume_state=task.eval_resume_state,
+                ),
+                run_status=RunStatus(benchmark.status.value),
+                identity=identity,
+            )
+
+    async def load(self) -> TaskSnapshot | None:
+        async with self._lock:
+            snapshot = await settle_task_io(asyncio.to_thread(self._load))
+            self._expected_failure_status = (
+                TaskStatus.EVALUATING
+                if snapshot is not None
+                and snapshot.task.status == TaskStatus.EVALUATING
+                and snapshot.task.eval_resume_state is not None
+                else None
+            )
+
+            return snapshot
+
+    async def current(self) -> bool:
+        async with self._lock:
+            snapshot = await settle_task_io(asyncio.to_thread(self._load))
+            return snapshot is not None and snapshot.task.status != TaskStatus.STOPPED
+
+    def _write(self, mutation: Mutation) -> bool:
+        if isinstance(mutation, SaveCheckpoint):
+            return save_eval_resume_state(
+                self._task.id,
+                self._org,
+                mutation.checkpoint,
+                expected_started_at=self._task.started_at,
+                authority=self._authority,
+                connection=self._evaluation_lock.connection
+                if self._evaluation_lock_acquired and self._evaluation_lock
+                else None,
+            )
+        with self._session() as session:
+            task = fetch_task_row(self._task.id, session, self._org)
+            expected_status: TaskStatus | tuple[TaskStatus, ...] | None = None
+            if isinstance(mutation, RetryTask):
+                try:
+                    lock_execution_authority(session, self._authority)
+                except ExecutionAuthorityRevoked:
+                    session.rollback()
+                    return False
+                task = session.exec(
+                    select(Task)
+                    .where(
+                        Task.id == self._task.id,
+                        Task.org_id == self._org.id,
+                        Task.benchmark == self._authority.benchmark_id,
+                        Task.started_at == self._task.started_at,
+                        col(Task.status).in_(
+                            (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
+                        ),
+                    )
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                ).one_or_none()
+                if task is None:
+                    session.rollback()
+                    return False
+                session.add(
+                    ErrorResult(
+                        org_id=task.org_id,
+                        task=task.id,
+                        error_message=mutation.error_message,
+                        producer=mutation.producer,
+                        operation=mutation.operation_name,
+                        error_type=mutation.error_type,
+                        cause_code=mutation.cause_code,
+                        retry_scheduled=True,
+                        failed_attempt_number=mutation.failed_attempt_number,
+                    )
+                )
+                session.commit()
+                return True
+            if isinstance(mutation, FailTask):
+                return commit_task_error(
+                    task,
+                    session,
+                    mutation.error_message,
+                    producer=mutation.producer,
+                    operation=mutation.operation_name,
+                    error_type=mutation.error_type,
+                    cause_code=mutation.cause_code,
+                    expected_started_at=self._task.started_at,
+                    expected_status=self._expected_failure_status,
+                    authority=self._authority,
+                )
+            if isinstance(mutation, CompleteTask):
+                session.add(
+                    EvaluationResult(
+                        org_id=self._org.id,
+                        task=task.id,
+                        instance_id=mutation.instance_id,
+                        result=mutation.result,
+                        agent_caused_exit_reason=AgentCausedExitReason(mutation.exit_reason)
+                        if mutation.exit_reason
+                        else None,
+                    )
+                )
+                breakdown = session.get(TaskBreakdown, task.task_breakdown) if task.task_breakdown else None
+                if breakdown is not None:
+                    if mutation.evaluation_run_duration is not None:
+                        breakdown.evaluation_run_duration = mutation.evaluation_run_duration
+                    if mutation.sandbox_run_duration is not None:
+                        breakdown.sandbox_run_duration = mutation.sandbox_run_duration
+                to_status = TaskStatus.FINISHED
+                expected_status = (TaskStatus.EVALUATING, TaskStatus.ERROR)
+            elif isinstance(mutation, EvaluateTask):
+                breakdown = TaskBreakdown(
+                    sandbox_build_duration=mutation.sandbox_build_duration,
+                    agent_run_duration=mutation.agent_run_duration,
+                )
+                session.add(breakdown)
+                task.task_breakdown = breakdown.id
+                to_status = TaskStatus.EVALUATING
+            elif isinstance(mutation, BuildTask):
+                to_status = TaskStatus.BUILDING
+            elif isinstance(mutation, RunTask):
+                to_status = TaskStatus.IN_PROGRESS
+            elif isinstance(mutation, PendingTask):
+                to_status = TaskStatus.PENDING
+                expected_status = self._expected_failure_status
+            else:
+                to_status = TaskStatus.STOPPED
+
+            return commit_task_status_transition(
+                task.id,
+                session,
+                self._org,
+                to_status,
+                authority=self._authority,
+                expected_started_at=self._task.started_at,
+                expected_status=expected_status,
+            )
+
+    async def write(self, mutation: Mutation) -> bool:
+        async with self._lock:
+            return await settle_task_io(asyncio.to_thread(self._write, mutation))
+
+    def _resume(self) -> dict[str, Any] | None:
+        with self._session() as session:
+            try:
+                lock_execution_authority(session, self._authority)
+            except ExecutionAuthorityRevoked:
+                session.rollback()
+                return None
+            created_at = session.exec(
+                select(col(ExecutorDispatch.created_at)).where(col(ExecutorDispatch.id) == self._authority.dispatch_id)
+            ).one()
+            task = session.exec(
+                select(Task)
+                .where(
+                    Task.id == self._task.id,
+                    Task.org_id == self._org.id,
+                    Task.status == TaskStatus.EVALUATING,
+                    Task.started_at == created_at,
+                )
+                .with_for_update()
+            ).one_or_none()
+
+            return task.eval_resume_state if task is not None else None
+
+    async def resume(self) -> dict[str, Any] | None:
+        async with self._lock:
+            self._evaluation_lock = task_evaluation_lock(engine, self._task.id)
+            self._evaluation_lock_acquired = await self._evaluation_lock.__aenter__()
+            if not self._evaluation_lock_acquired:
+                return None
+
+            return await settle_task_io(asyncio.to_thread(self._resume))
+
+    async def close(self) -> None:
+        async with self._lock:
+            if self._evaluation_lock is not None:
+                await self._evaluation_lock.__aexit__(None, None, None)
+                self._evaluation_lock = None
+                self._evaluation_lock_acquired = False
+
+
 async def process_task(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
@@ -553,9 +747,11 @@ async def process_task(
     *,
     sandbox_provider: SandboxProvider | None = None,
     queue_context: SandboxQueueContext | None = None,
+    persistence: TaskPersistence | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Process one task while retaining dependency recovery state across sandbox attempts."""
     dependency_setup_recovery = _DependencySetupRecoveryState()
+    persistence = persistence if persistence is not None else PostgresTaskPersistence(task_row, org, authority)
 
     with observability_span(
         "task.started",
@@ -588,12 +784,21 @@ async def process_task(
                 authority=authority,
                 sandbox_provider=sandbox_provider,
                 queue_context=queue_context,
+                persistence=persistence,
             )
 
-    def record_attempt_failure(attempt: SandboxRecoveryAttempt, exc: Exception) -> None:
+    async def record_attempt_failure(attempt: SandboxRecoveryAttempt, exc: Exception) -> None:
         _observe_task_retry(attempt, exc)
         if isinstance(exc, SandboxSetupError):
-            _record_failure_before_retry(task_row, authority, exc, attempt.number)
+            await persistence.write(
+                RetryTask(
+                    error_message=_exception_message(exc),
+                    producer="sandbox_provider",
+                    operation_name="setup",
+                    error_type=type(exc).__name__,
+                    failed_attempt_number=attempt.number,
+                )
+            )
 
     result = await benchmark_service.run_with_sandbox_recovery(
         task_id=task_id,
@@ -634,6 +839,7 @@ async def _process_task_attempt(
     *,
     sandbox_provider: SandboxProvider | None = None,
     queue_context: SandboxQueueContext | None = None,
+    persistence: TaskPersistence,
 ) -> dict[str, dict[str, Any] | None]:
     """
     Processes a task and returns the evaluation result
@@ -644,29 +850,14 @@ async def _process_task_attempt(
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
 
-    requested_attempt_started_at = task_row.started_at
-    with Session(bind=engine) as task_session:
-        try:
-            benchmark_row = lock_execution_authority(task_session, authority)
-        except ExecutionAuthorityRevoked:
-            task_session.rollback()
-            return {task_id: None}
-        task_row = fetch_task_row(task_row.id, task_session, org)
-
-        if _normalized_attempt_time(task_row.started_at) != _normalized_attempt_time(requested_attempt_started_at):
-            return {task_id: None}
-        attempt_started_at = task_row.started_at
-        if benchmark_row.status == BenchmarkStatus.STOPPING or task_row.status == TaskStatus.STOPPED:
-            handle_early_exit(task_row, task_session, authority)
-            return {task_id: None}
-        expected_failure_status = (
-            TaskStatus.EVALUATING
-            if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None
-            else None
-        )
-        benchmark_name = benchmark_row.name
-        benchmark_agent_name = benchmark_row.arguments.contract.name
-        benchmark_started_by_email = benchmark_row.started_by_email
+    snapshot = await persistence.load()
+    if snapshot is None:
+        return {task_id: None}
+    task_state = snapshot.task
+    attempt_started_at = task_state.started_at
+    if snapshot.run_status == RunStatus.STOPPING or task_state.status == TaskStatus.STOPPED:
+        await persistence.write(StopTask())
+        return {task_id: None}
 
     # Setup logging infrastructure before try block so it's always available.
     # Version streams by task attempt so retries never overwrite earlier logs.
@@ -685,14 +876,7 @@ async def _process_task_attempt(
         },
     )
 
-    evaluation_lock: PostgresAdvisoryLock | None = None
-    evaluation_lock_acquired = False
-
-    def open_task_session() -> Session:
-        bind = evaluation_lock.connection if evaluation_lock_acquired and evaluation_lock is not None else engine
-        return Session(bind=bind)
-
-    evaluation_resume_state = task_row.eval_resume_state
+    evaluation_resume_state = task_state.eval_resume_state
     sandbox_id_for_recovery: str | None = None
     exit_reason: AgentCausedExitReason | None = None
     evaluation_start_time: float | None = None
@@ -701,47 +885,19 @@ async def _process_task_attempt(
     async def on_eval_resume_state(state: dict[str, Any]) -> None:
         nonlocal evaluation_resume_state
         evaluation_resume_state = state
-        await asyncio.to_thread(
-            save_eval_resume_state,
-            task_row.id,
-            org,
-            state,
-            expected_started_at=attempt_started_at,
-            authority=authority,
-            connection=evaluation_lock.connection if evaluation_lock_acquired and evaluation_lock is not None else None,
-        )
+        if not await persistence.write(SaveCheckpoint(checkpoint=state)):
+            raise ExecutionAuthorityRevoked("Task checkpoint authority was revoked")
 
-    def execution_is_current() -> bool:
-        with open_task_session() as task_session:
-            try:
-                lock_execution_authority(task_session, authority)
-            except ExecutionAuthorityRevoked:
-                task_session.rollback()
-                return False
-            task = fetch_task_row(task_row.id, task_session, org)
-            is_current = task.status != TaskStatus.STOPPED and task.started_at == attempt_started_at
-            task_session.rollback()
-            return is_current
+    async def task_is_stopped() -> bool:
+        return not await persistence.current()
 
-    def task_is_stopped() -> bool:
-        return not execution_is_current()
-
-    def return_queued_task_to_pending() -> bool:
+    async def return_queued_task_to_pending() -> bool:
         """Release a queued task so a fresh-sandbox retry can re-admit it."""
         if queue_context is None:
             return True
-        with Session(bind=engine) as task_session:
-            return commit_task_status_transition(
-                task_row.id,
-                task_session,
-                org,
-                TaskStatus.PENDING,
-                expected_started_at=attempt_started_at,
-                expected_status=expected_failure_status,
-                authority=authority,
-            )
+        return await persistence.write(PendingTask())
 
-    def commit_terminal_error(
+    async def commit_terminal_error(
         exc: BaseException,
         error_message: str,
         *,
@@ -772,20 +928,15 @@ async def _process_task_attempt(
                 },
             )
             capture_exception(exc)
-        with open_task_session() as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(
-                task,
-                task_session,
-                error_message,
+        await persistence.write(
+            FailTask(
+                error_message=error_message,
                 producer=producer,
-                operation=operation,
+                operation_name=operation,
                 error_type=type(exc).__name__,
                 cause_code=cause_code,
-                expected_started_at=attempt_started_at,
-                expected_status=expected_failure_status,
-                authority=authority,
             )
+        )
         return {task_id: None}
 
     async def recover_evaluation_stream_failure(error_message: str) -> dict[str, dict[str, Any] | None] | None:
@@ -793,7 +944,7 @@ async def _process_task_attempt(
         if evaluation_resume_state is None:
             return None
         resume_state = evaluation_resume_state
-        if task_is_stopped():
+        if await task_is_stopped():
             return {task_id: None}
 
         recovery_message = f"{error_message}; resuming evaluation from durable benchmark state"
@@ -816,14 +967,14 @@ async def _process_task_attempt(
                 )
             )
         except BenchmarkServiceWebSocketDNSResolutionError as resume_error:
-            if task_is_stopped():
+            if await task_is_stopped():
                 return {task_id: None}
             terminal_error = (
                 f"{recovery_message}; WebSocket DNS resolution failed during resume: {_exception_message(resume_error)}"
             )
             logger.warning(terminal_error)
             log_output(f"\n[ERROR] {terminal_error}")
-            return commit_terminal_error(
+            return await commit_terminal_error(
                 resume_error,
                 terminal_error,
                 producer="benchmark_service",
@@ -831,12 +982,12 @@ async def _process_task_attempt(
                 cause_code="websocket_dns_resolution",
             )
         except Exception as resume_error:
-            if task_is_stopped():
+            if await task_is_stopped():
                 return {task_id: None}
             terminal_error = f"{recovery_message}; resume failed: {_exception_message(resume_error)}"
             logger.warning(terminal_error)
             log_output(f"\n[ERROR] {terminal_error}")
-            return commit_terminal_error(
+            return await commit_terminal_error(
                 resume_error,
                 terminal_error,
                 producer="benchmark_service",
@@ -847,66 +998,25 @@ async def _process_task_attempt(
         evaluation_run_duration = finished_at - (evaluation_start_time or resume_eval_start_time)
         sandbox_run_duration = finished_at - start_sandbox_run_time if start_sandbox_run_time is not None else None
         evaluation_result_value = cast(dict[str, Any], evaluation_result)
-        evaluation_result_row = EvaluationResult(
-            org_id=org.id,
-            task=task_row.id,
-            instance_id=sandbox_id_for_recovery,
-            result=evaluation_result_value,
-            agent_caused_exit_reason=exit_reason,
-        )
-        with open_task_session() as task_session:
-            task_session.add(evaluation_result_row)
-            task_in_session = fetch_task_row(task_row.id, task_session, org)
-            if task_in_session.task_breakdown:
-                existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
-                assert existing_breakdown is not None
-                existing_breakdown.evaluation_run_duration = evaluation_run_duration
-                if sandbox_run_duration is not None:
-                    existing_breakdown.sandbox_run_duration = sandbox_run_duration
-            if not commit_task_status_transition(
-                task_row.id,
-                task_session,
-                org,
-                TaskStatus.FINISHED,
-                expected_started_at=attempt_started_at,
-                expected_status=(TaskStatus.EVALUATING, TaskStatus.ERROR),
-                authority=authority,
-            ):
-                return {task_id: None}
+        if not await persistence.write(
+            CompleteTask(
+                instance_id=sandbox_id_for_recovery,
+                result=evaluation_result_value,
+                exit_reason=exit_reason.value if exit_reason else None,
+                evaluation_run_duration=evaluation_run_duration,
+                sandbox_run_duration=sandbox_run_duration,
+            )
+        ):
+            return {task_id: None}
 
         return {task_id: evaluation_result_value}
 
     try:
-        evaluation_resume_state = task_row.eval_resume_state
-        if task_row.status == TaskStatus.EVALUATING and evaluation_resume_state is not None:
-            evaluation_lock = task_evaluation_lock(engine, task_row.id)
-            evaluation_lock_acquired = await evaluation_lock.__aenter__()
-            if not evaluation_lock_acquired:
+        if task_state.status == TaskStatus.EVALUATING and evaluation_resume_state is not None:
+            evaluation_resume_state = await persistence.resume()
+            if evaluation_resume_state is None:
                 return {task_id: None}
-
-            with open_task_session() as ownership_session:
-                try:
-                    lock_execution_authority(ownership_session, authority)
-                except ExecutionAuthorityRevoked:
-                    ownership_session.rollback()
-                    return {task_id: None}
-                dispatch_created_at = ownership_session.exec(
-                    select(col(ExecutorDispatch.created_at)).where(col(ExecutorDispatch.id) == authority.dispatch_id)
-                ).one()
-                owned_task = ownership_session.exec(
-                    select(Task)
-                    .where(col(Task.id) == task_row.id)
-                    .where(col(Task.org_id) == org.id)
-                    .where(col(Task.status) == TaskStatus.EVALUATING)
-                    .where(col(Task.started_at) == dispatch_created_at)
-                    .with_for_update()
-                ).one_or_none()
-                if owned_task is None or owned_task.eval_resume_state is None:
-                    ownership_session.rollback()
-                    return {task_id: None}
-                evaluation_resume_state = owned_task.eval_resume_state
-                resume_state = owned_task.eval_resume_state
-                ownership_session.rollback()
+            resume_state = evaluation_resume_state
 
             try:
                 log_output("Resuming evaluation from durable benchmark state\n")
@@ -927,38 +1037,19 @@ async def _process_task_attempt(
                     )
                 )
                 resume_eval_duration = time.perf_counter() - resume_eval_start_time
-                evaluation_result_row = EvaluationResult(
-                    org_id=org.id,
-                    task=task_row.id,
-                    instance_id=None,
-                    result=cast(dict[str, Any], evaluation_result),
-                    agent_caused_exit_reason=None,
-                )
+                evaluation_result_value = cast(dict[str, Any], evaluation_result)
+                if not await persistence.write(
+                    CompleteTask(
+                        result=evaluation_result_value,
+                        evaluation_run_duration=resume_eval_duration,
+                    )
+                ):
+                    return {task_id: None}
 
-                with open_task_session() as task_session:
-                    task_session.add(evaluation_result_row)
-                    task_in_session = fetch_task_row(task_row.id, task_session, org)
-                    if task_in_session.task_breakdown:
-                        existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
-                        assert existing_breakdown is not None
-                        existing_breakdown.evaluation_run_duration = resume_eval_duration
-                    if not commit_task_status_transition(
-                        task_row.id,
-                        task_session,
-                        org,
-                        TaskStatus.FINISHED,
-                        expected_started_at=attempt_started_at,
-                        expected_status=(TaskStatus.EVALUATING, TaskStatus.ERROR),
-                        authority=authority,
-                    ):
-                        return {task_id: None}
-
-                    return {task_id: evaluation_result_row.result}
+                return {task_id: evaluation_result_value}
             except SandboxNotFoundError:
-                with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session, org)
-                    if task.status == TaskStatus.STOPPED:
-                        return {task_id: None}
+                if await task_is_stopped():
+                    return {task_id: None}
                 try:
                     await recovery_attempt.retrieve_task()
                 except Exception:
@@ -971,10 +1062,8 @@ async def _process_task_attempt(
                     )
                 raise
             except Exception as e:
-                with open_task_session() as task_session:
-                    task = fetch_task_row(task_row.id, task_session, org)
-                    if task.status == TaskStatus.STOPPED:
-                        return {task_id: None}
+                if await task_is_stopped():
+                    return {task_id: None}
 
                 raise e from e
 
@@ -994,30 +1083,15 @@ async def _process_task_attempt(
         }
 
         if queue_context is None:
-            with Session(bind=engine) as task_session:
-                if not commit_task_status_transition(
-                    task_row.id,
-                    task_session,
-                    org,
-                    TaskStatus.BUILDING,
-                    expected_started_at=attempt_started_at,
-                    authority=authority,
-                ):
-                    return {task_id: None}
-
-        identity = {
-            "benchmark_name": benchmark_name,
-            "agent_name": benchmark_agent_name,
-        }
-        if benchmark_started_by_email:
-            identity["email"] = benchmark_started_by_email
+            if not await persistence.write(BuildTask()):
+                return {task_id: None}
 
         env_vars = {
             **(await runtime.resolve_secrets(start_benchmark_request.contract.secrets)),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             **_attested_inference_settings(start_benchmark_request.contract),
-            "IDENTITY": json.dumps(identity),
+            "IDENTITY": json.dumps(snapshot.identity),
             # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
             # are filterable per benchmark run and separable from other environments sharing the
             # same Daytona account (sandbox OTLP export is account-level).
@@ -1076,16 +1150,8 @@ async def _process_task_attempt(
 
             try:
                 if queue_context is None:
-                    with Session(bind=engine) as task_session:
-                        if not commit_task_status_transition(
-                            task_row.id,
-                            task_session,
-                            org,
-                            TaskStatus.IN_PROGRESS,
-                            expected_started_at=attempt_started_at,
-                            authority=authority,
-                        ):
-                            return {task_id: None}
+                    if not await persistence.write(RunTask()):
+                        return {task_id: None}
 
                 # Upload the contract to the sandbox after creating and install the dependencies
                 await upload_agent_artifacts(
@@ -1133,7 +1199,7 @@ async def _process_task_attempt(
                         benchmark_id=str(benchmark_id),
                         runtime_source=task_data.source,
                         dependency_setup_mode=dependency_setup_recovery.mode,
-                        execution_is_current=execution_is_current,
+                        execution_is_current=persistence.current,
                     )
                 except DependencySetupExhaustedError:
                     dependency_setup_recovery.mode = DependencySetupMode.FINAL_FRESH_SANDBOX
@@ -1150,19 +1216,13 @@ async def _process_task_attempt(
                 )
 
                 task_breakdown.agent_run_duration = agent_run_time
-                with Session(bind=engine) as task_session:
-                    task_session.add(task_breakdown)
-                    task_in_session = fetch_task_row(task_row.id, task_session, org)
-                    task_in_session.task_breakdown = task_breakdown.id
-                    if not commit_task_status_transition(
-                        task_row.id,
-                        task_session,
-                        org,
-                        TaskStatus.EVALUATING,
-                        expected_started_at=attempt_started_at,
-                        authority=authority,
-                    ):
-                        return {task_id: None}
+                if not await persistence.write(
+                    EvaluateTask(
+                        sandbox_build_duration=task_breakdown.sandbox_build_duration,
+                        agent_run_duration=task_breakdown.agent_run_duration,
+                    )
+                ):
+                    return {task_id: None}
 
                 # Evaluate the instance
                 evaluation_start_time = time.perf_counter()
@@ -1200,53 +1260,34 @@ async def _process_task_attempt(
                 # Force flush the logs, maybe redundant since we have the one in finally:
                 task_logs.buffer_logs(force_flush=True)
 
-                # Save the evaluation result to the database with the task row
-                # Record the termination reason if the agent did not exit cleanly (timeout / OS kill)
-                evaluation_result_row = EvaluationResult(
-                    org_id=org.id,
-                    task=task_row.id,
-                    instance_id=sandbox.id,
-                    result=cast(dict[str, Any], evaluation_result),
-                    agent_caused_exit_reason=exit_reason,
-                )
+                evaluation_result_value = cast(dict[str, Any], evaluation_result)
+                if not await persistence.write(
+                    CompleteTask(
+                        instance_id=sandbox.id,
+                        result=evaluation_result_value,
+                        exit_reason=exit_reason.value if exit_reason else None,
+                        evaluation_run_duration=task_breakdown.evaluation_run_duration,
+                        sandbox_run_duration=task_breakdown.sandbox_run_duration,
+                    )
+                ):
+                    return {task_id: None}
 
-                with Session(bind=engine) as task_session:
-                    task_session.add(evaluation_result_row)
-                    task_in_session = fetch_task_row(task_row.id, task_session, org)
-                    existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
-                    if existing_breakdown is None:
-                        raise TrackerServiceError(f"Missing task breakdown for task {task_row.id}")
-                    existing_breakdown.evaluation_run_duration = task_breakdown.evaluation_run_duration
-                    existing_breakdown.sandbox_run_duration = task_breakdown.sandbox_run_duration
-                    if not commit_task_status_transition(
-                        task_row.id,
-                        task_session,
-                        org,
-                        TaskStatus.FINISHED,
-                        expected_started_at=attempt_started_at,
-                        expected_status=(TaskStatus.EVALUATING, TaskStatus.ERROR),
-                        authority=authority,
-                    ):
-                        return {task_id: None}
-
-                    return {task_id: evaluation_result_row.result}
+                return {task_id: evaluation_result_value}
             except Exception:
-                with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session, org)
-                    if task.status == TaskStatus.STOPPED:
-                        return {task_id: None}
+                if await task_is_stopped():
+                    return {task_id: None}
 
                 raise
 
     except SandboxSetupError as e:
-        if task_is_stopped():
+        if await task_is_stopped():
             return {task_id: None}
-        if not return_queued_task_to_pending():
+        if not await return_queued_task_to_pending():
             return {task_id: None}
         log_output(f"\n[ERROR] {_exception_message(e)}")
         raise
     except SandboxNotFoundError as e:
-        if task_is_stopped():
+        if await task_is_stopped():
             return {task_id: None}
         if recovery_attempt.sandbox_loss_retry_available:
             message = (
@@ -1260,33 +1301,33 @@ async def _process_task_attempt(
         error_message = _exception_message(e)
         log_output(f"\n[ERROR] {error_message}")
 
-        return commit_terminal_error(
+        return await commit_terminal_error(
             e,
             error_message,
             producer="sandbox_provider",
             operation="sandbox_recovery",
         )
     except OutputArtifactError as e:
-        if task_is_stopped():
+        if await task_is_stopped():
             return {task_id: None}
         error_message = _exception_message(e)
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
-        return commit_terminal_error(
+        return await commit_terminal_error(
             e,
             error_message,
             producer="output_artifact",
             operation="upload_output_artifacts",
         )
     except BenchmarkServiceWebSocketDNSResolutionError as e:
-        if task_is_stopped():
+        if await task_is_stopped():
             return {task_id: None}
         error_message = f"Benchmark service WebSocket connection failed during DNS resolution: {_exception_message(e)}"
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
-        return commit_terminal_error(
+        return await commit_terminal_error(
             e,
             error_message,
             producer="benchmark_service",
@@ -1294,7 +1335,7 @@ async def _process_task_attempt(
             cause_code="websocket_dns_resolution",
         )
     except ConnectionClosedError as e:
-        if task_is_stopped():
+        if await task_is_stopped():
             return {task_id: None}
         seconds = int(time.monotonic() - task_logs.last_log_time)
         error_message = (
@@ -1306,7 +1347,7 @@ async def _process_task_attempt(
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
-        return commit_terminal_error(
+        return await commit_terminal_error(
             e,
             error_message,
             producer="benchmark_service",
@@ -1314,7 +1355,7 @@ async def _process_task_attempt(
             cause_code="websocket_connection_closed",
         )
     except BenchmarkServiceStreamError as e:
-        if task_is_stopped():
+        if await task_is_stopped():
             return {task_id: None}
         error_message = f"Benchmark service WebSocket stream failed: {_exception_message(e)}"
         recovered = await recover_evaluation_stream_failure(error_message)
@@ -1323,7 +1364,7 @@ async def _process_task_attempt(
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
-        return commit_terminal_error(
+        return await commit_terminal_error(
             e,
             error_message,
             producer="benchmark_service",
@@ -1331,7 +1372,7 @@ async def _process_task_attempt(
             cause_code="websocket_connection_closed",
         )
     except ValidationError as e:
-        if task_is_stopped():
+        if await task_is_stopped():
             return {task_id: None}
         field_names = ", ".join(".".join(str(loc) for loc in err["loc"]) for err in e.errors())
         error_message = (
@@ -1339,7 +1380,7 @@ async def _process_task_attempt(
         )
         log_output(f"\n[ERROR] {error_message}")
 
-        return commit_terminal_error(
+        return await commit_terminal_error(
             e,
             error_message,
             producer="benchmark_service",
@@ -1347,12 +1388,12 @@ async def _process_task_attempt(
             cause_code="incompatible_response",
         )
     except InvalidStatus as e:
-        if task_is_stopped():
+        if await task_is_stopped():
             return {task_id: None}
         error_message = f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code})"
         log_output(f"\n[ERROR] {error_message}")
 
-        return commit_terminal_error(
+        return await commit_terminal_error(
             e,
             error_message,
             producer="benchmark_service",
@@ -1360,26 +1401,26 @@ async def _process_task_attempt(
             cause_code="websocket_http_rejected",
         )
     except BenchmarkServiceError as e:
-        if task_is_stopped():
+        if await task_is_stopped():
             return {task_id: None}
         error_message = _exception_message(e)
         # This is necessary because Daytona routes tasks to bad nodes. We should
         # remove this when Daytona fixes their infrastructure.
         if "docker daemon is not ready inside the sandbox" in error_message:
-            if not return_queued_task_to_pending():
+            if not await return_queued_task_to_pending():
                 return {task_id: None}
             log_output(f"\n[ERROR] {error_message}")
             raise SandboxSetupError(error_message) from e
         log_output(f"\n[ERROR] {error_message}")
 
-        return commit_terminal_error(
+        return await commit_terminal_error(
             e,
             error_message,
             producer="benchmark_service",
             operation="request",
         )
     except Exception as e:
-        if task_is_stopped():
+        if await task_is_stopped():
             return {task_id: None}
         logfire.exception("process_task failed")
         error_message = _exception_message(e)
@@ -1387,15 +1428,14 @@ async def _process_task_attempt(
         # include the error message
         log_output(f"\n[ERROR] {error_message}")
 
-        return commit_terminal_error(
+        return await commit_terminal_error(
             e,
             error_message,
             producer="tracker",
             operation="process_task",
         )
     finally:
-        if evaluation_lock is not None:
-            await evaluation_lock.__aexit__(None, None, None)
+        await persistence.close()
 
 
 def commit_task_error(
