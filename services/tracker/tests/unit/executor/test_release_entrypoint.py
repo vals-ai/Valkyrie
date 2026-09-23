@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from io import BytesIO
+from unittest.mock import Mock
 
 import boto3
 import pytest
@@ -216,7 +217,7 @@ def test_release_entrypoint_uses_sealed_configuration_and_persists_active_releas
     assert admission.release_id == stored_release.id
 
 
-@pytest.mark.parametrize("unsafe", [None, "primary", "draining", "missing"])
+@pytest.mark.parametrize("unsafe", [None, "primary", "draining", "missing", "missing-service", "service-failure"])
 def test_verify_host_drain_does_not_stop_runs(
     monkeypatch: MonkeyPatch, database_session: Session, unsafe: str | None
 ) -> None:
@@ -232,6 +233,14 @@ def test_verify_host_drain_does_not_stop_runs(
     ecs = FakeEcsClient()
     ecs.legacy_definition = unsafe
     ecs.task_description_failed = unsafe == "missing"
+    if unsafe == "missing-service":
+        monkeypatch.setattr(ecs, "describe_services", Mock(return_value={"services": []}))
+    elif unsafe == "service-failure":
+        monkeypatch.setattr(
+            ecs,
+            "describe_services",
+            Mock(return_value={"services": [{"taskDefinition": "primary"}], "failures": [{"reason": "MISSING"}]}),
+        )
     monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
     monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
     monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
