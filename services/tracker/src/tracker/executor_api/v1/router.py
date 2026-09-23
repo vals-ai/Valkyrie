@@ -1,26 +1,20 @@
 """Version-one adapters for the shared dispatch transactions."""
 
-from collections.abc import Generator
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlmodel import Session
+from fastapi import APIRouter
 
-from tracker.database.session import get_session
 from tracker.executor.dispatch_api import (
-    DispatchAccessDenied,
-    DispatchConflict,
     DispatchIdentity,
     as_utc,
-    authenticate_dispatch,
     claim_dispatch,
     complete_dispatch,
     dispatch_authority,
     heartbeat_dispatch,
 )
 from tracker.executor.run_api import RunState, initialize_run_tasks, read_run_state
+from tracker.executor_api.v1.dependencies import DispatchSession
+from tracker.executor_api.v1.task_router import router as task_router
 from tracker.executor_api.v1.schemas import (
     AuthorityResponse,
     ClaimRequest,
@@ -38,30 +32,7 @@ from tracker.executor_api.v1.schemas import (
 )
 
 router = APIRouter(prefix="/internal/executor/v1/dispatches", tags=["executor-v1"])
-_bearer = HTTPBearer(auto_error=False, scheme_name="ExecutorDispatchAuth")
-
-
-def _dispatch_session(
-    dispatch_id: UUID,
-    session: Annotated[Session, Depends(get_session)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
-) -> Generator[Session, None, None]:
-    try:
-        if credentials is None:
-            raise DispatchAccessDenied("Invalid executor credential")
-        authenticate_dispatch(session, dispatch_id, credentials.credentials)
-        yield session
-    except DispatchAccessDenied as error:
-        session.rollback()
-        raise HTTPException(
-            401, detail="Invalid executor credential", headers={"WWW-Authenticate": "Bearer"}
-        ) from error
-    except DispatchConflict as error:
-        session.rollback()
-        raise HTTPException(409, detail=str(error)) from error
-
-
-DispatchSession = Annotated[Session, Depends(_dispatch_session)]
+router.include_router(task_router)
 
 
 @router.post("/{dispatch_id}/claim")

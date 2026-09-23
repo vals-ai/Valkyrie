@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
+import json
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
 from pydantic import SecretStr
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from tests.factories import make_benchmark, make_task
 from tracker.aws.runtime import AWSResources
@@ -25,14 +26,18 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     ErrorResult,
+    EvaluationResult,
     ExecutorDispatch,
     ExecutorDispatchAccess,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
+    ExecutorTaskAttempt,
+    ExecutorTaskReceipt,
     Org,
     Task,
     TaskStatus,
+    TaskBreakdown,
 )
 from tracker.database.session import get_session
 from tracker.executor.dispatch_api import create_dispatch_access
@@ -41,6 +46,7 @@ from tracker.executor_api.v1.router import router
 from tracker.executor_api.transport import ExecutorTransport
 from tracker.executor_api.v1.client import ExecutorClient
 from tracker.executor_api.v1.schemas import ClaimRequest
+from tracker.executor_api.v1.task_schemas import BuildTask, RunTask, EvaluateTask, CompleteTask
 
 
 @dataclass(frozen=True)
@@ -685,17 +691,491 @@ def test_initialized_attempt_can_be_cleaned_up_without_touching_siblings(
     }
 
 
+@dataclass(frozen=True)
+class TaskFixture:
+    id: UUID
+    path: str
+    request: dict[str, str]
+
+
+@pytest.fixture
+def task_attempt(client: TestClient, dispatch: DispatchFixture, assigned_run: list[str]) -> TaskFixture:
+    assert "new-task" in assigned_run
+    assert client.post(f"{dispatch.path}/claim", json=dispatch.claim, headers=dispatch.headers).status_code == 200
+    initialized = client.post(
+        f"{dispatch.path}/run/initialize", json={**dispatch.request, "task_ids": ["new-task"]}, headers=dispatch.headers
+    )
+    assert initialized.status_code == 200, initialized.text
+    task = initialized.json()["tasks"][0]
+
+    return TaskFixture(
+        id=UUID(task["id"]),
+        path=f"{dispatch.path}/tasks/{task['id']}",
+        request={**dispatch.request, "expected_started_at": task["started_at"]},
+    )
+
+
+@pytest.fixture
+def owned_task(client: TestClient, dispatch: DispatchFixture, task_attempt: TaskFixture) -> TaskFixture:
+    response = client.post(
+        f"{task_attempt.path}/claim",
+        json={**task_attempt.request, "command_id": str(uuid4())},
+        headers=dispatch.headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["revision"] == 0
+
+    return task_attempt
+
+
+def _write_request(task: TaskFixture, revision: int, mutation: dict[str, object]) -> dict[str, object]:
+    return {**task.request, "command_id": str(uuid4()), "expected_revision": revision, "mutation": mutation}
+
+
+def test_task_writes_preserve_order_and_replay_committed_results(
+    client: TestClient, dispatch: DispatchFixture, owned_task: TaskFixture, postgres_session: Session
+) -> None:
+    """Commit task progress, checkpoints, timings, and results exactly once per command.
+
+    Test cases:
+    - Every lifecycle command advances its write revision and replays without another mutation.
+    - An older checkpoint replay cannot overwrite a later checkpoint.
+    - Completion retries after dispatch expiry return the original receipt without duplicating results.
+    """
+    commands: list[dict[str, object]] = [
+        {"operation": "build"},
+        {"operation": "run"},
+        {"operation": "evaluate", "sandbox_build_duration": 1.5, "agent_run_duration": 2.5},
+        {"operation": "checkpoint", "checkpoint": {"cursor": "first"}},
+        {"operation": "checkpoint", "checkpoint": {"cursor": "second"}},
+        {
+            "operation": "complete",
+            "result": {"score": 1, "passed": True},
+            "instance_id": "sandbox-1",
+            "exit_reason": "TIMEOUT",
+            "evaluation_run_duration": 3.5,
+            "sandbox_run_duration": 7.5,
+        },
+    ]
+    requests: list[dict[str, object]] = []
+    for revision, mutation in enumerate(commands):
+        request = _write_request(owned_task, revision, mutation)
+        requests.append(request)
+        response = client.post(f"{owned_task.path}/write", json=request, headers=dispatch.headers)
+        replay = client.post(f"{owned_task.path}/write", json=request, headers=dispatch.headers)
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "command_id": request["command_id"],
+            "task_id": str(owned_task.id),
+            "revision": revision + 1,
+        }
+        assert replay.json() == response.json()
+    assert client.post(f"{owned_task.path}/write", json=requests[3], headers=dispatch.headers).status_code == 200
+
+    task = postgres_session.get(Task, owned_task.id)
+    assert task is not None and task.status == TaskStatus.FINISHED and task.finished_at is not None
+    assert task.eval_resume_state == {"cursor": "second"}
+    breakdown = postgres_session.get(TaskBreakdown, task.task_breakdown)
+    assert breakdown is not None
+    assert (
+        breakdown.sandbox_build_duration,
+        breakdown.agent_run_duration,
+        breakdown.evaluation_run_duration,
+        breakdown.sandbox_run_duration,
+    ) == (1.5, 2.5, 3.5, 7.5)
+    result = postgres_session.exec(select(EvaluationResult).where(EvaluationResult.task == task.id)).one()
+    assert result.result == {"score": 1, "passed": True}
+    assert result.instance_id == "sandbox-1"
+    assert result.agent_caused_exit_reason is not None and result.agent_caused_exit_reason.value == "TIMEOUT"
+
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    assert invocation is not None
+    invocation.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    postgres_session.add(invocation)
+    postgres_session.commit()
+    assert client.post(f"{owned_task.path}/write", json=requests[-1], headers=dispatch.headers).status_code == 200
+    changed = {**requests[-1], "mutation": {"operation": "complete", "result": {"score": 0}}}
+    assert client.post(f"{owned_task.path}/write", json=changed, headers=dispatch.headers).status_code == 409
+    assert len(postgres_session.exec(select(EvaluationResult).where(EvaluationResult.task == task.id)).all()) == 1
+
+
+def test_task_retry_history_and_terminal_errors_are_atomic(
+    client: TestClient, dispatch: DispatchFixture, owned_task: TaskFixture, postgres_session: Session
+) -> None:
+    """Preserve recovery history without treating a scheduled retry as terminal.
+
+    Test cases:
+    - Retry history is recorded once while the task stays runnable.
+    - Returning to pending and starting again preserves the attempt identity.
+    - A final error records provenance and terminal status in the same transaction.
+    """
+    error = {
+        "error_message": "provider unavailable",
+        "producer": "sandbox_provider",
+        "operation_name": "setup",
+        "error_type": "SandboxSetupError",
+        "cause_code": "transient",
+    }
+    mutations: list[dict[str, object]] = [
+        {"operation": "build"},
+        {"operation": "retry", "failed_attempt_number": 1, **error},
+        {"operation": "pending"},
+        {"operation": "build"},
+        {"operation": "fail", **error},
+    ]
+    for revision, mutation in enumerate(mutations):
+        request = _write_request(owned_task, revision, mutation)
+        for _ in range(2):
+            response = client.post(f"{owned_task.path}/write", json=request, headers=dispatch.headers)
+            assert response.status_code == 200, response.text
+        if revision == 1:
+            task = postgres_session.get(Task, owned_task.id)
+            assert task is not None and task.status == TaskStatus.BUILDING
+    postgres_session.expire_all()
+    task = postgres_session.get(Task, owned_task.id)
+    assert task is not None and task.status == TaskStatus.ERROR and task.finished_at is not None
+    assert task.started_at.replace(tzinfo=UTC) == datetime.fromisoformat(owned_task.request["expected_started_at"])
+    errors = postgres_session.exec(
+        select(ErrorResult).where(ErrorResult.task == task.id).order_by(col(ErrorResult.created_at))
+    ).all()
+    assert len(errors) == 2
+    assert [(row.retry_scheduled, row.failed_attempt_number) for row in errors] == [(True, 1), (False, None)]
+    assert all(
+        (row.producer, row.operation, row.error_type, row.cause_code)
+        == ("sandbox_provider", "setup", "SandboxSetupError", "transient")
+        for row in errors
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["unclaimed", "expired", "stopped", "new-attempt", "claimant", "assignment", "task", "revision", "organization"],
+)
+def test_task_write_fences_reject_stale_or_unassigned_work(
+    client: TestClient, dispatch: DispatchFixture, owned_task: TaskFixture, postgres_session: Session, invalid: str
+) -> None:
+    """Reject unauthorized writes before touching task state or storing a receipt.
+
+    Test cases:
+    - Task ownership, live dispatch authority, assignment, and exact attempt time are mandatory.
+    - An outdated revision cannot overwrite a later task mutation.
+    """
+    request = _write_request(owned_task, 0, {"operation": "build"})
+    path = f"{owned_task.path}/write"
+    task = postgres_session.get(Task, owned_task.id)
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    owner = postgres_session.get(ExecutorTaskAttempt, owned_task.id)
+    assert task is not None and invocation is not None and benchmark is not None and owner is not None
+    if invalid == "unclaimed":
+        postgres_session.delete(owner)
+    elif invalid == "expired":
+        invocation.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        postgres_session.add(invocation)
+    elif invalid == "stopped":
+        benchmark.status = BenchmarkStatus.STOPPED
+        postgres_session.add(benchmark)
+    elif invalid == "new-attempt":
+        task.started_at = invocation.created_at + timedelta(seconds=1)
+        postgres_session.add(task)
+    elif invalid == "claimant":
+        request["claimant_id"] = str(uuid4())
+    elif invalid == "assignment":
+        invocation.assigned_task_ids = ["task-0"]
+        postgres_session.add(invocation)
+    elif invalid == "task":
+        path = f"{dispatch.path}/tasks/{uuid4()}/write"
+    elif invalid == "organization":
+        other_org = Org(name="other-task-org")
+        postgres_session.add(other_org)
+        postgres_session.flush()
+        task.org_id = other_org.id
+        postgres_session.add(task)
+    else:
+        request["expected_revision"] = 3
+    postgres_session.commit()
+    response = client.post(path, json=request, headers=dispatch.headers)
+    assert response.status_code == 409, response.text
+    postgres_session.refresh(task)
+    assert task.status == TaskStatus.PENDING
+    assert postgres_session.get(ExecutorTaskReceipt, (dispatch.dispatch_id, UUID(str(request["command_id"])))) is None
+
+
+@pytest.mark.parametrize("invalid", ["expired", "stopped", "organization", "building"])
+def test_task_claim_rejects_unavailable_attempts(
+    client: TestClient, dispatch: DispatchFixture, task_attempt: TaskFixture, postgres_session: Session, invalid: str
+) -> None:
+    """Reject task ownership when the run, dispatch, or task cannot authorize execution.
+
+    Test cases:
+    - Expired dispatches and stopped runs cannot claim pending work.
+    - A task in another organization or already building cannot acquire an owner.
+    """
+    task = postgres_session.get(Task, task_attempt.id)
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    assert task is not None and invocation is not None and benchmark is not None
+    if invalid == "expired":
+        invocation.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        postgres_session.add(invocation)
+    elif invalid == "stopped":
+        benchmark.status = BenchmarkStatus.STOPPED
+        postgres_session.add(benchmark)
+    elif invalid == "organization":
+        other_org = Org(name="other-task-org")
+        postgres_session.add(other_org)
+        postgres_session.flush()
+        task.org_id = other_org.id
+        postgres_session.add(task)
+    else:
+        task.status = TaskStatus.BUILDING
+        postgres_session.add(task)
+    postgres_session.commit()
+    request = {**task_attempt.request, "command_id": str(uuid4())}
+
+    response = client.post(f"{task_attempt.path}/claim", json=request, headers=dispatch.headers)
+
+    assert response.status_code == 409, response.text
+    assert postgres_session.get(ExecutorTaskAttempt, task_attempt.id) is None
+    assert postgres_session.get(ExecutorTaskReceipt, (dispatch.dispatch_id, UUID(request["command_id"]))) is None
+
+
+def test_concurrent_task_writes_have_one_winner(
+    app: FastAPI, client: TestClient, dispatch: DispatchFixture, owned_task: TaskFixture, postgres_session: Session
+) -> None:
+    """Serialize different commands racing for the same task revision.
+
+    Test cases:
+    - Only one of build and stop can commit at revision zero.
+    - Replaying the winner leaves the committed task revision unchanged.
+    """
+    barrier = Barrier(2)
+    requests = [_write_request(owned_task, 0, {"operation": operation}) for operation in ("build", "stop")]
+
+    def write(request: dict[str, object]) -> httpx.Response:
+        with TestClient(app) as concurrent_client:
+            barrier.wait(timeout=5)
+            return concurrent_client.post(f"{owned_task.path}/write", json=request, headers=dispatch.headers)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(write, requests))
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    winning_index = next(index for index, response in enumerate(responses) if response.status_code == 200)
+    assert (
+        client.post(f"{owned_task.path}/write", json=requests[winning_index], headers=dispatch.headers).json()
+        == responses[winning_index].json()
+    )
+    task = postgres_session.get(Task, owned_task.id)
+    owner = postgres_session.get(ExecutorTaskAttempt, owned_task.id)
+    assert task is not None and owner is not None and owner.revision == 1
+    assert task.status == (TaskStatus.BUILDING if winning_index == 0 else TaskStatus.STOPPED)
+
+
+def test_stopping_run_accepts_cleanup_but_not_new_work(
+    client: TestClient, dispatch: DispatchFixture, owned_task: TaskFixture, postgres_session: Session
+) -> None:
+    """Preserve evaluation output during stop without starting more execution.
+
+    Test cases:
+    - A stopping run rejects build, retry, and pending commands without advancing revisions.
+    - Checkpoints and final results can still commit for an evaluating attempt.
+    """
+    for revision, operation in enumerate(("build", "run", "evaluate")):
+        response = client.post(
+            f"{owned_task.path}/write",
+            json=_write_request(owned_task, revision, {"operation": operation}),
+            headers=dispatch.headers,
+        )
+        assert response.status_code == 200, response.text
+
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    assert benchmark is not None
+    benchmark.status = BenchmarkStatus.STOPPING
+    postgres_session.add(benchmark)
+    postgres_session.commit()
+
+    rejected: list[dict[str, object]] = [
+        {"operation": "build"},
+        {"operation": "pending"},
+        {
+            "operation": "retry",
+            "failed_attempt_number": 1,
+            "error_message": "retry",
+            "producer": "executor",
+            "operation_name": "evaluate",
+            "error_type": "EvaluationError",
+        },
+    ]
+    for mutation in rejected:
+        response = client.post(
+            f"{owned_task.path}/write", json=_write_request(owned_task, 3, mutation), headers=dispatch.headers
+        )
+        assert response.status_code == 409, response.text
+
+    checkpoint = _write_request(owned_task, 3, {"operation": "checkpoint", "checkpoint": {"step": 2}})
+    assert client.post(f"{owned_task.path}/write", json=checkpoint, headers=dispatch.headers).status_code == 200
+    stale_checkpoint = _write_request(owned_task, 3, {"operation": "checkpoint", "checkpoint": {"step": 1}})
+    assert client.post(f"{owned_task.path}/write", json=stale_checkpoint, headers=dispatch.headers).status_code == 409
+    result = _write_request(owned_task, 4, {"operation": "complete", "result": {"score": 1}})
+    assert client.post(f"{owned_task.path}/write", json=result, headers=dispatch.headers).status_code == 200
+
+    postgres_session.expire_all()
+    task = postgres_session.get(Task, owned_task.id)
+    owner = postgres_session.get(ExecutorTaskAttempt, owned_task.id)
+    assert task is not None and task.status == TaskStatus.FINISHED and task.eval_resume_state == {"step": 2}
+    assert owner is not None and owner.revision == 5
+    assert not postgres_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).all()
+
+
+@pytest.mark.parametrize("operation", ["run", "evaluate", "checkpoint", "complete"])
+def test_invalid_task_transition_leaves_no_side_effects(
+    client: TestClient, dispatch: DispatchFixture, owned_task: TaskFixture, postgres_session: Session, operation: str
+) -> None:
+    """Reject out-of-order execution commands without saving a successful receipt.
+
+    Test cases:
+    - A pending task cannot run, evaluate, checkpoint, or finish before building.
+    - Rejected commands leave its state, revision, result, and timing records unchanged.
+    """
+    mutation: dict[str, object] = {"operation": operation}
+    if operation == "checkpoint":
+        mutation["checkpoint"] = {"step": 1}
+    elif operation == "complete":
+        mutation["result"] = {"score": 1}
+    request = _write_request(owned_task, 0, mutation)
+
+    response = client.post(f"{owned_task.path}/write", json=request, headers=dispatch.headers)
+
+    assert response.status_code == 409, response.text
+    task = postgres_session.get(Task, owned_task.id)
+    owner = postgres_session.get(ExecutorTaskAttempt, owned_task.id)
+    assert task is not None and task.status == TaskStatus.PENDING
+    assert task.task_breakdown is None and task.eval_resume_state is None
+    assert owner is not None and owner.revision == 0
+    assert postgres_session.get(ExecutorTaskReceipt, (dispatch.dispatch_id, UUID(str(request["command_id"])))) is None
+    assert not postgres_session.exec(select(EvaluationResult).where(EvaluationResult.task == task.id)).all()
+
+
+@pytest.mark.parametrize("same_attempt", [True, False])
+def test_evaluation_claim_requires_dispatch_attempt(
+    client: TestClient,
+    dispatch: DispatchFixture,
+    task_attempt: TaskFixture,
+    postgres_session: Session,
+    same_attempt: bool,
+) -> None:
+    """Keep an old evaluation checkpoint from being claimed as a different attempt.
+
+    Test cases:
+    - Evaluation resume accepts the exact dispatch attempt timestamp.
+    - An older evaluating attempt remains unchanged and unclaimed.
+    """
+    task = postgres_session.get(Task, task_attempt.id)
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    assert task is not None and invocation is not None
+    task.status = TaskStatus.EVALUATING
+    task.started_at = invocation.created_at - timedelta(seconds=0 if same_attempt else 1)
+    task.eval_resume_state = {"step": 2}
+    postgres_session.add(task)
+    postgres_session.commit()
+    request = {
+        **task_attempt.request,
+        "command_id": str(uuid4()),
+        "expected_started_at": task.started_at.replace(tzinfo=UTC).isoformat(),
+    }
+
+    response = client.post(f"{task_attempt.path}/claim", json=request, headers=dispatch.headers)
+
+    assert response.status_code == (200 if same_attempt else 409), response.text
+    assert (postgres_session.get(ExecutorTaskAttempt, task.id) is not None) == same_attempt
+    postgres_session.refresh(task)
+    assert task.eval_resume_state == {"step": 2} and task.status == TaskStatus.EVALUATING
+
+
+def test_sibling_can_claim_only_after_the_attempt_changes(
+    client: TestClient, dispatch: DispatchFixture, owned_task: TaskFixture, postgres_session: Session
+) -> None:
+    """Prevent sibling dispatches from sharing ownership of one attempt.
+
+    Test cases:
+    - A live sibling with the same task assignment cannot claim the existing attempt.
+    - An explicitly new attempt can transfer ownership without authorizing the old writer.
+    """
+    release = postgres_session.get(ExecutorRelease, dispatch.claim["executor_release_id"])
+    assert release is not None
+    sibling = create_executor_dispatch(
+        dispatch.benchmark_id, release, ExecutorDispatchKind.RESUME, dispatch_id=uuid4(), task_ids=["new-task"]
+    )
+    postgres_session.add(sibling)
+    postgres_session.flush()
+    token = create_dispatch_access(postgres_session, sibling)
+    postgres_session.commit()
+    sibling_path = f"/internal/executor/v1/dispatches/{sibling.id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    claimant_id = str(uuid4())
+    assert (
+        client.post(
+            f"{sibling_path}/claim", json={**dispatch.claim, "claimant_id": claimant_id}, headers=headers
+        ).status_code
+        == 200
+    )
+    request = {**owned_task.request, "claimant_id": claimant_id, "command_id": str(uuid4())}
+    assert client.post(f"{sibling_path}/tasks/{owned_task.id}/claim", json=request, headers=headers).status_code == 409
+    task = postgres_session.get(Task, owned_task.id)
+    assert task is not None
+    task.started_at = sibling.created_at
+    postgres_session.add(task)
+    postgres_session.commit()
+    request["expected_started_at"] = sibling.created_at.replace(tzinfo=UTC).isoformat()
+    response = client.post(f"{sibling_path}/tasks/{owned_task.id}/claim", json=request, headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["revision"] == 0
+    old_write = _write_request(owned_task, 0, {"operation": "build"})
+    assert client.post(f"{owned_task.path}/write", json=old_write, headers=dispatch.headers).status_code == 409
+    new_write = {**request, "command_id": str(uuid4()), "expected_revision": 0, "mutation": {"operation": "build"}}
+    assert (
+        client.post(f"{sibling_path}/tasks/{owned_task.id}/write", json=new_write, headers=headers).status_code == 200
+    )
+
+
+@pytest.mark.parametrize("operation", ["claim", "write"])
+def test_task_commands_require_dispatch_credentials(
+    client: TestClient, task_attempt: TaskFixture, operation: str
+) -> None:
+    """Keep task mutations separate from user-level API authentication.
+
+    Test cases:
+    - Missing or unrelated dispatch credentials never authorize task writes.
+    """
+    request = (
+        {**task_attempt.request, "command_id": str(uuid4())}
+        if operation == "claim"
+        else _write_request(task_attempt, 0, {"operation": "build"})
+    )
+    for headers in ({}, {"Authorization": "Bearer unrelated"}):
+        assert client.post(f"{task_attempt.path}/{operation}", json=request, headers=headers).status_code == 401
+
+
 class MockLostResponseTransport(httpx.AsyncBaseTransport):
     """Drop a successful response only after the real API has committed it."""
 
-    def __init__(self, app: FastAPI, operation: str) -> None:
+    def __init__(self, app: FastAPI, operation: str, *, mutation: str | None = None) -> None:
         self._transport = httpx.ASGITransport(app)
         self._operation = operation
+        self._mutation = mutation
         self.dropped = False
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         response = await self._transport.handle_async_request(request)
-        if request.url.path.endswith(f"/{self._operation}") and response.status_code == 200 and not self.dropped:
+        matches_mutation = (
+            self._mutation is None or json.loads(request.content).get("mutation", {}).get("operation") == self._mutation
+        )
+        if (
+            request.url.path.endswith(f"/{self._operation}")
+            and matches_mutation
+            and response.status_code == 200
+            and not self.dropped
+        ):
             self.dropped = True
             await response.aclose()
             raise httpx.ReadError("Connection lost after server commit", request=request)
@@ -742,3 +1222,39 @@ async def test_client_recovers_a_response_lost_after_commit(
     assert invocation.status.value == terminal.status
     errors = postgres_session.exec(select(ErrorResult).where(ErrorResult.task == dispatch.task_id)).all()
     assert len(errors) == (1 if operation == "fail" else 0)
+
+
+@pytest.mark.parametrize("lost_operation", ["claim", "write"])
+async def test_task_client_retries_after_committed_response_loss(
+    app: FastAPI, dispatch: DispatchFixture, task_attempt: TaskFixture, postgres_session: Session, lost_operation: str
+) -> None:
+    """Retry task ownership and writes through the real client after server commit.
+
+    Test cases:
+    - Retried task claims keep revision zero and the same owner.
+    - A lost write response does not increment the revision twice or duplicate results.
+    """
+    transport = MockLostResponseTransport(
+        app, f"tasks/{task_attempt.id}/{lost_operation}", mutation="complete" if lost_operation == "write" else None
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://tracker.test") as http_client:
+        api = ExecutorClient(
+            ExecutorTransport(http_client, SecretStr(dispatch.token)),
+            dispatch.dispatch_id,
+            UUID(dispatch.claim["claimant_id"]),
+        )
+        started_at = datetime.fromisoformat(task_attempt.request["expected_started_at"])
+        claimed = await api.claim_task(task_attempt.id, started_at, command_id=uuid4())
+        assert claimed.revision == 0
+        for revision, mutation in enumerate(
+            [BuildTask(), RunTask(), EvaluateTask(), CompleteTask(result={"score": 1})]
+        ):
+            receipt = await api.write_task(
+                task_attempt.id, started_at, mutation, command_id=uuid4(), expected_revision=revision
+            )
+            assert receipt.revision == revision + 1
+    assert transport.dropped
+    results = postgres_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_attempt.id)).all()
+    assert len(results) == 1
+    owner = postgres_session.get(ExecutorTaskAttempt, task_attempt.id)
+    assert owner is not None and owner.revision == 4

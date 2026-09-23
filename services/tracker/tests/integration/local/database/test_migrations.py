@@ -17,10 +17,10 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import DBAPIError
-from sqlmodel import Session, create_engine
+from sqlmodel import Session, create_engine, select
 from testcontainers.postgres import PostgresContainer
 from tests.integration.local.database.conftest import local_postgres_url
-from tests.factories import make_benchmark
+from tests.factories import make_benchmark, make_task
 from services.executor_host.supervisor import ArtifactDispatch, PostgresExecutorDispatchStore
 from tracker.executor.release_control import create_executor_dispatch, pin_benchmark_to_release, register_release
 
@@ -33,6 +33,8 @@ from tracker.database.models import (
     ExecutorDispatch,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
+    ExecutorTaskAttempt,
+    ExecutorTaskReceipt,
     Org,
 )
 
@@ -77,13 +79,15 @@ def test_dispatch_lease_migration_adds_recovery_state(migration_database_url: st
     engine.dispose()
 
 
-def test_dispatch_api_migration_preserves_a_live_legacy_claim(migration_database_url: str) -> None:
+@pytest.mark.parametrize("revision", ["3e4f5a6b7c8d", "4f5a6b7c8d9e"])
+def test_dispatch_api_migration_preserves_a_live_legacy_claim(migration_database_url: str, revision: str) -> None:
     """Keep a legacy host claim valid across the additive executor API migration.
 
     Test cases:
     - The existing host claims a dispatch against the pre-API schema.
     - The same host renews and finishes that claim after the migration.
     - Migration leaves the release pin, start time, and credential eligibility unchanged.
+    - New task ownership and receipt rows do not block legacy task deletion.
     """
     upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_REVISION)
     assert upgrade.returncode == 0, upgrade.stderr
@@ -134,7 +138,7 @@ def test_dispatch_api_migration_preserves_a_live_legacy_claim(migration_database
             assert claimed is not None
             started_at = claimed.started_at
 
-        upgrade = _run_alembic(migration_database_url, "upgrade", "3e4f5a6b7c8d")
+        upgrade = _run_alembic(migration_database_url, "upgrade", revision)
         assert upgrade.returncode == 0, upgrade.stderr
         assert asyncio.run(store.is_current(authority))
         assert asyncio.run(store.heartbeat(authority))
@@ -148,6 +152,28 @@ def test_dispatch_api_migration_preserves_a_live_legacy_claim(migration_database
             assert completed.started_at == started_at
             assert completed.executor_release_id == "legacy-api-migration"
             assert session.connection().execute(text("SELECT COUNT(*) FROM executordispatchaccess")).scalar_one() == 0
+
+            if revision == "4f5a6b7c8d9e":
+                task = make_task(benchmark, "migrated-task")
+                session.add(task)
+                session.flush()
+                session.add_all(
+                    [
+                        ExecutorTaskAttempt(task_id=task.id, dispatch_id=dispatch_id, started_at=task.started_at),
+                        ExecutorTaskReceipt(
+                            dispatch_id=dispatch_id,
+                            command_id=uuid4(),
+                            task_id=task.id,
+                            request_digest="a" * 64,
+                            revision=0,
+                        ),
+                    ]
+                )
+                session.commit()
+                session.delete(task)
+                session.commit()
+                assert not session.exec(select(ExecutorTaskAttempt)).all()
+                assert not session.exec(select(ExecutorTaskReceipt)).all()
     finally:
         engine.dispose()
 
