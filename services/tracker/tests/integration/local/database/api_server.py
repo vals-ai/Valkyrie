@@ -7,11 +7,14 @@ from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import RequestResponseEndpoint
 from sqlmodel import Session, create_engine
 
 from tracker.database.session import get_session
 from tracker.executor_api.v1.router import router
+from tracker.executor_api.v1.task_schemas import SaveCheckpoint, TaskWriteRequest
 
 
 def main() -> None:
@@ -32,6 +35,19 @@ def main() -> None:
     app = FastAPI(lifespan=lifespan)
     app.include_router(router)
     app.dependency_overrides[get_session] = session_dependency
+    failures_remaining = int(os.environ.get("TEST_EXECUTOR_CHECKPOINT_FAILURES", "0"))
+
+    async def checkpoint_outage(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        nonlocal failures_remaining
+        if failures_remaining and request.url.path.endswith("/write"):
+            command = TaskWriteRequest.model_validate(await request.json())
+            if isinstance(command.mutation, SaveCheckpoint):
+                failures_remaining -= 1
+                return JSONResponse({"detail": "Checkpoint service restarting"}, status_code=503)
+
+        return await call_next(request)
+
+    app.middleware("http")(checkpoint_outage)
     uvicorn.run(app, fd=int(sys.argv[1]), log_level="error", access_log=False)
 
 

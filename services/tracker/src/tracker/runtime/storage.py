@@ -1,10 +1,22 @@
 """Provider-neutral object storage capabilities used by Tracker and the CLI."""
 
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
+from inspect import isawaitable
+
+UploadAuthority = Callable[[], bool | Awaitable[bool]]
+
+
+async def upload_is_current(check: UploadAuthority | None) -> bool:
+    """Resolve either a local authority check or the executor's asynchronous API check."""
+    if check is None:
+        return True
+    current = check()
+
+    return await current if isawaitable(current) else current
 
 
 @dataclass(frozen=True)
@@ -47,7 +59,7 @@ class ObjectStore(Protocol):
         key: str,
         chunks: AsyncIterable[bytes],
         *,
-        should_continue: Callable[[], bool] | None = None,
+        should_continue: UploadAuthority | None = None,
     ) -> int:
         """Store all chunks and return their total byte count."""
         raise NotImplementedError  # pragma: no cover

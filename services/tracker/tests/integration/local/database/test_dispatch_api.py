@@ -1933,7 +1933,7 @@ async def _process_event(process: asyncio.subprocess.Process) -> dict[str, objec
 
 
 async def _start_api_server(
-    stack: AsyncExitStack, database_url: str, port: int = 0
+    stack: AsyncExitStack, database_url: str, port: int = 0, *, checkpoint_failures: int = 0
 ) -> tuple[asyncio.subprocess.Process, int]:
     with socket.socket() as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1946,7 +1946,11 @@ async def _start_api_server(
             pass_fds=(listener.fileno(),),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "TEST_EXECUTOR_DATABASE_URL": database_url},
+            env={
+                **os.environ,
+                "TEST_EXECUTOR_DATABASE_URL": database_url,
+                "TEST_EXECUTOR_CHECKPOINT_FAILURES": str(checkpoint_failures),
+            },
         )
     stack.push_async_callback(_stop_api_process, process)
     assert (await _process_event(process))["event"] == "ready"
@@ -1963,6 +1967,7 @@ async def test_api_server_restart_preserves_executor_process(
     - A new server process accepts the original client's claim and task attempt.
     - The same client PID completes the task and run through real HTTP after restart.
     - No executor-side database/config modules or connections are required.
+    - Checkpoint writes survive seven failed requests while heartbeat authority remains valid.
     """
     task = postgres_session.get(Task, dispatch.task_id)
     assert task is not None
@@ -2004,7 +2009,7 @@ async def test_api_server_restart_preserves_executor_process(
         worker.stdin.write(b"read\n")
         await worker.stdin.drain()
         assert (await _process_event(worker))["event"] == "reading"
-        replacement, _ = await _start_api_server(stack, database_url, port)
+        replacement, _ = await _start_api_server(stack, database_url, port, checkpoint_failures=7)
         assert replacement.pid != server.pid
         resumed = await _process_event(worker)
         finished = await _process_event(worker)
@@ -2017,6 +2022,8 @@ async def test_api_server_restart_preserves_executor_process(
     benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
     invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
     assert task is not None and task.status == TaskStatus.FINISHED
+    owner = postgres_session.get(ExecutorTaskAttempt, task.id)
+    assert owner is not None and owner.revision == 6
     assert task.started_at == datetime.fromisoformat(str(started["started_at"])).replace(tzinfo=None)
     assert benchmark is not None and benchmark.status == BenchmarkStatus.FINISHED
     assert invocation is not None and invocation.status == ExecutorDispatchStatus.FINISHED

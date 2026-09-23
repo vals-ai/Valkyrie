@@ -15,6 +15,7 @@ from sqlmodel import Session
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import Benchmark, Org, Task, TaskStatus
 from tracker.executor.execution_authority import ExecutionAuthority
+from tracker.executor.checkpoints import CheckpointCallback, run_with_checkpoints
 from tracker.utils import ResizableLimiter, TaskMonitor, TrackedTask, TrackedTaskStatus
 
 
@@ -244,3 +245,116 @@ class TestTaskExecution:
         assert waiting.task is not None
         with pytest.raises(asyncio.CancelledError):
             waiting.task.result()
+
+
+class TestEvaluationCheckpoints:
+    """Async persistence of the benchmark client's synchronous checkpoint callbacks."""
+
+    @pytest.mark.parametrize("stream_fails", [False, True])
+    async def test_flushes_ordered_snapshots_before_returning(self, stream_fails: bool) -> None:
+        """Persist snapshots in order before exposing completion or a stream error.
+
+        Test cases:
+        - Later mutation of the callback's dictionary cannot change a queued snapshot.
+        - Completion waits for slow persistence without blocking the event loop.
+        - A stream failure still flushes checkpoints before recovery begins.
+        """
+        writing = asyncio.Event()
+        release = asyncio.Event()
+        saved: list[dict[str, Any]] = []
+
+        async def evaluate(checkpoint: CheckpointCallback) -> int:
+            state = {"cursor": {"position": 1}}
+            checkpoint(state)
+            state["cursor"]["position"] = 2
+            checkpoint(state)
+            if stream_fails:
+                raise ConnectionError("Evaluation stream disconnected")
+            return 42
+
+        async def persist(state: dict[str, Any]) -> None:
+            writing.set()
+            await release.wait()
+            saved.append(state)
+
+        runner = asyncio.create_task(run_with_checkpoints(evaluate, persist))
+        async with asyncio.timeout(5):
+            await writing.wait()
+            assert not runner.done()
+            release.set()
+            if stream_fails:
+                with pytest.raises(ConnectionError, match="Evaluation stream disconnected"):
+                    await runner
+            else:
+                assert await runner == 42
+
+        assert saved == [{"cursor": {"position": 1}}, {"cursor": {"position": 2}}]
+
+    @pytest.mark.parametrize("stream_completes", [False, True])
+    async def test_repeated_cancellation_flushes_accepted_checkpoints(self, stream_completes: bool) -> None:
+        """Do not leave accepted checkpoints writing after task cleanup returns.
+
+        Test cases:
+        - Repeated cancellation settles the stream and the pending writer.
+        - A completed stream still retains its pending checkpoint during cancellation.
+        - The original cancellation remains visible after checkpoint persistence.
+        """
+        writing = asyncio.Event()
+        stopped = asyncio.Event()
+        release = asyncio.Event()
+        saved: list[dict[str, Any]] = []
+
+        async def evaluate(checkpoint: CheckpointCallback) -> None:
+            checkpoint({"job_id": "durable-job"})
+            try:
+                if not stream_completes:
+                    await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        async def persist(state: dict[str, Any]) -> None:
+            writing.set()
+            await release.wait()
+            saved.append(state)
+
+        runner = asyncio.create_task(run_with_checkpoints(evaluate, persist))
+        async with asyncio.timeout(5):
+            await writing.wait()
+            if stream_completes:
+                # Let the completed stream wake the runner while persistence remains blocked.
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+            runner.cancel()
+            await stopped.wait()
+            assert not runner.done()
+            runner.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await runner
+
+        assert saved == [{"job_id": "durable-job"}]
+
+    async def test_persistence_failure_cancels_the_evaluation(self) -> None:
+        """A failed checkpoint cannot silently turn into successful evaluation completion.
+
+        Test cases:
+        - Persistence failure interrupts the running stream.
+        - Stream cleanup settles before the original persistence error propagates.
+        """
+        stopped = asyncio.Event()
+
+        async def evaluate(checkpoint: CheckpointCallback) -> None:
+            checkpoint({"job_id": "durable-job"})
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        async def persist(_state: dict[str, Any]) -> None:
+            raise OSError("Checkpoint storage unavailable")
+
+        async with asyncio.timeout(5):
+            with pytest.raises(OSError, match="Checkpoint storage unavailable"):
+                await run_with_checkpoints(evaluate, persist)
+
+        assert stopped.is_set()

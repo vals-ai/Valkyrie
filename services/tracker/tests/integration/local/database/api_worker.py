@@ -5,16 +5,18 @@ import json
 import os
 import sys
 from uuid import UUID, uuid4
+from typing import Any
 
 import httpx
 from pydantic import BaseModel, SecretStr
 
 from tracker.executor.api_execution import run_with_dispatch_lease
+from tracker.executor.checkpoints import CheckpointCallback, run_with_checkpoints
 from tracker.executor_api.transport import ExecutorTransport
 from tracker.executor_api.v1.client import ExecutorClient
 from tracker.executor_api.v1.finalization_schemas import CompleteRun
 from tracker.executor_api.v1.schemas import ClaimRequest
-from tracker.executor_api.v1.task_schemas import BuildTask, CompleteTask, EvaluateTask, RunTask
+from tracker.executor_api.v1.task_schemas import BuildTask, CompleteTask, EvaluateTask, RunTask, SaveCheckpoint
 
 
 class WorkerInput(BaseModel):
@@ -63,12 +65,31 @@ async def main() -> None:
             evaluated = await api.write_task(
                 task.id, task.started_at, EvaluateTask(), command_id=uuid4(), expected_revision=running.revision
             )
+            revision = evaluated.revision
+
+            async def evaluate(checkpoint: CheckpointCallback) -> dict[str, Any]:
+                checkpoint({"cursor": 1})
+                checkpoint({"cursor": 2})
+                return {"score": 1}
+
+            async def persist(checkpoint: dict[str, Any]) -> None:
+                nonlocal revision
+                written = await api.write_task(
+                    task.id,
+                    task.started_at,
+                    SaveCheckpoint(checkpoint=checkpoint),
+                    command_id=uuid4(),
+                    expected_revision=revision,
+                )
+                revision = written.revision
+
+            result = await run_with_checkpoints(evaluate, persist)
             await api.write_task(
                 task.id,
                 task.started_at,
-                CompleteTask(result={"score": 1}),
+                CompleteTask(result=result),
                 command_id=uuid4(),
-                expected_revision=evaluated.revision,
+                expected_revision=revision,
             )
             finalization = await api.finalization_state()
             assert finalization.snapshot_digest is not None

@@ -158,10 +158,12 @@ class TestOutputArtifacts:
         assert uploaded == [(artifact_content, "benchmarks/benchmark-123/task_0/artifacts/turns.jsonl")]
         assert store.put_stream.await_args.kwargs["should_continue"] is execution_is_current
 
+    @pytest.mark.parametrize("asynchronous", [False, True])
     async def test_upload_output_artifacts_skips_upload_when_authority_revoked(
         self,
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
+        asynchronous: bool,
     ) -> None:
         """A run that lost authority before transfer uploads nothing."""
         store = _mock_object_store()
@@ -177,13 +179,16 @@ class TestOutputArtifacts:
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
         mock_sandbox = Mock()
 
+        async def authority_revoked() -> bool:
+            return False
+
         await upload_output_artifacts(
             mock_sandbox,
             [artifact],
             "benchmark-123",
             "task_0",
             store,
-            execution_is_current=lambda: False,
+            execution_is_current=authority_revoked if asynchronous else lambda: False,
         )
 
         store.put_stream.assert_not_awaited()

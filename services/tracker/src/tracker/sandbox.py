@@ -44,7 +44,7 @@ from tenacity import (
 )
 
 from tracker.runtime.artifacts import benchmark_agent_bundle_key, task_artifact_key
-from tracker.runtime.storage import ObjectStore
+from tracker.runtime.storage import ObjectStore, UploadAuthority, upload_is_current
 from tracker.database.models import (
     MAX_OUTPUT_ARTIFACT_BYTES,
     AgentCausedExitReason,
@@ -630,7 +630,7 @@ async def archive_and_upload_output(
     *,
     benchmark_id: str | None = None,
     task_id: str | None = None,
-    execution_is_current: Callable[[], bool] | None = None,
+    execution_is_current: UploadAuthority | None = None,
 ) -> None:
     """Compress a file in the sandbox into a tar.gz and upload it to S3"""
     archive_path = f"/tmp/{uuid.uuid4().hex}.tar.gz"
@@ -731,7 +731,7 @@ async def upload_output_artifacts(
     benchmark_id: str,
     task_id: str,
     object_store: ObjectStore,
-    execution_is_current: Callable[[], bool] | None = None,
+    execution_is_current: UploadAuthority | None = None,
 ) -> None:
     """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
     total_bytes = 0
@@ -776,7 +776,7 @@ async def _upload_output_artifact(
     task_id: str,
     object_store: ObjectStore,
     total_bytes: int,
-    execution_is_current: Callable[[], bool] | None = None,
+    execution_is_current: UploadAuthority | None = None,
 ) -> int | None:
     artifact_path = _output_artifact_path(artifact)
     sandbox_path = await _resolve_output_artifact_sandbox_path(sandbox, artifact, task_id)
@@ -804,7 +804,7 @@ async def _upload_output_artifact(
             f"Output artifacts are too large: {new_total_bytes} bytes > {OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES} bytes"
         )
 
-    if execution_is_current is not None and not execution_is_current():
+    if not await upload_is_current(execution_is_current):
         return None
 
     s3_key = task_artifact_key(benchmark_id, task_id, artifact_path)
@@ -842,7 +842,7 @@ async def run_agent(
     benchmark_id: str | None = None,
     runtime_source: SandboxSource | None = None,
     dependency_setup_mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
-    execution_is_current: Callable[[], bool] | None = None,
+    execution_is_current: UploadAuthority | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
@@ -891,7 +891,7 @@ async def run_agent(
                 if (
                     result.exit_code == _SUCCESS_EXIT_CODE
                     and agent_output_s3_key
-                    and (execution_is_current is None or execution_is_current())
+                    and await upload_is_current(execution_is_current)
                 ):
                     await archive_and_upload_output(
                         sandbox,

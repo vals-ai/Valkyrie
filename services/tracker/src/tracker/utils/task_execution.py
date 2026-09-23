@@ -60,6 +60,7 @@ from tracker.exceptions import (
     TrackerServiceError,
 )
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
+from tracker.executor.checkpoints import run_with_checkpoints
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, error_span, incr
@@ -435,6 +436,10 @@ def save_eval_resume_state(
     authority: ExecutionAuthority,
     connection: Connection | None = None,
 ) -> bool:
+    """Persist this attempt's checkpoint before evaluation completion.
+
+    The evaluation-lock connection also permits ERROR because its evaluation can supersede a duplicate failure.
+    """
     with Session(bind=connection if connection is not None else engine) as session:
         try:
             lock_execution_authority(session, authority)
@@ -445,7 +450,11 @@ def save_eval_resume_state(
             update(Task)
             .where(col(Task.id) == task_row_id)
             .where(col(Task.org_id) == org.id)
-            .where(col(Task.status) == TaskStatus.EVALUATING)
+            .where(
+                col(Task.status).in_(
+                    (TaskStatus.EVALUATING, TaskStatus.ERROR) if connection is not None else (TaskStatus.EVALUATING,)
+                )
+            )
             .where(col(Task.started_at) == expected_started_at)
         )
 
@@ -689,10 +698,11 @@ async def _process_task_attempt(
     evaluation_start_time: float | None = None
     start_sandbox_run_time: float | None = None
 
-    def on_eval_resume_state(state: dict[str, Any]) -> None:
+    async def on_eval_resume_state(state: dict[str, Any]) -> None:
         nonlocal evaluation_resume_state
         evaluation_resume_state = state
-        save_eval_resume_state(
+        await asyncio.to_thread(
+            save_eval_resume_state,
             task_row.id,
             org,
             state,
@@ -782,6 +792,7 @@ async def _process_task_attempt(
         """Resume an interrupted evaluation when the service has persisted continuation state."""
         if evaluation_resume_state is None:
             return None
+        resume_state = evaluation_resume_state
         if task_is_stopped():
             return {task_id: None}
 
@@ -792,13 +803,16 @@ async def _process_task_attempt(
         try:
             task_logs.last_log_time = time.monotonic()
             evaluation_result = await _run_benchmark_service_websocket(
-                benchmark_service.resume_evaluation(
-                    task_row.task_id,
-                    eval_resume_state=evaluation_resume_state,
-                    on_message=log_output,
-                    on_eval_resume_state=on_eval_resume_state,
-                    dataset=start_benchmark_request.dataset,
-                    sandbox_provider=sandbox_provider_config,
+                run_with_checkpoints(
+                    lambda checkpoint: benchmark_service.resume_evaluation(
+                        task_row.task_id,
+                        eval_resume_state=resume_state,
+                        on_message=log_output,
+                        on_eval_resume_state=checkpoint,
+                        dataset=start_benchmark_request.dataset,
+                        sandbox_provider=sandbox_provider_config,
+                    ),
+                    on_eval_resume_state,
                 )
             )
         except BenchmarkServiceWebSocketDNSResolutionError as resume_error:
@@ -891,6 +905,7 @@ async def _process_task_attempt(
                     ownership_session.rollback()
                     return {task_id: None}
                 evaluation_resume_state = owned_task.eval_resume_state
+                resume_state = owned_task.eval_resume_state
                 ownership_session.rollback()
 
             try:
@@ -899,13 +914,16 @@ async def _process_task_attempt(
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 task_logs.last_log_time = time.monotonic()
                 evaluation_result = await _run_benchmark_service_websocket(
-                    benchmark_service.resume_evaluation(
-                        task_row.task_id,
-                        eval_resume_state=evaluation_resume_state,
-                        on_message=log_output,
-                        on_eval_resume_state=on_eval_resume_state,
-                        dataset=start_benchmark_request.dataset,
-                        sandbox_provider=sandbox_provider_config,
+                    run_with_checkpoints(
+                        lambda checkpoint: benchmark_service.resume_evaluation(
+                            task_row.task_id,
+                            eval_resume_state=resume_state,
+                            on_message=log_output,
+                            on_eval_resume_state=checkpoint,
+                            dataset=start_benchmark_request.dataset,
+                            sandbox_provider=sandbox_provider_config,
+                        ),
+                        on_eval_resume_state,
                     )
                 )
                 resume_eval_duration = time.perf_counter() - resume_eval_start_time
@@ -1162,13 +1180,16 @@ async def _process_task_attempt(
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 task_logs.last_log_time = time.monotonic()
                 evaluation_result = await _run_benchmark_service_websocket(
-                    benchmark_service.evaluate_instance(
-                        task_row.task_id,
-                        sandbox.id,
-                        on_message=log_output,
-                        on_eval_resume_state=on_eval_resume_state,
-                        dataset=start_benchmark_request.dataset,
-                        sandbox_provider=sandbox_provider_config,
+                    run_with_checkpoints(
+                        lambda checkpoint: benchmark_service.evaluate_instance(
+                            task_row.task_id,
+                            sandbox.id,
+                            on_message=log_output,
+                            on_eval_resume_state=checkpoint,
+                            dataset=start_benchmark_request.dataset,
+                            sandbox_provider=sandbox_provider_config,
+                        ),
+                        on_eval_resume_state,
                     )
                 )
                 task_breakdown.evaluation_run_duration = time.perf_counter() - evaluation_start_time
