@@ -197,7 +197,12 @@ def test_claim_replays_only_for_the_same_process(
     )
 
     assert first.status_code == 200, first.json()
-    assert replay.json() == first.json()
+    first_lease = first.json()
+    replay_lease = replay.json()
+    first_time = datetime.fromisoformat(first_lease.pop("server_time"))
+    replay_time = datetime.fromisoformat(replay_lease.pop("server_time"))
+    assert replay_lease == first_lease
+    assert first_time <= replay_time < datetime.fromisoformat(first_lease["lease_expires_at"])
     assert duplicate.status_code == 409
     assert first.json()["lease_expires_at"].endswith("Z")
 

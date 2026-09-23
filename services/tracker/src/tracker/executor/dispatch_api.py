@@ -95,7 +95,7 @@ def _lock_dispatch(session: Session, dispatch_id: UUID) -> tuple[Benchmark, Exec
     return benchmark, dispatch, access
 
 
-def _database_now(session: Session) -> datetime:
+def database_now(session: Session) -> datetime:
     # Read after acquiring locks; transaction-start time can precede a long lock wait.
     return as_utc(session.exec(select(func.clock_timestamp())).one()).replace(tzinfo=None)
 
@@ -126,7 +126,7 @@ def claim_dispatch(
     identity: DispatchIdentity,
 ) -> ExecutorDispatch:
     benchmark, dispatch, access = _lock_dispatch(session, dispatch_id)
-    now = _database_now(session)
+    now = database_now(session)
     if identity != DispatchIdentity(
         benchmark_id=dispatch.benchmark_id,
         release_id=dispatch.executor_release_id,
@@ -161,7 +161,7 @@ def claim_dispatch(
 def dispatch_authority(session: Session, dispatch_id: UUID, claimant_id: UUID) -> bool:
     benchmark, dispatch, access = _lock_dispatch(session, dispatch_id)
 
-    return _is_current(benchmark, dispatch, access, claimant_id, _database_now(session))
+    return _is_current(benchmark, dispatch, access, claimant_id, database_now(session))
 
 
 def lock_claimed_dispatch(
@@ -172,12 +172,12 @@ def lock_claimed_dispatch(
     if access.claimant_id != claimant_id:
         raise DispatchConflict("Executor dispatch belongs to another claimant")
 
-    return benchmark, dispatch, _is_current(benchmark, dispatch, access, claimant_id, _database_now(session))
+    return benchmark, dispatch, _is_current(benchmark, dispatch, access, claimant_id, database_now(session))
 
 
 def heartbeat_dispatch(session: Session, dispatch_id: UUID, claimant_id: UUID) -> ExecutorDispatch:
     benchmark, dispatch, access = _lock_dispatch(session, dispatch_id)
-    now = _database_now(session)
+    now = database_now(session)
     if not _is_current(benchmark, dispatch, access, claimant_id, now):
         raise DispatchConflict("Executor dispatch authority was revoked")
 
@@ -207,7 +207,7 @@ def complete_dispatch(
             raise DispatchConflict("Executor terminal request differs from the committed request")
         return dispatch
 
-    now = _database_now(session)
+    now = database_now(session)
     if not _is_current(benchmark, dispatch, access, claimant_id, now):
         raise DispatchConflict("Executor dispatch authority was revoked")
 

@@ -1980,12 +1980,18 @@
             "format": "date-time",
             "title": "Lease Expires At",
             "type": "string"
+          },
+          "server_time": {
+            "format": "date-time",
+            "title": "Server Time",
+            "type": "string"
           }
         },
         "required": [
           "dispatch_id",
           "claimant_id",
-          "lease_expires_at"
+          "lease_expires_at",
+          "server_time"
         ],
         "title": "LeaseResponse",
         "type": "object"
