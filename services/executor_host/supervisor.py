@@ -20,7 +20,7 @@ import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
 from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
 from redis.asyncio import Redis
-from taskiq import TaskiqEvents
+from taskiq import TaskiqEvents, TaskiqMessage, TaskiqMiddleware, TaskiqResult
 from taskiq_redis import RedisStreamBroker
 from executor_protocol import (
     DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS,
@@ -130,11 +130,31 @@ async def _await_task_cancellation(task: asyncio.Task[None]) -> None:
 async def _acquire_task_protection() -> None:
     global _active_execution_count, _protection_refresh_task
     async with _execution_lock:
+        if not await _set_task_protection(enabled=True):
+            raise TaskProtectionError("Waiting for ECS task protection before claiming new work")
         if _active_execution_count == 0:
-            updated = await _set_task_protection(enabled=True)
-            initial_delay = _PROTECTION_REFRESH_SECONDS if updated is not False else _PROTECTION_RETRY_SECONDS
-            _protection_refresh_task = asyncio.create_task(_renew_task_protection(initial_delay))
+            _protection_refresh_task = asyncio.create_task(_renew_task_protection(_PROTECTION_REFRESH_SECONDS))
         _active_execution_count += 1
+
+
+async def _wait_for_task_protection() -> None:
+    while True:
+        protection_task = asyncio.create_task(_acquire_task_protection())
+        try:
+            await asyncio.shield(protection_task)
+        except asyncio.CancelledError:
+            try:
+                await _await_task_completion(protection_task)
+            except TaskProtectionError:
+                pass
+            else:
+                release_task = asyncio.create_task(_release_task_protection())
+                await _await_task_completion(release_task)
+            raise
+        except TaskProtectionError:
+            await asyncio.sleep(_PROTECTION_RETRY_SECONDS)
+        else:
+            return
 
 
 async def _release_task_protection() -> None:
@@ -742,6 +762,14 @@ async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
         await process.wait()
 
 
+class PreserveCancelledDispatchMiddleware(TaskiqMiddleware):
+    """Leave cancelled deliveries pending instead of acknowledging unclaimed work."""
+
+    def on_error(self, message: TaskiqMessage, result: TaskiqResult[object], exception: BaseException) -> None:
+        if isinstance(exception, asyncio.CancelledError):
+            raise exception
+
+
 class DeleteAfterAckRedisStreamBroker(RedisStreamBroker):
     """Delete stream entries after Taskiq acknowledges their processing."""
 
@@ -769,6 +797,7 @@ broker = DeleteAfterAckRedisStreamBroker(
     consumer_group_name=QUEUE_NAME,
     idle_timeout=86400000,
 )
+broker.add_middlewares(PreserveCancelledDispatchMiddleware())
 
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
@@ -848,14 +877,7 @@ async def run_executor_dispatch(
     process_payload: ExecutorProcessPayload,
     heartbeat_interval_seconds: float = DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS,
 ) -> None:
-    protection_task = asyncio.create_task(_acquire_task_protection())
-    try:
-        await asyncio.shield(protection_task)
-    except asyncio.CancelledError:
-        await _await_task_completion(protection_task)
-        release_task = asyncio.create_task(_release_task_protection())
-        await _await_task_completion(release_task)
-        raise
+    await _wait_for_task_protection()
 
     try:
         claim_started_at = _monotonic_time()

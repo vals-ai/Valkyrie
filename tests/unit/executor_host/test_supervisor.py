@@ -12,6 +12,7 @@ import json
 from json import JSONDecodeError
 import logging
 import sys
+import urllib.request
 from collections.abc import Awaitable, Callable, Coroutine
 from functools import partial
 from pathlib import Path
@@ -19,6 +20,8 @@ from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
+from taskiq import AckableMessage, TaskiqMessage
+from taskiq.receiver import Receiver
 
 import services.executor_host.observability as host_observability
 import services.executor_host.supervisor as supervisor_module
@@ -895,6 +898,88 @@ async def test_stream_message_is_not_deleted_when_ack_fails(
     await broker.shutdown()
 
 
+async def test_cancelled_protection_wait_preserves_message_for_redelivery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep an unclaimed message when Taskiq cancels a protection wait.
+
+    Test cases:
+    - Cancellation does not acknowledge or delete the unclaimed stream entry.
+    - Redelivery after protection recovers claims and completes the same dispatch.
+    """
+    waiting = asyncio.Event()
+    protection_available = False
+    commands: list[tuple[object, ...]] = []
+    store = FakeDispatchStore()
+    script = b"print('redelivered dispatch completed')"
+    original_sleep = asyncio.sleep
+
+    def respond(request: urllib.request.Request, *, timeout: int) -> io.BytesIO:
+        assert timeout == 5
+        assert isinstance(request.data, bytes)
+        enabled = json.loads(request.data)["ProtectionEnabled"]
+        return io.BytesIO(json.dumps({"protection": {"ProtectionEnabled": enabled and protection_available}}).encode())
+
+    async def wait_for_retry(delay: float) -> None:
+        if delay == 77:
+            waiting.set()
+            await asyncio.Event().wait()
+        else:
+            await original_sleep(delay)
+
+    monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", "http://ecs-agent")
+    monkeypatch.setattr(supervisor_module.urllib.request, "urlopen", respond)
+    monkeypatch.setattr(supervisor_module, "_PROTECTION_RETRY_SECONDS", 77)
+    monkeypatch.setattr(supervisor_module.asyncio, "sleep", wait_for_retry)
+    monkeypatch.setattr(supervisor_module, "supervisor", _supervisor(tmp_path, content=script))
+    monkeypatch.setattr(supervisor_module, "dispatch_store", store)
+    monkeypatch.setattr(supervisor_module, "Redis", partial(MockRedis, commands=commands, eval_result=1))
+    broker = supervisor_module.broker
+    message = TaskiqMessage(
+        task_id="taskiq-1",
+        task_name=supervisor_module.EXECUTOR_TASK_NAME,
+        labels={},
+        args=[],
+        kwargs={
+            "start_benchmark_request_json": {},
+            "benchmark_id_str": "benchmark-1",
+            "verified_task_ids": [],
+            "executor_dispatch_id": "dispatch-1",
+            "executor_release_id": "release-v2",
+            "executor_artifact_uri": "s3://artifacts/executors/v2.pex",
+            "executor_artifact_digest": hashlib.sha256(script).hexdigest(),
+            "executor_protocol_version": "1",
+        },
+    )
+    delivery = AckableMessage(
+        data=broker.formatter.dumps(message).message,
+        ack=broker._ack_generator(id="1700000000000-0", queue_name="executor-stream"),  # pyright: ignore[reportPrivateUsage]
+    )
+    receiver = Receiver(broker, max_async_tasks=1)
+    task = asyncio.create_task(receiver.callback(delivery))
+    try:
+        async with asyncio.timeout(5):
+            await waiting.wait()
+            task.cancel()
+            cancellation_results = await asyncio.gather(task, return_exceptions=True)
+        assert commands == []
+        assert isinstance(cancellation_results[0], asyncio.CancelledError)
+        assert store.claimed == []
+        assert store.terminalized == []
+        assert getattr(supervisor_module, "_active_execution_count") == 0
+
+        protection_available = True
+        async with asyncio.timeout(5):
+            await receiver.callback(delivery)
+        assert len(store.claimed) == 1
+        assert store.finished == [store.authority]
+        assert store.terminalized == []
+        assert len(commands) == 1
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 def test_executor_host_uses_one_taskiq_process() -> None:
     dockerfile = (Path(__file__).parents[3] / "services" / "executor_host" / "Dockerfile").read_text()
 
@@ -1037,12 +1122,112 @@ async def test_task_protection_has_one_loop_for_concurrent_work(monkeypatch: pyt
     assert getattr(supervisor_module, "_protection_refresh_task") is refresh_task
 
     await release_task_protection()
-    assert protection_calls == [True]
+    assert protection_calls == [True, True]
     await release_task_protection()
 
-    assert protection_calls == [True, False]
+    assert protection_calls == [True, True, False]
     assert refresh_task.done()
     assert getattr(supervisor_module, "_protection_refresh_task") is None
+
+
+@pytest.mark.parametrize("already_running", [False, True])
+async def test_dispatch_waits_for_confirmed_protection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, already_running: bool
+) -> None:
+    """Refused protection delays the claim without failing an existing dispatch.
+
+    Test cases:
+    - The first dispatch waits through refusals before claiming and completing.
+    - Another active dispatch cannot bypass confirmation for newly arriving work.
+    - The existing child retains its process identity and finishes without a restart.
+    """
+    protection_confirmed = False
+    responses = iter([False, False, True])
+    store = FakeDispatchStore()
+    original_claim = store.claim
+
+    def respond(request: urllib.request.Request, *, timeout: int) -> io.BytesIO:
+        nonlocal protection_confirmed
+        assert timeout == 5
+        assert isinstance(request.data, bytes)
+        enabled = json.loads(request.data)["ProtectionEnabled"]
+        protection_confirmed = next(responses) if enabled else False
+        body = {"protection": {"ProtectionEnabled": protection_confirmed}}
+        return io.BytesIO(json.dumps(body).encode())
+
+    async def claim(dispatch_id: str, benchmark_id: str, dispatch: ArtifactDispatch) -> DispatchAuthority | None:
+        assert protection_confirmed, "Dispatch claimed without confirmed ECS protection"
+        return await original_claim(dispatch_id, benchmark_id, dispatch)
+
+    existing_task: asyncio.Task[None] | None = None
+    existing_store = FakeDispatchStore()
+    started_path = tmp_path / "existing-started"
+    finish_path = tmp_path / "existing-finish"
+    process_identity = ""
+    try:
+        if already_running:
+            existing_script = b"""import json, os, sys, time
+from pathlib import Path
+request = json.loads(Path(sys.argv[1]).read_text())["start_benchmark_request_json"]
+with Path(request["started"]).open("a") as started:
+    started.write(str(os.getpid()) + "\\n")
+while not Path(request["finish"]).exists():
+    time.sleep(0.01)
+"""
+            monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", None)
+            existing_task = asyncio.create_task(
+                run_executor_dispatch(
+                    _supervisor(tmp_path, content=existing_script),
+                    existing_store,
+                    executor_dispatch_id="existing-dispatch",
+                    dispatch=_dispatch(digest=hashlib.sha256(existing_script).hexdigest()),
+                    process_payload=_process_payload({"started": str(started_path), "finish": str(finish_path)}),
+                )
+            )
+            async with asyncio.timeout(5):
+                while not started_path.exists() or not started_path.read_text():
+                    if existing_task.done():
+                        await existing_task
+                        pytest.fail("Existing executor exited before recording its process identity")
+                    await asyncio.sleep(0.01)
+            process_identity = started_path.read_text()
+
+        monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", "http://ecs-agent")
+        monkeypatch.setattr(supervisor_module.urllib.request, "urlopen", respond)
+        monkeypatch.setattr(supervisor_module, "_PROTECTION_RETRY_SECONDS", 0)
+        monkeypatch.setattr(store, "claim", claim)
+        script = b"print('completed after protection confirmation')"
+        async with asyncio.timeout(5):
+            await run_executor_dispatch(
+                _supervisor(tmp_path, content=script),
+                store,
+                executor_dispatch_id="dispatch-1",
+                dispatch=_dispatch(digest=hashlib.sha256(script).hexdigest()),
+                process_payload=_process_payload(),
+            )
+        assert len(store.claimed) == 1
+        assert store.finished == [store.authority]
+        assert store.terminalized == []
+        assert getattr(supervisor_module, "_active_execution_count") == int(already_running)
+        if existing_task is not None:
+            assert not existing_task.done()
+            assert started_path.read_text() == process_identity
+            assert len(process_identity.splitlines()) == 1
+            assert existing_store.finished == []
+            assert existing_store.terminalized == []
+    finally:
+        if existing_task is not None:
+            finish_path.touch()
+            try:
+                async with asyncio.timeout(5):
+                    await asyncio.shield(existing_task)
+            finally:
+                existing_task.cancel()
+                await asyncio.gather(existing_task, return_exceptions=True)
+    if already_running:
+        assert len(existing_store.claimed) == 1
+        assert existing_store.finished == [existing_store.authority]
+        assert existing_store.terminalized == []
 
 
 @pytest.mark.asyncio
@@ -1054,8 +1239,9 @@ async def test_task_protection_is_acquired_before_claim(
     store = FakeDispatchStore(claim_result=False)
     original_claim = store.claim
 
-    async def record_protection(*, enabled: bool) -> None:
+    async def record_protection(*, enabled: bool) -> bool:
         events.append(f"protection-{enabled}")
+        return True
 
     async def record_claim(
         dispatch_id: str,
@@ -1082,9 +1268,9 @@ async def test_task_protection_is_acquired_before_claim(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("repeat_acquisition_cancellation", "repeat_release_cancellation"),
-    [(False, False), (True, False), (False, True)],
-    ids=["single", "repeated-acquisition", "repeated-release"],
+    ("repeat_acquisition_cancellation", "repeat_release_cancellation", "enable_confirmed"),
+    [(False, False, True), (True, False, True), (False, True, True), (False, False, False), (True, False, False)],
+    ids=["single", "repeated-acquisition", "repeated-release", "refused", "refused-repeated-cancellation"],
 )
 async def test_cancellation_during_protection_acquisition_releases_before_claim(
     tmp_path: Path,
@@ -1092,6 +1278,7 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
     *,
     repeat_acquisition_cancellation: bool,
     repeat_release_cancellation: bool,
+    enable_confirmed: bool,
 ) -> None:
     protection_calls: list[bool] = []
     enable_started = asyncio.Event()
@@ -1101,15 +1288,17 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
     release_completed = asyncio.Event()
     store = FakeDispatchStore(claim_result=False)
 
-    async def block_task_protection(*, enabled: bool) -> None:
+    async def block_task_protection(*, enabled: bool) -> bool:
         protection_calls.append(enabled)
         if enabled and protection_calls == [True]:
             enable_started.set()
             await finish_enable.wait()
+            return enable_confirmed
         elif not enabled and repeat_release_cancellation and protection_calls == [True, False]:
             release_started.set()
             await finish_release.wait()
             release_completed.set()
+        return True
 
     monkeypatch.setattr(supervisor_module, "_set_task_protection", block_task_protection)
     artifact = b"unused"
@@ -1136,7 +1325,8 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert protection_calls == [True, False]
+    expected_calls = [True, False] if enable_confirmed else [True]
+    assert protection_calls == expected_calls
     assert release_completed.is_set() is repeat_release_cancellation
     assert getattr(supervisor_module, "_active_execution_count") == 0
     assert store.claimed == []
@@ -1151,7 +1341,7 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
         process_payload=_process_payload(),
     )
 
-    assert protection_calls == [True, False, True, False]
+    assert protection_calls == [*expected_calls, True, False]
     assert getattr(supervisor_module, "_active_execution_count") == 0
     assert len(store.claimed) == 1
 
