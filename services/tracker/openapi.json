@@ -1569,6 +1569,7 @@
         "title": "HarnessConfig",
         "type": "object"
       },
+      "JsonValue": {},
       "LeaseResponse": {
         "properties": {
           "claimant_id": {
@@ -2039,6 +2040,199 @@
           "artifacts"
         ],
         "title": "RunArtifactsResponse",
+        "type": "object"
+      },
+      "RunInfo": {
+        "properties": {
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "aws_managed": {
+            "title": "Aws Managed",
+            "type": "boolean"
+          },
+          "benchmark_id": {
+            "format": "uuid",
+            "title": "Benchmark Id",
+            "type": "string"
+          },
+          "benchmark_name": {
+            "title": "Benchmark Name",
+            "type": "string"
+          },
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "org_name": {
+            "title": "Org Name",
+            "type": "string"
+          },
+          "queue_pool_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Pool Id"
+          },
+          "resources": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunResources"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          }
+        },
+        "required": [
+          "benchmark_id",
+          "org_id",
+          "org_name",
+          "benchmark_name",
+          "agent_name",
+          "model",
+          "started_at",
+          "status",
+          "aws_managed",
+          "concurrency",
+          "queue_pool_id",
+          "resources"
+        ],
+        "title": "RunInfo",
+        "type": "object"
+      },
+      "RunResources": {
+        "properties": {
+          "log_group": {
+            "title": "Log Group",
+            "type": "string"
+          },
+          "log_retention_days": {
+            "title": "Log Retention Days",
+            "type": "integer"
+          },
+          "region": {
+            "title": "Region",
+            "type": "string"
+          },
+          "s3_bucket": {
+            "title": "S3 Bucket",
+            "type": "string"
+          }
+        },
+        "required": [
+          "region",
+          "s3_bucket",
+          "log_group",
+          "log_retention_days"
+        ],
+        "title": "RunResources",
+        "type": "object"
+      },
+      "RunStateResponse": {
+        "properties": {
+          "current": {
+            "title": "Current",
+            "type": "boolean"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunInfo"
+          },
+          "task_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/TaskStatus"
+            },
+            "title": "Task Counts",
+            "type": "object"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskState"
+            },
+            "title": "Tasks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "current",
+          "run",
+          "tasks",
+          "task_counts"
+        ],
+        "title": "RunStateResponse",
+        "type": "object"
+      },
+      "RunStatus": {
+        "enum": [
+          "IN_PROGRESS",
+          "STOPPING",
+          "STOPPED",
+          "FINISHED",
+          "ERROR"
+        ],
+        "title": "RunStatus",
+        "type": "string"
+      },
+      "RunTasksRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "claimant_id": {
+            "format": "uuid",
+            "title": "Claimant Id",
+            "type": "string"
+          },
+          "include_eval_resume_state": {
+            "default": false,
+            "title": "Include Eval Resume State",
+            "type": "boolean"
+          },
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Task Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "claimant_id"
+        ],
+        "title": "RunTasksRequest",
         "type": "object"
       },
       "S3UploadResultsResponse": {
@@ -3057,6 +3251,62 @@
           "agent_output_expires_in"
         ],
         "title": "TaskArtifactsResponse",
+        "type": "object"
+      },
+      "TaskState": {
+        "properties": {
+          "eval_resume_state": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eval Resume State"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "task_id",
+          "status",
+          "started_at",
+          "finished_at"
+        ],
+        "title": "TaskState",
         "type": "object"
       },
       "TaskStatus": {
@@ -5278,6 +5528,122 @@
           }
         ],
         "summary": "Heartbeat",
+        "tags": [
+          "executor-v1"
+        ]
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/run/initialize": {
+      "post": {
+        "operationId": "initialize_run",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunTasksRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Initialize Run",
+        "tags": [
+          "executor-v1"
+        ]
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/run/state": {
+      "post": {
+        "operationId": "run_state",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunTasksRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Run State",
         "tags": [
           "executor-v1"
         ]

@@ -20,6 +20,7 @@ from pydantic import SecretStr
 from sqlmodel import Session, select
 
 from tests.factories import make_benchmark, make_task
+from tracker.aws.runtime import AWSResources
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -126,7 +127,9 @@ def client(app: FastAPI) -> Generator[TestClient, None, None]:
         yield test_client
 
 
-@pytest.mark.parametrize("operation", ["claim", "authority", "heartbeat", "finish", "fail"])
+@pytest.mark.parametrize(
+    "operation", ["claim", "authority", "heartbeat", "finish", "fail", "run/initialize", "run/state"]
+)
 def test_dispatch_credentials_are_required(client: TestClient, dispatch: DispatchFixture, operation: str) -> None:
     """Reject missing and unrelated credentials independently of user API auth settings.
 
@@ -402,6 +405,286 @@ def test_failure_refuses_unknown_task_assignments(
     assert task.status == TaskStatus.IN_PROGRESS
 
 
+@pytest.fixture
+def assigned_run(postgres_session: Session, dispatch: DispatchFixture) -> list[str]:
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    assert benchmark is not None and invocation is not None
+    benchmark.started_at = datetime(2026, 1, 1, tzinfo=UTC)
+    benchmark.aws_managed = True
+    benchmark.arguments = benchmark.arguments.model_copy(
+        update={
+            "concurrency": 3,
+            "queue_pool_id": "pool-1",
+            "properties": AWSResources("us-west-2", "run-artifacts", "run-logs", 7),
+        }
+    )
+    evaluating = make_task(
+        benchmark, "evaluating", status=TaskStatus.EVALUATING, started_at=datetime(2026, 1, 2, tzinfo=UTC)
+    )
+    evaluating.eval_resume_state = {"instance_id": "existing-instance", "outputs": ["kept"]}
+    sibling_task = make_task(benchmark, "sibling-task", status=TaskStatus.FINISHED)
+    task_ids = ["new-task", "evaluating", "task-0"]
+    invocation.assigned_task_ids = task_ids
+    postgres_session.add_all([benchmark, invocation, evaluating, sibling_task])
+    foreign_org = Org(name="unrelated-run-owner")
+    postgres_session.add(foreign_org)
+    postgres_session.flush()
+    foreign_benchmark = make_benchmark(org_id=foreign_org.id, name="unrelated-run")
+    postgres_session.add(foreign_benchmark)
+    postgres_session.flush()
+    foreign_task = make_task(foreign_benchmark, "new-task", status=TaskStatus.FINISHED)
+    foreign_task.eval_resume_state = {"private": "unrelated-checkpoint"}
+    postgres_session.add(foreign_task)
+    postgres_session.commit()
+
+    return task_ids
+
+
+def test_run_initialization_preserves_existing_attempts(
+    client: TestClient, dispatch: DispatchFixture, assigned_run: list[str], postgres_session: Session
+) -> None:
+    """Initialize only missing assigned rows and return a stable v1 snapshot.
+
+    Test cases:
+    - Replaying initialization preserves row IDs, attempt timestamps, status, and evaluation checkpoints.
+    - Requested order survives database ordering; run-wide counts include sibling tasks.
+    - Normal polling omits checkpoint contents without modifying the saved checkpoint.
+    """
+    assert client.post(f"{dispatch.path}/claim", json=dispatch.claim, headers=dispatch.headers).status_code == 200
+    request = {**dispatch.request, "task_ids": assigned_run, "include_eval_resume_state": True}
+    initialized = client.post(f"{dispatch.path}/run/initialize", json=request, headers=dispatch.headers)
+    replay = client.post(f"{dispatch.path}/run/initialize", json=request, headers=dispatch.headers)
+
+    assert initialized.status_code == 200, initialized.text
+    assert replay.json() == initialized.json()
+    state = initialized.json()
+    assert state["current"] is True
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    assert benchmark is not None
+    assert state["run"] == {
+        "benchmark_id": str(dispatch.benchmark_id),
+        "org_id": str(benchmark.org_id),
+        "org_name": "dispatch-api-test",
+        "benchmark_name": "swebench",
+        "agent_name": "a",
+        "model": None,
+        "started_at": "2026-01-01T00:00:00Z",
+        "status": "IN_PROGRESS",
+        "aws_managed": True,
+        "concurrency": 3,
+        "queue_pool_id": "pool-1",
+        "resources": {
+            "region": "us-west-2",
+            "s3_bucket": "run-artifacts",
+            "log_group": "run-logs",
+            "log_retention_days": 7,
+        },
+    }
+    assert [task["task_id"] for task in state["tasks"]] == assigned_run
+    assert [task["status"] for task in state["tasks"]] == ["PENDING", "EVALUATING", "IN_PROGRESS"]
+    assert state["tasks"][1]["started_at"] == "2026-01-02T00:00:00Z"
+    assert state["tasks"][1]["eval_resume_state"] == {"instance_id": "existing-instance", "outputs": ["kept"]}
+    assert state["tasks"][0]["eval_resume_state"] is None
+    assert state["task_counts"] == {
+        "PENDING": 1,
+        "BUILDING": 0,
+        "IN_PROGRESS": 1,
+        "EVALUATING": 1,
+        "STOPPED": 0,
+        "FINISHED": 1,
+        "ERROR": 0,
+    }
+    polled = client.post(
+        f"{dispatch.path}/run/state", json={**dispatch.request, "task_ids": assigned_run}, headers=dispatch.headers
+    )
+    assert polled.status_code == 200
+    assert all(task["eval_resume_state"] is None for task in polled.json()["tasks"])
+    checkpoint = postgres_session.exec(
+        select(Task).where(Task.benchmark == dispatch.benchmark_id, Task.task_id == "evaluating")
+    ).one()
+    assert checkpoint.eval_resume_state == {"instance_id": "existing-instance", "outputs": ["kept"]}
+
+
+@pytest.mark.parametrize("operation", ["run/initialize", "run/state"])
+def test_run_api_rejects_unassigned_tasks_and_unclaimed_processes(
+    client: TestClient, dispatch: DispatchFixture, assigned_run: list[str], postgres_session: Session, operation: str
+) -> None:
+    """Scope task access to the persisted assignment, even within the same run.
+
+    Test cases:
+    - The credential alone does not replace a successful process claim.
+    - Requests for a sibling's task or an invented task fail without creating rows.
+    - A wrong claimant and a missing legacy assignment cannot access run state.
+    """
+    path = f"{dispatch.path}/{operation}"
+    request = {**dispatch.request, "task_ids": assigned_run}
+    assert client.post(path, json=request, headers=dispatch.headers).status_code == 409
+    assert client.post(f"{dispatch.path}/claim", json=dispatch.claim, headers=dispatch.headers).status_code == 200
+    assert client.post(path, json={**request, "claimant_id": str(uuid4())}, headers=dispatch.headers).status_code == 409
+    for task_id in ("sibling-task", "invented-task"):
+        response = client.post(path, json={**request, "task_ids": ["new-task", task_id]}, headers=dispatch.headers)
+        assert response.status_code == 409
+    assert (
+        postgres_session.exec(
+            select(Task).where(Task.benchmark == dispatch.benchmark_id, Task.task_id == "new-task")
+        ).first()
+        is None
+    )
+
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    assert invocation is not None
+    invocation.assigned_task_ids = None
+    postgres_session.add(invocation)
+    postgres_session.commit()
+    assert client.post(path, json={**request, "task_ids": []}, headers=dispatch.headers).status_code == 409
+
+
+@pytest.mark.parametrize("revocation", ["stopping", "stopped", "expired", "failed", "finished"])
+def test_run_state_reports_revocation_without_creating_tasks(
+    client: TestClient, dispatch: DispatchFixture, assigned_run: list[str], postgres_session: Session, revocation: str
+) -> None:
+    """Allow an old claimant to observe cancellation without authorizing new writes.
+
+    Test cases:
+    - Stopped or expired claims remain readable with current=false.
+    - Stopping or terminal runs reject initialization even when their dispatch lease remains live.
+    - A missing assigned row is reported as uninitialized, never fabricated by a read.
+    """
+    assert assigned_run
+    assert client.post(f"{dispatch.path}/claim", json=dispatch.claim, headers=dispatch.headers).status_code == 200
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    assert invocation is not None and benchmark is not None
+    if revocation == "expired":
+        invocation.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    else:
+        benchmark.status = {
+            "stopping": BenchmarkStatus.STOPPING,
+            "stopped": BenchmarkStatus.STOPPED,
+            "failed": BenchmarkStatus.ERROR,
+            "finished": BenchmarkStatus.FINISHED,
+        }[revocation]
+    postgres_session.add_all([invocation, benchmark])
+    postgres_session.commit()
+
+    response = client.post(
+        f"{dispatch.path}/run/state", json={**dispatch.request, "task_ids": ["task-0"]}, headers=dispatch.headers
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["current"] is (revocation not in ("stopped", "expired"))
+    assert response.json()["run"]["status"] == benchmark.status.value
+    for operation in ("run/state", "run/initialize"):
+        response = client.post(
+            f"{dispatch.path}/{operation}",
+            json={**dispatch.request, "task_ids": ["new-task"]},
+            headers=dispatch.headers,
+        )
+        assert response.status_code == 409
+    assert (
+        postgres_session.exec(
+            select(Task).where(Task.benchmark == dispatch.benchmark_id, Task.task_id == "new-task")
+        ).first()
+        is None
+    )
+
+
+def test_concurrent_initialization_creates_one_attempt_per_task(
+    app: FastAPI, client: TestClient, dispatch: DispatchFixture, assigned_run: list[str], postgres_session: Session
+) -> None:
+    """Serialize overlapping initialization requests without duplicating or resetting tasks.
+
+    Test cases:
+    - Concurrent sessions return the same persisted row and attempt identities.
+    - Exactly one new row exists for each assigned dataset task.
+    """
+    assert client.post(f"{dispatch.path}/claim", json=dispatch.claim, headers=dispatch.headers).status_code == 200
+    barrier = Barrier(2)
+
+    def initialize() -> httpx.Response:
+        with TestClient(app) as concurrent_client:
+            barrier.wait(timeout=5)
+            return concurrent_client.post(
+                f"{dispatch.path}/run/initialize",
+                json={**dispatch.request, "task_ids": assigned_run},
+                headers=dispatch.headers,
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(initialize) for _ in range(2)]
+        responses = [future.result(timeout=10) for future in futures]
+    assert [response.status_code for response in responses] == [200, 200]
+    assert responses[0].json() == responses[1].json()
+    rows = postgres_session.exec(select(Task).where(Task.benchmark == dispatch.benchmark_id)).all()
+    assert sorted(task.task_id for task in rows) == sorted([*assigned_run, "sibling-task"])
+
+
+def test_initialization_cannot_adopt_a_newer_task_attempt(
+    client: TestClient, dispatch: DispatchFixture, assigned_run: list[str], postgres_session: Session
+) -> None:
+    """Reject stale initialization while allowing the monitor to observe a retry.
+
+    Test cases:
+    - A newer attempt timestamp invalidates initialization under the old dispatch.
+    - Rejection rolls back other missing rows from the same batch.
+    - State reads return the new timestamp so the old executor can cancel its stale task.
+    """
+    assert client.post(f"{dispatch.path}/claim", json=dispatch.claim, headers=dispatch.headers).status_code == 200
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    task = postgres_session.get(Task, dispatch.task_id)
+    assert invocation is not None and task is not None
+    task.started_at = invocation.created_at + timedelta(seconds=1)
+    postgres_session.add(task)
+    postgres_session.commit()
+
+    response = client.post(
+        f"{dispatch.path}/run/initialize", json={**dispatch.request, "task_ids": assigned_run}, headers=dispatch.headers
+    )
+    assert response.status_code == 409
+    assert (
+        postgres_session.exec(
+            select(Task).where(Task.benchmark == dispatch.benchmark_id, Task.task_id == "new-task")
+        ).first()
+        is None
+    )
+    polled = client.post(
+        f"{dispatch.path}/run/state", json={**dispatch.request, "task_ids": ["task-0"]}, headers=dispatch.headers
+    )
+    assert polled.status_code == 200
+    assert datetime.fromisoformat(polled.json()["tasks"][0]["started_at"]).replace(
+        tzinfo=None
+    ) == task.started_at.replace(tzinfo=None)
+
+
+def test_initialized_attempt_can_be_cleaned_up_without_touching_siblings(
+    client: TestClient, dispatch: DispatchFixture, assigned_run: list[str], postgres_session: Session
+) -> None:
+    """Keep newly created attempt timestamps compatible with dispatch failure cleanup.
+
+    Test cases:
+    - Failure after initialization terminalizes the new assigned attempt.
+    - The run's unassigned finished sibling remains unchanged.
+    """
+    assert client.post(f"{dispatch.path}/claim", json=dispatch.claim, headers=dispatch.headers).status_code == 200
+    initialized = client.post(
+        f"{dispatch.path}/run/initialize", json={**dispatch.request, "task_ids": assigned_run}, headers=dispatch.headers
+    )
+    assert initialized.status_code == 200
+    failed = client.post(
+        f"{dispatch.path}/fail", json={**dispatch.request, "error_message": "executor failed"}, headers=dispatch.headers
+    )
+    assert failed.status_code == 200
+    statuses = dict(
+        postgres_session.exec(select(Task.task_id, Task.status).where(Task.benchmark == dispatch.benchmark_id)).all()
+    )
+    assert statuses == {
+        "new-task": TaskStatus.ERROR,
+        "evaluating": TaskStatus.ERROR,
+        "task-0": TaskStatus.ERROR,
+        "sibling-task": TaskStatus.FINISHED,
+    }
+
+
 class MockLostResponseTransport(httpx.AsyncBaseTransport):
     """Drop a successful response only after the real API has committed it."""
 
@@ -423,15 +706,16 @@ class MockLostResponseTransport(httpx.AsyncBaseTransport):
         await self._transport.aclose()
 
 
-@pytest.mark.parametrize("operation", ["claim", "heartbeat", "finish", "fail"])
+@pytest.mark.parametrize("operation", ["claim", "heartbeat", "finish", "fail", "run/initialize", "run/state"])
 async def test_client_recovers_a_response_lost_after_commit(
-    app: FastAPI, dispatch: DispatchFixture, postgres_session: Session, operation: str
+    app: FastAPI, dispatch: DispatchFixture, assigned_run: list[str], postgres_session: Session, operation: str
 ) -> None:
     """Retry committed operations through the real client and PostgreSQL-backed API.
 
     Test cases:
     - Claim and heartbeat survive a lost response without changing the claimant.
     - Terminal retry returns its receipt and never duplicates failure records.
+    - Task initialization and state reads survive lost responses without resetting attempts.
     """
     lost_response = MockLostResponseTransport(app, operation)
     async with httpx.AsyncClient(transport=lost_response, base_url="http://tracker.test") as http_client:
@@ -443,6 +727,10 @@ async def test_client_recovers_a_response_lost_after_commit(
         claimed = await client.claim(ClaimRequest.model_validate(dispatch.claim))
         assert claimed.dispatch_id == dispatch.dispatch_id
         assert (await client.authority()).current
+        initialized = await client.initialize_run_tasks(assigned_run)
+        polled = await client.run_state(assigned_run)
+        assert [task.id for task in polled.tasks] == [task.id for task in initialized.tasks]
+        assert [task.started_at for task in polled.tasks] == [task.started_at for task in initialized.tasks]
         await client.heartbeat()
         terminal = await client.fail("test failure") if operation == "fail" else await client.finish()
         assert terminal.status == ("FAILED" if operation == "fail" else "FINISHED")
