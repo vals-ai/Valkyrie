@@ -28,12 +28,19 @@ def test_openapi_declares_authentication() -> None:
             "in": "header",
             "name": "x-api-key",
         },
+        "ExecutorDispatchAuth": {
+            "type": "http",
+            "scheme": "bearer",
+        },
     }
     assert schema["security"] == [{"BearerAuth": []}, {"ApiKeyAuth": []}]
     assert schema["paths"]["/health"]["get"]["security"] == []
     assert schema["paths"]["/init"]["post"]["security"] == [{"ApiKeyAuth": []}]
     assert schema["paths"]["/start-benchmark"]["post"]["security"] == [{"ApiKeyAuth": []}]
     assert schema["paths"]["/start-benchmark-with-storage"]["post"]["security"] == [{"ApiKeyAuth": []}]
+    for operation in ("claim", "authority", "heartbeat", "finish", "fail"):
+        path = f"/internal/executor/v1/dispatches/{{dispatch_id}}/{operation}"
+        assert schema["paths"][path]["post"]["security"] == [{"ExecutorDispatchAuth": []}]
 
 
 def test_openapi_declares_required_harness_headers() -> None:

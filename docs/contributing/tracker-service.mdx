@@ -75,6 +75,14 @@ make test-integration-local  # Local API and Postgres tests
 make test-integration-live   # AWS, benchmark service, and sandbox tests
 ```
 
+Database integration tests use disposable Docker containers by default. Without Docker, set `TEST_POSTGRES_BIN` to a directory containing `initdb` and `pg_ctl`. The tests create and remove an isolated PostgreSQL server with a local Unix socket.
+
+For Homebrew PostgreSQL 15, run from `services/tracker`:
+
+```bash
+TEST_POSTGRES_BIN=/opt/homebrew/opt/postgresql@15/bin uv run pytest tests/integration/local/database/test_dispatch_api.py
+```
+
 `tests/integration/live` requires `services/tracker/.env`:
 
 ```env

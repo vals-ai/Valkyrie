@@ -1,0 +1,120 @@
+"""Version-one adapters for the shared dispatch transactions."""
+
+from collections.abc import Generator
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlmodel import Session
+
+from tracker.database.session import get_session
+from tracker.executor.dispatch_api import (
+    DispatchAccessDenied,
+    DispatchConflict,
+    DispatchIdentity,
+    as_utc,
+    authenticate_dispatch,
+    claim_dispatch,
+    complete_dispatch,
+    dispatch_authority,
+    heartbeat_dispatch,
+)
+from tracker.executor_api.v1.schemas import (
+    AuthorityResponse,
+    ClaimRequest,
+    DispatchRequest,
+    FailRequest,
+    LeaseResponse,
+    TerminalResponse,
+)
+
+router = APIRouter(prefix="/internal/executor/v1/dispatches", tags=["executor-v1"])
+_bearer = HTTPBearer(auto_error=False, scheme_name="ExecutorDispatchAuth")
+
+
+def _dispatch_session(
+    dispatch_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> Generator[Session, None, None]:
+    try:
+        if credentials is None:
+            raise DispatchAccessDenied("Invalid executor credential")
+        authenticate_dispatch(session, dispatch_id, credentials.credentials)
+        yield session
+    except DispatchAccessDenied as error:
+        session.rollback()
+        raise HTTPException(
+            401, detail="Invalid executor credential", headers={"WWW-Authenticate": "Bearer"}
+        ) from error
+    except DispatchConflict as error:
+        session.rollback()
+        raise HTTPException(409, detail=str(error)) from error
+
+
+DispatchSession = Annotated[Session, Depends(_dispatch_session)]
+
+
+@router.post("/{dispatch_id}/claim")
+def claim(dispatch_id: UUID, request: ClaimRequest, session: DispatchSession) -> LeaseResponse:
+    dispatch = claim_dispatch(
+        session,
+        dispatch_id,
+        request.claimant_id,
+        DispatchIdentity(
+            benchmark_id=request.benchmark_id,
+            release_id=request.executor_release_id,
+            artifact_uri=request.executor_artifact_uri,
+            artifact_digest=request.executor_artifact_digest,
+            protocol_version=request.executor_protocol_version,
+        ),
+    )
+    assert dispatch.lease_expires_at is not None
+    response = LeaseResponse(
+        dispatch_id=dispatch.id,
+        claimant_id=request.claimant_id,
+        lease_expires_at=as_utc(dispatch.lease_expires_at),
+    )
+    session.commit()
+
+    return response
+
+
+@router.post("/{dispatch_id}/authority")
+def authority(dispatch_id: UUID, request: DispatchRequest, session: DispatchSession) -> AuthorityResponse:
+    return AuthorityResponse(current=dispatch_authority(session, dispatch_id, request.claimant_id))
+
+
+@router.post("/{dispatch_id}/heartbeat")
+def heartbeat(dispatch_id: UUID, request: DispatchRequest, session: DispatchSession) -> LeaseResponse:
+    dispatch = heartbeat_dispatch(session, dispatch_id, request.claimant_id)
+    assert dispatch.lease_expires_at is not None
+    response = LeaseResponse(
+        dispatch_id=dispatch.id,
+        claimant_id=request.claimant_id,
+        lease_expires_at=as_utc(dispatch.lease_expires_at),
+    )
+    session.commit()
+
+    return response
+
+
+@router.post("/{dispatch_id}/finish")
+def finish(dispatch_id: UUID, request: DispatchRequest, session: DispatchSession) -> TerminalResponse:
+    dispatch = complete_dispatch(session, dispatch_id, request.claimant_id)
+    assert dispatch.finished_at is not None
+    response = TerminalResponse(dispatch_id=dispatch.id, status="FINISHED", finished_at=as_utc(dispatch.finished_at))
+    session.commit()
+
+    return response
+
+
+@router.post("/{dispatch_id}/fail")
+def fail(dispatch_id: UUID, request: FailRequest, session: DispatchSession) -> TerminalResponse:
+    dispatch = complete_dispatch(session, dispatch_id, request.claimant_id, error_message=request.error_message)
+    assert dispatch.finished_at is not None
+    response = TerminalResponse(dispatch_id=dispatch.id, status="FAILED", finished_at=as_utc(dispatch.finished_at))
+    session.commit()
+
+    return response

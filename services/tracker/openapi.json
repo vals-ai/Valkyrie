@@ -402,6 +402,19 @@
         "title": "AnalyzeBenchmarkRequest",
         "type": "object"
       },
+      "AuthorityResponse": {
+        "properties": {
+          "current": {
+            "title": "Current",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "current"
+        ],
+        "title": "AuthorityResponse",
+        "type": "object"
+      },
       "AverageTaskBreakdown": {
         "properties": {
           "agent_run_duration": {
@@ -1045,6 +1058,88 @@
         "title": "Body_stop_benchmark",
         "type": "object"
       },
+      "ClaimRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "benchmark_id": {
+            "format": "uuid",
+            "title": "Benchmark Id",
+            "type": "string"
+          },
+          "claimant_id": {
+            "format": "uuid",
+            "title": "Claimant Id",
+            "type": "string"
+          },
+          "executor_artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Executor Artifact Digest",
+            "type": "string"
+          },
+          "executor_artifact_uri": {
+            "minLength": 1,
+            "title": "Executor Artifact Uri",
+            "type": "string"
+          },
+          "executor_protocol_version": {
+            "minLength": 1,
+            "title": "Executor Protocol Version",
+            "type": "string"
+          },
+          "executor_release_id": {
+            "minLength": 1,
+            "title": "Executor Release Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claimant_id",
+          "benchmark_id",
+          "executor_release_id",
+          "executor_artifact_uri",
+          "executor_artifact_digest",
+          "executor_protocol_version"
+        ],
+        "title": "ClaimRequest",
+        "type": "object"
+      },
+      "DispatchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "claimant_id": {
+            "format": "uuid",
+            "title": "Claimant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claimant_id"
+        ],
+        "title": "DispatchRequest",
+        "type": "object"
+      },
+      "FailRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "claimant_id": {
+            "format": "uuid",
+            "title": "Claimant Id",
+            "type": "string"
+          },
+          "error_message": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Error Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claimant_id",
+          "error_message"
+        ],
+        "title": "FailRequest",
+        "type": "object"
+      },
       "FetchBenchmarkMetadataResponse": {
         "properties": {
           "benchmark_arguments": {
@@ -1472,6 +1567,32 @@
           "sandbox_provider_secret_name"
         ],
         "title": "HarnessConfig",
+        "type": "object"
+      },
+      "LeaseResponse": {
+        "properties": {
+          "claimant_id": {
+            "format": "uuid",
+            "title": "Claimant Id",
+            "type": "string"
+          },
+          "dispatch_id": {
+            "format": "uuid",
+            "title": "Dispatch Id",
+            "type": "string"
+          },
+          "lease_expires_at": {
+            "format": "date-time",
+            "title": "Lease Expires At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dispatch_id",
+          "claimant_id",
+          "lease_expires_at"
+        ],
+        "title": "LeaseResponse",
         "type": "object"
       },
       "LogEventResponse": {
@@ -3023,6 +3144,35 @@
         "title": "TasksResponse",
         "type": "object"
       },
+      "TerminalResponse": {
+        "properties": {
+          "dispatch_id": {
+            "format": "uuid",
+            "title": "Dispatch Id",
+            "type": "string"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "title": "Finished At",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "FINISHED",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dispatch_id",
+          "status",
+          "finished_at"
+        ],
+        "title": "TerminalResponse",
+        "type": "object"
+      },
       "UpdateBenchmarkConcurrencyRequest": {
         "properties": {
           "concurrency": {
@@ -3127,6 +3277,10 @@
       },
       "BearerAuth": {
         "bearerFormat": "JWT",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "ExecutorDispatchAuth": {
         "scheme": "bearer",
         "type": "http"
       }
@@ -4837,6 +4991,296 @@
           }
         ],
         "summary": "Init Org"
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/authority": {
+      "post": {
+        "operationId": "authority",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Authority",
+        "tags": [
+          "executor-v1"
+        ]
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/claim": {
+      "post": {
+        "operationId": "claim",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaseResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Claim",
+        "tags": [
+          "executor-v1"
+        ]
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/fail": {
+      "post": {
+        "operationId": "fail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Fail",
+        "tags": [
+          "executor-v1"
+        ]
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/finish": {
+      "post": {
+        "operationId": "finish",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Finish",
+        "tags": [
+          "executor-v1"
+        ]
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/heartbeat": {
+      "post": {
+        "operationId": "heartbeat",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaseResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Heartbeat",
+        "tags": [
+          "executor-v1"
+        ]
       }
     },
     "/preview-results": {

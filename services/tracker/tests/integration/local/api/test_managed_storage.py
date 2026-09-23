@@ -9,6 +9,7 @@ from sqlmodel import Session
 from tests.factories import make_benchmark
 from tests.integration.local.database.conftest import (
     postgres_container as postgres_container,
+    postgres_url as postgres_url,
 )
 from tests.integration.local.database.conftest import (
     postgres_engine as postgres_engine,

@@ -12,7 +12,7 @@ from tracker.database.models import *  # noqa: F403
 config = context.config
 
 # Override sqlalchemy.url with DATABASE_URL from environment
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
+config.set_main_option("sqlalchemy.url", DATABASE_URL.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

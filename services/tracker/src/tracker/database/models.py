@@ -306,6 +306,16 @@ class ExecutorDispatch(SQLModel, table=True):
     failure_reason: str | None = None
 
 
+class ExecutorDispatchAccess(SQLModel, table=True):
+    """Dispatch-scoped API credentials and replay protection, separate from legacy claims."""
+
+    dispatch_id: UUID = Field(primary_key=True, foreign_key="executordispatch.id")
+    token_digest: str
+    claimant_id: UUID | None = None
+    terminal_operation: str | None = None
+    terminal_request_digest: str | None = None
+
+
 class Benchmark(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint(

@@ -28,6 +28,7 @@ from sqlmodel import Session, col, select, update
 from tracker import config
 from tracker._lambda import invoke_lambda
 from tracker.api.agents import router as agents_router
+from tracker.executor_api.v1.router import router as executor_v1_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
@@ -213,6 +214,7 @@ logfire.instrument_fastapi(app, excluded_urls="/health$")
 app.add_middleware(RequestContextMiddleware)
 
 app.include_router(agents_router)
+app.include_router(executor_v1_router)
 app.include_router(benchmark_services_router)
 app.include_router(benchmarks_status_router)
 app.include_router(filter_options_router)
