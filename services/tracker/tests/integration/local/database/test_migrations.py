@@ -35,6 +35,7 @@ from tracker.database.models import (
     ExecutorDispatchStatus,
     ExecutorTaskAttempt,
     ExecutorTaskReceipt,
+    ExecutorRunReceipt,
     Org,
 )
 
@@ -79,7 +80,7 @@ def test_dispatch_lease_migration_adds_recovery_state(migration_database_url: st
     engine.dispose()
 
 
-@pytest.mark.parametrize("revision", ["3e4f5a6b7c8d", "4f5a6b7c8d9e"])
+@pytest.mark.parametrize("revision", ["3e4f5a6b7c8d", "4f5a6b7c8d9e", "5a6b7c8d9e0f"])
 def test_dispatch_api_migration_preserves_a_live_legacy_claim(migration_database_url: str, revision: str) -> None:
     """Keep a legacy host claim valid across the additive executor API migration.
 
@@ -153,7 +154,7 @@ def test_dispatch_api_migration_preserves_a_live_legacy_claim(migration_database
             assert completed.executor_release_id == "legacy-api-migration"
             assert session.connection().execute(text("SELECT COUNT(*) FROM executordispatchaccess")).scalar_one() == 0
 
-            if revision == "4f5a6b7c8d9e":
+            if revision in ("4f5a6b7c8d9e", "5a6b7c8d9e0f"):
                 task = make_task(benchmark, "migrated-task")
                 session.add(task)
                 session.flush()
@@ -174,6 +175,15 @@ def test_dispatch_api_migration_preserves_a_live_legacy_claim(migration_database
                 session.commit()
                 assert not session.exec(select(ExecutorTaskAttempt)).all()
                 assert not session.exec(select(ExecutorTaskReceipt)).all()
+            if revision == "5a6b7c8d9e0f":
+                receipt = ExecutorRunReceipt(
+                    dispatch_id=dispatch_id, command_id=uuid4(), request_digest="b" * 64, status="FINISHED"
+                )
+                session.add(receipt)
+                session.commit()
+                session.delete(completed)
+                session.commit()
+                assert not session.exec(select(ExecutorRunReceipt)).all()
     finally:
         engine.dispose()
 

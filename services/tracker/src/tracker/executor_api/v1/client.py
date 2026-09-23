@@ -18,6 +18,12 @@ from tracker.executor_api.v1.schemas import (
     TerminalResponse,
 )
 from tracker.executor_api.v1.task_schemas import Mutation, TaskAttemptRequest, TaskWriteRequest, TaskWriteResponse
+from tracker.executor_api.v1.finalization_schemas import (
+    Finalization,
+    FinalizationResponse,
+    FinalizeRequest,
+    FinalizeResponse,
+)
 
 Response = TypeVar("Response", bound=BaseModel)
 
@@ -74,6 +80,25 @@ class ExecutorClient:
             f"tasks/{task_id}/claim",
             TaskAttemptRequest(claimant_id=self._claimant_id, command_id=command_id, expected_started_at=started_at),
             TaskWriteResponse,
+        )
+
+    async def finalization_state(self) -> FinalizationResponse:
+        return await self._post(
+            "run/finalization", DispatchRequest(claimant_id=self._claimant_id), FinalizationResponse
+        )
+
+    async def finalize_run(
+        self, snapshot_digest: str, finalization: Finalization, *, command_id: UUID
+    ) -> FinalizeResponse:
+        return await self._post(
+            "run/finalize",
+            FinalizeRequest(
+                claimant_id=self._claimant_id,
+                command_id=command_id,
+                snapshot_digest=snapshot_digest,
+                finalization=finalization,
+            ),
+            FinalizeResponse,
         )
 
     async def write_task(

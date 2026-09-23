@@ -335,6 +335,16 @@ class ExecutorTaskReceipt(SQLModel, table=True):
     revision: int
 
 
+class ExecutorRunReceipt(SQLModel, table=True):
+    """Retain a finalization response across retries and later run attempts."""
+
+    dispatch_id: UUID = Field(primary_key=True, foreign_key="executordispatch.id", ondelete="CASCADE")
+    command_id: UUID = Field(primary_key=True)
+    request_digest: str
+    status: str
+    final_evaluation_id: UUID | None = None
+
+
 class Benchmark(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint(
