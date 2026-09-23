@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from collections.abc import Coroutine
 from typing import Any, Protocol, TypeVar
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 
@@ -74,6 +74,7 @@ class ApiTaskPersistence:
         self._revision: int | None = None
         self._revoked = False
         self._lock = asyncio.Lock()
+        self._reservation_id: UUID | None = None
 
     async def _snapshot(self) -> TaskSnapshot | None:
         if self._revoked:
@@ -164,6 +165,43 @@ class ApiTaskPersistence:
             return None
 
         return snapshot.task.eval_resume_state
+
+    async def reserve_pool(self) -> bool:
+        """Reserve creation without losing a committed revision when the caller is cancelled."""
+        async with self._lock:
+            return await settle_task_io(self._reserve_pool())
+
+    async def _reserve_pool(self) -> bool:
+        if self._revoked or self._revision is None:
+            return False
+        reserved = await self._api.reserve_pool(
+            self._task.id,
+            self._task.started_at,
+            command_id=uuid4(),
+            expected_revision=self._revision,
+        )
+        if not reserved.reserved:
+            return False
+        assert reserved.reservation_id is not None and reserved.revision is not None
+        self._reservation_id = reserved.reservation_id
+        self._revision = reserved.revision
+
+        return True
+
+    async def release_pool(self) -> None:
+        async with self._lock:
+            await settle_task_io(self._release_pool())
+
+    async def _release_pool(self) -> None:
+        if self._reservation_id is None:
+            return
+        await self._api.release_pool(
+            self._task.id,
+            self._task.started_at,
+            self._reservation_id,
+            command_id=uuid4(),
+        )
+        self._reservation_id = None
 
     async def close(self) -> None:
         """The dispatch claim protects API evaluation; no database lock is retained."""

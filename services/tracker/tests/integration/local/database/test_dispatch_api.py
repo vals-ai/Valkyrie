@@ -22,6 +22,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import httpx
+import aiohttp
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
@@ -65,7 +66,7 @@ from tracker.executor.release_control import (
     QueuePoolBusyError,
 )
 from tracker.executor.dispatch_control import admit_start_dispatch, admit_recovery_dispatch
-from tracker.scheduler.store import queue_pool_lock
+from tracker.scheduler.store import queue_pool_id, queue_pool_lock
 from tracker.executor_api.v1.router import router
 from tracker.executor_api.transport import ExecutorTransport
 from tracker.executor_api.v1.client import ExecutorClient
@@ -73,12 +74,12 @@ from tracker.executor_api.v1.schemas import ClaimRequest
 from tracker.executor_api.v1.task_schemas import BuildTask, RunTask, EvaluateTask, CompleteTask
 from tracker.executor_api.v1.finalization_schemas import CompleteRun
 from tracker.executor.task_persistence import ApiTaskPersistence
+from tracker.executor.run_execution import process_benchmark_v1
 from tracker.executor.checkpoints import CheckpointCallback
-from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.exceptions import SandboxSetupError
 from tracker.runtime.services import RuntimeServices
 from tracker.types import StartBenchmarkRequest
-from tracker.utils.task_execution import process_task
+from services.executor_host.supervisor import ApiExecutorDispatchStore, ArtifactDispatch, ExecutorProcessPayload
 
 
 @dataclass(frozen=True)
@@ -1517,8 +1518,11 @@ def test_run_finalization_replays_receipt_after_expiry_and_retry(
     - Final score, metadata, status, and receipt commit together.
     - Lease expiry and a later attempt do not duplicate or restore the old score.
     - A changed request cannot reuse the committed command identifier.
+    - Only the current finalizer can retrieve the version-one report.
     """
     request = _finalize_request(dispatch, finalizable_run)
+    report_request = {**dispatch.request, "command_id": request["command_id"]}
+    assert client.post(f"{dispatch.path}/run/report", json=report_request, headers=dispatch.headers).status_code == 409
     response = client.post(f"{dispatch.path}/run/finalize", json=request, headers=dispatch.headers)
 
     assert response.status_code == 200, response.text
@@ -1528,7 +1532,20 @@ def test_run_finalization_replays_receipt_after_expiry_and_retry(
     evaluation = postgres_session.get(FinalEvaluation, UUID(body["final_evaluation_id"]))
     assert benchmark is not None and benchmark.status == BenchmarkStatus.FINISHED and benchmark.finished_at is not None
     assert evaluation is not None and evaluation.final_score == 0.75 and evaluation.properties == {"weight": 1}
+    report_response = client.post(f"{dispatch.path}/run/report", json=report_request, headers=dispatch.headers)
+    assert report_response.status_code == 200
+    report = report_response.json()["report"]
+    assert report["benchmark_id"] == str(dispatch.benchmark_id) and report["status"] == "FINISHED"
+    assert report["final_evaluation"] == {
+        "id": str(evaluation.id),
+        "org_id": str(evaluation.org_id),
+        "benchmark": str(dispatch.benchmark_id),
+        "final_score": 0.75,
+        "properties": {"weight": 1},
+    }
+    assert report["evaluation_results"]["task-0"]["score"] == 0.75
     assert client.post(f"{dispatch.path}/finish", json=dispatch.request, headers=dispatch.headers).status_code == 200
+    assert client.post(f"{dispatch.path}/run/report", json=report_request, headers=dispatch.headers).status_code == 409
 
     invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
     task = postgres_session.get(Task, dispatch.task_id)
@@ -1937,13 +1954,18 @@ async def test_task_client_retries_after_committed_response_loss(
     assert owner is not None and owner.revision == 4
 
 
-@pytest.mark.parametrize("retry_sandbox", [False, True])
+@pytest.mark.parametrize(
+    ("queued", "retry_sandbox", "creation_unknown"),
+    [(False, False, False), (False, True, False), (True, False, False), (True, True, False), (True, False, True)],
+)
 async def test_process_task_persists_through_api(
     app: FastAPI,
     dispatch: DispatchFixture,
     postgres_session: Session,
     monkeypatch: pytest.MonkeyPatch,
     retry_sandbox: bool,
+    queued: bool,
+    creation_unknown: bool,
 ) -> None:
     """Run the task lifecycle through PostgreSQL-backed HTTP without executor SQL.
 
@@ -1951,12 +1973,11 @@ async def test_process_task_persists_through_api(
     - Execution persists checkpoints, durations, and the final result using v1 commands.
     - Losing the completion response does not duplicate the result.
     - A fresh sandbox retry retains the task attempt and its write revision.
+    - An uncertain provider creation retains the reservation and does not retry creation.
     """
     task = postgres_session.get(Task, dispatch.task_id)
     benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
     assert task is not None and benchmark is not None
-    org = postgres_session.get(Org, benchmark.org_id)
-    assert org is not None
     task.status = TaskStatus.PENDING
     postgres_session.add(task)
     postgres_session.commit()
@@ -1966,6 +1987,8 @@ async def test_process_task_persists_through_api(
 
     @asynccontextmanager
     async def sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Sandbox]:
+        if creation_unknown:
+            raise SandboxSetupError("Provider did not confirm whether it created the sandbox")
         instance = Mock(spec=Sandbox, id="api-sandbox")
         instance.name = "api-sandbox"
         yield instance
@@ -2007,11 +2030,30 @@ async def test_process_task_persists_through_api(
     )
     runtime = Mock(spec=RuntimeServices, logs=Mock(), objects=Mock(), log_locations=Mock())
     runtime.resolve_secrets = AsyncMock(return_value={})
+    runtime.objects.put_bytes = AsyncMock()
+    runtime.run_completion_callback = AsyncMock()
+    provider = Mock(spec=SandboxProvider, admission_pool_id="api-test-provider")
+    provider.check_admission = AsyncMock(return_value=True)
+
+    @asynccontextmanager
+    async def provider_context(*_args: object) -> AsyncGenerator[SandboxProvider]:
+        yield provider
+
+    if queued:
+        benchmark.arguments = benchmark.arguments.model_copy(
+            update={"queue_pool_id": queue_pool_id(provider.admission_pool_id)}
+        )
+        postgres_session.add(benchmark)
+        postgres_session.commit()
+    runtime.get_sandbox_provider = provider_context
+    runtime.get_sandbox_provider_config = AsyncMock(
+        return_value=DaytonaProviderConfig(
+            DAYTONA_API_KEY="test", DAYTONA_API_URL="https://app.daytona.io/api", DAYTONA_TARGET="us"
+        )
+    )
+    monkeypatch.setattr(BenchmarkServiceClient, "final_score", AsyncMock(return_value=Mock(final_score=1, metadata={})))
     transport = MockLostResponseTransport(app, "write", mutation="complete")
-    async with (
-        httpx.AsyncClient(transport=transport, base_url="http://tracker.test") as http,
-        BenchmarkServiceClient("http://benchmark.test", {}) as service,
-    ):
+    async with httpx.AsyncClient(transport=transport, base_url="http://tracker.test") as http:
         api = ExecutorClient(
             ExecutorTransport(http, SecretStr(dispatch.token)),
             dispatch.dispatch_id,
@@ -2019,29 +2061,33 @@ async def test_process_task_persists_through_api(
         )
         await api.claim(ClaimRequest.model_validate(dispatch.claim))
         state = await api.run_state([task.task_id])
-        result = await process_task(
-            task,
+        await process_benchmark_v1(
+            api,
             StartBenchmarkRequest(
                 benchmark_name=benchmark.name,
                 contract=benchmark.arguments.contract,
                 task_ids=[task.task_id],
                 concurrency=1,
+                custom_benchmark_service="http://benchmark.test",
             ),
-            service,
-            benchmark.id,
-            task.task_id,
             runtime,
-            org,
-            DaytonaProviderConfig(
-                DAYTONA_API_KEY="test", DAYTONA_API_URL="https://app.daytona.io/api", DAYTONA_TARGET="us"
-            ),
-            asyncio.Semaphore(1),
-            ExecutionAuthority(benchmark.id, dispatch.dispatch_id),
-            sandbox_provider=Mock(spec=SandboxProvider),
-            persistence=ApiTaskPersistence(api, state.tasks[0]),
+            [task.task_id],
+            dispatch.dispatch_id,
+            run=state.run,
         )
 
-    assert result == {task.task_id: {"score": 1}}
+    postgres_session.refresh(benchmark)
+    if creation_unknown:
+        postgres_session.refresh(task)
+        assert benchmark.status == BenchmarkStatus.ERROR and task.status == TaskStatus.ERROR
+        assert benchmark.error_message is not None and "requires reconciliation" in benchmark.error_message
+        assert len(postgres_session.exec(select(ExecutorPoolReservation)).all()) == 1
+        assert agent_calls == 0
+        return
+    assert benchmark.status == BenchmarkStatus.FINISHED
+    assert benchmark.final_evaluation is not None and benchmark.final_evaluation.final_score == 1
+    published = json.loads(runtime.objects.put_bytes.call_args.args[1])
+    assert published["status"] == "FINISHED" and published["evaluation_results"][task.task_id]["score"] == 1
     assert transport.dropped
     postgres_session.refresh(task)
     assert task.status == TaskStatus.FINISHED
@@ -2051,7 +2097,9 @@ async def test_process_task_persists_through_api(
     breakdown = postgres_session.get(TaskBreakdown, task.task_breakdown)
     assert breakdown is not None and breakdown.agent_run_duration == 2.5
     owner = postgres_session.get(ExecutorTaskAttempt, task.id)
-    assert owner is not None and owner.revision == (10 if retry_sandbox else 6)
+    expected_revision = (10 if retry_sandbox else 6) + ((2 if retry_sandbox else 1) if queued else 0)
+    assert owner is not None and owner.revision == expected_revision
+    assert postgres_session.exec(select(ExecutorPoolReservation)).all() == []
     errors = postgres_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).all()
     assert len(errors) == (1 if retry_sandbox else 0)
     if errors:
@@ -2250,6 +2298,31 @@ async def test_api_server_restart_preserves_executor_process(
     database_url = postgres_engine.url.render_as_string(hide_password=False)
     async with AsyncExitStack() as stack:
         server, port = await _start_api_server(stack, database_url)
+        host_http = await stack.enter_async_context(aiohttp.ClientSession())
+        host_store = ApiExecutorDispatchStore(
+            host_http,
+            ExecutorProcessPayload(
+                str(dispatch.benchmark_id),
+                ["task-0"],
+                {
+                    "executor_api_token": dispatch.token,
+                    "executor_tracker_url": f"http://127.0.0.1:{port}",
+                    "executor_claimant_id": dispatch.claim["claimant_id"],
+                },
+            ),
+        )
+        authority = await host_store.claim(
+            str(dispatch.dispatch_id),
+            str(dispatch.benchmark_id),
+            ArtifactDispatch(
+                dispatch.claim["executor_release_id"],
+                dispatch.claim["executor_artifact_uri"],
+                dispatch.claim["executor_artifact_digest"],
+                dispatch.claim["executor_protocol_version"],
+            ),
+        )
+        assert authority is not None and await host_store.is_current(authority)
+        assert await host_store.heartbeat(authority)
         worker = await asyncio.create_subprocess_exec(
             sys.executable,
             str(Path(__file__).with_name("api_worker.py")),
@@ -2289,6 +2362,8 @@ async def test_api_server_restart_preserves_executor_process(
         assert resumed == {"event": "resumed", "pid": started["pid"]}
         assert finished == {"event": "finished", "pid": started["pid"]}
         assert await asyncio.wait_for(worker.wait(), timeout=10) == 0
+        assert await host_store.finish(authority)
+        assert not await host_store.is_current(authority)
 
     postgres_session.expire_all()
     task = postgres_session.get(Task, dispatch.task_id)

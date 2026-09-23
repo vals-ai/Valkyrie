@@ -1,4 +1,5 @@
 import json
+import subprocess
 import zipfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -41,8 +42,18 @@ def test_verify_archive_requires_executor_entrypoint_and_importable_protocol(tmp
         verify_archive(wrong_protocol_location)
 
 
-def test_new_artifact_manifest_requires_protocol_three(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_command(command: Sequence[str], **_kwargs: object) -> None:
+@pytest.mark.parametrize(("system", "artifact_protocol"), [("Linux", "4"), ("Darwin", "4"), ("Linux", "3")])
+def test_new_artifact_manifest_requires_protocol_four(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str, artifact_protocol: str
+) -> None:
+    """Publish only a manifest matching the checked artifact and native build platform.
+
+    Test cases:
+    - Linux and macOS artifacts report their own operating system.
+    - A stale packaged protocol cannot be published with a newer manifest.
+    """
+
+    def fake_command(command: Sequence[str], **_kwargs: object) -> subprocess.CompletedProcess[str] | None:
         if "export" in command:
             Path(command[command.index("--output-file") + 1]).write_text("requirements")
         elif "--wheel" in command:
@@ -53,12 +64,24 @@ def test_new_artifact_manifest_requires_protocol_three(tmp_path: Path, monkeypat
             with zipfile.ZipFile(artifact, "w") as archive:
                 archive.writestr("tracker/executor/entrypoint.py", "")
                 archive.writestr("executor_protocol.py", "")
+        elif "--check" in command:
+            return subprocess.CompletedProcess(command, 0, json.dumps({"protocol_version": artifact_protocol}), "")
+
+        return None
 
     monkeypatch.setattr(builder.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(builder.platform, "system", lambda: system)
     commands = Mock(side_effect=fake_command)
     monkeypatch.setattr(builder.subprocess, "run", commands)
 
+    if artifact_protocol != "4":
+        with pytest.raises(ValueError, match="protocol does not match"):
+            builder.build(tmp_path, "a" * 40)
+        assert not (tmp_path / "manifest.json").exists()
+        return
+
     manifest = builder.build(tmp_path, "a" * 40)
 
-    assert manifest["protocol_version"] == "3"
-    assert json.loads((tmp_path / "manifest.json").read_text())["protocol_version"] == "3"
+    assert manifest["protocol_version"] == "4"
+    assert manifest["architecture"] == f"{system.lower()}-arm64"
+    assert json.loads((tmp_path / "manifest.json").read_text())["protocol_version"] == "4"

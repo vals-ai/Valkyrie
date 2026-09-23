@@ -4,6 +4,7 @@ Run: uv run pytest tests/unit/test_taskiq_producers.py
 """
 
 import json
+import hashlib
 import io
 import zipfile
 from typing import Any, cast
@@ -26,6 +27,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     ExecutorDispatch,
+    ExecutorDispatchAccess,
     ExecutorRelease,
     Task,
     TaskStatus,
@@ -50,7 +52,7 @@ _ACCESS_KEY_TASK_KWARGS = {
     "benchmark_id_str",
     "verified_task_ids",
 } | _DISPATCH_TASK_KWARGS
-_MANAGED_TASK_KWARGS = {"execution_context_json"} | _DISPATCH_TASK_KWARGS
+_MANAGED_TASK_KWARGS = {"execution_context_json", "executor_api_token"} | _DISPATCH_TASK_KWARGS
 _CALLER_AWS_HEADERS = {
     "x-harness-aws-access-key-id": "caller-access-key",
     "x-harness-aws-secret-access-key": "caller-secret-key",
@@ -130,7 +132,14 @@ def _start_request(contract: AgentContractRequest, harness_config: HarnessConfig
     )
 
 
-def test_managed_start_and_resume_emit_credential_free_v3(
+def _assert_dispatch_access(session: Session, payload: dict[str, Any], benchmark: Benchmark) -> None:
+    token = payload["executor_api_token"]
+    access = session.get(ExecutorDispatchAccess, UUID(payload["executor_dispatch_id"]))
+    assert access is not None and access.token_digest == hashlib.sha256(token.encode()).hexdigest()
+    assert token not in benchmark.model_dump_json()
+
+
+def test_managed_start_and_resume_use_dispatch_credentials(
     contract: AgentContractRequest,
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -159,6 +168,7 @@ def test_managed_start_and_resume_emit_credential_free_v3(
     assert benchmark.aws_managed is True
     assert len(payloads) == 1
     assert set(payloads[0]) == _MANAGED_TASK_KWARGS
+    _assert_dispatch_access(database_session, payloads[0], benchmark)
     start_context = payloads[0]["execution_context_json"]
     assert start_context["version"] == 3
     assert start_context["start_benchmark_request"]["harness_config"] is None
@@ -177,6 +187,7 @@ def test_managed_start_and_resume_emit_credential_free_v3(
     assert response.status_code == 200
     assert len(payloads) == 1
     assert set(payloads[0]) == _MANAGED_TASK_KWARGS
+    _assert_dispatch_access(database_session, payloads[0], benchmark)
     resume_context = payloads[0]["execution_context_json"]
     assert resume_context["version"] == 3
     assert resume_context["benchmark_id"] == str(benchmark.id)

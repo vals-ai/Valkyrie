@@ -94,6 +94,8 @@ class FakeEcsClient:
         self.service_updates: list[dict[str, object]] = []
         self.protection_updates: list[dict[str, object]] = []
         self.stopped_tasks: list[str] = []
+        self.legacy_definition: str | None = None
+        self.task_description_failed = False
 
     def get_waiter(self, name: str) -> "FakeEcsClient":
         assert name == "services_stable"
@@ -116,6 +118,22 @@ class FakeEcsClient:
     def update_service(self, **kwargs: object) -> dict[str, object]:
         self.service_updates.append(kwargs)
         return {}
+
+    def describe_services(self, **_kwargs: object) -> dict[str, object]:
+        return {"services": [{"taskDefinition": "primary"}]}
+
+    def describe_tasks(self, **_kwargs: object) -> dict[str, object]:
+        if self.task_description_failed:
+            return {"tasks": [], "failures": [{"reason": "MISSING"}]}
+        return {"tasks": [{"taskDefinitionArn": "draining"}, {"taskDefinitionArn": "primary"}]}
+
+    def describe_task_definition(self, **kwargs: object) -> dict[str, object]:
+        environment = (
+            []
+            if kwargs["taskDefinition"] == self.legacy_definition
+            else [{"name": "EXECUTOR_HOST_DRAIN_PROTOCOL", "value": "1"}]
+        )
+        return {"taskDefinition": {"containerDefinitions": [{"environment": environment}]}}
 
 
 def _release_arguments(monkeypatch: MonkeyPatch, *, artifact_digest: str = "a" * 64) -> None:
@@ -196,6 +214,40 @@ def test_release_entrypoint_uses_sealed_configuration_and_persists_active_releas
     assert stored_release.readiness_verified
     assert admission is not None
     assert admission.release_id == stored_release.id
+
+
+@pytest.mark.parametrize("unsafe", [None, "primary", "draining", "missing"])
+def test_verify_host_drain_does_not_stop_runs(
+    monkeypatch: MonkeyPatch, database_session: Session, unsafe: str | None
+) -> None:
+    """Verify deployed host capabilities without mutating admission or active hosts.
+
+    Test cases:
+    - Every current and draining generation must support the drain protocol.
+    - An old primary, old draining host, or incomplete AWS response blocks deployment.
+    - Both success and failure leave admission, service counts, and task protection unchanged.
+    """
+    _release_arguments(monkeypatch)
+    sys.argv = sys.argv[:12] + ["maintenance-verify-drain", "b" * 40]
+    ecs = FakeEcsClient()
+    ecs.legacy_definition = unsafe
+    ecs.task_description_failed = unsafe == "missing"
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    if unsafe is None:
+        release_entrypoint.main()
+    else:
+        with pytest.raises(SystemExit):
+            release_entrypoint.main()
+
+    database_session.expire_all()
+    admission = database_session.get(ExecutorAdmission, 1)
+    assert admission is not None and admission.maintenance_target_sha is None
+    assert ecs.service_updates == []
+    assert ecs.protection_updates == []
+    assert ecs.stopped_tasks == []
 
 
 def test_maintenance_begin_fences_admission_and_stops_executor_hosts(
@@ -292,7 +344,7 @@ def test_release_entrypoint_rejects_invalid_release_id_before_reading_secret(mon
     ("argument_index", "invalid_value", "error"),
     [
         (14, "s3://other/releases/git-abc123-def456/executor.pex", "configured S3 bucket"),
-        (16, "4", "Unsupported executor protocol"),
+        (16, "unsupported", "Unsupported executor protocol"),
     ],
 )
 def test_release_entrypoint_rejects_invalid_artifact_identity_before_reading_secret(

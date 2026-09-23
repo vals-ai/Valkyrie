@@ -65,6 +65,47 @@ class EcsClient(Protocol):
 
     def update_service(self, **kwargs: object) -> Mapping[str, object]: ...
 
+    def describe_services(self, **kwargs: object) -> Mapping[str, object]: ...
+
+    def describe_tasks(self, **kwargs: object) -> Mapping[str, object]: ...
+
+    def describe_task_definition(self, **kwargs: object) -> Mapping[str, object]: ...
+
+
+class _HostTask(BaseModel):
+    taskDefinitionArn: str
+
+
+class _HostTasks(BaseModel):
+    tasks: list[_HostTask]
+    failures: list[dict[str, object]] = Field(default_factory=list)
+
+
+class _HostService(BaseModel):
+    taskDefinition: str
+
+
+class _HostServices(BaseModel):
+    services: list[_HostService]
+    failures: list[dict[str, object]] = Field(default_factory=list)
+
+
+class _EnvironmentValue(BaseModel):
+    name: str
+    value: str
+
+
+class _HostContainer(BaseModel):
+    environment: list[_EnvironmentValue] = Field(default_factory=list)
+
+
+class _HostDefinition(BaseModel):
+    containerDefinitions: list[_HostContainer]
+
+
+class _HostDefinitionResponse(BaseModel):
+    taskDefinition: _HostDefinition
+
 
 class S3ArtifactClient(Protocol):
     def get_object(self, *, Bucket: str, Key: str) -> Mapping[str, object]: ...
@@ -200,6 +241,32 @@ def _force_stop_executor_hosts(client: EcsClient, task: ReleaseTaskConfig) -> in
     return len(task_arns)
 
 
+def _verify_host_drain(task: ReleaseTaskConfig) -> None:
+    """Check deployed and still-running generations before bypassing host maintenance."""
+    client = create_ecs_client()
+    described = _HostServices.model_validate(
+        client.describe_services(cluster=task.cluster_arn, services=[task.executor_service_name])
+    )
+    if described.failures or len(described.services) != 1:
+        raise SystemExit("Cannot verify the deployed executor host service; no runs were stopped")
+    definitions = {described.services[0].taskDefinition}
+    task_arns = _executor_tasks(client, task)
+    for start in range(0, len(task_arns), 100):
+        batch = task_arns[start : start + 100]
+        running = _HostTasks.model_validate(client.describe_tasks(cluster=task.cluster_arn, tasks=batch))
+        if running.failures or len(running.tasks) != len(batch):
+            raise SystemExit("Cannot verify every executor host; no runs were stopped")
+        definitions.update(host.taskDefinitionArn for host in running.tasks)
+    for definition in sorted(definitions):
+        response = _HostDefinitionResponse.model_validate(client.describe_task_definition(taskDefinition=definition))
+        if not any(
+            value.name == "EXECUTOR_HOST_DRAIN_PROTOCOL" and value.value == "1"
+            for container in response.taskDefinition.containerDefinitions
+            for value in container.environment
+        ):
+            raise SystemExit("A deployed executor host does not support draining; complete the initial cutover first")
+
+
 def _begin_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) -> dict[str, int]:
     from sqlmodel import Session
 
@@ -292,10 +359,15 @@ def main() -> None:
         _activate_sealed_release(task, release)
         return
 
-    if operation not in ("maintenance-begin", "maintenance-finish") or len(arguments) != 13:
+    if operation not in ("maintenance-begin", "maintenance-finish", "maintenance-verify-drain") or len(arguments) != 13:
         raise SystemExit(f"Invalid sealed release task operation: {operation}")
     maintenance = MaintenanceInput(target_sha=arguments[12])
     _configure_database(task)
+    if operation == "maintenance-verify-drain":
+        _verify_host_drain(task)
+        print(json.dumps({"status": "drain-capable"}, sort_keys=True))
+        return
+
     if operation == "maintenance-begin":
         print(json.dumps(_begin_maintenance(task, maintenance), sort_keys=True))
     else:

@@ -1,5 +1,6 @@
 """Version-one finalization requests and snapshots, independent of the ORM."""
 
+from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -50,3 +51,43 @@ class FinalizeResponse(BaseModel):
     benchmark_id: UUID
     status: Literal["FINISHED", "ERROR", "STOPPED"]
     final_evaluation_id: UUID | None
+
+
+class ReportRequest(DispatchRequest):
+    command_id: UUID
+
+
+class ReportEvaluation(BaseModel):
+    id: UUID
+    org_id: UUID
+    benchmark: UUID
+    final_score: float
+    properties: dict[str, JsonValue]
+
+
+class ReportTaskBreakdown(BaseModel):
+    sandbox_build_duration: float | None
+    agent_run_duration: float | None
+    evaluation_run_duration: float | None
+    sandbox_run_duration: float | None
+
+
+class RunReport(BaseModel):
+    """Stable v1 report fields; benchmark-owned arguments and results remain JSON payloads."""
+
+    benchmark_id: UUID
+    benchmark_name: str
+    started_at: datetime
+    finished_at: datetime | None
+    status: RunStatus
+    error_message: str | None
+    benchmark_arguments: dict[str, JsonValue]
+    tasks_stopped: int | None
+    final_evaluation: ReportEvaluation | None
+    average_task_breakdown: ReportTaskBreakdown | None
+    evaluation_results: dict[str, dict[str, JsonValue]] | None
+    task_errors: dict[str, str] | None
+
+
+class ReportResponse(BaseModel):
+    report: RunReport

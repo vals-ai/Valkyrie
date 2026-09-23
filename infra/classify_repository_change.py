@@ -25,6 +25,7 @@ _EXECUTOR_STACK_FILES = {
     "infra/app.py",
     "infra/cdk.json",
     "infra/classify_repository_change.py",
+    "infra/classify_executor_template_change.py",
     "infra/constants.py",
     "infra/executor_release/main.py",
     "infra/executor_stack.py",
@@ -68,6 +69,8 @@ _EXECUTOR_RELEASE_DIRECTORIES = (
     "services/tracker/src/tracker/agent/",
     "services/tracker/src/tracker/aws/",
     "services/tracker/src/tracker/database/",
+    "services/tracker/src/tracker/executor/",
+    "services/tracker/src/tracker/executor_api/",
     "services/tracker/src/tracker/logging/",
     "services/tracker/src/tracker/middleware/",
     "services/tracker/src/tracker/observability/",
@@ -90,6 +93,7 @@ class Classification:
     head_sha: str
     executor_stack_deploy_required: bool
     executor_host_redeploy_required: bool
+    executor_host_maintenance_required: bool
     executor_release_required: bool
     core_maintenance_required: bool
     database_maintenance_required: bool
@@ -302,7 +306,7 @@ def classify_repository_change(
     if executor_effect.redeploy_required:
         executor_stack_deploy_required = True
         reasons.update(executor_effect.reasons)
-    maintenance_required = executor_effect.redeploy_required or database_maintenance_required
+    maintenance_required = executor_effect.maintenance_required or database_maintenance_required
     classification = "maintenance-required" if maintenance_required else "safe"
     return Classification(
         classification=classification,
@@ -310,6 +314,7 @@ def classify_repository_change(
         head_sha=head_sha,
         executor_stack_deploy_required=executor_stack_deploy_required,
         executor_host_redeploy_required=executor_effect.redeploy_required,
+        executor_host_maintenance_required=executor_effect.maintenance_required,
         executor_release_required=executor_release_required,
         core_maintenance_required=core_maintenance_required,
         database_maintenance_required=database_maintenance_required,
@@ -323,6 +328,7 @@ def combine_executor_effects(*effects: ExecutorHostTemplateEffect) -> ExecutorHo
     return ExecutorHostTemplateEffect(
         redeploy_required=any(effect.redeploy_required for effect in effects),
         reasons=tuple(sorted({reason for effect in effects for reason in effect.reasons})),
+        rolling_update=not any(effect.maintenance_required for effect in effects),
     )
 
 

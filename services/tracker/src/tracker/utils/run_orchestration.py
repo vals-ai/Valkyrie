@@ -498,7 +498,7 @@ class _QueuedExecution:
     context_version: int | None = None
 
 
-def _parse_queued_execution(
+def parse_queued_execution(
     start_benchmark_request_json: dict[str, Any] | None,
     benchmark_id_str: str | None,
     verified_task_ids: list[str] | None,
@@ -534,6 +534,9 @@ def _parse_queued_execution(
         aws_managed=True,
         context_version=context.version,
     )
+
+
+_parse_queued_execution = parse_queued_execution
 
 
 def _queued_benchmark_id(

@@ -82,7 +82,7 @@ for target in "${targets[@]}"; do
     SENTRY_DSN_SECRET_NAME=offline-synth \
     DESCOPE_MANAGEMENT_KEY_SECRET_NAME=offline-synth \
     DESCOPE_PROJECT_ID=offline-synth \
-    CDK_CONTEXT_JSON="{\"stage\":\"$stage\"}" \
+    CDK_CONTEXT_JSON="{\"stage\":\"$stage\",\"aws:cdk:enable-path-metadata\":true}" \
     CDK_OUTDIR="$assembly" \
       uv run --frozen python app.py
   )

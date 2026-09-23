@@ -15,7 +15,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Protocol, Unpack, cast
+from uuid import uuid4
 
+import aiohttp
 import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
 from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
@@ -250,6 +252,17 @@ class ExecutorProcessPayload:
                 "verified_task_ids": raw_task_ids,
             }
         arguments["telemetry_context_json"] = telemetry_context
+        if payload.get("executor_protocol_version") == "4":
+            arguments["executor_api_token"] = _required_string(payload, "executor_api_token")
+            arguments["executor_tracker_url"] = _required_string(dict(os.environ), "EXECUTOR_TRACKER_URL")
+            arguments["executor_claimant_id"] = str(uuid4())
+            for key in (
+                "executor_release_id",
+                "executor_artifact_uri",
+                "executor_artifact_digest",
+                "executor_protocol_version",
+            ):
+                arguments[key] = _required_string(payload, key)
         if not isinstance(benchmark_id, str) or not benchmark_id:
             raise ValueError("Executor payload has no valid benchmark ID")
         verified_task_ids = (
@@ -282,6 +295,76 @@ class ExecutorDispatchStore(Protocol):
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool: ...
 
     async def finish(self, authority: DispatchAuthority) -> bool: ...
+
+
+class ApiExecutorDispatchStore:
+    """Keep host claim, lease, and revocation checks on the version-one HTTP contract."""
+
+    def __init__(self, client: aiohttp.ClientSession, process_payload: ExecutorProcessPayload) -> None:
+        self._client = client
+        self._claimant_id = _required_string(process_payload.arguments, "executor_claimant_id")
+        self._token = _required_string(process_payload.arguments, "executor_api_token")
+        self._origin = _required_string(process_payload.arguments, "executor_tracker_url").rstrip("/")
+
+    async def _post(
+        self, dispatch_id: str, operation: str, values: dict[str, object] | None = None
+    ) -> dict[str, object] | None:
+        async with self._client.post(
+            f"{self._origin}/internal/executor/v1/dispatches/{dispatch_id}/{operation}",
+            json={"claimant_id": self._claimant_id, **(values or {})},
+            headers={"Authorization": f"Bearer {self._token}"},
+            allow_redirects=False,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as response:
+            if response.status in (401, 403, 409):
+                return None
+            response.raise_for_status()
+            if response.status != 200:
+                raise TaskProtectionError("Tracker did not confirm executor authority")
+            payload: object = await response.json()
+            if not isinstance(payload, dict):
+                raise TaskProtectionError("Tracker returned an invalid executor authority response")
+
+            return cast(dict[str, object], payload)
+
+    async def claim(self, dispatch_id: str, benchmark_id: str, dispatch: ArtifactDispatch) -> DispatchAuthority | None:
+        response = await self._post(
+            dispatch_id,
+            "claim",
+            {
+                "benchmark_id": benchmark_id,
+                "executor_release_id": dispatch.release_id,
+                "executor_artifact_uri": dispatch.artifact_uri,
+                "executor_artifact_digest": dispatch.artifact_digest,
+                "executor_protocol_version": dispatch.protocol_version,
+            },
+        )
+        if response is None:
+            return None
+        if response.get("dispatch_id") != dispatch_id or response.get("claimant_id") != self._claimant_id:
+            raise TaskProtectionError("Tracker confirmed a different executor claim")
+
+        return DispatchAuthority(dispatch_id, benchmark_id)
+
+    async def is_current(self, authority: DispatchAuthority) -> bool:
+        response = await self._post(authority.dispatch_id, "authority")
+
+        return response is not None and response.get("current") is True
+
+    async def heartbeat(self, authority: DispatchAuthority) -> bool:
+        response = await self._post(authority.dispatch_id, "heartbeat")
+
+        return (
+            response is not None
+            and response.get("dispatch_id") == authority.dispatch_id
+            and response.get("claimant_id") == self._claimant_id
+        )
+
+    async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
+        return await self._post(authority.dispatch_id, "fail", {"error_message": "Executor process failed"}) is not None
+
+    async def finish(self, authority: DispatchAuthority) -> bool:
+        return await self._post(authority.dispatch_id, "finish") is not None
 
 
 class PostgresExecutorDispatchStore:
@@ -736,7 +819,7 @@ class ExecutorSupervisor:
             await self.sleep(self.authority_check_interval)
             try:
                 authority_is_current = await is_current()
-            except psycopg2.OperationalError:
+            except (psycopg2.OperationalError, aiohttp.ClientError, TimeoutError):
                 logger.exception(
                     "Failed to check executor dispatch authority; retrying",
                 )
@@ -795,7 +878,8 @@ broker = DeleteAfterAckRedisStreamBroker(
     url=REDIS_URL,
     queue_name=QUEUE_NAME,
     consumer_group_name=QUEUE_NAME,
-    idle_timeout=86400000,
+    idle_timeout=30000,
+    xread_count=1,
 )
 broker.add_middlewares(PreserveCancelledDispatchMiddleware())
 
@@ -960,13 +1044,19 @@ async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
                 raw_payload,
                 telemetry_context=child_telemetry_context,
             )
-            await run_executor_dispatch(
-                supervisor,
-                dispatch_store,
-                executor_dispatch_id=dispatch_id,
-                dispatch=dispatch,
-                process_payload=process_payload,
-            )
+            async with aiohttp.ClientSession() as client:
+                store = (
+                    ApiExecutorDispatchStore(client, process_payload)
+                    if dispatch.protocol_version == "4"
+                    else dispatch_store
+                )
+                await run_executor_dispatch(
+                    supervisor,
+                    store,
+                    executor_dispatch_id=dispatch_id,
+                    dispatch=dispatch,
+                    process_payload=process_payload,
+                )
             record_dispatch_completion(child_telemetry_context)
         except asyncio.CancelledError:
             record_dispatch_cancellation(child_telemetry_context)

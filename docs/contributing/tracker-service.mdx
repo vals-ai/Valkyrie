@@ -96,12 +96,17 @@ AWS_SESSION_TOKEN=              # Optional, required for temporary credentials
 TEST_AWS_S3_BUCKET=             # S3 bucket for agent artifacts
 TEST_LOG_GROUP=                 # CloudWatch log group
 TEST_DAYTONA_SECRET_NAME=       # Secrets Manager secret holding the Daytona provider config
+TEST_EXECUTOR_PEX=             # Absolute path to a protocol-4 executor PEX built from this checkout
 
 # Benchmark service
 BENCHMARK_SERVICE_BASE_URL=     # Domain of the benchmark service
 BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE=local  # Cloud Map namespace fallback when no base URL is set
 BENCHMARK_SERVICE_AUTH_KEY=     # Access key for authenticating with a benchmark service
 ```
+
+The executor continuity test requires Docker for isolated PostgreSQL and Redis. It starts local Tracker, benchmark-service, and host processes with real Daytona sandboxes. It compares maintenance shutdown with Tracker restart and host drain, then checks unchanged attempt identity, one result per run, and uploaded artifacts. Test-created agents, run artifacts, logs, and sandboxes are removed during teardown.
+
+Build `TEST_EXECUTOR_PEX` with `services/executor_artifact/build.py` on the same ARM64 operating system as the test. The live-test workflow builds it on Linux ARM64 before running the suite.
 
 ## Migrations
 

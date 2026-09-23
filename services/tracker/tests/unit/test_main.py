@@ -1014,7 +1014,7 @@ class TestTrackerAPI:
     @pytest.mark.parametrize(
         ("protocol_version", "aws_managed"),
         [("1", False), (SUPPORTED_PROTOCOL_VERSION, True)],
-        ids=["protocol-1-access-key", "protocol-2-managed"],
+        ids=["protocol-1-access-key", "protocol-4-managed"],
     )
     async def test_start_benchmark_serializes_committed_dispatch_for_executor_host(
         self,
@@ -1103,6 +1103,9 @@ class TestTrackerAPI:
             if aws_managed
             else {"start_benchmark_request_json", "benchmark_id_str", "verified_task_ids"}
         )
+        if protocol_version == "4":
+            execution_kwargs.add("executor_api_token")
+            monkeypatch.setenv("EXECUTOR_TRACKER_URL", "http://tracker.test")
         assert set(taskiq_message.kwargs) == execution_kwargs | {
             "telemetry_context_json",
             "executor_dispatch_id",
@@ -1152,7 +1155,15 @@ class TestTrackerAPI:
             assert process_payload.arguments == {
                 "execution_context_json": taskiq_message.kwargs["execution_context_json"],
                 "telemetry_context_json": child_telemetry_context,
+                "executor_api_token": taskiq_message.kwargs["executor_api_token"],
+                "executor_tracker_url": "http://tracker.test",
+                "executor_claimant_id": process_payload.arguments["executor_claimant_id"],
+                "executor_release_id": taskiq_message.kwargs["executor_release_id"],
+                "executor_artifact_uri": taskiq_message.kwargs["executor_artifact_uri"],
+                "executor_artifact_digest": taskiq_message.kwargs["executor_artifact_digest"],
+                "executor_protocol_version": "4",
             }
+            UUID(str(process_payload.arguments["executor_claimant_id"]))
         else:
             assert process_payload.arguments == {
                 "start_benchmark_request_json": request.model_copy(

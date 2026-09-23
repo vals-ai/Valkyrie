@@ -32,6 +32,7 @@ from constants import (
     EXECUTOR_RELEASE_ROLE_NAME,
     POSTGRES_DB,
     POSTGRES_PORT,
+    TRACKER_PORT,
     SANDBOX_CLEANUP_DLQ_NAME,
     SANDBOX_CLEANUP_FUNCTION_NAME,
     SANDBOX_CLEANUP_LOG_GROUP_NAME,
@@ -199,6 +200,9 @@ class ExecutorStack(Stack):
                 **db_env,
                 "REDIS_URL": redis_url,
                 "STABLE_QUEUE_NAME": "valkyrie-stable",
+                "EXECUTOR_TRACKER_URL": f"http://tracker.{namespace.namespace_name}:{TRACKER_PORT}",
+                "EXECUTOR_HOST_SERVICE_NAME": stage.phys("ExecutorHost"),
+                "EXECUTOR_HOST_DRAIN_PROTOCOL": "1",
                 "EXECUTOR_RELEASE_BUCKET": self.executor_release_bucket.bucket_name,
                 "EXECUTOR_RELEASE_PREFIX": EXECUTOR_RELEASE_PREFIX,
                 "SENTRY_RELEASE": f"executor-host@{executor_host_release}",
@@ -210,6 +214,19 @@ class ExecutorStack(Stack):
             aws_iam.PolicyStatement(
                 actions=["ecs:UpdateTaskProtection"],
                 resources=["*"],
+            )
+        )
+        self.executor_task_role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["ecs:DescribeServices"],
+                resources=[
+                    self.format_arn(
+                        service="ecs",
+                        resource="service",
+                        resource_name=f"{cluster.cluster_name}/{stage.phys('ExecutorHost')}",
+                        arn_format=cdk.ArnFormat.SLASH_RESOURCE_NAME,
+                    )
+                ],
             )
         )
         self.executor_task_role.add_to_policy(
@@ -231,6 +248,11 @@ class ExecutorStack(Stack):
             min_healthy_percent=100,
             max_healthy_percent=200,
             assign_public_ip=True,
+        )
+        tracker_service.connections.allow_from(
+            self.executor_host_service,
+            aws_ec2.Port.tcp(TRACKER_PORT),
+            "Executor host security group calls the versioned Tracker API",
         )
         executor_scaling = self.executor_host_service.auto_scale_task_count(
             min_capacity=stage_config.worker.min_tasks,
@@ -419,7 +441,7 @@ class ExecutorStack(Stack):
         )
         task_role.add_to_policy(
             aws_iam.PolicyStatement(
-                actions=["ecs:UpdateTaskProtection", "ecs:StopTask"],
+                actions=["ecs:UpdateTaskProtection", "ecs:StopTask", "ecs:DescribeTasks"],
                 resources=[executor_task_arn],
                 conditions={"ArnEquals": {"ecs:cluster": cluster.cluster_arn}},
             )
@@ -429,6 +451,20 @@ class ExecutorStack(Stack):
                 actions=["ecs:DescribeServices", "ecs:UpdateService"],
                 resources=[self.executor_host_service.service_arn, tracker_service.service_arn],
                 conditions={"ArnEquals": {"ecs:cluster": cluster.cluster_arn}},
+            )
+        )
+
+        task_role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["ecs:DescribeTaskDefinition"],
+                resources=[
+                    self.format_arn(
+                        service="ecs",
+                        resource="task-definition",
+                        resource_name=f"{self.executor_host_service.task_definition.family}:*",
+                        arn_format=cdk.ArnFormat.SLASH_RESOURCE_NAME,
+                    )
+                ],
             )
         )
 

@@ -48,6 +48,7 @@ def test_openapi_declares_authentication() -> None:
         "run/state",
         "run/finalization",
         "run/finalize",
+        "run/report",
     ):
         path = f"/internal/executor/v1/dispatches/{{dispatch_id}}/{operation}"
         assert schema["paths"][path]["post"]["security"] == [{"ExecutorDispatchAuth": []}]

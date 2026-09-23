@@ -13,18 +13,19 @@ from json import JSONDecodeError
 import logging
 import sys
 import urllib.request
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
-from taskiq import AckableMessage, TaskiqMessage
+from taskiq import AckableMessage, InMemoryBroker, TaskiqMessage
 from taskiq.receiver import Receiver
 
 import services.executor_host.observability as host_observability
 import services.executor_host.supervisor as supervisor_module
+import services.executor_host.draining as draining_module
 from services.executor_host.supervisor import (  # pyright: ignore[reportMissingImports]
     ArtifactDispatch,
     DispatchAuthority,
@@ -984,6 +985,69 @@ def test_executor_host_uses_one_taskiq_process() -> None:
     dockerfile = (Path(__file__).parents[3] / "services" / "executor_host" / "Dockerfile").read_text()
 
     assert '"--workers", "1"' in dockerfile
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("already_replaced", [False, True])
+async def test_replaced_host_drains_without_cancelling_work(
+    monkeypatch: pytest.MonkeyPatch, already_replaced: bool
+) -> None:
+    """Stop Taskiq intake while retaining already running work.
+
+    Test cases:
+    - A replaced host accepts no work at startup.
+    - An active host drains only after its running task completes naturally.
+    """
+    current = not already_replaced
+    started = asyncio.Event()
+    release = asyncio.Event()
+    intake_stopped = asyncio.Event()
+    finish_event = asyncio.Event()
+    completed: list[str] = []
+
+    async def current_generation() -> bool:
+        return current
+
+    class MockQueueBroker(InMemoryBroker):
+        async def listen(self) -> AsyncGenerator[bytes, None]:
+            message = TaskiqMessage(task_id="drain-task", task_name="drain-work", labels={}, args=[], kwargs={})
+            try:
+                yield self.formatter.dumps(message).message
+                await asyncio.Event().wait()
+            finally:
+                intake_stopped.set()
+
+    broker = MockQueueBroker()
+
+    async def work() -> None:
+        started.set()
+        await release.wait()
+        completed.append("finished")
+
+    broker.task("drain-work")(work)
+    monkeypatch.setattr(draining_module, "is_current_generation", current_generation)
+    monkeypatch.setattr(draining_module, "_POLL_SECONDS", 0.01)
+    receiver = draining_module.DrainingReceiver(broker, max_prefetch=1)
+    listener = asyncio.create_task(receiver.listen(finish_event))
+    try:
+        async with asyncio.timeout(5):
+            if already_replaced:
+                await listener
+                assert not started.is_set() and completed == []
+            else:
+                await started.wait()
+                current = False
+                await finish_event.wait()
+                await intake_stopped.wait()
+                assert not listener.done() and completed == []
+                release.set()
+                await listener
+                assert completed == ["finished"]
+    finally:
+        release.set()
+        listener.cancel()
+        await asyncio.gather(listener, return_exceptions=True)
+        await broker.shutdown()
 
 
 @pytest.mark.asyncio

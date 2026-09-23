@@ -2406,6 +2406,134 @@
         "title": "ReleasePoolResponse",
         "type": "object"
       },
+      "ReportEvaluation": {
+        "properties": {
+          "benchmark": {
+            "format": "uuid",
+            "title": "Benchmark",
+            "type": "string"
+          },
+          "final_score": {
+            "title": "Final Score",
+            "type": "number"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "properties": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Properties",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "org_id",
+          "benchmark",
+          "final_score",
+          "properties"
+        ],
+        "title": "ReportEvaluation",
+        "type": "object"
+      },
+      "ReportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "claimant_id": {
+            "format": "uuid",
+            "title": "Claimant Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claimant_id",
+          "command_id"
+        ],
+        "title": "ReportRequest",
+        "type": "object"
+      },
+      "ReportResponse": {
+        "properties": {
+          "report": {
+            "$ref": "#/components/schemas/RunReport"
+          }
+        },
+        "required": [
+          "report"
+        ],
+        "title": "ReportResponse",
+        "type": "object"
+      },
+      "ReportTaskBreakdown": {
+        "properties": {
+          "agent_run_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Run Duration"
+          },
+          "evaluation_run_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Run Duration"
+          },
+          "sandbox_build_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Build Duration"
+          },
+          "sandbox_run_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Run Duration"
+          }
+        },
+        "required": [
+          "sandbox_build_duration",
+          "agent_run_duration",
+          "evaluation_run_duration",
+          "sandbox_run_duration"
+        ],
+        "title": "ReportTaskBreakdown",
+        "type": "object"
+      },
       "ReservePoolRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2748,6 +2876,136 @@
           "resources"
         ],
         "title": "RunInfo",
+        "type": "object"
+      },
+      "RunReport": {
+        "description": "Stable v1 report fields; benchmark-owned arguments and results remain JSON payloads.",
+        "properties": {
+          "average_task_breakdown": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReportTaskBreakdown"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "benchmark_arguments": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Benchmark Arguments",
+            "type": "object"
+          },
+          "benchmark_id": {
+            "format": "uuid",
+            "title": "Benchmark Id",
+            "type": "string"
+          },
+          "benchmark_name": {
+            "title": "Benchmark Name",
+            "type": "string"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "evaluation_results": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/JsonValue"
+                  },
+                  "type": "object"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Results"
+          },
+          "final_evaluation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReportEvaluation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "task_errors": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Errors"
+          },
+          "tasks_stopped": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tasks Stopped"
+          }
+        },
+        "required": [
+          "benchmark_id",
+          "benchmark_name",
+          "started_at",
+          "finished_at",
+          "status",
+          "error_message",
+          "benchmark_arguments",
+          "tasks_stopped",
+          "final_evaluation",
+          "average_task_breakdown",
+          "evaluation_results",
+          "task_errors"
+        ],
+        "title": "RunReport",
         "type": "object"
       },
       "RunResources": {
@@ -6514,6 +6772,64 @@
           }
         ],
         "summary": "Initialize Run",
+        "tags": [
+          "executor-v1"
+        ]
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/run/report": {
+      "post": {
+        "operationId": "run_report",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Run Report",
         "tags": [
           "executor-v1"
         ]

@@ -61,11 +61,13 @@ from tracker.exceptions import (
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.executor.checkpoints import run_with_checkpoints
 from tracker.executor.task_persistence import (
+    ApiTaskPersistence,
     TaskPersistence,
     TaskSnapshot,
     attempt_time,
     settle_task_io,
 )
+from tracker.executor.queue_execution import ApiSandboxQueueContext
 from tracker.executor_api.v1.schemas import RunStatus, TaskState
 from tracker.executor_api.v1.schemas import TaskStatus as ApiTaskStatus
 from tracker.executor_api.v1.task_schemas import (
@@ -746,7 +748,7 @@ async def process_task(
     authority: ExecutionAuthority,
     *,
     sandbox_provider: SandboxProvider | None = None,
-    queue_context: SandboxQueueContext | None = None,
+    queue_context: SandboxQueueContext | ApiSandboxQueueContext | None = None,
     persistence: TaskPersistence | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Process one task while retaining dependency recovery state across sandbox attempts."""
@@ -838,7 +840,7 @@ async def _process_task_attempt(
     authority: ExecutionAuthority,
     *,
     sandbox_provider: SandboxProvider | None = None,
-    queue_context: SandboxQueueContext | None = None,
+    queue_context: SandboxQueueContext | ApiSandboxQueueContext | None = None,
     persistence: TaskPersistence,
 ) -> dict[str, dict[str, Any] | None]:
     """
@@ -1131,6 +1133,17 @@ async def _process_task_attempt(
         async with AsyncExitStack() as sandbox_stack:
             if queue_context is None:
                 sandbox = await sandbox_stack.enter_async_context(sandbox_context())
+            elif isinstance(queue_context, ApiSandboxQueueContext):
+                assert isinstance(persistence, ApiTaskPersistence)
+                sandbox = await queue_context.enter(
+                    stack=sandbox_stack,
+                    persistence=persistence,
+                    source=task_data.source,
+                    resources=task_data.resources,
+                    create=sandbox_context,
+                )
+                if sandbox is None:
+                    return {task_id: None}
             else:
                 sandbox = await enter_queued_sandbox(
                     stack=sandbox_stack,
