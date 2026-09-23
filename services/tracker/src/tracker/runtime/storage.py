@@ -1,9 +1,9 @@
 """Provider-neutral object storage capabilities used by Tracker and the CLI."""
 
-from collections.abc import AsyncIterable, AsyncIterator, Callable
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
