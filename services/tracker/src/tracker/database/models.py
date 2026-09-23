@@ -316,6 +316,25 @@ class ExecutorDispatchAccess(SQLModel, table=True):
     terminal_request_digest: str | None = None
 
 
+class ExecutorTaskAttempt(SQLModel, table=True):
+    """Exclusive executor ownership and write ordering for a task's current attempt."""
+
+    task_id: UUID = Field(primary_key=True, foreign_key="task.id", ondelete="CASCADE")
+    dispatch_id: UUID = Field(foreign_key="executordispatch.id", ondelete="CASCADE")
+    started_at: datetime
+    revision: int = 0
+
+
+class ExecutorTaskReceipt(SQLModel, table=True):
+    """Replay a committed task command without repeating its side effects."""
+
+    dispatch_id: UUID = Field(primary_key=True, foreign_key="executordispatch.id", ondelete="CASCADE")
+    command_id: UUID = Field(primary_key=True)
+    task_id: UUID = Field(foreign_key="task.id", ondelete="CASCADE")
+    request_digest: str
+    revision: int
+
+
 class Benchmark(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint(

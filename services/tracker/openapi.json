@@ -1058,6 +1058,19 @@
         "title": "Body_stop_benchmark",
         "type": "object"
       },
+      "BuildTask": {
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "const": "build",
+            "default": "build",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "title": "BuildTask",
+        "type": "object"
+      },
       "ClaimRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1103,6 +1116,79 @@
         "title": "ClaimRequest",
         "type": "object"
       },
+      "CompleteTask": {
+        "additionalProperties": false,
+        "properties": {
+          "evaluation_run_duration": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Run Duration"
+          },
+          "exit_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "TIMEOUT",
+                  "OS_KILLED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Reason"
+          },
+          "instance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instance Id"
+          },
+          "operation": {
+            "const": "complete",
+            "default": "complete",
+            "title": "Operation",
+            "type": "string"
+          },
+          "result": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Result",
+            "type": "object"
+          },
+          "sandbox_run_duration": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Run Duration"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "CompleteTask",
+        "type": "object"
+      },
       "DispatchRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1116,6 +1202,43 @@
           "claimant_id"
         ],
         "title": "DispatchRequest",
+        "type": "object"
+      },
+      "EvaluateTask": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_run_duration": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Run Duration"
+          },
+          "operation": {
+            "const": "evaluate",
+            "default": "evaluate",
+            "title": "Operation",
+            "type": "string"
+          },
+          "sandbox_build_duration": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Build Duration"
+          }
+        },
+        "title": "EvaluateTask",
         "type": "object"
       },
       "FailRequest": {
@@ -1138,6 +1261,57 @@
           "error_message"
         ],
         "title": "FailRequest",
+        "type": "object"
+      },
+      "FailTask": {
+        "additionalProperties": false,
+        "properties": {
+          "cause_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cause Code"
+          },
+          "error_message": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "title": "Error Message",
+            "type": "string"
+          },
+          "error_type": {
+            "minLength": 1,
+            "title": "Error Type",
+            "type": "string"
+          },
+          "operation": {
+            "const": "fail",
+            "default": "fail",
+            "title": "Operation",
+            "type": "string"
+          },
+          "operation_name": {
+            "minLength": 1,
+            "title": "Operation Name",
+            "type": "string"
+          },
+          "producer": {
+            "minLength": 1,
+            "title": "Producer",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error_message",
+          "producer",
+          "operation_name",
+          "error_type"
+        ],
+        "title": "FailTask",
         "type": "object"
       },
       "FetchBenchmarkMetadataResponse": {
@@ -1933,6 +2107,19 @@
         "additionalProperties": true,
         "type": "object"
       },
+      "PendingTask": {
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "const": "pending",
+            "default": "pending",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "title": "PendingTask",
+        "type": "object"
+      },
       "RetryMode": {
         "enum": [
           "auto",
@@ -1952,6 +2139,63 @@
           "status"
         ],
         "title": "RetryOrResumeBenchmarkResponse",
+        "type": "object"
+      },
+      "RetryTask": {
+        "additionalProperties": false,
+        "properties": {
+          "cause_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cause Code"
+          },
+          "error_message": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "title": "Error Message",
+            "type": "string"
+          },
+          "error_type": {
+            "minLength": 1,
+            "title": "Error Type",
+            "type": "string"
+          },
+          "failed_attempt_number": {
+            "minimum": 1.0,
+            "title": "Failed Attempt Number",
+            "type": "integer"
+          },
+          "operation": {
+            "const": "retry",
+            "default": "retry",
+            "title": "Operation",
+            "type": "string"
+          },
+          "operation_name": {
+            "minLength": 1,
+            "title": "Operation Name",
+            "type": "string"
+          },
+          "producer": {
+            "minLength": 1,
+            "title": "Producer",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error_message",
+          "producer",
+          "operation_name",
+          "error_type",
+          "failed_attempt_number"
+        ],
+        "title": "RetryTask",
         "type": "object"
       },
       "RunArtifactDownloadResponse": {
@@ -2207,6 +2451,19 @@
         "title": "RunStatus",
         "type": "string"
       },
+      "RunTask": {
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "const": "run",
+            "default": "run",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "title": "RunTask",
+        "type": "object"
+      },
       "RunTasksRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2261,6 +2518,29 @@
           "console_url"
         ],
         "title": "S3UploadResultsResponse",
+        "type": "object"
+      },
+      "SaveCheckpoint": {
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Checkpoint",
+            "type": "object"
+          },
+          "operation": {
+            "const": "checkpoint",
+            "default": "checkpoint",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "checkpoint"
+        ],
+        "title": "SaveCheckpoint",
         "type": "object"
       },
       "SchedulerActiveEntryResponse": {
@@ -3209,6 +3489,19 @@
         "title": "StopBenchmarkResponse",
         "type": "object"
       },
+      "StopTask": {
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "const": "stop",
+            "default": "stop",
+            "title": "Operation",
+            "type": "string"
+          }
+        },
+        "title": "StopTask",
+        "type": "object"
+      },
       "TaskArtifactsResponse": {
         "properties": {
           "agent_output_expires_in": {
@@ -3251,6 +3544,33 @@
           "agent_output_expires_in"
         ],
         "title": "TaskArtifactsResponse",
+        "type": "object"
+      },
+      "TaskAttemptRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "claimant_id": {
+            "format": "uuid",
+            "title": "Claimant Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "expected_started_at": {
+            "format": "date-time",
+            "title": "Expected Started At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claimant_id",
+          "command_id",
+          "expected_started_at"
+        ],
+        "title": "TaskAttemptRequest",
         "type": "object"
       },
       "TaskState": {
@@ -3371,6 +3691,111 @@
           "finished_at"
         ],
         "title": "TaskSummary",
+        "type": "object"
+      },
+      "TaskWriteRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "claimant_id": {
+            "format": "uuid",
+            "title": "Claimant Id",
+            "type": "string"
+          },
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_started_at": {
+            "format": "date-time",
+            "title": "Expected Started At",
+            "type": "string"
+          },
+          "mutation": {
+            "discriminator": {
+              "mapping": {
+                "build": "#/components/schemas/BuildTask",
+                "checkpoint": "#/components/schemas/SaveCheckpoint",
+                "complete": "#/components/schemas/CompleteTask",
+                "evaluate": "#/components/schemas/EvaluateTask",
+                "fail": "#/components/schemas/FailTask",
+                "pending": "#/components/schemas/PendingTask",
+                "retry": "#/components/schemas/RetryTask",
+                "run": "#/components/schemas/RunTask",
+                "stop": "#/components/schemas/StopTask"
+              },
+              "propertyName": "operation"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BuildTask"
+              },
+              {
+                "$ref": "#/components/schemas/RunTask"
+              },
+              {
+                "$ref": "#/components/schemas/EvaluateTask"
+              },
+              {
+                "$ref": "#/components/schemas/SaveCheckpoint"
+              },
+              {
+                "$ref": "#/components/schemas/CompleteTask"
+              },
+              {
+                "$ref": "#/components/schemas/FailTask"
+              },
+              {
+                "$ref": "#/components/schemas/RetryTask"
+              },
+              {
+                "$ref": "#/components/schemas/PendingTask"
+              },
+              {
+                "$ref": "#/components/schemas/StopTask"
+              }
+            ],
+            "title": "Mutation"
+          }
+        },
+        "required": [
+          "claimant_id",
+          "command_id",
+          "expected_started_at",
+          "expected_revision",
+          "mutation"
+        ],
+        "title": "TaskWriteRequest",
+        "type": "object"
+      },
+      "TaskWriteResponse": {
+        "properties": {
+          "command_id": {
+            "format": "uuid",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_id",
+          "task_id",
+          "revision"
+        ],
+        "title": "TaskWriteResponse",
         "type": "object"
       },
       "TasksResponse": {
@@ -5644,6 +6069,142 @@
           }
         ],
         "summary": "Run State",
+        "tags": [
+          "executor-v1"
+        ]
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/tasks/{task_id}/claim": {
+      "post": {
+        "operationId": "task_claim",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskAttemptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskWriteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Task Claim",
+        "tags": [
+          "executor-v1"
+        ]
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/tasks/{task_id}/write": {
+      "post": {
+        "operationId": "task_write",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskWriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskWriteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Task Write",
         "tags": [
           "executor-v1"
         ]
