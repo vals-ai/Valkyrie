@@ -800,6 +800,15 @@ async def _terminalize_after_failure(
         )
 
 
+async def _terminalize_uncancellably(
+    store: ExecutorDispatchStore,
+    authority: DispatchAuthority,
+    task_ids: list[str],
+) -> None:
+    """Run terminalization on its own task so a pending cancellation can't cut it short."""
+    await _await_task_completion(asyncio.create_task(_terminalize_after_failure(store, authority, task_ids)))
+
+
 async def _heartbeat_loop(
     store: ExecutorDispatchStore,
     authority: DispatchAuthority,
@@ -871,9 +880,7 @@ async def run_executor_dispatch(
         except asyncio.CancelledError:
             authority = await _await_task_completion(claim_task)
             if authority is not None:
-                await _await_task_completion(
-                    asyncio.create_task(_terminalize_after_failure(store, authority, process_payload.verified_task_ids))
-                )
+                await _terminalize_uncancellably(store, authority, process_payload.verified_task_ids)
             raise
 
         if authority is None:
@@ -911,9 +918,7 @@ async def run_executor_dispatch(
                     authority.dispatch_id,
                 )
         except BaseException:
-            await _await_task_completion(
-                asyncio.create_task(_terminalize_after_failure(store, authority, process_payload.verified_task_ids))
-            )
+            await _terminalize_uncancellably(store, authority, process_payload.verified_task_ids)
             raise
         finally:
             heartbeat_task.cancel()

@@ -195,21 +195,21 @@ class TrackerService:
         secret_name = harness_config.get("webhook")
         return secret_name if secret_name else None
 
-    @classmethod
-    def validate_sandbox_provider(cls, provider: str | None = None) -> tuple[str, str | None]:
-        """Validate the selected sandbox provider before starting a run."""
+    @staticmethod
+    def _resolve_sandbox_provider(sdk_config: ValkyrieConfig, provider: str | None) -> tuple[str, str | None]:
         try:
-            name, secret = ValkyrieConfig.from_yaml(config_location()).resolve_sandbox_provider(provider)
+            name, secret = sdk_config.resolve_sandbox_provider(provider)
         except ValkyrieConfigError as error:
             raise TrackerServiceError(str(error)) from error
         return name or "daytona", secret
 
+    @classmethod
+    def validate_sandbox_provider(cls, provider: str | None = None) -> tuple[str, str | None]:
+        """Validate the selected sandbox provider before starting a run."""
+        return cls._resolve_sandbox_provider(ValkyrieConfig.from_yaml(config_location()), provider)
+
     def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str, str | None]:
-        try:
-            name, secret = self._sdk_config.resolve_sandbox_provider(provider)
-        except ValkyrieConfigError as error:
-            raise TrackerServiceError(str(error)) from error
-        return name or "daytona", secret
+        return self._resolve_sandbox_provider(self._sdk_config, provider)
 
     def health_check(self) -> Response:
         """

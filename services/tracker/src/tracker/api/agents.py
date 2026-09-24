@@ -20,9 +20,9 @@ from tracker import config
 from tracker.agent.archive import ArchiveLimitError, validate_agent_archive
 from tracker.agent.schemas import validate_agent_name
 from tracker.api.dependencies import AgentLibraryRuntimeDependency
+from tracker.api.download import local_file_response, resolve_download_url
 from tracker.runtime.artifacts import list_agents
 from tracker.exceptions import S3Error
-from tracker.local.storage import FilesystemObjectStore
 from tracker.types import AgentDownloadURLResponse, AgentEntry, AgentsResponse
 
 PRESIGNED_URL_EXPIRES_SECONDS = 300
@@ -98,21 +98,22 @@ async def get_agent_download_url(
     with _storage_errors():
         if not await runtime.objects.exists(key):
             raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")
-        if download and isinstance(runtime.objects, FilesystemObjectStore):
-            return FileResponse(
-                runtime.objects.object_location(key), filename=f"{name}.zip", media_type="application/zip"
+        if download:
+            response = local_file_response(
+                runtime.objects, key, filename=f"{name}.zip", media_type="application/zip"
             )
-        url = await runtime.objects.temporary_download_url(key, expires_in=PRESIGNED_URL_EXPIRES_SECONDS)
-        if url is None:
-            return AgentDownloadURLResponse(
-                name=name,
-                download_url=str(
-                    request.url_for("get_agent_download_url", name=name).include_query_params(download="true")
-                ),
-                expires_in=0,
-            )
+            if response is not None:
+                return response
+        url, expires_in = await resolve_download_url(
+            runtime.objects,
+            key,
+            request=request,
+            route_name="get_agent_download_url",
+            route_params={"name": name},
+            expires_in=PRESIGNED_URL_EXPIRES_SECONDS,
+        )
 
-    return AgentDownloadURLResponse(name=name, download_url=url, expires_in=PRESIGNED_URL_EXPIRES_SECONDS)
+    return AgentDownloadURLResponse(name=name, download_url=url, expires_in=expires_in)
 
 
 @router.put(
