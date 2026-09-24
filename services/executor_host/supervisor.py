@@ -19,8 +19,6 @@ from uuid import uuid4
 
 import aiohttp
 import boto3
-import psycopg2  # pyright: ignore[reportMissingModuleSource]
-from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
 from redis.asyncio import Redis
 from taskiq import TaskiqEvents, TaskiqMessage, TaskiqMiddleware, TaskiqResult
 from taskiq_redis import RedisStreamBroker
@@ -252,17 +250,16 @@ class ExecutorProcessPayload:
                 "verified_task_ids": raw_task_ids,
             }
         arguments["telemetry_context_json"] = telemetry_context
-        if payload.get("executor_protocol_version") == "4":
-            arguments["executor_api_token"] = _required_string(payload, "executor_api_token")
-            arguments["executor_tracker_url"] = _required_string(dict(os.environ), "EXECUTOR_TRACKER_URL")
-            arguments["executor_claimant_id"] = str(uuid4())
-            for key in (
-                "executor_release_id",
-                "executor_artifact_uri",
-                "executor_artifact_digest",
-                "executor_protocol_version",
-            ):
-                arguments[key] = _required_string(payload, key)
+        arguments["executor_api_token"] = _required_string(payload, "executor_api_token")
+        arguments["executor_tracker_url"] = _required_string(dict(os.environ), "EXECUTOR_TRACKER_URL")
+        arguments["executor_claimant_id"] = str(uuid4())
+        for key in (
+            "executor_release_id",
+            "executor_artifact_uri",
+            "executor_artifact_digest",
+            "executor_protocol_version",
+        ):
+            arguments[key] = _required_string(payload, key)
         if not isinstance(benchmark_id, str) or not benchmark_id:
             raise ValueError("Executor payload has no valid benchmark ID")
         verified_task_ids = (
@@ -365,278 +362,6 @@ class ApiExecutorDispatchStore:
 
     async def finish(self, authority: DispatchAuthority) -> bool:
         return await self._post(authority.dispatch_id, "finish") is not None
-
-
-class PostgresExecutorDispatchStore:
-    """Persist dispatch lifecycle at the stable process-owner boundary."""
-
-    def __init__(
-        self,
-        *,
-        host: str,
-        port: str,
-        dbname: str,
-        user: str,
-        password: str,
-    ) -> None:
-        self.host = host
-        self.port = port
-        self.dbname = dbname
-        self.user = user
-        self.password = password
-
-    @classmethod
-    def from_environment(cls) -> PostgresExecutorDispatchStore:
-        return cls(
-            host=os.environ.get("DB_HOST", "localhost"),
-            port=os.environ.get("DB_PORT", "5432"),
-            dbname=os.environ.get("DB_NAME", "tracker"),
-            user=os.environ.get("DB_USERNAME", "tracker"),
-            password=os.environ.get("DB_PASSWORD", "tracker"),
-        )
-
-    def _connect(self) -> PostgresConnection:
-        return psycopg2.connect(
-            host=self.host,
-            port=self.port,
-            dbname=self.dbname,
-            user=self.user,
-            password=self.password,
-        )
-
-    async def claim(
-        self,
-        dispatch_id: str,
-        benchmark_id: str,
-        dispatch: ArtifactDispatch,
-    ) -> DispatchAuthority | None:
-        claimed = await asyncio.to_thread(
-            self._claim,
-            dispatch_id,
-            benchmark_id,
-            dispatch,
-        )
-        if not claimed:
-            return None
-        return DispatchAuthority(
-            dispatch_id=dispatch_id,
-            benchmark_id=benchmark_id,
-        )
-
-    def _claim(
-        self,
-        dispatch_id: str,
-        benchmark_id: str,
-        dispatch: ArtifactDispatch,
-    ) -> bool:
-        with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE executordispatch AS dispatch
-                SET status = 'RUNNING',
-                    started_at = CURRENT_TIMESTAMP,
-                    heartbeat_at = CURRENT_TIMESTAMP,
-                    lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second')
-                FROM benchmark
-                WHERE dispatch.id = %s::uuid
-                  AND dispatch.benchmark_id = benchmark.id
-                  AND benchmark.id = %s::uuid
-                  AND benchmark.status = 'IN_PROGRESS'
-                  AND dispatch.executor_release_id = %s
-                  AND dispatch.executor_artifact_uri = %s
-                  AND dispatch.executor_artifact_digest = %s
-                  AND dispatch.executor_protocol_version = %s
-                  AND dispatch.status = 'QUEUED'
-                  AND dispatch.claim_deadline_at > CURRENT_TIMESTAMP
-                RETURNING dispatch.id
-                """,
-                (
-                    DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
-                    dispatch_id,
-                    benchmark_id,
-                    dispatch.release_id,
-                    dispatch.artifact_uri,
-                    dispatch.artifact_digest,
-                    dispatch.protocol_version,
-                ),
-            )
-            return cursor.fetchone() is not None
-
-    async def is_current(self, authority: DispatchAuthority) -> bool:
-        return await asyncio.to_thread(self._is_current, authority)
-
-    def _is_current(self, authority: DispatchAuthority) -> bool:
-        with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT dispatch.id
-                FROM executordispatch AS dispatch
-                JOIN benchmark ON benchmark.id = dispatch.benchmark_id
-                WHERE dispatch.id = %s::uuid
-                  AND benchmark.status != 'STOPPED'
-                  AND dispatch.status = 'RUNNING'
-                  AND dispatch.lease_expires_at > CURRENT_TIMESTAMP
-                """,
-                (authority.dispatch_id,),
-            )
-            return cursor.fetchone() is not None
-
-    async def heartbeat(self, authority: DispatchAuthority) -> bool:
-        return await asyncio.to_thread(self._heartbeat, authority)
-
-    def _heartbeat(self, authority: DispatchAuthority) -> bool:
-        with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE executordispatch
-                SET heartbeat_at = CURRENT_TIMESTAMP,
-                    lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second')
-                WHERE id = %s::uuid
-                  AND benchmark_id = %s::uuid
-                  AND status = 'RUNNING'
-                  AND lease_expires_at > CURRENT_TIMESTAMP
-                RETURNING id
-                """,
-                (DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS, authority.dispatch_id, authority.benchmark_id),
-            )
-            return cursor.fetchone() is not None
-
-    async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
-        return await asyncio.to_thread(self._terminalize, authority, task_ids)
-
-    def _terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
-        with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT status
-                FROM benchmark
-                WHERE id = %s::uuid
-                FOR UPDATE
-                """,
-                (authority.benchmark_id,),
-            )
-            benchmark_row = cursor.fetchone()
-            if benchmark_row is None:
-                return False
-            cursor.execute(
-                """
-                UPDATE executordispatch
-                SET status = 'FAILED',
-                    finished_at = CURRENT_TIMESTAMP,
-                    failure_reason = 'EXECUTOR_FAILED'
-                WHERE id = %s::uuid
-                  AND benchmark_id = %s::uuid
-                  AND status = 'RUNNING'
-                  AND lease_expires_at > CURRENT_TIMESTAMP
-                RETURNING id
-                """,
-                (authority.dispatch_id, authority.benchmark_id),
-            )
-            failed_dispatch_row = cursor.fetchone()
-            if failed_dispatch_row is None:
-                return False
-            cursor.execute(
-                """
-                UPDATE task
-                SET status = 'ERROR', finished_at = CURRENT_TIMESTAMP
-                WHERE benchmark = %s::uuid
-                  AND task_id = ANY(%s)
-                  AND started_at <= (
-                      SELECT created_at
-                      FROM executordispatch
-                      WHERE id = %s::uuid
-                  )
-                  AND status IN ('PENDING', 'BUILDING', 'IN_PROGRESS', 'EVALUATING')
-                """,
-                (authority.benchmark_id, task_ids, authority.dispatch_id),
-            )
-            if benchmark_row[0] == "IN_PROGRESS":
-                cursor.execute(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1
-                        FROM executordispatch
-                        WHERE benchmark_id = %s::uuid
-                          AND id != %s::uuid
-                          AND status IN ('QUEUED', 'RUNNING')
-                    )
-                    """,
-                    (authority.benchmark_id, authority.dispatch_id),
-                )
-                active_dispatch_row = cursor.fetchone()
-                assert active_dispatch_row is not None
-                if not bool(active_dispatch_row[0]):
-                    cursor.execute(
-                        """
-                        UPDATE benchmark
-                        SET status = 'ERROR',
-                            finished_at = CURRENT_TIMESTAMP,
-                            error_message = 'Executor host failed'
-                        WHERE id = %s::uuid
-                        """,
-                        (authority.benchmark_id,),
-                    )
-            return True
-
-    async def finish(self, authority: DispatchAuthority) -> bool:
-        return await asyncio.to_thread(self._finish, authority)
-
-    def _finish(self, authority: DispatchAuthority) -> bool:
-        with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT status
-                FROM benchmark
-                WHERE id = %s::uuid
-                FOR UPDATE
-                """,
-                (authority.benchmark_id,),
-            )
-            benchmark_row = cursor.fetchone()
-            if benchmark_row is None or benchmark_row[0] in ("STOPPING", "STOPPED"):
-                return False
-
-            cursor.execute(
-                """
-                UPDATE executordispatch
-                SET status = 'FINISHED', finished_at = CURRENT_TIMESTAMP
-                WHERE id = %s::uuid
-                  AND benchmark_id = %s::uuid
-                  AND status = 'RUNNING'
-                  AND lease_expires_at > CURRENT_TIMESTAMP
-                RETURNING id
-                """,
-                (authority.dispatch_id, authority.benchmark_id),
-            )
-            if cursor.fetchone() is None:
-                return False
-
-            if benchmark_row[0] == "IN_PROGRESS":
-                cursor.execute(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1
-                        FROM executordispatch
-                        WHERE benchmark_id = %s::uuid
-                          AND status IN ('QUEUED', 'RUNNING')
-                    )
-                    """,
-                    (authority.benchmark_id,),
-                )
-                active_dispatch_row = cursor.fetchone()
-                assert active_dispatch_row is not None
-                if not bool(active_dispatch_row[0]):
-                    cursor.execute(
-                        """
-                        UPDATE benchmark
-                        SET status = 'ERROR',
-                            finished_at = CURRENT_TIMESTAMP,
-                            error_message = 'Executor exited without finalizing benchmark'
-                        WHERE id = %s::uuid
-                        """,
-                        (authority.benchmark_id,),
-                    )
-            return True
 
 
 def _required_string(payload: Mapping[str, object], key: str) -> str:
@@ -819,7 +544,7 @@ class ExecutorSupervisor:
             await self.sleep(self.authority_check_interval)
             try:
                 authority_is_current = await is_current()
-            except (psycopg2.OperationalError, aiohttp.ClientError, TimeoutError):
+            except (aiohttp.ClientError, TimeoutError):
                 logger.exception(
                     "Failed to check executor dispatch authority; retrying",
                 )
@@ -890,7 +615,6 @@ async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:
 
 
 supervisor = ExecutorSupervisor(CACHE_DIR)
-dispatch_store = PostgresExecutorDispatchStore.from_environment()
 
 
 async def _terminalize_after_failure(
@@ -1045,11 +769,7 @@ async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
                 telemetry_context=child_telemetry_context,
             )
             async with aiohttp.ClientSession() as client:
-                store = (
-                    ApiExecutorDispatchStore(client, process_payload)
-                    if dispatch.protocol_version == "4"
-                    else dispatch_store
-                )
+                store = ApiExecutorDispatchStore(client, process_payload)
                 await run_executor_dispatch(
                     supervisor,
                     store,

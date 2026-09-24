@@ -158,7 +158,7 @@ def _release_arguments(monkeypatch: MonkeyPatch, *, artifact_digest: str = "a" *
             "git-abc123-def456",
             "s3://releases/releases/git-abc123-def456/executor.pex",
             artifact_digest,
-            "1",
+            "4",
         ],
     )
 

@@ -51,6 +51,7 @@ _ACCESS_KEY_TASK_KWARGS = {
     "start_benchmark_request_json",
     "benchmark_id_str",
     "verified_task_ids",
+    "executor_api_token",
 } | _DISPATCH_TASK_KWARGS
 _MANAGED_TASK_KWARGS = {"execution_context_json", "executor_api_token"} | _DISPATCH_TASK_KWARGS
 _CALLER_AWS_HEADERS = {
@@ -466,7 +467,7 @@ def test_access_key_start_and_resume_keep_v1_task_kwargs(
     harness_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _promote_test_release(database_session, protocol_version="1")
+    _promote_test_release(database_session)
     payloads = _capture_task_payloads(monkeypatch)
 
     async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:

@@ -25,7 +25,7 @@ class TestBenchmarksStatus:
             id="status-release",
             artifact_uri="s3://artifacts/status.pex",
             artifact_digest="a" * 64,
-            protocol_version="1",
+            protocol_version="4",
         )
         running_benchmark = make_benchmark("running", status=BenchmarkStatus.IN_PROGRESS)
         running_benchmark.current_execution_release_id = release.id

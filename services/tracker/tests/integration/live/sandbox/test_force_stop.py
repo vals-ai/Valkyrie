@@ -3,6 +3,8 @@
 Exercise force-stop behavior against real sandbox infrastructure.
 """
 
+from tests.utils import process_benchmark
+
 import asyncio
 from typing import Any, Optional
 
@@ -22,7 +24,7 @@ from tracker.sandbox import create_sandbox
 from tracker.types import HarnessConfig
 from tracker.utils import fetch_sandbox_provider_config, force_stop_sandboxes
 
-process_benchmark = getattr(tracker_utils, "process_benchmark")
+
 initiate_stop_benchmark = getattr(tracker_utils, "initiate_stop_benchmark")
 
 logger = get_logger(__name__)

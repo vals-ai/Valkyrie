@@ -1,7 +1,6 @@
 """PostgreSQL tests for operational Alembic migration contracts."""
 
 import os
-import asyncio
 import subprocess
 import sys
 from collections.abc import Generator
@@ -17,12 +16,9 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import DBAPIError
-from sqlmodel import Session, create_engine, select
+from sqlmodel import Session, create_engine
 from testcontainers.postgres import PostgresContainer
 from tests.integration.local.database.conftest import local_postgres_url
-from tests.factories import make_benchmark, make_task
-from services.executor_host.supervisor import ArtifactDispatch, PostgresExecutorDispatchStore
-from tracker.executor.release_control import create_executor_dispatch, pin_benchmark_to_release, register_release
 
 from tracker.database.models import (
     AgentContractRequest,
@@ -30,13 +26,6 @@ from tracker.database.models import (
     BenchmarkStatus,
     ExecutorRelease,
     ExecutorReleaseStatus,
-    ExecutorDispatch,
-    ExecutorDispatchKind,
-    ExecutorDispatchStatus,
-    ExecutorTaskAttempt,
-    ExecutorTaskReceipt,
-    ExecutorRunReceipt,
-    ExecutorPoolReservation,
     Org,
 )
 
@@ -79,131 +68,6 @@ def test_dispatch_lease_migration_adds_recovery_state(migration_database_url: st
         for index in inspector.get_indexes("executordispatch")
     )
     engine.dispose()
-
-
-@pytest.mark.parametrize("revision", ["3e4f5a6b7c8d", "4f5a6b7c8d9e", "5a6b7c8d9e0f", "6b7c8d9e0f1a"])
-def test_dispatch_api_migration_preserves_a_live_legacy_claim(migration_database_url: str, revision: str) -> None:
-    """Keep a legacy host claim valid across the additive executor API migration.
-
-    Test cases:
-    - The existing host claims a dispatch against the pre-API schema.
-    - The same host renews and finishes that claim after the migration.
-    - Migration leaves the release pin, start time, and credential eligibility unchanged.
-    - New task ownership and receipt rows do not block legacy task deletion.
-    """
-    upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_REVISION)
-    assert upgrade.returncode == 0, upgrade.stderr
-    engine = create_engine(migration_database_url)
-    try:
-        with Session(engine, expire_on_commit=False) as session:
-            org = Org(name="legacy-api-migration")
-            session.add(org)
-            session.flush()
-            benchmark = make_benchmark(org_id=org.id)
-            release = ExecutorRelease(
-                id="legacy-api-migration",
-                artifact_uri="s3://artifacts/legacy.pex",
-                artifact_digest="a" * 64,
-                protocol_version="2",
-                readiness_verified=True,
-            )
-            register_release(session, release)
-            pin_benchmark_to_release(benchmark, release)
-            session.add(benchmark)
-            session.flush()
-            dispatch = create_executor_dispatch(
-                benchmark.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4(), task_ids=[]
-            )
-            session.add(dispatch)
-            session.commit()
-            benchmark_id, dispatch_id = benchmark.id, dispatch.id
-            artifact = ArtifactDispatch.from_payload(
-                {
-                    "executor_release_id": release.id,
-                    "executor_artifact_uri": release.artifact_uri,
-                    "executor_artifact_digest": release.artifact_digest,
-                    "executor_protocol_version": release.protocol_version,
-                }
-            )
-
-        url = engine.url
-        host = url.query.get("host", url.host)
-        assert isinstance(host, str)
-        assert url.username is not None and url.password is not None and url.database is not None
-        store = PostgresExecutorDispatchStore(
-            host=host, port=str(url.port or 5432), user=url.username, password=url.password, dbname=url.database
-        )
-        authority = asyncio.run(store.claim(str(dispatch_id), str(benchmark_id), artifact))
-        assert authority is not None
-        with Session(engine) as session:
-            claimed = session.get(ExecutorDispatch, dispatch_id)
-            assert claimed is not None
-            started_at = claimed.started_at
-
-        upgrade = _run_alembic(migration_database_url, "upgrade", revision)
-        assert upgrade.returncode == 0, upgrade.stderr
-        assert asyncio.run(store.is_current(authority))
-        assert asyncio.run(store.heartbeat(authority))
-        assert asyncio.run(store.claim(str(dispatch_id), str(benchmark_id), artifact)) is None
-        assert asyncio.run(store.finish(authority))
-
-        with Session(engine) as session:
-            completed = session.get(ExecutorDispatch, dispatch_id)
-            assert completed is not None
-            assert completed.status == ExecutorDispatchStatus.FINISHED
-            assert completed.started_at == started_at
-            assert completed.executor_release_id == "legacy-api-migration"
-            assert session.connection().execute(text("SELECT COUNT(*) FROM executordispatchaccess")).scalar_one() == 0
-
-            if revision in ("4f5a6b7c8d9e", "5a6b7c8d9e0f", "6b7c8d9e0f1a"):
-                task = make_task(benchmark, "migrated-task")
-                session.add(task)
-                session.flush()
-                session.add_all(
-                    [
-                        ExecutorTaskAttempt(task_id=task.id, dispatch_id=dispatch_id, started_at=task.started_at),
-                        ExecutorTaskReceipt(
-                            dispatch_id=dispatch_id,
-                            command_id=uuid4(),
-                            task_id=task.id,
-                            request_digest="a" * 64,
-                            revision=0,
-                        ),
-                    ]
-                )
-                session.commit()
-                session.delete(task)
-                session.commit()
-                assert not session.exec(select(ExecutorTaskAttempt)).all()
-                assert not session.exec(select(ExecutorTaskReceipt)).all()
-            if revision == "6b7c8d9e0f1a":
-                task = make_task(benchmark, "reserved-task")
-                session.add(task)
-                session.flush()
-                reservation = ExecutorPoolReservation(
-                    pool_id="pool_migration",
-                    reservation_id=uuid4(),
-                    dispatch_id=dispatch_id,
-                    task_id=task.id,
-                    started_at=task.started_at,
-                )
-                session.add(reservation)
-                session.commit()
-                session.delete(reservation)
-                session.commit()
-                session.delete(task)
-                session.commit()
-            if revision in ("5a6b7c8d9e0f", "6b7c8d9e0f1a"):
-                receipt = ExecutorRunReceipt(
-                    dispatch_id=dispatch_id, command_id=uuid4(), request_digest="b" * 64, status="FINISHED"
-                )
-                session.add(receipt)
-                session.commit()
-                session.delete(completed)
-                session.commit()
-                assert not session.exec(select(ExecutorRunReceipt)).all()
-    finally:
-        engine.dispose()
 
 
 @pytest.fixture

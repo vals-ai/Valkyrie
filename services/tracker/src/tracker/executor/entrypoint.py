@@ -37,7 +37,7 @@ from tracker.logging import benchmark_id_var, request_id_var, task_id_var
 from tracker.logging.context import attempt_started_at_var, executor_dispatch_id_var
 from tracker.observability import configure_observability
 from tracker.observability.sentry import capture_exception
-from tracker.utils.run_orchestration import parse_queued_execution, process_benchmark
+from tracker.utils.run_orchestration import parse_queued_execution
 from tracker.outbound_security import validate_custom_service_destination
 
 logger = logging.getLogger(__name__)
@@ -130,18 +130,9 @@ def _executor_context(payload: Mapping[str, object]) -> Generator[None, None, No
 
 async def _run_executor(payload: dict[str, Any]) -> None:
     with _executor_context(payload):
-        operation = (
-            _run_api_executor(payload)
-            if payload.get("executor_protocol_version") == "4"
-            else process_benchmark(
-                start_benchmark_request_json=payload.get("start_benchmark_request_json"),
-                benchmark_id_str=payload.get("benchmark_id_str"),
-                verified_task_ids=payload.get("verified_task_ids"),
-                execution_context_json=payload.get("execution_context_json"),
-                executor_dispatch_id=payload["executor_dispatch_id"],
-            )
-        )
-        task = asyncio.create_task(operation)
+        if payload.get("executor_protocol_version") != SUPPORTED_PROTOCOL_VERSION:
+            raise ValueError("Executor requires the API-backed protocol version 4")
+        task = asyncio.create_task(_run_api_executor(payload))
         loop = asyncio.get_running_loop()
         loop.add_signal_handler(signal.SIGTERM, task.cancel)
         try:

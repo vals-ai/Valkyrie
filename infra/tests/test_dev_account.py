@@ -384,8 +384,12 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         for task in template.find_resources("AWS::ECS::TaskDefinition").values():
             for container in task["Properties"]["ContainerDefinitions"]:
                 environment = {item["Name"]: item["Value"] for item in container.get("Environment", [])}
-                self.assertEqual(environment["DATABASE_POOL_SIZE"], "5")
-                self.assertEqual(environment["DATABASE_MAX_OVERFLOW"], "2")
+                if container["Name"] == "ExecutorHostContainer":
+                    self.assertFalse(any(name.startswith(("DB_", "DATABASE_")) for name in environment))
+                    self.assertFalse(any(item["Name"].startswith("DB_") for item in container.get("Secrets", [])))
+                else:
+                    self.assertEqual(environment["DATABASE_POOL_SIZE"], "5")
+                    self.assertEqual(environment["DATABASE_MAX_OVERFLOW"], "2")
         roles = template.find_resources("AWS::IAM::Role")
         release_role_id, release_role = next(
             (logical_id, role)

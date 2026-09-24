@@ -5,15 +5,13 @@ Run: uv run pytest tests/unit/test_docent_analysis.py
 
 from __future__ import annotations
 
-from typing import Any
 
 import pytest
 from sqlmodel import Session
 
 from tracker.aws.runtime import AWSRuntime
-from tracker.database.models import Benchmark, BenchmarkStatus, DocentReadingStatus
+from tracker.database.models import Benchmark, DocentReadingStatus
 from tracker.docent_analysis import invoke_analyzer
-from tracker.utils import catch_errors_during_cleanup
 
 
 @pytest.fixture(autouse=True)
@@ -107,35 +105,3 @@ class TestInvokeAnalyzer:
         database_session.refresh(example_benchmark_object)
         assert example_benchmark_object.docent_reading_status == DocentReadingStatus.DONE
         assert example_benchmark_object.docent_reading_url is None
-
-
-def test_cleanup_sweeps_running_docent_status_to_error(
-    database_session: Session,
-    example_benchmark_object: Benchmark,
-    executor_authority: Any,
-) -> None:
-    """A benchmark stuck at IN_PROGRESS with docent_reading_status=RUNNING is
-    swept to ERROR (both the benchmark itself and the analyzer status).
-    """
-    from tests.utils import TEST_ORG_ID
-    from tracker.database.models import Org
-
-    example_benchmark_object.status = BenchmarkStatus.IN_PROGRESS
-    example_benchmark_object.docent_reading_status = DocentReadingStatus.RUNNING
-    database_session.add(example_benchmark_object)
-    database_session.commit()
-
-    org = database_session.get(Org, TEST_ORG_ID)
-    assert org is not None
-    authority = executor_authority(example_benchmark_object, session=database_session)
-
-    catch_errors_during_cleanup(
-        example_benchmark_object.id,
-        database_session,
-        org,
-        authority=authority,
-    )
-
-    database_session.refresh(example_benchmark_object)
-    assert example_benchmark_object.docent_reading_status == DocentReadingStatus.ERROR
-    assert example_benchmark_object.status == BenchmarkStatus.ERROR

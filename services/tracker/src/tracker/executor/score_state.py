@@ -12,6 +12,11 @@ from tracker.database.models import Benchmark, EvaluationResult, Org, Task, Task
 TaskFingerprint = tuple[tuple[UUID, datetime, TaskStatus, UUID | None], ...]
 
 
+def fetch_final_score_inputs(session: Session, benchmark_row: Benchmark, org: Org) -> dict[str, dict[str, Any] | None]:
+    """Return current task results for Tracker's score endpoint."""
+    return fetch_final_score_state(session, benchmark_row, org)[0]
+
+
 def fetch_final_score_state(
     session: Session, benchmark_row: Benchmark, org: Org, *, for_update: bool = False
 ) -> tuple[dict[str, dict[str, Any] | None], TaskFingerprint]:

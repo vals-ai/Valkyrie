@@ -22,6 +22,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.executor.dispatch_api import DispatchConflict, as_utc, lock_claimed_dispatch
+from tracker.observability.tracing import observability_span
 from tracker.scheduler.store import claim_eligible_task
 
 _RUNNABLE = (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
@@ -142,12 +143,19 @@ def write_task(
 
 
 def set_task_status(session: Session, task: Task, *, status: TaskStatus, expected: tuple[TaskStatus, ...]) -> None:
-    if task.status not in expected:
-        raise DispatchConflict("Task status does not permit this operation")
-    if status in (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS):
-        _require_queue_reservation(session, task, status)
-    task.status = status
-    session.add(task)
+    with observability_span(
+        "task.status_transition",
+        task_id=task.task_id,
+        benchmark_id=str(task.benchmark),
+        from_status=task.status.value,
+        to_status=status.value,
+    ):
+        if task.status not in expected:
+            raise DispatchConflict("Task status does not permit this operation")
+        if status in (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS):
+            _require_queue_reservation(session, task, status)
+        task.status = status
+        session.add(task)
 
 
 def _require_queue_reservation(session: Session, task: Task, status: TaskStatus) -> None:

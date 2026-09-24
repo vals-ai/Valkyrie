@@ -26,7 +26,7 @@ _CLAIM = ClaimRequest(
     executor_release_id="lease-test",
     executor_artifact_uri="s3://artifacts/lease-test.pex",
     executor_artifact_digest="a" * 64,
-    executor_protocol_version="2",
+    executor_protocol_version="4",
 )
 
 

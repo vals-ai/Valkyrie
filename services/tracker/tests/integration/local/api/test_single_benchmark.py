@@ -37,13 +37,13 @@ class TestSingleBenchmark:
             id="initial-release",
             artifact_uri="s3://artifacts/initial.pex",
             artifact_digest="a" * 64,
-            protocol_version="1",
+            protocol_version="4",
         )
         current_release = ExecutorRelease(
             id="current-release",
             artifact_uri="s3://artifacts/current.pex",
             artifact_digest="b" * 64,
-            protocol_version="1",
+            protocol_version="4",
         )
         database_session.add_all([initial_release, current_release])
         database_session.commit()
@@ -191,13 +191,13 @@ class TestBenchmarkStatusStream:
             id="initial-release",
             artifact_uri="s3://artifacts/initial.pex",
             artifact_digest="a" * 64,
-            protocol_version="1",
+            protocol_version="4",
         )
         current_release = ExecutorRelease(
             id="current-release",
             artifact_uri="s3://artifacts/current.pex",
             artifact_digest="b" * 64,
-            protocol_version="1",
+            protocol_version="4",
         )
         database_session.add_all([initial_release, current_release])
         database_session.commit()

@@ -117,7 +117,7 @@ def dispatch(postgres_session: Session) -> DispatchFixture:
         id="dispatch-api-release",
         artifact_uri="s3://artifacts/executor.pex",
         artifact_digest="a" * 64,
-        protocol_version="2",
+        protocol_version="4",
         readiness_verified=True,
     )
     register_release(postgres_session, release)
@@ -2028,9 +2028,6 @@ async def test_process_task_persists_through_api(
         postgres_session.add(task)
         postgres_session.commit()
 
-    def forbidden_session(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("API-backed task execution opened a database session")
-
     @asynccontextmanager
     async def sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Sandbox]:
         nonlocal sandbox_created, sandbox_cleaned
@@ -2072,7 +2069,6 @@ async def test_process_task_persists_through_api(
         on_eval_resume_state({"cursor": 2})
         return {"score": 1}
 
-    monkeypatch.setattr("tracker.utils.task_execution.Session", forbidden_session)
     monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", sandbox)
     monkeypatch.setattr("tracker.utils.task_execution.upload_agent_artifacts", AsyncMock())
     monkeypatch.setattr("tracker.utils.task_execution.run_agent", agent)

@@ -27,7 +27,6 @@ from tracker.types import AWSCredentials, HarnessConfig
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
-from tracker.utils import TaskMonitor
 
 # Set the default AWS credentials before importing modules that create clients.
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
@@ -258,13 +257,6 @@ def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Ses
     async def _mock_verify_task_ids(*_args: Any, task_ids: list[str], **_kwargs: Any) -> VerifyTaskIdsResponse:
         return VerifyTaskIdsResponse(task_ids=task_ids)
 
-    async def _mock_recover_queued_pool(*_args: Any, **_kwargs: Any) -> None:
-        return None
-
-    monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-    monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-    monkeypatch.setattr(TaskMonitor, "_TRACK_INTERVAL", 0)
-    monkeypatch.setattr("tracker.utils.run_orchestration.recover_queued_pool", _mock_recover_queued_pool)
     monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
     monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
     monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)

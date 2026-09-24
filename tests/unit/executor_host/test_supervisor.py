@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import Mock
 
+import aiohttp
 import pytest
 from taskiq import AckableMessage, InMemoryBroker, TaskiqMessage
 from taskiq.receiver import Receiver
@@ -33,7 +34,6 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     DeleteAfterAckRedisStreamBroker,
     ExecutorProcessPayload,
     ExecutorSupervisor,
-    PostgresExecutorDispatchStore,
     run_executor_dispatch,
     verify_file_digest,
 )
@@ -103,40 +103,6 @@ class FakeS3Client:
         Path(filename).write_bytes(self.content)
 
 
-class RecordingCursor:
-    def __init__(self, row: tuple[object, ...] | None | list[tuple[object, ...] | None]) -> None:
-        self.rows = row if isinstance(row, list) else [row]
-        self.statements: list[tuple[str, tuple[object, ...]]] = []
-
-    def __enter__(self) -> RecordingCursor:
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        pass
-
-    def execute(self, statement: str, parameters: tuple[object, ...]) -> None:
-        self.statements.append((" ".join(statement.split()), parameters))
-
-    def fetchone(self) -> tuple[object, ...] | None:
-        if len(self.rows) == 1:
-            return self.rows[0]
-        return self.rows.pop(0)
-
-
-class RecordingConnection:
-    def __init__(self, cursor: RecordingCursor) -> None:
-        self.recording_cursor = cursor
-
-    def __enter__(self) -> RecordingConnection:
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        pass
-
-    def cursor(self) -> RecordingCursor:
-        return self.recording_cursor
-
-
 class MockRedis:
     def __init__(
         self,
@@ -169,9 +135,24 @@ def _dispatch(*, digest: str) -> ArtifactDispatch:
             "executor_release_id": "release-v2",
             "executor_artifact_uri": "s3://artifacts/executors/v2.pex",
             "executor_artifact_digest": digest,
-            "executor_protocol_version": "1",
+            "executor_protocol_version": "4",
         }
     )
+
+
+@pytest.fixture(autouse=True)
+def tracker_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXECUTOR_TRACKER_URL", "http://tracker.test")
+
+
+def _api_fields() -> dict[str, str]:
+    return {
+        "executor_api_token": "test-token",
+        "executor_release_id": "release-v2",
+        "executor_artifact_uri": "s3://artifacts/executors/v2.pex",
+        "executor_artifact_digest": "a" * 64,
+        "executor_protocol_version": "4",
+    }
 
 
 def _process_payload(
@@ -182,6 +163,7 @@ def _process_payload(
 ) -> ExecutorProcessPayload:
     return ExecutorProcessPayload.from_payload(
         {
+            **_api_fields(),
             "start_benchmark_request_json": request or {},
             "benchmark_id_str": benchmark_id,
             "verified_task_ids": task_ids or [],
@@ -202,16 +184,16 @@ def test_managed_process_payload_includes_child_telemetry_context() -> None:
     }
 
     payload = ExecutorProcessPayload.from_payload(
-        {"execution_context_json": context},
+        {**_api_fields(), "execution_context_json": context},
         telemetry_context=telemetry_context,
     )
 
     assert payload.benchmark_id == "benchmark-1"
     assert payload.verified_task_ids == ["task-1"]
-    assert payload.arguments == {
-        "execution_context_json": context,
-        "telemetry_context_json": telemetry_context,
-    }
+    assert payload.arguments["execution_context_json"] == context
+    assert payload.arguments["telemetry_context_json"] == telemetry_context
+    assert payload.arguments["executor_tracker_url"] == "http://tracker.test"
+    assert payload.arguments["executor_api_token"] == "test-token"
 
 
 def test_process_payload_rejects_mixed_execution_shapes() -> None:
@@ -250,7 +232,7 @@ def test_dispatch_rejects_missing_or_invalid_identity() -> None:
             {
                 "executor_release_id": "release-v2",
                 "executor_artifact_uri": "s3://artifacts/v2.pex",
-                "executor_protocol_version": "1",
+                "executor_protocol_version": "4",
             }
         )
 
@@ -309,166 +291,6 @@ def test_validate_artifact_uri_requires_configured_bucket_and_prefix() -> None:
 
 
 @pytest.mark.asyncio
-async def test_postgres_claim_is_status_fenced_and_returns_authority(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cursor = RecordingCursor(("dispatch-1",))
-    store = PostgresExecutorDispatchStore(
-        host="db",
-        port="5432",
-        dbname="tracker",
-        user="tracker",
-        password="secret",
-    )
-    monkeypatch.setattr(store, "_connect", lambda: RecordingConnection(cursor))
-
-    authority = await store.claim(
-        "dispatch-1",
-        "benchmark-1",
-        _dispatch(digest="0" * 64),
-    )
-
-    assert authority == DispatchAuthority(
-        dispatch_id="dispatch-1",
-        benchmark_id="benchmark-1",
-    )
-    statement, parameters = cursor.statements[0]
-    assert "UPDATE executordispatch AS dispatch" in statement
-    assert "FROM benchmark" in statement
-    assert "benchmark.status = 'IN_PROGRESS'" in statement
-    assert "dispatch.status = 'QUEUED'" in statement
-    assert "dispatch.claim_deadline_at > CURRENT_TIMESTAMP" in statement
-    assert "SET status = 'RUNNING'" in statement
-    assert "started_at = CURRENT_TIMESTAMP" in statement
-    assert parameters[1:3] == ("dispatch-1", "benchmark-1")
-
-
-@pytest.mark.asyncio
-async def test_postgres_authority_and_completion_are_fenced(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cursor = RecordingCursor([(True,), ("dispatch-1",), ("FINISHED",), ("dispatch-1",)])
-    store = PostgresExecutorDispatchStore(
-        host="db",
-        port="5432",
-        dbname="tracker",
-        user="tracker",
-        password="secret",
-    )
-    monkeypatch.setattr(store, "_connect", lambda: RecordingConnection(cursor))
-    authority = DispatchAuthority(
-        dispatch_id="dispatch-1",
-        benchmark_id="benchmark-1",
-    )
-
-    assert await store.is_current(authority)
-    assert await store.heartbeat(authority)
-    assert await store.finish(authority)
-
-    authority_statement, authority_parameters = cursor.statements[0]
-    heartbeat_statement, heartbeat_parameters = cursor.statements[1]
-    finish_lock_statement, finish_lock_parameters = cursor.statements[2]
-    finish_statement, finish_parameters = cursor.statements[3]
-    assert "dispatch.status = 'RUNNING'" in authority_statement
-    assert "benchmark.status != 'STOPPED'" in authority_statement
-    assert "dispatch.lease_expires_at > CURRENT_TIMESTAMP" in authority_statement
-    assert authority_parameters == ("dispatch-1",)
-    assert "lease_expires_at > CURRENT_TIMESTAMP" in heartbeat_statement
-    assert heartbeat_parameters == (
-        supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
-        "dispatch-1",
-        "benchmark-1",
-    )
-    assert "FOR UPDATE" in finish_lock_statement
-    assert finish_lock_parameters == ("benchmark-1",)
-    assert "SET status = 'FINISHED'" in finish_statement
-    assert "lease_expires_at > CURRENT_TIMESTAMP" in finish_statement
-    assert finish_parameters == ("dispatch-1", "benchmark-1")
-
-
-@pytest.mark.asyncio
-async def test_postgres_finish_errors_orphaned_in_progress_benchmark(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cursor = RecordingCursor([("IN_PROGRESS",), ("dispatch-1",), (False,)])
-    store = PostgresExecutorDispatchStore(
-        host="db",
-        port="5432",
-        dbname="tracker",
-        user="tracker",
-        password="secret",
-    )
-    monkeypatch.setattr(store, "_connect", lambda: RecordingConnection(cursor))
-    authority = DispatchAuthority(dispatch_id="dispatch-1", benchmark_id="benchmark-1")
-
-    assert await store.finish(authority)
-
-    assert "FOR UPDATE" in cursor.statements[0][0]
-    assert "SET status = 'FINISHED'" in cursor.statements[1][0]
-    assert "SELECT EXISTS" in cursor.statements[2][0]
-    assert "SET status = 'ERROR'" in cursor.statements[3][0]
-
-
-@pytest.mark.asyncio
-async def test_postgres_terminalize_marks_current_run_and_runnable_tasks_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cursor = RecordingCursor([("IN_PROGRESS",), ("dispatch-1",), (False,)])
-    store = PostgresExecutorDispatchStore(
-        host="db",
-        port="5432",
-        dbname="tracker",
-        user="tracker",
-        password="secret",
-    )
-    monkeypatch.setattr(store, "_connect", lambda: RecordingConnection(cursor))
-    authority = DispatchAuthority(
-        dispatch_id="dispatch-1",
-        benchmark_id="benchmark-1",
-    )
-
-    assert await store.terminalize(authority, ["task-1"])
-
-    lock_statement = cursor.statements[0][0]
-    dispatch_statement = cursor.statements[1][0]
-    task_statement, task_parameters = cursor.statements[2]
-    benchmark_statement = cursor.statements[4][0]
-    assert "FOR UPDATE" in lock_statement
-    assert "SET status = 'FAILED'" in dispatch_statement
-    assert "lease_expires_at > CURRENT_TIMESTAMP" in dispatch_statement
-    assert "task_id = ANY(%s)" in task_statement
-    assert "started_at <= ( SELECT created_at FROM executordispatch" in task_statement
-    assert "status IN ('PENDING', 'BUILDING', 'IN_PROGRESS', 'EVALUATING')" in task_statement
-    assert task_parameters == ("benchmark-1", ["task-1"], "dispatch-1")
-    assert "SET status = 'ERROR'" in benchmark_statement
-
-
-@pytest.mark.asyncio
-async def test_postgres_terminalize_keeps_benchmark_active_for_coexisting_dispatch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cursor = RecordingCursor([("IN_PROGRESS",), ("dispatch-1",), (True,)])
-    store = PostgresExecutorDispatchStore(
-        host="db",
-        port="5432",
-        dbname="tracker",
-        user="tracker",
-        password="secret",
-    )
-    monkeypatch.setattr(store, "_connect", lambda: RecordingConnection(cursor))
-    authority = DispatchAuthority(
-        dispatch_id="dispatch-1",
-        benchmark_id="benchmark-1",
-    )
-
-    assert await store.terminalize(authority, ["retry-task"])
-
-    assert len(cursor.statements) == 4
-    assert cursor.statements[2][1] == ("benchmark-1", ["retry-task"], "dispatch-1")
-    assert "SELECT EXISTS" in cursor.statements[3][0]
-
-
-@pytest.mark.asyncio
 async def test_run_forwards_dispatch_authority_to_executor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -506,7 +328,7 @@ async def test_run_forwards_dispatch_authority_to_executor(
     assert store.authority_checks
     assert store.finished == [store.authority]
     assert (
-        f"Launching benchmark benchmark-1 dispatch_id=dispatch-1 release=release-v2 digest={digest} protocol=1"
+        f"Launching benchmark benchmark-1 dispatch_id=dispatch-1 release=release-v2 digest={digest} protocol=4"
     ) in caplog.messages
 
 
@@ -573,7 +395,7 @@ async def test_heartbeat_lease_expires_from_last_confirmed_renewal(
         if len(store.heartbeats) == 1:
             return True
         now = 1 + supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS
-        raise supervisor_module.psycopg2.OperationalError("temporary")
+        raise aiohttp.ClientConnectionError("temporary")
 
     monkeypatch.setattr(supervisor_module, "_monotonic_time", lambda: now)
     monkeypatch.setattr(supervisor_module.asyncio, "sleep", advance_time)
@@ -747,7 +569,7 @@ async def test_launch_executor_rejects_invalid_dispatch_id_without_side_effects(
 
     monkeypatch.setattr(supervisor, "run", unexpected_run)
     monkeypatch.setattr(supervisor_module, "supervisor", supervisor)
-    monkeypatch.setattr(supervisor_module, "dispatch_store", store)
+    monkeypatch.setattr(supervisor_module, "ApiExecutorDispatchStore", Mock(return_value=store))
     capture_exception = Mock()
     monkeypatch.setattr(host_observability.sentry_sdk, "capture_exception", capture_exception)
 
@@ -760,7 +582,8 @@ async def test_launch_executor_rejects_invalid_dispatch_id_without_side_effects(
             executor_release_id="release-v2",
             executor_artifact_uri="s3://artifacts/executors/v2.pex",
             executor_artifact_digest=digest,
-            executor_protocol_version="1",
+            executor_protocol_version="4",
+            executor_api_token="test-token",
         )
 
     assert store.claimed == []
@@ -788,7 +611,8 @@ async def test_broker_payload_dispatch_id_reaches_dispatch_owner(
         executor_release_id="release-v2",
         executor_artifact_uri="s3://artifacts/executors/v2.pex",
         executor_artifact_digest="0" * 64,
-        executor_protocol_version="1",
+        executor_protocol_version="4",
+        executor_api_token="test-token",
     )
 
     assert captured["executor_dispatch_id"] == "dispatch-1"
@@ -824,7 +648,8 @@ async def test_launch_executor_records_cancellation_before_context_cleanup(
             executor_release_id="release-v2",
             executor_artifact_uri="s3://artifacts/executors/v2.pex",
             executor_artifact_digest="0" * 64,
-            executor_protocol_version="1",
+            executor_protocol_version="4",
+            executor_api_token="test-token",
         )
 
     assert cancellation_context["benchmark_id"] == "benchmark-1"
@@ -933,7 +758,7 @@ async def test_cancelled_protection_wait_preserves_message_for_redelivery(
     monkeypatch.setattr(supervisor_module, "_PROTECTION_RETRY_SECONDS", 77)
     monkeypatch.setattr(supervisor_module.asyncio, "sleep", wait_for_retry)
     monkeypatch.setattr(supervisor_module, "supervisor", _supervisor(tmp_path, content=script))
-    monkeypatch.setattr(supervisor_module, "dispatch_store", store)
+    monkeypatch.setattr(supervisor_module, "ApiExecutorDispatchStore", Mock(return_value=store))
     monkeypatch.setattr(supervisor_module, "Redis", partial(MockRedis, commands=commands, eval_result=1))
     broker = supervisor_module.broker
     message = TaskiqMessage(
@@ -949,7 +774,8 @@ async def test_cancelled_protection_wait_preserves_message_for_redelivery(
             "executor_release_id": "release-v2",
             "executor_artifact_uri": "s3://artifacts/executors/v2.pex",
             "executor_artifact_digest": hashlib.sha256(script).hexdigest(),
-            "executor_protocol_version": "1",
+            "executor_api_token": "test-token",
+            "executor_protocol_version": "4",
         },
     )
     delivery = AckableMessage(
@@ -1474,7 +1300,7 @@ async def test_periodic_authority_operational_error_allows_child_completion(
 
     checks = iter(
         [
-            supervisor_module.psycopg2.OperationalError("temporary"),
+            aiohttp.ClientConnectionError("temporary"),
             True,
             True,
         ]
@@ -1570,7 +1396,7 @@ async def test_periodic_authority_operational_error_then_loss_terminates(
             return self.returncode
 
     process = FakeProcess()
-    checks = iter([supervisor_module.psycopg2.OperationalError("temporary"), False])
+    checks = iter([aiohttp.ClientConnectionError("temporary"), False])
 
     async def is_current() -> bool:
         result = next(checks)
@@ -1713,15 +1539,8 @@ async def test_prepare_artifact_rejects_download_digest_mismatch(tmp_path: Path)
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("protocol_version", ["1", "2", "3"])
-def test_host_accepts_current_and_pinned_legacy_protocols(protocol_version: str) -> None:
-    dispatch = ArtifactDispatch.from_payload(
-        {
-            "executor_release_id": "immutable-release",
-            "executor_artifact_uri": "s3://artifacts/releases/immutable.pex",
-            "executor_artifact_digest": "a" * 64,
-            "executor_protocol_version": protocol_version,
-        }
-    )
-    assert dispatch.protocol_version == protocol_version
-    assert dispatch.release_id == "immutable-release"
+@pytest.mark.parametrize("protocol_version", ["1", "2", "3", "unknown"])
+def test_host_rejects_retired_protocols(protocol_version: str) -> None:
+    """Reject retired protocols before claiming work or downloading an artifact."""
+    with pytest.raises(ValueError, match="Unsupported executor protocol"):
+        ArtifactDispatch.from_payload({**_api_fields(), "executor_protocol_version": protocol_version})

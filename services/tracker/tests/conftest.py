@@ -7,7 +7,8 @@ from uuid import UUID, uuid4
 
 import pytest
 from dotenv import load_dotenv
-from sqlalchemy import event
+from sqlalchemy import DateTime, event
+from sqlalchemy.sql.functions import GenericFunction
 from sqlalchemy.pool import ConnectionPoolEntry
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -29,6 +30,13 @@ from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.types import AWSCredentials
 
 _ = load_dotenv()
+
+
+class clock_timestamp(GenericFunction[datetime]):
+    """Decode the SQLite clock shim with PostgreSQL's datetime result type."""
+
+    type = DateTime()
+    inherit_cache = True
 
 
 @pytest.fixture(autouse=True)
@@ -58,6 +66,9 @@ def database_session(tmp_path: Path) -> Generator[Session, None, None]:
         cursor: Cursor = cast(Cursor, dbapi_connection.cursor())  # type: ignore
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.close()
+        dbapi_connection.create_function(
+            "clock_timestamp", 0, lambda: datetime.now(UTC).replace(tzinfo=None).isoformat(" ")
+        )
 
     SQLModel.metadata.create_all(test_engine)
 
@@ -94,7 +105,7 @@ def executor_authority_kwargs(
                     id=release_id,
                     artifact_uri="s3://artifacts/authority-test-release.pex",
                     artifact_digest="a" * 64,
-                    protocol_version="1",
+                    protocol_version="4",
                     readiness_verified=True,
                 )
                 authority_session.add(release)

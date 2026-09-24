@@ -11,6 +11,7 @@ from benchmark_service.client import BenchmarkServiceClient
 from dotenv import load_dotenv
 from sqlmodel import Session
 
+from main import app
 from tests.integration.seed_agent_artifacts import (
     create_s3_client,
     delete_test_agent_artifact,
@@ -22,6 +23,7 @@ from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
 from tracker.aws.s3 import get_contract_s3_key
 from tracker.aws.secrets import SecretsManagerStore
 from tracker.config import create_benchmark_service_url
+from tracker.database.session import get_session
 from tracker.database.models import DEFAULT_ORG_NAME, AgentContractRequest, Org
 from tracker.types import AWSCredentials, HarnessConfig
 from tracker.utils import create_benchmark_service_client, fetch_sandbox_provider_config
@@ -34,9 +36,14 @@ def tracker_database(
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Session:
-    """Connect tracker background work to the per-test SQLite database."""
-    monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-    monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+    """Connect the executor API to the per-test SQLite database."""
+
+    def get_test_session() -> Generator[Session, None, None]:
+        with Session(database_session.get_bind(), expire_on_commit=False) as request_session:
+            yield request_session
+        database_session.expire_all()
+
+    monkeypatch.setitem(app.dependency_overrides, get_session, get_test_session)
     existing = database_session.get(Org, TEST_ORG_ID)
     if not existing:
         database_session.add(Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME))

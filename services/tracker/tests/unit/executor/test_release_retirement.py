@@ -23,7 +23,7 @@ def test_retirement_loop_retires_a_blocker_free_release(
             id="old",
             artifact_uri="s3://artifacts/old.pex",
             artifact_digest="a" * 64,
-            protocol_version="1",
+            protocol_version="4",
             readiness_verified=True,
         ),
     )
@@ -33,7 +33,7 @@ def test_retirement_loop_retires_a_blocker_free_release(
             id="active",
             artifact_uri="s3://artifacts/active.pex",
             artifact_digest="b" * 64,
-            protocol_version="1",
+            protocol_version="4",
             readiness_verified=True,
         ),
     )

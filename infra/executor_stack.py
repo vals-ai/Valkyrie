@@ -126,8 +126,6 @@ class ExecutorStack(Stack):
         benchmark_service_url = benchmark_service_base_url(stage)
         bucket = aws_s3.Bucket.from_bucket_name(self, "ManagedRuntimeBucket", bucket_name)
         shared_env = {
-            "DATABASE_POOL_SIZE": str(stage_config.database.pool_size),
-            "DATABASE_MAX_OVERFLOW": str(stage_config.database.max_overflow),
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
@@ -138,17 +136,7 @@ class ExecutorStack(Stack):
             **managed_runtime_environment(self, stage, bucket, stage_config.managed_aws),
         }
 
-        db_env = {
-            "DB_HOST": database.db_instance_endpoint_address,
-            "DB_PORT": database.db_instance_endpoint_port,
-            "DB_NAME": POSTGRES_DB,
-        }
-
         db_credentials_secret = cast(aws_secretsmanager.ISecret, db_credentials)
-        db_secrets = {
-            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="username"),
-            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="password"),
-        }
 
         sentry_secret_name = os.environ.get("SENTRY_DSN_SECRET_NAME", "")
         if not stage.is_release_test and not sentry_secret_name:
@@ -197,7 +185,6 @@ class ExecutorStack(Stack):
             ),
             environment={
                 **shared_env,
-                **db_env,
                 "REDIS_URL": redis_url,
                 "STABLE_QUEUE_NAME": "valkyrie-stable",
                 "EXECUTOR_TRACKER_URL": f"http://tracker.{namespace.namespace_name}:{TRACKER_PORT}",
@@ -207,7 +194,7 @@ class ExecutorStack(Stack):
                 "EXECUTOR_RELEASE_PREFIX": EXECUTOR_RELEASE_PREFIX,
                 "SENTRY_RELEASE": f"executor-host@{executor_host_release}",
             },
-            secrets={**db_secrets, **sentry_secrets},
+            secrets=sentry_secrets,
             stop_timeout=Duration.seconds(WORKER_STOP_TIMEOUT_SECONDS),
         )
         self.executor_task_role.add_to_policy(

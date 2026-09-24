@@ -4,13 +4,11 @@ import asyncio
 import json
 import socket
 import time
-import traceback
 from asyncio import Semaphore
 from collections.abc import Coroutine
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from enum import Enum
 from types import TracebackType
 from typing import Any, cast
 from uuid import UUID
@@ -27,8 +25,6 @@ from benchmark_service import (
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceStreamError
 from pydantic import ValidationError
-from sqlalchemy.engine import Connection
-from sqlmodel import Session, col, select, update
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
 from tracker.aws.cloudwatch_logs import (
@@ -41,35 +37,24 @@ from tracker.config import ENVIRONMENT
 from tracker.database.models import (
     AgentCausedExitReason,
     AgentContractRequest,
-    Benchmark,
-    BenchmarkStatus,
-    ErrorResult,
-    ExecutorDispatch,
-    EvaluationResult,
     Org,
     Task,
     TaskBreakdown,
     TaskStatus,
 )
-from tracker.database.session import engine
 from tracker.exceptions import (
     DependencySetupExhaustedError,
     ExecutionAuthorityRevoked,
     OutputArtifactError,
     SandboxSetupError,
 )
-from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
+from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.executor.checkpoints import run_with_checkpoints
 from tracker.executor.task_persistence import (
     ApiTaskPersistence,
-    TaskPersistence,
-    TaskSnapshot,
-    attempt_time,
-    settle_task_io,
 )
 from tracker.executor.queue_execution import ApiSandboxQueueContext
-from tracker.executor_api.v1.schemas import RunStatus, TaskState
-from tracker.executor_api.v1.schemas import TaskStatus as ApiTaskStatus
+from tracker.executor_api.v1.schemas import RunStatus
 from tracker.executor_api.v1.task_schemas import (
     BuildTask,
     RunTask,
@@ -80,21 +65,16 @@ from tracker.executor_api.v1.task_schemas import (
     RetryTask,
     PendingTask,
     StopTask,
-    Mutation,
 )
 from tracker.logging import get_logger
-from tracker.notifications import NotificationContext, SlackNotifier
-from tracker.observability import elapsed_ms, error_span, incr
-from tracker.observability.sentry import capture_exception, clear_sandbox_context, task_scope
+from tracker.observability import error_span, incr
+from tracker.observability.sentry import capture_exception, clear_sandbox_context
 from tracker.observability.tracing import observability_span
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
-from tracker.scheduler.admission import SandboxQueueContext, enter_queued_sandbox
-from tracker.scheduler.store import PostgresAdvisoryLock, task_evaluation_lock
 from tracker.types import (
     StartBenchmarkRequest,
 )
 
-from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 
 logger = get_logger(__name__)
 
@@ -160,12 +140,6 @@ def _observe_task_retry(attempt: SandboxRecoveryAttempt, exc: BaseException) -> 
         incr(f"{_TASK_RETRY_METRIC}.retry", tags={"error_class": error_class})
 
 
-class TrackedTaskStatus(str, Enum):
-    WAITING = "waiting"
-    RUNNING = "running"
-    DONE = "done"
-
-
 class ResizableLimiter:
     """A per-executor admission limit that can change without preempting admitted work."""
 
@@ -201,540 +175,6 @@ class ResizableLimiter:
             self._condition.notify_all()
 
 
-class TrackedTask:
-    _coro: Coroutine[Any, Any, Any]
-    _status: str
-    _task: asyncio.Task[Any] | None
-    _org: Org
-    _attempt_started_at: datetime
-    _authority: ExecutionAuthority
-
-    def __init__(
-        self,
-        coro: Coroutine[Any, Any, Any],
-        org: Org,
-        authority: ExecutionAuthority,
-        started_at: datetime,
-    ):
-        self._coro = coro
-        self._org = org
-        self._authority = authority
-        self._attempt_started_at = _normalized_attempt_time(started_at)
-        self._status = TrackedTaskStatus.WAITING
-        self._task = None
-
-    @property
-    def status(self) -> str:
-        return self._status
-
-    @property
-    def task(self) -> asyncio.Task[Any] | None:
-        return self._task
-
-    @property
-    def attempt_started_at(self) -> datetime:
-        return self._attempt_started_at
-
-    async def run(
-        self,
-        limiter: ResizableLimiter | None,
-        task_row: Task,
-    ) -> dict[str, dict[str, Any] | None]:
-        async def _wrap_coro():
-            """Need to have a task created even if we are not running the coroutine so that we can cancel it before its running"""
-            if limiter is None:
-                self._status = TrackedTaskStatus.RUNNING
-
-                return await self._coro
-            async with limiter:
-                self._status = TrackedTaskStatus.RUNNING
-                return await self._coro
-
-        with task_scope(task_row.task_id, attempt_started_at=self.attempt_started_at.isoformat()):
-            try:
-                self._task = asyncio.create_task(_wrap_coro())
-                return await self._task
-            except asyncio.CancelledError:
-                logger.warning(f"Task {task_row.task_id} was cancelled")
-                # Need to clean up the coroutine if we cancelled the task
-                self._coro.close()
-
-                # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
-                return {task_row.task_id: None}
-            except Exception as e:
-                error_message = f"Task error was not handled: {_exception_message(e)}\n{traceback.format_exc()}"
-                logger.error(error_message)
-                logfire.exception("tracked_task_run failed")
-                capture_exception(e)
-                with Session(bind=engine) as session:
-                    task = fetch_task_row(task_row.id, session, self._org)
-                    commit_task_error(
-                        task,
-                        session,
-                        error_message,
-                        producer="sandbox_provider" if isinstance(e, SandboxSetupError) else "tracker",
-                        operation="setup" if isinstance(e, SandboxSetupError) else "process_task",
-                        error_type=type(e).__name__,
-                        expected_started_at=task_row.started_at,
-                        authority=self._authority,
-                    )
-
-                return {task_row.task_id: None}
-            finally:
-                self._status = TrackedTaskStatus.DONE
-
-
-class TaskMonitor:
-    _benchmark_id: UUID
-    _task_tracking: dict[str, TrackedTask]
-    _notifier: SlackNotifier | None
-    _org: Org
-    _limiter: ResizableLimiter | None
-    _coordinator_done: asyncio.Event | None
-    _cancellation_requested: set[str]
-    _authority: ExecutionAuthority
-    _TRACK_INTERVAL: int = 2
-
-    def __init__(
-        self,
-        benchmark_id: UUID,
-        task_tracking: dict[str, TrackedTask],
-        org: Org,
-        limiter: ResizableLimiter | None,
-        *,
-        authority: ExecutionAuthority,
-        notifier: SlackNotifier | None = None,
-        coordinator_done: asyncio.Event | None = None,
-    ):
-        self._benchmark_id = benchmark_id
-        self._task_tracking = task_tracking
-        self._org = org
-        self._notifier = notifier
-        self._limiter = limiter
-        self._coordinator_done = coordinator_done
-        self._cancellation_requested = set()
-        self._authority = authority
-
-    def _load_state(self, task_ids: list[str]) -> tuple[Benchmark, dict[str, tuple[TaskStatus, datetime]]]:
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
-            task_states = {
-                task_id: (TaskStatus(status), started_at)
-                for task_id, status, started_at in session.exec(
-                    select(Task.task_id, Task.status, Task.started_at)
-                    .where(col(Task.task_id).in_(task_ids))
-                    .where(Task.benchmark == self._benchmark_id)
-                    .where(Task.org_id == self._org.id)
-                ).all()
-            }
-
-        for task_id in task_ids:
-            if task_id not in task_states:
-                raise ValueError(f"Task with id {task_id} not found")
-
-        return benchmark_row, task_states
-
-    def _authority_is_current(self) -> bool:
-        with Session(bind=engine) as session:
-            try:
-                lock_execution_authority(session, self._authority)
-            except ExecutionAuthorityRevoked:
-                session.rollback()
-                return False
-            session.rollback()
-            return True
-
-    async def _check_notifications(self, benchmark_row: Benchmark) -> None:
-        """Check notification thresholds using DB task counts."""
-        if not self._notifier:
-            return
-
-        with Session(bind=engine) as session:
-            notification_context = NotificationContext.from_benchmark(benchmark_row, session, self._org)
-            await self._notifier.check_and_notify(notification_context)
-
-    async def track_tasks(self) -> None:
-        """
-        Tracks tasks and cancels them when they are no longer valid.
-        """
-
-        while self._task_tracking or (self._coordinator_done is not None and not self._coordinator_done.is_set()):
-            authority_current = self._authority_is_current()
-            for task_id, tracked_task in list(self._task_tracking.items()):
-                if tracked_task.status == TrackedTaskStatus.DONE:
-                    del self._task_tracking[task_id]
-                    self._cancellation_requested.discard(task_id)
-
-            if not self._task_tracking:
-                if self._coordinator_done is not None and self._coordinator_done.is_set():
-                    break
-                await asyncio.sleep(self._TRACK_INTERVAL)
-                continue
-
-            tasks_to_check: list[str] = list(self._task_tracking.keys())
-            benchmark_row, task_states = self._load_state(tasks_to_check)
-            if self._limiter is not None:
-                await self._limiter.resize(benchmark_row.arguments.concurrency)
-
-            for task_id in tasks_to_check:
-                tracked_task = self._task_tracking[task_id]
-                status, started_at = task_states[task_id]
-                invalid = (
-                    not authority_current
-                    or status == TaskStatus.STOPPED
-                    or benchmark_row.status == BenchmarkStatus.ERROR
-                    or _normalized_attempt_time(started_at) != tracked_task.attempt_started_at
-                )
-                task = tracked_task.task
-                if invalid and task is not None and not task.done() and task_id not in self._cancellation_requested:
-                    self._cancellation_requested.add(task_id)
-                    task.cancel(f"Task {task_id} has been invalidated. Run has been requested to stop")
-
-            await self._check_notifications(benchmark_row)
-            await asyncio.sleep(self._TRACK_INTERVAL)
-
-
-def handle_early_exit(task_row: Task, task_session: Session, authority: ExecutionAuthority) -> bool:
-    return _commit_task_status(
-        task_row,
-        task_session,
-        TaskStatus.STOPPED,
-        authority=authority,
-        expected_started_at=task_row.started_at,
-    )
-
-
-def save_eval_resume_state(
-    task_row_id: UUID,
-    org: Org,
-    eval_resume_state: dict[str, Any],
-    *,
-    expected_started_at: datetime,
-    authority: ExecutionAuthority,
-    connection: Connection | None = None,
-) -> bool:
-    """Persist this attempt's checkpoint before evaluation completion.
-
-    The evaluation-lock connection also permits ERROR because its evaluation can supersede a duplicate failure.
-    """
-    with Session(bind=connection if connection is not None else engine) as session:
-        try:
-            lock_execution_authority(session, authority)
-        except ExecutionAuthorityRevoked:
-            session.rollback()
-            return False
-        task_update = (
-            update(Task)
-            .where(col(Task.id) == task_row_id)
-            .where(col(Task.org_id) == org.id)
-            .where(
-                col(Task.status).in_(
-                    (TaskStatus.EVALUATING, TaskStatus.ERROR) if connection is not None else (TaskStatus.EVALUATING,)
-                )
-            )
-            .where(col(Task.started_at) == expected_started_at)
-        )
-
-        result = session.exec(task_update.values(eval_resume_state=eval_resume_state))
-        session.commit()
-        return result.rowcount > 0
-
-
-def _commit_task_status(
-    task: Task,
-    session: Session,
-    to_status: TaskStatus,
-    *,
-    authority: ExecutionAuthority,
-    error_message: str | None = None,
-    extra: dict[str, Any] | None = None,
-    expected_started_at: datetime | None = None,
-    expected_status: TaskStatus | tuple[TaskStatus, ...] | None = None,
-) -> bool:
-    from_status = task.status
-    span_attributes = {
-        "benchmark_id": str(task.benchmark),
-        "task_id": task.task_id,
-        "from_status": from_status.value,
-        "to_status": to_status.value,
-        **(extra or {}),
-    }
-    if error_message is not None:
-        span_attributes["has_error_message"] = True
-
-    with observability_span("task.status_transition", **span_attributes):
-        try:
-            lock_execution_authority(session, authority)
-        except ExecutionAuthorityRevoked:
-            session.rollback()
-            return False
-        values: dict[str, TaskStatus | datetime] = {"status": to_status}
-        if to_status in [TaskStatus.FINISHED, TaskStatus.ERROR]:
-            values["finished_at"] = datetime.now(ZoneInfo("UTC"))
-
-        task_update = update(Task).where(col(Task.id) == task.id).where(col(Task.org_id) == task.org_id)
-        if expected_started_at is not None:
-            task_update = task_update.where(col(Task.started_at) == expected_started_at)
-        if expected_status is None:
-            task_update = task_update.where(
-                col(Task.status).not_in((TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED))
-            )
-        elif isinstance(expected_status, tuple):
-            task_update = task_update.where(col(Task.status).in_(expected_status))
-        else:
-            task_update = task_update.where(col(Task.status) == expected_status)
-
-        result = session.exec(task_update.values(**values))
-        if result.rowcount == 0:
-            session.rollback()
-            return False
-
-        session.commit()
-        return True
-
-
-def commit_task_status_transition(
-    task_row_id: UUID,
-    session: Session,
-    org: Org,
-    to_status: TaskStatus,
-    *,
-    authority: ExecutionAuthority,
-    expected_started_at: datetime | None = None,
-    expected_status: TaskStatus | tuple[TaskStatus, ...] | None = None,
-) -> bool:
-    fetch_start = time.monotonic()
-    task = fetch_task_row(task_row_id, session, org)
-    return _commit_task_status(
-        task,
-        session,
-        to_status,
-        extra={"fetch_duration_ms": elapsed_ms(fetch_start)},
-        expected_started_at=expected_started_at,
-        expected_status=expected_status,
-        authority=authority,
-    )
-
-
-class PostgresTaskPersistence:
-    """Keep legacy task transactions and evaluation locks behind the async execution boundary."""
-
-    def __init__(self, task: Task, org: Org, authority: ExecutionAuthority) -> None:
-        self._task = task
-        self._org = org
-        self._authority = authority
-        self._evaluation_lock: PostgresAdvisoryLock | None = None
-        self._evaluation_lock_acquired = False
-        self._expected_failure_status: TaskStatus | None = None
-        self._lock = asyncio.Lock()
-
-    def _session(self) -> Session:
-        bind = self._evaluation_lock.connection if self._evaluation_lock_acquired and self._evaluation_lock else engine
-        return Session(bind=bind)
-
-    def _load(self) -> TaskSnapshot | None:
-        with self._session() as session:
-            try:
-                benchmark = lock_execution_authority(session, self._authority)
-            except ExecutionAuthorityRevoked:
-                session.rollback()
-                return None
-            task = fetch_task_row(self._task.id, session, self._org)
-            if attempt_time(task.started_at) != attempt_time(self._task.started_at):
-                return None
-            identity = {"benchmark_name": benchmark.name, "agent_name": benchmark.arguments.contract.name}
-            if benchmark.started_by_email:
-                identity["email"] = benchmark.started_by_email
-
-            return TaskSnapshot(
-                task=TaskState(
-                    id=task.id,
-                    task_id=task.task_id,
-                    status=ApiTaskStatus(task.status.value),
-                    started_at=task.started_at,
-                    finished_at=task.finished_at,
-                    eval_resume_state=task.eval_resume_state,
-                ),
-                run_status=RunStatus(benchmark.status.value),
-                identity=identity,
-            )
-
-    async def load(self) -> TaskSnapshot | None:
-        async with self._lock:
-            snapshot = await settle_task_io(asyncio.to_thread(self._load))
-            self._expected_failure_status = (
-                TaskStatus.EVALUATING
-                if snapshot is not None
-                and snapshot.task.status == TaskStatus.EVALUATING
-                and snapshot.task.eval_resume_state is not None
-                else None
-            )
-
-            return snapshot
-
-    async def current(self) -> bool:
-        async with self._lock:
-            snapshot = await settle_task_io(asyncio.to_thread(self._load))
-            return snapshot is not None and snapshot.task.status != TaskStatus.STOPPED
-
-    def _write(self, mutation: Mutation) -> bool:
-        if isinstance(mutation, SaveCheckpoint):
-            return save_eval_resume_state(
-                self._task.id,
-                self._org,
-                mutation.checkpoint,
-                expected_started_at=self._task.started_at,
-                authority=self._authority,
-                connection=self._evaluation_lock.connection
-                if self._evaluation_lock_acquired and self._evaluation_lock
-                else None,
-            )
-        with self._session() as session:
-            task = fetch_task_row(self._task.id, session, self._org)
-            expected_status: TaskStatus | tuple[TaskStatus, ...] | None = None
-            if isinstance(mutation, RetryTask):
-                try:
-                    lock_execution_authority(session, self._authority)
-                except ExecutionAuthorityRevoked:
-                    session.rollback()
-                    return False
-                task = session.exec(
-                    select(Task)
-                    .where(
-                        Task.id == self._task.id,
-                        Task.org_id == self._org.id,
-                        Task.benchmark == self._authority.benchmark_id,
-                        Task.started_at == self._task.started_at,
-                        col(Task.status).in_(
-                            (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
-                        ),
-                    )
-                    .with_for_update()
-                    .execution_options(populate_existing=True)
-                ).one_or_none()
-                if task is None:
-                    session.rollback()
-                    return False
-                session.add(
-                    ErrorResult(
-                        org_id=task.org_id,
-                        task=task.id,
-                        error_message=mutation.error_message,
-                        producer=mutation.producer,
-                        operation=mutation.operation_name,
-                        error_type=mutation.error_type,
-                        cause_code=mutation.cause_code,
-                        retry_scheduled=True,
-                        failed_attempt_number=mutation.failed_attempt_number,
-                    )
-                )
-                session.commit()
-                return True
-            if isinstance(mutation, FailTask):
-                return commit_task_error(
-                    task,
-                    session,
-                    mutation.error_message,
-                    producer=mutation.producer,
-                    operation=mutation.operation_name,
-                    error_type=mutation.error_type,
-                    cause_code=mutation.cause_code,
-                    expected_started_at=self._task.started_at,
-                    expected_status=self._expected_failure_status,
-                    authority=self._authority,
-                )
-            if isinstance(mutation, CompleteTask):
-                session.add(
-                    EvaluationResult(
-                        org_id=self._org.id,
-                        task=task.id,
-                        instance_id=mutation.instance_id,
-                        result=mutation.result,
-                        agent_caused_exit_reason=AgentCausedExitReason(mutation.exit_reason)
-                        if mutation.exit_reason
-                        else None,
-                    )
-                )
-                breakdown = session.get(TaskBreakdown, task.task_breakdown) if task.task_breakdown else None
-                if breakdown is not None:
-                    if mutation.evaluation_run_duration is not None:
-                        breakdown.evaluation_run_duration = mutation.evaluation_run_duration
-                    if mutation.sandbox_run_duration is not None:
-                        breakdown.sandbox_run_duration = mutation.sandbox_run_duration
-                to_status = TaskStatus.FINISHED
-                expected_status = (TaskStatus.EVALUATING, TaskStatus.ERROR)
-            elif isinstance(mutation, EvaluateTask):
-                breakdown = TaskBreakdown(
-                    sandbox_build_duration=mutation.sandbox_build_duration,
-                    agent_run_duration=mutation.agent_run_duration,
-                )
-                session.add(breakdown)
-                task.task_breakdown = breakdown.id
-                to_status = TaskStatus.EVALUATING
-            elif isinstance(mutation, BuildTask):
-                to_status = TaskStatus.BUILDING
-            elif isinstance(mutation, RunTask):
-                to_status = TaskStatus.IN_PROGRESS
-            elif isinstance(mutation, PendingTask):
-                to_status = TaskStatus.PENDING
-                expected_status = self._expected_failure_status
-            else:
-                to_status = TaskStatus.STOPPED
-
-            return commit_task_status_transition(
-                task.id,
-                session,
-                self._org,
-                to_status,
-                authority=self._authority,
-                expected_started_at=self._task.started_at,
-                expected_status=expected_status,
-            )
-
-    async def write(self, mutation: Mutation) -> bool:
-        async with self._lock:
-            return await settle_task_io(asyncio.to_thread(self._write, mutation))
-
-    def _resume(self) -> dict[str, Any] | None:
-        with self._session() as session:
-            try:
-                lock_execution_authority(session, self._authority)
-            except ExecutionAuthorityRevoked:
-                session.rollback()
-                return None
-            created_at = session.exec(
-                select(col(ExecutorDispatch.created_at)).where(col(ExecutorDispatch.id) == self._authority.dispatch_id)
-            ).one()
-            task = session.exec(
-                select(Task)
-                .where(
-                    Task.id == self._task.id,
-                    Task.org_id == self._org.id,
-                    Task.status == TaskStatus.EVALUATING,
-                    Task.started_at == created_at,
-                )
-                .with_for_update()
-            ).one_or_none()
-
-            return task.eval_resume_state if task is not None else None
-
-    async def resume(self) -> dict[str, Any] | None:
-        async with self._lock:
-            self._evaluation_lock = task_evaluation_lock(engine, self._task.id)
-            self._evaluation_lock_acquired = await self._evaluation_lock.__aenter__()
-            if not self._evaluation_lock_acquired:
-                return None
-
-            return await settle_task_io(asyncio.to_thread(self._resume))
-
-    async def close(self) -> None:
-        async with self._lock:
-            if self._evaluation_lock is not None:
-                await self._evaluation_lock.__aexit__(None, None, None)
-                self._evaluation_lock = None
-                self._evaluation_lock_acquired = False
-
-
 async def process_task(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
@@ -748,12 +188,11 @@ async def process_task(
     authority: ExecutionAuthority,
     *,
     sandbox_provider: SandboxProvider | None = None,
-    queue_context: SandboxQueueContext | ApiSandboxQueueContext | None = None,
-    persistence: TaskPersistence | None = None,
+    queue_context: ApiSandboxQueueContext | None = None,
+    persistence: ApiTaskPersistence,
 ) -> dict[str, dict[str, Any] | None]:
     """Process one task while retaining dependency recovery state across sandbox attempts."""
     dependency_setup_recovery = _DependencySetupRecoveryState()
-    persistence = persistence if persistence is not None else PostgresTaskPersistence(task_row, org, authority)
 
     with observability_span(
         "task.started",
@@ -840,8 +279,8 @@ async def _process_task_attempt(
     authority: ExecutionAuthority,
     *,
     sandbox_provider: SandboxProvider | None = None,
-    queue_context: SandboxQueueContext | ApiSandboxQueueContext | None = None,
-    persistence: TaskPersistence,
+    queue_context: ApiSandboxQueueContext | None = None,
+    persistence: ApiTaskPersistence,
 ) -> dict[str, dict[str, Any] | None]:
     """
     Processes a task and returns the evaluation result
@@ -1133,24 +572,10 @@ async def _process_task_attempt(
         async with AsyncExitStack() as sandbox_stack:
             if queue_context is None:
                 sandbox = await sandbox_stack.enter_async_context(sandbox_context())
-            elif isinstance(queue_context, ApiSandboxQueueContext):
-                assert isinstance(persistence, ApiTaskPersistence)
+            else:
                 sandbox = await queue_context.enter(
                     stack=sandbox_stack,
                     persistence=persistence,
-                    source=task_data.source,
-                    resources=task_data.resources,
-                    create=sandbox_context,
-                )
-                if sandbox is None:
-                    return {task_id: None}
-            else:
-                sandbox = await enter_queued_sandbox(
-                    stack=sandbox_stack,
-                    context=queue_context,
-                    task_row_id=task_row.id,
-                    expected_started_at=attempt_started_at,
-                    authority=authority,
                     source=task_data.source,
                     resources=task_data.resources,
                     create=sandbox_context,
@@ -1449,38 +874,3 @@ async def _process_task_attempt(
         )
     finally:
         await persistence.close()
-
-
-def commit_task_error(
-    task_row: Task,
-    session: Session,
-    error_message: str,
-    *,
-    producer: str,
-    operation: str,
-    error_type: str,
-    authority: ExecutionAuthority,
-    cause_code: str | None = None,
-    expected_started_at: datetime | None = None,
-    expected_status: TaskStatus | None = None,
-) -> bool:
-    session.add(
-        ErrorResult(
-            org_id=task_row.org_id,
-            task=task_row.id,
-            error_message=error_message,
-            producer=producer,
-            operation=operation,
-            error_type=error_type,
-            cause_code=cause_code,
-        )
-    )
-    return _commit_task_status(
-        task_row,
-        session,
-        TaskStatus.ERROR,
-        error_message=error_message,
-        expected_started_at=expected_started_at,
-        expected_status=expected_status,
-        authority=authority,
-    )

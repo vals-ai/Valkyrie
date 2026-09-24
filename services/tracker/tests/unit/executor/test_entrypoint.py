@@ -40,7 +40,7 @@ async def test_sigterm_cancels_executor_and_awaits_cleanup(monkeypatch: MonkeyPa
     signal_handler: Callable[[], None] | None = None
     loop = asyncio.get_running_loop()
 
-    async def process_benchmark(**_payload: object) -> None:
+    async def process_benchmark(_payload: dict[str, object]) -> None:
         started.set()
         try:
             await asyncio.Event().wait()
@@ -55,7 +55,7 @@ async def test_sigterm_cancels_executor_and_awaits_cleanup(monkeypatch: MonkeyPa
     def remove_signal_handler(received_signal: signal.Signals) -> bool:
         return received_signal == signal.SIGTERM
 
-    monkeypatch.setattr(executor_entrypoint, "process_benchmark", process_benchmark)
+    monkeypatch.setattr(executor_entrypoint, "_run_api_executor", process_benchmark)
     monkeypatch.setattr(loop, "add_signal_handler", add_signal_handler)
     monkeypatch.setattr(loop, "remove_signal_handler", remove_signal_handler)
 
@@ -66,6 +66,7 @@ async def test_sigterm_cancels_executor_and_awaits_cleanup(monkeypatch: MonkeyPa
                 "benchmark_id_str": "benchmark-id",
                 "verified_task_ids": [],
                 "executor_dispatch_id": "dispatch-id",
+                "executor_protocol_version": "4",
             }
         )
     )
@@ -77,11 +78,20 @@ async def test_sigterm_cancels_executor_and_awaits_cleanup(monkeypatch: MonkeyPa
     assert cleaned_up.is_set()
 
 
+@pytest.mark.parametrize("protocol_version", [None, "1", "2", "3", "unknown"])
+async def test_executor_rejects_retired_protocols(protocol_version: str | None) -> None:
+    """Reject old payloads before starting execution or accessing a database."""
+    with pytest.raises(ValueError, match="API-backed protocol version 4"):
+        await executor_entrypoint._run_executor(  # pyright: ignore[reportPrivateUsage]
+            {"executor_dispatch_id": "dispatch-id", "executor_protocol_version": protocol_version}
+        )
+
+
 @pytest.mark.asyncio
 async def test_unhandled_executor_error_is_captured_with_run_context(monkeypatch: MonkeyPatch) -> None:
     error = RuntimeError("executor failed")
 
-    async def process_benchmark(**_payload: object) -> None:
+    async def process_benchmark(_payload: dict[str, object]) -> None:
         raise error
 
     captured_context: dict[str, str] = {}
@@ -92,7 +102,7 @@ async def test_unhandled_executor_error_is_captured_with_run_context(monkeypatch
         captured_context["request_id"] = request_id_var.get()
         captured_context["executor_dispatch_id"] = executor_dispatch_id_var.get()
 
-    monkeypatch.setattr(executor_entrypoint, "process_benchmark", process_benchmark)
+    monkeypatch.setattr(executor_entrypoint, "_run_api_executor", process_benchmark)
     monkeypatch.setattr(sentry_sdk, "capture_exception", capture_exception)
 
     with pytest.raises(RuntimeError, match="executor failed"):
@@ -101,6 +111,7 @@ async def test_unhandled_executor_error_is_captured_with_run_context(monkeypatch
                 "benchmark_id_str": "benchmark-id",
                 "telemetry_context_json": {"request_id": "request-id", "trace_headers": {}},
                 "executor_dispatch_id": "dispatch-id",
+                "executor_protocol_version": "4",
             }
         )
 
@@ -121,11 +132,12 @@ def test_main_forwards_executor_payload(
         "benchmark_id_str": "benchmark-id",
         "verified_task_ids": ["task-1", "task-2"],
         "executor_dispatch_id": "dispatch-id",
+        "executor_protocol_version": "4",
     }
     payload_path = tmp_path / "payload.json"
     payload_path.write_text(json.dumps(payload), encoding="utf-8")
     process_benchmark = AsyncMock()
-    monkeypatch.setattr(executor_entrypoint, "process_benchmark", process_benchmark)
+    monkeypatch.setattr(executor_entrypoint, "_run_api_executor", process_benchmark)
     monkeypatch.setattr(sys, "argv", ["executor-entrypoint", str(payload_path)])
 
     executor_entrypoint.main()
@@ -133,13 +145,7 @@ def test_main_forwards_executor_payload(
     configure, flush = observability
     configure.assert_called_once_with("valkyrie-executor", environment=ENVIRONMENT)
     flush.assert_called_once_with()
-    process_benchmark.assert_awaited_once_with(
-        start_benchmark_request_json=payload["start_benchmark_request_json"],
-        benchmark_id_str=payload["benchmark_id_str"],
-        verified_task_ids=payload["verified_task_ids"],
-        execution_context_json=None,
-        executor_dispatch_id=payload["executor_dispatch_id"],
-    )
+    process_benchmark.assert_awaited_once_with(payload)
 
 
 def test_main_forwards_managed_execution_payload(
@@ -150,11 +156,12 @@ def test_main_forwards_managed_execution_payload(
     payload = {
         "execution_context_json": {"benchmark_id": "benchmark-id"},
         "executor_dispatch_id": "dispatch-id",
+        "executor_protocol_version": "4",
     }
     payload_path = tmp_path / "payload.json"
     payload_path.write_text(json.dumps(payload), encoding="utf-8")
     process_benchmark = AsyncMock()
-    monkeypatch.setattr(executor_entrypoint, "process_benchmark", process_benchmark)
+    monkeypatch.setattr(executor_entrypoint, "_run_api_executor", process_benchmark)
     monkeypatch.setattr(sys, "argv", ["executor-entrypoint", str(payload_path)])
 
     executor_entrypoint.main()
@@ -162,13 +169,7 @@ def test_main_forwards_managed_execution_payload(
     configure, flush = observability
     configure.assert_called_once_with("valkyrie-executor", environment=ENVIRONMENT)
     flush.assert_called_once_with()
-    process_benchmark.assert_awaited_once_with(
-        start_benchmark_request_json=None,
-        benchmark_id_str=None,
-        verified_task_ids=None,
-        execution_context_json=payload["execution_context_json"],
-        executor_dispatch_id=payload["executor_dispatch_id"],
-    )
+    process_benchmark.assert_awaited_once_with(payload)
 
 
 def test_executor_context_restores_run_and_trace_context(monkeypatch: MonkeyPatch) -> None:
@@ -193,6 +194,7 @@ def test_executor_context_restores_run_and_trace_context(monkeypatch: MonkeyPatc
             {
                 "execution_context_json": {"benchmark_id": "benchmark-id"},
                 "executor_dispatch_id": "dispatch-id",
+                "executor_protocol_version": "4",
                 "telemetry_context_json": {
                     "request_id": "request-id",
                     "trace_headers": {"sentry-trace": "trace-header", "baggage": "baggage-header"},

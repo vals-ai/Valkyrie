@@ -1,17 +1,9 @@
 """Back-compat re-export shim for the former tracker/utils.py."""
 
+from tracker.executor.score_state import fetch_final_score_inputs
+
 from tracker.utils.harness_config import (
     fetch_harness_config,
-)
-from tracker.utils.run_orchestration import (
-    catch_errors_during_cleanup,
-    commit_benchmark_error,
-    create_task_rows,
-    fetch_final_score_inputs,
-    has_runnable_tasks,
-    has_stopped_tasks,
-    process_benchmark,
-    set_benchmark_final_status,
 )
 from tracker.utils.reporting import (
     BenchmarkContext,
@@ -47,54 +39,33 @@ from tracker.utils.run_control import (
 )
 from tracker.utils.task_execution import (
     ResizableLimiter,
-    TaskMonitor,
-    TrackedTask,
-    TrackedTaskStatus,
-    commit_task_error,
-    commit_task_status_transition,
-    handle_early_exit,
     process_task,
-    save_eval_resume_state,
 )
 
 __all__ = [
+    "fetch_final_score_inputs",
     "BenchmarkContext",
     "BenchmarkConcurrencyUpdate",
     "ResizableLimiter",
     "TaskCounts",
-    "TaskMonitor",
-    "TrackedTask",
-    "TrackedTaskStatus",
     "YieldingWriter",
     "build_benchmark_table_rows",
-    "catch_errors_during_cleanup",
-    "commit_benchmark_error",
-    "commit_task_error",
-    "commit_task_status_transition",
     "create_benchmark_service_client",
     "create_final_view",
-    "create_task_rows",
     "decode_cursor",
     "encode_cursor",
     "fetch_average_task_breakdown",
     "fetch_benchmark_row",
     "fetch_evaluation_results",
     "fetch_filtered_benchmark_rows",
-    "fetch_final_score_inputs",
     "fetch_harness_config",
     "fetch_sandbox_provider_config",
     "fetch_task_row",
     "force_stop_sandboxes",
-    "handle_early_exit",
-    "has_runnable_tasks",
-    "has_stopped_tasks",
     "initiate_stop_benchmark",
-    "process_benchmark",
     "process_task",
     "reset_to_in_progress_status",
     "sandbox_generator",
-    "save_eval_resume_state",
-    "set_benchmark_final_status",
     "start_benchmark_request_to_benchmark",
     "stop_sandbox",
     "stream_benchmark_results",

@@ -13,17 +13,17 @@ import pytest
 from benchmark_service import SandboxNotFoundError, SandboxRecoveryPolicy
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from benchmark_service.schemas import RetrieveTaskResponse, SetupTaskResponse, VolumeMount
-from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, desc, select
 
 from tests.unit.utils.task_execution_support import (
     bind_task_to_dispatch,
     create_task_environment,
-    install_sqlite_evaluation_lock,
     make_retrieve_task_response,
     run_process_task,
 )
-from tracker.scheduler.admission import SandboxQueueContext
+from tracker.executor.queue_execution import ApiSandboxQueueContext
+from tracker.executor.task_persistence import ApiTaskPersistence
+from tracker.executor_api.v1.task_schemas import PendingTask
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
@@ -145,8 +145,6 @@ class TestTaskExecutionRetry:
             return {"status": "success", "score": 1.0}
 
         is_run_agent_target = fail_target == "tracker.utils.task_execution.run_agent"
-        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
         monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr(fail_target, _fails_first_run_agent if is_run_agent_target else _fails_first_other)
@@ -218,8 +216,6 @@ class TestTaskExecutionRetry:
             harness_config,
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
-        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
 
         sandbox_entry_count = 0
@@ -300,8 +296,6 @@ class TestTaskExecutionRetry:
             harness_config,
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
-        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
 
         sandbox_entry_count = 0
@@ -363,8 +357,6 @@ class TestTaskExecutionRetry:
             harness_config,
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
-        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
 
         mock_sandbox = AsyncMock()
@@ -387,19 +379,17 @@ class TestTaskExecutionRetry:
 
         transition_statuses: list[TaskStatus] = []
 
-        def _refuse_pending_transition(*args: Any, **_kwargs: Any) -> bool:
-            transition_statuses.append(args[3])
-            return False
+        original_write = ApiTaskPersistence.write
 
-        task_engine = database_session.get_bind()
-        assert isinstance(task_engine, Engine)
-        queue_context = SandboxQueueContext(
-            provider=Mock(),
-            pool_id="pool_test",
-            engine=task_engine,
-        )
-        monkeypatch.setattr(task_execution_module, "enter_queued_sandbox", _mock_enter_queued_sandbox)
-        monkeypatch.setattr(task_execution_module, "commit_task_status_transition", _refuse_pending_transition)
+        async def _refuse_pending_transition(persistence: ApiTaskPersistence, mutation: Any) -> bool:
+            if isinstance(mutation, PendingTask):
+                transition_statuses.append(TaskStatus.PENDING)
+                return False
+            return await original_write(persistence, mutation)
+
+        queue_context = ApiSandboxQueueContext(provider=Mock())
+        monkeypatch.setattr(ApiSandboxQueueContext, "enter", _mock_enter_queued_sandbox)
+        monkeypatch.setattr(ApiTaskPersistence, "write", _refuse_pending_transition)
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
 
@@ -431,7 +421,6 @@ class TestTaskExecutionRetry:
             harness_config,
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
-        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
 
         sandbox_entry_count = 0
@@ -526,8 +515,6 @@ class TestTaskExecutionRetry:
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
             return {"status": "success", "score": 1.0}
 
-        monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monkeypatch.setattr(task_execution_module.TaskLogBuffer, "buffer_logs", Mock())
         monkeypatch.setattr(task_execution_module, "create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr(task_execution_module, "run_agent", _mock_run_agent)
@@ -568,7 +555,6 @@ class TestTaskExecutionRetry:
         database_session.add(task_row)
         database_session.commit()
         bind_task_to_dispatch(database_session, task_row, authority)
-        install_sqlite_evaluation_lock(database_session, monkeypatch)
 
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("benchmark_service.client.time.time", lambda: 1_234.5)
@@ -591,8 +577,6 @@ class TestTaskExecutionRetry:
                 raise SandboxNotFoundError("grading sandbox was preempted")
             return {"status": "success", "score": 1.0}
 
-        monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monkeypatch.setattr(task_execution_module.TaskLogBuffer, "buffer_logs", Mock())
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
@@ -623,7 +607,6 @@ class TestTaskExecutionRetry:
         database_session.add(task_row)
         database_session.commit()
         bind_task_to_dispatch(database_session, task_row, authority)
-        install_sqlite_evaluation_lock(database_session, monkeypatch)
 
         async def _failed_policy_lookup(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             raise BenchmarkServiceError("policy lookup failed")
@@ -632,8 +615,6 @@ class TestTaskExecutionRetry:
             raise SandboxNotFoundError("grading sandbox was preempted")
 
         capture_exception = Mock()
-        monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monkeypatch.setattr(task_execution_module.TaskLogBuffer, "buffer_logs", Mock())
         monkeypatch.setattr(task_execution_module.sentry_sdk, "capture_exception", capture_exception)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _failed_policy_lookup)
@@ -722,8 +703,6 @@ class TestTaskExecutionRetry:
             finally:
                 record["exited"] = True
 
-        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
         monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr("tracker.utils.task_execution.upload_agent_artifacts", _mock_upload_agent_artifacts)
