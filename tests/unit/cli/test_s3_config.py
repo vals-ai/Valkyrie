@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import yaml
 import click
 import pytest
-from tracker.aws.clients import DefaultChainAWSClientProvider, ExplicitCredentialsAWSClientProvider
+from tracker.aws.clients import LocalChainAWSClientProvider, ExplicitCredentialsAWSClientProvider
 from tracker.aws.s3 import download_from_s3
 
 from valkyrie.cli import s3_config
@@ -56,7 +56,7 @@ def test_aws_runtime_uses_sdk_credential_chain_without_configured_keys(
 
     runtime = s3_config.aws_runtime()
 
-    assert isinstance(runtime.clients, DefaultChainAWSClientProvider)
+    assert isinstance(runtime.clients, LocalChainAWSClientProvider)
     assert runtime.clients.region == "us-east-1"
 
 
@@ -71,7 +71,7 @@ async def test_profile_credentials_can_read_without_deployment_account_configura
     client = AsyncMock()
     client.__aenter__.return_value = client
     client.get_object.return_value = {"Body": stream}
-    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", lambda _provider: client)
+    monkeypatch.setattr(LocalChainAWSClientProvider, "s3_client", lambda _provider: client)
     configured_runtime = s3_config.aws_runtime()
     runtime = configured_runtime.with_resources(replace(configured_runtime.resources, region="us-west-2"))
 

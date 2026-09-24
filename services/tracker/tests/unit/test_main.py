@@ -3228,7 +3228,14 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket_and_logs(
 
     logs_client = Mock()
     logs_client.filter_log_events.return_value = {"events": []}
+    logs_client.create_log_group = AsyncMock()
+    logs_client.put_retention_policy = AsyncMock()
     monkeypatch.setattr(DefaultChainAWSClientProvider, "cloudwatch_logs_client", lambda _provider: logs_client)
+    async_logs_context = AsyncMock()
+    async_logs_context.__aenter__.return_value = logs_client
+    monkeypatch.setattr(
+        DefaultChainAWSClientProvider, "cloudwatch_logs_async_client", lambda _provider: async_logs_context
+    )
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", _create_cloudwatch_benchmark)
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "write", _write_cloudwatch_log)
     runtime = await CloudRuntimeFactory.create_execution_runtime(
@@ -3286,7 +3293,9 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket_and_logs(
     assert archived == [saved_result]
     payloads: list[dict[str, Any]] = []
 
-    def invoke_lambda(_clients: object, _function: str, payload: dict[str, Any], **_arguments: Any) -> dict[str, str]:
+    async def invoke_lambda(
+        _clients: object, _function: str, payload: dict[str, Any], **_arguments: Any
+    ) -> dict[str, str]:
         payloads.append(payload)
         return {"reading_plan_url": "https://analysis.example/result"}
 

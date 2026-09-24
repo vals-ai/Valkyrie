@@ -112,7 +112,11 @@ class RunsResource:
         if managed_s3_bucket is not None and properties is not None:
             raise ValkyrieRunError("managed_s3_bucket and properties are mutually exclusive")
 
-        if managed_s3_bucket is not None and self._sdk.config.aws_access_key_id is not None:
+        if (
+            managed_s3_bucket is not None
+            and self._sdk.config.aws is not None
+            and self._sdk.config.aws.credentials is not None
+        ):
             raise ValkyrieRunError("managed_s3_bucket requires deployment-managed AWS access")
 
         contract = self._normalize_contract(agent, model=model, agent_kwargs=agent_kwargs, secrets=secrets)

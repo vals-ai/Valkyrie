@@ -38,6 +38,11 @@ def config_values() -> ConfigValuesFactory:
             "benchmark_auth": {"swebench": "benchmark-token"},
             "webhook": "SlackWebhook",
         }
+        credential_fields = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}
+        if credential_fields & overrides.keys():
+            if all(overrides.pop(field, None) is None for field in credential_fields):
+                assert isinstance(values["aws"], dict)
+                values["aws"] = {**values["aws"], "credentials": None}
         values.update(overrides)
         return values
 
