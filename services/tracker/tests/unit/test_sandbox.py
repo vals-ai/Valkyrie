@@ -1267,9 +1267,7 @@ class TestRunAgent:
         apply_egress.assert_awaited_once()
         clear_egress.assert_not_awaited()
 
-    async def test_controlled_nonzero_exit_collects_outputs_after_seal(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_controlled_nonzero_exit_collects_outputs_after_seal(self, monkeypatch: pytest.MonkeyPatch) -> None:
         workload = _FakeControlledWorkload(exit_code=23)
         sandbox = _FakeControlledSandbox(workload)
         contract = _controlled_contract().model_copy(
@@ -1763,8 +1761,7 @@ class TestRunAgent:
         assert post_deadline_timeouts[0] == post_deadline_timeouts[1]
         assert (
             post_deadline_timeouts[-1] - post_deadline_timeouts[0]
-            == sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS
-            - sandbox_module.GENERATION_ARBITRATION_GRACE_SECONDS
+            == sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS - sandbox_module.GENERATION_ARBITRATION_GRACE_SECONDS
         )
         apparent_deadline = post_deadline_timeouts[-1] - sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS
         assert 0.005 <= apparent_deadline - started_before < 0.015
@@ -1795,7 +1792,13 @@ class TestRunAgent:
         persist = AsyncMock()
 
         reason, duration = await _stream_controlled_output(
-            cast(Any, _FakeControlledSandbox(workload)), "echo done", "/workspace", _ignore_output, 0.001, controller, persist
+            cast(Any, _FakeControlledSandbox(workload)),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            0.001,
+            controller,
+            persist,
         )
 
         assert reason == AgentCausedExitReason.TIMEOUT
