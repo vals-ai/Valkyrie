@@ -917,6 +917,13 @@ class TestRunRecovery:
                 "score": 1.0,
                 "agent_caused_exit_reason": "TIMEOUT",
                 "task_breakdown": {
+                    "accounting_session_id": None,
+                    "base_generation_allowance_seconds": None,
+                    "cumulative_time_credit_cap_seconds": None,
+                    "effective_generation_allowance_seconds": None,
+                    "external_service_credit_applied_seconds": None,
+                    "external_service_credit_revision": None,
+                    "external_service_overhead_seconds": None,
                     "sandbox_build_duration": 1.0,
                     "agent_run_duration": 2.0,
                     "evaluation_run_duration": 3.0,
