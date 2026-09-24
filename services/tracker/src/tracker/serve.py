@@ -18,11 +18,12 @@ def main() -> None:
     args = parser.parse_args()
     if args.config is not None:
         config.configure(args.config)
+    is_local = config.resources is not None
     uvicorn.run(
         "main:app",
-        host="127.0.0.1" if config.resources is not None else "0.0.0.0",
+        host="127.0.0.1" if is_local else "0.0.0.0",
         port=8000,
-        workers=1 if config.resources is not None else 2,
+        workers=1 if is_local else 2,
         log_config=None,
     )
 

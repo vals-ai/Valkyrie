@@ -12,9 +12,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from tracker.api.dependencies import RunRuntimeDependency, TrackedBenchmarkId
+from tracker.api.download import local_file_response, resolve_download_url
 from tracker.runtime.artifacts import benchmark_prefix
 from tracker.exceptions import S3Error
-from tracker.local.storage import FilesystemObjectStore
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/benchmarks")
@@ -111,17 +111,19 @@ async def get_run_artifact_url(
     """Return a temporary download URL for an exact artifact in the authorized run."""
     path = _path(path)
     key = benchmark_prefix(str(benchmark_id)) + path
-    ttl = 300
     with _storage_errors():
         metadata = await run_context.objects.stat(key)
-        if download and isinstance(run_context.objects, FilesystemObjectStore):
-            return FileResponse(run_context.objects.object_location(key), filename=Path(path).name)
-        url = await run_context.objects.temporary_download_url(key, expires_in=ttl)
-        if url is None:
-            ttl = 0
-            url = str(
-                request.url_for("get_run_artifact_url", benchmark_id=benchmark_id).include_query_params(
-                    path=path, download="true"
-                )
-            )
+        if download:
+            response = local_file_response(run_context.objects, key, filename=Path(path).name)
+            if response is not None:
+                return response
+        url, ttl = await resolve_download_url(
+            run_context.objects,
+            key,
+            request=request,
+            route_name="get_run_artifact_url",
+            route_params={"benchmark_id": benchmark_id},
+            query_params={"path": path},
+            expires_in=300,
+        )
     return RunArtifactDownloadResponse(path=path, download_url=url, expires_in=ttl, size=metadata.size)

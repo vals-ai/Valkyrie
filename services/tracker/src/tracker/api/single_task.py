@@ -14,6 +14,7 @@ from tracker.api.dependencies import (
     TrackedBenchmarkId,
     load_task_for_benchmark_or_404,
 )
+from tracker.api.download import resolve_download_url
 from tracker.auth import get_current_org
 from tracker.runtime.logs import task_log_stream_name
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
@@ -139,15 +140,15 @@ async def get_task_artifacts(
     ttl_seconds: int | None = None
     key = f"{_task_prefix(benchmark_id, task_id)}agent_output.tar.gz"
     if await runtime.objects.exists(key):
-        ttl_seconds = 300
-        agent_output_url = await runtime.objects.temporary_download_url(key, expires_in=ttl_seconds)
-        if agent_output_url is None:
-            ttl_seconds = 0
-            agent_output_url = str(
-                request.url_for("get_run_artifact_url", benchmark_id=benchmark_id).include_query_params(
-                    path=f"{task_id}/agent_output.tar.gz", download="true"
-                )
-            )
+        agent_output_url, ttl_seconds = await resolve_download_url(
+            runtime.objects,
+            key,
+            request=request,
+            route_name="get_run_artifact_url",
+            route_params={"benchmark_id": benchmark_id},
+            query_params={"path": f"{task_id}/agent_output.tar.gz"},
+            expires_in=300,
+        )
 
     return TaskArtifactsResponse(
         cloudwatch_url=cloudwatch_url,
