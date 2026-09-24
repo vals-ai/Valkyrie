@@ -22,7 +22,6 @@ from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
     FinalEvaluation,
-    GenerationContainment,
     OutputArtifact,
 )
 from tracker.types import (
