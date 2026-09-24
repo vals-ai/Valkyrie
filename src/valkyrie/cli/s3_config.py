@@ -2,7 +2,7 @@ from functools import lru_cache
 from typing import Any
 
 import click
-from tracker.aws.clients import DefaultChainAWSClientProvider, ExplicitCredentialsAWSClientProvider
+from tracker.aws.clients import ExplicitCredentialsAWSClientProvider, LocalChainAWSClientProvider
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.types import AWSCredentials
 
@@ -14,7 +14,7 @@ from valkyrie.cli.runtime_config import config_location
 def _aws_runtime(resources: AWSResources, credentials: AWSCredentials | None) -> AWSRuntime:
     return AWSRuntime(
         resources=resources,
-        clients=DefaultChainAWSClientProvider(resources.region)
+        clients=LocalChainAWSClientProvider(resources.region)
         if credentials is None
         else ExplicitCredentialsAWSClientProvider(credentials),
     )

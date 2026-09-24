@@ -732,6 +732,7 @@ async def _start_benchmark(
             )
 
     if request.environment == "aws":
+        runtime = CloudRuntimeFactory.create_runtime(aws_runtime)
         object_store = S3ObjectStore(aws_runtime)
         library_store = S3ObjectStore(library_runtime)
         agent_copier = (

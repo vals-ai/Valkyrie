@@ -1743,8 +1743,11 @@
             "title": "Dataset"
           },
           "environment": {
-            "const": "aws",
             "default": "aws",
+            "enum": [
+              "aws",
+              "local"
+            ],
             "title": "Environment",
             "type": "string"
           },
@@ -1811,9 +1814,13 @@
                 "$ref": "#/components/schemas/AWSResources"
               },
               {
+                "$ref": "#/components/schemas/LocalResources"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Properties"
           },
           "sandbox_provider": {
             "default": "daytona",
