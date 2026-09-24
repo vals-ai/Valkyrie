@@ -273,10 +273,6 @@ class TrackerStack(Stack):
             )
         tls_enabled = not stage.is_release_test
 
-        # Shared by Tracker and ExecutorHost (executor_stack.py reuses this via
-        # tracker_service.connections.security_groups[0]). Egress is scoped to what
-        # both services actually call: VPC-internal Postgres/Redis/DNS/benchmark-service
-        # traffic, plus HTTPS out for AWS APIs, Sentry, and the sandbox provider.
         tracker_security_group = aws_ec2.SecurityGroup(
             self,
             "TrackerSecurityGroup",
