@@ -48,7 +48,7 @@ class TestComparison:
         """Reject incomplete comparisons and keep the explicit unsafe-change control separate.
 
         Test cases:
-        - Missing revisions cannot report success.
+        - Missing revisions or the replacement scenario cannot report success.
         - The unsafe-change control must interrupt both revisions.
         """
         assert compare_exit([]) == 2
@@ -56,6 +56,17 @@ class TestComparison:
         assert (
             compare_exit(
                 [
+                    {"label": "before", "scenario": "maintenance", "outcome": "interrupted"},
+                    {"label": "after", "scenario": "maintenance", "outcome": "interrupted"},
+                ]
+            )
+            == 2
+        )
+        assert (
+            compare_exit(
+                [
+                    {"label": "before", "scenario": "replacement", "outcome": "interrupted"},
+                    {"label": "after", "scenario": "replacement", "outcome": "survived"},
                     {"label": "before", "scenario": "maintenance", "outcome": "interrupted"},
                     {"label": "after", "scenario": "maintenance", "outcome": "interrupted"},
                 ]

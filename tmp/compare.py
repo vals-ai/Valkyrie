@@ -83,6 +83,9 @@ def run_command(arguments: list[str], cwd: Path, log: Path, environment: dict[st
 def compare_exit(results: list[dict[str, object]]) -> int:
     if {result.get("label") for result in results} != {"before", "after"}:
         return 2
+    replacement = [result for result in results if result.get("scenario") == "replacement"]
+    if len(replacement) != 2 or {result.get("label") for result in replacement} != {"before", "after"}:
+        return 2
     if any(result.get("outcome") in {"setup_error", "probe_error", "cleanup_error"} for result in results):
         return 2
     if any(
