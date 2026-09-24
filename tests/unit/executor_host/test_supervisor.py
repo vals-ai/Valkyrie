@@ -333,6 +333,80 @@ async def test_run_forwards_dispatch_authority_to_executor(
 
 
 @pytest.mark.asyncio
+async def test_one_host_finishes_old_artifact_while_starting_new_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that changing the dispatch artifact does not restart an active child.
+
+    Test cases:
+    - An old executor stays alive while the same supervisor completes a new release.
+    - Both dispatches finish using their own immutable artifact.
+    """
+    monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", None)
+    started = tmp_path / "old-started"
+    release_old = tmp_path / "release-old"
+    release_new = tmp_path / "release-new"
+    old_script = b"""import json, os, sys, time
+from pathlib import Path
+request = json.loads(Path(sys.argv[1]).read_text())["start_benchmark_request_json"]
+Path(request["started"]).write_text(str(os.getpid()))
+while not Path(request["release"]).exists():
+    time.sleep(0.01)
+"""
+    new_script = b"""import json, sys
+from pathlib import Path
+request = json.loads(Path(sys.argv[1]).read_text())["start_benchmark_request_json"]
+Path(request["marker"]).write_text("new-release")
+"""
+    old_digest = hashlib.sha256(old_script).hexdigest()
+    new_digest = hashlib.sha256(new_script).hexdigest()
+    (tmp_path / f"{old_digest}.pex").write_bytes(old_script)
+    (tmp_path / f"{new_digest}.pex").write_bytes(new_script)
+    supervisor = _supervisor(tmp_path, content=b"unused")
+    old_store = FakeDispatchStore()
+    new_store = FakeDispatchStore()
+    old_dispatch = ArtifactDispatch.from_payload(
+        {
+            "executor_release_id": "release-v1",
+            "executor_artifact_uri": "s3://artifacts/executors/v1.pex",
+            "executor_artifact_digest": old_digest,
+            "executor_protocol_version": "4",
+        }
+    )
+    old_task = asyncio.create_task(
+        run_executor_dispatch(
+            supervisor,
+            old_store,
+            executor_dispatch_id="old-dispatch",
+            dispatch=old_dispatch,
+            process_payload=_process_payload({"started": str(started), "release": str(release_old)}),
+        )
+    )
+    try:
+        async with asyncio.timeout(5):
+            while not started.exists():
+                await asyncio.sleep(0.01)
+            old_pid = started.read_text()
+            await run_executor_dispatch(
+                supervisor,
+                new_store,
+                executor_dispatch_id="new-dispatch",
+                dispatch=_dispatch(digest=new_digest),
+                process_payload=_process_payload({"marker": str(release_new)}, benchmark_id="benchmark-2"),
+            )
+        assert release_new.read_text() == "new-release"
+        assert not old_task.done()
+        assert started.read_text() == old_pid
+        assert old_store.finished == []
+        assert new_store.finished == [new_store.authority]
+    finally:
+        release_old.touch()
+        await asyncio.wait_for(old_task, timeout=5)
+    assert old_store.finished == [old_store.authority]
+
+
+@pytest.mark.asyncio
 async def test_run_renews_heartbeat_and_stops_it_after_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
