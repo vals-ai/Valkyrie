@@ -198,34 +198,24 @@ benchmarks/run_id/task_0/artifacts/result.json
 
 ### `egress: object`
 
-Set separate outbound network policies for agent installation and execution:
+Set the outbound network policy used while Valkyrie installs the agent:
 
 ```yaml
 egress:
   install:
     - https://pypi.org
     - https://files.pythonhosted.org
-  run:
-    - https://api.openai.com
 ```
 
-Each stage accepts one of these values:
+`install` accepts one of these values:
 
 - `"*"` keeps outbound access unrestricted.
 - `[]` blocks all outbound access.
 - A non-empty list allows only the listed URLs, domains, IP addresses, or CIDRs.
 
-Both `install` and `run` default to `"*"`. You can restrict one stage without changing the other:
+Installation defaults to `"*"`. Agent contracts cannot set `egress.run`; the benchmark owns setup, agent-run, and evaluation policies. The benchmark also chooses whether agent installation occurs before or after setup. Compose tasks always run setup first so setup can start the service that receives agent commands. Each policy remains active until Valkyrie applies the next stage's policy.
 
-```yaml
-egress:
-  install: "*"
-  run: []
-```
-
-For standard sandboxes, Valkyrie uploads the agent bundle, installs the agent, sets up the benchmark task, runs the agent, then evaluates the result. Compose tasks are the compatibility exception: benchmark setup first starts the Compose service, then Valkyrie installs and runs the agent inside that service. The agent contract owns the `install` and `run` policies. The benchmark owns its setup and evaluation policies. Each policy remains active until Valkyrie applies the next stage's policy.
-
-Existing contracts can keep using `egress_allowlist` for `run_cmd`. Omit `egress`, and a missing or empty legacy allowlist keeps installation and execution unrestricted. A non-empty legacy allowlist restricts only agent execution. Do not combine a non-empty `egress_allowlist` with `egress`.
+Existing contracts can keep using `egress_allowlist` as a legacy agent-run request. A missing or empty legacy allowlist adds no destinations. A non-empty legacy allowlist is unioned with the benchmark's run allowlist. When the benchmark has no run-policy opinion, a missing or empty legacy allowlist preserves unrestricted execution and a non-empty list preserves the old allowlist behavior. `"*"` from the benchmark keeps execution unrestricted.
 
 Allowlists help keep evaluations clean, but shared CDN edge IPs can make network restrictions broader than a single hostname.
 

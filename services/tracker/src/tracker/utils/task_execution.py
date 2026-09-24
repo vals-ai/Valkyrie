@@ -60,6 +60,7 @@ from tracker.exceptions import (
     SandboxSetupError,
     TrackerServiceError,
 )
+from tracker.egress import combine_run_egress_policies
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
@@ -1105,9 +1106,11 @@ async def _process_task_attempt(
                         raise
 
                 # Compose setup bootstraps the service that receives agent commands,
-                # so only Compose retains setup-before-install compatibility.
-                compose_runtime = isinstance(task_data.source, ComposeSource)
-                if not compose_runtime:
+                # so it must run before installation regardless of the declared order.
+                install_after_setup = (
+                    isinstance(task_data.source, ComposeSource) or task_data.agent_install_order == "after_setup"
+                )
+                if not install_after_setup:
                     await install_agent()
 
                 await apply_egress_policy(sandbox, task_data.egress.setup_task)
@@ -1128,7 +1131,7 @@ async def _process_task_attempt(
                 # distinct outage and must receive a new identity.
                 recovery_attempt.mark_replacement_ready()
 
-                if compose_runtime:
+                if install_after_setup:
                     await install_agent()
 
                 # Force flush the logs if anything has been buffered
@@ -1141,7 +1144,10 @@ async def _process_task_attempt(
 
                 await apply_egress_policy(
                     agent_sandbox,
-                    start_benchmark_request.contract.run_egress_policy,
+                    combine_run_egress_policies(
+                        task_data.egress.run,
+                        start_benchmark_request.contract.egress_allowlist,
+                    ),
                 )
                 exit_reason, agent_run_time = await run_agent(
                     agent_sandbox,

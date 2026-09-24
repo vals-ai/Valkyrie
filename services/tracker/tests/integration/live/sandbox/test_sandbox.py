@@ -21,6 +21,7 @@ from tests.utils import random_task_id
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3ObjectStore, get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.database.models import AgentContractRequest
+from tracker.egress import combine_run_egress_policies
 from tracker.exceptions import SandboxError
 from tracker.sandbox import (
     apply_egress_policy,
@@ -306,7 +307,10 @@ class TestSandboxOperations:
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
         object_store = S3ObjectStore(aws_runtime)
 
-        await apply_egress_policy(test_sandbox, contract.run_egress_policy)
+        await apply_egress_policy(
+            test_sandbox,
+            combine_run_egress_policies(None, contract.egress_allowlist),
+        )
         await run_agent(
             test_sandbox,
             contract,

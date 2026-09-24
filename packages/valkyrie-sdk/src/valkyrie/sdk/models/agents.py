@@ -3,7 +3,7 @@
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, field_validator, model_serializer
 
 from valkyrie.sdk.models._base import ResponseModel
 
@@ -56,10 +56,11 @@ EgressPolicy = Literal["*"] | list[str]
 
 
 class AgentEgressPlan(BaseModel):
-    """Network policy for agent installation and execution."""
+    """Network policy for agent installation."""
+
+    model_config = ConfigDict(extra="forbid")
 
     install: EgressPolicy = "*"
-    run: EgressPolicy = "*"
 
 
 class AgentContractRequest(BaseModel):
@@ -102,13 +103,6 @@ class AgentContractRequest(BaseModel):
                 normalized_path if isinstance(artifact, str) else artifact.model_copy(update={"path": normalized_path})
             )
         return normalized_artifacts
-
-    @model_validator(mode="after")
-    def validate_egress_fields(self) -> "AgentContractRequest":
-        """Reject conflicting legacy and staged run policies."""
-        if self.egress is not None and self.egress_allowlist:
-            raise ValueError("egress and egress_allowlist cannot both be set")
-        return self
 
 
 class AgentEntry(ResponseModel):

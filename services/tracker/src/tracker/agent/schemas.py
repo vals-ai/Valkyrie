@@ -5,7 +5,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ValidationError, create_model, field_validator, model_validator
+from pydantic import BaseModel, ValidationError, create_model, field_validator
 
 from tracker.database.models import OutputArtifact, OutputArtifactSpec
 from tracker.egress import AgentEgressPlan
@@ -75,12 +75,6 @@ class AgentContract(BaseModel):
     defaults: dict[str, Parameter] = {}
     kwargs: dict[str, Parameter] = {}
     run_cmd: str
-
-    @model_validator(mode="after")
-    def validate_egress_configuration(self) -> "AgentContract":
-        if self.egress is not None and self.egress_allowlist:
-            raise ValueError("egress and egress_allowlist cannot both be set")
-        return self
 
     @field_validator("name")
     @classmethod

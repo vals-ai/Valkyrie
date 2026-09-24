@@ -12,7 +12,13 @@ from uuid import UUID
 import pytest
 from benchmark_service import ComposeSource, ImageSource, SandboxNotFoundError, SandboxRecoveryPolicy
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
-from benchmark_service.schemas import BenchmarkEgressPlan, RetrieveTaskResponse, SetupTaskResponse, VolumeMount
+from benchmark_service.schemas import (
+    AgentInstallOrder,
+    BenchmarkEgressPlan,
+    RetrieveTaskResponse,
+    SetupTaskResponse,
+    VolumeMount,
+)
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, desc, select
 
@@ -208,7 +214,15 @@ class TestTaskExecutionRetry:
         else:
             assert terminal_results == []
 
-    @pytest.mark.parametrize("compose_runtime", [False, True])
+    @pytest.mark.parametrize(
+        ("compose_runtime", "agent_install_order", "setup_before_install"),
+        [
+            pytest.param(False, "before_setup", False, id="image-before-setup"),
+            pytest.param(False, "after_setup", True, id="image-after-setup"),
+            pytest.param(True, "before_setup", True, id="compose-before-setup-override"),
+            pytest.param(True, "after_setup", True, id="compose-after-setup"),
+        ],
+    )
     async def test_process_task_applies_stage_policies_in_lifecycle_order(
         self,
         contract: AgentContractRequest,
@@ -217,14 +231,16 @@ class TestTaskExecutionRetry:
         harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
         compose_runtime: bool,
+        agent_install_order: AgentInstallOrder,
+        setup_before_install: bool,
     ) -> None:
-        """Compose setup bootstraps its runtime; image tasks install before setup."""
+        """Benchmarks choose install order; Compose always bootstraps first."""
         contract = contract.model_copy(
             update={
                 "egress": AgentEgressPlan(
                     install=["https://packages.example.com"],
-                    run=[],
-                )
+                ),
+                "egress_allowlist": ["https://agent-runtime.example.com"],
             }
         )
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
@@ -243,8 +259,10 @@ class TestTaskExecutionRetry:
         task_data = make_retrieve_task_response().model_copy(
             update={
                 "source": source,
+                "agent_install_order": agent_install_order,
                 "egress": BenchmarkEgressPlan(
                     setup_task=[],
+                    run=["https://benchmark-runtime.example.com"],
                     evaluation=["https://grading.example.com"],
                 ),
             }
@@ -319,9 +337,12 @@ class TestTaskExecutionRetry:
         assert events == [
             "upload",
             "wrap",
-            *(setup_events if compose_runtime else install_events),
-            *(install_events if compose_runtime else setup_events),
-            f"policy:{expected_agent_target}:[]",
+            *(setup_events if setup_before_install else install_events),
+            *(install_events if setup_before_install else setup_events),
+            (
+                f"policy:{expected_agent_target}:"
+                "['https://benchmark-runtime.example.com', 'https://agent-runtime.example.com']"
+            ),
             "run",
             "policy:raw:['https://grading.example.com']",
             "evaluate",

@@ -12,7 +12,6 @@ from pydantic import (
     field_serializer,
     field_validator,
     model_serializer,
-    model_validator,
 )
 from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
@@ -166,21 +165,9 @@ class AgentContractRequest(BaseModel):
     # Set only by the tracker, after rebuilding this contract from the bundle.
     inference_settings_attested: bool = False
 
-    @model_validator(mode="after")
-    def validate_egress_configuration(self) -> "AgentContractRequest":
-        if self.egress is not None and self.egress_allowlist:
-            raise ValueError("egress and egress_allowlist cannot both be set")
-        return self
-
     @property
     def install_egress_policy(self) -> EgressPolicy:
         return self.egress.install if self.egress is not None else "*"
-
-    @property
-    def run_egress_policy(self) -> EgressPolicy:
-        if self.egress is not None:
-            return self.egress.run
-        return self.egress_allowlist or "*"
 
     @field_validator("output_artifacts")
     @classmethod

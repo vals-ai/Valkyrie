@@ -361,7 +361,8 @@
         "type": "object"
       },
       "AgentEgressPlan": {
-        "description": "Agent-owned network policy for dependency installation and execution.",
+        "additionalProperties": false,
+        "description": "Agent-owned network policy for dependency installation.",
         "properties": {
           "install": {
             "anyOf": [
@@ -378,22 +379,6 @@
             ],
             "default": "*",
             "title": "Install"
-          },
-          "run": {
-            "anyOf": [
-              {
-                "const": "*",
-                "type": "string"
-              },
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              }
-            ],
-            "default": "*",
-            "title": "Run"
           }
         },
         "title": "AgentEgressPlan",
