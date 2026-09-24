@@ -7,7 +7,13 @@ import httpx
 import pytest
 
 import tracker.runtime.model_gateway as model_gateway
-from tracker.runtime.model_gateway import REVOKE_ATTEMPTS, TOKEN_TTL_SECONDS, task_scoped_gateway_key
+from tracker.runtime.model_gateway import (
+    REQUEST_TIMEOUT_SECONDS,
+    REVOKE_ATTEMPTS,
+    REVOKE_TIMEOUT_SECONDS,
+    TOKEN_TTL_SECONDS,
+    task_scoped_gateway_key,
+)
 
 
 IDENTITY = {"benchmark_name": "swebench", "agent_name": "opencode"}
@@ -42,12 +48,14 @@ class RecordingGateway:
         self.mint_status = mint_status
         self.revoke_statuses = revoke_status if isinstance(revoke_status, list) else [revoke_status]
         self.requests: list[tuple[str, dict[str, Any], str | None]] = []
+        self.timeouts: list[float] = []
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         original_client = httpx.AsyncClient
         transport = httpx.MockTransport(self)
 
         def build_client(**kwargs: Any) -> httpx.AsyncClient:
+            self.timeouts.append(kwargs["timeout"])
             return original_client(transport=transport, **kwargs)
 
         monkeypatch.setattr(httpx, "AsyncClient", build_client)
@@ -238,3 +246,15 @@ async def test_the_gateway_stays_reachable_for_every_tenant(monkeypatch: pytest.
         assert scoped["MODEL_GATEWAY_API_KEY"] == TOKEN
 
     assert gateway.paths == ["/service-auth", "/service-auth/revoke"]
+
+
+async def test_teardown_does_not_hold_the_task_slot_for_long(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Minting gets the patience it needs; revoking must not stall a finished task."""
+    gateway = RecordingGateway()
+    gateway.install(monkeypatch)
+
+    async with _scoped(_env()):
+        pass
+
+    assert gateway.timeouts == [REQUEST_TIMEOUT_SECONDS, REVOKE_TIMEOUT_SECONDS]
+    assert REVOKE_TIMEOUT_SECONDS * REVOKE_ATTEMPTS < REQUEST_TIMEOUT_SECONDS

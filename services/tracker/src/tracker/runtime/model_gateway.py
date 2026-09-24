@@ -27,6 +27,9 @@ KEY_ENV = "MODEL_GATEWAY_API_KEY"
 MINT_PATH = "/service-auth"
 REVOKE_PATH = "/service-auth/revoke"
 REQUEST_TIMEOUT_SECONDS = 30.0
+# Teardown holds the task's slot, so revoking gets a short leash rather than
+# the patience minting needs: at worst REVOKE_ATTEMPTS of these plus backoff.
+REVOKE_TIMEOUT_SECONDS = 5.0
 
 # Revoking on teardown is what ends a credential's life. This is only the
 # backstop for a tracker that died before it could, so it is the longest the
@@ -60,8 +63,10 @@ def _control_plane_url(env_vars: dict[str, str], org_name: str) -> str:
     return url
 
 
-async def _post(url: str, path: str, api_key: str, payload: dict[str, Any]) -> httpx.Response:
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+async def _post(
+    url: str, path: str, api_key: str, payload: dict[str, Any], *, timeout: float = REQUEST_TIMEOUT_SECONDS
+) -> httpx.Response:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
             f"{url.rstrip('/')}{path}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -133,7 +138,7 @@ async def _revoke(url: str, api_key: str, lease_id: str) -> None:
     last_error: httpx.HTTPError | None = None
     for attempt in range(REVOKE_ATTEMPTS):
         try:
-            _ = await _post(url, REVOKE_PATH, api_key, {"lease_id": lease_id})
+            _ = await _post(url, REVOKE_PATH, api_key, {"lease_id": lease_id}, timeout=REVOKE_TIMEOUT_SECONDS)
             return
         except httpx.HTTPStatusError as e:
             if e.response.status_code < 500:
