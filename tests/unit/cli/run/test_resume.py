@@ -26,6 +26,7 @@ class MockTrackerService:
     """Record retry/resume requests made by the CLI command."""
 
     calls: list[dict[str, object]] = []
+    retry_modes: list[RetryMode] = []
 
     def __enter__(self) -> "MockTrackerService":
         return self
@@ -49,6 +50,7 @@ class MockTrackerService:
         lambda_function: str | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
         self.calls.append({"benchmark_id": benchmark_id, "service_headers": service_headers})
+        self.retry_modes.append(retry_mode)
         return RetryOrResumeBenchmarkResponse(status="success")
 
 
@@ -56,6 +58,7 @@ class MockTrackerService:
 def reset_calls() -> None:
     """Reset recorded requests so each test is isolated."""
     MockTrackerService.calls = []
+    MockTrackerService.retry_modes = []
 
 
 def test_resume_forwards_custom_headers(
@@ -131,3 +134,37 @@ def test_update_agent_rejects_a_different_run_bucket_before_copy_or_resume(
         Key=f"benchmarks/{run_id}/mini_sweagent.zip",
     )
     assert MockTrackerService.calls == [{"benchmark_id": run_id, "service_headers": {}}]
+
+
+@pytest.mark.parametrize(
+    ("flags", "retry_mode"),
+    [([], RetryMode.AUTO), (["--from-scratch"], RetryMode.FROM_SCRATCH), (["--regrade"], RetryMode.REGRADE)],
+)
+def test_retry_sends_the_selected_retry_mode(
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: list[str],
+    retry_mode: RetryMode,
+) -> None:
+    def no_service_headers(*_arguments: object) -> dict[str, str]:
+        return {}
+
+    monkeypatch.setattr(resume_module, "TrackerService", MockTrackerService)
+    monkeypatch.setattr(resume_module, "benchmark_service_headers", no_service_headers)
+
+    result = cli_runner.invoke(resume_module.retry_command, ["123e4567-e89b-12d3-a456-426614174000", *flags])
+
+    assert result.exit_code == 0, result.output
+    assert MockTrackerService.retry_modes == [retry_mode]
+
+
+def test_regrade_rejects_from_scratch(cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(resume_module, "TrackerService", MockTrackerService)
+
+    result = cli_runner.invoke(
+        resume_module.retry_command, ["123e4567-e89b-12d3-a456-426614174000", "--regrade", "--from-scratch"]
+    )
+
+    assert result.exit_code == 2
+    assert "--from-scratch and --regrade cannot be used together." in result.output
+    assert MockTrackerService.calls == []

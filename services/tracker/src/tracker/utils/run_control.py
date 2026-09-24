@@ -171,16 +171,21 @@ def _retry_candidates(
     rerun_task_ids: list[str],
     org: Org,
     *,
+    retry_mode: RetryMode = RetryMode.AUTO,
     for_update: bool = False,
 ) -> tuple[list[Task], list[str]]:
     query = (
         select(Task)
-        .where(*_retry_task_filters(benchmark_row, retry, rerun_task_ids, org))
+        .where(*_retry_task_filters(benchmark_row, retry, rerun_task_ids, org, retry_mode))
         .order_by(asc(Task.started_at), asc(Task.id))
     )
     if for_update:
         query = query.with_for_update()
     existing_rows = list(session.exec(query).all())
+    if retry_mode == RetryMode.REGRADE:
+        # Regrade never creates or regenerates tasks. Checked here, not in SQL, because a
+        # cleared eval_resume_state can be stored as JSON null.
+        return [task for task in existing_rows if task.eval_resume_state is not None], []
     existing_ids = {task.task_id for task in existing_rows}
     new_task_ids = [task_id for task_id in rerun_task_ids if task_id not in existing_ids]
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and new_task_ids:
@@ -198,6 +203,7 @@ def prepare_retry_state(
     org: Org,
     *,
     queued_recovery: bool = False,
+    retry_mode: RetryMode = RetryMode.AUTO,
     for_update: bool = False,
 ) -> RetryState:
     """Read a retry snapshot without acquiring locks or changing lifecycle state."""
@@ -218,7 +224,7 @@ def prepare_retry_state(
         new_task_ids: list[str] = []
     else:
         rows, new_task_ids = _retry_candidates(
-            benchmark_row, session, retry, rerun_task_ids, org, for_update=for_update
+            benchmark_row, session, retry, rerun_task_ids, org, retry_mode=retry_mode, for_update=for_update
         )
     version = json.dumps(
         {
@@ -259,12 +265,13 @@ def reset_to_in_progress_status(
 
     Retry resets error/stopped tasks; new valid task IDs receive fresh PENDING rows.
     Benchmark becomes IN_PROGRESS; durable evaluation tasks retain EVALUATING.
+    Regrade returns finished tasks with durable evaluation state to EVALUATING.
     """
     try:
         # Serialize retries with final-score persistence for this benchmark.
         benchmark_row = fetch_benchmark_row(benchmark_row.id, session, org, for_update=True)
         existing_rows, new_task_ids = _retry_candidates(
-            benchmark_row, session, retry, rerun_task_ids, org, for_update=True
+            benchmark_row, session, retry, rerun_task_ids, org, retry_mode=retry_mode, for_update=True
         )
 
         # Allow re-running the end of the benchmark without running any tasks
@@ -294,7 +301,7 @@ def reset_to_in_progress_status(
         for task in existing_rows:
             task.status = (
                 TaskStatus.EVALUATING
-                if retry_mode == RetryMode.AUTO and task.eval_resume_state is not None
+                if retry_mode != RetryMode.FROM_SCRATCH and task.eval_resume_state is not None
                 else TaskStatus.PENDING
             )
             retry_started_at = datetime.now(ZoneInfo("UTC"))
@@ -319,15 +326,23 @@ def reset_to_in_progress_status(
         raise TrackerServiceError(f"Unexpected error resuming run {benchmark_row.id}: {str(e)}") from e
 
 
-def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: list[str], org: Org) -> list[Any]:
+def _retry_task_filters(
+    benchmark_row: Benchmark, retry: bool, rerun_task_ids: list[str], org: Org, retry_mode: RetryMode
+) -> list[Any]:
     """Select retryable rows.
 
     Active retries on in-progress runs are limited to ERROR tasks. Finished tasks must wait until the run is terminal.
+    Regrade selects finished tasks, optionally limited to the requested IDs.
     """
     filters = [
         col(Task.benchmark) == benchmark_row.id,
         col(Task.org_id) == org.id,
     ]
+    if retry_mode == RetryMode.REGRADE:
+        filters.append(col(Task.status) == TaskStatus.FINISHED)
+        if rerun_task_ids:
+            filters.append(col(Task.task_id).in_(rerun_task_ids))
+        return filters
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
         filters.append(col(Task.status) == TaskStatus.ERROR)
         if rerun_task_ids:

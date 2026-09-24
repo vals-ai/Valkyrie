@@ -448,6 +448,7 @@ valkyrie run resume \
   [--header|-H <TEXT> <TEXT>...] \
   [--update-agent|-u] \
   [--from-scratch] \
+  [--regrade] \
   [--benchmark-url <TEXT>] \
   [--connect] \
   [--lambda <TEXT>]
@@ -510,6 +511,11 @@ valkyrie run resume \
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--regrade"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"boolean"}</code> · default: <code>{"False"}</code></span></div>
+  <p className="mb-0 mt-1">{"Re-evaluate finished tasks from durable eval state without regenerating. Finished or stopped runs only."}</p>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--benchmark-url"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"text"}</code> · default: <code>{"None"}</code></span></div>
   <p className="mb-0 mt-1">{"Replace the benchmark service URL for this run."}</p>
 </div>
@@ -542,6 +548,7 @@ valkyrie run retry \
   [--header|-H <TEXT> <TEXT>...] \
   [--update-agent|-u] \
   [--from-scratch] \
+  [--regrade] \
   [--benchmark-url <TEXT>] \
   [--connect] \
   [--lambda <TEXT>]
@@ -597,6 +604,11 @@ valkyrie run retry \
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--from-scratch"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"boolean"}</code> · default: <code>{"False"}</code></span></div>
   <p className="mb-0 mt-1">{"Clear durable eval state and rerun generation."}</p>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--regrade"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"boolean"}</code> · default: <code>{"False"}</code></span></div>
+  <p className="mb-0 mt-1">{"Re-evaluate finished tasks from durable eval state without regenerating. Finished or stopped runs only."}</p>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">

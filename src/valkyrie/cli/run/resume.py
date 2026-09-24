@@ -78,6 +78,12 @@ from valkyrie.cli.tracker_client import TrackerService
     help="Clear durable eval state and rerun generation.",
 )
 @click.option(
+    "--regrade",
+    is_flag=True,
+    default=False,
+    help="Re-evaluate finished tasks from durable eval state without regenerating. Finished or stopped runs only.",
+)
+@click.option(
     "--benchmark-url",
     type=str,
     default=None,
@@ -104,6 +110,7 @@ def resume(
     headers: tuple[tuple[str, str], ...],
     update_agent: bool,
     from_scratch: bool,
+    regrade: bool,
     benchmark_url: str | None,
     lambda_function: str | None,
     connect: bool,
@@ -114,6 +121,8 @@ def resume(
     Example:
         valkyrie run resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
     """
+    if from_scratch and regrade:
+        raise click.UsageError("--from-scratch and --regrade cannot be used together.")
     retry_task_ids = resolve_task_ids(task_ids, task_ids_file) or []
 
     # NOTE: workaround for auto retrying tasks when using the retry command
@@ -137,7 +146,7 @@ def resume(
             _ = tracker.retry_or_resume_benchmark(
                 run_id,
                 retry,
-                RetryMode.FROM_SCRATCH if from_scratch else RetryMode.AUTO,
+                RetryMode.REGRADE if regrade else RetryMode.FROM_SCRATCH if from_scratch else RetryMode.AUTO,
                 concurrency,
                 retry_task_ids,
                 service_headers=service_headers,
