@@ -22,6 +22,7 @@ from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
     FinalEvaluation,
+    GenerationContainment,
     OutputArtifact,
 )
 from tracker.types import (
@@ -61,6 +62,7 @@ from tracker.types import (
     StartBenchmarkResponse,
     StopBenchmarkResponse,
     TaskArtifactsResponse,
+    TaskBreakdown,
     TasksResponse,
     TaskSummary,
 )
@@ -93,6 +95,7 @@ from valkyrie.sdk.models import (
     FinalViewResponse as SDKFinalViewResponse,
     HarnessConfig as SDKHarnessConfig,
     LogEvent as SDKLogEvent,
+    GenerationContainment as SDKGenerationContainment,
     OutputArtifact as SDKOutputArtifact,
     RetryOrResumeBenchmarkResponse as SDKRetryResponse,
     S3UploadResultsResponse as SDKS3ResultsResponse,
@@ -107,6 +110,7 @@ from valkyrie.sdk.models import (
     StartBenchmarkResponse as SDKStartBenchmarkResponse,
     StopBenchmarkResponse as SDKStopBenchmarkResponse,
     TaskArtifactsResponse as SDKTaskArtifactsResponse,
+    TaskBreakdown as SDKTaskBreakdown,
     TaskIDsResponse as SDKTaskIDsResponse,
     TasksResponse as SDKTasksResponse,
     TaskSummary as SDKTaskSummary,
@@ -217,6 +221,7 @@ MODEL_PAIRS = (
     (SingleBenchmarkResponse, SDKSingleBenchmarkResponse),
     (TaskSummary, SDKTaskSummary),
     (TasksResponse, SDKTasksResponse),
+    (TaskBreakdown, SDKTaskBreakdown),
     (SingleTaskResponse, SDKSingleTaskResponse),
     (TaskArtifactsResponse, SDKTaskArtifactsResponse),
     (AgentEntry, SDKAgentEntry),
@@ -374,6 +379,34 @@ async def test_sdk_default_start_request_is_accepted_by_legacy_tracker() -> None
         config, base_url="https://tracker.test", transport=httpx.MockTransport(handler)
     ) as client:
         await client.runs.start("sweagent", "swebench")
+
+
+@pytest.mark.parametrize("model", [AgentContractRequest, SDKAgentContractRequest])
+def test_generation_containment_defaults_and_validation(model: type[BaseModel]) -> None:
+    request = model(name="agent")
+    assert request.generation_containment is None
+
+    for payload in (
+        {"type": "unknown", "version": 1},
+        {"type": "linux_pid_namespace", "version": 0},
+        {"type": "linux_pid_namespace", "version": -1},
+        {"type": "linux_pid_namespace", "version": "1"},
+        {"type": "linux_pid_namespace", "version": 1, "extra": True},
+    ):
+        with pytest.raises(ValidationError):
+            model(name="agent", generation_containment=payload)
+
+
+def test_generation_containment_tracker_sdk_wire_parity_and_public_export() -> None:
+    payload = {"type": "linux_pid_namespace", "version": 3}
+    tracker = AgentContractRequest(name="agent", generation_containment=payload)
+    sdk = SDKAgentContractRequest.model_validate(tracker.model_dump(mode="json"))
+
+    assert isinstance(SDKGenerationContainment, type)
+    assert SDKGenerationContainment is type(sdk.generation_containment)
+    assert sdk.generation_containment is not None
+    assert sdk.generation_containment.model_dump() == payload
+    assert sdk.model_dump(mode="json") == tracker.model_dump(mode="json", warnings=False)
 
 
 def _normalized_wire_schema(value: Any) -> Any:
