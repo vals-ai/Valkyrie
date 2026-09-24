@@ -27,6 +27,7 @@ from constants import (
     ALB_HEALTH_INTERVAL_SECONDS,
     ALB_IDLE_TIMEOUT_SECONDS,
     ALLOWED_IPS,
+    BENCHMARK_SERVICE_PORT,
     CONTAINER_HEALTH_INTERVAL_SECONDS,
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
@@ -272,6 +273,48 @@ class TrackerStack(Stack):
             )
         tls_enabled = not stage.is_release_test
 
+        # Shared by Tracker and ExecutorHost (executor_stack.py reuses this via
+        # tracker_service.connections.security_groups[0]). Egress is scoped to what
+        # both services actually call: VPC-internal Postgres/Redis/DNS/benchmark-service
+        # traffic, plus HTTPS out for AWS APIs, Sentry, and the sandbox provider.
+        tracker_security_group = aws_ec2.SecurityGroup(
+            self,
+            "TrackerSecurityGroup",
+            vpc=vpc,
+            description="Tracker and ExecutorHost service security group",
+            allow_all_outbound=False,
+        )
+        tracker_security_group.add_egress_rule(
+            aws_ec2.Peer.ipv4(VPC_CIDR),
+            aws_ec2.Port.tcp(POSTGRES_PORT),
+            "Tracker PostgreSQL",
+        )
+        tracker_security_group.add_egress_rule(
+            aws_ec2.Peer.ipv4(VPC_CIDR),
+            aws_ec2.Port.tcp(REDIS_PORT),
+            "Tracker and ExecutorHost Redis",
+        )
+        tracker_security_group.add_egress_rule(
+            aws_ec2.Peer.ipv4(VPC_CIDR),
+            aws_ec2.Port.tcp(BENCHMARK_SERVICE_PORT),
+            "Benchmark service Cloud Map calls",
+        )
+        tracker_security_group.add_egress_rule(
+            aws_ec2.Peer.ipv4(VPC_CIDR),
+            aws_ec2.Port.udp(53),
+            "VPC DNS UDP",
+        )
+        tracker_security_group.add_egress_rule(
+            aws_ec2.Peer.ipv4(VPC_CIDR),
+            aws_ec2.Port.tcp(53),
+            "VPC DNS TCP",
+        )
+        tracker_security_group.add_egress_rule(
+            aws_ec2.Peer.any_ipv4(),
+            aws_ec2.Port.tcp(443),
+            "AWS API endpoints",
+        )
+
         self.service = aws_ecs_patterns.ApplicationLoadBalancedFargateService(
             self,
             "TrackerService",
@@ -291,6 +334,7 @@ class TrackerStack(Stack):
             open_listener=False,
             assign_public_ip=True,
             public_load_balancer=not stage.is_release_test,
+            security_groups=[tracker_security_group],
         )
 
         create_tracker_access_logs(

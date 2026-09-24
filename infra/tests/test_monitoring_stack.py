@@ -679,7 +679,7 @@ class MonitoringStackTest(unittest.TestCase):
                 tracker_security_group_id = next(
                     logical_id
                     for logical_id, resource in tracker_security_groups.items()
-                    if resource["Properties"]["GroupDescription"].endswith("TrackerService/Service/SecurityGroup")
+                    if resource["Properties"]["GroupDescription"] == "Tracker and ExecutorHost service security group"
                 )
                 redis_ingress = [
                     resource["Properties"]

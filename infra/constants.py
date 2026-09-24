@@ -37,6 +37,11 @@ TRACKER_PORT = 8000
 REDIS_PORT = 6379
 POSTGRES_PORT = 5432
 
+# Container port every benchmark-services-registry service listens on; Tracker
+# and ExecutorHost reach these over Cloud Map inside the shared VPC. Cross-repo
+# contract with benchmark-services-registry - changing it is a breaking change.
+BENCHMARK_SERVICE_PORT = 8000
+
 # ElastiCache Redis (shared by Tracker + ExecutorHost)
 ELASTICACHE_NODE_TYPE = "cache.t4g.micro"
 
