@@ -515,6 +515,22 @@ class TasksResponse(BaseModel):
     total_count: int
 
 
+class TaskBreakdown(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    sandbox_build_duration: float | None
+    agent_run_duration: float | None
+    evaluation_run_duration: float | None
+    sandbox_run_duration: float | None
+    accounting_session_id: str | None
+    base_generation_allowance_seconds: float | None
+    cumulative_time_credit_cap_seconds: float | None
+    external_service_overhead_seconds: float | None
+    external_service_credit_applied_seconds: float | None
+    effective_generation_allowance_seconds: float | None
+    external_service_credit_revision: int | None
+
+
 class SingleTaskResponse(BaseModel):
     id: UUID
     task_id: str
@@ -524,6 +540,7 @@ class SingleTaskResponse(BaseModel):
     error_message: str | None
     evaluation_result: dict[str, Any] | None
     agent_caused_exit_reason: str | None
+    task_breakdown: TaskBreakdown | None = None
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:

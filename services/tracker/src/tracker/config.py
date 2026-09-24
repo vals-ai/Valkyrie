@@ -1,5 +1,6 @@
 """Configuration for the tracker service."""
 
+import math
 from enum import Enum
 import os
 from typing import Any
@@ -88,6 +89,24 @@ def _non_negative_int_setting(name: str, default: int) -> int:
         raise ValueError(f"{name} must not be negative")
 
     return value
+
+
+def _positive_float_setting(name: str) -> float:
+    value = float(os.environ[name])
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a positive finite number")
+
+    return value
+
+
+EXTERNAL_SERVICE_GATEWAY_URL = (
+    os.environ.get("EXTERNAL_SERVICE_GATEWAY_URL", "").rstrip("/") or None
+)
+EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS = (
+    _positive_float_setting("EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS")
+    if EXTERNAL_SERVICE_GATEWAY_URL is not None
+    else None
+)
 
 
 AGENT_UPLOAD_MAX_BYTES = _positive_int_setting("AGENT_UPLOAD_MAX_BYTES", 1073741824)

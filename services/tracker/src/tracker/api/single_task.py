@@ -19,9 +19,10 @@ from tracker.database.models import (
     Org,
     Task,
     TaskStatus,
+    TaskBreakdown as TaskBreakdownRow,
 )
 from tracker.database.session import get_session
-from tracker.types import SingleTaskResponse, TaskArtifactsResponse
+from tracker.types import SingleTaskResponse, TaskArtifactsResponse, TaskBreakdown as TaskBreakdownResponse
 
 router = APIRouter(prefix="/benchmarks")
 
@@ -82,6 +83,9 @@ def get_single_task(
     _, task = _load_task_or_404(benchmark_id, task_id, org, session)
 
     eval_row, error_message = _fetch_result_objects(session, task, org)
+    task_breakdown_row = (
+        session.get(TaskBreakdownRow, task.task_breakdown) if task.task_breakdown is not None else None
+    )
 
     return SingleTaskResponse(
         id=task.id,
@@ -93,6 +97,11 @@ def get_single_task(
         evaluation_result=eval_row.result if eval_row else None,
         agent_caused_exit_reason=(
             eval_row.agent_caused_exit_reason.value if eval_row and eval_row.agent_caused_exit_reason else None
+        ),
+        task_breakdown=(
+            TaskBreakdownResponse.model_validate(task_breakdown_row)
+            if task_breakdown_row is not None
+            else None
         ),
     )
 

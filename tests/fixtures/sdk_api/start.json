@@ -16,6 +16,7 @@
         }
       ],
       "egress_allowlist": [],
+      "generation_containment": null,
       "secrets": {
         "ANTHROPIC_API_KEY": "AnthropicSecret"
       },

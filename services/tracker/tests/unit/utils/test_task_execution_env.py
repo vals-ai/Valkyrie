@@ -6,12 +6,12 @@ Run: uv run pytest tests/unit/utils/test_task_execution_env.py
 import asyncio
 import json
 import threading
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from benchmark_service import SandboxSource, TargetedSnapshotSource
@@ -29,11 +29,18 @@ from tests.unit.utils.task_execution_support import (
 )
 from tracker.auth import RequestIdentity
 from tracker.runtime.services import RuntimeServices
+from tracker.external_service_gateway import (
+    AccountingSessionSnapshot,
+    ExternalServiceAccountingSummary,
+    AccountingSessionState,
+)
 from tracker.database.models import (
     AgentContractRequest,
+    GenerationContainment,
     ExecutorDispatch,
     ExecutorDispatchStatus,
     Task,
+    TaskBreakdown,
     TaskStatus,
 )
 from tracker.scheduler.admission import SandboxQueueContext
@@ -202,6 +209,363 @@ class TestProcessTaskEnvironment:
         assert env_vars["UNRELATED_SECRET"] == "secret-value"
         assert env_vars["MODEL_GATEWAY_URL"] == "https://gateway.example.test"
         assert env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_controlled_task_routes_model_gateway_through_accounting_session(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        contract = contract.model_copy(
+            update={
+                "model": "provider/model",
+                "kwargs": {"variant": "xhigh"},
+                "secrets": {
+                    "MODEL_GATEWAY_URL": "upstream-url-secret",
+                    "MODEL_GATEWAY_API_KEY": "upstream-key-secret",
+                    "UNRELATED_SECRET": "unrelated-secret",
+                },
+                "inference_settings_attested": True,
+                "generation_containment": GenerationContainment(
+                    type="linux_pid_namespace", version=1
+                ),
+            }
+        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        task_response = make_retrieve_task_response().model_copy(
+            update={
+                "agent_timeout": 10.0,
+                "generation_containment": GenerationContainment(
+                    type="linux_pid_namespace", version=1
+                ),
+            }
+        )
+        captured_env_vars: list[dict[str, str]] = []
+        resolved_references: list[dict[str, str]] = []
+        captured_deadlines: list[Any] = []
+
+        async def retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return task_response
+
+        def resolve_secrets(
+            references: dict[str, str], *_args: Any, **_kwargs: Any
+        ) -> dict[str, str]:
+            resolved_references.append(references)
+            return {"UNRELATED_SECRET": "unrelated-value"}
+
+        async def capture_run_agent(
+            *_args: Any,
+            external_service_deadline: Any,
+            on_external_service_sealed: Callable[
+                [ExternalServiceAccountingSummary], Awaitable[None]
+            ],
+            **_kwargs: Any,
+        ) -> tuple[None, float]:
+            captured_deadlines.append(external_service_deadline)
+            await on_external_service_sealed(
+                ExternalServiceAccountingSummary(
+                    accounting_session_id="session-1",
+                    base_generation_allowance_seconds=10.0,
+                    cumulative_time_credit_cap_seconds=5.0,
+                    external_service_overhead_seconds=2.0,
+                    external_service_credit_applied_seconds=2.0,
+                    effective_generation_allowance_seconds=12.0,
+                    external_service_credit_revision=3,
+                )
+            )
+            return None, 1.0
+
+        create_session = AsyncMock(
+            return_value=AccountingSessionSnapshot(
+                session_id="session-1",
+                state=AccountingSessionState.OPEN,
+                cumulative_neutral_overhead_ms=0,
+                revision=0,
+                accounting_epoch=0,
+            )
+        )
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve_task)
+        monkeypatch.setattr(
+            "tracker.runtime.services.resolve_secrets", resolve_secrets
+        )
+        monkeypatch.setattr(
+            utils_module,
+            "create_sandbox",
+            partial(_capture_sandbox_environment, captured_env_vars),
+        )
+        monkeypatch.setattr(utils_module, "run_agent", capture_run_agent)
+        monkeypatch.setattr(
+            utils_module.ExternalServiceGatewayClient,
+            "create_session",
+            create_session,
+        )
+        monkeypatch.setattr(
+            utils_module, "EXTERNAL_SERVICE_GATEWAY_URL", "http://local-gateway"
+        )
+        monkeypatch.setattr(
+            utils_module, "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", 5.0
+        )
+
+        result = await run_process_task(
+            start_benchmark_request,
+            task_row,
+            benchmark_id,
+            runtime_services,
+            authority,
+        )
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        assert resolved_references == [{"UNRELATED_SECRET": "unrelated-secret"}]
+        assert captured_env_vars[0]["MODEL_GATEWAY_URL"] == "http://local-gateway"
+        assert captured_env_vars[0]["MODEL_GATEWAY_API_KEY"] == "session-1"
+        assert captured_env_vars[0]["UNRELATED_SECRET"] == "unrelated-value"
+        assert captured_env_vars[0]["VALKYRIE_AGENT_VARIANT"] == "xhigh"
+        assert captured_deadlines[0].base_allowance_seconds == 10.0
+        assert captured_deadlines[0].credit_cap_seconds == 5.0
+        create_call = create_session.await_args
+        assert create_call is not None
+        create_kwargs = create_call.kwargs
+        assert create_kwargs["model"] == "provider/model"
+        assert create_kwargs["config"] == {}
+        database_session.expire_all()
+        persisted_task = database_session.get(Task, task_row.id)
+        assert persisted_task is not None
+        assert persisted_task.task_breakdown is not None
+        breakdown = database_session.get(
+            TaskBreakdown, persisted_task.task_breakdown
+        )
+        assert breakdown is not None
+        assert getattr(breakdown, "accounting_session_id") == "session-1"
+        assert getattr(breakdown, "external_service_overhead_seconds") == 2.0
+        assert getattr(breakdown, "external_service_credit_revision") == 3
+
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_accounting_persistence_failure_blocks_evaluation(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        containment = GenerationContainment(
+            type="linux_pid_namespace", version=1
+        )
+        contract = contract.model_copy(
+            update={
+                "model": "provider/model",
+                "generation_containment": containment,
+            }
+        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        task_response = make_retrieve_task_response().model_copy(
+            update={
+                "agent_timeout": 10.0,
+                "generation_containment": containment,
+            }
+        )
+        persistence_error = RuntimeError("summary persistence failed")
+        evaluate_instance = AsyncMock()
+
+        async def retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return task_response
+
+        def resolve_no_secrets(
+            *_args: Any, **_kwargs: Any
+        ) -> dict[str, str]:
+            return {}
+
+        async def fail_during_agent(
+            *_args: Any,
+            on_external_service_sealed: Callable[
+                [ExternalServiceAccountingSummary], Awaitable[None]
+            ],
+            **_kwargs: Any,
+        ) -> tuple[None, float]:
+            await on_external_service_sealed(
+                ExternalServiceAccountingSummary(
+                    accounting_session_id="session-1",
+                    base_generation_allowance_seconds=10.0,
+                    cumulative_time_credit_cap_seconds=5.0,
+                    external_service_overhead_seconds=1.0,
+                    external_service_credit_applied_seconds=1.0,
+                    effective_generation_allowance_seconds=11.0,
+                    external_service_credit_revision=1,
+                )
+            )
+            raise AssertionError("unreachable")
+
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve_task)
+        monkeypatch.setattr(
+            BenchmarkServiceClient, "evaluate_instance", evaluate_instance
+        )
+        monkeypatch.setattr(
+            "tracker.runtime.services.resolve_secrets",
+            resolve_no_secrets,
+        )
+        monkeypatch.setattr(utils_module, "run_agent", fail_during_agent)
+        monkeypatch.setattr(
+            utils_module, "EXTERNAL_SERVICE_GATEWAY_URL", "http://local-gateway"
+        )
+        monkeypatch.setattr(
+            utils_module, "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", 5.0
+        )
+        monkeypatch.setattr(
+            utils_module.ExternalServiceGatewayClient,
+            "create_session",
+            AsyncMock(
+                return_value=AccountingSessionSnapshot(
+                    session_id="session-1",
+                    state=AccountingSessionState.OPEN,
+                    cumulative_neutral_overhead_ms=0,
+                    revision=0,
+                    accounting_epoch=0,
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            utils_module,
+            "_persist_external_service_summary",
+            Mock(side_effect=persistence_error),
+        )
+
+        result = await run_process_task(
+            start_benchmark_request,
+            task_row,
+            benchmark_id,
+            runtime_services,
+            authority,
+        )
+
+        assert result == {"task_0": None}
+        evaluate_instance.assert_not_awaited()
+
+
+    @pytest.mark.parametrize(
+        ("gateway_url", "agent_enabled", "task_enabled", "timeout"),
+        [
+            (None, True, True, 10.0),
+            ("http://local-gateway", False, True, 10.0),
+            ("http://local-gateway", True, False, 10.0),
+            ("http://local-gateway", True, True, None),
+        ],
+    )
+    async def test_ineligible_accounting_does_not_create_a_session(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: pytest.MonkeyPatch,
+        gateway_url: str | None,
+        agent_enabled: bool,
+        task_enabled: bool,
+        timeout: float | None,
+    ) -> None:
+        containment = GenerationContainment(
+            type="linux_pid_namespace", version=1
+        )
+        selected_contract = contract.model_copy(
+            update={
+                "model": "provider/model",
+                "generation_containment": containment if agent_enabled else None,
+            }
+        )
+        create_session = AsyncMock()
+        monkeypatch.setattr(
+            utils_module, "EXTERNAL_SERVICE_GATEWAY_URL", gateway_url
+        )
+        monkeypatch.setattr(
+            utils_module, "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", 5.0
+        )
+        monkeypatch.setattr(
+            utils_module.ExternalServiceGatewayClient,
+            "create_session",
+            create_session,
+        )
+
+        deadline = await utils_module._create_external_service_deadline(  # pyright: ignore[reportPrivateUsage]
+            selected_contract,
+            containment if task_enabled else None,
+            timeout,
+        )
+
+        assert deadline is None
+        create_session.assert_not_awaited()
+
+    async def test_two_eligible_tasks_get_distinct_matching_session_credentials(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        containment = GenerationContainment(
+            type="linux_pid_namespace", version=1
+        )
+        selected_contract = contract.model_copy(
+            update={
+                "model": "provider/model",
+                "generation_containment": containment,
+            }
+        )
+        requested_session_ids: list[str] = []
+
+        async def create_session(
+            _client: Any,
+            *,
+            session_id: str,
+            model: str,
+            config: dict[str, str],
+        ) -> AccountingSessionSnapshot:
+            assert model == "provider/model"
+            assert config == {}
+            requested_session_ids.append(session_id)
+            return AccountingSessionSnapshot(
+                session_id=session_id,
+                state=AccountingSessionState.OPEN,
+                cumulative_neutral_overhead_ms=0,
+                revision=0,
+                accounting_epoch=0,
+            )
+
+        monkeypatch.setattr(
+            utils_module, "EXTERNAL_SERVICE_GATEWAY_URL", "http://local-gateway"
+        )
+        monkeypatch.setattr(
+            utils_module, "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", 5.0
+        )
+        monkeypatch.setattr(
+            utils_module.ExternalServiceGatewayClient,
+            "create_session",
+            create_session,
+        )
+
+        first = await utils_module._create_external_service_deadline(  # pyright: ignore[reportPrivateUsage]
+            selected_contract, containment, 10.0
+        )
+        second = await utils_module._create_external_service_deadline(  # pyright: ignore[reportPrivateUsage]
+            selected_contract, containment, 10.0
+        )
+
+        assert first is not None
+        assert second is not None
+        assert requested_session_ids[0] != requested_session_ids[1]
+        _, first_environment = utils_module._external_service_environment(  # pyright: ignore[reportPrivateUsage]
+            selected_contract.secrets, first
+        )
+        _, second_environment = utils_module._external_service_environment(  # pyright: ignore[reportPrivateUsage]
+            selected_contract.secrets, second
+        )
+        assert first_environment["MODEL_GATEWAY_API_KEY"] == first.session_id
+        assert second_environment["MODEL_GATEWAY_API_KEY"] == second.session_id
+        assert first_environment["MODEL_GATEWAY_URL"] == "http://local-gateway"
+        assert second_environment["MODEL_GATEWAY_URL"] == "http://local-gateway"
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_task_withholds_unattested_inference_settings(

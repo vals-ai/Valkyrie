@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError, create_model, field_validator
 
-from tracker.database.models import OutputArtifact, OutputArtifactSpec
+from tracker.database.models import GenerationContainment, OutputArtifact, OutputArtifactSpec
 from tracker.exceptions import ContractValidationError
 
 
@@ -58,6 +58,7 @@ class AgentContract(BaseModel):
     name: str
     install_cmd: str
     final_output: Path | None = None
+    generation_containment: GenerationContainment | None = None
     output_artifacts: list[OutputArtifactSpec] = []
     egress_allowlist: list[str] = []
     secrets: dict[str, str] = {}

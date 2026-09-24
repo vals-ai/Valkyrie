@@ -6,14 +6,14 @@ import socket
 import time
 import traceback
 from asyncio import Semaphore
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from types import TracebackType
 from typing import Any, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import logfire
@@ -37,7 +37,11 @@ from tracker.aws.cloudwatch_logs import (
 from tracker.runtime.services import RuntimeServices
 from tracker.runtime.artifacts import task_artifact_key
 from tracker.runtime.task_logs import TaskLogBuffer
-from tracker.config import ENVIRONMENT
+from tracker.config import (
+    ENVIRONMENT,
+    EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS,
+    EXTERNAL_SERVICE_GATEWAY_URL,
+)
 from tracker.database.models import (
     AgentCausedExitReason,
     AgentContractRequest,
@@ -45,6 +49,7 @@ from tracker.database.models import (
     BenchmarkStatus,
     ErrorResult,
     ExecutorDispatch,
+    GenerationContainment,
     EvaluationResult,
     Org,
     Task,
@@ -55,9 +60,15 @@ from tracker.database.session import engine
 from tracker.exceptions import (
     DependencySetupExhaustedError,
     ExecutionAuthorityRevoked,
+    GenerationTerminationUnconfirmedError,
     OutputArtifactError,
     SandboxSetupError,
     TrackerServiceError,
+)
+from tracker.external_service_gateway import (
+    ExternalServiceAccountingSummary,
+    ExternalServiceDeadlineController,
+    ExternalServiceGatewayClient,
 )
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.logging import get_logger
@@ -65,7 +76,13 @@ from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, error_span, incr
 from tracker.observability.sentry import capture_exception, clear_sandbox_context, task_scope
 from tracker.observability.tracing import observability_span
-from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
+from tracker.sandbox import (
+    DependencySetupMode,
+    _controlled_generation_selected,  # pyright: ignore[reportPrivateUsage]
+    create_sandbox,
+    run_agent,
+    upload_agent_artifacts,
+)
 from tracker.scheduler.admission import SandboxQueueContext, enter_queued_sandbox
 from tracker.scheduler.store import PostgresAdvisoryLock, task_evaluation_lock
 from tracker.types import (
@@ -529,6 +546,94 @@ def commit_task_status_transition(
         authority=authority,
     )
 
+async def _create_external_service_deadline(
+    contract: AgentContractRequest,
+    task_generation_containment: GenerationContainment | None,
+    agent_timeout: float | None,
+) -> ExternalServiceDeadlineController | None:
+    if EXTERNAL_SERVICE_GATEWAY_URL is None or not _controlled_generation_selected(
+        contract, task_generation_containment, agent_timeout
+    ):
+        return None
+
+    assert EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS is not None
+    assert agent_timeout is not None
+    if contract.model is None:
+        raise TrackerServiceError(
+            "External service accounting requires an attested agent model"
+        )
+    client = ExternalServiceGatewayClient(EXTERNAL_SERVICE_GATEWAY_URL)
+    snapshot = await client.create_session(
+        session_id=str(uuid4()),
+        model=contract.model,
+        config={},
+    )
+    return ExternalServiceDeadlineController(
+        client=client,
+        snapshot=snapshot,
+        base_allowance_seconds=agent_timeout,
+        credit_cap_seconds=EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS,
+    )
+
+
+def _external_service_environment(
+    secret_references: dict[str, str],
+    deadline: ExternalServiceDeadlineController | None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    if deadline is None:
+        return secret_references, {}
+
+    assert EXTERNAL_SERVICE_GATEWAY_URL is not None
+    filtered_references = {
+        name: reference
+        for name, reference in secret_references.items()
+        if name not in {"MODEL_GATEWAY_URL", "MODEL_GATEWAY_API_KEY"}
+    }
+    return filtered_references, {
+        "MODEL_GATEWAY_URL": EXTERNAL_SERVICE_GATEWAY_URL,
+        "MODEL_GATEWAY_API_KEY": deadline.session_id,
+    }
+
+
+def _persist_external_service_summary(
+    summary: ExternalServiceAccountingSummary,
+    *,
+    task_breakdown: TaskBreakdown,
+    task_row_id: UUID,
+    org: Org,
+    execution_is_current: Callable[[], bool],
+    open_task_session: Callable[[], Session],
+) -> None:
+    if not execution_is_current():
+        raise ExecutionAuthorityRevoked(
+            "Execution authority was revoked before accounting persistence"
+        )
+    task_breakdown.accounting_session_id = summary.accounting_session_id
+    task_breakdown.base_generation_allowance_seconds = (
+        summary.base_generation_allowance_seconds
+    )
+    task_breakdown.cumulative_time_credit_cap_seconds = (
+        summary.cumulative_time_credit_cap_seconds
+    )
+    task_breakdown.external_service_overhead_seconds = (
+        summary.external_service_overhead_seconds
+    )
+    task_breakdown.external_service_credit_applied_seconds = (
+        summary.external_service_credit_applied_seconds
+    )
+    task_breakdown.effective_generation_allowance_seconds = (
+        summary.effective_generation_allowance_seconds
+    )
+    task_breakdown.external_service_credit_revision = (
+        summary.external_service_credit_revision
+    )
+    with open_task_session() as task_session:
+        task_session.add(task_breakdown)
+        task_in_session = fetch_task_row(task_row_id, task_session, org)
+        task_in_session.task_breakdown = task_breakdown.id
+        task_session.commit()
+
+
 
 async def process_task(
     task_row: Task,
@@ -964,6 +1069,15 @@ async def _process_task_attempt(
         if sandbox_provider is None:
             sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
 
+        task_generation_containment = getattr(
+            task_data, "generation_containment", None
+        )
+        external_service_deadline = await _create_external_service_deadline(
+            start_benchmark_request.contract,
+            task_generation_containment,
+            task_data.agent_timeout,
+        )
+
         # Labels that show up in the UI we can use to filter sandboxes.
         # Benchmark/Id/Task are read back by sandbox._audit_sandbox_delete.
         labels = {
@@ -994,8 +1108,14 @@ async def _process_task_attempt(
         if benchmark_started_by_email:
             identity["email"] = benchmark_started_by_email
 
+        secret_references, external_service_environment = (
+            _external_service_environment(
+                start_benchmark_request.contract.secrets,
+                external_service_deadline,
+            )
+        )
         env_vars = {
-            **(await runtime.resolve_secrets(start_benchmark_request.contract.secrets)),
+            **(await runtime.resolve_secrets(secret_references)),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             **_attested_inference_settings(start_benchmark_request.contract),
@@ -1007,10 +1127,23 @@ async def _process_task_attempt(
                 f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={ENVIRONMENT}"
             ),
             **recovery_attempt.environment,
+            **external_service_environment,
         }
 
         # We don't want to track the task until the sandbox is actually created.
         task_breakdown = TaskBreakdown()
+
+        async def persist_external_service_summary(
+            summary: ExternalServiceAccountingSummary,
+        ) -> None:
+            _persist_external_service_summary(
+                summary,
+                task_breakdown=task_breakdown,
+                task_row_id=task_row.id,
+                org=org,
+                execution_is_current=execution_is_current,
+                open_task_session=open_task_session,
+            )
 
         start_sandbox_build_time = time.perf_counter()
         object_store = runtime.objects
@@ -1112,10 +1245,17 @@ async def _process_task_attempt(
                         object_store=object_store,
                         agent_output_s3_key=agent_output_s3_key,
                         agent_timeout=task_data.agent_timeout,
+                        task_generation_containment=task_generation_containment,
                         benchmark_id=str(benchmark_id),
                         runtime_source=task_data.source,
                         dependency_setup_mode=dependency_setup_recovery.mode,
                         execution_is_current=execution_is_current,
+                        external_service_deadline=external_service_deadline,
+                        on_external_service_sealed=(
+                            persist_external_service_summary
+                            if external_service_deadline is not None
+                            else None
+                        ),
                     )
                 except DependencySetupExhaustedError:
                     dependency_setup_recovery.mode = DependencySetupMode.FINAL_FRESH_SANDBOX
@@ -1217,6 +1357,19 @@ async def _process_task_attempt(
 
                 raise
 
+    except GenerationTerminationUnconfirmedError as e:
+        if task_is_stopped():
+            return {task_id: None}
+        error_message = _exception_message(e)
+        log_output(f"\n[ERROR] {error_message}")
+
+        return commit_terminal_error(
+            e,
+            error_message,
+            producer="tracker",
+            operation="generation_termination",
+            cause_code="deadline_expired_termination_unconfirmed",
+        )
     except SandboxSetupError as e:
         if task_is_stopped():
             return {task_id: None}
