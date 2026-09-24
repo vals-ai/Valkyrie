@@ -38,7 +38,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.scheduler.admission import SandboxQueueContext
-from tracker.runtime.model_gateway import TOKEN_TTL_SECONDS
+import tracker.runtime.model_gateway as model_gateway_module
 from tracker.types import HarnessConfig
 
 
@@ -52,13 +52,7 @@ def _install_gateway(monkeypatch: pytest.MonkeyPatch, minted: list[dict[str, Any
         assert request.url.path == "/service-auth/revoke", request.url.path
         return httpx.Response(200, json={"revoked": 1})
 
-    original_client = httpx.AsyncClient
-    transport = httpx.MockTransport(handle)
-
-    def build_client(**kwargs: Any) -> httpx.AsyncClient:
-        return original_client(transport=transport, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", build_client)
+    monkeypatch.setattr(model_gateway_module, "_client", httpx.AsyncClient(transport=httpx.MockTransport(handle)))
 
 
 @asynccontextmanager
@@ -239,7 +233,7 @@ class TestProcessTaskEnvironment:
                     "email": "starter@example.com",
                 },
                 "variant": "xhigh",
-                "ttl_seconds": TOKEN_TTL_SECONDS,
+                "ttl_seconds": 7 * 24 * 60 * 60,
             }
         ]
 

@@ -7,13 +7,7 @@ import httpx
 import pytest
 
 import tracker.runtime.model_gateway as model_gateway
-from tracker.runtime.model_gateway import (
-    REQUEST_TIMEOUT_SECONDS,
-    REVOKE_ATTEMPTS,
-    REVOKE_TIMEOUT_SECONDS,
-    TOKEN_TTL_SECONDS,
-    task_scoped_gateway_key,
-)
+from tracker.runtime.model_gateway import task_scoped_gateway_key
 
 
 IDENTITY = {"benchmark_name": "swebench", "agent_name": "opencode"}
@@ -48,20 +42,15 @@ class RecordingGateway:
         self.mint_status = mint_status
         self.revoke_statuses = revoke_status if isinstance(revoke_status, list) else [revoke_status]
         self.requests: list[tuple[str, dict[str, Any], str | None]] = []
-        self.timeouts: list[float] = []
+        self.timeouts: list[float | None] = []
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        original_client = httpx.AsyncClient
-        transport = httpx.MockTransport(self)
-
-        def build_client(**kwargs: Any) -> httpx.AsyncClient:
-            self.timeouts.append(kwargs["timeout"])
-            return original_client(transport=transport, **kwargs)
-
-        monkeypatch.setattr(httpx, "AsyncClient", build_client)
+        client = httpx.AsyncClient(transport=httpx.MockTransport(self))
+        monkeypatch.setattr(model_gateway, "_client", client)
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append((request.url.path, json.loads(request.content), request.headers.get("Authorization")))
+        self.timeouts.append(request.extensions.get("timeout", {}).get("read"))
         if request.url.path == "/service-auth":
             return httpx.Response(self.mint_status, json={"token": TOKEN, "lease_id": "lease-1"})
         status = self.revoke_statuses[min(len(self.paths) - 2, len(self.revoke_statuses) - 1)]
@@ -73,6 +62,14 @@ class RecordingGateway:
 
     def payload_for(self, path: str) -> dict[str, Any]:
         return next(payload for request_path, payload, _ in self.requests if request_path == path)
+
+
+@pytest.fixture
+def no_retry_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def instant(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("asyncio.sleep", instant)
 
 
 async def test_scoped_credential_replaces_the_static_key_and_is_revoked(
@@ -93,7 +90,8 @@ async def test_scoped_credential_replaces_the_static_key_and_is_revoked(
         "allowed_models": [MODEL],
         "identity": IDENTITY,
         "variant": "xhigh",
-        "ttl_seconds": TOKEN_TTL_SECONDS,
+        # No renew, and some agents run for days.
+        "ttl_seconds": 7 * 24 * 60 * 60,
     }
     assert gateway.payload_for("/service-auth/revoke") == {"lease_id": "lease-1"}
     # Both control-plane calls authenticate as the executor, never as the token.
@@ -170,6 +168,7 @@ async def test_a_failed_mint_stops_the_task(monkeypatch: pytest.MonkeyPatch) -> 
             pytest.fail("the sandbox must not start without a scoped credential")
 
 
+@pytest.mark.usefixtures("no_retry_delay")
 @pytest.mark.parametrize(
     "revoke_status,attempts",
     [
@@ -179,7 +178,7 @@ async def test_a_failed_mint_stops_the_task(monkeypatch: pytest.MonkeyPatch) -> 
         # Already gone, or never ours to revoke: retrying cannot help.
         (404, 1),
         # The sandbox saw this token, so a sick gateway is worth another try.
-        (500, REVOKE_ATTEMPTS),
+        (500, 3),
     ],
 )
 async def test_teardown_never_fails_a_finished_task(
@@ -187,7 +186,6 @@ async def test_teardown_never_fails_a_finished_task(
 ) -> None:
     gateway = RecordingGateway(revoke_status=revoke_status)
     gateway.install(monkeypatch)
-    monkeypatch.setattr(model_gateway, "REVOKE_RETRY_DELAY_SECONDS", 0)
 
     async with _scoped(_env()) as scoped:
         assert scoped["MODEL_GATEWAY_API_KEY"] == TOKEN
@@ -195,13 +193,13 @@ async def test_teardown_never_fails_a_finished_task(
     assert gateway.paths == ["/service-auth"] + ["/service-auth/revoke"] * attempts
 
 
+@pytest.mark.usefixtures("no_retry_delay")
 async def test_a_transient_revoke_failure_still_ends_the_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A token the sandbox has seen must not outlive one bad response."""
     gateway = RecordingGateway(revoke_status=[503, 200])
     gateway.install(monkeypatch)
-    monkeypatch.setattr(model_gateway, "REVOKE_RETRY_DELAY_SECONDS", 0)
 
     async with _scoped(_env()):
         pass
@@ -218,6 +216,19 @@ async def test_the_credential_is_revoked_when_the_task_raises(monkeypatch: pytes
             raise RuntimeError("agent blew up")
 
     assert gateway.paths == ["/service-auth", "/service-auth/revoke"]
+
+
+async def test_teardown_does_not_hold_the_task_slot_for_long(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Minting gets the patience it needs; revoking must not stall a finished task."""
+    gateway = RecordingGateway()
+    gateway.install(monkeypatch)
+
+    async with _scoped(_env()):
+        pass
+
+    mint_timeout, revoke_timeout = gateway.timeouts
+    assert revoke_timeout is not None and mint_timeout is not None
+    assert revoke_timeout * 3 < mint_timeout
 
 
 async def test_the_key_is_not_sent_to_a_private_destination(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -246,30 +257,3 @@ async def test_the_gateway_stays_reachable_for_every_tenant(monkeypatch: pytest.
         assert scoped["MODEL_GATEWAY_API_KEY"] == TOKEN
 
     assert gateway.paths == ["/service-auth", "/service-auth/revoke"]
-
-
-async def test_teardown_does_not_hold_the_task_slot_for_long(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Minting gets the patience it needs; revoking must not stall a finished task."""
-    gateway = RecordingGateway()
-    gateway.install(monkeypatch)
-
-    async with _scoped(_env()):
-        pass
-
-    assert gateway.timeouts == [REQUEST_TIMEOUT_SECONDS, REVOKE_TIMEOUT_SECONDS]
-    assert REVOKE_TIMEOUT_SECONDS * REVOKE_ATTEMPTS < REQUEST_TIMEOUT_SECONDS
-
-
-async def test_the_credential_outlasts_an_agent_that_runs_for_days(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """There is no renew, so a task longer than the lifetime loses model access
-    partway through. Some agents run for days."""
-    gateway = RecordingGateway()
-    gateway.install(monkeypatch)
-
-    async with _scoped(_env()):
-        pass
-
-    assert gateway.payload_for("/service-auth")["ttl_seconds"] == TOKEN_TTL_SECONDS
-    assert TOKEN_TTL_SECONDS >= 5 * 24 * 60 * 60
