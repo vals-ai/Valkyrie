@@ -17,9 +17,7 @@ from tracker.external_service_gateway import (
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-inf", "0", "-1"])
-def test_credit_cap_must_be_positive_and_finite(
-    monkeypatch: pytest.MonkeyPatch, value: str
-) -> None:
+def test_credit_cap_must_be_positive_and_finite(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
     monkeypatch.setenv("TEST_CREDIT_CAP", value)
 
     with pytest.raises(ValueError, match="positive finite"):
@@ -75,9 +73,7 @@ async def test_control_client_uses_the_session_contract() -> None:
         )
         read = await client.read_session("session-1")
         frozen = await client.begin_arbitration("session-1")
-        sealed = await client.resolve_arbitration(
-            "session-1", ArbitrationDecision.SEAL
-        )
+        sealed = await client.resolve_arbitration("session-1", ArbitrationDecision.SEAL)
     finally:
         await http_client.aclose()
 
@@ -93,16 +89,13 @@ async def test_control_client_uses_the_session_contract() -> None:
     ]
     assert requests[0].method == "POST"
     assert requests[0].read().decode() == (
-        '{"session_id":"session-1","adapter":"model_gateway",'
-        '"model":"model-1","config":{"variant":"variant-1"}}'
+        '{"session_id":"session-1","adapter":"model_gateway","model":"model-1","config":{"variant":"variant-1"}}'
     )
     assert requests[-1].read().decode() == '{"decision":"SEAL"}'
 
 
 def test_deadline_controller_applies_the_cap_from_the_immutable_start() -> None:
-    snapshot = AccountingSessionSnapshot.model_validate(
-        _snapshot(overhead_ms=12_500, revision=4, epoch=2)
-    )
+    snapshot = AccountingSessionSnapshot.model_validate(_snapshot(overhead_ms=12_500, revision=4, epoch=2))
     controller = ExternalServiceDeadlineController(
         client=ExternalServiceGatewayClient("http://gateway.test"),
         snapshot=snapshot,
@@ -134,7 +127,5 @@ def test_deadline_controller_rejects_a_snapshot_for_another_session() -> None:
 
     with pytest.raises(ValueError, match="different accounting session"):
         controller._accept(  # pyright: ignore[reportPrivateUsage]
-            AccountingSessionSnapshot.model_validate(
-                _snapshot(session_id="session-2")
-            )
+            AccountingSessionSnapshot.model_validate(_snapshot(session_id="session-2"))
         )

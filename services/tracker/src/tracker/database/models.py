@@ -157,6 +157,7 @@ class GenerationContainment(BaseModel):
     type: Literal["linux_pid_namespace"]
     version: int = PydanticField(strict=True, ge=1)
 
+
 class AgentContractRequest(BaseModel):
     name: str
     generation_containment: GenerationContainment | None = None

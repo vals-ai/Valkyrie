@@ -62,6 +62,7 @@ class GenerationContainment(BaseModel):
     type: Literal["linux_pid_namespace"]
     version: int = Field(strict=True, ge=1)
 
+
 class AgentContractRequest(BaseModel):
     """Agent definition submitted when starting a run."""
 

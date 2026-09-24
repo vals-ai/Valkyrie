@@ -561,16 +561,12 @@ class TestTaskExecutionRetry:
         ("failure", "expected_operation", "expected_cause_code"),
         [
             (
-                GenerationTerminationUnconfirmedError(
-                    "deadline termination unconfirmed"
-                ),
+                GenerationTerminationUnconfirmedError("deadline termination unconfirmed"),
                 "generation_termination",
                 "deadline_expired_termination_unconfirmed",
             ),
             (
-                ControlledGenerationTerminationUnconfirmedError(
-                    "transport termination unconfirmed"
-                ),
+                ControlledGenerationTerminationUnconfirmedError("transport termination unconfirmed"),
                 "process_task",
                 None,
             ),
@@ -609,9 +605,7 @@ class TestTaskExecutionRetry:
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             response = make_retrieve_task_response(problem_path="/tmp/problem.txt")
-            cast(Any, response).generation_containment = GenerationContainment(
-                type="linux_pid_namespace", version=1
-            )
+            cast(Any, response).generation_containment = GenerationContainment(type="linux_pid_namespace", version=1)
             response.sandbox_recovery = SandboxRecoveryPolicy(max_sandbox_attempts=3)
             return response
 
@@ -624,9 +618,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", evaluate_instance)
 
-        result = await run_process_task(
-            start_benchmark_request, task_row, benchmark_id, runtime_services, authority
-        )
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
         assert result == {"task_0": None}
         assert sandbox_entries == 1
@@ -636,14 +628,11 @@ class TestTaskExecutionRetry:
         evaluate_instance.assert_not_awaited()
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        error = database_session.exec(
-            select(ErrorResult).where(col(ErrorResult.task) == task_row.id)
-        ).one()
+        error = database_session.exec(select(ErrorResult).where(col(ErrorResult.task) == task_row.id)).one()
         assert error.producer == "tracker"
         assert error.operation == expected_operation
         assert error.cause_code == expected_cause_code
         assert error.retry_scheduled is False
-
 
     async def test_eval_resume_loads_recovery_policy_before_handling_sandbox_loss(
         self,

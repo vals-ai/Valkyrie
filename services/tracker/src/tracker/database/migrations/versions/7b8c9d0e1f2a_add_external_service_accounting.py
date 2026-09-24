@@ -1,7 +1,7 @@
 """Add external-service accounting fields to task breakdown.
 
 Revision ID: 7b8c9d0e1f2a
-Revises: 6a7b8c9d0e1f
+Revises: 2d3e4f5a6b7c
 Create Date: 2026-09-19 00:00:00.000000
 """
 

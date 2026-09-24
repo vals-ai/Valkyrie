@@ -588,19 +588,18 @@ class TestParseYamlContract:
 
         assert result.name == "my_agent"
 
-
     @pytest.mark.parametrize("version", [1, 3, 17])
     def test_generation_containment_is_preserved(self, tmp_path: Path, version: int) -> None:
         path = self._write_yaml(
             tmp_path,
-            f'''\
+            f"""\
             name: my_agent
             install_cmd: bash setup.sh
             run_cmd: "agent --task {{problem_statement_path}}"
             generation_containment:
               type: linux_pid_namespace
               version: {version}
-        ''',
+        """,
         )
 
         result = _parse_yaml_contract(path, AgentConfig())
@@ -636,12 +635,12 @@ class TestParseYamlContract:
     def test_generation_containment_rejects_invalid_yaml(self, tmp_path: Path, containment: dict[str, Any]) -> None:
         path = self._write_yaml(
             tmp_path,
-            f'''\
+            f"""\
             name: my_agent
             install_cmd: bash setup.sh
             run_cmd: "agent --task {{problem_statement_path}}"
             generation_containment: {containment!r}
-        ''',
+        """,
         )
 
         with pytest.raises(ValueError):

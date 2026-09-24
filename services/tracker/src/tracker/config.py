@@ -99,9 +99,7 @@ def _positive_float_setting(name: str) -> float:
     return value
 
 
-EXTERNAL_SERVICE_GATEWAY_URL = (
-    os.environ.get("EXTERNAL_SERVICE_GATEWAY_URL", "").rstrip("/") or None
-)
+EXTERNAL_SERVICE_GATEWAY_URL = os.environ.get("EXTERNAL_SERVICE_GATEWAY_URL", "").rstrip("/") or None
 EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS = (
     _positive_float_setting("EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS")
     if EXTERNAL_SERVICE_GATEWAY_URL is not None

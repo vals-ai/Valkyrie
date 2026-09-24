@@ -546,6 +546,7 @@ def commit_task_status_transition(
         authority=authority,
     )
 
+
 async def _create_external_service_deadline(
     contract: AgentContractRequest,
     task_generation_containment: GenerationContainment | None,
@@ -559,9 +560,7 @@ async def _create_external_service_deadline(
     assert EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS is not None
     assert agent_timeout is not None
     if contract.model is None:
-        raise TrackerServiceError(
-            "External service accounting requires an attested agent model"
-        )
+        raise TrackerServiceError("External service accounting requires an attested agent model")
     client = ExternalServiceGatewayClient(EXTERNAL_SERVICE_GATEWAY_URL)
     snapshot = await client.create_session(
         session_id=str(uuid4()),
@@ -605,34 +604,19 @@ def _persist_external_service_summary(
     open_task_session: Callable[[], Session],
 ) -> None:
     if not execution_is_current():
-        raise ExecutionAuthorityRevoked(
-            "Execution authority was revoked before accounting persistence"
-        )
+        raise ExecutionAuthorityRevoked("Execution authority was revoked before accounting persistence")
     task_breakdown.accounting_session_id = summary.accounting_session_id
-    task_breakdown.base_generation_allowance_seconds = (
-        summary.base_generation_allowance_seconds
-    )
-    task_breakdown.cumulative_time_credit_cap_seconds = (
-        summary.cumulative_time_credit_cap_seconds
-    )
-    task_breakdown.external_service_overhead_seconds = (
-        summary.external_service_overhead_seconds
-    )
-    task_breakdown.external_service_credit_applied_seconds = (
-        summary.external_service_credit_applied_seconds
-    )
-    task_breakdown.effective_generation_allowance_seconds = (
-        summary.effective_generation_allowance_seconds
-    )
-    task_breakdown.external_service_credit_revision = (
-        summary.external_service_credit_revision
-    )
+    task_breakdown.base_generation_allowance_seconds = summary.base_generation_allowance_seconds
+    task_breakdown.cumulative_time_credit_cap_seconds = summary.cumulative_time_credit_cap_seconds
+    task_breakdown.external_service_overhead_seconds = summary.external_service_overhead_seconds
+    task_breakdown.external_service_credit_applied_seconds = summary.external_service_credit_applied_seconds
+    task_breakdown.effective_generation_allowance_seconds = summary.effective_generation_allowance_seconds
+    task_breakdown.external_service_credit_revision = summary.external_service_credit_revision
     with open_task_session() as task_session:
         task_session.add(task_breakdown)
         task_in_session = fetch_task_row(task_row_id, task_session, org)
         task_in_session.task_breakdown = task_breakdown.id
         task_session.commit()
-
 
 
 async def process_task(
@@ -1069,9 +1053,7 @@ async def _process_task_attempt(
         if sandbox_provider is None:
             sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
 
-        task_generation_containment = getattr(
-            task_data, "generation_containment", None
-        )
+        task_generation_containment = getattr(task_data, "generation_containment", None)
         external_service_deadline = await _create_external_service_deadline(
             start_benchmark_request.contract,
             task_generation_containment,
@@ -1108,11 +1090,9 @@ async def _process_task_attempt(
         if benchmark_started_by_email:
             identity["email"] = benchmark_started_by_email
 
-        secret_references, external_service_environment = (
-            _external_service_environment(
-                start_benchmark_request.contract.secrets,
-                external_service_deadline,
-            )
+        secret_references, external_service_environment = _external_service_environment(
+            start_benchmark_request.contract.secrets,
+            external_service_deadline,
         )
         env_vars = {
             **(await runtime.resolve_secrets(secret_references)),
@@ -1252,9 +1232,7 @@ async def _process_task_attempt(
                         execution_is_current=execution_is_current,
                         external_service_deadline=external_service_deadline,
                         on_external_service_sealed=(
-                            persist_external_service_summary
-                            if external_service_deadline is not None
-                            else None
+                            persist_external_service_summary if external_service_deadline is not None else None
                         ),
                     )
                 except DependencySetupExhaustedError:
