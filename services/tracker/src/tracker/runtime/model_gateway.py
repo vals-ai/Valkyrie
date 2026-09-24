@@ -35,8 +35,9 @@ REVOKE_TIMEOUT_SECONDS = 5.0
 # backstop for a tracker that died before it could, so it is the longest the
 # gateway allows rather than a guess at how long the task needs: a sandbox
 # waits for a creation permit, sets up, and may run an agent with no timeout of
-# its own, and a credential that expires mid-task breaks the run.
-TOKEN_TTL_SECONDS = 24 * 60 * 60
+# its own, and a credential that expires mid-task breaks the run. Some agents
+# run for days, so this has to clear them; the gateway refuses anything longer.
+TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
 
 # Revoking is what makes that backstop irrelevant, so it is worth more than one
 # attempt: the sandbox saw the token, and a transient failure at teardown would

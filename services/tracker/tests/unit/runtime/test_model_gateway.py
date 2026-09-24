@@ -258,3 +258,18 @@ async def test_teardown_does_not_hold_the_task_slot_for_long(monkeypatch: pytest
 
     assert gateway.timeouts == [REQUEST_TIMEOUT_SECONDS, REVOKE_TIMEOUT_SECONDS]
     assert REVOKE_TIMEOUT_SECONDS * REVOKE_ATTEMPTS < REQUEST_TIMEOUT_SECONDS
+
+
+async def test_the_credential_outlasts_an_agent_that_runs_for_days(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """There is no renew, so a task longer than the lifetime loses model access
+    partway through. Some agents run for days."""
+    gateway = RecordingGateway()
+    gateway.install(monkeypatch)
+
+    async with _scoped(_env()):
+        pass
+
+    assert gateway.payload_for("/service-auth")["ttl_seconds"] == TOKEN_TTL_SECONDS
+    assert TOKEN_TTL_SECONDS >= 5 * 24 * 60 * 60
