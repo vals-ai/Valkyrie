@@ -21,16 +21,17 @@ import httpx
 import pytest
 import yaml
 from click.testing import CliRunner
-from tracker.database.models import AgentContractRequest, BenchmarkStatus, DocentReadingStatus, RetryMode, TaskStatus
+from tracker.database.models import AgentContractRequest, DocentReadingStatus, RetryMode, TaskStatus
 from tracker.types import (
-    BenchmarkDetails,
+    RunDetails,
+    RunStatus,
     BenchmarkServiceEntry,
     BenchmarkServiceHealth,
     BenchmarkServicesResponse,
-    BenchmarkTableRow,
-    FetchBenchmarkResponse,
-    FetchBenchmarksRequest,
-    FetchBenchmarksResponse,
+    RunSummary,
+    GetRunResponse,
+    ListRunsRequest,
+    ListRunsResponse,
 )
 
 from valkyrie.cli import main as cli_main
@@ -39,8 +40,8 @@ import valkyrie.cli.config.benchmark_services as config_benchmark_services
 from valkyrie.cli.config.benchmark_services import paginate_services
 from valkyrie.cli.exceptions import TrackerNotFoundError
 from valkyrie.cli.run import list_runs, start
-from valkyrie.cli.run.list_runs import format_fetch_benchmarks_response
-from valkyrie.cli.run.progress import format_benchmark_status
+from valkyrie.cli.run.list_runs import format_list_runs_response
+from valkyrie.cli.run.progress import format_run_status
 from valkyrie.cli.runtime_config import (
     DEV_TRACKER_URL,
     TRACKER_SERVICE_URL_ENV_VAR,
@@ -81,9 +82,9 @@ class MockClient:
     ) -> httpx.Response:
         self.url = url
         self.params = params
-        if "/fetch-run-outputs/" in url:
+        if url.endswith("/outputs"):
             return httpx.Response(200, content=b"tar")
-        return httpx.Response(200, json={"benchmarks": [], "total_count": 0})
+        return httpx.Response(200, json={"runs": [], "total_count": 0})
 
     def close(self) -> None:
         return None
@@ -145,14 +146,14 @@ class MockTrackerService:
     def __exit__(self, *_exc_info: object) -> None:
         return None
 
-    def start_benchmark(self, *_args: object, **_kwargs: object) -> httpx.Response:
+    def start_run(self, *_args: object, **_kwargs: object) -> httpx.Response:
         self.start_calls.append({"args": _args, "kwargs": _kwargs})
         return httpx.Response(200, json=self.start_response)
 
-    def fetch_benchmark(self, _run_id: object) -> SimpleNamespace:
+    def fetch_run(self, _run_id: object) -> SimpleNamespace:
         return SimpleNamespace(benchmark_name="swebench")
 
-    def retry_or_resume_benchmark(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+    def retry_or_resume_run(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
         self.retry_or_resume_calls.append({"args": _args, "kwargs": _kwargs})
 
         return SimpleNamespace(status="success")
@@ -205,7 +206,7 @@ def connect_stream_testbed(
     mock_tracker_service.start_response = {
         "benchmark_name": "swebench",
         "agent_name": "agent",
-        "benchmark_id": str(started_run_id),
+        "run_id": str(started_run_id),
         "concurrency": 5,
         "started_at": datetime.now(ZoneInfo("UTC")).isoformat(),
         "task_count": 1,
@@ -216,14 +217,14 @@ def connect_stream_testbed(
     async def get_contract_from_s3(_agent: str, _agent_config: object) -> AgentContractRequest:
         return AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run")
 
-    def stream_benchmark_status(_tracker: MockTrackerService, run_id: object) -> None:
+    def stream_run_status(_tracker: MockTrackerService, run_id: object) -> None:
         streamed_run_ids.append(str(run_id))
 
     monkeypatch.setattr(run_start, "TrackerService", mock_tracker_service)
     monkeypatch.setattr(run_start, "get_contract_from_s3", get_contract_from_s3)
-    monkeypatch.setattr(run_start, "stream_benchmark_status", stream_benchmark_status)
+    monkeypatch.setattr(run_start, "stream_run_status", stream_run_status)
     monkeypatch.setattr(run_resume, "TrackerService", mock_tracker_service)
-    monkeypatch.setattr(run_resume, "stream_benchmark_status", stream_benchmark_status)
+    monkeypatch.setattr(run_resume, "stream_run_status", stream_run_status)
 
     return started_run_id, streamed_run_ids, mock_tracker_service
 
@@ -361,7 +362,7 @@ def test_fetch_run_outputs_uses_run_outputs_endpoint(
     response = tracker.fetch_run_outputs(run_id, task_ids=["task-1", "task-2"])
 
     assert response.content == b"tar"
-    assert mock_client.url == f"http://tracker/fetch-run-outputs/{run_id}"
+    assert mock_client.url == f"http://tracker/runs/{run_id}/outputs"
     assert mock_client.params == {"task_ids": ["task-1", "task-2"]}
 
 
@@ -378,11 +379,11 @@ def test_fetch_run_outputs_omits_empty_task_ids(
     response = tracker.fetch_run_outputs(run_id)
 
     assert response.content == b"tar"
-    assert mock_client.url == f"http://tracker/fetch-run-outputs/{run_id}"
+    assert mock_client.url == f"http://tracker/runs/{run_id}/outputs"
     assert mock_client.params == {}
 
 
-def test_stop_benchmark_sends_task_selection(
+def test_stop_run_sends_task_selection(
     monkeypatch: pytest.MonkeyPatch,
     mock_client: MockClient,
 ) -> None:
@@ -400,22 +401,22 @@ def test_stop_benchmark_sends_task_selection(
     run_id = uuid4()
     tracker = TrackerService(base_url="http://tracker")
 
-    tracker.stop_benchmark(
+    tracker.stop_run(
         run_id,
         force=True,
         task_ids=["task-a", "task-b"],
     )
 
-    assert mock_client.url == f"http://tracker/stop-benchmark/{run_id}"
+    assert mock_client.url == f"http://tracker/runs/{run_id}/stop"
     assert mock_client.params == {"force": True}
     assert mock_client.json == {"task_ids": ["task-a", "task-b"]}
 
-    tracker.stop_benchmark(run_id, force=False)
+    tracker.stop_run(run_id, force=False)
 
     assert mock_client.json == {"task_ids": None}
 
 
-def test_update_benchmark_concurrency_uses_patch_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_update_run_concurrency_uses_patch_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     """Send concurrency updates to the dedicated tracker endpoint."""
     requests: list[httpx.Request] = []
     run_id = UUID("123e4567-e89b-12d3-a456-426614174000")
@@ -425,7 +426,7 @@ def test_update_benchmark_concurrency_uses_patch_endpoint(monkeypatch: pytest.Mo
         return httpx.Response(
             200,
             json={
-                "benchmark_id": str(run_id),
+                "run_id": str(run_id),
                 "status": "IN_PROGRESS",
                 "concurrency": 9,
             },
@@ -445,17 +446,17 @@ def test_update_benchmark_concurrency_uses_patch_endpoint(monkeypatch: pytest.Mo
     monkeypatch.setattr(TrackerService, "parse_config_keys", _empty_config_keys)
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
 
-    response = TrackerService(base_url="http://tracker").update_benchmark_concurrency(run_id, 9)
+    response = TrackerService(base_url="http://tracker").update_run_concurrency(run_id, 9)
 
     assert len(requests) == 1
     assert requests[0].method == "PATCH"
-    assert str(requests[0].url) == f"http://tracker/benchmarks/{run_id}/concurrency"
+    assert str(requests[0].url) == f"http://tracker/runs/{run_id}/concurrency"
     assert json.loads(requests[0].content) == {"concurrency": 9}
-    assert response.benchmark_id == run_id
+    assert response.run_id == run_id
     assert response.concurrency == 9
 
 
-def test_update_benchmark_concurrency_surfaces_tracker_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_update_run_concurrency_surfaces_tracker_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Preserve the tracker's useful rejection detail for CLI callers."""
     original_client = httpx.Client
     transport = httpx.MockTransport(
@@ -478,7 +479,7 @@ def test_update_benchmark_concurrency_surfaces_tracker_error(monkeypatch: pytest
         TrackerServiceError,
         match="Failed to update run concurrency: Run is currently in the FINISHED state",
     ):
-        tracker.update_benchmark_concurrency(uuid4(), 9)
+        tracker.update_run_concurrency(uuid4(), 9)
 
 
 def test_tracker_client_checks_health_on_context_entry(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -687,8 +688,9 @@ def test_retry_or_resume_sends_retry_mode(
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
 
     tracker = TrackerService(base_url="http://tracker")
-    result = tracker.retry_or_resume_benchmark(
-        uuid4(),
+    retry_run_id = uuid4()
+    result = tracker.retry_or_resume_run(
+        retry_run_id,
         retry=True,
         retry_mode=RetryMode.FROM_SCRATCH,
         concurrency=3,
@@ -699,7 +701,8 @@ def test_retry_or_resume_sends_retry_mode(
     )
 
     assert result.status == "success"
-    assert mock_client.params == {"retry": True, "retry_mode": "from_scratch", "concurrency": 3}
+    assert mock_client.url == f"http://tracker/runs/{retry_run_id}/retry"
+    assert mock_client.params == {"retry_mode": "from_scratch", "concurrency": 3}
     assert mock_client.json == {
         "task_ids": ["task-1"],
         "service_headers": {},
@@ -708,15 +711,17 @@ def test_retry_or_resume_sends_retry_mode(
         "lambda_function": "vals-format-lambda",
     }
 
-    tracker.retry_or_resume_benchmark(
-        uuid4(),
+    resume_run_id = uuid4()
+    tracker.retry_or_resume_run(
+        resume_run_id,
         retry=False,
         retry_mode=RetryMode.AUTO,
         concurrency=0,
         task_ids=[],
     )
 
-    assert mock_client.params == {"retry": False, "retry_mode": "auto", "concurrency": 0}
+    assert mock_client.url == f"http://tracker/runs/{resume_run_id}/resume"
+    assert mock_client.params == {"retry_mode": "auto", "concurrency": 0}
 
 
 def test_tracker_client_requires_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -779,7 +784,7 @@ def test_tracker_client_requires_provider_secret_config(tmp_path: Path, monkeypa
         ),
     ],
 )
-def test_start_benchmark_resolves_provider_configuration(
+def test_start_run_resolves_provider_configuration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mock_client: MockClient,
@@ -800,7 +805,7 @@ def test_start_benchmark_resolves_provider_configuration(
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
 
     tracker = TrackerService(base_url="http://tracker")
-    tracker.start_benchmark(
+    tracker.start_run(
         contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
         benchmark_name="swebench",
         concurrency=1,
@@ -817,7 +822,7 @@ def test_start_benchmark_resolves_provider_configuration(
     assert harness_config["sandbox_provider_secret_name"] == expected_secret
 
 
-def test_start_benchmark_forwards_aws_session_token(
+def test_start_run_forwards_aws_session_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mock_client: MockClient,
@@ -832,7 +837,7 @@ def test_start_benchmark_forwards_aws_session_token(
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
 
     tracker = TrackerService(base_url="http://tracker")
-    tracker.start_benchmark(
+    tracker.start_run(
         contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
         benchmark_name="swebench",
         concurrency=1,
@@ -850,7 +855,7 @@ def test_start_benchmark_forwards_aws_session_token(
     assert aws_config["aws_session_token"] == "temporary-token"
 
 
-def test_start_benchmark_without_static_keys_sends_managed_request(
+def test_start_run_without_static_keys_sends_managed_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -881,7 +886,7 @@ def test_start_benchmark_without_static_keys_sends_managed_request(
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
 
     tracker = TrackerService(base_url="http://tracker")
-    tracker.start_benchmark(
+    tracker.start_run(
         contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
         benchmark_name="swebench",
         concurrency=1,
@@ -1113,7 +1118,7 @@ def test_run_label_cli_options_and_client_requests(
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
 
     tracker = TrackerService(base_url="http://tracker")
-    tracker.start_benchmark(
+    tracker.start_run(
         contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
         benchmark_name="swebench",
         concurrency=1,
@@ -1125,7 +1130,7 @@ def test_run_label_cli_options_and_client_requests(
     assert mock_client.json is not None
     assert mock_client.json["label"] == "nightly"
 
-    tracker.fetch_benchmarks(FetchBenchmarksRequest(label="nightly"))
+    tracker.list_runs(ListRunsRequest(label="nightly"))
     assert mock_client.params is not None
     assert mock_client.params["label"] == "nightly"
 
@@ -1139,8 +1144,8 @@ def test_run_label_fetch_and_list_output(capsys: pytest.CaptureFixture[str]) -> 
     """
     run_id = uuid4()
     started_at = datetime.now(ZoneInfo("UTC"))
-    details = BenchmarkDetails(
-        status=BenchmarkStatus.IN_PROGRESS,
+    details = RunDetails(
+        status=RunStatus.IN_PROGRESS,
         started_at=started_at,
         total_tasks=1,
         finished_tasks=0,
@@ -1148,10 +1153,10 @@ def test_run_label_fetch_and_list_output(capsys: pytest.CaptureFixture[str]) -> 
         docent_reading_status=DocentReadingStatus.IDLE,
     )
 
-    format_benchmark_status(
-        FetchBenchmarkResponse(
+    format_run_status(
+        GetRunResponse(
             benchmark_name="swebench",
-            benchmark_id=run_id,
+            run_id=run_id,
             details=details,
             s3_bucket_url="s3://bucket/benchmarks/run",
             label="nightly",
@@ -1161,19 +1166,19 @@ def test_run_label_fetch_and_list_output(capsys: pytest.CaptureFixture[str]) -> 
     assert "Label:" in fetch_output
     assert "nightly" in fetch_output
 
-    format_fetch_benchmarks_response(
-        FetchBenchmarksResponse(
-            benchmarks=[
-                BenchmarkTableRow(
-                    id=run_id,
-                    name="swebench",
+    format_list_runs_response(
+        ListRunsResponse(
+            runs=[
+                RunSummary(
+                    run_id=run_id,
+                    benchmark_name="swebench",
                     agent_name="agent",
                     model="openai/gpt-5.5",
                     dataset="default",
                     started_by_email=None,
                     started_at=started_at,
                     finished_at=None,
-                    status=BenchmarkStatus.IN_PROGRESS,
+                    status=RunStatus.IN_PROGRESS,
                     total_tasks=1,
                     finished_tasks=0,
                     label="nightly",

@@ -13,7 +13,7 @@ import pytest
 from click.testing import CliRunner
 from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
 from tracker.database.models import RetryMode
-from tracker.types import FetchBenchmarkMetadataResponse, FetchBenchmarkResponse, RetryOrResumeBenchmarkResponse
+from tracker.types import RunMetadataResponse, GetRunResponse, RetryOrResumeRunResponse
 
 from tests.unit.cli.factories import make_fetch_metadata, make_fetch_response
 from valkyrie.cli import s3_config
@@ -33,12 +33,12 @@ class MockTrackerService:
     def __exit__(self, *_exc_info: object) -> None:
         return None
 
-    def fetch_benchmark(self, benchmark_id: UUID) -> FetchBenchmarkResponse:
-        return make_fetch_response(benchmark_id)
+    def fetch_run(self, run_id: UUID) -> GetRunResponse:
+        return make_fetch_response(run_id)
 
-    def retry_or_resume_benchmark(
+    def retry_or_resume_run(
         self,
-        benchmark_id: UUID,
+        run_id: UUID,
         retry: bool,
         retry_mode: RetryMode,
         concurrency: int | None,
@@ -47,9 +47,9 @@ class MockTrackerService:
         secrets: dict[str, str] | None = None,
         benchmark_url: str | None = None,
         lambda_function: str | None = None,
-    ) -> RetryOrResumeBenchmarkResponse:
-        self.calls.append({"benchmark_id": benchmark_id, "service_headers": service_headers})
-        return RetryOrResumeBenchmarkResponse(status="success")
+    ) -> RetryOrResumeRunResponse:
+        self.calls.append({"run_id": run_id, "service_headers": service_headers})
+        return RetryOrResumeRunResponse(status="success")
 
 
 @pytest.fixture(autouse=True)
@@ -81,9 +81,7 @@ def test_resume_forwards_custom_headers(
     )
 
     assert result.exit_code == 0, result.output
-    assert MockTrackerService.calls == [
-        {"benchmark_id": run_id, "service_headers": {"x-descope-api-key": "secret-value"}}
-    ]
+    assert MockTrackerService.calls == [{"run_id": run_id, "service_headers": {"x-descope-api-key": "secret-value"}}]
 
 
 @pytest.mark.parametrize("storage_bucket", [None, "shared-library", "vs-dev-acme-123"])
@@ -98,8 +96,8 @@ def test_update_agent_rejects_a_different_run_bucket_before_copy_or_resume(
     client.copy_object.return_value = {}
 
     class TrackerWithMetadata(MockTrackerService):
-        def fetch_benchmark_metadata(self, benchmark_id: UUID) -> FetchBenchmarkMetadataResponse:
-            return make_fetch_metadata(benchmark_id).model_copy(update={"storage_bucket": storage_bucket})
+        def fetch_run_metadata(self, run_id: UUID) -> RunMetadataResponse:
+            return make_fetch_metadata(run_id).model_copy(update={"storage_bucket": storage_bucket})
 
     monkeypatch.setattr(resume_module, "TrackerService", TrackerWithMetadata)
     monkeypatch.setattr(resume_module, "benchmark_service_headers", lambda *_arguments: {})
@@ -130,4 +128,4 @@ def test_update_agent_rejects_a_different_run_bucket_before_copy_or_resume(
         CopySource={"Bucket": "shared-library", "Key": "agents/mini_sweagent.zip"},
         Key=f"benchmarks/{run_id}/mini_sweagent.zip",
     )
-    assert MockTrackerService.calls == [{"benchmark_id": run_id, "service_headers": {}}]
+    assert MockTrackerService.calls == [{"run_id": run_id, "service_headers": {}}]

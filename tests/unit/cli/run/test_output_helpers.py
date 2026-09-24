@@ -16,20 +16,15 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from click.testing import CliRunner
-from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
-from tracker.types import (
-    BenchmarkDetails,
-    FetchBenchmarkMetadataResponse,
-    FetchBenchmarkResponse,
-    StartBenchmarkResponse,
-)
+from tracker.database.models import DocentReadingStatus, TaskStatus
+from tracker.types import GetRunResponse, RunDetails, RunMetadataResponse, RunStatus, StartRunResponse
 
 from valkyrie.cli.display import paginate_cli_pages
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.fetch import fetch
 from valkyrie.cli.run.outputs import download_run_outputs
-from valkyrie.cli.run.progress import format_benchmark_status, stream_benchmark_status
-from valkyrie.cli.run.start import format_start_benchmark_response
+from valkyrie.cli.run.progress import format_run_status, stream_run_status
+from valkyrie.cli.run.start import format_start_run_response
 from valkyrie.cli.tracker_client import TrackerService
 
 from tests.unit.cli.factories import make_fetch_metadata, make_fetch_response
@@ -40,8 +35,8 @@ fetch_module = import_module("valkyrie.cli.run.fetch")
 class StubProgressTracker:
     def __init__(
         self,
-        response: FetchBenchmarkResponse,
-        metadata: FetchBenchmarkMetadataResponse | TrackerServiceError,
+        response: GetRunResponse,
+        metadata: RunMetadataResponse | TrackerServiceError,
         events: tuple[str, ...] = ("event: disconnect",),
     ) -> None:
         self.response = response
@@ -50,16 +45,16 @@ class StubProgressTracker:
         self.metadata_calls = 0
         self.stream_calls = 0
 
-    def fetch_benchmark(self, _run_id: UUID) -> FetchBenchmarkResponse:
+    def fetch_run(self, _run_id: UUID) -> GetRunResponse:
         return self.response
 
-    def fetch_benchmark_metadata(self, _run_id: UUID) -> FetchBenchmarkMetadataResponse:
+    def fetch_run_metadata(self, _run_id: UUID) -> RunMetadataResponse:
         self.metadata_calls += 1
         if isinstance(self.metadata, TrackerServiceError):
             raise self.metadata
         return self.metadata
 
-    def stream_benchmark(self, _run_id: UUID) -> Iterator[str]:
+    def stream_run(self, _run_id: UUID) -> Iterator[str]:
         self.stream_calls += 1
         yield from self.events
 
@@ -72,11 +67,11 @@ def test_format_benchmark_status_prints_terminal_details(capsys: pytest.CaptureF
     - An errored response renders its stored run-level error.
     - The existing progress line still renders.
     """
-    response = FetchBenchmarkResponse(
+    response = GetRunResponse(
         benchmark_name="swebench",
-        benchmark_id=uuid4(),
-        details=BenchmarkDetails(
-            status=BenchmarkStatus.FINISHED,
+        run_id=uuid4(),
+        details=RunDetails(
+            status=RunStatus.FINISHED,
             started_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
             total_tasks=4,
             finished_tasks=3,
@@ -87,18 +82,18 @@ def test_format_benchmark_status_prints_terminal_details(capsys: pytest.CaptureF
         final_score=83.25,
     )
 
-    format_benchmark_status(response)
+    format_run_status(response)
 
     output = capsys.readouterr().out
     assert "Final score:" in output
     assert "83.2%" in output
     assert "3/4 (75.0%)" in output
 
-    error_response = FetchBenchmarkResponse(
+    error_response = GetRunResponse(
         benchmark_name="terminal-bench",
-        benchmark_id=uuid4(),
-        details=BenchmarkDetails(
-            status=BenchmarkStatus.ERROR,
+        run_id=uuid4(),
+        details=RunDetails(
+            status=RunStatus.ERROR,
             started_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
             total_tasks=4,
             finished_tasks=4,
@@ -109,7 +104,7 @@ def test_format_benchmark_status_prints_terminal_details(capsys: pytest.CaptureF
         error_message="Dominant task error affecting 4/4 tasks",
     )
 
-    format_benchmark_status(error_response)
+    format_run_status(error_response)
 
     error_output = capsys.readouterr().out
     assert "Error:" in error_output
@@ -120,7 +115,7 @@ def test_connected_fetch_prints_rich_identity(capsys: pytest.CaptureFixture[str]
     run_id = uuid4()
     tracker = StubProgressTracker(make_fetch_response(run_id), make_fetch_metadata(run_id))
 
-    stream_benchmark_status(cast(TrackerService, tracker), run_id, show_identity=True)
+    stream_run_status(cast(TrackerService, tracker), run_id, show_identity=True)
 
     output = capsys.readouterr().out
     assert "Run Details" in output
@@ -147,14 +142,14 @@ def test_connected_fetch_uses_terminal_error_status(capsys: pytest.CaptureFixtur
     """
     run_id = uuid4()
     error_message = "No tasks were completed successfully. 1 distinct error:\n- 4/4 tasks: Secret error"
-    response = make_fetch_response(run_id, status=BenchmarkStatus.ERROR, finished_tasks=4)
+    response = make_fetch_response(run_id, status=RunStatus.ERROR, finished_tasks=4)
     error_details = response.details.model_copy(update={"task_breakdown": {TaskStatus.ERROR: 4}})
     error_response = response.model_copy(update={"details": error_details, "error_message": error_message})
 
     # Terminal runs should use the same renderer as a regular fetch.
     terminal_tracker = StubProgressTracker(error_response, make_fetch_metadata(run_id))
 
-    stream_benchmark_status(cast(TrackerService, terminal_tracker), run_id, show_identity=True)
+    stream_run_status(cast(TrackerService, terminal_tracker), run_id, show_identity=True)
 
     terminal_output = capsys.readouterr().out
     assert "Run Status" in terminal_output
@@ -165,7 +160,7 @@ def test_connected_fetch_uses_terminal_error_status(capsys: pytest.CaptureFixtur
     zero_task_response = make_fetch_response(run_id, total_tasks=0, finished_tasks=0, task_breakdown={})
     zero_task_error_response = make_fetch_response(
         run_id,
-        status=BenchmarkStatus.ERROR,
+        status=RunStatus.ERROR,
         total_tasks=0,
         finished_tasks=0,
         task_breakdown={},
@@ -178,7 +173,7 @@ def test_connected_fetch_uses_terminal_error_status(capsys: pytest.CaptureFixtur
         events=(f"data: {zero_task_error_response.model_dump_json()}", "event: complete"),
     )
 
-    stream_benchmark_status(cast(TrackerService, live_tracker), run_id, show_identity=True)
+    stream_run_status(cast(TrackerService, live_tracker), run_id, show_identity=True)
 
     live_output = capsys.readouterr().out
     assert "0/0 (0.0%)" in live_output
@@ -192,7 +187,7 @@ def test_connected_fetch_continues_when_metadata_is_unavailable(capsys: pytest.C
     run_id = uuid4()
     tracker = StubProgressTracker(make_fetch_response(run_id), TrackerServiceError("metadata unavailable"))
 
-    stream_benchmark_status(cast(TrackerService, tracker), run_id, show_identity=True)
+    stream_run_status(cast(TrackerService, tracker), run_id, show_identity=True)
 
     output = capsys.readouterr().out
     assert "Run Details" in output
@@ -205,7 +200,7 @@ def test_shared_connected_stream_omits_identity_by_default(capsys: pytest.Captur
     run_id = uuid4()
     tracker = StubProgressTracker(make_fetch_response(run_id), make_fetch_metadata(run_id))
 
-    stream_benchmark_status(cast(TrackerService, tracker), run_id)
+    stream_run_status(cast(TrackerService, tracker), run_id)
 
     output = capsys.readouterr().out
     assert "Run Details" not in output
@@ -227,7 +222,7 @@ def test_fetch_connect_enables_identity_header(monkeypatch: pytest.MonkeyPatch) 
         stream_calls.append((actual_run_id, show_identity))
 
     monkeypatch.setattr(fetch_module, "TrackerService", StubFetchTrackerService)
-    monkeypatch.setattr(fetch_module, "stream_benchmark_status", record_stream)
+    monkeypatch.setattr(fetch_module, "stream_run_status", record_stream)
 
     result = CliRunner().invoke(fetch, [str(run_id), "--connect"])
 
@@ -235,12 +230,12 @@ def test_fetch_connect_enables_identity_header(monkeypatch: pytest.MonkeyPatch) 
     assert stream_calls == [(run_id, True)]
 
 
-def test_format_start_benchmark_response_prints_run_outputs_command(capsys: pytest.CaptureFixture[str]) -> None:
+def test_format_start_run_response_prints_run_outputs_command(capsys: pytest.CaptureFixture[str]) -> None:
     run_id = uuid4()
-    response = StartBenchmarkResponse(
+    response = StartRunResponse(
         benchmark_name="swebench",
         agent_name="agent",
-        benchmark_id=run_id,
+        run_id=run_id,
         concurrency=4,
         started_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
         task_count=10,
@@ -248,7 +243,7 @@ def test_format_start_benchmark_response_prints_run_outputs_command(capsys: pyte
         s3_bucket_url="s3://bucket/run",
     )
 
-    format_start_benchmark_response(response)
+    format_start_run_response(response)
 
     output = capsys.readouterr().out
     assert "Run outputs:" in output

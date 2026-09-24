@@ -71,6 +71,11 @@ _EXPECTED_RESOURCES = {
         "fetch",
         "filter_options",
         "list",
+        "statuses",
+        "tasks",
+        "iter_tasks",
+        "task",
+        "artifacts",
         "iter",
         "stream",
         "results",
@@ -95,23 +100,42 @@ _EXPECTED_TYPES = {
     "Artifacts": ("RunArtifactEntry", "RunArtifactsResponse", "RunArtifactDownloadResponse"),
     "Agents": ("AgentContractRequest", "AgentDownloadURLResponse", "AgentEntry", "AgentsResponse"),
     "Runs": (
+        "AnalyzeRunRequest",
         "AnalyzeEvent",
+        "GetRunResponse",
         "FetchBenchmarkResponse",
         "FetchBenchmarkMetadataResponse",
         "FetchBenchmarksRequest",
         "FetchBenchmarksResponse",
         "FilterOptionsResponse",
         "FinalViewResponse",
+        "ListRunsRequest",
+        "ListRunsResponse",
         "RetryOrResumeBenchmarkResponse",
+        "RetryOrResumeRunResponse",
         "ResultsExistResponse",
+        "RunArguments",
+        "RunDetails",
+        "RunFinalEvaluation",
+        "RunMetadataResponse",
+        "RunResultsResponse",
+        "RunStatusEntry",
+        "RunStatusResponse",
+        "RunSummary",
         "S3UploadResultsResponse",
         "StartBenchmarkResponse",
+        "StartRunRequest",
+        "StartRunResponse",
         "StopBenchmarkResponse",
+        "StopRunResponse",
         "UpdateBenchmarkConcurrencyRequest",
         "UpdateBenchmarkConcurrencyResponse",
+        "UpdateRunConcurrencyRequest",
+        "UpdateRunConcurrencyResponse",
         "BenchmarkStatus",
         "Order",
         "RetryMode",
+        "RunStatus",
         "TaskStatus",
     ),
     "Services": (
@@ -302,7 +326,7 @@ class TestSDKReference:
         assert len(results.signatures) == 3
         assert "Literal[False]" in results.signatures[0]
         assert "Literal[True]" in results.signatures[1]
-        assert "RetrieveResultsResponse" in results.signatures[2]
+        assert "RetrieveRunResultsResponse" in results.signatures[2]
 
         models = {model.name: model for model in sdk_reference.models}
         task_fields = {field.name: field for field in models["FetchTasksRequest"].fields}
@@ -323,8 +347,8 @@ class TestSDKReference:
         sources = (
             sdk_resources.RunsResource,
             sdk_resources.RunsResource.start,
-            sdk.FetchBenchmarksRequest,
-            sdk.BenchmarkStatus,
+            sdk.ListRunsRequest,
+            sdk.RunStatus,
             sdk.ValkyrieAPIError,
             sdk.ValkyrieClient,
             sdk.ValkyrieClient.from_config.__func__,
@@ -361,17 +385,17 @@ class TestSDKReference:
 
         request_section = _section(
             rendered,
-            f"## `FetchBenchmarksRequest` {{#{entries['FetchBenchmarksRequest'].slug}}}",
+            f"## `ListRunsRequest` {{#{entries['ListRunsRequest'].slug}}}",
         )
         _, agents_page = _page_with_heading(rendered, f"## `AgentEntry` {{#{entries['AgentEntry'].slug}}}")
         runs = next(resource for resource in sdk_reference.resources if resource.name == "RunsResource")
         start_section = _section(rendered, f"## `{runs.client_attribute}.start` {{#start}}")
 
-        assert f'href="{target("BenchmarkStatus")}"' in request_section
+        assert f'href="{target("RunStatus")}"' in request_section
         assert f'href="{target("Order")}"' in request_section
         assert f'href="{target("AgentEntry")}"' in agents_page
         assert f'href="{target("AgentContractRequest")}"' in start_section
-        assert f'href="{target("StartBenchmarkResponse")}"' in start_section
+        assert f'href="{target("StartRunResponse")}"' in start_section
 
         config_section = _section(rendered, f"## `ValkyrieConfig` {{#{entries['ValkyrieConfig'].slug}}}")
         agent_contract_section = _section(

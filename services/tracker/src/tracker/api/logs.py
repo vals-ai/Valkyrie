@@ -14,8 +14,10 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import Session, col, select
 
 from tracker.api.dependencies import (
-    RunRuntimeDependency,
+    CanonicalRunAWSDependency,
+    CanonicalRunRuntimeDependency,
     RunAWSDependency,
+    RunRuntimeDependency,
     load_task_for_benchmark_or_404,
 )
 from tracker.auth import get_current_org
@@ -33,13 +35,11 @@ from tracker.runtime.logs import (
 from tracker.types import LogEventResponse, LogPageResponse
 
 
-def _validate_log_filters(
-    _run_context: RunAWSDependency,
-    query: str | None = Query(default=None, min_length=1),
-    start_time: datetime | None = None,
-    end_time: datetime | None = None,
+def _validate_log_filter_values(
+    query: str | None,
+    start_time: datetime | None,
+    end_time: datetime | None,
 ) -> None:
-    """Reject ambiguous log filters before handling a request."""
     if query is not None and not query.strip():
         raise HTTPException(status_code=422, detail="query must not be blank")
     for name, value in (("start_time", start_time), ("end_time", end_time)):
@@ -49,7 +49,28 @@ def _validate_log_filters(
         raise HTTPException(status_code=422, detail="end_time must be later than start_time")
 
 
+def _validate_log_filters(
+    _run_context: RunAWSDependency,
+    query: str | None = Query(default=None, min_length=1),
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+) -> None:
+    """Reject ambiguous log filters before handling a request."""
+    _validate_log_filter_values(query, start_time, end_time)
+
+
+def _validate_canonical_log_filters(
+    _run_context: CanonicalRunAWSDependency,
+    query: str | None = Query(default=None, min_length=1),
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+) -> None:
+    """Apply the same filter contract to canonical run routes."""
+    _validate_log_filter_values(query, start_time, end_time)
+
+
 router = APIRouter(prefix="/benchmarks", dependencies=[Depends(_validate_log_filters)])
+run_router = APIRouter(prefix="/runs", dependencies=[Depends(_validate_canonical_log_filters)])
 
 
 def _task_reference(
@@ -108,6 +129,33 @@ def _log_reference(
 
 
 LogReferenceDependency = Annotated[RunLogReference | TaskLogReference, Depends(_log_reference)]
+
+
+def _canonical_task_reference(
+    run_context: CanonicalRunAWSDependency,
+    task_id: str = Query(min_length=1),
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> TaskLogReference:
+    return _task_reference(run_context, task_id, org, session)
+
+
+CanonicalTaskLogReferenceDependency = Annotated[TaskLogReference, Depends(_canonical_task_reference)]
+
+
+def _canonical_log_reference(
+    run_context: CanonicalRunAWSDependency,
+    task_id: str | None = Query(default=None, min_length=1),
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> RunLogReference | TaskLogReference:
+    return _log_reference(run_context, task_id, org, session)
+
+
+CanonicalLogReferenceDependency = Annotated[
+    RunLogReference | TaskLogReference,
+    Depends(_canonical_log_reference),
+]
 
 
 def _response(page: LogPage) -> LogPageResponse:
@@ -222,3 +270,30 @@ def stream_task_logs(
         end_time=end_time,
     )
     return StreamingResponse(events, media_type="text/event-stream")
+
+
+@run_router.get("/{run_id}/logs", response_model=LogPageResponse)
+async def get_run_logs(
+    reference: CanonicalLogReferenceDependency,
+    runtime: CanonicalRunRuntimeDependency,
+    query: str | None = Query(default=None, min_length=1),
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+    cursor: str | None = None,
+    limit: int = Query(default=1_000, ge=1, le=10_000),
+) -> LogPageResponse:
+    """Canonical paginated logs for a run or one of its tasks."""
+    return await get_logs(reference, runtime, query, start_time, end_time, cursor, limit)
+
+
+@run_router.get("/{run_id}/logs/stream", response_model=None)
+def stream_run_task_logs(
+    reference: CanonicalTaskLogReferenceDependency,
+    runtime: CanonicalRunRuntimeDependency,
+    query: str | None = Query(default=None, min_length=1),
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+    session: Session = Depends(get_session),
+) -> StreamingResponse:
+    """Canonical SSE log stream for one task in a run."""
+    return stream_task_logs(reference, runtime, query, start_time, end_time, session)

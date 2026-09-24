@@ -19,19 +19,33 @@ from tracker.aws.services import CloudRuntimeFactory
 from tracker.database.models import Benchmark, Org, Task
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
-from tracker.logging import benchmark_id_var
+from tracker.logging import benchmark_id_var, run_id_var
 from tracker.runtime.services import RuntimeServices
 
 
-async def bind_benchmark_id(benchmark_id: UUID) -> UUID:
-    """Bind a route's run identifier to logs, errors, and the active request span."""
-    value = str(benchmark_id)
+def _bind_run_context(identifier: UUID) -> None:
+    value = str(identifier)
     benchmark_id_var.set(value)
-    trace.get_current_span().set_attribute("benchmark_id", value)
+    run_id_var.set(value)
+    span = trace.get_current_span()
+    span.set_attribute("benchmark_id", value)
+    span.set_attribute("run_id", value)
+
+
+async def bind_benchmark_id(benchmark_id: UUID) -> UUID:
+    """Bind a legacy route's run identifier to the active context."""
+    _bind_run_context(benchmark_id)
     return benchmark_id
 
 
+async def bind_run_id(run_id: UUID) -> UUID:
+    """Bind a canonical route's run identifier to the active context."""
+    _bind_run_context(run_id)
+    return run_id
+
+
 TrackedBenchmarkId = Annotated[UUID, Depends(bind_benchmark_id)]
+TrackedRunId = Annotated[UUID, Depends(bind_run_id)]
 
 
 @dataclass(frozen=True)
@@ -68,6 +82,19 @@ async def get_run_aws_context(
 RunAWSDependency = Annotated[RunAWSContext, Depends(get_run_aws_context)]
 
 
+async def get_run_aws_context_by_run_id(
+    run_id: TrackedRunId,
+    request: Request,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> RunAWSContext:
+    """Canonical run-id adapter for the persisted AWS authority dependency."""
+    return await get_run_aws_context(run_id, request, session, org)
+
+
+CanonicalRunAWSDependency = Annotated[RunAWSContext, Depends(get_run_aws_context_by_run_id)]
+
+
 async def get_run_runtime(run_context: RunAWSDependency) -> RuntimeServices:
     """Compose services for one authorized run operation."""
     aws_runtime = run_context.aws_runtime
@@ -82,6 +109,14 @@ async def get_run_runtime(run_context: RunAWSDependency) -> RuntimeServices:
 
 
 RunRuntimeDependency = Annotated[RuntimeServices, Depends(get_run_runtime)]
+
+
+async def get_canonical_run_runtime(run_context: CanonicalRunAWSDependency) -> RuntimeServices:
+    """Canonical run-id adapter for runtime services."""
+    return await get_run_runtime(run_context)
+
+
+CanonicalRunRuntimeDependency = Annotated[RuntimeServices, Depends(get_canonical_run_runtime)]
 
 
 async def get_agent_library_runtime(

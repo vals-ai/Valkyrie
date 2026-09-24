@@ -9,9 +9,9 @@ from uuid import UUID
 
 import pytest
 from click.testing import CliRunner
-from tracker.database.models import AgentContractRequest, BenchmarkArguments
+from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
-from tracker.types import FetchBenchmarkMetadataResponse
+from tracker.types import RunArguments, RunMetadataResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.analyze import analyze
@@ -21,11 +21,11 @@ analyze_module = import_module("valkyrie.cli.run.analyze")
 _RUN_ID = UUID("123e4567-e89b-12d3-a456-426614174000")
 
 
-def _metadata() -> FetchBenchmarkMetadataResponse:
-    return FetchBenchmarkMetadataResponse(
-        benchmark_id=_RUN_ID,
+def _metadata() -> RunMetadataResponse:
+    return RunMetadataResponse(
+        run_id=_RUN_ID,
         benchmark_name="swebench",
-        benchmark_arguments=BenchmarkArguments(
+        run_arguments=RunArguments(
             contract=AgentContractRequest(name="analysis-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
         ),
@@ -35,7 +35,7 @@ def _metadata() -> FetchBenchmarkMetadataResponse:
 def _tracker() -> MagicMock:
     tracker = MagicMock()
     tracker.__enter__.return_value = tracker
-    tracker.fetch_benchmark_metadata.return_value = _metadata()
+    tracker.fetch_run_metadata.return_value = _metadata()
 
     return tracker
 
@@ -61,7 +61,7 @@ class TestAnalyzeCommand:
             ("heartbeat", {}),
             ("done", {"reading_plan_url": "https://docent.example/plan"}),
         ]
-        tracker.analyze_benchmark.return_value = iter(events)
+        tracker.analyze_run.return_value = iter(events)
         mock_ingest_lookup = AsyncMock(return_value="docent-ingest")
         monkeypatch.setattr(analyze_module, "TrackerService", lambda: tracker)
         monkeypatch.setattr(analyze_module, "get_ingest_lambda_from_s3", mock_ingest_lookup)
@@ -73,7 +73,7 @@ class TestAnalyzeCommand:
         assert "https://docent.example/plan" in result.output
         assert "event:" not in result.output
         mock_ingest_lookup.assert_awaited_once_with("analysis-agent")
-        tracker.analyze_benchmark.assert_called_once_with(
+        tracker.analyze_run.assert_called_once_with(
             _RUN_ID,
             no_cache=True,
             lambda_function="docent-ingest",
@@ -109,7 +109,7 @@ class TestAnalyzeCommand:
 
         assert result.exit_code == 1
         assert expected_message in result.output
-        tracker.analyze_benchmark.assert_not_called()
+        tracker.analyze_run.assert_not_called()
 
     @pytest.mark.parametrize(
         ("status", "expected_message"),
@@ -134,7 +134,7 @@ class TestAnalyzeCommand:
         - Every state exits nonzero without rendering a traceback.
         """
         tracker = _tracker()
-        tracker.analyze_benchmark.side_effect = TrackerServiceError(
+        tracker.analyze_run.side_effect = TrackerServiceError(
             f"Cannot analyze run {_RUN_ID}: status is {status} (must be FINISHED)."
         )
         monkeypatch.setattr(analyze_module, "TrackerService", lambda: tracker)

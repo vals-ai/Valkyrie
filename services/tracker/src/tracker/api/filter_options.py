@@ -14,6 +14,7 @@ from tracker.database.models import Benchmark, Org
 from tracker.database.session import get_session
 
 router = APIRouter(prefix="/benchmarks")
+run_router = APIRouter(prefix="/runs")
 
 
 class FilterOptionsResponse(BaseModel):
@@ -51,3 +52,12 @@ def get_filter_options(
         datasets=sorted({dataset or "default" for _, _, _, dataset, _ in rows}),
         started_by_emails=sorted({email for _, _, _, _, email in rows if email}),
     )
+
+
+@run_router.get("/filter-options", response_model=FilterOptionsResponse)
+def get_run_filter_options(
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> FilterOptionsResponse:
+    """Canonical alias for the run-list filter values."""
+    return get_filter_options(org, session)

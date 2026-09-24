@@ -39,15 +39,13 @@ class ArtifactsResource:
         params: dict[str, str | int] = {"prefix": _path(prefix.rstrip("/"), allow_empty=True), "limit": limit}
         if cursor is not None:
             params["cursor"] = cursor
-        return await self._sdk.request_model(
-            "GET", f"/benchmarks/{run_id}/artifacts", RunArtifactsResponse, params=params
-        )
+        return await self._sdk.request_model("GET", f"/runs/{run_id}/artifacts", RunArtifactsResponse, params=params)
 
     async def download_url(self, run_id: UUID, path: str) -> RunArtifactDownloadResponse:
         """Create a temporary URL for one exact artifact path."""
         return await self._sdk.request_model(
             "GET",
-            f"/benchmarks/{run_id}/artifacts/download-url",
+            f"/runs/{run_id}/artifacts/download-url",
             RunArtifactDownloadResponse,
             params={"path": _path(path)},
         )

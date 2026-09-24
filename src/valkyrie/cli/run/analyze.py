@@ -27,8 +27,8 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
     try:
         with TrackerService() as tracker:
             # Resolve the analyzer Lambda from the agent's current pushed contract.
-            metadata = tracker.fetch_benchmark_metadata(run_id)
-            contract_name = metadata.benchmark_arguments.contract.name
+            metadata = tracker.fetch_run_metadata(run_id)
+            contract_name = metadata.run_arguments.contract.name
             try:
                 lambda_function = asyncio.run(get_ingest_lambda_from_s3(contract_name))
             except S3Error as e:
@@ -43,7 +43,7 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
                 )
 
             terminal: tuple[str, dict[str, Any]] | None = None
-            for event, data in tracker.analyze_benchmark(
+            for event, data in tracker.analyze_run(
                 run_id,
                 no_cache=no_cache,
                 lambda_function=lambda_function,

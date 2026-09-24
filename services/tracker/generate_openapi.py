@@ -32,6 +32,22 @@ HARNESS_OPERATIONS = (
     ("/retrieve-results", "get"),
     ("/retry-or-resume-benchmark/{benchmark_id}", "post"),
     ("/stop-benchmark/{benchmark_id}", "post"),
+    ("/runs/{run_id}", "get"),
+    ("/runs/{run_id}/analysis", "post"),
+    ("/runs/{run_id}/artifacts", "get"),
+    ("/runs/{run_id}/artifacts/download-url", "get"),
+    ("/runs/{run_id}/events", "get"),
+    ("/runs/{run_id}/logs", "get"),
+    ("/runs/{run_id}/logs/stream", "get"),
+    ("/runs/{run_id}/metadata", "get"),
+    ("/runs/{run_id}/outputs", "get"),
+    ("/runs/{run_id}/results", "get"),
+    ("/runs/{run_id}/results/exists", "get"),
+    ("/runs/{run_id}/results/preview", "get"),
+    ("/runs/{run_id}/retry", "post"),
+    ("/runs/{run_id}/resume", "post"),
+    ("/runs/{run_id}/stop", "post"),
+    ("/runs/{run_id}/tasks/{task_id}/artifacts", "get"),
 )
 
 
@@ -70,6 +86,7 @@ def build_openapi() -> dict[str, Any]:
     schema["paths"]["/init"]["post"]["security"] = API_KEY_ONLY
     schema["paths"]["/start-benchmark"]["post"]["security"] = API_KEY_ONLY
     schema["paths"]["/start-benchmark-with-storage"]["post"]["security"] = API_KEY_ONLY
+    schema["paths"]["/runs"]["post"]["security"] = API_KEY_ONLY
     return schema
 
 

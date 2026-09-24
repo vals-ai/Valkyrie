@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 import click
-from tracker.types import FinalViewResponse
+from tracker.types import RunResultsResponse
 
 from valkyrie.cli.display import terminal_safe
 from valkyrie.cli.exceptions import TrackerServiceError
@@ -54,7 +54,7 @@ def group_task_errors(task_errors: Mapping[str, str]) -> list[tuple[str, tuple[s
 
 
 def build_run_errors_payload(
-    response: FinalViewResponse,
+    response: RunResultsResponse,
     *,
     observed_at: datetime | None = None,
 ) -> dict[str, object]:
@@ -64,7 +64,7 @@ def build_run_errors_payload(
         "schema_version": 1,
         "kind": "run_errors",
         "observed_at": _utc_isoformat(observed_at or datetime.now(timezone.utc)),
-        "run_id": str(response.benchmark_id),
+        "run_id": str(response.run_id),
         "benchmark_name": response.benchmark_name,
         "status": response.status.value,
         "error_message": response.error_message,
@@ -73,7 +73,7 @@ def build_run_errors_payload(
     }
 
 
-def format_run_errors_json(response: FinalViewResponse) -> str:
+def format_run_errors_json(response: RunResultsResponse) -> str:
     """Serialize one compact, machine-readable run-errors document."""
     return json.dumps(
         build_run_errors_payload(response),
@@ -83,13 +83,13 @@ def format_run_errors_json(response: FinalViewResponse) -> str:
     )
 
 
-def format_run_errors_text(response: FinalViewResponse) -> None:
+def format_run_errors_text(response: RunResultsResponse) -> None:
     """Render stored run and current task errors for a human reader."""
     task_errors = response.task_errors or {}
     groups = group_task_errors(task_errors)
 
     click.echo(click.style("Run Errors", bold=True))
-    click.echo(f"{'Run ID:':<12}{response.benchmark_id}")
+    click.echo(f"{'Run ID:':<12}{response.run_id}")
     click.echo(f"{'Benchmark:':<12}{terminal_safe(response.benchmark_name, preserve_newlines=False)}")
     click.echo(f"{'Status:':<12}{response.status.value.replace('_', ' ').title()}")
 
@@ -138,7 +138,7 @@ def errors(run_id: UUID, output_format: str) -> None:
     try:
         with TrackerService() as tracker:
             response = tracker.retrieve_results(run_id, s3=False)
-        if not isinstance(response, FinalViewResponse):
+        if not isinstance(response, RunResultsResponse):
             raise TrackerServiceError("Tracker returned an unexpected response while fetching run errors")
     except TrackerServiceError as error:
         safe_error = terminal_safe(str(error), preserve_newlines=False)

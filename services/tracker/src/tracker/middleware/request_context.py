@@ -3,7 +3,7 @@
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from tracker.logging import benchmark_id_var, request_id_var, task_id_var
+from tracker.logging import benchmark_id_var, request_id_var, run_id_var, task_id_var
 
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -24,6 +24,7 @@ class RequestContextMiddleware:
         tokens = [
             request_id_var.set(request_id),
             benchmark_id_var.set(""),
+            run_id_var.set(""),
             task_id_var.set(""),
         ]
 

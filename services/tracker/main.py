@@ -30,14 +30,25 @@ from tracker._lambda import invoke_lambda
 from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
-from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
-from tracker.api.dependencies import RunAWSDependency
+from tracker.api.benchmarks_status import run_router as runs_status_router
+from tracker.api.dependencies import (
+    CanonicalRunAWSDependency,
+    RunAWSDependency,
+    TrackedBenchmarkId,
+    TrackedRunId,
+    bind_benchmark_id,
+)
 from tracker.api.filter_options import router as filter_options_router
+from tracker.api.filter_options import run_router as run_filter_options_router
 from tracker.api.logs import router as logs_router
+from tracker.api.logs import run_router as run_logs_router
 from tracker.api.scheduler_overview import router as scheduler_overview_router
 from tracker.api.single_benchmark import router as single_benchmark_router
+from tracker.api.single_benchmark import run_router as run_tasks_router
 from tracker.api.single_task import router as single_task_router
+from tracker.api.single_task import run_router as run_task_router
 from tracker.api.run_artifacts import router as run_artifacts_router
+from tracker.api.run_artifacts import run_router as canonical_run_artifacts_router
 from tracker.auth import (
     RequestIdentity,
     extract_api_key,
@@ -129,6 +140,7 @@ from tracker.outbound_security import validate_custom_service_destination, valid
 from tracker.scheduler.store import queue_pool_id, try_task_evaluation_transaction_lock
 from tracker.types import (
     AnalyzeBenchmarkRequest,
+    AnalyzeRunRequest,
     AWSRuntimeResponse,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
@@ -136,18 +148,30 @@ from tracker.types import (
     FetchBenchmarksResponse,
     FetchBenchmarkTasksRequest,
     FinalViewResponse,
+    GetRunResponse,
     HarnessConfig,
     ManagedExecutionContext,
+    ListRunsResponse,
     ManagedStorageStartBenchmarkRequest,
     Order,
+    ResultsExistResponse,
     RetrieveResultsResponse,
+    RetrieveRunResultsResponse,
     RetryOrResumeBenchmarkResponse,
+    RetryOrResumeRunResponse,
+    RunMetadataResponse,
+    RunResultsResponse,
     S3UploadResultsResponse,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
+    StartRunRequest,
+    StartRunResponse,
     StopBenchmarkResponse,
+    StopRunResponse,
     UpdateBenchmarkConcurrencyRequest,
     UpdateBenchmarkConcurrencyResponse,
+    UpdateRunConcurrencyRequest,
+    UpdateRunConcurrencyResponse,
     validate_managed_execution_request,
 )
 from tracker.utils import (
@@ -215,12 +239,18 @@ app.add_middleware(RequestContextMiddleware)
 app.include_router(agents_router)
 app.include_router(benchmark_services_router)
 app.include_router(benchmarks_status_router)
+app.include_router(runs_status_router)
 app.include_router(filter_options_router)
+app.include_router(run_filter_options_router)
 app.include_router(logs_router)
+app.include_router(run_logs_router)
 app.include_router(scheduler_overview_router)
 app.include_router(single_benchmark_router)
+app.include_router(run_tasks_router)
 app.include_router(single_task_router)
+app.include_router(run_task_router)
 app.include_router(run_artifacts_router)
+app.include_router(canonical_run_artifacts_router)
 
 
 # Preserve health check log suppression after configure_logging() replaced handlers
@@ -2150,4 +2180,285 @@ async def fetch_run_outputs(
         _tar_output_stream(_output_keys_with_first(first_key, keys), benchmark_prefix, object_store),
         media_type="application/x-tar",
         headers={"Content-Disposition": f"attachment; filename=benchmark_{benchmark_id}_outputs.tar"},
+    )
+
+
+@app.get("/runs", response_model=ListRunsResponse)
+async def list_runs(
+    agent_name: list[str] | None = Query(default=None),
+    benchmark_name: list[str] | None = Query(default=None),
+    status: list[BenchmarkStatus] | None = Query(default=None),
+    started_by: list[str] | None = Query(default=None),
+    model: str | None = Query(default=None),
+    dataset: str | None = Query(default=None),
+    label: str | None = Query(default=None),
+    started_after: datetime | None = Query(default=None),
+    started_before: datetime | None = Query(default=None),
+    order_by: Order = Query(default=Order.DESC),
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> ListRunsResponse:
+    """List runs through the canonical API."""
+    response = await fetch_benchmarks(
+        agent_name,
+        benchmark_name,
+        status,
+        started_by,
+        model,
+        dataset,
+        label,
+        started_after,
+        started_before,
+        order_by,
+        cursor,
+        limit,
+        offset,
+        session,
+        org,
+    )
+    return ListRunsResponse.model_validate(response.model_dump())
+
+
+@app.post("/runs", response_model=StartRunResponse)
+async def start_run(
+    http_request: Request,
+    request: StartRunRequest,
+    session: Session = Depends(get_session),
+    run_starter: RequestIdentity = Depends(get_current_starter),
+) -> StartRunResponse:
+    """Start a standard or managed-storage run through one canonical route."""
+    if request.managed_s3_bucket is None:
+        response = await start_benchmark(http_request, request, session, run_starter)
+    else:
+        managed_request = ManagedStorageStartBenchmarkRequest.model_validate(request.model_dump())
+        response = await start_benchmark_with_storage(http_request, managed_request, session, run_starter)
+    return StartRunResponse.model_validate(response.model_dump())
+
+
+@app.get("/runs/{run_id}", response_model=GetRunResponse)
+async def get_run(
+    run_id: TrackedRunId,
+    run_context: CanonicalRunAWSDependency,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> GetRunResponse:
+    """Fetch canonical run details."""
+    response = await fetch_benchmark(run_id, run_context, False, session, org)
+    return GetRunResponse.model_validate(cast(FetchBenchmarkResponse, response).model_dump())
+
+
+@app.get("/runs/{run_id}/events", response_model=None)
+async def stream_run_events(
+    run_id: TrackedRunId,
+    run_context: CanonicalRunAWSDependency,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> StreamingResponse:
+    """Stream canonical run snapshots as server-sent events."""
+    return StreamingResponse(
+        stream_benchmark_results(run_id, session, run_context.aws_runtime, org, canonical=True),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/runs/{run_id}/results", response_model=RetrieveRunResultsResponse)
+async def get_run_results(
+    run_id: TrackedRunId,
+    http_request: Request,
+    s3: bool = Query(default=False),
+    task_ids: list[str] | None = Query(default=None),
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> RetrieveRunResultsResponse:
+    """Retrieve canonical run results, optionally uploaded to S3."""
+    response = await _retrieve_results(run_id, http_request, s3, False, task_ids, session, org)
+    if isinstance(response, S3UploadResultsResponse):
+        return response
+    return RunResultsResponse.model_validate(response.model_dump())
+
+
+@app.get("/runs/{run_id}/results/preview", response_model=S3UploadResultsResponse)
+async def preview_run_results(
+    run_id: TrackedRunId,
+    http_request: Request,
+    task_ids: list[str] | None = Query(default=None),
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> S3UploadResultsResponse:
+    """Archive and recompute a run preview through the canonical API."""
+    return await preview_results(run_id, http_request, task_ids, session, org)
+
+
+@app.get("/runs/{run_id}/results/exists", response_model=ResultsExistResponse)
+async def run_results_exist(
+    run_id: TrackedRunId,
+    run_context: CanonicalRunAWSDependency,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> ResultsExistResponse:
+    """Check whether one run's final view exists."""
+    return ResultsExistResponse.model_validate(await check_results_exist(run_id, run_context, session, org))
+
+
+@app.get("/runs/{run_id}/metadata", response_model=RunMetadataResponse)
+async def get_run_metadata(
+    run_id: TrackedRunId,
+    request: Request,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> RunMetadataResponse:
+    """Fetch canonical run metadata."""
+    response = await fetch_benchmark_metadata(run_id, request, session, org)
+    return RunMetadataResponse.model_validate(response.model_dump())
+
+
+@app.get("/runs/{run_id}/outputs", response_model=None)
+async def get_run_outputs(
+    run_id: TrackedRunId,
+    run_context: CanonicalRunAWSDependency,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+    task_ids: list[str] | None = Query(default=None),
+) -> StreamingResponse:
+    """Stream one run's output archive through the canonical API."""
+    return await fetch_run_outputs(run_id, run_context, session, org, task_ids)
+
+
+@app.post("/runs/{run_id}/analysis", response_model=None)
+async def analyze_run(
+    run_id: TrackedRunId,
+    run_context: CanonicalRunAWSDependency,
+    body: AnalyzeRunRequest,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> dict[str, str] | StreamingResponse:
+    """Analyze a run through the canonical API."""
+    return await analyze_benchmark(run_id, run_context, body, session, org)
+
+
+@app.post("/runs/{run_id}/stop", response_model=StopRunResponse)
+async def stop_run(
+    run_id: TrackedRunId,
+    http_request: Request,
+    force: bool = Query(default=False),
+    task_ids: list[str] | None = Body(default=None, embed=True),
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> StopRunResponse:
+    """Stop a run through the canonical API."""
+    response = await stop_benchmark(run_id, http_request, force, task_ids, session, org)
+    return StopRunResponse.model_validate(response.model_dump())
+
+
+@app.patch("/runs/{run_id}/concurrency", response_model=UpdateRunConcurrencyResponse)
+def update_run_concurrency(
+    run_id: TrackedRunId,
+    request: UpdateRunConcurrencyRequest,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> UpdateRunConcurrencyResponse:
+    """Update a run's concurrency through the canonical API."""
+    response = patch_benchmark_concurrency(run_id, request, session, org)
+    return UpdateRunConcurrencyResponse.model_validate(response.model_dump())
+
+
+async def _retry_or_resume_run(
+    run_id: UUID,
+    http_request: Request,
+    *,
+    retry: bool,
+    retry_mode: RetryMode,
+    concurrency: int | None,
+    task_ids: list[str],
+    service_headers: dict[str, str],
+    secrets: dict[str, str],
+    benchmark_url: str | None,
+    lambda_function: str | None,
+    session: Session,
+    org: Org,
+) -> RetryOrResumeRunResponse:
+    response = await retry_or_resume_benchmark(
+        run_id,
+        http_request,
+        retry,
+        retry_mode,
+        concurrency,
+        task_ids,
+        service_headers,
+        secrets,
+        benchmark_url,
+        lambda_function,
+        session,
+        org,
+    )
+    return RetryOrResumeRunResponse.model_validate(response.model_dump())
+
+
+@app.post("/runs/{run_id}/resume", response_model=RetryOrResumeRunResponse)
+async def resume_run(
+    run_id: TrackedRunId,
+    http_request: Request,
+    retry_mode: RetryMode = Query(default=RetryMode.AUTO),
+    concurrency: int | None = Query(default=None),
+    task_ids: list[str] = Body(default=[]),
+    service_headers: dict[str, str] = Body(default={}),
+    secrets: dict[str, str] = Body(default={}),
+    benchmark_url: str | None = Body(default=None),
+    lambda_function: Annotated[str | None, Body(min_length=1)] = None,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> RetryOrResumeRunResponse:
+    """Resume a run through the canonical API."""
+    return await _retry_or_resume_run(
+        run_id,
+        http_request,
+        retry=False,
+        retry_mode=retry_mode,
+        concurrency=concurrency,
+        task_ids=task_ids,
+        service_headers=service_headers,
+        secrets=secrets,
+        benchmark_url=benchmark_url,
+        lambda_function=lambda_function,
+        session=session,
+        org=org,
+    )
+
+
+@app.post("/runs/{run_id}/retry", response_model=RetryOrResumeRunResponse)
+async def retry_run(
+    run_id: TrackedRunId,
+    http_request: Request,
+    retry_mode: RetryMode = Query(default=RetryMode.AUTO),
+    concurrency: int | None = Query(default=None),
+    task_ids: list[str] = Body(default=[]),
+    service_headers: dict[str, str] = Body(default={}),
+    secrets: dict[str, str] = Body(default={}),
+    benchmark_url: str | None = Body(default=None),
+    lambda_function: Annotated[str | None, Body(min_length=1)] = None,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> RetryOrResumeRunResponse:
+    """Retry a run through the canonical API."""
+    return await _retry_or_resume_run(
+        run_id,
+        http_request,
+        retry=True,
+        retry_mode=retry_mode,
+        concurrency=concurrency,
+        task_ids=task_ids,
+        service_headers=service_headers,
+        secrets=secrets,
+        benchmark_url=benchmark_url,
+        lambda_function=lambda_function,
+        session=session,
+        org=org,
     )

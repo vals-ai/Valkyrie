@@ -15,10 +15,11 @@ import httpx
 import pytest
 from click.testing import CliRunner, Result
 from tracker.agent.schemas import AgentConfig
-from tracker.database.models import AgentContractRequest, BenchmarkStatus, TaskStatus
+from tracker.database.models import AgentContractRequest, TaskStatus
+from tracker.types import RunStatus
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run.progress import stream_benchmark_status
+from valkyrie.cli.run.progress import stream_run_status
 
 from tests.unit.cli.factories import make_fetch_response
 
@@ -38,7 +39,7 @@ def _start_response(run_id: UUID) -> httpx.Response:
         json={
             "benchmark_name": "swebench",
             "agent_name": "remote-agent",
-            "benchmark_id": str(run_id),
+            "run_id": str(run_id),
             "concurrency": 5,
             "started_at": _STARTED_AT.isoformat(),
             "task_count": 2,
@@ -78,7 +79,7 @@ class StartTestbed:
             self.publish_local_agent,
         ):
             boundary.reset_mock()
-        self.tracker.start_benchmark.side_effect = responses
+        self.tracker.start_run.side_effect = responses
 
     def invoke(self, arguments: list[str]) -> Result:
         return self.cli_runner.invoke(
@@ -108,7 +109,7 @@ def start_testbed(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> Sta
     monkeypatch.setattr(start_module, "get_contract_from_s3", testbed.resolve_remote)
     monkeypatch.setattr(start_module, "resolve_task_ids", testbed.resolve_tasks)
     monkeypatch.setattr(start_module, "benchmark_service_headers", testbed.resolve_headers)
-    monkeypatch.setattr(start_module, "stream_benchmark_status", testbed.stream_status)
+    monkeypatch.setattr(start_module, "stream_run_status", testbed.stream_status)
     monkeypatch.setattr(
         start_module,
         "push_agent_if_absent",
@@ -134,8 +135,8 @@ class TestCountedStarts:
         result = start_testbed.invoke([])
 
         assert result.exit_code == 0, result.output
-        assert start_testbed.tracker.start_benchmark.call_count == 1
-        assert start_testbed.tracker.start_benchmark.call_args.args[2] == 5
+        assert start_testbed.tracker.start_run.call_count == 1
+        assert start_testbed.tracker.start_run.call_args.args[2] == 5
         assert "requested runs successfully started" not in result.output
 
         # Exercise the short alias with the compatible connect mode.
@@ -158,34 +159,34 @@ class TestCountedStarts:
         """
         initial_response = make_fetch_response(
             _FIRST_RUN_ID,
-            status=BenchmarkStatus.IN_PROGRESS,
+            status=RunStatus.IN_PROGRESS,
             total_tasks=0,
             finished_tasks=0,
             task_breakdown={},
         )
         discovered_response = make_fetch_response(
             _FIRST_RUN_ID,
-            status=BenchmarkStatus.IN_PROGRESS,
+            status=RunStatus.IN_PROGRESS,
             total_tasks=2,
             finished_tasks=0,
             task_breakdown={TaskStatus.PENDING: 1, TaskStatus.BUILDING: 1},
         )
         completed_response = make_fetch_response(
             _FIRST_RUN_ID,
-            status=BenchmarkStatus.FINISHED,
+            status=RunStatus.FINISHED,
             total_tasks=2,
             finished_tasks=2,
             task_breakdown={TaskStatus.FINISHED: 2},
         )
-        start_testbed.tracker.fetch_benchmark.return_value = initial_response
-        start_testbed.tracker.stream_benchmark.return_value = iter(
+        start_testbed.tracker.fetch_run.return_value = initial_response
+        start_testbed.tracker.stream_run.return_value = iter(
             [
                 f"data: {discovered_response.model_dump_json()}",
                 f"data: {completed_response.model_dump_json()}",
                 "event: complete",
             ]
         )
-        monkeypatch.setattr(start_module, "stream_benchmark_status", stream_benchmark_status)
+        monkeypatch.setattr(start_module, "stream_run_status", stream_run_status)
 
         result = start_testbed.invoke(["--connect"])
 
@@ -214,7 +215,7 @@ class TestCountedStarts:
         result = start_testbed.invoke(["-k", "temperature", "1", "--label", "stable", "--count", "2"])
 
         assert result.exit_code == 0, result.output
-        assert start_testbed.tracker.start_benchmark.call_count == 2
+        assert start_testbed.tracker.start_run.call_count == 2
         assert start_testbed.resolve_remote.await_count == 1
         assert start_testbed.tracker.__enter__.call_count == 1
 
@@ -225,7 +226,7 @@ class TestCountedStarts:
         assert isinstance(agent_config, AgentConfig)
         assert agent_config.kwargs == {"temperature": "1"}
 
-        start_requests = start_testbed.tracker.start_benchmark.call_args_list
+        start_requests = start_testbed.tracker.start_run.call_args_list
         assert start_requests[0].args[0] is start_requests[1].args[0]
         assert [request.args[6] for request in start_requests] == ["stable", "stable"]
 
@@ -271,7 +272,7 @@ class TestCountedStarts:
         assert result.exit_code == 0, result.output
         get_contract.assert_called_once()
         push_agent.assert_awaited_once_with("local-agent", local_agent)
-        assert start_testbed.tracker.start_benchmark.call_count == 2
+        assert start_testbed.tracker.start_run.call_count == 2
 
     def test_managed_start_defers_contract_resolution_to_tracker(
         self,
@@ -283,7 +284,7 @@ class TestCountedStarts:
 
         assert result.exit_code == 0, result.output
         start_testbed.resolve_remote.assert_not_awaited()
-        contract = start_testbed.tracker.start_benchmark.call_args.args[0]
+        contract = start_testbed.tracker.start_run.call_args.args[0]
         assert contract == AgentContractRequest(
             name="remote-agent",
             model="anthropic/claude-opus-5",
@@ -330,7 +331,7 @@ class TestCountedStarts:
 
         assert result.exit_code == 0, result.output
         push_agent.assert_awaited_once_with("local-agent", local_agent)
-        contract = start_testbed.tracker.start_benchmark.call_args.args[0]
+        contract = start_testbed.tracker.start_run.call_args.args[0]
         assert contract == AgentContractRequest(
             name="local-agent",
             model="anthropic/claude-opus-5",
@@ -371,7 +372,7 @@ class TestCountedStarts:
         assert "Refusing to overwrite it as a side effect of run start" in result.output
         assert "Use --agent local-agent" in result.output
         start_testbed.publish_local_agent.assert_awaited_once_with("local-agent", local_agent)
-        start_testbed.tracker.start_benchmark.assert_not_called()
+        start_testbed.tracker.start_run.assert_not_called()
 
     def test_invalid_options_precede_side_effects(self, start_testbed: StartTestbed) -> None:
         """
@@ -408,7 +409,7 @@ class TestCountedStarts:
 
         assert queued_result.exit_code == 0, queued_result.output
         assert "Priority override:" in queued_result.output
-        start_call = start_testbed.tracker.start_benchmark.call_args
+        start_call = start_testbed.tracker.start_run.call_args
         assert start_call is not None
         assert start_call.kwargs["priority"] == 0
         assert start_call.kwargs["provider"] == "modal"
@@ -481,7 +482,7 @@ class TestCountedStarts:
         result = start_testbed.invoke(arguments)
 
         assert result.exit_code != 0
-        assert start_testbed.tracker.start_benchmark.call_count == len(prior_ids) + 1
+        assert start_testbed.tracker.start_run.call_count == len(prior_ids) + 1
         assert expected_detail in result.output
         assert "Authentication error:" not in result.output
         assert "Benchmark service error:" not in result.output

@@ -402,6 +402,29 @@
         "title": "AnalyzeBenchmarkRequest",
         "type": "object"
       },
+      "AnalyzeRunRequest": {
+        "description": "Canonical run analysis request.",
+        "properties": {
+          "lambda_function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
+          "no_cache": {
+            "default": false,
+            "title": "No Cache",
+            "type": "boolean"
+          }
+        },
+        "title": "AnalyzeRunRequest",
+        "type": "object"
+      },
       "AverageTaskBreakdown": {
         "properties": {
           "agent_run_duration": {
@@ -972,6 +995,59 @@
         "title": "BenchmarkTableRow",
         "type": "object"
       },
+      "Body_resume_run": {
+        "properties": {
+          "benchmark_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Benchmark Url"
+          },
+          "lambda_function": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
+          "secrets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Secrets",
+            "type": "object"
+          },
+          "service_headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Service Headers",
+            "type": "object"
+          },
+          "task_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Task Ids",
+            "type": "array"
+          }
+        },
+        "title": "Body_resume_run",
+        "type": "object"
+      },
       "Body_retry_or_resume_benchmark": {
         "properties": {
           "benchmark_url": {
@@ -1025,6 +1101,59 @@
         "title": "Body_retry_or_resume_benchmark",
         "type": "object"
       },
+      "Body_retry_run": {
+        "properties": {
+          "benchmark_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Benchmark Url"
+          },
+          "lambda_function": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
+          "secrets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Secrets",
+            "type": "object"
+          },
+          "service_headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Service Headers",
+            "type": "object"
+          },
+          "task_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Task Ids",
+            "type": "array"
+          }
+        },
+        "title": "Body_retry_run",
+        "type": "object"
+      },
       "Body_stop_benchmark": {
         "properties": {
           "task_ids": {
@@ -1044,6 +1173,36 @@
         },
         "title": "Body_stop_benchmark",
         "type": "object"
+      },
+      "Body_stop_run": {
+        "properties": {
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          }
+        },
+        "title": "Body_stop_run",
+        "type": "object"
+      },
+      "DocentReadingStatus": {
+        "enum": [
+          "IDLE",
+          "RUNNING",
+          "ERROR",
+          "DONE"
+        ],
+        "title": "DocentReadingStatus",
+        "type": "string"
       },
       "FetchBenchmarkMetadataResponse": {
         "properties": {
@@ -1429,6 +1588,123 @@
         "title": "FinalViewResponse",
         "type": "object"
       },
+      "GetRunResponse": {
+        "description": "Canonical run detail response.",
+        "properties": {
+          "benchmark_name": {
+            "title": "Benchmark Name",
+            "type": "string"
+          },
+          "current_execution_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Execution Release Id"
+          },
+          "details": {
+            "$ref": "#/components/schemas/RunDetails"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "executor_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Artifact Digest"
+          },
+          "executor_protocol_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Protocol Version"
+          },
+          "executor_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Release Id"
+          },
+          "final_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Score"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "s3_bucket_url": {
+            "title": "S3 Bucket Url",
+            "type": "string"
+          },
+          "storage_bucket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Bucket"
+          }
+        },
+        "required": [
+          "benchmark_name",
+          "run_id",
+          "details",
+          "s3_bucket_url"
+        ],
+        "title": "GetRunResponse",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1472,6 +1748,45 @@
           "sandbox_provider_secret_name"
         ],
         "title": "HarnessConfig",
+        "type": "object"
+      },
+      "ListRunsResponse": {
+        "description": "Canonical paginated run list.",
+        "properties": {
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            },
+            "title": "Runs",
+            "type": "array"
+          },
+          "total_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Count"
+          }
+        },
+        "required": [
+          "runs"
+        ],
+        "title": "ListRunsResponse",
         "type": "object"
       },
       "LogEventResponse": {
@@ -1811,6 +2126,20 @@
         "additionalProperties": true,
         "type": "object"
       },
+      "ResultsExistResponse": {
+        "description": "Whether a run's canonical result file exists.",
+        "properties": {
+          "exists": {
+            "title": "Exists",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "exists"
+        ],
+        "title": "ResultsExistResponse",
+        "type": "object"
+      },
       "RetryMode": {
         "enum": [
           "auto",
@@ -1830,6 +2159,118 @@
           "status"
         ],
         "title": "RetryOrResumeBenchmarkResponse",
+        "type": "object"
+      },
+      "RetryOrResumeRunResponse": {
+        "description": "Canonical retry or resume response.",
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "RetryOrResumeRunResponse",
+        "type": "object"
+      },
+      "RunArguments": {
+        "additionalProperties": false,
+        "description": "Canonical persisted arguments for one run.",
+        "properties": {
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/AgentContractRequest-Output"
+          },
+          "dataset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset"
+          },
+          "environment": {
+            "const": "aws",
+            "default": "aws",
+            "title": "Environment",
+            "type": "string"
+          },
+          "lambda_function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
+          "properties": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AWSResources"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sandbox_provider": {
+            "default": "daytona",
+            "title": "Sandbox Provider",
+            "type": "string"
+          },
+          "sandbox_provider_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Provider Secret Name"
+          },
+          "slice_str": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slice Str"
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          }
+        },
+        "required": [
+          "contract",
+          "concurrency"
+        ],
+        "title": "RunArguments",
         "type": "object"
       },
       "RunArtifactDownloadResponse": {
@@ -1918,6 +2359,613 @@
           "artifacts"
         ],
         "title": "RunArtifactsResponse",
+        "type": "object"
+      },
+      "RunDetails": {
+        "description": "Canonical progress details for one run.",
+        "properties": {
+          "docent_reading_status": {
+            "$ref": "#/components/schemas/DocentReadingStatus"
+          },
+          "docent_reading_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Docent Reading Url"
+          },
+          "finished_tasks": {
+            "title": "Finished Tasks",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "task_breakdown": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/TaskStatus"
+            },
+            "title": "Task Breakdown",
+            "type": "object"
+          },
+          "total_tasks": {
+            "title": "Total Tasks",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "started_at",
+          "total_tasks",
+          "finished_tasks",
+          "task_breakdown",
+          "docent_reading_status"
+        ],
+        "title": "RunDetails",
+        "type": "object"
+      },
+      "RunFinalEvaluation": {
+        "description": "Canonical final evaluation embedded in run results.",
+        "properties": {
+          "final_score": {
+            "title": "Final Score",
+            "type": "number"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "properties": {
+            "additionalProperties": true,
+            "title": "Properties",
+            "type": "object"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "org_id",
+          "run_id",
+          "final_score"
+        ],
+        "title": "RunFinalEvaluation",
+        "type": "object"
+      },
+      "RunMetadataResponse": {
+        "description": "Canonical metadata for one run.",
+        "properties": {
+          "benchmark_name": {
+            "title": "Benchmark Name",
+            "type": "string"
+          },
+          "current_execution_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Execution Release Id"
+          },
+          "executor_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Artifact Digest"
+          },
+          "executor_artifact_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Artifact Uri"
+          },
+          "executor_protocol_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Protocol Version"
+          },
+          "executor_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Release Id"
+          },
+          "run_arguments": {
+            "$ref": "#/components/schemas/RunArguments"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "started_by_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started By Email"
+          },
+          "storage_bucket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Bucket"
+          }
+        },
+        "required": [
+          "run_id",
+          "benchmark_name",
+          "run_arguments"
+        ],
+        "title": "RunMetadataResponse",
+        "type": "object"
+      },
+      "RunResultsResponse": {
+        "description": "Canonical final view for one run.",
+        "properties": {
+          "average_task_breakdown": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AverageTaskBreakdown"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "benchmark_name": {
+            "title": "Benchmark Name",
+            "type": "string"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "evaluation_results": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Results"
+          },
+          "final_evaluation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunFinalEvaluation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "run_arguments": {
+            "$ref": "#/components/schemas/RunArguments"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "task_errors": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Errors"
+          },
+          "tasks_stopped": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tasks Stopped"
+          }
+        },
+        "required": [
+          "run_id",
+          "benchmark_name",
+          "started_at",
+          "finished_at",
+          "status",
+          "error_message",
+          "run_arguments",
+          "tasks_stopped",
+          "final_evaluation",
+          "average_task_breakdown",
+          "evaluation_results",
+          "task_errors"
+        ],
+        "title": "RunResultsResponse",
+        "type": "object"
+      },
+      "RunStatus": {
+        "description": "Lifecycle states for one run.",
+        "enum": [
+          "IN_PROGRESS",
+          "STOPPING",
+          "STOPPED",
+          "FINISHED",
+          "ERROR"
+        ],
+        "title": "RunStatus",
+        "type": "string"
+      },
+      "RunStatusEntry": {
+        "description": "Canonical status snapshot for one run.",
+        "properties": {
+          "current_execution_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Execution Release Id"
+          },
+          "executor_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Artifact Digest"
+          },
+          "executor_protocol_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Protocol Version"
+          },
+          "executor_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Release Id"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "finished_tasks": {
+            "title": "Finished Tasks",
+            "type": "integer"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "task_state_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Task State Counts",
+            "type": "object"
+          },
+          "total_tasks": {
+            "title": "Total Tasks",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "finished_at",
+          "total_tasks",
+          "finished_tasks"
+        ],
+        "title": "RunStatusEntry",
+        "type": "object"
+      },
+      "RunStatusResponse": {
+        "description": "Canonical status snapshots.",
+        "properties": {
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunStatusEntry"
+            },
+            "title": "Runs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs"
+        ],
+        "title": "RunStatusResponse",
+        "type": "object"
+      },
+      "RunSummary": {
+        "description": "Canonical summary for one run.",
+        "properties": {
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "benchmark_name": {
+            "title": "Benchmark Name",
+            "type": "string"
+          },
+          "current_execution_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Execution Release Id"
+          },
+          "dataset": {
+            "default": "default",
+            "title": "Dataset",
+            "type": "string"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "executor_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Artifact Digest"
+          },
+          "executor_protocol_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Protocol Version"
+          },
+          "executor_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Release Id"
+          },
+          "final_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Score"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "finished_tasks": {
+            "title": "Finished Tasks",
+            "type": "integer"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
+          "started_by_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started By Email"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "task_state_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Task State Counts",
+            "type": "object"
+          },
+          "total_tasks": {
+            "title": "Total Tasks",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_id",
+          "benchmark_name",
+          "agent_name",
+          "model",
+          "started_by_email",
+          "started_at",
+          "finished_at",
+          "status",
+          "total_tasks",
+          "finished_tasks"
+        ],
+        "title": "RunSummary",
         "type": "object"
       },
       "S3UploadResultsResponse": {
@@ -2881,6 +3929,325 @@
         "title": "StartBenchmarkResponse",
         "type": "object"
       },
+      "StartRunRequest": {
+        "description": "Canonical request for starting a run.",
+        "properties": {
+          "benchmark_name": {
+            "title": "Benchmark Name",
+            "type": "string"
+          },
+          "concurrency": {
+            "default": 5,
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/AgentContractRequest-Input"
+          },
+          "custom_benchmark_service": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Benchmark Service"
+          },
+          "dataset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset"
+          },
+          "environment": {
+            "const": "aws",
+            "default": "aws",
+            "title": "Environment",
+            "type": "string"
+          },
+          "harness_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HarnessConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "lambda_function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
+          "managed_s3_bucket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Owner-provisioned managed storage bucket. POST /start-benchmark-with-storage requires it; POST /start-benchmark rejects it.",
+            "title": "Managed S3 Bucket"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "maximum": 4.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "properties": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AWSResources"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sandbox_provider": {
+            "default": "daytona",
+            "title": "Sandbox Provider",
+            "type": "string"
+          },
+          "sandbox_provider_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Provider Secret Name"
+          },
+          "service_auth_header_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Auth Header Name"
+          },
+          "service_auth_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Auth Secret Name"
+          },
+          "service_headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Service Headers",
+            "type": "object"
+          },
+          "slice_str": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slice Str"
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          },
+          "webhook_intervals": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Intervals"
+          },
+          "webhook_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Secret Name"
+          }
+        },
+        "required": [
+          "contract",
+          "benchmark_name"
+        ],
+        "title": "StartRunRequest",
+        "type": "object"
+      },
+      "StartRunResponse": {
+        "description": "Canonical start response with a run identifier.",
+        "properties": {
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "benchmark_name": {
+            "title": "Benchmark Name",
+            "type": "string"
+          },
+          "cloudwatch_url": {
+            "title": "Cloudwatch Url",
+            "type": "string"
+          },
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "current_execution_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Execution Release Id"
+          },
+          "executor_artifact_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Artifact Digest"
+          },
+          "executor_protocol_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Protocol Version"
+          },
+          "executor_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executor Release Id"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "s3_bucket_url": {
+            "title": "S3 Bucket Url",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "storage_bucket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Bucket"
+          },
+          "task_count": {
+            "title": "Task Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "benchmark_name",
+          "agent_name",
+          "run_id",
+          "concurrency",
+          "started_at",
+          "task_count",
+          "cloudwatch_url",
+          "s3_bucket_url"
+        ],
+        "title": "StartRunResponse",
+        "type": "object"
+      },
       "StopBenchmarkResponse": {
         "properties": {
           "status": {
@@ -2892,6 +4259,20 @@
           "status"
         ],
         "title": "StopBenchmarkResponse",
+        "type": "object"
+      },
+      "StopRunResponse": {
+        "description": "Canonical stop response.",
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "StopRunResponse",
         "type": "object"
       },
       "TaskArtifactsResponse": {
@@ -3058,6 +4439,45 @@
           "concurrency"
         ],
         "title": "UpdateBenchmarkConcurrencyResponse",
+        "type": "object"
+      },
+      "UpdateRunConcurrencyRequest": {
+        "description": "Canonical concurrency update request.",
+        "properties": {
+          "concurrency": {
+            "minimum": 1.0,
+            "title": "Concurrency",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "concurrency"
+        ],
+        "title": "UpdateRunConcurrencyRequest",
+        "type": "object"
+      },
+      "UpdateRunConcurrencyResponse": {
+        "description": "Canonical concurrency update response.",
+        "properties": {
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "concurrency"
+        ],
+        "title": "UpdateRunConcurrencyResponse",
         "type": "object"
       },
       "ValidationError": {
@@ -5084,6 +6504,1792 @@
           }
         },
         "summary": "Retry Or Resume Benchmark"
+      }
+    },
+    "/runs": {
+      "get": {
+        "description": "List runs through the canonical API.",
+        "operationId": "list_runs",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "agent_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent Name"
+            }
+          },
+          {
+            "in": "query",
+            "name": "benchmark_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Benchmark Name"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "$ref": "#/components/schemas/BenchmarkStatus"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "started_by",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started By"
+            }
+          },
+          {
+            "in": "query",
+            "name": "model",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Model"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Dataset"
+            }
+          },
+          {
+            "in": "query",
+            "name": "label",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Label"
+            }
+          },
+          {
+            "in": "query",
+            "name": "started_after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "started_before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "order_by",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Order",
+              "default": "desc"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListRunsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Runs"
+      },
+      "post": {
+        "description": "Start a standard or managed-storage run through one canonical route.",
+        "operationId": "start_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Start Run"
+      }
+    },
+    "/runs/filter-options": {
+      "get": {
+        "description": "Canonical alias for the run-list filter values.",
+        "operationId": "get_run_filter_options",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilterOptionsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Run Filter Options"
+      }
+    },
+    "/runs/status": {
+      "get": {
+        "description": "Return canonical status snapshots for the listed run ids.",
+        "operationId": "get_runs_status",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "ids",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Ids",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Runs Status"
+      }
+    },
+    "/runs/{run_id}": {
+      "get": {
+        "description": "Fetch canonical run details.",
+        "operationId": "get_run",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run"
+      }
+    },
+    "/runs/{run_id}/analysis": {
+      "post": {
+        "description": "Analyze a run through the canonical API.",
+        "operationId": "analyze_run",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyzeRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Analyze Run"
+      }
+    },
+    "/runs/{run_id}/artifacts": {
+      "get": {
+        "description": "Canonical artifact listing for one run.",
+        "operationId": "list_canonical_run_artifacts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "prefix",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Prefix",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunArtifactsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Canonical Run Artifacts"
+      }
+    },
+    "/runs/{run_id}/artifacts/download-url": {
+      "get": {
+        "description": "Canonical artifact download URL for one run.",
+        "operationId": "get_canonical_run_artifact_url",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunArtifactDownloadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Canonical Run Artifact Url"
+      }
+    },
+    "/runs/{run_id}/concurrency": {
+      "patch": {
+        "description": "Update a run's concurrency through the canonical API.",
+        "operationId": "update_run_concurrency",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRunConcurrencyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateRunConcurrencyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Run Concurrency"
+      }
+    },
+    "/runs/{run_id}/events": {
+      "get": {
+        "description": "Stream canonical run snapshots as server-sent events.",
+        "operationId": "stream_run_events",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Run Events"
+      }
+    },
+    "/runs/{run_id}/logs": {
+      "get": {
+        "description": "Canonical paginated logs for a run or one of its tasks.",
+        "operationId": "get_run_logs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Query"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_time",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Time"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_time",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Time"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "maximum": 10000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Id"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogPageResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Logs"
+      }
+    },
+    "/runs/{run_id}/logs/stream": {
+      "get": {
+        "description": "Canonical SSE log stream for one task in a run.",
+        "operationId": "stream_run_task_logs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Query"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_time",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Time"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_time",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Time"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Run Task Logs"
+      }
+    },
+    "/runs/{run_id}/metadata": {
+      "get": {
+        "description": "Fetch canonical run metadata.",
+        "operationId": "get_run_metadata",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunMetadataResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Metadata"
+      }
+    },
+    "/runs/{run_id}/outputs": {
+      "get": {
+        "description": "Stream one run's output archive through the canonical API.",
+        "operationId": "get_run_outputs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_ids",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Ids"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Outputs"
+      }
+    },
+    "/runs/{run_id}/results": {
+      "get": {
+        "description": "Retrieve canonical run results, optionally uploaded to S3.",
+        "operationId": "get_run_results",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "s3",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "S3",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_ids",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Ids"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RunResultsResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/S3UploadResultsResponse"
+                    }
+                  ],
+                  "title": "Response Get Run Results"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Results"
+      }
+    },
+    "/runs/{run_id}/results/exists": {
+      "get": {
+        "description": "Check whether one run's final view exists.",
+        "operationId": "run_results_exist",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultsExistResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Results Exist"
+      }
+    },
+    "/runs/{run_id}/results/preview": {
+      "get": {
+        "description": "Archive and recompute a run preview through the canonical API.",
+        "operationId": "preview_run_results",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_ids",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Ids"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/S3UploadResultsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Run Results"
+      }
+    },
+    "/runs/{run_id}/resume": {
+      "post": {
+        "description": "Resume a run through the canonical API.",
+        "operationId": "resume_run",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "retry_mode",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/RetryMode",
+              "default": "auto"
+            }
+          },
+          {
+            "in": "query",
+            "name": "concurrency",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Concurrency"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_resume_run"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetryOrResumeRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume Run"
+      }
+    },
+    "/runs/{run_id}/retry": {
+      "post": {
+        "description": "Retry a run through the canonical API.",
+        "operationId": "retry_run",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "retry_mode",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/RetryMode",
+              "default": "auto"
+            }
+          },
+          {
+            "in": "query",
+            "name": "concurrency",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Concurrency"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_retry_run"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetryOrResumeRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Run"
+      }
+    },
+    "/runs/{run_id}/stop": {
+      "post": {
+        "description": "Stop a run through the canonical API.",
+        "operationId": "stop_run",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force",
+              "type": "boolean"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_stop_run"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop Run"
+      }
+    },
+    "/runs/{run_id}/tasks": {
+      "get": {
+        "description": "Canonical task list for one run.",
+        "operationId": "get_run_tasks",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task_id_search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task Id Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "started_at",
+              "enum": [
+                "task_id",
+                "started_at",
+                "duration",
+                "status"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_dir",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "title": "Sort Dir",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TasksResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Tasks"
+      }
+    },
+    "/runs/{run_id}/tasks/{task_id}": {
+      "get": {
+        "description": "Canonical task detail for one run.",
+        "operationId": "get_run_task",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SingleTaskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Task"
+      }
+    },
+    "/runs/{run_id}/tasks/{task_id}/artifacts": {
+      "get": {
+        "description": "Canonical task artifact links for one run.",
+        "operationId": "get_run_task_artifacts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskArtifactsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Task Artifacts"
       }
     },
     "/scheduler/overview": {

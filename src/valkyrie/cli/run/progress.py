@@ -4,15 +4,15 @@ from typing import Literal
 from uuid import UUID
 
 import click
-from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
-from tracker.types import BenchmarkDetails, FetchBenchmarkMetadataResponse, FetchBenchmarkResponse
+from tracker.database.models import DocentReadingStatus, TaskStatus
+from tracker.types import GetRunResponse, RunDetails, RunMetadataResponse, RunStatus
 
 from valkyrie.cli.display import local_time, terminal_safe
 from valkyrie.cli.run.snapshot import fetch_run_metadata, format_run_snapshot_json
 from valkyrie.cli.tracker_client import TrackerService
 
 
-class BenchmarkFormatter:
+class RunFormatter:
     STATUS_COLORS = {
         "PENDING": "yellow",
         "BUILDING": "cyan",
@@ -51,46 +51,42 @@ class BenchmarkFormatter:
             if count == 0:
                 continue
 
-            color = BenchmarkFormatter.STATUS_COLORS[status]
+            color = RunFormatter.STATUS_COLORS[status]
             label = status.value.replace("_", " ").title()
             parts.append(click.style(f"{label}: {count}", fg=color))
 
         return f"{' │ '.join(parts)}" if parts else ""
 
 
-def _display_run_error(benchmark_response: FetchBenchmarkResponse) -> None:
-    """Display the stored run error as terminal-safe red text.
-
-    Arguments
-    - benchmark_response: Run response that may contain an error message.
-    """
-    if not benchmark_response.error_message:
+def _display_run_error(run_response: GetRunResponse) -> None:
+    """Display the stored run error as terminal-safe red text."""
+    if not run_response.error_message:
         return
 
-    safe_error = terminal_safe(benchmark_response.error_message, preserve_newlines=True)
+    safe_error = terminal_safe(run_response.error_message, preserve_newlines=True)
     click.secho(f"Error: {safe_error}", fg="red")
 
 
-def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
+def format_run_status(run_response: GetRunResponse) -> None:
     """Format and display run status in a box with a progress bar."""
-    details = benchmark_response.details
+    details = run_response.details
 
-    bar, progress_pct = BenchmarkFormatter.create_progress_bar(details.finished_tasks, details.total_tasks)
-    status_color = BenchmarkFormatter.STATUS_COLORS[details.status.value]
+    bar, progress_pct = RunFormatter.create_progress_bar(details.finished_tasks, details.total_tasks)
+    status_color = RunFormatter.STATUS_COLORS[details.status.value]
     status_text = click.style(details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
     progress_line = f"[{bar}] {details.finished_tasks}/{details.total_tasks} ({progress_pct:.1f}%) • {status_text}"
-    breakdown_text = BenchmarkFormatter.format_task_breakdown(details.task_breakdown)
+    breakdown_text = RunFormatter.format_task_breakdown(details.task_breakdown)
 
     click.echo("┌─ Run Status " + "─" * 66)
-    click.echo(f"│ {'Benchmark:':<12} {benchmark_response.benchmark_name}")
-    click.echo(f"│ {'Run ID:':<12} {benchmark_response.benchmark_id}")
-    if benchmark_response.label:
-        click.echo(f"│ {'Label:':<12} {benchmark_response.label}")
+    click.echo(f"│ {'Benchmark:':<12} {run_response.benchmark_name}")
+    click.echo(f"│ {'Run ID:':<12} {run_response.run_id}")
+    if run_response.label:
+        click.echo(f"│ {'Label:':<12} {run_response.label}")
     click.echo(f"│ {'Started at:':<12} {local_time(details.started_at)}")
-    if benchmark_response.final_score is not None:
-        click.echo(f"│ {'Final score:':<12} {benchmark_response.final_score:.1f}%")
-    click.echo(f"│ {'S3:':<12} {benchmark_response.s3_bucket_url}")
-    analysis_line = _format_docent_analysis(details, benchmark_response.benchmark_id)
+    if run_response.final_score is not None:
+        click.echo(f"│ {'Final score:':<12} {run_response.final_score:.1f}%")
+    click.echo(f"│ {'S3:':<12} {run_response.s3_bucket_url}")
+    analysis_line = _format_docent_analysis(details, run_response.run_id)
     if analysis_line is not None:
         click.echo(f"│ {'Analysis:':<12} {analysis_line}")
     click.echo("├" + "─" * 79)
@@ -98,36 +94,33 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     if breakdown_text:
         click.echo(f"│ {breakdown_text}")
     click.echo("└" + "─" * 79)
-    if details.status == BenchmarkStatus.ERROR and benchmark_response.error_message:
-        _display_run_error(benchmark_response)
+    if details.status == RunStatus.ERROR and run_response.error_message:
+        _display_run_error(run_response)
 
 
-def format_run_identity(
-    benchmark_response: FetchBenchmarkResponse,
-    metadata: FetchBenchmarkMetadataResponse | None,
-) -> None:
+def format_run_identity(run_response: GetRunResponse, metadata: RunMetadataResponse | None) -> None:
     """Display stable run identity before connected progress updates."""
     click.echo("┌─ Run Details " + "─" * 65)
-    click.echo(f"│ {'Benchmark:':<17} {benchmark_response.benchmark_name}")
+    click.echo(f"│ {'Benchmark:':<17} {run_response.benchmark_name}")
     if metadata is not None:
-        arguments = metadata.benchmark_arguments
+        arguments = metadata.run_arguments
         click.echo(f"│ {'Agent:':<17} {arguments.contract.name}")
         click.echo(f"│ {'Model:':<17} {arguments.contract.model or '-'}")
         click.echo(f"│ {'Dataset:':<17} {arguments.dataset or 'default'}")
-    click.echo(f"│ {'Run ID:':<17} {benchmark_response.benchmark_id}")
-    if benchmark_response.label:
-        click.echo(f"│ {'Label:':<17} {benchmark_response.label}")
+    click.echo(f"│ {'Run ID:':<17} {run_response.run_id}")
+    if run_response.label:
+        click.echo(f"│ {'Label:':<17} {run_response.label}")
     if metadata is not None:
         if metadata.started_by_email:
             click.echo(f"│ {'Started by:':<17} {metadata.started_by_email}")
-        click.echo(f"│ {'Max concurrency:':<17} {metadata.benchmark_arguments.concurrency}")
+        click.echo(f"│ {'Max concurrency:':<17} {metadata.run_arguments.concurrency}")
     else:
         click.echo(f"│ {'Metadata:':<17} unavailable")
-    click.echo(f"│ {'Started at:':<17} {local_time(benchmark_response.details.started_at)}")
+    click.echo(f"│ {'Started at:':<17} {local_time(run_response.details.started_at)}")
     click.echo("└" + "─" * 79)
 
 
-def _format_docent_analysis(details: BenchmarkDetails, run_id: UUID) -> str | None:
+def _format_docent_analysis(details: RunDetails, run_id: UUID) -> str | None:
     status = details.docent_reading_status
     if status == DocentReadingStatus.DONE and details.docent_reading_url:
         return details.docent_reading_url
@@ -138,9 +131,8 @@ def _format_docent_analysis(details: BenchmarkDetails, run_id: UUID) -> str | No
     return None
 
 
-def _stream_next_steps(benchmark_id: UUID, s3_url: str | None = None) -> None:
+def _stream_next_steps(run_id: UUID, s3_url: str | None = None) -> None:
     """Print next-step commands after a stream ends."""
-    run_id = benchmark_id
     click.echo(
         f"│ {'Get results:':<17} "
         + click.style(f"valkyrie run results {run_id} --path ./results-{run_id}.json", fg="cyan")
@@ -151,33 +143,33 @@ def _stream_next_steps(benchmark_id: UUID, s3_url: str | None = None) -> None:
     click.echo("└" + "─" * 79)
 
 
-def _completion_event(response: FetchBenchmarkResponse) -> Literal["complete", "error", "stopped"]:
-    if response.details.status == BenchmarkStatus.ERROR:
+def _completion_event(response: GetRunResponse) -> Literal["complete", "error", "stopped"]:
+    if response.details.status == RunStatus.ERROR:
         return "error"
-    if response.details.status == BenchmarkStatus.STOPPED:
+    if response.details.status == RunStatus.STOPPED:
         return "stopped"
     return "complete"
 
 
-def stream_benchmark_status(
+def stream_run_status(
     tracker: TrackerService,
-    benchmark_id: UUID,
+    run_id: UUID,
     *,
     show_identity: bool = False,
     output_format: Literal["text", "jsonl"] = "text",
 ) -> None:
     """Stream and display live run status updates."""
-    initial = tracker.fetch_benchmark(benchmark_id)
+    initial = tracker.fetch_run(run_id)
     if output_format == "text" and initial.details.status in {
-        BenchmarkStatus.FINISHED,
-        BenchmarkStatus.ERROR,
-        BenchmarkStatus.STOPPED,
+        RunStatus.FINISHED,
+        RunStatus.ERROR,
+        RunStatus.STOPPED,
     }:
-        format_benchmark_status(initial)
+        format_run_status(initial)
         return
 
     s3_url = initial.s3_bucket_url
-    metadata = fetch_run_metadata(tracker, benchmark_id) if show_identity or output_format == "jsonl" else None
+    metadata = fetch_run_metadata(tracker, run_id) if show_identity or output_format == "jsonl" else None
     if output_format == "jsonl":
         click.echo(format_run_snapshot_json(initial, metadata, event="snapshot"))
     else:
@@ -186,26 +178,26 @@ def stream_benchmark_status(
         click.echo(click.style("Streaming run updates (Ctrl+C to stop)...", fg="cyan"))
 
         initial_details = initial.details
-        bar, progress_pct = BenchmarkFormatter.create_progress_bar(
+        bar, progress_pct = RunFormatter.create_progress_bar(
             initial_details.finished_tasks, initial_details.total_tasks
         )
-        status_color = BenchmarkFormatter.STATUS_COLORS[initial_details.status.value]
+        status_color = RunFormatter.STATUS_COLORS[initial_details.status.value]
         status_text = click.style(initial_details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
         click.echo(
             f"[{bar}] {initial_details.finished_tasks}/{initial_details.total_tasks} ({progress_pct:.1f}%) • {status_text}"
         )
-        click.echo(BenchmarkFormatter.format_task_breakdown(initial_details.task_breakdown), nl=False)
+        click.echo(RunFormatter.format_task_breakdown(initial_details.task_breakdown), nl=False)
 
     latest = initial
 
     try:
-        for event in tracker.stream_benchmark(benchmark_id):
+        for event in tracker.stream_run(run_id):
             if event.startswith("data:"):
                 data_json = event[5:].strip()
                 if not data_json:
                     continue
 
-                response = FetchBenchmarkResponse.model_validate_json(data_json)
+                response = GetRunResponse.model_validate_json(data_json)
                 latest = response
                 if output_format == "jsonl":
                     click.echo(format_run_snapshot_json(response, metadata, event="update"))
@@ -213,14 +205,14 @@ def stream_benchmark_status(
 
                 details = response.details
 
-                bar, progress_pct = BenchmarkFormatter.create_progress_bar(details.finished_tasks, details.total_tasks)
-                status_color = BenchmarkFormatter.STATUS_COLORS[details.status.value]
+                bar, progress_pct = RunFormatter.create_progress_bar(details.finished_tasks, details.total_tasks)
+                status_color = RunFormatter.STATUS_COLORS[details.status.value]
                 status_text = click.style(details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
 
                 progress_line = (
                     f"[{bar}] {details.finished_tasks}/{details.total_tasks} ({progress_pct:.1f}%) • {status_text}"
                 )
-                breakdown_text = BenchmarkFormatter.format_task_breakdown(details.task_breakdown)
+                breakdown_text = RunFormatter.format_task_breakdown(details.task_breakdown)
 
                 click.echo(f"\033[F\033[K{progress_line}\n\033[K{breakdown_text}", nl=False)
 
@@ -238,7 +230,7 @@ def stream_benchmark_status(
                     else:
                         click.echo(click.style("✓ Run completed!", fg="green", bold=True))
                     click.echo("┌─ Next Steps " + "─" * 66)
-                    _stream_next_steps(benchmark_id, s3_url)
+                    _stream_next_steps(run_id, s3_url)
                 break
 
             elif event.startswith("event: error"):
@@ -249,7 +241,7 @@ def stream_benchmark_status(
                     click.echo(click.style("✗ Run errored.", fg="red", bold=True))
                     _display_run_error(latest)
                     click.echo("┌─ Next Steps " + "─" * 66)
-                    _stream_next_steps(benchmark_id, s3_url)
+                    _stream_next_steps(run_id, s3_url)
                 break
 
             elif event.startswith("event: disconnect"):
@@ -274,4 +266,4 @@ def stream_benchmark_status(
             click.echo("\n")
             click.echo(click.style("Streaming stopped.", fg="yellow"))
             click.echo("┌─ Next Steps " + "─" * 66)
-            _stream_next_steps(benchmark_id, s3_url)
+            _stream_next_steps(run_id, s3_url)

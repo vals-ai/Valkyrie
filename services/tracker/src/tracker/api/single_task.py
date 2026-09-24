@@ -8,7 +8,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, col, desc, select
 
-from tracker.api.dependencies import RunAWSDependency, TrackedBenchmarkId, load_task_for_benchmark_or_404
+from tracker.api.dependencies import (
+    CanonicalRunAWSDependency,
+    RunAWSDependency,
+    TrackedBenchmarkId,
+    TrackedRunId,
+    load_task_for_benchmark_or_404,
+)
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations, task_log_stream_name
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, create_presigned_url, s3_object_exists
@@ -24,6 +30,7 @@ from tracker.database.session import get_session
 from tracker.types import SingleTaskResponse, TaskArtifactsResponse
 
 router = APIRouter(prefix="/benchmarks")
+run_router = APIRouter(prefix="/runs")
 
 
 def _load_task_or_404(benchmark_id: UUID, task_id: str, org: Org, session: Session) -> tuple[Benchmark, Task]:
@@ -140,3 +147,26 @@ async def get_task_artifacts(
         agent_output_url=agent_output_url,
         agent_output_expires_in=ttl_seconds,
     )
+
+
+@run_router.get("/{run_id}/tasks/{task_id}", response_model=SingleTaskResponse)
+def get_run_task(
+    run_id: TrackedRunId,
+    task_id: str,
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> SingleTaskResponse:
+    """Canonical task detail for one run."""
+    return get_single_task(run_id, task_id, org, session)
+
+
+@run_router.get("/{run_id}/tasks/{task_id}/artifacts", response_model=TaskArtifactsResponse)
+async def get_run_task_artifacts(
+    run_id: TrackedRunId,
+    task_id: str,
+    run_context: CanonicalRunAWSDependency,
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> TaskArtifactsResponse:
+    """Canonical task artifact links for one run."""
+    return await get_task_artifacts(run_id, task_id, run_context, org, session)

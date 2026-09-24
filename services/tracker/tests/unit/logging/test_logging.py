@@ -5,7 +5,7 @@ Run: uv run pytest tests/unit/logging/test_logging.py
 
 import json
 import logging
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock, Mock, call
 from uuid import UUID
 
 import pytest
@@ -19,9 +19,10 @@ from tracker.logging import (
     benchmark_id_var,
     configure_logging,
     request_id_var,
+    run_id_var,
     task_id_var,
 )
-from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
+from tracker.api.dependencies import TrackedBenchmarkId, TrackedRunId, bind_benchmark_id, bind_run_id
 from tracker.middleware import LoggingContextMiddleware
 from tracker.types import AWSCredentials, HarnessConfig
 
@@ -31,6 +32,7 @@ class ContextLogRecord(logging.LogRecord):
 
     request_id: str
     benchmark_id: str
+    run_id: str
     task_id: str
 
 
@@ -107,20 +109,24 @@ class TestContextFilter:
 
         assert record.request_id == ""
         assert record.benchmark_id == ""
+        assert record.run_id == ""
         assert record.task_id == ""
 
         request_token = request_id_var.set("req-123")
         benchmark_token = benchmark_id_var.set("bench-456")
+        run_token = run_id_var.set("run-456")
         task_token = task_id_var.set("task-789")
         try:
             context_filter.filter(record)
 
             assert record.request_id == "req-123"
             assert record.benchmark_id == "bench-456"
+            assert record.run_id == "run-456"
             assert record.task_id == "task-789"
         finally:
             request_id_var.reset(request_token)
             benchmark_id_var.reset(benchmark_token)
+            run_id_var.reset(run_token)
             task_id_var.reset(task_token)
 
     def test_context_filter_preserves_explicit_record_fields(self) -> None:
@@ -154,7 +160,41 @@ async def test_bind_benchmark_id_updates_logging_context_and_request_span(monkey
 
     assert result == benchmark_id
     assert benchmark_id_var.get() == str(benchmark_id)
-    span.set_attribute.assert_called_once_with("benchmark_id", str(benchmark_id))
+    assert run_id_var.get() == str(benchmark_id)
+    assert span.set_attribute.call_args_list == [
+        call("benchmark_id", str(benchmark_id)),
+        call("run_id", str(benchmark_id)),
+    ]
+
+
+async def test_bind_run_id_updates_both_compatibility_contexts(monkeypatch: pytest.MonkeyPatch) -> None:
+    span = Mock()
+    monkeypatch.setattr("tracker.api.dependencies.trace.get_current_span", lambda: span)
+    run_id = UUID("12345678-1234-5678-9234-567812345678")
+
+    result = await bind_run_id(run_id)
+
+    assert result == run_id
+    assert benchmark_id_var.get() == str(run_id)
+    assert run_id_var.get() == str(run_id)
+
+
+async def test_bind_run_id_survives_fastapi_dependency_resolution() -> None:
+    test_app = FastAPI()
+    observed_ids: list[tuple[str, str]] = []
+
+    async def endpoint(run_id: TrackedRunId) -> dict[str, str]:
+        observed_ids.append((run_id_var.get(), benchmark_id_var.get()))
+        return {"run_id": str(run_id)}
+
+    test_app.add_api_route("/runs/{run_id}", endpoint)
+    run_id = UUID("12345678-1234-5678-9234-567812345678")
+
+    async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+        response = await client.get(f"/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert observed_ids == [(str(run_id), str(run_id))]
 
 
 async def test_bind_benchmark_id_survives_fastapi_dependency_resolution() -> None:
@@ -288,6 +328,7 @@ class TestLoggingContextMiddleware:
         result = await middleware.pre_execute(message)
 
         assert benchmark_id_var.get() == "bench-123"
+        assert run_id_var.get() == "bench-123"
         assert request_id_var.get() == "req-456"
         assert result is message
 
@@ -309,6 +350,7 @@ class TestLoggingContextMiddleware:
         result = await middleware.pre_execute(message)
 
         assert benchmark_id_var.get() == "bench-v2"
+        assert run_id_var.get() == "bench-v2"
         assert request_id_var.get() == "req-v2"
         assert result is message
 
@@ -316,12 +358,14 @@ class TestLoggingContextMiddleware:
         """post_execute clears all context vars."""
         middleware = LoggingContextMiddleware()
         benchmark_id_var.set("leftover")
+        run_id_var.set("leftover")
         request_id_var.set("leftover")
         task_id_var.set("leftover")
 
         await middleware.post_execute(MagicMock(), MagicMock())
 
         assert benchmark_id_var.get() == ""
+        assert run_id_var.get() == ""
         assert request_id_var.get() == ""
         assert task_id_var.get() == ""
 
@@ -329,10 +373,12 @@ class TestLoggingContextMiddleware:
         """on_error clears context vars so failed jobs don't leak."""
         middleware = LoggingContextMiddleware()
         benchmark_id_var.set("leaked")
+        run_id_var.set("leaked")
 
         await middleware.on_error(MagicMock(), MagicMock(), RuntimeError("boom"))
 
         assert benchmark_id_var.get() == ""
+        assert run_id_var.get() == ""
 
 
 async def test_request_context_middleware_sets_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
