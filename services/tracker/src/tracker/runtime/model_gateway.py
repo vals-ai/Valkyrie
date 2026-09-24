@@ -7,6 +7,7 @@ knows which model the task was assigned, and can hand the sandbox a token
 scoped to that model instead, revoked once the task is done.
 """
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -33,6 +34,12 @@ REQUEST_TIMEOUT_SECONDS = 30.0
 # waits for a creation permit, sets up, and may run an agent with no timeout of
 # its own, and a credential that expires mid-task breaks the run.
 TOKEN_TTL_SECONDS = 24 * 60 * 60
+
+# Revoking is what makes that backstop irrelevant, so it is worth more than one
+# attempt: the sandbox saw the token, and a transient failure at teardown would
+# otherwise leave it usable for the rest of its life.
+REVOKE_ATTEMPTS = 3
+REVOKE_RETRY_DELAY_SECONDS = 0.5
 
 
 def _control_plane_url(env_vars: dict[str, str], org_name: str) -> str:
@@ -113,10 +120,29 @@ async def task_scoped_gateway_key(
     try:
         yield {**env_vars, KEY_ENV: lease["token"]}
     finally:
+        await _revoke(url, api_key, lease["lease_id"])
+
+
+async def _revoke(url: str, api_key: str, lease_id: str) -> None:
+    """End the credential's life, retrying a gateway that is briefly unwell.
+
+    A completed task must not fail, or mask its own error, over its credential
+    teardown, so this never raises. The response body is not read: an empty one
+    would raise a decoding error that is not an `httpx.HTTPError`.
+    """
+    last_error: httpx.HTTPError | None = None
+    for attempt in range(REVOKE_ATTEMPTS):
         try:
-            # The response body is not read: revoking is best effort, the token
-            # expires on its own, and a completed task must not fail, or mask
-            # its own error, over its credential teardown.
-            _ = await _post(url, REVOKE_PATH, api_key, {"lease_id": lease["lease_id"]})
+            _ = await _post(url, REVOKE_PATH, api_key, {"lease_id": lease_id})
+            return
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code < 500:
+                # Already gone, or never ours to revoke; retrying cannot help.
+                logger.warning(f"Gateway refused to revoke lease {lease_id}: {e}")
+                return
+            last_error = e
         except httpx.HTTPError as e:
-            logger.warning(f"Could not revoke gateway lease {lease['lease_id']}: {e}")
+            last_error = e
+        if attempt + 1 < REVOKE_ATTEMPTS:
+            await asyncio.sleep(REVOKE_RETRY_DELAY_SECONDS * (attempt + 1))
+    logger.warning(f"Could not revoke gateway lease {lease_id}, it stays live until it expires: {last_error}")

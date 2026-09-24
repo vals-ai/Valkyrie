@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 import tracker.runtime.model_gateway as model_gateway
-from tracker.runtime.model_gateway import TOKEN_TTL_SECONDS, task_scoped_gateway_key
+from tracker.runtime.model_gateway import REVOKE_ATTEMPTS, TOKEN_TTL_SECONDS, task_scoped_gateway_key
 
 
 IDENTITY = {"benchmark_name": "swebench", "agent_name": "opencode"}
@@ -38,9 +38,9 @@ def _scoped(env: dict[str, str], **overrides: Any) -> Any:
 class RecordingGateway:
     """Answers the mint and revoke calls, recording what was asked."""
 
-    def __init__(self, *, mint_status: int = 200, revoke_status: int = 200) -> None:
+    def __init__(self, *, mint_status: int = 200, revoke_status: int | list[int] = 200) -> None:
         self.mint_status = mint_status
-        self.revoke_status = revoke_status
+        self.revoke_statuses = revoke_status if isinstance(revoke_status, list) else [revoke_status]
         self.requests: list[tuple[str, dict[str, Any], str | None]] = []
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -56,9 +56,8 @@ class RecordingGateway:
         self.requests.append((request.url.path, json.loads(request.content), request.headers.get("Authorization")))
         if request.url.path == "/service-auth":
             return httpx.Response(self.mint_status, json={"token": TOKEN, "lease_id": "lease-1"})
-        if self.revoke_status == 204:
-            return httpx.Response(204)
-        return httpx.Response(self.revoke_status, json={"revoke_status": self.revoke_status})
+        status = self.revoke_statuses[min(len(self.paths) - 2, len(self.revoke_statuses) - 1)]
+        return httpx.Response(status) if status == 204 else httpx.Response(status, json={"revoked": 1})
 
     @property
     def paths(self) -> list[str]:
@@ -163,15 +162,43 @@ async def test_a_failed_mint_stops_the_task(monkeypatch: pytest.MonkeyPatch) -> 
             pytest.fail("the sandbox must not start without a scoped credential")
 
 
-async def test_a_failed_revoke_does_not_fail_a_finished_task(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The token expires on its own TTL, so teardown is best effort."""
-    gateway = RecordingGateway(revoke_status=500)
+@pytest.mark.parametrize(
+    "revoke_status,attempts",
+    [
+        (200, 1),
+        # An empty body decodes to an error that is not an httpx.HTTPError.
+        (204, 1),
+        # Already gone, or never ours to revoke: retrying cannot help.
+        (404, 1),
+        # The sandbox saw this token, so a sick gateway is worth another try.
+        (500, REVOKE_ATTEMPTS),
+    ],
+)
+async def test_teardown_never_fails_a_finished_task(
+    monkeypatch: pytest.MonkeyPatch, revoke_status: int, attempts: int
+) -> None:
+    gateway = RecordingGateway(revoke_status=revoke_status)
     gateway.install(monkeypatch)
+    monkeypatch.setattr(model_gateway, "REVOKE_RETRY_DELAY_SECONDS", 0)
 
     async with _scoped(_env()) as scoped:
         assert scoped["MODEL_GATEWAY_API_KEY"] == TOKEN
 
-    assert gateway.paths == ["/service-auth", "/service-auth/revoke"]
+    assert gateway.paths == ["/service-auth"] + ["/service-auth/revoke"] * attempts
+
+
+async def test_a_transient_revoke_failure_still_ends_the_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A token the sandbox has seen must not outlive one bad response."""
+    gateway = RecordingGateway(revoke_status=[503, 200])
+    gateway.install(monkeypatch)
+    monkeypatch.setattr(model_gateway, "REVOKE_RETRY_DELAY_SECONDS", 0)
+
+    async with _scoped(_env()):
+        pass
+
+    assert gateway.paths == ["/service-auth", "/service-auth/revoke", "/service-auth/revoke"]
 
 
 async def test_the_credential_is_revoked_when_the_task_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -181,18 +208,6 @@ async def test_the_credential_is_revoked_when_the_task_raises(monkeypatch: pytes
     with pytest.raises(RuntimeError):
         async with _scoped(_env()):
             raise RuntimeError("agent blew up")
-
-    assert gateway.paths == ["/service-auth", "/service-auth/revoke"]
-
-
-@pytest.mark.parametrize("revoke_status", [200, 204, 500])
-async def test_teardown_never_fails_a_finished_task(monkeypatch: pytest.MonkeyPatch, revoke_status: int) -> None:
-    """Including an empty body, whose decoding error is not an HTTP error."""
-    gateway = RecordingGateway(revoke_status=revoke_status)
-    gateway.install(monkeypatch)
-
-    async with _scoped(_env()) as scoped:
-        assert scoped["MODEL_GATEWAY_API_KEY"] == TOKEN
 
     assert gateway.paths == ["/service-auth", "/service-auth/revoke"]
 
