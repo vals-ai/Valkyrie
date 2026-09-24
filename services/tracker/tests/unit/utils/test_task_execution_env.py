@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
 
+import httpx
 import pytest
 from benchmark_service import SandboxSource, TargetedSnapshotSource
 from benchmark_service.client import BenchmarkServiceClient
@@ -38,6 +39,25 @@ from tracker.database.models import (
 )
 from tracker.scheduler.admission import SandboxQueueContext
 from tracker.types import HarnessConfig
+
+
+def _install_gateway(monkeypatch: pytest.MonkeyPatch, minted: list[dict[str, Any]]) -> None:
+    """Answer the tracker's run-token mint and revoke calls in process."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/service-auth":
+            minted.append(json.loads(request.content))
+            return httpx.Response(200, json={"token": "mgwt_scoped", "lease_id": "lease-1"})
+        assert request.url.path == "/service-auth/revoke", request.url.path
+        return httpx.Response(200, json={"revoked": 1})
+
+    original_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handle)
+
+    def build_client(**kwargs: Any) -> httpx.AsyncClient:
+        return original_client(transport=transport, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", build_client)
 
 
 @asynccontextmanager
@@ -164,6 +184,8 @@ class TestProcessTaskEnvironment:
             }
         )
         captured_env_vars: list[dict[str, str]] = []
+        minted: list[dict[str, Any]] = []
+        _install_gateway(monkeypatch, minted)
 
         def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {
@@ -201,7 +223,24 @@ class TestProcessTaskEnvironment:
         }
         assert env_vars["UNRELATED_SECRET"] == "secret-value"
         assert env_vars["MODEL_GATEWAY_URL"] == "https://gateway.example.test"
-        assert env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
+        # The sandbox receives a task-scoped token, never the executor's key.
+        assert env_vars["MODEL_GATEWAY_API_KEY"] == "mgwt_scoped"
+        # Scoped to what the tracker resolved, not to the values the contract's
+        # own secrets tried to inject.
+        assert minted == [
+            {
+                "run_id": str(benchmark_id),
+                "task_id": "task_0",
+                "allowed_models": ["provider/model"],
+                "identity": {
+                    "benchmark_name": "swebench",
+                    "agent_name": contract.name,
+                    "email": "starter@example.com",
+                },
+                "variant": "xhigh",
+                "ttl_seconds": minted[0]["ttl_seconds"],
+            }
+        ]
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_task_withholds_unattested_inference_settings(
