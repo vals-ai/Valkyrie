@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 import pytest
 
+import tracker.runtime.model_gateway as model_gateway
 from tracker.runtime.model_gateway import TOKEN_TTL_SECONDS, task_scoped_gateway_key
 
 
@@ -28,6 +29,7 @@ def _scoped(env: dict[str, str], **overrides: Any) -> Any:
         "attested_model": MODEL,
         "variant": "xhigh",
         "identity": IDENTITY,
+        "org_name": "vals.ai",
     }
     kwargs.update(overrides)
     return task_scoped_gateway_key(env, **kwargs)
@@ -54,7 +56,9 @@ class RecordingGateway:
         self.requests.append((request.url.path, json.loads(request.content), request.headers.get("Authorization")))
         if request.url.path == "/service-auth":
             return httpx.Response(self.mint_status, json={"token": TOKEN, "lease_id": "lease-1"})
-        return httpx.Response(self.revoke_status, json={"revoked": 1})
+        if self.revoke_status == 204:
+            return httpx.Response(204)
+        return httpx.Response(self.revoke_status, json={"revoke_status": self.revoke_status})
 
     @property
     def paths(self) -> list[str]:
@@ -177,5 +181,45 @@ async def test_the_credential_is_revoked_when_the_task_raises(monkeypatch: pytes
     with pytest.raises(RuntimeError):
         async with _scoped(_env()):
             raise RuntimeError("agent blew up")
+
+    assert gateway.paths == ["/service-auth", "/service-auth/revoke"]
+
+
+@pytest.mark.parametrize("revoke_status", [200, 204, 500])
+async def test_teardown_never_fails_a_finished_task(monkeypatch: pytest.MonkeyPatch, revoke_status: int) -> None:
+    """Including an empty body, whose decoding error is not an HTTP error."""
+    gateway = RecordingGateway(revoke_status=revoke_status)
+    gateway.install(monkeypatch)
+
+    async with _scoped(_env()) as scoped:
+        assert scoped["MODEL_GATEWAY_API_KEY"] == TOKEN
+
+    assert gateway.paths == ["/service-auth", "/service-auth/revoke"]
+
+
+async def test_the_key_is_not_sent_to_a_private_destination(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gateway address is a resolved secret, and a contract picks which
+    secret each of its variables reads."""
+    gateway = RecordingGateway()
+    gateway.install(monkeypatch)
+    monkeypatch.setattr(model_gateway, "AUTH_REQUIRED", True)
+    env = _env(MODEL_GATEWAY_URL="http://169.254.169.254")
+
+    with pytest.raises(ValueError):
+        async with _scoped(env, org_name="tenant.example"):
+            pytest.fail("the executor's key must not leave for a private host")
+
+    assert gateway.requests == []
+
+
+async def test_the_gateway_stays_reachable_for_every_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gateway is a Vals-owned host, so it must not be treated as a custom one."""
+    gateway = RecordingGateway()
+    gateway.install(monkeypatch)
+    monkeypatch.setattr(model_gateway, "AUTH_REQUIRED", True)
+    env = _env(MODEL_GATEWAY_URL="https://model-gateway.vals.ai")
+
+    async with _scoped(env, org_name="tenant.example") as scoped:
+        assert scoped["MODEL_GATEWAY_API_KEY"] == TOKEN
 
     assert gateway.paths == ["/service-auth", "/service-auth/revoke"]

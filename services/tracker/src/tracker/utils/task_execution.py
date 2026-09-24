@@ -1038,6 +1038,7 @@ async def _process_task_attempt(
                 attested_model=contract.model if contract.inference_settings_attested else None,
                 variant=contract.kwargs.get("variant", ""),
                 identity=identity,
+                org_name=org.name,
             ) as scoped_env_vars:
                 async with create_sandbox(
                     provider=sandbox_provider,

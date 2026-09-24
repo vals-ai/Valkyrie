@@ -13,7 +13,9 @@ from typing import Any
 
 import httpx
 
+from tracker.config import AUTH_REQUIRED
 from tracker.logging import get_logger
+from tracker.outbound_security import validate_custom_service_destination, validate_service_url_syntax
 
 
 logger = get_logger(__name__)
@@ -33,7 +35,25 @@ REQUEST_TIMEOUT_SECONDS = 30.0
 TOKEN_TTL_SECONDS = 24 * 60 * 60
 
 
-async def _post(url: str, path: str, api_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _control_plane_url(env_vars: dict[str, str], org_name: str) -> str:
+    """Validate the gateway address before the tracker sends its key there.
+
+    The address is a resolved secret, and a contract chooses which secret each
+    of its variables reads, so this is a caller-influenced destination like any
+    other the tracker talks to. Vals-owned hosts stay reachable because the
+    gateway is one; private and link-local ones do not.
+    """
+    url = validate_service_url_syntax(env_vars[URL_ENV])
+    validate_custom_service_destination(
+        url,
+        org_name=org_name,
+        auth_required=AUTH_REQUIRED,
+        restrict_vals_hosts=False,
+    )
+    return url
+
+
+async def _post(url: str, path: str, api_key: str, payload: dict[str, Any]) -> httpx.Response:
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
         response = await client.post(
             f"{url.rstrip('/')}{path}",
@@ -41,7 +61,7 @@ async def _post(url: str, path: str, api_key: str, payload: dict[str, Any]) -> d
             json=payload,
         )
         response.raise_for_status()
-        return response.json()
+        return response
 
 
 @asynccontextmanager
@@ -53,6 +73,7 @@ async def task_scoped_gateway_key(
     attested_model: str | None,
     variant: str,
     identity: dict[str, str],
+    org_name: str,
 ) -> AsyncIterator[dict[str, str]]:
     """Yield the sandbox environment with its gateway key scoped to this task.
 
@@ -66,33 +87,36 @@ async def task_scoped_gateway_key(
     unreachable cannot reach the gateway to run either, and silently falling
     back to the static key would make the scoping unreliable and invisible.
     """
-    url = env_vars.get(URL_ENV, "")
     api_key = env_vars.get(KEY_ENV, "")
-    if not url or not api_key or not attested_model:
+    if not env_vars.get(URL_ENV) or not api_key or not attested_model:
         yield env_vars
         return
 
-    lease = await _post(
-        url,
-        MINT_PATH,
-        api_key,
-        {
-            "run_id": run_id,
-            "task_id": task_id,
-            "allowed_models": [attested_model],
-            "identity": identity,
-            "variant": variant or None,
-            "ttl_seconds": TOKEN_TTL_SECONDS,
-        },
-    )
+    url = _control_plane_url(env_vars, org_name)
+    lease = (
+        await _post(
+            url,
+            MINT_PATH,
+            api_key,
+            {
+                "run_id": run_id,
+                "task_id": task_id,
+                "allowed_models": [attested_model],
+                "identity": identity,
+                "variant": variant or None,
+                "ttl_seconds": TOKEN_TTL_SECONDS,
+            },
+        )
+    ).json()
     logger.info(f"Scoped gateway credential to {attested_model} for task {task_id} (lease {lease['lease_id']})")
 
     try:
         yield {**env_vars, KEY_ENV: lease["token"]}
     finally:
         try:
-            await _post(url, REVOKE_PATH, api_key, {"lease_id": lease["lease_id"]})
+            # The response body is not read: revoking is best effort, the token
+            # expires on its own, and a completed task must not fail, or mask
+            # its own error, over its credential teardown.
+            _ = await _post(url, REVOKE_PATH, api_key, {"lease_id": lease["lease_id"]})
         except httpx.HTTPError as e:
-            # Best effort: the token expires on its own TTL, and a completed
-            # task should not fail over its credential teardown.
             logger.warning(f"Could not revoke gateway lease {lease['lease_id']}: {e}")
