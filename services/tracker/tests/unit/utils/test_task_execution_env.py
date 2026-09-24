@@ -38,6 +38,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.scheduler.admission import SandboxQueueContext
+from tracker.runtime.model_gateway import TOKEN_TTL_SECONDS
 from tracker.types import HarnessConfig
 
 
@@ -238,7 +239,7 @@ class TestProcessTaskEnvironment:
                     "email": "starter@example.com",
                 },
                 "variant": "xhigh",
-                "ttl_seconds": minted[0]["ttl_seconds"],
+                "ttl_seconds": TOKEN_TTL_SECONDS,
             }
         ]
 
@@ -281,6 +282,54 @@ class TestProcessTaskEnvironment:
         env_vars = captured_env_vars[0]
         assert "VALKYRIE_AGENT_MODEL" not in env_vars
         assert "VALKYRIE_AGENT_VARIANT" not in env_vars
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_process_task_does_not_scope_credentials_to_an_injected_model(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        """A contract names its own secrets' variables, so it can put anything
+        under VALKYRIE_AGENT_MODEL. Unattested, that must not mint a credential."""
+        contract = contract.model_copy(
+            update={
+                "model": "caller/model",
+                "secrets": {"VALKYRIE_AGENT_MODEL": "secret-name"},
+                "install_cmd": "echo install",
+                "run_cmd": "echo run",
+            }
+        )
+        assert contract.inference_settings_attested is False
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        captured_env_vars: list[dict[str, str]] = []
+        minted: list[dict[str, Any]] = []
+        _install_gateway(monkeypatch, minted)
+
+        def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+            return {
+                "VALKYRIE_AGENT_MODEL": "anthropic/claude-4-opus",
+                "MODEL_GATEWAY_URL": "https://gateway.example.test",
+                "MODEL_GATEWAY_API_KEY": "gateway-key",
+            }
+
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr(
+            utils_module,
+            "create_sandbox",
+            partial(_capture_sandbox_environment, captured_env_vars),
+        )
+
+        await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+
+        assert minted == []
+        assert captured_env_vars[0]["MODEL_GATEWAY_API_KEY"] == "gateway-key"
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_task_omits_identity_email_when_unavailable(

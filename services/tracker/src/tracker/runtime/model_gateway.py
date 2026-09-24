@@ -20,27 +20,17 @@ logger = get_logger(__name__)
 
 URL_ENV = "MODEL_GATEWAY_URL"
 KEY_ENV = "MODEL_GATEWAY_API_KEY"
-MODEL_ENV = "VALKYRIE_AGENT_MODEL"
-VARIANT_ENV = "VALKYRIE_AGENT_VARIANT"
-RUN_ID_ENV = "RUN_ID"
-TASK_ID_ENV = "TASK_ID"
 
 MINT_PATH = "/service-auth"
 REVOKE_PATH = "/service-auth/revoke"
 REQUEST_TIMEOUT_SECONDS = 30.0
 
-# A token cannot be renewed, so it has to outlive the agent command by enough
-# to cover setup and evaluation. The slack also keeps every value comfortably
-# above the gateway's 60s floor; its ceiling is 24h.
-MAX_TTL_SECONDS = 24 * 60 * 60
-DEFAULT_TTL_SECONDS = 60 * 60
-TTL_SLACK_SECONDS = 30 * 60
-
-
-def _ttl_seconds(agent_timeout: float | None) -> int:
-    if agent_timeout is None:
-        return DEFAULT_TTL_SECONDS
-    return int(min(agent_timeout + TTL_SLACK_SECONDS, MAX_TTL_SECONDS))
+# Revoking on teardown is what ends a credential's life. This is only the
+# backstop for a tracker that died before it could, so it is the longest the
+# gateway allows rather than a guess at how long the task needs: a sandbox
+# waits for a creation permit, sets up, and may run an agent with no timeout of
+# its own, and a credential that expires mid-task breaks the run.
+TOKEN_TTL_SECONDS = 24 * 60 * 60
 
 
 async def _post(url: str, path: str, api_key: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -58,14 +48,19 @@ async def _post(url: str, path: str, api_key: str, payload: dict[str, Any]) -> d
 async def task_scoped_gateway_key(
     env_vars: dict[str, str],
     *,
+    run_id: str,
+    task_id: str,
+    attested_model: str | None,
+    variant: str,
     identity: dict[str, str],
-    agent_timeout: float | None,
 ) -> AsyncIterator[dict[str, str]]:
     """Yield the sandbox environment with its gateway key scoped to this task.
 
-    The environment is returned untouched unless the contract asked for a
-    gateway credential and the tracker attested the agent's model: only a model
-    we resolved ourselves is safe to scope a token to.
+    Everything the token is scoped by is passed in rather than read back out of
+    `env_vars`, whose keys a contract's own secrets can choose: only a model the
+    tracker resolved itself is safe to scope a credential to. The environment is
+    returned untouched when there is no attested model, or when the contract did
+    not ask for a gateway credential at all.
 
     Minting failures are left to propagate. A task whose control plane is
     unreachable cannot reach the gateway to run either, and silently falling
@@ -73,8 +68,7 @@ async def task_scoped_gateway_key(
     """
     url = env_vars.get(URL_ENV, "")
     api_key = env_vars.get(KEY_ENV, "")
-    model = env_vars.get(MODEL_ENV, "")
-    if not url or not api_key or not model:
+    if not url or not api_key or not attested_model:
         yield env_vars
         return
 
@@ -83,15 +77,15 @@ async def task_scoped_gateway_key(
         MINT_PATH,
         api_key,
         {
-            "run_id": env_vars[RUN_ID_ENV],
-            "task_id": env_vars[TASK_ID_ENV],
-            "allowed_models": [model],
+            "run_id": run_id,
+            "task_id": task_id,
+            "allowed_models": [attested_model],
             "identity": identity,
-            "variant": env_vars.get(VARIANT_ENV) or None,
-            "ttl_seconds": _ttl_seconds(agent_timeout),
+            "variant": variant or None,
+            "ttl_seconds": TOKEN_TTL_SECONDS,
         },
     )
-    logger.info(f"Scoped gateway credential to {model} for task {env_vars[TASK_ID_ENV]} (lease {lease['lease_id']})")
+    logger.info(f"Scoped gateway credential to {attested_model} for task {task_id} (lease {lease['lease_id']})")
 
     try:
         yield {**env_vars, KEY_ENV: lease["token"]}

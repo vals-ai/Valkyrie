@@ -1028,8 +1028,16 @@ async def _process_task_attempt(
             # Scoped here rather than earlier so a queued attempt does not spend
             # its credential's lifetime waiting for a turn, and released only
             # once the sandbox holding it is gone.
+            contract = start_benchmark_request.contract
             async with task_scoped_gateway_key(
-                env_vars, identity=identity, agent_timeout=task_data.agent_timeout
+                env_vars,
+                run_id=str(benchmark_id),
+                task_id=task_row.task_id,
+                # Only what the tracker resolved from the agent's own bundle;
+                # a caller-supplied contract is never scoped to its own model.
+                attested_model=contract.model if contract.inference_settings_attested else None,
+                variant=contract.kwargs.get("variant", ""),
+                identity=identity,
             ) as scoped_env_vars:
                 async with create_sandbox(
                     provider=sandbox_provider,
