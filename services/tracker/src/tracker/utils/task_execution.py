@@ -600,21 +600,38 @@ def _persist_external_service_summary(
     task_breakdown: TaskBreakdown,
     task_row_id: UUID,
     org: Org,
-    execution_is_current: Callable[[], bool],
+    authority: ExecutionAuthority,
+    expected_started_at: datetime,
     open_task_session: Callable[[], Session],
 ) -> None:
-    if not execution_is_current():
-        raise ExecutionAuthorityRevoked("Execution authority was revoked before accounting persistence")
-    task_breakdown.accounting_session_id = summary.accounting_session_id
-    task_breakdown.base_generation_allowance_seconds = summary.base_generation_allowance_seconds
-    task_breakdown.cumulative_time_credit_cap_seconds = summary.cumulative_time_credit_cap_seconds
-    task_breakdown.external_service_overhead_seconds = summary.external_service_overhead_seconds
-    task_breakdown.external_service_credit_applied_seconds = summary.external_service_credit_applied_seconds
-    task_breakdown.effective_generation_allowance_seconds = summary.effective_generation_allowance_seconds
-    task_breakdown.external_service_credit_revision = summary.external_service_credit_revision
     with open_task_session() as task_session:
+        try:
+            lock_execution_authority(task_session, authority)
+        except ExecutionAuthorityRevoked:
+            task_session.rollback()
+            raise
+        task_in_session = task_session.exec(
+            select(Task)
+            .where(col(Task.id) == task_row_id)
+            .where(col(Task.org_id) == org.id)
+            .where(col(Task.benchmark) == authority.benchmark_id)
+            .with_for_update()
+        ).one_or_none()
+        if (
+            task_in_session is None
+            or task_in_session.status == TaskStatus.STOPPED
+            or _normalized_attempt_time(task_in_session.started_at) != _normalized_attempt_time(expected_started_at)
+        ):
+            task_session.rollback()
+            raise ExecutionAuthorityRevoked("Task attempt changed before accounting persistence")
+        task_breakdown.accounting_session_id = summary.accounting_session_id
+        task_breakdown.base_generation_allowance_seconds = summary.base_generation_allowance_seconds
+        task_breakdown.cumulative_time_credit_cap_seconds = summary.cumulative_time_credit_cap_seconds
+        task_breakdown.external_service_overhead_seconds = summary.external_service_overhead_seconds
+        task_breakdown.external_service_credit_applied_seconds = summary.external_service_credit_applied_seconds
+        task_breakdown.effective_generation_allowance_seconds = summary.effective_generation_allowance_seconds
+        task_breakdown.external_service_credit_revision = summary.external_service_credit_revision
         task_session.add(task_breakdown)
-        task_in_session = fetch_task_row(task_row_id, task_session, org)
         task_in_session.task_breakdown = task_breakdown.id
         task_session.commit()
 
@@ -1121,7 +1138,8 @@ async def _process_task_attempt(
                 task_breakdown=task_breakdown,
                 task_row_id=task_row.id,
                 org=org,
-                execution_is_current=execution_is_current,
+                authority=authority,
+                expected_started_at=attempt_started_at,
                 open_task_session=open_task_session,
             )
 

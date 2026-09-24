@@ -7,7 +7,7 @@ import time
 import uuid
 from asyncio import Semaphore
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator, Literal, Never, Protocol, assert_never, cast
@@ -86,7 +86,10 @@ bundle_path = PurePosixPath("/bundle")
 SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
 AGENT_INSTALL_TIMEOUT_SECONDS = 10 * 60
-GENERATION_TERMINATION_GRACE_SECONDS = 5.0
+# The 20-second post-deadline window includes at most 10 seconds for gateway arbitration;
+# the remaining time is reserved for confirmed workload termination.
+GENERATION_ARBITRATION_GRACE_SECONDS = 10.0
+GENERATION_TERMINATION_GRACE_SECONDS = 20.0
 EXTERNAL_SERVICE_REFRESH_LEAD_SECONDS = 60.0
 EXTERNAL_SERVICE_REFRESH_RETRY_SECONDS = 1.0
 CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
@@ -675,7 +678,7 @@ async def _raise_controlled_failure_after_close(workload: _ControlledWorkload, e
 
 async def _finish_controlled_output(workload: _ControlledWorkload, output_task: asyncio.Task[None]) -> None:
     try:
-        await asyncio.wait({output_task}, return_when=asyncio.ALL_COMPLETED)
+        # A naturally completed producer has a finite buffered tail to drain.
         await output_task
     except Exception as error:
         await _raise_controlled_failure_after_close(workload, error)
@@ -754,9 +757,9 @@ async def _stream_controlled_output(
             deadline_task.cancel()
         await asyncio.gather(deadline_task, return_exceptions=True)
 
-    async def terminate_at_deadline() -> None:
+    async def terminate_at_deadline(apparent_deadline: float) -> None:
         try:
-            async with asyncio.timeout_at(deadline + GENERATION_TERMINATION_GRACE_SECONDS):
+            async with asyncio.timeout_at(apparent_deadline + GENERATION_TERMINATION_GRACE_SECONDS):
                 await workload.kill()
         except asyncio.CancelledError:
             raise
@@ -765,9 +768,11 @@ async def _stream_controlled_output(
                 "Generation deadline expired without confirmed workload termination"
             ) from error
 
-    async def propagate_control_error(error: BaseException) -> Never:
-        await terminate_at_deadline()
-        await _cancel_and_join_controlled_tasks(wait_task, output_task)
+    async def propagate_control_error(error: BaseException, apparent_deadline: float) -> Never:
+        await terminate_at_deadline(apparent_deadline)
+        await _cancel_and_join_controlled_tasks(wait_task)
+        # Preserve the control failure after draining output from confirmed absence.
+        await asyncio.gather(output_task, return_exceptions=True)
         raise error
 
     async def seal_natural_completion() -> None:
@@ -803,12 +808,13 @@ async def _stream_controlled_output(
                     return _controlled_result_outcome(completed, started_at)
 
             if deadline_task in done:
+                apparent_deadline = deadline
                 try:
                     await deadline_task
                 except asyncio.CancelledError:
                     raise
                 except BaseException as control_error:
-                    await propagate_control_error(control_error)
+                    await propagate_control_error(control_error, apparent_deadline)
 
                 if wait_task.done():
                     completed = await _controlled_wait_result(workload, wait_task)
@@ -820,23 +826,31 @@ async def _stream_controlled_output(
                 if deadline_controller is not None:
                     assert on_accounting_sealed is not None
                     try:
-                        frozen = await deadline_controller.begin_arbitration()
-                        deadline = deadline_controller.deadline(started_at, frozen)
+                        arbitration_deadline = apparent_deadline + GENERATION_ARBITRATION_GRACE_SECONDS
+                        async with asyncio.timeout_at(arbitration_deadline):
+                            frozen = await deadline_controller.begin_arbitration()
+                        frozen_deadline = deadline_controller.deadline(started_at, frozen)
 
                         if wait_task.done():
                             completed = await _controlled_wait_result(workload, wait_task)
-                            if _controlled_completion_precedes_deadline(completed, deadline):
-                                sealed = await deadline_controller.resolve(ArbitrationDecision.SEAL)
+                            if _controlled_completion_precedes_deadline(completed, frozen_deadline):
+                                async with asyncio.timeout_at(arbitration_deadline):
+                                    sealed = await deadline_controller.resolve(ArbitrationDecision.SEAL)
                                 await on_accounting_sealed(deadline_controller.summary(sealed))
                                 await _finish_controlled_output(workload, output_task)
                                 return _controlled_result_outcome(completed, started_at)
 
-                        if deadline > event_loop.time():
-                            await deadline_controller.resolve(ArbitrationDecision.RESUME)
+                        if frozen_deadline > event_loop.time():
+                            async with asyncio.timeout_at(arbitration_deadline):
+                                await deadline_controller.resolve(ArbitrationDecision.RESUME)
+                            # A new window starts only after the gateway acknowledges RESUME.
+                            deadline = frozen_deadline
                             deadline_task = asyncio.create_task(wait_for_deadline(deadline))
                             continue
 
-                        sealed = await deadline_controller.resolve(ArbitrationDecision.SEAL)
+                        async with asyncio.timeout_at(arbitration_deadline):
+                            sealed = await deadline_controller.resolve(ArbitrationDecision.SEAL)
+                        deadline = frozen_deadline
                         sealed_summary = deadline_controller.summary(sealed)
                         if wait_task.done():
                             completed = await _controlled_wait_result(workload, wait_task)
@@ -847,14 +861,13 @@ async def _stream_controlled_output(
                     except asyncio.CancelledError:
                         raise
                     except BaseException as control_error:
-                        await propagate_control_error(control_error)
+                        await propagate_control_error(control_error, apparent_deadline)
                 break
 
-        await terminate_at_deadline()
+        await terminate_at_deadline(apparent_deadline)
         await _cancel_and_join_controlled_tasks(wait_task)
-        with suppress(Exception):
-            await asyncio.wait({output_task}, return_when=asyncio.ALL_COMPLETED)
-            await output_task
+        # A confirmed CBS close finishes the active iterator after buffered output.
+        await output_task
         if sealed_summary is not None:
             assert on_accounting_sealed is not None
             await on_accounting_sealed(sealed_summary)
@@ -1327,6 +1340,9 @@ async def run_agent(
                 contract.egress_allowlist,
             )
     except ControlledGenerationError:
+        raise
+    except AgentRunFailedError:
+        await upload_outputs(preserve_agent_error=True)
         raise
     except Exception:
         if external_service_deadline is not None:

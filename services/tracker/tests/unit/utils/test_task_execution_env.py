@@ -8,6 +8,7 @@ import json
 import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, cast
@@ -18,11 +19,12 @@ from benchmark_service import SandboxSource, TargetedSnapshotSource
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse
 from sqlalchemy.engine import Engine
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import (
     TEST_ORG,
+    bind_task_to_dispatch,
     create_task_environment,
     make_retrieve_task_response,
     run_process_task,
@@ -329,6 +331,63 @@ class TestProcessTaskEnvironment:
         assert getattr(breakdown, "accounting_session_id") == "session-1"
         assert getattr(breakdown, "external_service_overhead_seconds") == 2.0
         assert getattr(breakdown, "external_service_credit_revision") == 3
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.parametrize("handoff", ["stop", "retry"])
+    async def test_stopped_or_retried_attempt_rejects_prior_sealed_accounting(
+        self, contract: AgentContractRequest, database_session: Session, harness_config: HarnessConfig, handoff: str
+    ) -> None:
+        _, task_row, _, authority = create_task_environment(contract, database_session, harness_config)
+        bind_task_to_dispatch(database_session, task_row, authority)
+        task_row.status = TaskStatus.IN_PROGRESS
+        database_session.add(task_row)
+        database_session.commit()
+        expected_started_at = task_row.started_at
+        assert expected_started_at is not None
+        bind = database_session.get_bind()
+        assert isinstance(bind, Engine)
+        summary = ExternalServiceAccountingSummary(
+            accounting_session_id="sealed-prior-attempt",
+            base_generation_allowance_seconds=10.0,
+            cumulative_time_credit_cap_seconds=5.0,
+            external_service_overhead_seconds=2.0,
+            external_service_credit_applied_seconds=2.0,
+            effective_generation_allowance_seconds=12.0,
+            external_service_credit_revision=3,
+        )
+
+        with Session(bind=bind) as handoff_session:
+            current_task = handoff_session.get(Task, task_row.id)
+            assert current_task is not None
+            if handoff == "stop":
+                current_task.status = TaskStatus.STOPPED
+            else:
+                current_task.started_at = expected_started_at + timedelta(seconds=1)
+            handoff_session.add(current_task)
+            handoff_session.commit()
+
+        with pytest.raises(utils_module.ExecutionAuthorityRevoked):
+            utils_module._persist_external_service_summary(
+                summary,
+                task_breakdown=TaskBreakdown(),
+                task_row_id=task_row.id,
+                org=TEST_ORG,
+                authority=authority,
+                expected_started_at=expected_started_at,
+                open_task_session=lambda: Session(bind=bind),
+            )
+
+        with Session(bind=bind) as verify_session:
+            current_task = verify_session.get(Task, task_row.id)
+            assert current_task is not None
+            if handoff == "stop":
+                assert current_task.status == TaskStatus.STOPPED
+                assert current_task.started_at == expected_started_at
+            else:
+                assert current_task.status == TaskStatus.IN_PROGRESS
+                assert current_task.started_at == expected_started_at + timedelta(seconds=1)
+            assert current_task.task_breakdown is None
+            assert verify_session.exec(select(TaskBreakdown)).all() == []
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_accounting_persistence_failure_blocks_evaluation(

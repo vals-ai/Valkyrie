@@ -598,7 +598,6 @@ class _FakeControlledWorkload:
         exit_code: int = 0,
         wait_error: BaseException | None = None,
         wait_release: asyncio.Event | None = None,
-        output_release: asyncio.Event | None = None,
         kill_release: asyncio.Event | None = None,
         natural: bool = True,
         absence_confirmed_at: float | None = None,
@@ -606,7 +605,6 @@ class _FakeControlledWorkload:
         self.exit_code = exit_code
         self.wait_error = wait_error
         self.wait_release = wait_release
-        self.output_release = output_release
         self.kill_release = kill_release
         self.absence_confirmed_at = absence_confirmed_at
         self.closed = asyncio.Event()
@@ -628,8 +626,6 @@ class _FakeControlledWorkload:
             yield "agent output"
             await self.closed.wait()
             self.output_drain_started.set()
-            if self.output_release is not None:
-                await self.output_release.wait()
             if self.output_error is not None:
                 raise self.output_error
         finally:
@@ -1271,6 +1267,63 @@ class TestRunAgent:
         apply_egress.assert_awaited_once()
         clear_egress.assert_not_awaited()
 
+    async def test_controlled_nonzero_exit_collects_outputs_after_seal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        workload = _FakeControlledWorkload(exit_code=23)
+        sandbox = _FakeControlledSandbox(workload)
+        contract = _controlled_contract().model_copy(
+            update={"final_output": "/logs", "output_artifacts": ["artifacts/result.json"]}
+        )
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, _FakeAccountingClient()),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=1.0,
+        )
+        sealed: list[ExternalServiceAccountingSummary] = []
+
+        async def save_summary(summary: ExternalServiceAccountingSummary) -> None:
+            sealed.append(summary)
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command == "test -e /logs":
+                assert workload.closed.is_set()
+                assert len(sealed) == 1
+            return ExecResult(exit_code=0)
+
+        async def collect_after_seal(*_args: Any, **_kwargs: Any) -> None:
+            assert len(sealed) == 1
+            assert workload.closed.is_set()
+
+        archive = AsyncMock(side_effect=collect_after_seal)
+        artifacts = AsyncMock(side_effect=collect_after_seal)
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive)
+        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", artifacts)
+
+        with pytest.raises(AgentRunFailedError, match="exit code 23"):
+            await run_agent(
+                cast(Any, sandbox),
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                agent_output_s3_key="benchmarks/run/task/output.tar.gz",
+                benchmark_id="benchmark-123",
+                agent_timeout=10.0,
+                task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+                external_service_deadline=controller,
+                on_external_service_sealed=save_summary,
+            )
+
+        assert len(sealed) == 1
+        archive.assert_awaited_once()
+        artifacts.assert_awaited_once()
+
     async def test_accounting_persistence_failure_skips_output_collection(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1458,81 +1511,83 @@ class TestRunAgent:
         assert reason == AgentCausedExitReason.TIMEOUT
         assert workload.kill_calls == 1
 
-    async def test_controlled_cancellation_during_natural_output_join_restores_egress(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        workload = _FakeControlledWorkload(output_release=asyncio.Event())
-        sandbox = _FakeControlledSandbox(workload)
-        controlled_sandbox = cast(Any, sandbox)
-        controlled_sandbox.modify_egress_rules = AsyncMock()
-        controlled_sandbox.clear_egress_rules = AsyncMock()
-        real_wait = asyncio.wait
-        join_started = asyncio.Event()
+    async def test_natural_completion_drains_buffered_tail_output(self) -> None:
+        class CompletedProducerWithTail(_FakeControlledWorkload):
+            def __init__(self) -> None:
+                super().__init__()
+                self.buffered_output: asyncio.Queue[str] = asyncio.Queue()
 
-        async def observed_wait(
-            tasks: set[asyncio.Task[Any]],
-            *,
-            timeout: float | None = None,
-            return_when: str = asyncio.ALL_COMPLETED,
-        ) -> tuple[set[asyncio.Task[Any]], set[asyncio.Task[Any]]]:
-            if len(tasks) == 1 and return_when == asyncio.ALL_COMPLETED:
-                join_started.set()
-            return await real_wait(tasks, timeout=timeout, return_when=return_when)
+            async def output(self) -> AsyncIterator[str]:
+                await self.wait_finished.wait()
+                await asyncio.sleep(0.02)
+                while not self.buffered_output.empty():
+                    yield self.buffered_output.get_nowait()
 
-        monkeypatch.setattr(sandbox_module.asyncio, "wait", observed_wait)
-        task = asyncio.create_task(
-            _stream_controlled_output_with_egress_allowlist(
-                controlled_sandbox, "echo done", "/workspace", _ignore_output, ["example.com"], 10.0
-            )
+        workload = CompletedProducerWithTail()
+        workload.buffered_output.put_nowait("already-buffered tail")
+        messages: list[str] = []
+        reason, _ = await asyncio.wait_for(
+            _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)), "echo done", "/workspace", messages.append, 10.0
+            ),
+            timeout=0.2,
         )
-        await asyncio.wait_for(join_started.wait(), timeout=1)
 
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        assert reason is None
+        assert messages == ["already-buffered tail"]
+        assert workload.kill_calls == 0
 
-        assert workload.wait_finished.is_set()
-        assert workload.output_finished.is_set()
+    async def test_confirmed_timeout_drains_buffered_output_before_seal(self) -> None:
+        class BufferedOutputAfterKill(_FakeControlledWorkload):
+            def __init__(self) -> None:
+                super().__init__(wait_release=asyncio.Event(), natural=False)
+                self.buffered_output: asyncio.Queue[str] = asyncio.Queue()
+
+            async def output(self) -> AsyncIterator[str]:
+                self.output_started.set()
+                try:
+                    await self.closed.wait()
+                    await asyncio.sleep(0.02)
+                    while not self.buffered_output.empty():
+                        yield self.buffered_output.get_nowait()
+                finally:
+                    self.output_finished.set()
+
+        workload = BufferedOutputAfterKill()
+        workload.buffered_output.put_nowait("queued before confirmed kill")
+        messages: list[str] = []
+        client = _FakeAccountingClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.001,
+            credit_cap_seconds=0.0,
+        )
+        sealed: list[ExternalServiceAccountingSummary] = []
+
+        async def persist_summary(summary: ExternalServiceAccountingSummary) -> None:
+            assert messages == ["queued before confirmed kill"]
+            sealed.append(summary)
+
+        reason, _ = await asyncio.wait_for(
+            _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                messages.append,
+                0.001,
+                controller,
+                persist_summary,
+            ),
+            timeout=0.2,
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert client.decisions == ["SEAL"]
         assert workload.kill_calls == 1
-        controlled_sandbox.clear_egress_rules.assert_awaited_once_with()
-
-    async def test_controlled_cancellation_during_timeout_output_drain_restores_egress(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), output_release=asyncio.Event(), natural=False)
-        sandbox = _FakeControlledSandbox(workload)
-        controlled_sandbox = cast(Any, sandbox)
-        controlled_sandbox.modify_egress_rules = AsyncMock()
-        controlled_sandbox.clear_egress_rules = AsyncMock()
-        real_wait = asyncio.wait
-        join_started = asyncio.Event()
-
-        async def observed_wait(
-            tasks: set[asyncio.Task[Any]],
-            *,
-            timeout: float | None = None,
-            return_when: str = asyncio.ALL_COMPLETED,
-        ) -> tuple[set[asyncio.Task[Any]], set[asyncio.Task[Any]]]:
-            if len(tasks) == 1 and return_when == asyncio.ALL_COMPLETED:
-                join_started.set()
-            return await real_wait(tasks, timeout=timeout, return_when=return_when)
-
-        monkeypatch.setattr(sandbox_module.asyncio, "wait", observed_wait)
-        task = asyncio.create_task(
-            _stream_controlled_output_with_egress_allowlist(
-                controlled_sandbox, "echo done", "/workspace", _ignore_output, ["example.com"], 0.001
-            )
-        )
-        await asyncio.wait_for(join_started.wait(), timeout=1)
-
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
         assert workload.wait_finished.is_set()
         assert workload.output_finished.is_set()
-        assert workload.kill_calls == 2
-        controlled_sandbox.clear_egress_rules.assert_awaited_once_with()
+        assert len(sealed) == 1
 
     async def test_controlled_deadline_kill_succeeds_within_absolute_grace(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1703,10 +1758,147 @@ class TestRunAgent:
         assert abs(duration - 0.015) < 1e-9
         assert client.decisions == ["SEAL"]
         assert events == ["SEAL", "kill"]
-        grace_deadlines = [value for value in timeout_deadlines if value - started_before > 1.0]
-        assert len(grace_deadlines) == 1
-        recomputed_deadline = grace_deadlines[0] - sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS
-        assert 0.015 <= recomputed_deadline - started_before < 0.025
+        post_deadline_timeouts = [value for value in timeout_deadlines if value - started_before > 1.0]
+        assert len(post_deadline_timeouts) == 3
+        assert post_deadline_timeouts[0] == post_deadline_timeouts[1]
+        assert (
+            post_deadline_timeouts[-1] - post_deadline_timeouts[0]
+            == sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS
+            - sandbox_module.GENERATION_ARBITRATION_GRACE_SECONDS
+        )
+        apparent_deadline = post_deadline_timeouts[-1] - sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS
+        assert 0.005 <= apparent_deadline - started_before < 0.015
+
+    async def test_eight_second_arbitration_seals_then_confirms_absence_within_absolute_window(self) -> None:
+        class DelayedAccountingClient(_FakeAccountingClient):
+            async def begin_arbitration(self, session_id: str) -> AccountingSessionSnapshot:
+                await asyncio.sleep(3.9)
+                return await super().begin_arbitration(session_id)
+
+            async def resolve_arbitration(self, session_id: str, decision: Any) -> AccountingSessionSnapshot:
+                await asyncio.sleep(3.9)
+                return await super().resolve_arbitration(session_id, decision)
+
+        class AwaitingKillWorkload(_FakeControlledWorkload):
+            async def kill(self) -> None:
+                await asyncio.sleep(0)
+                await super().kill()
+
+        workload = AwaitingKillWorkload(wait_release=asyncio.Event(), natural=False)
+        client = DelayedAccountingClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.001,
+            credit_cap_seconds=0.0,
+        )
+        persist = AsyncMock()
+
+        reason, duration = await _stream_controlled_output(
+            cast(Any, _FakeControlledSandbox(workload)), "echo done", "/workspace", _ignore_output, 0.001, controller, persist
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert abs(duration - 0.001) < 1e-9
+        assert client.begin_calls == 1
+        assert client.decisions == ["SEAL"]
+        assert workload.kill_calls == 1
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+        persist.assert_awaited_once()
+
+    async def test_shared_arbitration_budget_exhaustion_kills_without_grading(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class SlowResolutionClient(_FakeAccountingClient):
+            resolve_calls = 0
+
+            async def begin_arbitration(self, session_id: str) -> AccountingSessionSnapshot:
+                await asyncio.sleep(0.04)
+                return await super().begin_arbitration(session_id)
+
+            async def resolve_arbitration(self, session_id: str, decision: Any) -> AccountingSessionSnapshot:
+                self.resolve_calls += 1
+                await asyncio.sleep(0.15)
+                return await super().resolve_arbitration(session_id, decision)
+
+        monkeypatch.setattr(sandbox_module, "GENERATION_ARBITRATION_GRACE_SECONDS", 0.1, raising=False)
+        monkeypatch.setattr(sandbox_module, "GENERATION_TERMINATION_GRACE_SECONDS", 0.2)
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        client = SlowResolutionClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.001,
+            credit_cap_seconds=0.0,
+        )
+        persist = AsyncMock()
+
+        with pytest.raises(TimeoutError):
+            await _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                0.001,
+                controller,
+                persist,
+            )
+
+        assert client.begin_calls == 1
+        assert client.resolve_calls == 1
+        assert client.decisions == []
+        assert workload.kill_calls == 1
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+        persist.assert_not_awaited()
+
+    async def test_failed_resume_keeps_original_absolute_termination_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class SlowResumeClient(_FakeAccountingClient):
+            async def resolve_arbitration(self, session_id: str, decision: Any) -> AccountingSessionSnapshot:
+                await asyncio.sleep(0.15)
+                return await super().resolve_arbitration(session_id, decision)
+
+        real_timeout_at = asyncio.timeout_at
+        timeout_deadlines: list[float] = []
+
+        def capture_timeout_at(when: float | None) -> asyncio.Timeout:
+            assert when is not None
+            timeout_deadlines.append(when)
+            return real_timeout_at(when)
+
+        monkeypatch.setattr(sandbox_module.asyncio, "timeout_at", capture_timeout_at)
+        monkeypatch.setattr(sandbox_module, "GENERATION_ARBITRATION_GRACE_SECONDS", 0.1)
+        monkeypatch.setattr(sandbox_module, "GENERATION_TERMINATION_GRACE_SECONDS", 0.2)
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        client = SlowResumeClient(begin_overhead_ms=1000)
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.001,
+            credit_cap_seconds=1.0,
+        )
+        started_before = asyncio.get_running_loop().time()
+        persist = AsyncMock()
+
+        with pytest.raises(TimeoutError):
+            await _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                0.001,
+                controller,
+                persist,
+            )
+
+        assert client.decisions == []
+        assert workload.kill_calls == 1
+        assert workload.wait_finished.is_set()
+        assert 0.001 <= timeout_deadlines[-1] - 0.2 - started_before < 0.02
+        persist.assert_not_awaited()
 
     async def test_refresh_credit_extends_from_immutable_start(self) -> None:
         workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
