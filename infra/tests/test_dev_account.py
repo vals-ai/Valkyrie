@@ -158,6 +158,15 @@ def ssm_parameter_id(template: Mapping[str, object], parameter_name: str) -> str
 
 
 class DevAccountInfrastructureTest(unittest.TestCase):
+    def test_host_rollout_finishes_while_old_tasks_drain(self) -> None:
+        with mock.patch.dict(os.environ, DEV_AUTH_ENV, clear=True):
+            template = dev_executor_template()
+        host_service = next(iter(template.find_resources("AWS::ECS::Service").values()))
+        self.assertEqual(
+            host_service["Properties"]["DeploymentConfiguration"]["EarlySuccessCriteria"],
+            {"Enable": True, "HealthyPercent": 100, "SourceServiceRevisionCleanup": "DEFERRED"},
+        )
+
     def test_synthesized_host_image_change_uses_draining(self) -> None:
         """Verify that real CDK host paths and drain capability drive rollout classification.
 

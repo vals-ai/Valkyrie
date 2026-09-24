@@ -236,6 +236,16 @@ class ExecutorStack(Stack):
             max_healthy_percent=200,
             assign_public_ip=True,
         )
+        # Finish the rollout after new hosts are healthy; protected old hosts can drain afterward.
+        host_service_resource = cast(aws_ecs.CfnService, self.executor_host_service.node.default_child)
+        host_service_resource.add_property_override(
+            "DeploymentConfiguration.EarlySuccessCriteria",
+            {
+                "Enable": True,
+                "HealthyPercent": 100,
+                "SourceServiceRevisionCleanup": "DEFERRED",
+            },
+        )
         tracker_service.connections.allow_from(
             self.executor_host_service,
             aws_ec2.Port.tcp(TRACKER_PORT),
