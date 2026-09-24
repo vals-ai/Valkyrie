@@ -344,6 +344,10 @@
     "destination": "/reference/sdk/models/agents#agent-download-url-response"
   },
   {
+    "source": "/reference/sdk/models/agents/agent-egress-plan",
+    "destination": "/reference/sdk/models/agents#agent-egress-plan"
+  },
+  {
     "source": "/reference/sdk/models/agents/agent-entry",
     "destination": "/reference/sdk/models/agents#agent-entry"
   },

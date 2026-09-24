@@ -141,6 +141,16 @@
       },
       "AgentContractRequest-Input": {
         "properties": {
+          "egress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentEgressPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "egress_allowlist": {
             "default": [],
             "items": {
@@ -230,6 +240,16 @@
       },
       "AgentContractRequest-Output": {
         "properties": {
+          "egress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentEgressPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "egress_allowlist": {
             "default": [],
             "items": {
@@ -338,6 +358,45 @@
           "expires_in"
         ],
         "title": "AgentDownloadURLResponse",
+        "type": "object"
+      },
+      "AgentEgressPlan": {
+        "description": "Agent-owned network policy for dependency installation and execution.",
+        "properties": {
+          "install": {
+            "anyOf": [
+              {
+                "const": "*",
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
+            "default": "*",
+            "title": "Install"
+          },
+          "run": {
+            "anyOf": [
+              {
+                "const": "*",
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
+            "default": "*",
+            "title": "Run"
+          }
+        },
+        "title": "AgentEgressPlan",
         "type": "object"
       },
       "AgentEntry": {

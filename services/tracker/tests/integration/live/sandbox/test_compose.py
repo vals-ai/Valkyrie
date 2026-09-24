@@ -14,7 +14,13 @@ from benchmark_service.schemas import RetrieveTaskResponse
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3ObjectStore
 from tracker.database.models import AgentContractRequest
-from tracker.sandbox import create_sandbox, run_agent, runtime_sandbox
+from tracker.sandbox import (
+    apply_egress_policy,
+    create_sandbox,
+    install_agent_dependencies,
+    run_agent,
+    runtime_sandbox,
+)
 from tracker.types import AWSCredentials, HarnessConfig
 
 _DIND_IMAGE = "docker:28.3.3-dind"
@@ -216,15 +222,18 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
         )
     )
 
+    agent_sandbox = runtime_sandbox(outer_sandbox, task_data.source)
+    await apply_egress_policy(agent_sandbox, contract.install_egress_policy)
+    await install_agent_dependencies(agent_sandbox, contract, logs.append)
+    await apply_egress_policy(agent_sandbox, contract.run_egress_policy)
     exit_reason, agent_run_time = await run_agent(
-        outer_sandbox,
+        agent_sandbox,
         contract,
         task_data.problem_path,
         _COMPOSE_TASK_ID,
         logs.append,
         task_data.cwd,
         S3ObjectStore(aws_runtime),
-        runtime_source=task_data.source,
     )
 
     assert exit_reason is None

@@ -1,9 +1,9 @@
 """Agent contract models used by SDK run requests."""
 
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, field_validator, model_serializer
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
 
 from valkyrie.sdk.models._base import ResponseModel
 
@@ -52,6 +52,14 @@ class OutputArtifact(BaseModel):
 
 
 OutputArtifactSpec = str | OutputArtifact
+EgressPolicy = Literal["*"] | list[str]
+
+
+class AgentEgressPlan(BaseModel):
+    """Network policy for agent installation and execution."""
+
+    install: EgressPolicy = "*"
+    run: EgressPolicy = "*"
 
 
 class AgentContractRequest(BaseModel):
@@ -64,6 +72,7 @@ class AgentContractRequest(BaseModel):
     final_output: str | None = None
     output_artifacts: list[OutputArtifactSpec] = Field(default_factory=list)
     egress_allowlist: list[str] = Field(default_factory=list)
+    egress: AgentEgressPlan | None = None
     secrets: dict[str, str] = Field(default_factory=dict)
     kwargs: dict[str, str] = Field(default_factory=dict)
     # Tracker-owned; cleared on every incoming request.
@@ -93,6 +102,13 @@ class AgentContractRequest(BaseModel):
                 normalized_path if isinstance(artifact, str) else artifact.model_copy(update={"path": normalized_path})
             )
         return normalized_artifacts
+
+    @model_validator(mode="after")
+    def validate_egress_fields(self) -> "AgentContractRequest":
+        """Reject conflicting legacy and staged run policies."""
+        if self.egress is not None and self.egress_allowlist:
+            raise ValueError("egress and egress_allowlist cannot both be set")
+        return self
 
 
 class AgentEntry(ResponseModel):

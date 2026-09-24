@@ -444,6 +444,72 @@ class TestParseYamlContract:
         assert result.egress_allowlist == ["https://api.openai.com", "https://github.com"]
         assert result.secrets == {"API_KEY": "MySecretName"}
 
+    def test_stage_egress_policies_passed_through(self, tmp_path: Path) -> None:
+        path = self._write_yaml(
+            tmp_path,
+            """\
+            name: my_agent
+            install_cmd: bash setup.sh
+            run_cmd: "agent --task {problem_statement_path}"
+            egress:
+              install:
+                - https://packages.example.com
+              run: []
+        """,
+        )
+
+        result = _parse_yaml_contract(path, AgentConfig())
+
+        assert result.install_egress_policy == ["https://packages.example.com"]
+        assert result.run_egress_policy == []
+
+    def test_legacy_egress_defaults_and_allowlist_mapping(self, tmp_path: Path) -> None:
+        unrestricted = self._write_yaml(
+            tmp_path,
+            """\
+            name: my_agent
+            install_cmd: bash setup.sh
+            run_cmd: "agent --task {problem_statement_path}"
+        """,
+        )
+        unrestricted_result = _parse_yaml_contract(unrestricted, AgentConfig())
+
+        assert unrestricted_result.install_egress_policy == "*"
+        assert unrestricted_result.run_egress_policy == "*"
+
+        unrestricted.write_text(
+            dedent(
+                """\
+                name: my_agent
+                install_cmd: bash setup.sh
+                run_cmd: "agent --task {problem_statement_path}"
+                egress_allowlist:
+                  - https://api.openai.com
+                """
+            )
+        )
+        legacy_result = _parse_yaml_contract(unrestricted, AgentConfig())
+
+        assert legacy_result.install_egress_policy == "*"
+        assert legacy_result.run_egress_policy == ["https://api.openai.com"]
+
+    def test_rejects_new_egress_with_legacy_allowlist(self, tmp_path: Path) -> None:
+        path = self._write_yaml(
+            tmp_path,
+            """\
+            name: my_agent
+            install_cmd: bash setup.sh
+            run_cmd: "agent --task {problem_statement_path}"
+            egress_allowlist:
+              - https://api.openai.com
+            egress:
+              run: []
+        """,
+        )
+
+        with pytest.raises(ValueError, match="egress and egress_allowlist cannot both be set"):
+            _parse_yaml_contract(path, AgentConfig())
+
     def test_model_from_agent_config(self, tmp_path: Path) -> None:
         """
         Validates that the model comes from AgentConfig, not the YAML contract.

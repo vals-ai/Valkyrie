@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from valkyrie.sdk.models import (
     AWSCredentials,
     AgentContractRequest,
+    AgentEgressPlan,
     FetchBenchmarkResponse,
     FetchBenchmarksResponse,
     FinalViewResponse,
@@ -27,6 +28,39 @@ FIXTURES = Path(__file__).parents[2] / "fixtures" / "sdk_api"
 
 def load_fixture(name: str) -> dict[str, object]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def test_agent_contract_preserves_legacy_egress_and_serializes_staged_policies() -> None:
+    legacy_contract = AgentContractRequest(name="legacy")
+    staged_contract = AgentContractRequest(
+        name="staged",
+        egress=AgentEgressPlan(
+            install=["https://packages.example.com"],
+            run=[],
+        ),
+    )
+
+    assert legacy_contract.model_dump(mode="json")["egress"] is None
+    assert AgentEgressPlan().model_dump(mode="json") == {"install": "*", "run": "*"}
+    assert staged_contract.model_dump(mode="json")["egress"] == {
+        "install": ["https://packages.example.com"],
+        "run": [],
+    }
+
+
+@pytest.mark.parametrize("policy", ["packages.example.com", None, ["packages.example.com", 1]])
+def test_agent_egress_plan_rejects_invalid_policies(policy: object) -> None:
+    with pytest.raises(ValidationError):
+        AgentEgressPlan.model_validate({"install": policy})
+
+
+def test_agent_contract_rejects_staged_and_legacy_egress_together() -> None:
+    with pytest.raises(ValidationError, match="cannot both be set"):
+        AgentContractRequest(
+            name="conflicting",
+            egress_allowlist=["legacy.example.com"],
+            egress=AgentEgressPlan(run=["new.example.com"]),
+        )
 
 
 def test_agent_contract_normalizes_output_artifacts() -> None:

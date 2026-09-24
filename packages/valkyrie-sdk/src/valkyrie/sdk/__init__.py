@@ -3,6 +3,7 @@
 from valkyrie.sdk.models import (
     AgentContractRequest,
     AgentDownloadURLResponse,
+    AgentEgressPlan,
     AgentEntry,
     AgentsResponse,
     AnalyzeEvent,
@@ -65,6 +66,7 @@ __all__ = [
     "RunArtifactDownloadResponse",
     "AgentContractRequest",
     "AgentDownloadURLResponse",
+    "AgentEgressPlan",
     "AgentEntry",
     "AgentsResponse",
     "AnalyzeEvent",

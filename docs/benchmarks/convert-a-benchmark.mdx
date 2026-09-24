@@ -77,6 +77,7 @@ from typing import Any
 
 from benchmark_service import BenchmarkService, ImageSource, Resources, Sandbox
 from benchmark_service.schemas import (
+    BenchmarkEgressPlan,
     FinalScoreResult,
     RetrieveTaskResponse,
     StreamChunk,
@@ -132,6 +133,17 @@ Decide your image strategy before writing this method, because it determines wha
 - **Per-task environments** (each task has its own Dockerfile): build and publish one image or snapshot per task ahead of time, and return the per-task reference here.
 
 Other `source` options are `SnapshotSource` for a provider snapshot and `ComposeSource` when the task needs Docker Compose services. GPUs are requested through resources, for example `Resources(vcpu=8, memory=32, disk=50, gpu=1, gpu_type="H100")`. Nested Docker is available in every sandbox, so a benchmark that runs containers only needs a Docker-capable image and to start `dockerd` itself during setup.
+
+A benchmark can set separate outbound network policies for setup and evaluation:
+
+```python
+egress=BenchmarkEgressPlan(
+    setup_task=["https://artifacts.example.com"],
+    evaluation=[],
+)
+```
+
+Use `"*"` for unrestricted access, `[]` to block all outbound access, or a non-empty list to allow only those URLs, domains, IP addresses, or CIDRs. Both stages default to `"*"`, so existing benchmark services can omit `egress` without changing behavior. The selected setup policy remains active until the agent policy is applied. The evaluation policy remains active while Valkyrie evaluates the live task sandbox, including evaluation stream resumption.
 
 <Warning>
   Hosted sandboxes can only use `linux/amd64` images that pull anonymously. Build with `--platform linux/amd64` and confirm an anonymous pull works, since a private image usually surfaces as sandbox creation or retry errors rather than an image-pull error.
