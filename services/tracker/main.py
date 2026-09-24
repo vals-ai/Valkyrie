@@ -1534,9 +1534,9 @@ def _prepare_recovery(
 
 
 def _validate_regrade(benchmark: Benchmark, state: RetryState | None, task_ids: list[str]) -> None:
-    """Reject regrading an active run, skipping a requested task, or regrading nothing."""
-    if benchmark.status == BenchmarkStatus.IN_PROGRESS:
-        raise HTTPException(status_code=409, detail="Cannot regrade a run that is in progress.")
+    """Reject regrading an unfinished run, skipping a requested task, or regrading nothing."""
+    if benchmark.status not in (BenchmarkStatus.FINISHED, BenchmarkStatus.STOPPED):
+        raise HTTPException(status_code=409, detail="Only finished or stopped runs can be regraded.")
     assert state is not None
     if skipped := sorted(set(task_ids).difference(state.task_ids)):
         raise HTTPException(status_code=400, detail=f"Not finished with eval resume state: {', '.join(skipped)}")
@@ -1663,6 +1663,8 @@ async def retry_or_resume_benchmark(
             verified = await service.verify_task_ids(
                 task_ids=verified_task_ids, slice_str=None, dataset=preparation.dataset
             )
+            if retry_mode == RetryMode.REGRADE and (unknown := sorted(set(verified_task_ids) - set(verified.task_ids))):
+                raise HTTPException(status_code=400, detail=f"Unknown to the benchmark service: {', '.join(unknown)}")
             verified_task_ids = verified.task_ids
         finally:
             await service.close()

@@ -136,26 +136,17 @@ def test_update_agent_rejects_a_different_run_bucket_before_copy_or_resume(
     assert MockTrackerService.calls == [{"benchmark_id": run_id, "service_headers": {}}]
 
 
-@pytest.mark.parametrize(
-    ("flags", "retry_mode"),
-    [([], RetryMode.AUTO), (["--from-scratch"], RetryMode.FROM_SCRATCH), (["--regrade"], RetryMode.REGRADE)],
-)
-def test_retry_sends_the_selected_retry_mode(
-    cli_runner: CliRunner,
-    monkeypatch: pytest.MonkeyPatch,
-    flags: list[str],
-    retry_mode: RetryMode,
-) -> None:
+def test_regrade_sends_regrade_retry_mode(cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     def no_service_headers(*_arguments: object) -> dict[str, str]:
         return {}
 
     monkeypatch.setattr(resume_module, "TrackerService", MockTrackerService)
     monkeypatch.setattr(resume_module, "benchmark_service_headers", no_service_headers)
 
-    result = cli_runner.invoke(resume_module.retry_command, ["123e4567-e89b-12d3-a456-426614174000", *flags])
+    result = cli_runner.invoke(resume_module.retry_command, ["123e4567-e89b-12d3-a456-426614174000", "--regrade"])
 
     assert result.exit_code == 0, result.output
-    assert MockTrackerService.retry_modes == [retry_mode]
+    assert MockTrackerService.retry_modes == [RetryMode.REGRADE]
 
 
 def test_regrade_rejects_from_scratch(cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:

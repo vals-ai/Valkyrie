@@ -786,8 +786,9 @@ class TestRunRecovery:
         """Regrade only re-evaluates finished tasks that kept eval resume state.
 
         Test cases:
-        - A requested task that cannot be regraded fails the request without changing state.
-        - Finished tasks with resume state return to EVALUATING; nothing is regenerated.
+        - A requested task that cannot be regraded fails the request without queueing work.
+        - A task the benchmark service no longer recognizes fails the request.
+        - Finished tasks with resume state return to EVALUATING with that state intact.
         - Finished tasks without resume state and unfinished tasks are left untouched.
         - An in-progress run cannot be regraded.
         """
@@ -812,17 +813,24 @@ class TestRunRecovery:
         database_session.add_all([benchmark_row, graded, ungraded, errored])
         database_session.commit()
 
+        known_task_ids: list[str] = []
+
         async def _verify_task_ids(*_args: Any, task_ids: list[str], **_kwargs: Any) -> VerifyTaskIdsResponse:
-            return VerifyTaskIdsResponse(task_ids=task_ids)
+            return VerifyTaskIdsResponse(task_ids=[task_id for task_id in task_ids if task_id in known_task_ids])
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_task_ids)
         regrade_url = f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true&retry_mode=regrade"
 
         skipped_response = client.post(regrade_url, json={"task_ids": ["graded", "ungraded"]}, headers=harness_headers)
+        unknown_response = client.post(regrade_url, headers=harness_headers)
 
         assert skipped_response.status_code == 400
         assert skipped_response.json() == {"detail": "Not finished with eval resume state: ungraded"}
+        assert unknown_response.status_code == 400
+        assert unknown_response.json() == {"detail": "Unknown to the benchmark service: graded"}
         assert mock_kicker.queued_calls == []
+
+        known_task_ids.append("graded")
 
         response = client.post(regrade_url, headers=harness_headers)
 

@@ -183,8 +183,7 @@ def _retry_candidates(
         query = query.with_for_update()
     existing_rows = list(session.exec(query).all())
     if retry_mode == RetryMode.REGRADE:
-        # Regrade never creates or regenerates tasks. Checked here, not in SQL, because a
-        # cleared eval_resume_state can be stored as JSON null.
+        # Filtered here because a cleared eval_resume_state is stored as JSON null, not SQL NULL.
         return [task for task in existing_rows if task.eval_resume_state is not None], []
     existing_ids = {task.task_id for task in existing_rows}
     new_task_ids = [task_id for task_id in rerun_task_ids if task_id not in existing_ids]
