@@ -2304,7 +2304,6 @@ class TestTrackerAPI:
             "attempts": 1,
         }
 
-
     async def test_preview_results_archives_then_overwrites_canonical_result(
         self,
         monkeypatch: MonkeyPatch,

@@ -164,9 +164,7 @@ class ExternalServiceDeadlineController:
         self,
         decision: ArbitrationDecision,
     ) -> AccountingSessionSnapshot:
-        return self._accept(
-            await self.client.resolve_arbitration(self.session_id, decision)
-        )
+        return self._accept(await self.client.resolve_arbitration(self.session_id, decision))
 
     def summary(
         self,
@@ -178,12 +176,8 @@ class ExternalServiceDeadlineController:
             accounting_session_id=observed.session_id,
             base_generation_allowance_seconds=self.base_allowance_seconds,
             cumulative_time_credit_cap_seconds=self.credit_cap_seconds,
-            external_service_overhead_seconds=(
-                observed.cumulative_neutral_overhead_ms / 1000
-            ),
+            external_service_overhead_seconds=(observed.cumulative_neutral_overhead_ms / 1000),
             external_service_credit_applied_seconds=applied,
-            effective_generation_allowance_seconds=(
-                self.base_allowance_seconds + applied
-            ),
+            effective_generation_allowance_seconds=(self.base_allowance_seconds + applied),
             external_service_credit_revision=observed.revision,
         )
